@@ -11230,7 +11230,31 @@ pub async fn patch_item(
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());
-                if requested_owner.as_deref() != Some(caller_lane.as_str()) {
+                // AF-1069: a card whose owner is no longer registered is
+                // orphaned, and discarding it was already open to any worker
+                // (AF-1048 discarded 17 such cards while every reassignment
+                // of them was refused). Moving it to a live, non-isolated lane
+                // keeps the work, so that is allowed too, and logged. A card a
+                // registered worker owns stays theirs.
+                let orphan_rescue = requested_owner.as_deref().is_some_and(|to| {
+                    let from = row.session.as_deref().unwrap_or("").trim();
+                    !from.is_empty()
+                        && !super::session_verbs::session_is_registered(from)
+                        && super::session_verbs::session_is_registered(to)
+                        && super::session_verbs::parse_env(to).get("CC_ISOLATED") != Some("1")
+                });
+                if orphan_rescue {
+                    tracing::info!(
+                        caller = %caller_lane,
+                        card = %id_w,
+                        from = ?row.session,
+                        to = ?requested_owner,
+                        measured = true,
+                        n_considered = 1,
+                        verdict = "orphaned_card_reassigned",
+                        "a card whose owner is no longer registered moved to a live lane"
+                    );
+                } else if requested_owner.as_deref() != Some(caller_lane.as_str()) {
                     tracing::warn!(
                         caller = %caller_lane,
                         card = %id_w,
