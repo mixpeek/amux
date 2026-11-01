@@ -508,18 +508,18 @@ def _script_tests_gate(refs):
         mine = [(t, why) for t, why in failing if t not in inherited]
         secs = (datetime.datetime.now() - t0).total_seconds()
         verdict = "script_tests_fail" if mine else "script_tests_pass"
-        sys.stderr.write("amux pre-push: script tests on %s: %d of %d checks.yml shell tests name a "
-                         "changed script, %d failing from this push, %d already failing on the remote, "
+        sys.stderr.write("amux pre-push: script tests on %s: %d of %d wired tests name a "
+                         "changed script or hook, %d failing from this push, %d already failing on the remote, "
                          "%d not run (cap %d), %.0fs verdict=%s\n"
                          % (short, len(tests), wired, len(mine), len(inherited), len(dropped),
                             _SCRIPT_TESTS_MAX, secs, verdict))
         _audit("script_tests", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f"
                % (verdict, short, len(tests), len(mine), len(inherited), secs))
         if mine:
-            sys.stderr.write("\nBLOCKED: this push fails shell tests that checks.yml runs:\n")
+            sys.stderr.write("\nBLOCKED: this push fails tests that CI runs:\n")
             for t, why in mine:
                 sys.stderr.write("  %s\n    %s\n" % (t, why.replace("\n", "\n    ")))
-            sys.stderr.write("\nReproduce: bash <test> on your commit.\nOverride for this push, if "
+            sys.stderr.write("\nReproduce: run that test on your commit.\nOverride for this push, if "
                              "you are deliberately landing it red:\n  AMUX_SKIP_SCRIPT_TESTS=1 git push ...\n")
             return 1
     return 0

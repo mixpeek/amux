@@ -152,7 +152,7 @@ def main():
               "1 failing from this push, 1 already failing on the remote" in r.stderr, True)
         check("the test saw no amux session and a scratch HOME",
               "AMUX_URL reached" in r.stderr or "pusher's HOME reached" in r.stderr, False)
-        check("a test naming no changed script is not run", "3 of 4 checks.yml shell tests" in r.stderr, True)
+        check("a test naming no changed script is not run", "3 of 4 wired tests" in r.stderr, True)
         check("refusal names the override", "AMUX_SKIP_SCRIPT_TESTS" in r.stderr, True)
         check("verdict field", "verdict=script_tests_fail" in r.stderr, True)
 
@@ -165,7 +165,7 @@ def main():
         r = git(work, "push", "origin", "main")
         check("a push whose only red is inherited is allowed", r.returncode, 0)
         check("and says the tests ran", "verdict=script_tests_pass" in r.stderr, True)
-        check("and how many it selected", "3 of 4 checks.yml shell tests" in r.stderr, True)
+        check("and how many it selected", "3 of 4 wired tests" in r.stderr, True)
 
         # A changed hook runs the hook tests that name it (AF-1128), and one
         # that names another hook stays out.
