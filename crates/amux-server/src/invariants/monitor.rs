@@ -1782,8 +1782,20 @@ fn provider_launch_check() -> Vec<InvariantResult> {
 /// and failed 151 times on mixpeek-seo, whose every owner prompt is kept that
 /// way. Reading the recorded verdict is the fix the comment below asks for.
 fn counts_toward_capture(session: &str, text: &str, intake_state: &str) -> bool {
-    intake_state != "board_capture_off" && measures_board_capture(session, text)
+    !matches!(intake_state, "board_capture_off" | INTAKE_DECIDED_NO_TASK)
+        && measures_board_capture(session, text)
 }
+
+/// Intake read the prompt and found no task in it: a question, information or
+/// policy. Committed with no task ids is its answer, not a dropped card
+/// (AF-1150: four questions to mvs-infra failed the check as "silently dropped").
+const INTAKE_DECIDED_NO_TASK: &str = "decided_no_task";
+
+const INTAKE_STATE_SQL: &str = "CASE WHEN NOT json_valid(intake_result) THEN '' \
+     WHEN json_extract(intake_result, '$.state') = 'committed' \
+      AND COALESCE(json_array_length(intake_result, '$.task_ids'), 0) = 0 \
+     THEN 'decided_no_task' \
+     ELSE COALESCE(json_extract(intake_result, '$.state'), '') END";
 
 fn measures_board_capture(session: &str, text: &str) -> bool {
     !session.is_empty()
@@ -1823,13 +1835,11 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
     let rows: Vec<(String, String, bool, i64, String)> = {
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT session, text, card_id IS NOT NULL, ts, \
-                    CASE WHEN json_valid(intake_result) \
-                         THEN COALESCE(json_extract(intake_result, '$.state'), '') ELSE '' END \
+        let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT session, text, card_id IS NOT NULL, ts, {INTAKE_STATE_SQL} \
                FROM cmd_history \
              WHERE type = 'user' AND ts > (strftime('%s','now') - ?1) * 1000",
-        ) else {
+        )) else {
             return vec![InvariantResult::unknown(ID, "cmd_history query failed")];
         };
         stmt.query_map(rusqlite::params![lookback_s], |r| {
@@ -5656,5 +5666,29 @@ mod capture_off_tests {
         assert!(super::counts_toward_capture("lane-a", ask, ""), "an ordinary prompt counts");
         assert!(!super::counts_toward_capture("lane-a", ask, "board_capture_off"), "a deliberate no-card does not");
         assert!(super::counts_toward_capture("lane-a", ask, "captured"), "other intake states still count");
+    }
+
+    /// AF-1150: the state comes from the row, so the proof runs the real SQL.
+    #[test]
+    fn a_prompt_intake_found_no_task_in_does_not_count() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let state = |raw: Option<&str>| -> String {
+            conn.query_row(
+                &format!("SELECT {} FROM (SELECT ?1 AS intake_result)", super::INTAKE_STATE_SQL),
+                [raw],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let ask = "can you review this and come up with a robust plan for the seo pages";
+        let question = state(Some(r#"{"state":"committed","task_ids":[]}"#));
+        assert_eq!(question, super::INTAKE_DECIDED_NO_TASK);
+        assert!(!super::counts_toward_capture("lane-a", ask, &question));
+        let carded = state(Some(r#"{"state":"committed","task_ids":["AF-1"]}"#));
+        assert_eq!(carded, "committed", "a committed task keeps its state");
+        assert!(super::counts_toward_capture("lane-a", ask, &carded));
+        assert_eq!(state(None), "", "no verdict still counts as a possible drop");
+        assert_eq!(state(Some("not json")), "");
+        assert_eq!(state(Some(r#"{"state":"board_capture_off"}"#)), "board_capture_off");
     }
 }
