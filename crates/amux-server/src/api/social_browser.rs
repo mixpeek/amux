@@ -302,10 +302,48 @@ impl Publisher for LinkedIn {
         })
     }
 
-    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
+    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, state: &'a AppState, _headers: HeaderMap, post: &'a Value)
         -> BoxFut<'a, Result<Value, String>> {
-        Box::pin(async move { Err("LinkedIn metrics are not built for the browser publisher".to_string()) })
+        Box::pin(async move {
+            let urn = post["post_id"].as_str().unwrap_or("").to_string();
+            let _one = PUBLISHING.lock().await;
+            let out = linkedin_metrics(state, &urn).await;
+            release(state).await;
+            out
+        })
     }
+}
+
+/// The page's Content engagement table: one row per post, its cells by header.
+/// A row names its post by URN only in its Boost link.
+const PAGE_ANALYTICS: &str = "https://www.linkedin.com/company/146906104/admin/analytics/updates/";
+const PAGE_ANALYTICS_JS: &str = "(()=>{const t=[...document.querySelectorAll('table')].find(t=>/Impressions/.test(t.innerText));if(!t)return null;const h=[...t.querySelectorAll('th')].map(c=>c.innerText.trim());return [...t.querySelectorAll('tbody tr')].map(r=>{const c=[...r.querySelectorAll('td')].map(d=>d.innerText.trim());const a=r.querySelector('a[href*=\"content=\"]');return {urn:a?decodeURIComponent((a.href.match(/content=([^&]+)/)||[])[1]||''):'',cells:Object.fromEntries(h.map((n,i)=>[n,c[i]]))}})})()";
+
+async fn linkedin_metrics(state: &AppState, urn: &str) -> Result<Value, String> {
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": PAGE_ANALYTICS, "session": SESSION, "join": true}))
+        .await.map_err(|(_, e)| e)?;
+    super::browser::drive(state, SESSION, "navigate", json!({"url": PAGE_ANALYTICS})).await?;
+    if !until(state, "[...document.querySelectorAll('table')].some(t=>/Impressions/.test(t.innerText))", 30).await? {
+        return Err("LinkedIn's page analytics table did not load".to_string());
+    }
+    page_metrics(&eval(state, PAGE_ANALYTICS_JS).await?, urn)
+}
+
+/// One post's numbers from the table. LinkedIn prints "-" until it has them,
+/// and a row with none is not a measured zero: it stays unmeasured and retries.
+fn page_metrics(rows: &Value, urn: &str) -> Result<Value, String> {
+    let row = rows.as_array().and_then(|r| r.iter().find(|x| x["urn"] == urn))
+        .ok_or_else(|| format!("{urn} is not in the amux page's analytics table (a personal post, or older than its 14 days)"))?;
+    let n = |k: &str| row["cells"][k].as_str().and_then(|v| v.replace(',', "").parse::<i64>().ok());
+    let (impressions, views, clicks, reactions, comments, shares) =
+        (n("Impressions"), n("Views"), n("Clicks"), n("Reactions"), n("Comments"), n("Reposts"));
+    if impressions.is_none() && views.is_none() && reactions.is_none() {
+        return Err("LinkedIn shows no numbers for this post yet".to_string());
+    }
+    let engagement = [reactions, comments, shares].iter().flatten().sum::<i64>();
+    Ok(json!({"impressions": impressions, "views": views, "clicks": clicks, "likes": reactions,
+        "reactions": reactions, "comments": comments, "shares": shares, "engagement": engagement,
+        "sources": {"page_analytics": {"measured": true}}}))
 }
 
 async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Failure> {
@@ -387,6 +425,19 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_analytics_read_a_post_and_never_turn_a_dash_into_zero() {
+        let rows = json!([
+            {"urn": "urn:li:ugcPost:1", "cells": {"Impressions": "1,204", "Views": "96", "Clicks": "7", "Reactions": "12", "Comments": "3", "Reposts": "1"}},
+            {"urn": "urn:li:ugcPost:2", "cells": {"Impressions": "-", "Views": "-", "Reactions": "-"}},
+        ]);
+        let m = page_metrics(&rows, "urn:li:ugcPost:1").unwrap();
+        assert_eq!((m["impressions"].as_i64(), m["views"].as_i64(), m["shares"].as_i64(), m["engagement"].as_i64()),
+            (Some(1204), Some(96), Some(1), Some(16)));
+        assert!(page_metrics(&rows, "urn:li:ugcPost:2").unwrap_err().contains("no numbers"));
+        assert!(page_metrics(&rows, "urn:li:ugcPost:3").unwrap_err().contains("not in"));
+    }
 
     /// AF-1065: a refused browser start passes on its own status; only a
     /// failure without an answer is a 502 to retry.

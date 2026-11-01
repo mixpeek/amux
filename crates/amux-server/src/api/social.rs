@@ -756,16 +756,18 @@ pub fn due_windows(conn: &rusqlite::Connection, at: i64, max_attempts: i64) -> r
             if at < posted_at + secs {
                 continue;
             }
-            let prior: Option<(i64, i64)> = conn
+            let prior: Option<(i64, i64, i64)> = conn
                 .query_row(
-                    "SELECT measured, attempts FROM social_post_metrics WHERE post_row = ?1 AND win = ?2",
+                    "SELECT measured, attempts, fetched_at FROM social_post_metrics WHERE post_row = ?1 AND win = ?2",
                     rusqlite::params![id, w],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .ok();
             match prior {
-                Some((1, _)) => {}
-                Some((_, n)) if n >= max_attempts => {}
+                Some((1, _, _)) => {}
+                // Spent, then once a day: a missing token scope burned all 12
+                // attempts in a day, and granting it later fixed nothing.
+                Some((_, n, fetched)) if n >= max_attempts && at - fetched < 86_400 => {}
                 _ => out.push((id, *w)),
             }
         }
@@ -838,7 +840,8 @@ mod tests {
         assert_eq!(due_windows(&conn, 1000 + 700_000, 3).unwrap().len(), 3);
         conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '24h', 1, '{}', 1, 1)", []).unwrap();
         conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '72h', 1, 'null', 0, 1)", []).unwrap();
-        conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '7d', 1, 'null', 0, 3)", []).unwrap();
+        conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '7d', 650000, 'null', 0, 3)", []).unwrap();
         assert_eq!(due_windows(&conn, 1000 + 700_000, 3).unwrap(), vec![(1, "72h")], "measured and exhausted windows are skipped, a failed one retried");
+        assert_eq!(due_windows(&conn, 650_000 + 86_400, 3).unwrap(), vec![(1, "72h"), (1, "7d")], "a spent window is tried again a day on");
     }
 }
