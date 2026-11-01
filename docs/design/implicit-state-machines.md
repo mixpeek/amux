@@ -183,7 +183,7 @@ with `scripts/mutate.sh`) and a log verdict.
 | 24 | Land gate receipts | Awaiting owner approval (AMUX-6643, owner-tier file): the newest receipt for a commit decides; a later failure revokes an earlier pass |
 | 25 | CI watch | Fixed 8ba9e7196: an unreadable board is unknown, not closed |
 | 26 | Stall ladder | Not a defect: the tmp reaper keeps small files, and ladder files are bytes |
-| 27 | Cleanup tick cooldowns | Owner routed Mac maintenance to desktop (10-31 10:37) |
+| 27 | Cleanup tick cooldowns | Fixed bb4e51f15: the cooldown is per incident; a class that measured clear escalates a new incident at once |
 | 28 | Staged-guard marker | Fixed 8d6057fb7: expires after 2 h |
 | 29 | Guard verdict outcome | Fixed c13122717: the attach is guarded on an unresolved row |
 | 30 | Notifications | Fixed 8ba9e7196: claimed once across tabs; stale tabs re-baseline |
