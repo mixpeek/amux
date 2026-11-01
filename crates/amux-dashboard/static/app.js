@@ -27174,7 +27174,7 @@ async function _pmLoadPins() {
     if (!r.ok || sess !== peekSession) return;
     _pmPins = (await r.json()).pins || []; _pmPinsFor = sess;
     _pmRenderPinsBtn(); _peekMessagesRender();
-  } catch (_) {}
+  } catch (e) { console.warn('pinned messages did not load', e); }
 }
 async function _pmPin(id, on) {
   try {
