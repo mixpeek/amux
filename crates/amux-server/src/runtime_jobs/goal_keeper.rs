@@ -526,6 +526,10 @@ struct Keep {
     rearmed_after_limit: bool,
     /// Agent deaths at or before this were already listed in a continue.
     listed_until: i64,
+    /// A background shell or subagents are running. A worker told to continue
+    /// may rightly wait on them, so that turn is not a no-progress turn: the
+    /// two-strike budget would stop the keeper before the wait ended.
+    background_live: bool,
 }
 
 /// Kept on disk, so a server restart does not hand every stuck goal a fresh
@@ -681,7 +685,7 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
     if k.last_sent > 0.0 && foreign_input_since(records, k.last_sent) {
         k.no_progress = 0;
         k.exhausted_logged = false;
-    } else if k.last_sent > 0.0 && limit != LimitGate::Over && !limit_hit_since(records, k.last_sent) {
+    } else if k.last_sent > 0.0 && limit != LimitGate::Over && !k.background_live && !limit_hit_since(records, k.last_sent) {
         if tool_uses_since(records, k.last_sent) == 0 {
             k.no_progress += 1;
         } else {
@@ -736,13 +740,27 @@ async fn notify_met_once(app: &crate::api::AppState, name: &str, condition: &str
 }
 
 /// The worker's turn is over, so a continue lands between turns. A finished
-/// turn with only a background shell still running (`agent_state: active`,
-/// `activity: background_shell`) counts: Claude Code queues a paste whatever
-/// runs behind it, the rule board-drive and steering already use. A worker
-/// waiting on a prompt, an approval or a limit does not.
+/// turn with a background shell or subagents still running (`agent_state:
+/// active`) counts: Claude Code queues a paste whatever runs behind it, the
+/// rule board-drive and steering already use. A worker waiting on a prompt,
+/// an approval or a limit does not.
 fn turn_ended_for_goal(s: &Value) -> bool {
-    s["turn_state"] == "completed"
-        && (s["agent_state"] == "idle" || (s["agent_state"] == "active" && s["activity"] == "background_shell"))
+    s["turn_state"] == "completed" && (s["agent_state"] == "idle" || (s["agent_state"] == "active" && background_live(s)))
+}
+
+fn background_live(s: &Value) -> bool {
+    s["activity"] == "background_shell" || s["activity"] == "subagents"
+}
+
+/// How long the worker must be quiet before a continue. Working subagents
+/// report progress and one finishing wakes the parent, so silence this long
+/// means one is stuck; the wait keeps a healthy fan-out from being nagged.
+fn quiet_needed(s: &Value, idle_s: f64) -> f64 {
+    if s["activity"] == "subagents" {
+        idle_s.max(env_f64("AMUX_GOAL_CONTINUE_SUBAGENT_IDLE_S", 1800.0))
+    } else {
+        idle_s
+    }
 }
 
 async fn tick(app: crate::api::AppState) {
@@ -785,7 +803,7 @@ async fn tick(app: crate::api::AppState) {
             continue;
         }
         let Some(progress_at) = s["last_progress_at"].as_f64() else { continue };
-        if now - progress_at < idle_s || !enabled(&name) {
+        if now - progress_at < quiet_needed(s, idle_s) || !enabled(&name) {
             continue;
         }
         let Some(path) = crate::api::session_verbs::session_jsonl_path(&name) else { continue };
@@ -833,6 +851,7 @@ async fn tick(app: crate::api::AppState) {
         let (decision, listed_until, rearmed) = {
             let Ok(mut map) = state().lock() else { return };
             let k = map.entry(name.clone()).or_default();
+            k.background_live = background_live(s);
             let d = decide_with(k, &goal, &res, &records, now, gate);
             if let LimitGate::Holding { reset_at } = gate {
                 if k.held_for_reset != reset_at {
@@ -960,7 +979,10 @@ mod tests {
         assert!(f(&shell), "the repro shape");
         assert!(f(&json!({"turn_state": "completed", "agent_state": "idle", "activity": "none"})));
         assert!(!f(&json!({"turn_state": "running", "agent_state": "active", "activity": "tool"})), "mid-turn");
-        assert!(!f(&json!({"turn_state": "completed", "agent_state": "active", "activity": "subagents"})), "subagents still working");
+        let subagents = json!({"turn_state": "completed", "agent_state": "active", "activity": "subagents"});
+        assert!(f(&subagents), "a stuck subagent must not stall the goal");
+        assert_eq!(super::quiet_needed(&subagents, 120.0), 1800.0, "a healthy fan-out is not nagged");
+        assert_eq!(super::quiet_needed(&shell, 120.0), 120.0);
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "waiting", "activity": "waiting_for_input"})));
         assert!(!f(&json!({"turn_state": "completed", "agent_state": "rate_limited", "activity": "rate_limited"})));
     }
@@ -979,6 +1001,21 @@ mod tests {
         assert_eq!((k.condition.as_str(), k.no_progress, k.exhausted_logged), ("ship it", 3, true));
         std::fs::write(&path, "{not json").unwrap();
         assert!(load_state(&path).is_empty(), "a corrupt file starts fresh instead of failing");
+    }
+
+    /// Waiting on background work is a right answer to a continue. Counting
+    /// it left the keeper exhausted for a job that was still running.
+    #[test]
+    fn a_continue_answered_by_waiting_on_background_work_is_not_no_progress() {
+        let goal = super::Goal { met: false, condition: "ship".into(), ts: 1.0, cleared: None };
+        let res = super::Resolved { state: "unmet", why: String::new(), active: true, footer: Some(true) };
+        let run = |live| {
+            let mut k = super::Keep { condition: "ship".into(), last_sent: 1000.0, background_live: live, ..Default::default() };
+            let _ = super::decide(&mut k, &goal, &res, &[], 1000.0 + super::interval_s() + 1.0);
+            k.no_progress
+        };
+        assert_eq!(run(true), 0);
+        assert_eq!(run(false), 1, "with nothing running it still counts");
     }
 
     #[test]

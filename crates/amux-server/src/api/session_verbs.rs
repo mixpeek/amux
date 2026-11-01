@@ -30204,7 +30204,13 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // and an isolated lane receives the owner's text untouched. The note goes
     // on the DELIVERED text; the history row keeps the original words and
     // records the link in `repeat_of`.
-    let repeat = if matches!(send_origin, SendOrigin::Owner) && !isolated {
+    //
+    // NOTHING GOES IN FRONT OF A SLASH COMMAND. On mixpeek-dev (2026-10-31
+    // 19:44-19:52Z) re-sending the same `/goal` text put this note first, so
+    // the message no longer started with the command, went in as one paste
+    // and never registered. The worker's goal-guard stopgap typed it by hand.
+    let plain_message = !is_slash_command(&orig_text);
+    let repeat = if matches!(send_origin, SendOrigin::Owner) && !isolated && plain_message {
         super::repeat_ask::lookup(state, name, &orig_text).await
     } else {
         None
@@ -30224,7 +30230,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     let elsewhere_json = elsewhere.as_ref().map(|(id, lane, ts)| {
         json!({"id": format!("MSG-{id}"), "session": lane, "age_s": (now_i64() * 1000 - ts).max(0) / 1000})
     });
-    if let (Some((id, lane, ts)), false) = (elsewhere.as_ref(), isolated) {
+    if let (Some((id, lane, ts)), false) = (elsewhere.as_ref(), isolated || !plain_message) {
         text = format!("{}{text}", super::repeat_ask::note_elsewhere(*id, lane, *ts, now_i64() * 1000));
     }
     // OWNER @-MENTION GRANTS (api/mention_grants.rs). Only the owner's own
@@ -30240,7 +30246,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             valid_session_name(w) && env_path(w).exists()
         });
         let made = super::mention_grants::record(&crate::config::amux_home(), name, &mentioned, now_f64() as i64);
-        if !made.is_empty() && !isolated {
+        if !made.is_empty() && !isolated && plain_message {
             text.push_str(&super::mention_grants::delivery_note(&made));
         }
     }
@@ -30302,6 +30308,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
         );
     }
     let mut queue_id = None;
+    let goal_sent_at = now_f64();
     let (ok, msg) = if let Some(h) = hold.as_ref() {
         // EMPTY guard, the sender recorded: this is a verified peer's own
         // words, not an automated producer, so the AMUX-4574 refusal of
@@ -30604,6 +30611,10 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     let mut resp = json!({"ok": ok, "message": msg, "id": send_id});
     if let Some(e) = elsewhere_json {
         resp["same_request_elsewhere"] = e;
+    }
+    if ok && super::goal_loop::sets_goal(&orig_text) {
+        resp["goal_registration"] = json!("watching");
+        super::goal_loop::watch_goal_registration(state.clone(), name.to_string(), goal_sent_at);
     }
     if let (true, Some(h)) = (ok, hold.as_ref()) {
         // AMUX-5237: the fields a sender (and `amux send`) reads to know the
