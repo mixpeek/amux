@@ -2525,19 +2525,27 @@ fn trigger_cards(conn: &Connection, own: &str, source_ref: Option<&str>, set_at:
         if id == own || named.iter().any(|n| n == id) {
             continue;
         }
-        // A finished card with no closed_at (6,397 of 28,621 on 2026-10-31,
-        // most of them discarded) is dated by its last update instead: a card
-        // last touched before the trigger was set was already finished then.
-        // Before, an unknown close time counted the card, so MF-4200's trigger
-        // "... ported onto the MG-2309 sliced scan ..." read as FIRED by the
-        // discarded MG-2309 and the card drained minutes after each re-park
-        // (AF-1122).
-        let row: Option<(String, i64, Option<i64>)> = conn
-            .query_row("SELECT status, COALESCE(archived, 0), COALESCE(closed_at, CAST(updated AS INTEGER)) FROM issues WHERE id = ?1 AND deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        // WHEN A FINISHED CARD FINISHED (AF-1122). 6,397 of 28,621 finished
+        // cards have no closed_at (2026-10-31, most of them discarded), and an
+        // unknown close time counted the card, so MF-4200's trigger "...
+        // ported onto the MG-2309 sliced scan ..." read as FIRED by MG-2309,
+        // discarded hours earlier, and drained minutes after every re-park.
+        // Close time is closed_at, else the change log's move into a finished
+        // status. `updated` is only an UPPER bound (any later edit moves it,
+        // review F1): touched before the trigger means finished before it.
+        let row: Option<(String, i64, Option<i64>, Option<i64>)> = conn
+            .query_row("SELECT i.status, COALESCE(i.archived, 0), \
+                        COALESCE(i.closed_at, (SELECT CAST(MAX(l.changed_at) AS INTEGER) FROM board_change_log l \
+                          WHERE l.table_name = 'issues' AND l.row_id = i.id \
+                          AND l.new_status IN ('done','verified','discarded') \
+                          AND COALESCE(l.old_status, '') NOT IN ('done','verified','discarded'))), \
+                        CAST(i.updated AS INTEGER) \
+                        FROM issues i WHERE i.id = ?1 AND i.deleted IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .optional()?;
-        if let Some((status, archived, closed_at)) = row {
+        if let Some((status, archived, closed_at, updated)) = row {
             let finished = matches!(status.as_str(), "done" | "verified" | "discarded");
-            if finished && closed_at.zip(set_at).is_some_and(|(closed, set)| closed <= set) {
+            let before = |t: Option<i64>| t.zip(set_at).is_some_and(|(t, set)| t <= set);
+            if finished && (before(closed_at) || before(updated)) {
                 continue;
             }
             named.push(id.to_string());
@@ -12011,11 +12019,21 @@ mod tests {
         }).unwrap();
         let ids = |s: &std::sync::Arc<crate::db::Store>| drainable_backlog_ids(&s.read().unwrap(), "lane", now_f64());
         assert!(!ids(&store).contains(&"MF-4200".to_string()), "finished an hour before the trigger: context, so it parks as prose");
+        // Review F1: a metadata edit after the trigger moves `updated` past it.
+        // The change log's move into discarded still dates MG-2309 before.
+        store.write(move |c| {
+            c.execute("UPDATE issues SET updated=?1 WHERE id='MG-2309'", [set + 30])?;
+            // The fixture's own insert logged MG-2309 entering discarded "now";
+            // date that move an hour before the trigger, as MG-2309's was.
+            c.execute("UPDATE board_change_log SET changed_at=?1 WHERE row_id='MG-2309' AND new_status='discarded'", [set - 3600])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(!ids(&store).contains(&"MF-4200".to_string()), "edited after the trigger, but the log dates the discard before it");
         store.write(move |c| {
             c.execute("UPDATE issues SET updated=?1 WHERE id='MG-9'", [set + 30])?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
-        assert!(ids(&store).contains(&"MF-9".to_string()), "last updated after the trigger: it fired");
+        assert!(ids(&store).contains(&"MF-9".to_string()), "no close time and touched after the trigger: counted, so it fires");
     }
 
     /// AMUX-5668: an isolated lane's untouched todo/backlog cards move to a
