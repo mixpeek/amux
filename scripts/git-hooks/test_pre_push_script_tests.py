@@ -166,6 +166,23 @@ def main():
         check("a push whose only red is inherited is allowed", r.returncode, 0)
         check("and says the tests ran", "verdict=script_tests_pass" in r.stderr, True)
         check("and how many it selected", "3 of 4 checks.yml shell tests" in r.stderr, True)
+
+        # A changed hook runs the hook tests that name it (AF-1128), and one
+        # that names another hook stays out.
+        write(work, "scripts/git-hooks/thing", "#!/bin/sh\nexit 0\n")
+        write(work, "scripts/git-hooks/other", "#!/bin/sh\nexit 0\n")
+        write(work, "scripts/git-hooks/test_thing.py",
+              "import os, sys\n# tests scripts/git-hooks/thing\nsys.exit(1 if open('scripts/git-hooks/thing').read().count('BAD') else 0)\n")
+        write(work, "scripts/git-hooks/test_other.py",
+              "import sys\n# tests scripts/git-hooks/other\nsys.exit(1 if open('scripts/git-hooks/th' + 'ing').read().count('BAD') else 0)\n")
+        commit(work, "adds hooks", "scripts")
+        check("adding the hooks is allowed", git(work, "push", "origin", "main").returncode, 0)
+        write(work, "scripts/git-hooks/thing", "#!/bin/sh\n# BAD\nexit 0\n")
+        commit(work, "breaks thing", "scripts")
+        r = git(work, "push", "origin", "main")
+        check("a change a hook test rejects is refused", r.returncode != 0, True)
+        check("the refusal names that test", "scripts/git-hooks/test_thing.py" in r.stderr.split("BLOCKED")[-1], True)
+        check("a test of another hook did not run", "scripts/git-hooks/test_other.py" in r.stderr, False)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

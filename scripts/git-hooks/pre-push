@@ -410,10 +410,13 @@ def _git_show(sha, path):
 
 
 def _script_tests_for(sha, touched):
-    """The checks.yml shell tests that name a changed script: (selected, wired
-    count). A changed test-*.sh selects itself."""
+    """The checks.yml shell tests that name a changed script, then the
+    scripts/git-hooks/test_*.py that name a changed hook: (selected, wired
+    count). A changed test selects itself. ab340f923 changed pre-push and ran
+    none of the hook tests, and one of them reddened main (AF-1128)."""
     changed = [p for p in touched if p.startswith("scripts/") and "/" not in p[len("scripts/"):]]
-    if not changed:
+    hooks = [p for p in touched if p.startswith("scripts/git-hooks/")]
+    if not changed and not hooks:
         return [], 0
     steps = "\n".join(l for l in _git_show(sha, ".github/workflows/checks.yml").splitlines()
                       if not l.lstrip().startswith("#"))
@@ -426,6 +429,13 @@ def _script_tests_for(sha, touched):
         body = _git_show(sha, t)
         if any(os.path.basename(c) in body for c in changed):
             picked.append(t)
+    if hooks:
+        listed = subprocess.run(["git", "ls-tree", "--name-only", sha, "scripts/git-hooks/"],
+                                capture_output=True, text=True, timeout=30).stdout.split()
+        for t in (x for x in listed if os.path.basename(x).startswith("test_") and x.endswith(".py")):
+            wired.append(t)
+            if t in hooks or any(os.path.basename(h) in _git_show(sha, t) for h in hooks):
+                picked.append(t)
     return picked, len(wired)
 
 
@@ -447,7 +457,8 @@ def _script_test_failures(sha, tests):
             if not os.path.exists(os.path.join(tmp, t)):
                 continue
             try:
-                r = subprocess.run(["bash", t], cwd=tmp, env=env, capture_output=True, text=True,
+                run = [sys.executable, t] if t.endswith(".py") else ["bash", t]
+                r = subprocess.run(run, cwd=tmp, env=env, capture_output=True, text=True,
                                    timeout=_SCRIPT_TEST_TIMEOUT_S)
                 if r.returncode != 0:
                     failing.append((t, "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:])))
