@@ -304,6 +304,11 @@ pub(crate) struct Stats {
     /// Files whose atime moved past the previous measurement: reads since then.
     #[serde(default)]
     pub touched: u64,
+    /// The part of `bytes` in files hard-linked elsewhere (`git clone` of a
+    /// local path links its objects). Moving this folder frees none of it
+    /// until every other link is gone too.
+    #[serde(default)]
+    pub shared_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -436,7 +441,7 @@ pub(crate) fn measure(root: &Path, budget: Duration) -> Stats {
 /// `measure`, also counting files read (atime) after `since`.
 pub(crate) fn measure_since(root: &Path, budget: Duration, since: i64) -> Stats {
     let start = Instant::now();
-    let mut st = Stats { bytes: 0, files: 0, last_used: 0, measured_at: now_secs(), complete: true, newest_write: 0, touched: 0 };
+    let mut st = Stats { bytes: 0, files: 0, last_used: 0, measured_at: now_secs(), complete: true, newest_write: 0, touched: 0, shared_bytes: 0 };
     // Each entry carries whether it is inside a `.git` directory.
     let mut stack = vec![(root.to_path_buf(), false)];
     while let Some((dir, in_git)) = stack.pop() {
@@ -460,7 +465,10 @@ pub(crate) fn measure_since(root: &Path, budget: Duration, since: i64) -> Stats 
             }
             st.files += 1;
             st.bytes += m.blocks() * 512;
-            if in_git && !git_write_is_use(&e.file_name()) {
+            if m.nlink() > 1 {
+                st.shared_bytes += m.blocks() * 512;
+            }
+            if in_git && (m.nlink() > 1 || !git_write_is_use(&e.file_name())) {
                 continue;
             }
             st.last_used = st.last_used.max(m.mtime());
@@ -481,7 +489,10 @@ pub(crate) fn measure_since(root: &Path, budget: Duration, since: i64) -> Stats 
 /// gate runs on every check) reads the index, and on 2026-10-30 that made 85
 /// idle checkouts read as used within hours, every pass, so none could ever
 /// move. Writes count, a commit or fetch is real work, except the index and
-/// its lock, which `git status` refreshes on its own.
+/// its lock, which `git status` refreshes on its own. A hard-linked file in
+/// `.git` is shared with sibling clones and one inode has one mtime: on
+/// 2026-11-01 a single clone's commit made 45 gs12 clones (360 GB) read as
+/// written at the same second, so its timestamps say nothing about this one.
 fn git_write_is_use(name: &std::ffi::OsStr) -> bool {
     !matches!(name.to_str(), Some("index" | "index.lock" | "FETCH_HEAD"))
 }
@@ -1125,7 +1136,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
         let moved_before = rep.moved;
         run_and_record(&path, op, &mut rep).await;
         if kind == Kind::ToHdd && rep.moved > moved_before {
-            freed += f.stats.as_ref().map(|s| s.bytes).unwrap_or(0);
+            freed += f.stats.as_ref().map(|s| s.bytes - s.shared_bytes).unwrap_or(0);
             if pressure && pct(mac_free + freed) >= u64::from(cfg.target_free_pct) {
                 pressure = false;
             }
@@ -1772,7 +1783,7 @@ mod tests {
     }
 
     fn stats(now: i64, last_used: i64, newest_write: i64) -> Stats {
-        Stats { bytes: 1, files: 10, last_used, measured_at: now, complete: true, newest_write, touched: 0 }
+        Stats { bytes: 1, files: 10, last_used, measured_at: now, complete: true, newest_write, touched: 0, shared_bytes: 0 }
     }
 
     #[test]
@@ -2087,8 +2098,21 @@ mod tests {
         age_all();
         fs::write(r.join(".git/objects/ab/cdef"), "obj").unwrap();
         assert!(now_secs() - measure(&r, Duration::from_secs(10)).last_used < 60, "a commit is a use");
-        // Reading a real file still counts.
+        // A sibling clone's commit freshens an object hard-linked into this
+        // clone: the shared inode moves, and this checkout was not used.
         fs::remove_file(r.join(".git/objects/ab/cdef")).unwrap();
+        fs::write(r.join(".git/objects/ab/linked"), "obj").unwrap();
+        fs::hard_link(r.join(".git/objects/ab/linked"), d.path().join("sibling-object")).unwrap();
+        age_all();
+        set(&d.path().join("sibling-object"), std::time::SystemTime::now());
+        let shared = measure(&r, Duration::from_secs(10));
+        assert_eq!(shared.last_used, base.last_used, "a sibling's write to a shared object is not a use");
+        assert!(shared.shared_bytes > 0 && shared.shared_bytes < shared.bytes, "shared bytes are counted apart");
+        fs::remove_file(d.path().join("sibling-object")).unwrap();
+        set(&r.join(".git/objects/ab/linked"), std::time::SystemTime::now());
+        assert!(now_secs() - measure(&r, Duration::from_secs(10)).last_used < 60, "an unlinked object is this clone's own");
+        // Reading a real file still counts.
+        fs::remove_file(r.join(".git/objects/ab/linked")).unwrap();
         age_all();
         let t = std::time::SystemTime::now();
         fs::File::open(r.join("src/a.rs")).unwrap().set_times(fs::FileTimes::new().set_accessed(t)).unwrap();
