@@ -5658,6 +5658,19 @@ fn pickup_prompt(conn: &Connection, session: &str, row: &bs::IssueRow) -> String
         }
         prompt.push_str("\n\n[fan-out workspace] Own the entire board in your dedicated amux/fanout branch. Preserve the worktree across pauses. Resolve implementation dependencies locally and never create a task on another worker board. Commit your changes and record test evidence; configure CC_WORKTREE_VERIFY with the appropriate repository verification command. When completed outcomes have evidence and no implementation is active, the harness merges an isolated candidate, runs those checks, and pushes main without changing the shared checkout. Resolve returned conflicts/check failures yourself; keep driving to the resolved terminal gates. Only actual spend/customer-outbound authorization remains an approval.");
     }
+    // AF-1122: a card offered again because its trigger fired says so, or the
+    // worker re-reads its own "waiting on X" and parks it again (MF-4200 was
+    // reclaimed five times that way).
+    if let (Some(trigger), Ok(TriggerPark::Fired(cards))) =
+        (row.source_ref.as_deref(), trigger_park(conn, row, now_f64() as i64))
+    {
+        prompt.push_str(&format!(
+            "\n\n[trigger met] This card was parked on: {}. Every card that names is finished now ({}). \
+             Confirm the condition holds and work it, or re-park it with a new trigger.",
+            quoted_card_text(trigger, &row.id),
+            cards.join(", ")
+        ));
+    }
     if let Some(next) = row.next_action.as_deref().filter(|v| !v.is_empty()) {
         prompt.push_str(&format!(
             "\nNext action: {}",
@@ -11971,6 +11984,10 @@ mod tests {
         let conn = store.read().unwrap();
         let row = bs::get_issue(&conn, "GM-40").unwrap().unwrap();
         assert_eq!(trigger_park(&conn, &row, now_f64() as i64).unwrap(), TriggerPark::Fired(vec!["GE1-30".into()]));
+        let prompt = pickup_prompt(&conn, "lane", &row);
+        assert!(prompt.contains("[trigger met]") && prompt.contains("finished now (GE1-30)"), "{prompt}");
+        let prose = bs::get_issue(&conn, "GM-41").unwrap().unwrap();
+        assert!(!pickup_prompt(&conn, "lane", &prose).contains("[trigger met]"), "prose did not fire");
     }
 
     /// AF-1090: a trigger that mentions a card already finished when it was
