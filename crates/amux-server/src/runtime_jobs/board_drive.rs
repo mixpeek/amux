@@ -7799,6 +7799,19 @@ fn blocker_recoveries_with_policy(
     Ok(result)
 }
 
+/// A card's `rev` for a delivery about it, read on the blocking pool (AF-1120).
+async fn card_rev(state: &AppState, card: &str) -> Option<i64> {
+    let card = card.to_owned();
+    state
+        .store
+        .read_async(move |c| {
+            Ok(c.query_row("SELECT rev FROM issues WHERE id=?1", rusqlite::params![&card], |r| r.get(0)).ok())
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
 async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTrace {
     // First, before any skip: an isolated lane is also opted out of pickup
     // (amux-helper: CC_AUTO_PICKUP=0), and the handoff placed at the isolated
@@ -7908,7 +7921,8 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         // An owner's explicit stop (session.stopped, source api-stop) with no
         // start after it is a decision, not a crash: the drive leaves the
         // lane stopped until someone starts it.
-        if state.store.read().ok().is_some_and(|conn| owner_stopped(&conn, lane)) {
+        let stop_lane = lane.to_owned();
+        if state.store.read_async(move |conn| Ok(owner_stopped(conn, &stop_lane))).await.unwrap_or(false) {
             tracing::info!(target: "amux::board_drive", session = lane, measured = true, n_considered = 1,
                 verdict = "owner_stop_held", "board_drive: lane was stopped by its owner; not woken");
             return LaneTrace::skip(
@@ -7927,8 +7941,12 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             )
             .with_counts(eligible, open);
         }
-        let should_wake = match state.store.read() {
-            Ok(conn) => match select_resume(&conn, lane, now_f64(), true) {
+        // AF-1120: on the blocking pool, so the lane loop never holds a
+        // runtime thread for a store read.
+        let adherence = fleet.board_adherence(lane);
+        let wake_tags = fleet.tags(lane);
+        let wake_lane = lane.to_owned();
+        let should_wake = match state.store.read_async(move |conn| Ok(match select_resume(conn, &wake_lane, now_f64(), true) {
                 Resume::Claim { .. } => true,
                 // The worker, not a human or a server heuristic, owns this
                 // reconciliation. Wake it without a singular resume card; the
@@ -7937,21 +7955,22 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 Resume::Current { .. } => true,
                 Resume::None => {
                     matches!(
-                        select_pickup(&conn, lane, now_f64()),
+                        select_pickup(conn, &wake_lane, now_f64()),
                         Pickup::Claim { .. } | Pickup::DrainBacklog { .. }
-                    ) || (fleet.board_adherence(lane)
+                    ) || (adherence
                         && matches!(
-                            select_advance(&conn, lane, &fleet.tags(lane), now_f64()),
+                            select_advance(conn, &wake_lane, &wake_tags, now_f64()),
                             Advance::Nudge {
                                 kind: "advance-nudged" | "decompose-asked",
                                 ..
                             }
                         )) || (eligible == 0
-                        && open_execution_count(&conn, lane).ok() == Some(0)
-                        && !verify_batch_pending(&conn, lane, now_f64())
-                        && !done_verify_candidates(&conn, lane).is_empty())
+                        && open_execution_count(conn, &wake_lane).ok() == Some(0)
+                        && !verify_batch_pending(conn, &wake_lane, now_f64())
+                        && !done_verify_candidates(conn, &wake_lane).is_empty())
                 }
-            },
+            })).await {
+            Ok(wake) => wake,
             Err(_) => {
                 return LaneTrace::skip(
                     lane,
@@ -8082,7 +8101,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     }
     let now = now_f64();
     let tags = fleet.tags(lane);
-    let Ok(conn) = state.store.read() else {
+    let resume_lane = lane.to_owned();
+    let Ok(resume) = state.store.read_async(move |conn| {
+        Ok(select_resume(conn, &resume_lane, now, woke_for_dispatch))
+    }).await else {
         return LaneTrace::skip(
             lane,
             "store-unavailable",
@@ -8090,8 +8112,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         )
         .with_counts(eligible, open);
     };
-    let resume = select_resume(&conn, lane, now, woke_for_dispatch);
-    drop(conn);
     let mut current_claim = None;
     if !matches!(&resume, Resume::None) {
         match resume {
@@ -8185,8 +8205,11 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 current_claim = Some((card, cause));
             }
             Resume::Conflicting { cards } => {
-                let plan = match state.store.read() {
-                    Ok(conn) => select_claim_reconcile(&conn, lane, &cards, now),
+                let (plan_lane, plan_cards) = (lane.to_owned(), cards.clone());
+                let plan = match state.store.read_async(move |conn| {
+                    Ok(select_claim_reconcile(conn, &plan_lane, &plan_cards, now))
+                }).await {
+                    Ok(plan) => plan,
                     Err(_) => {
                         return LaneTrace::skip(
                             lane,
@@ -8289,7 +8312,10 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             Resume::None => unreachable!("non-empty resume selector was matched above"),
         }
     }
-    let Ok(conn) = state.store.read() else {
+    let (select_lane, select_tags) = (lane.to_owned(), tags.clone());
+    let Ok((advance, mut pickup)) = state.store.read_async(move |conn| {
+        Ok((select_advance(conn, &select_lane, &select_tags, now), select_pickup(conn, &select_lane, now)))
+    }).await else {
         return LaneTrace::skip(
             lane,
             "store-unavailable",
@@ -8297,9 +8323,6 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         )
         .with_counts(eligible, open);
     };
-    let advance = select_advance(&conn, lane, &tags, now);
-    let mut pickup = select_pickup(&conn, lane, now);
-    drop(conn);
 
     let advance_reason = match &advance {
         Advance::None { reason, detail } => (*reason, detail.clone()),
@@ -8333,14 +8356,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // A card whose rev cannot be read delivers unconditionally — the same
             // behaviour as before, since refusing to nudge because a read failed
             // would be a worse trade than an occasionally-stale nudge.
-            let rev: Option<i64> = state.store.read().ok().and_then(|c| {
-                c.query_row(
-                    "SELECT rev FROM issues WHERE id=?1",
-                    rusqlite::params![&card],
-                    |r| r.get(0),
-                )
-                .ok()
-            });
+            let rev = card_rev(state, &card).await;
             let delivery = match rev {
                 Some(r) => fleet.deliver_about(&target, &text, &card, r).await,
                 None => fleet.deliver_work(&target, &text).await.map(|_| true),
@@ -8423,11 +8439,13 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
         // the canonical recovery of that same abandoned WIP slot forever.
         // Also preserve the existing capture-shell WIP exemption: a reminder
         // already sent about a raw prompt is not an executable task claim.
+        let exempt_card = card.clone();
         let capture_exempt = state
             .store
-            .read()
+            .read_async(move |conn| Ok(bs::get_issue(conn, &exempt_card).ok().flatten()))
+            .await
             .ok()
-            .and_then(|conn| bs::get_issue(&conn, &card).ok().flatten())
+            .flatten()
             .is_some_and(|row| bs::is_capture_shell(&row) || row.item_type == "epic");
         let recovery = matches!(&pickup, Pickup::ReclaimStale { card: stale, .. } if stale == &card)
             || capture_exempt;
@@ -8446,7 +8464,8 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     if matches!(pickup, Pickup::Claim { .. } | Pickup::DrainBacklog { .. }) {
         let cap = fleet.done_wip_cap(lane);
         if cap > 0 {
-            let done = state.store.read().ok().map(|c| lane_done_cards(&c, lane)).unwrap_or_default();
+            let done_lane = lane.to_owned();
+            let done = state.store.read_async(move |c| Ok(lane_done_cards(c, &done_lane))).await.unwrap_or_default();
             // AH-395: proof work is exempt from the cap. Done cards wait on the
             // harness reviewer, which a lane cannot hurry, and a proof card
             // (often one the reviewer reopened) is exactly what closes them.
@@ -8460,12 +8479,11 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 // reviewer can close (gs12-compute, GC-107, 2026-10-06). When
                 // every done card has been handed once, hold quietly.
                 let now = now_f64();
-                let fresh = state.store.read().ok().and_then(|c| {
-                    done.iter()
-                        .find(|(id, _)| matches!(nudge_budget_check(&c, lane, id, "idle-with-card", "done", now),
-                            Ok(NudgeBudget::Admit { n: 0 })))
-                        .cloned()
-                });
+                let (fresh_lane, fresh_done) = (lane.to_owned(), done.clone());
+                let fresh = state.store.read_async(move |c| Ok(fresh_done.iter()
+                    .find(|(id, _)| matches!(nudge_budget_check(c, &fresh_lane, id, "idle-with-card", "done", now),
+                        Ok(NudgeBudget::Admit { n: 0 })))
+                    .cloned())).await.ok().flatten();
                 let Some((oldest, title)) = fresh else {
                     tracing::info!(target: "amux::board_drive", session = lane, measured = true,
                         n_considered = done.len(), cap, verdict = "done_wip_cap_awaiting_review",
@@ -8481,14 +8499,7 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                     "[amux done-WIP cap] You hold {} cards at done (cap {cap}, {DISPATCH_DONE_WIP_KEY}). Before new work, close the review gap on your oldest, {oldest} \"{title}\" (the review note on the card names it), and post the evidence on the card; the reviewer verifies it, so do not move it to verified yourself. If nothing is left for you to do, say on the card exactly what it waits for. New cards resume when you are under the cap.",
                     done.len()
                 );
-                let rev: Option<i64> = state.store.read().ok().and_then(|c| {
-                    c.query_row(
-                        "SELECT rev FROM issues WHERE id=?1",
-                        rusqlite::params![&oldest],
-                        |r| r.get(0),
-                    )
-                    .ok()
-                });
+                let rev = card_rev(state, &oldest).await;
                 let delivered = fleet.deliver_about(lane, &text, &oldest, rev.unwrap_or(0)).await;
                 tracing::info!(target: "amux::board_drive", session = lane, card = %oldest,
                     measured = true, n_considered = done.len(), cap, delivered = ?delivered,
@@ -8765,21 +8776,23 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // DURABLE cooldown (py:14627): the in-memory dict was wiped by the
             // very first reload after shipping and the dispatch re-fired at the
             // same lane within minutes.
+            let cooldown_lane = lane.to_owned();
             let recent = state
                 .store
-                .read()
-                .ok()
-                .and_then(|c| {
-                    c.query_row(
+                .read_async(move |c| {
+                    Ok(c.query_row(
                         "SELECT 1 FROM session_events WHERE session=?1 \
                          AND type='pickup.decompose_nudge' AND ts > ?2 LIMIT 1",
-                        rusqlite::params![lane, now - DECOMPOSE_COOLDOWN_S],
+                        rusqlite::params![cooldown_lane, now - DECOMPOSE_COOLDOWN_S],
                         |_| Ok(true),
                     )
                     .optional()
                     .ok()
-                    .flatten()
+                    .flatten())
                 })
+                .await
+                .ok()
+                .flatten()
                 .unwrap_or(false);
             if recent {
                 return LaneTrace::skip(
@@ -8930,45 +8943,52 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 if eligible > 0 && !is_verification_policy {
                     break 'verify None;
                 }
-                let Ok(conn) = state.store.read() else {
-                    break 'verify None;
-                };
-                if !is_verification_policy {
-                    match open_execution_count(&conn, lane) {
-                        Ok(0) => {}
-                        Ok(_) => break 'verify None,
-                        Err(error) => {
-                            break 'verify Some(format!("execution population unmeasured: {error}"))
+                // AF-1120: every read below runs on the blocking pool. Err
+                // carries what the block used to `break 'verify` with.
+                let verify_lane = lane.to_owned();
+                let read = state.store.read_async(move |conn| Ok((|| {
+                    let lane = verify_lane.as_str();
+                    if !is_verification_policy {
+                        match open_execution_count(conn, lane) {
+                            Ok(0) => {}
+                            Ok(_) => return Err(None),
+                            Err(error) => {
+                                return Err(Some(format!("execution population unmeasured: {error}")))
+                            }
                         }
                     }
-                }
-                let total = done_card_count(&conn, lane);
-                if total == 0 {
-                    break 'verify None;
-                }
-                let recent = verify_batch_pending(&conn, lane, now);
-                if recent {
-                    break 'verify Some(format!(
-                        "has {total} done card(s); previous verification batch still pending (24h retry)"
-                    ));
-                }
-                let cards = done_verify_candidates(&conn, lane);
-                if cards.is_empty() {
-                    break 'verify None;
-                }
-                let contracts: serde_json::Map<String, Value> = cards
-                    .iter()
-                    .filter_map(|(id, _, _)| {
-                        verification_contract(&conn, id)
-                            .ok()
-                            .flatten()
-                            .map(|signature| (id.clone(), json!(signature)))
-                    })
-                    .collect();
-                if contracts.len() != cards.len() {
-                    break 'verify Some("verification contracts unmeasured".into());
-                }
-                drop(conn);
+                    let total = done_card_count(conn, lane);
+                    if total == 0 {
+                        return Err(None);
+                    }
+                    if verify_batch_pending(conn, lane, now) {
+                        return Err(Some(format!(
+                            "has {total} done card(s); previous verification batch still pending (24h retry)"
+                        )));
+                    }
+                    let cards = done_verify_candidates(conn, lane);
+                    if cards.is_empty() {
+                        return Err(None);
+                    }
+                    let contracts: serde_json::Map<String, Value> = cards
+                        .iter()
+                        .filter_map(|(id, _, _)| {
+                            verification_contract(conn, id)
+                                .ok()
+                                .flatten()
+                                .map(|signature| (id.clone(), json!(signature)))
+                        })
+                        .collect();
+                    if contracts.len() != cards.len() {
+                        return Err(Some("verification contracts unmeasured".into()));
+                    }
+                    Ok((total, cards, contracts))
+                })())).await;
+                let (total, cards, contracts) = match read {
+                    Ok(Ok(found)) => found,
+                    Ok(Err(why)) => break 'verify why,
+                    Err(_) => break 'verify None,
+                };
                 let text = verify_nudge_text(&cards, total);
                 if let Err(error) = fleet.deliver_work(lane, &text).await {
                     return nudge_delivery_failed(lane, lane, "", &error)
@@ -9012,175 +9032,183 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
             // sitting there for 14+ days are either stale (should be archived)
             // or actionable (should be promoted to todo). 72h cooldown.
             let triage_trace = 'triage: {
-                let Ok(conn) = state.store.read() else {
-                    break 'triage None;
-                };
-                let now_i = now as i64;
-                let stale_count = stale_backlog_count(&conn, lane, now_i);
-                let total_backlog: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
-                         AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
-                        rusqlite::params![lane],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                let doing_count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='doing' \
-                         AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
-                        rusqlite::params![lane],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                // DRAINABLE backlog is narrower than total backlog: a card
-                // correctly parked in backlog is NOT un-worked and must not be
-                // drain-nudged (mixpeek-autopilot, 2026-08-13 — the nudge fired
-                // 3x on a standing tripwire and two externally-triggered chores,
-                // none of which have an honest path to `todo`). Exclude the same
-                // two things auto-pickup excludes: the dormant/armed types
-                // (tripwire, watch — they fire on an event, `is:armed`), and any
-                // card with a LIVE `source_ref` trigger (parked on an external
-                // condition, re-verified within SOURCE_REF_STALE_S). A trigger
-                // older than that is treated as un-set — see SOURCE_REF_STALE_S
-                // for why a fleet-wide sweep found this had gone to ~0 drainable
-                // almost everywhere despite hundreds of un-worked backlog cards.
-                // If nothing drainable remains, the lane's backlog is all
-                // correctly and CURRENTLY parked, and the drain nudge stays quiet.
-                let drain_population = match backlog_nudge_population(&conn, lane, now_i) {
-                    Ok(cards) => cards,
-                    Err(error) => break 'triage Some(format!("backlog nudge unmeasured: {error}")),
-                };
-                let drainable_backlog = drain_population.len() as i64;
-                // TWO shapes of the same "backlog isn't moving" problem:
-                //  * STALE TRIAGE: 10+ cards over 14 days old — archive cruft /
-                //    promote the still-actionable ones (72h cooldown).
-                //  * IDLE DRAIN (Ethan 2026-08-12, the "board doesn't drive to
-                //    completion" bug): the lane is doing NOTHING, has no
-                //    dispatchable todo (`eligible == 0`), and holds DRAINABLE
-                //    backlog of any age. board-drive dispatches `todo`, never
-                //    `backlog`, so a lane handed only backlog sits idle forever
-                //    (tubescience: 51 backlog / 0 todo / 0 doing). Short cooldown
-                //    so a lane that stays idle keeps getting nudged until it drains.
-                // AF-334. `doing_count == 0` means "no card is in `doing`",
-                // NOT "the lane is doing nothing", and the comment above
-                // conflates them. A lane that works fast, keeps `todo` drained
-                // and holds backlog satisfies all three terms CONTINUOUSLY
-                // while being the most productive lane in the fleet.
-                //
-                // Measured 2026-08-30, at the 30-minute resolution the trigger
-                // actually operates at rather than in aggregate: mvs-infra's
-                // last six drain nudges each landed with 63-79 card events in
-                // the preceding half hour. It was told it was idle every 16
-                // minutes while mutating a card every ~25 seconds. Fleet-wide
-                // the drain nudge was 42% of all messages.
-                //
-                // So the trigger gets a term for whether the lane is DEMONSTRABLY
-                // WORKING. This does not weaken the case it was built for: a
-                // genuinely stalled lane produces no card events and is still
-                // nudged. Checked against this session's own nudges in the same
-                // window - 2 of 4 had 25-27 events (suppressed by this term, and
-                // they were the wrong nudges) and 2 had exactly 0 (still fire,
-                // and they were correct: the lane was waiting on a build).
-                //
-                // A rotting backlog is NOT hidden by this. `stale_enough` below
-                // is an independent path and still fires at 10+ cards over 14
-                // days, which is the case where a busy lane's backlog needs
-                // attention regardless of how active the lane is.
-                //
-                // datetime(e.at) on BOTH sides: `_amux_state_events.at` is
-                // RFC3339 with an explicit +00:00 offset. Comparing it against a
-                // localtime string silently applies a 4-hour skew, which while
-                // writing this made every lane read as 0 events and nearly
-                // produced a false "the fix does not work" conclusion.
-                let lane_activity_window_min: i64 = std::env::var("AMUX_DRAIN_ACTIVITY_WINDOW_MIN")
-                    .ok()
-                    .and_then(|v| v.trim().parse().ok())
-                    .unwrap_or(30);
-                let recent_card_events: i64 = lane_card_activity(&conn, lane_activity_window_min)
-                    .get(lane)
-                    .copied()
-                    .unwrap_or(0);
-                let lane_working = recent_card_events > 0;
-                let idle_drain = should_drain_nudge(
-                    doing_count,
-                    eligible,
-                    drainable_backlog,
-                    recent_card_events,
-                );
-                if doing_count == 0 && eligible == 0 && drainable_backlog > 0 && lane_working {
-                    // Countable, so the suppression cannot become invisible.
-                    // If this fires constantly for a lane whose backlog never
-                    // moves, the term is too generous and the number says so.
-                    tracing::info!(
-                        target: "board_drive",
-                        "[drain-nudge/suppressed AF-334] lane={lane} backlog={drainable_backlog} \
-                         card_events_last_{lane_activity_window_min}min={recent_card_events} \
-                         — the lane is demonstrably working; drain nudge withheld"
+                // AF-1120: the census runs on the blocking pool; Err carries
+                // what the block used to `break 'triage` with.
+                let triage_lane = lane.to_owned();
+                let read = state.store.read_async(move |conn| Ok((|| {
+                    let lane = triage_lane.as_str();
+                    let now_i = now as i64;
+                    let stale_count = stale_backlog_count(conn, lane, now_i);
+                    let total_backlog: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='backlog' \
+                             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
+                            rusqlite::params![lane],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    let doing_count: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM issues WHERE session=?1 AND status='doing' \
+                             AND deleted IS NULL AND COALESCE(archived,0)=0 AND owner_type='agent'",
+                            rusqlite::params![lane],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    // DRAINABLE backlog is narrower than total backlog: a card
+                    // correctly parked in backlog is NOT un-worked and must not be
+                    // drain-nudged (mixpeek-autopilot, 2026-08-13 — the nudge fired
+                    // 3x on a standing tripwire and two externally-triggered chores,
+                    // none of which have an honest path to `todo`). Exclude the same
+                    // two things auto-pickup excludes: the dormant/armed types
+                    // (tripwire, watch — they fire on an event, `is:armed`), and any
+                    // card with a LIVE `source_ref` trigger (parked on an external
+                    // condition, re-verified within SOURCE_REF_STALE_S). A trigger
+                    // older than that is treated as un-set — see SOURCE_REF_STALE_S
+                    // for why a fleet-wide sweep found this had gone to ~0 drainable
+                    // almost everywhere despite hundreds of un-worked backlog cards.
+                    // If nothing drainable remains, the lane's backlog is all
+                    // correctly and CURRENTLY parked, and the drain nudge stays quiet.
+                    let drain_population = match backlog_nudge_population(conn, lane, now_i) {
+                        Ok(cards) => cards,
+                        Err(error) => return Err(Some(format!("backlog nudge unmeasured: {error}"))),
+                    };
+                    let drainable_backlog = drain_population.len() as i64;
+                    // TWO shapes of the same "backlog isn't moving" problem:
+                    //  * STALE TRIAGE: 10+ cards over 14 days old — archive cruft /
+                    //    promote the still-actionable ones (72h cooldown).
+                    //  * IDLE DRAIN (Ethan 2026-08-12, the "board doesn't drive to
+                    //    completion" bug): the lane is doing NOTHING, has no
+                    //    dispatchable todo (`eligible == 0`), and holds DRAINABLE
+                    //    backlog of any age. board-drive dispatches `todo`, never
+                    //    `backlog`, so a lane handed only backlog sits idle forever
+                    //    (tubescience: 51 backlog / 0 todo / 0 doing). Short cooldown
+                    //    so a lane that stays idle keeps getting nudged until it drains.
+                    // AF-334. `doing_count == 0` means "no card is in `doing`",
+                    // NOT "the lane is doing nothing", and the comment above
+                    // conflates them. A lane that works fast, keeps `todo` drained
+                    // and holds backlog satisfies all three terms CONTINUOUSLY
+                    // while being the most productive lane in the fleet.
+                    //
+                    // Measured 2026-08-30, at the 30-minute resolution the trigger
+                    // actually operates at rather than in aggregate: mvs-infra's
+                    // last six drain nudges each landed with 63-79 card events in
+                    // the preceding half hour. It was told it was idle every 16
+                    // minutes while mutating a card every ~25 seconds. Fleet-wide
+                    // the drain nudge was 42% of all messages.
+                    //
+                    // So the trigger gets a term for whether the lane is DEMONSTRABLY
+                    // WORKING. This does not weaken the case it was built for: a
+                    // genuinely stalled lane produces no card events and is still
+                    // nudged. Checked against this session's own nudges in the same
+                    // window - 2 of 4 had 25-27 events (suppressed by this term, and
+                    // they were the wrong nudges) and 2 had exactly 0 (still fire,
+                    // and they were correct: the lane was waiting on a build).
+                    //
+                    // A rotting backlog is NOT hidden by this. `stale_enough` below
+                    // is an independent path and still fires at 10+ cards over 14
+                    // days, which is the case where a busy lane's backlog needs
+                    // attention regardless of how active the lane is.
+                    //
+                    // datetime(e.at) on BOTH sides: `_amux_state_events.at` is
+                    // RFC3339 with an explicit +00:00 offset. Comparing it against a
+                    // localtime string silently applies a 4-hour skew, which while
+                    // writing this made every lane read as 0 events and nearly
+                    // produced a false "the fix does not work" conclusion.
+                    let lane_activity_window_min: i64 = std::env::var("AMUX_DRAIN_ACTIVITY_WINDOW_MIN")
+                        .ok()
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(30);
+                    let recent_card_events: i64 = lane_card_activity(conn, lane_activity_window_min)
+                        .get(lane)
+                        .copied()
+                        .unwrap_or(0);
+                    let lane_working = recent_card_events > 0;
+                    let idle_drain = should_drain_nudge(
+                        doing_count,
+                        eligible,
+                        drainable_backlog,
+                        recent_card_events,
                     );
-                }
-                let stale_enough = (stale_count as usize) >= BACKLOG_TRIAGE_THRESHOLD;
-                if !idle_drain && !stale_enough {
-                    break 'triage None;
-                }
-                let (event_type, base_cooldown_s) = if idle_drain {
-                    (
-                        "backlog.drain_nudge",
-                        idle_backlog_drain_cooldown_s(drainable_backlog),
-                    )
-                } else {
-                    ("backlog.triage_nudge", BACKLOG_TRIAGE_COOLDOWN_S)
+                    if doing_count == 0 && eligible == 0 && drainable_backlog > 0 && lane_working {
+                        // Countable, so the suppression cannot become invisible.
+                        // If this fires constantly for a lane whose backlog never
+                        // moves, the term is too generous and the number says so.
+                        tracing::info!(
+                            target: "board_drive",
+                            "[drain-nudge/suppressed AF-334] lane={lane} backlog={drainable_backlog} \
+                             card_events_last_{lane_activity_window_min}min={recent_card_events} \
+                             — the lane is demonstrably working; drain nudge withheld"
+                        );
+                    }
+                    let stale_enough = (stale_count as usize) >= BACKLOG_TRIAGE_THRESHOLD;
+                    if !idle_drain && !stale_enough {
+                        return Err(None);
+                    }
+                    let (event_type, base_cooldown_s) = if idle_drain {
+                        (
+                            "backlog.drain_nudge",
+                            idle_backlog_drain_cooldown_s(drainable_backlog),
+                        )
+                    } else {
+                        ("backlog.triage_nudge", BACKLOG_TRIAGE_COOLDOWN_S)
+                    };
+                    // AF-319: THE FEEDBACK TERM. Cadence was a function of backlog
+                    // SIZE and of nothing else, so the biggest backlogs pinned
+                    // themselves to the 20-minute floor and stayed there.
+                    //
+                    // What this does NOT fix, said here so the next reader does not
+                    // over-credit it: the lanes carrying the measured volume are all
+                    // ACTIVE (mvs-infra: 72 nudges against 3,682 card events over
+                    // 34h), so their watermark moves every tick and they are never
+                    // suppressed. That is the correct outcome — they are not stuck —
+                    // but it means the 42%-of-fleet-messages cost is a TRIGGER
+                    // problem, not a feedback one. Git note on 9d77177e.
+                    //
+                    // Only the drain nudge is metered. The triage nudge already has
+                    // a 72h cooldown and is not what the measurement found.
+                    let mark_now = lane_board_mark(conn, lane);
+                    let nudge_state = read_nudge_state(conn, lane);
+                    let (unheeded_after, moved) =
+                        nudge_feedback(nudge_state.board_mark, mark_now, nudge_state.unheeded);
+                    let cap = nudge_unheeded_cap();
+                    let suppress = idle_drain && unheeded_after >= cap;
+                    let cooldown_s = if idle_drain {
+                        unheeded_backoff(base_cooldown_s, unheeded_after)
+                    } else {
+                        base_cooldown_s
+                    };
+                    let recent: bool = conn
+                        .query_row(
+                            "SELECT 1 FROM session_events WHERE session=?1 \
+                             AND type=?2 AND ts > ?3 LIMIT 1",
+                            rusqlite::params![lane, event_type, now - cooldown_s],
+                            |_| Ok(true),
+                        )
+                        .optional()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false);
+                    if recent {
+                        return Err(Some(format!(
+                            "backlog nudge ({event_type}) already sent within cooldown"
+                        )));
+                    }
+                    let cards = if idle_drain {
+                        drain_population.into_iter().take(8).collect()
+                    } else {
+                        stale_backlog_candidates(conn, lane, now_i)
+                    };
+                    if cards.is_empty() {
+                        return Err(None);
+                    }
+                    Ok((idle_drain, nudge_state, suppress, unheeded_after, mark_now, drainable_backlog, cap, moved, cooldown_s, base_cooldown_s, cards, stale_count, total_backlog, event_type))
+                })())).await;
+                let (idle_drain, nudge_state, suppress, unheeded_after, mark_now, drainable_backlog, cap, moved, cooldown_s, base_cooldown_s, cards, stale_count, total_backlog, event_type) = match read {
+                    Ok(Ok(found)) => found,
+                    Ok(Err(why)) => break 'triage why,
+                    Err(_) => break 'triage None,
                 };
-                // AF-319: THE FEEDBACK TERM. Cadence was a function of backlog
-                // SIZE and of nothing else, so the biggest backlogs pinned
-                // themselves to the 20-minute floor and stayed there.
-                //
-                // What this does NOT fix, said here so the next reader does not
-                // over-credit it: the lanes carrying the measured volume are all
-                // ACTIVE (mvs-infra: 72 nudges against 3,682 card events over
-                // 34h), so their watermark moves every tick and they are never
-                // suppressed. That is the correct outcome — they are not stuck —
-                // but it means the 42%-of-fleet-messages cost is a TRIGGER
-                // problem, not a feedback one. Git note on 9d77177e.
-                //
-                // Only the drain nudge is metered. The triage nudge already has
-                // a 72h cooldown and is not what the measurement found.
-                let mark_now = lane_board_mark(&conn, lane);
-                let nudge_state = read_nudge_state(&conn, lane);
-                let (unheeded_after, moved) =
-                    nudge_feedback(nudge_state.board_mark, mark_now, nudge_state.unheeded);
-                let cap = nudge_unheeded_cap();
-                let suppress = idle_drain && unheeded_after >= cap;
-                let cooldown_s = if idle_drain {
-                    unheeded_backoff(base_cooldown_s, unheeded_after)
-                } else {
-                    base_cooldown_s
-                };
-                let recent: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM session_events WHERE session=?1 \
-                         AND type=?2 AND ts > ?3 LIMIT 1",
-                        rusqlite::params![lane, event_type, now - cooldown_s],
-                        |_| Ok(true),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(false);
-                if recent {
-                    break 'triage Some(format!(
-                        "backlog nudge ({event_type}) already sent within cooldown"
-                    ));
-                }
-                let cards = if idle_drain {
-                    drain_population.into_iter().take(8).collect()
-                } else {
-                    stale_backlog_candidates(&conn, lane, now_i)
-                };
-                if cards.is_empty() {
-                    break 'triage None;
-                }
-                drop(conn);
 
                 // Persist the feedback state on EVERY drain decision, nudge or
                 // not — a counter that only advances when we act cannot detect
@@ -9281,88 +9309,95 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
                 if !fleet.auto_continue_enabled(lane) {
                     break 'cont None;
                 }
-                let Ok(conn) = state.store.read() else {
-                    break 'cont None;
-                };
-                let (bc, dc, blocked, done, human_blocked) = outstanding_work(&conn, lane);
-                // `done` IS CONTEXT, NOT A TRIGGER (AMUX-2903, second pass).
-                //
-                // I shipped change-detection first and the very next nudge
-                // disproved it: closing a card moves `done` 228 -> 229, which
-                // re-armed the nudge on my own productivity. `done` grows
-                // monotonically as a lane works, so ANY change signal derived
-                // from it re-fires forever on an active lane — change-detection
-                // made the loop slower, not finite.
-                //
-                // And its prescribed action is not the lane's to take: reaching
-                // `verified` needs CI green and a deploy, which are outside the
-                // lane entirely (CI has been red on origin/main since
-                // 2026-08-10, AMUX-2902). Nudging toward a gate the recipient
-                // cannot open is ethos rule 3.
-                //
-                // `blocked` is the honest trigger: bounded, and re-assessing a
-                // blocker is work the lane can actually do. The done count still
-                // rides along in the message as context.
-                if bc == 0 {
-                    // SAY WHAT WAS EXCLUDED (AMUX-3775, ethos rule 1). A skip
-                    // line reading "0 blocked" over a lane holding seven blocked
-                    // cards is the reason this was hard to see: the count and
-                    // the board disagreed and only the board was visible.
-                    let hb = if human_blocked.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " ({} blocked card(s) excluded: their depends_on chain roots in a \
-                             card waiting on the human, so the lane cannot act on them)",
-                            human_blocked.len()
+                // AF-1120: on the blocking pool; Err is the block's `break 'cont`.
+                let cont_lane = lane.to_owned();
+                let read = state.store.read_async(move |conn| Ok((|| {
+                    let lane = cont_lane.as_str();
+                    let (bc, dc, blocked, done, human_blocked) = outstanding_work(conn, lane);
+                    // `done` IS CONTEXT, NOT A TRIGGER (AMUX-2903, second pass).
+                    //
+                    // I shipped change-detection first and the very next nudge
+                    // disproved it: closing a card moves `done` 228 -> 229, which
+                    // re-armed the nudge on my own productivity. `done` grows
+                    // monotonically as a lane works, so ANY change signal derived
+                    // from it re-fires forever on an active lane — change-detection
+                    // made the loop slower, not finite.
+                    //
+                    // And its prescribed action is not the lane's to take: reaching
+                    // `verified` needs CI green and a deploy, which are outside the
+                    // lane entirely (CI has been red on origin/main since
+                    // 2026-08-10, AMUX-2902). Nudging toward a gate the recipient
+                    // cannot open is ethos rule 3.
+                    //
+                    // `blocked` is the honest trigger: bounded, and re-assessing a
+                    // blocker is work the lane can actually do. The done count still
+                    // rides along in the message as context.
+                    if bc == 0 {
+                        // SAY WHAT WAS EXCLUDED (AMUX-3775, ethos rule 1). A skip
+                        // line reading "0 blocked" over a lane holding seven blocked
+                        // cards is the reason this was hard to see: the count and
+                        // the board disagreed and only the board was visible.
+                        let hb = if human_blocked.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " ({} blocked card(s) excluded: their depends_on chain roots in a \
+                                 card waiting on the human, so the lane cannot act on them)",
+                                human_blocked.len()
+                            )
+                        };
+                        return Err(Some(format!(
+                            "auto-continue enabled, {dc} done but 0 actionable blocked — done is context, not a trigger{hb}"
+                        )));
+                    }
+                    let recent: bool = conn
+                        .query_row(
+                            "SELECT 1 FROM session_events WHERE session=?1 \
+                             AND type='continue.nudge' AND ts > ?2 LIMIT 1",
+                            rusqlite::params![lane, now - CONTINUE_NUDGE_COOLDOWN_S],
+                            |_| Ok(true),
                         )
-                    };
-                    break 'cont Some(format!(
-                        "auto-continue enabled, {dc} done but 0 actionable blocked — done is context, not a trigger{hb}"
-                    ));
-                }
-                let recent: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM session_events WHERE session=?1 \
-                         AND type='continue.nudge' AND ts > ?2 LIMIT 1",
-                        rusqlite::params![lane, now - CONTINUE_NUDGE_COOLDOWN_S],
-                        |_| Ok(true),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                    .unwrap_or(false);
-                if recent {
-                    break 'cont Some(format!(
-                        "has {bc} blocked + {dc} done but continue-nudge sent within 30min"
-                    ));
-                }
-                // TERMINATION (AMUX-2903). The cooldown above is a RATE limit,
-                // not an exit — and `done` is monotonic, so without one this
-                // fires every 30 minutes for the life of a lane. Measured
-                // before the first nudge ever went out: 15 lanes eligible, 277
-                // done cards among them, ~720 nudges/day.
-                //
-                // Worse, its prescribed exit is `verified`, whose first
-                // criterion is "CI passed on the merged commit" — red on
-                // origin/main with 112 commits unpushed (AMUX-2902). A lane
-                // that answers honestly ("these cannot be verified, here is
-                // why") would be asked again forever, which is ethos rule 3:
-                // a constraint with no truthful path forward.
-                //
-                // So the nudge now responds to CHANGE, not to time. If the
-                // outstanding set is identical to what the last nudge reported,
-                // the previous one produced no movement and repeating it will
-                // not either. Any real progress — a blocker cleared, a card
-                // verified or archived, new work finished — moves a count and
-                // re-arms it.
-                if last_continue_nudge_counts(&conn, lane) == Some((bc, dc)) {
-                    break 'cont Some(format!(
-                        "has {bc} blocked + {dc} done, unchanged since the last \
-                         continue-nudge — not repeating it (AMUX-2903)"
-                    ));
-                }
-                drop(conn);
+                        .optional()
+                        .ok()
+                        .flatten()
+                        .unwrap_or(false);
+                    if recent {
+                        return Err(Some(format!(
+                            "has {bc} blocked + {dc} done but continue-nudge sent within 30min"
+                        )));
+                    }
+                    // TERMINATION (AMUX-2903). The cooldown above is a RATE limit,
+                    // not an exit — and `done` is monotonic, so without one this
+                    // fires every 30 minutes for the life of a lane. Measured
+                    // before the first nudge ever went out: 15 lanes eligible, 277
+                    // done cards among them, ~720 nudges/day.
+                    //
+                    // Worse, its prescribed exit is `verified`, whose first
+                    // criterion is "CI passed on the merged commit" — red on
+                    // origin/main with 112 commits unpushed (AMUX-2902). A lane
+                    // that answers honestly ("these cannot be verified, here is
+                    // why") would be asked again forever, which is ethos rule 3:
+                    // a constraint with no truthful path forward.
+                    //
+                    // So the nudge now responds to CHANGE, not to time. If the
+                    // outstanding set is identical to what the last nudge reported,
+                    // the previous one produced no movement and repeating it will
+                    // not either. Any real progress — a blocker cleared, a card
+                    // verified or archived, new work finished — moves a count and
+                    // re-arms it.
+                    if last_continue_nudge_counts(conn, lane) == Some((bc, dc)) {
+                        return Err(Some(format!(
+                            "has {bc} blocked + {dc} done, unchanged since the last \
+                             continue-nudge — not repeating it (AMUX-2903)"
+                        )));
+                    }
+                    Ok((bc, dc, blocked, done, human_blocked))
+                })())).await;
+                let (bc, dc, blocked, done, human_blocked) = match read {
+                    Ok(Ok(found)) => found,
+                    Ok(Err(why)) => break 'cont why,
+                    Err(_) => break 'cont None,
+                };
                 let text = continue_nudge_text(bc, dc, &blocked, &done, &human_blocked);
                 if let Err(error) = fleet.deliver_work(lane, &text).await {
                     return nudge_delivery_failed(lane, lane, "", &error)
@@ -19125,6 +19160,27 @@ mod af579_decline_exit_tests {
         assert!(
             body.contains("decline_exit(session)"),
             "pickup_prompt must call decline_exit, or the exit reaches no lane"
+        );
+    }
+
+    /// AF-1120: drive_lane runs once per lane per tick, and each synchronous
+    /// `store.read()` in it waited for a pooled connection and ran its query on
+    /// the runtime thread (2,265 blocking polls in one day, lane_loop up to
+    /// 16 s). Its reads go through `read_async`, which runs on the blocking pool.
+    #[test]
+    fn drive_lane_reads_the_store_only_through_read_async() {
+        let src = include_str!("board_drive.rs");
+        // Bounded to the function, so this test's own literals are not in it.
+        let body = src
+            .split_once("async fn drive_lane<")
+            .expect("drive_lane exists")
+            .1;
+        let body = body.split_once("\n}\n").expect("its closing brace").0;
+        let sync_reads = body.matches(".read()").count();
+        assert_eq!(sync_reads, 0, "drive_lane holds a runtime thread on {sync_reads} synchronous store read(s)");
+        assert!(
+            body.matches("read_async(").count() >= 10,
+            "drive_lane's reads moved somewhere this test cannot see"
         );
     }
 }
