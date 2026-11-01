@@ -1,6 +1,6 @@
 #!/bin/bash
 # The deploy gate must fail on what it claims to check (ethos rule 7).
-set -uo pipefail
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX=$(mktemp -d); trap 'rm -rf -- "${FIX:?}"' EXIT
 cd "$FIX" || exit 1
@@ -18,7 +18,7 @@ step() { git add .; git commit -qm "$1"; }
 step base
 fails=0
 run() { # <label> <want rc> <expected output>
-  out=$(bash "$HERE/ci-fast-gate.sh" HEAD~1 HEAD 2>&1); rc=$?
+  rc=0; out=$(bash "$HERE/ci-fast-gate.sh" HEAD~1 HEAD 2>&1) || rc=$?
   if [ "$rc" = "$2" ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "  ok   $1"; else echo "  FAIL $1 (rc=$rc): $out"; fails=$((fails+1)); fi
 }
 echo ok2 > a.txt; step plain
