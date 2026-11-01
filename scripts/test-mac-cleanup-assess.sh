@@ -142,7 +142,9 @@ check "and quotes the previous card and its numbers"  "yes" "$(has "$again" 'car
 check "control: the first-time line is absent then"   "no"  "$(has "$again" 'first cpu escalation')"
 
 echo "4. lane attribution walks the parent chain to a pane"
-bash -c 'sleep 30 & wait' & shell=$!
+# From /: a sleep started in a lane's scratch dir is attributed to that lane
+# by path, so the no-lane control failed whenever the suite ran from one.
+bash -c 'cd / && { sleep 30 & wait; }' & shell=$!
 sleep 0.5; child=$(pgrep -P "$shell" sleep | head -1)
 check "a grandchild of a pane is attributed to its lane" "lane-under-test" "$(lane_for_pid "$child" "$shell amux-lane-under-test")"
 check "control: with no pane in its chain it has no lane" "no lane" "$(lane_for_pid "$child" "999999 amux-other")"
