@@ -53324,6 +53324,11 @@ function _forceSseReconnect(reason) {
   if (_sse) { try { _sse.close(); } catch(e) {} _sse = null; }
   _sseRetries = 0;
   _liveSSE = false;
+  // connectSSE() returns at once while the polling fallback is on, so a
+  // forced reconnect during polling waited for the next 30 s poll retry. Try
+  // the stream now; polling keeps running until its first message stops it
+  // (implicit state machines inventory 2026-10-31, #32).
+  _sseFallback = false;
   updateConnectionStatus();
   connectSSE();
 }
