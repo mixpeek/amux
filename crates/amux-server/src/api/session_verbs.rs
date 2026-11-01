@@ -1554,6 +1554,8 @@ pub(crate) enum EmptyComposer {
 /// and with nothing watching it steering preserved it as a human draft for an
 /// hour while four queued messages waited behind it.
 pub(crate) const RESTORE_WINDOW_S: f64 = 300.0;
+/// How far before the send the last look ahead of a resend reaches.
+pub(crate) const RESEND_LOOKBACK_S: f64 = 300.0;
 
 pub(crate) fn empty_composer_verdict(now: f64, grace_until: f64, redelivered_at: Option<f64>, transcript_live: bool) -> EmptyComposer {
     if now < grace_until {
@@ -15103,6 +15105,20 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                         EmptyComposer::Redeliver => {
                             if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
                                 continue; // send it at the next idle look
+                            }
+                            // Last look before a second copy, over a wider window
+                            // than the send's own: resending costs a turn and can
+                            // act on a closed card, holding back costs nothing
+                            // when the text is already there. Both doubled on a
+                            // bound transcript with the text in it, and the narrow
+                            // check missed it for a reason this line must show
+                            // (VID-030 repro on 1bb4c086a).
+                            if jsonl_submission_since(&name, &text, sent_at - RESEND_LOOKBACK_S) {
+                                tracing::warn!(session = %name, sent_at, now = now_f64(), bound = transcript_is_bound(&name),
+                                    path = ?session_jsonl_path(&name), measured = true, n_considered = 1,
+                                    verdict = "direct_draft_resend_averted",
+                                    "the message is in the transcript outside the send's window; not sending it again");
+                                break "direct_draft_confirmed_by_transcript";
                             }
                             redelivered_at = Some(now_f64());
                             tracing::warn!(session = %name, preview = %chars_truncate(&text, 80), measured = true, n_considered = 1,
@@ -51201,6 +51217,20 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert!(body.contains(r#"break "direct_draft_lost""#), "and named lost if it still does not arrive");
         let resolved = &body[body.find("held direct message resolved").unwrap().saturating_sub(400)..];
         assert!(!resolved[..400].contains("direct_draft_lost"), "lost is never logged as resolved");
+    }
+
+    #[test]
+    fn a_resend_first_looks_for_the_text_before_the_sends_window() {
+        let src = include_str!("session_verbs.rs");
+        let body = &src[src.find("fn spawn_direct_draft_idle_submit(").unwrap()..];
+        let look = body.find("sent_at - RESEND_LOOKBACK_S").unwrap();
+        let send = body.find("paste_into_composer(&name, &close_trailing_mention(&text))").unwrap();
+        assert!(look < send, "the last look comes before the second copy");
+        let text = "Add a footer";
+        let rec = json!({"type": "user", "timestamp": "2026-11-01T20:44:08.038Z", "message": {"role": "user", "content": text}});
+        let at = parse_iso8601("2026-11-01T20:45:00.000Z").unwrap();
+        assert!(!submission_records_have(std::slice::from_ref(&rec), text, at), "outside the send's window");
+        assert!(submission_records_have(std::slice::from_ref(&rec), text, at - RESEND_LOOKBACK_S), "inside the last look");
     }
 
     #[test]
