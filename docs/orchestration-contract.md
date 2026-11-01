@@ -43,6 +43,32 @@ Additions from goal spec 12:
 | A4 | Stateful systems get a production-scale test bed; restore, replay and scale tests run there before production | environment |
 | A5 | Capacity is a scheduling input: provider usage caps, host pressure and the land queue gate dispatch | runner |
 
+## Rule 5 by repository declaration
+
+A repository opts every land into the server queue with one committed key in
+`.amux/land.conf`, read from origin/main, so a change cannot weaken its own gate:
+
+```
+[amux]
+	queueGate = scripts/ci-fast-gate.sh "$AMUX_LAND_BASE" "$AMUX_LAND_TIP"
+```
+
+The gate runs on origin/main plus everything ahead of the entry, with the
+program the command runs restored to origin/main's bytes. `AMUX_LAND_BASE` is
+that main and `AMUX_LAND_TIP` the composed commit. `queueGateTimeout` overrides
+the 900 s budget. Red refuses the entry and bisects a batch; a gate that cannot
+start or times out refuses without blame, because that is no verdict. Declared
+repositories also get the client's `landRegenerate` and `landRegenerable`
+handling and `landFastGate` on the server push, and the repository's
+`scripts/land_gate.py` owner and receipt legs run per entry.
+
+`amux land` is then the one path, for every lane, and it waits for the outcome.
+No declaration means the old path, and every land says so
+(`verdict=land_gate_undeclared`). `AMUX_LAND_QUEUE_DECLARED=0` in `server.env`
+turns declarations off for the server; `AMUX_LAND_CLIENT=1
+AMUX_LAND_CLIENT_REASON=<why>` skips the queue once, logged, which is how a fix
+to a broken declaration or a broken server lands.
+
 ## Phases
 
 | Phase | Rules | Exit, measured |

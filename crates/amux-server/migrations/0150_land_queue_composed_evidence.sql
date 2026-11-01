@@ -1,0 +1,8 @@
+-- Z2: what each land was tested on. The checkout the land came from, the
+-- origin/main it was composed onto, the entry's own commits on the composed
+-- tree, and what the gate said. Rows from before this read NULL.
+-- ADDCOL: land_queue tree TEXT
+-- ADDCOL: land_queue base_sha TEXT
+-- ADDCOL: land_queue landed_base TEXT
+-- ADDCOL: land_queue landed_tip TEXT
+-- ADDCOL: land_queue gate_verdict TEXT

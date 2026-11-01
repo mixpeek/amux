@@ -809,6 +809,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0149_message_pins",
         sql: include_str!("../../migrations/0149_message_pins.sql"),
     },
+    Migration {
+        version: 150,
+        name: "0150_land_queue_composed_evidence",
+        sql: include_str!("../../migrations/0150_land_queue_composed_evidence.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

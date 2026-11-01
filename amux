@@ -8272,6 +8272,42 @@ _land_regen_extract() {
   printf '%s\n' "$dir"
 }
 
+# _land_queue_wait <POST response>: follow one server queue entry to its end.
+# 0 merged, 1 refused or withdrawn. Past AMUX_LAND_WAIT_S the entry stays queued
+# and this says so, because the land has not failed.
+_land_queue_wait() {
+  local id t0 now body st budget="${AMUX_LAND_WAIT_S:-7200}" last=""
+  id="$(printf '%s' "$1" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" || return 1
+  t0=$(date +%s)
+  while :; do
+    body="$(_curl -sk -m 20 "${AMUX_API:-$(cmd_url)}/api/land?id=$id" 2>/dev/null || true)"
+    st="$(printf '%s' "$body" | python3 -c '
+import json,sys
+try:
+    i=[x for x in json.load(sys.stdin)["items"]][0]
+except Exception:
+    sys.exit()
+print(i["state"]); print((i.get("merged_sha") or "")[:12]); print(i.get("gate_verdict") or ""); print(i.get("output") or "")' 2>/dev/null || true)"
+    case "$(printf '%s' "$st" | head -1)" in
+      merged)
+        echo "amux land: landed $(printf '%s\n' "$st" | sed -n 2p) on main (gate: $(printf '%s\n' "$st" | sed -n 3p))"
+        return 0 ;;
+      refused|withdrawn)
+        printf '%s\n' "$st" | tail -n +4 >&2
+        echo "amux land: the queue did not land this (entry $id, $(printf '%s' "$st" | head -1)); nothing of it was merged" >&2
+        return 1 ;;
+      "$last") ;;
+      *) last="$(printf '%s' "$st" | head -1)"; [ -z "$last" ] || echo "amux land: entry $id is $last" >&2 ;;
+    esac
+    now=$(date +%s)
+    if [ $((now - t0)) -ge "$budget" ]; then
+      echo "amux land: entry $id is still in the server queue after ${budget}s; it stays queued, and the lane gets a message when it ends" >&2
+      return 0
+    fi
+    sleep "${AMUX_LAND_WAIT_POLL_S:-5}"
+  done
+}
+
 _land_regenerate() {
   local tip="$1" cmd inputs globs tmp idx rc=0 out t0 tree new n=0 p g hit
   local budget="${AMUX_LAND_REGENERATE_TIMEOUT_S:-300}"
@@ -9951,7 +9987,7 @@ lines = [l for l in text.splitlines() if l.startswith("amux land:")]
 reason = lines[-1][len("amux land:"):].strip() if lines else ""
 m = re.findall(r"landed (?:in a batch: landed )?([0-9a-f]{7,40}) on ", text)
 sha = m[-1] if m else None
-queued = bool(re.search(r"queued on the server|detached \(pid \d+\)", text))
+queued = bool(re.search(r"queued on the server|detached \(pid \d+\)", text)) and not re.search(r"landed [0-9a-f]{7,40} on main \(gate:", text)
 on_origin, not_on, why, n_cmp = None, [], None, 0
 if src:
     f = subprocess.run(["git", "fetch", "-q", remote, branch], capture_output=True, text=True)
@@ -10126,6 +10162,19 @@ cmd_land() {
   # sha, queued, not_on_origin, rc, reason), with `landed` measured against the
   # remote after the land, never taken from land's own log line.
   #
+  # A repository that declares `queueGate` in .amux/land.conf (the one key that
+  # turns this on; docs/orchestration-contract.md) has one land path: this
+  # command posts to the server queue, which tests each change on main plus
+  # everything ahead of it with that gate, read from origin/main, and refuses a
+  # red one. It waits for the outcome and exits 0 on merged, 1 on refused (--detach
+  # returns once queued; AMUX_LAND_WAIT_S bounds the wait, default 7200). Exit 6:
+  # the server did not answer, so nothing was tested and nothing was pushed.
+  # AMUX_LAND_CLIENT=1 AMUX_LAND_CLIENT_REASON=<why> takes the client path anyway,
+  # logged as verdict=land_queue_bypassed; it is the way to land a fix to the
+  # declaration or to the server itself. With no declaration the client path runs
+  # as it always has and says nothing tested the composed tree
+  # (verdict=land_gate_undeclared).
+  #
   # Repository config lives in `.amux/land.conf` (git-config syntax, committed):
   # the [amux] land* keys, read from the remote branch (the regenerate keys from
   # the tree being pushed), and [freeze "<name>"] sections (path, until, owner,
@@ -10168,6 +10217,16 @@ cmd_land() {
       --cancel-for) shift; _land_cancel_for "$@"; return $? ;;
       --to-head) shift; _land_to_head "$@"; return $? ;;
       --status) _land_status; return $? ;;
+      # For the server queue: render declared paths on a composed tree and
+      # print the commit to push, with this file's own _land_regenerate.
+      --regenerate-on)
+        local me="${AMUX_WORKER:-amux-land}" log="$HOME/.amux/logs/land.log" key=queue
+        mkdir -p "$HOME/.amux/logs"
+        _land_log() { printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$me" "$*" "$key" >> "$log"; echo "amux land: $*" >&2; }
+        # In a condition, as the client calls it: its find | while pipelines end
+        # non-zero on a tree whose last file matches no glob, and set -e must not
+        # see that.
+        local _rr=0; _land_regenerate "${2:?}" || _rr=$?; return "$_rr" ;;
       -h|--help) sed -n '/^cmd_land()/,/^  local remote/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
       *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
     esac
@@ -10212,7 +10271,26 @@ cmd_land() {
   # refused. A 409 land_queue_off (the rule is off for this lane) or an
   # unreachable server falls through to the client queue below.
   # AMUX_LAND_CLIENT=1 forces the client path.
-  if [ -n "${AMUX_SESSION:-}" ] && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
+  #
+  # A repository's own declaration (Z2) puts every land there, session or not,
+  # and the client waits: the declaration is read here from committed bytes so
+  # a server that cannot be reached refuses the land instead of skipping the gate.
+  local _q_decl="" _q_who="${AMUX_SESSION:-${AMUX_WORKER:-$(whoami)}}" _q_tree
+  _q_tree="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$branch" = main ] && [ "${AMUX_LAND_GUARDED:-0}" != 1 ]; then
+    _q_decl="$(git config --blob "$remote/$branch:.amux/land.conf" --get amux.queueGate 2>/dev/null || true)"
+  fi
+  if [ -n "$_q_decl" ] && [ "${AMUX_LAND_CLIENT:-0}" = 1 ]; then
+    mkdir -p "$HOME/.amux/logs"
+    printf '%s %s verdict=land_queue_bypassed reason=%s\n' "$(date -u +%FT%TZ)" "$_q_who" "${AMUX_LAND_CLIENT_REASON:-none given}" >> "$HOME/.amux/logs/land.log"
+    echo "amux land: WARN this repository declares a queue gate and AMUX_LAND_CLIENT=1 skips it (verdict=land_queue_bypassed, reason: ${AMUX_LAND_CLIENT_REASON:-none given})" >&2
+  fi
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ -z "$_q_decl" ] && git rev-parse -q --verify "$remote/$branch" >/dev/null 2>&1; then
+    mkdir -p "$HOME/.amux/logs"
+    printf '%s %s verdict=land_gate_undeclared repo declares no amux.queueGate: the push hook is the only check on the composed tree\n' "$(date -u +%FT%TZ)" "$_q_who" >> "$HOME/.amux/logs/land.log"
+    echo "amux land: this repository declares no amux.queueGate in .amux/land.conf, so no queue gate tests the composed tree (verdict=land_gate_undeclared)" >&2
+  fi
+  if { [ -n "${AMUX_SESSION:-}" ] || [ -n "$_q_decl" ]; } && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
     local _q_sha _q_out _q_code _q_body _q_pol
     _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
     # Ask whether the queue is on for this lane before queueing (AF-1103).
@@ -10220,19 +10298,36 @@ cmd_land() {
     # the rule is off: 563 a day, the top error group, and the reason
     # route.mounted_routes_answer read POST /api/land as a dead route. An
     # unreadable policy (old server, unreachable) still tries the POST.
-    _q_pol=$(_curl -sk -m 10 "${AMUX_API:-$(cmd_url)}/api/land/policy?lane=${AMUX_SESSION}" 2>/dev/null) || _q_pol=""
-    case "$_q_pol" in *'"queue":false'*) _q_sha="" ;; esac
+    _q_pol=$(_curl -sk -m 10 -G --data-urlencode "lane=${_q_who}" --data-urlencode "tree=${_q_tree}" "${AMUX_API:-$(cmd_url)}/api/land/policy" 2>/dev/null) || _q_pol=""
+    case "$_q_pol" in *'"queue":false'*) [ -n "$_q_decl" ] || _q_sha="" ;; esac
     if [ -n "$_q_sha" ]; then
       # The server re-runs the land guards and is authoritative, so the
       # lane's own escapes travel with the request.
       _q_body=$(python3 -c 'import json,sys; d={"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3], "allow_reused_message": sys.argv[4] == "1"}
 if sys.argv[5]: d["freeze_override"] = sys.argv[5]
-print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}")
-      _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: $AMUX_SESSION" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
-      _q_code="${_q_out##*$'\n'}"
+if sys.argv[6]: d["tree"] = sys.argv[6]
+print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}" "$_q_tree")
+      local _q_try
+      for _q_try in 1 2 3; do
+        _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+          -H "X-Amux-Session: $_q_who" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
+        _q_code="${_q_out##*$'\n'}"
+        # Only a declared repository retries: a restart is seconds, and past
+        # this the land refuses rather than lose its gate.
+        case "$_q_code" in ''|000) [ -n "$_q_decl" ] && [ "$_q_try" != 3 ] && sleep "${AMUX_LAND_QUEUE_RETRY_S:-5}" ;; *) break ;; esac
+      done
+      if [ -n "$_q_decl" ]; then case "$_q_code" in ''|000)
+        mkdir -p "$HOME/.amux/logs"
+        printf '%s %s verdict=land_queue_unreachable nothing pushed\n' "$(date -u +%FT%TZ)" "$_q_who" >> "$HOME/.amux/logs/land.log"
+        echo "amux land: this repository lands through the server queue and the server did not answer; nothing was tested or pushed. Retry, or AMUX_LAND_CLIENT=1 AMUX_LAND_CLIENT_REASON=<why> amux land (verdict=land_queue_unreachable)" >&2
+        return 6 ;; esac
+      fi
       case "$_q_code" in
-        202) echo "amux land: queued on the server (contract rule 5); you get a message when it lands or is refused. ${_q_out%$'\n'*}"; return 0 ;;
+        202) echo "amux land: queued on the server (contract rule 5); you get a message when it lands or is refused. ${_q_out%$'\n'*}"
+          case "$_q_out" in *'"declared":true'*)
+            [ "$detach" = 1 ] || { _land_queue_wait "$_q_out"; return $?; } ;;
+          esac
+          return 0 ;;
         # 400: the queue refused THIS request (unknown commit, a priority land
         # with no reason). Anything else (409 rule off, 404 from a server
         # without the route, unreachable) falls through to the client queue.
@@ -10241,7 +10336,14 @@ print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_RE
         # message): the same refusal as the client guard above, rc 4.
         409) case "$_q_out" in *'"verdict":"land_refused_'*)
                echo "amux land: refused by a land guard on the server; nothing queued: ${_q_out%$'\n'*}" >&2; return 4 ;;
-             esac ;;
+             esac
+             # The queue is off on this server (AMUX_LAND_QUEUE_DECLARED=0, or a
+             # server older than the declaration): the client path carries it.
+             if [ -n "$_q_decl" ]; then
+               mkdir -p "$HOME/.amux/logs"
+               printf '%s %s verdict=land_queue_unavailable the server refused the declared queue: %s\n' "$(date -u +%FT%TZ)" "$_q_who" "${_q_out%$'\n'*}" >> "$HOME/.amux/logs/land.log"
+               echo "amux land: WARN the server does not run the declared queue here, so the client path lands this and the gate does not run (verdict=land_queue_unavailable)" >&2
+             fi ;;
       esac
     fi
   fi
