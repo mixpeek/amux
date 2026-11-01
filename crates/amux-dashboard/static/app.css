@@ -6412,6 +6412,24 @@
   .reclaim-skip-reason.bad { border-color: var(--yellow); color: var(--yellow); }
   .reclaim-skip-why { color: var(--dim); font-size: var(--fs-xs); flex: 1; min-width: 0; }
   .metrics-table td input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+  /* Scoreboard: the Metrics table and cards, plus one control row that scrolls
+     sideways on a phone and a worker column that stays put while the table does. */
+  .sb-controls { display: flex; align-items: center; gap: var(--space-2-5); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; margin-bottom: var(--space-3); }
+  .sb-controls > * { flex-shrink: 0; }
+  .sb-title { font-size: var(--fs-3xl); font-weight: 700; }
+  .sb-updated { font-size: var(--fs-xs); color: var(--dim); white-space: nowrap; }
+  .sb-unmeasured { color: var(--dim); font-style: italic; font-weight: 400; font-size: var(--fs-md); }
+  .sb-of { color: var(--dim); font-weight: 400; font-size: var(--fs-xs); }
+  .sb-table .sb-name { position: sticky; left: 0; z-index: 1; background: var(--card); color: var(--text); font-size: var(--fs-md); text-transform: none; letter-spacing: 0; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; }
+  .sb-table thead th:first-child { position: sticky; left: 0; z-index: 2; }
+  .sb-table .sb-wait { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+  .sb-why-list { margin: 0 0 var(--space-5); padding-left: var(--space-5); font-size: var(--fs-md); color: var(--dim); overflow-wrap: anywhere; }
+  .sb-why-list li { margin-bottom: var(--space-1-5); }
+  @media (max-width: 600px) {
+    .sb-title { font-size: var(--fs-xl); }
+    .sb-table .sb-name { max-width: 8rem; }
+    #sb-refresh { min-height: 44px; min-width: 44px; }
+  }
 
   .metrics-load-row { display: flex; gap: var(--space-2); margin-bottom: var(--space-5); flex-wrap: wrap; }
   .metrics-load-block { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-2) var(--space-4); text-align: center; min-width: 72px; }

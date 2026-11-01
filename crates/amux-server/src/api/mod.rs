@@ -110,6 +110,7 @@ pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
 pub mod observability;
+pub mod scoreboard;
 pub mod offline_origin;
 pub mod orchestrate;
 pub mod orchestrations;
@@ -413,6 +414,7 @@ pub fn router_with_connector_transport(
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
+        .merge(scoreboard::routes())
         .merge(connectors::routes_with(connector_ctx.clone()))
         .nest("/api/telegram", telegram::routes_with(http))
         .merge(grants::routes())

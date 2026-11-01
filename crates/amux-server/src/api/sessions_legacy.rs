@@ -6188,6 +6188,18 @@ pub(crate) async fn legacy_sessions_values(
     Ok(serde_json::from_str(&json)?)
 }
 
+/// The fleet as `GET /api/sessions` shows it to this caller: the same cached
+/// array with the same two filters, so another view of the fleet cannot reveal
+/// an isolated worker to a peer or a worker outside a member's scope.
+pub(crate) async fn sessions_for_caller(
+    store: crate::db::SharedStore,
+    headers: &axum::http::HeaderMap,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let json = legacy_sessions_array_for_dashboard(store).await?;
+    let body = filter_for_local_member(&filter_isolated_for_peer(&json, headers), headers);
+    Ok(serde_json::from_str(&body)?)
+}
+
 /// `GET /api/sessions?view=picker`: the few fields a worker PICKER needs
 /// (the iOS share sheet), from the cheap sources only (AMUX-5386).
 ///

@@ -3844,6 +3844,7 @@ pub enum RenameDisposition {
 /// cannot join that gap quietly — the same argument AF-328 made for the issues
 /// fixture.
 pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
+    ("goal_samples", RenameDisposition::Migrate),
     // -- the lane's own state: must follow the rename --
     ("issues", RenameDisposition::Migrate),
     ("issues.reviewer", RenameDisposition::Migrate),
