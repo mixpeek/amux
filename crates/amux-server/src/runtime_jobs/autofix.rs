@@ -5388,11 +5388,17 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
         // its self-heal epoch in there (InvariantResult::heals_at), and that is
         // what separates "held red on purpose until Tuesday" from "a fault that
         // is getting worse". Without it the two file identical cards.
-        "SELECT invariant_id, entity_key, status, first_seen, last_seen, occurrences, \
+        //
+        // The count is the CURRENT failing run (AF-1126), not `occurrences`,
+        // which totals every failure since first_seen: an incident with 117
+        // lifetime failures filed on one blip an hour after it had healed. A
+        // row written before that column existed reads 0 and falls back.
+        "SELECT invariant_id, entity_key, status, first_seen, last_seen, \
+                CASE WHEN COALESCE(episode_occurrences, 0) > 0 THEN episode_occurrences ELSE occurrences END AS run, \
                 expected, observed, COALESCE(evidence, ''), COALESCE(episode, 1) \
          FROM _amux_invariant_incident WHERE resolved_at IS NULL AND status = 'fail' \
          AND last_seen >= ?1 \
-         ORDER BY occurrences DESC LIMIT 200",
+         ORDER BY run DESC LIMIT 200",
     ) else {
         return (out, suppressed);
     };
@@ -18131,16 +18137,17 @@ mod tests {
             // worse of the two failures.
             // `episode` likewise mirrors migration 0081 (AMUX-4798), with the
             // same DEFAULT 1, so a fixture row that does not name one behaves
-            // like every incident that predates the column.
+            // like every incident that predates the column. `episode_occurrences`
+            // mirrors 0147 (AF-1126); 0 makes the filer read `occurrences`.
             "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
              status TEXT, first_seen REAL, last_seen REAL, occurrences INTEGER, \
              resolved_at REAL, expected TEXT, observed TEXT, evidence TEXT, \
-             episode INTEGER NOT NULL DEFAULT 1);",
+             episode INTEGER NOT NULL DEFAULT 1, episode_occurrences INTEGER NOT NULL DEFAULT 0);",
         )
         .unwrap();
         for r in rows {
             conn.execute(
-                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10)",
+                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,0)",
                 rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
             )
             .unwrap();
@@ -18157,7 +18164,7 @@ mod tests {
             "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
              status TEXT, first_seen REAL, last_seen REAL, occurrences INTEGER, \
              resolved_at REAL, expected TEXT, observed TEXT, evidence TEXT, \
-             episode INTEGER NOT NULL DEFAULT 1); \
+             episode INTEGER NOT NULL DEFAULT 1, episode_occurrences INTEGER NOT NULL DEFAULT 0); \
              CREATE TABLE session_events (idem TEXT); \
              CREATE UNIQUE INDEX idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL; \
              CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
@@ -18166,7 +18173,7 @@ mod tests {
         .unwrap();
         for r in rows {
             conn.execute(
-                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10)",
+                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,0)",
                 rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
             )
             .unwrap();
