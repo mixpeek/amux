@@ -672,7 +672,20 @@ async fn live_metrics(
     };
     match fetch_metrics(&ctx, &state, headers, &post).await {
         Ok(m) => Json(json!({"ok": true, "measured": true, "post": id, "metrics": m})).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "measured": false, "post": id, "error": e}))).into_response(),
+        Err(e) => (metrics_failure_status(&e), Json(json!({"ok": false, "measured": false, "post": id, "error": e}))).into_response(),
+    }
+}
+
+/// A platform declining is not a platform failing (AF-1152). A token it refuses
+/// is amux's credential to fix, and a post with no numbers yet is an answer
+/// (`measured: false` says so); only the rest is a bad gateway.
+fn metrics_failure_status(error: &str) -> StatusCode {
+    if error.contains("shows no numbers") {
+        StatusCode::OK
+    } else if error.starts_with("HTTP 401") || error.starts_with("HTTP 403") {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::BAD_GATEWAY
     }
 }
 
@@ -843,5 +856,21 @@ mod tests {
         conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '7d', 650000, 'null', 0, 3)", []).unwrap();
         assert_eq!(due_windows(&conn, 1000 + 700_000, 3).unwrap(), vec![(1, "72h")], "measured and exhausted windows are skipped, a failed one retried");
         assert_eq!(due_windows(&conn, 650_000 + 86_400, 3).unwrap(), vec![(1, "72h"), (1, "7d")], "a spent window is tried again a day on");
+    }
+}
+
+#[cfg(test)]
+mod metrics_status_tests {
+    use super::*;
+
+    #[test]
+    fn a_platform_declining_is_not_a_bad_gateway() {
+        let scopes = "HTTP 403 Forbidden: Request had insufficient authentication scopes.";
+        assert_eq!(metrics_failure_status(scopes), StatusCode::FORBIDDEN);
+        assert_eq!(metrics_failure_status("HTTP 401 Unauthorized: x"), StatusCode::FORBIDDEN);
+        let none_yet = "LinkedIn shows no numbers for this post yet";
+        assert_eq!(metrics_failure_status(none_yet), StatusCode::OK);
+        assert_eq!(metrics_failure_status("HTTP 500 Internal: x"), StatusCode::BAD_GATEWAY);
+        assert_eq!(metrics_failure_status("connection reset"), StatusCode::BAD_GATEWAY);
     }
 }
