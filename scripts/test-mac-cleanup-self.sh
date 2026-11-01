@@ -84,7 +84,7 @@ addlog live 60 "mac-cleanup: measured=true"
 addlog ancient 90000 "mac-cleanup: measured=true"
 out=$(probe)
 check "a slow run is a constraint"                    yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 500s, over the 480s warning')"
-check "three runs that skipped arms are one"          yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "three runs that skipped arms are one"          yes "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
 check "blocked fires are one, though recorded ok"     yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
 check "a killed run is counted, a blocked one is not" yes "$(has "$out" '1 killed before the done line, 2 found another tick running')"
 check "a log still being written is not judged"       yes "$(has "$out" ' 7 run log\(s\)')"
@@ -92,16 +92,22 @@ check "a log still being written is not judged"       yes "$(has "$out" ' 7 run 
 echo "4a2. skipped runs already escalated are not raised again (RCA self 20261020-005306)"
 mkdir -p "$FIX/state"; printf 'esc_self=%s\n' "$((NOW-600))" > "$FIX/state/state"
 out=$(probe)
-check "every skip predates the last escalation: no constraint" no "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "every skip predates the last escalation: no constraint" no "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
 check "it says so, with a verdict"                    yes "$(has "$out" 'all 3 runs that skipped arms in 24h predate the last self escalation.*verdict=self_skips_already_escalated')"
 printf 'esc_self=%s\n' "$((NOW-1500))" > "$FIX/state/state"
 out=$(probe)
-check "a skip after the escalation raises it again"   yes "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "a skip after the escalation raises it again"   yes "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
 # Real logs are named by start time in ms. A run that started before the
 # escalation and finished after it is the one that sent it (RCA self 20261101-014559).
 for n in 1 2 3; do mv "$LOGS/skip$n.log" "$LOGS/$((NOW-1600+n))000.log"; done
 out=$(probe)
-check "a run that started before the escalation is not new" no "$(has "$out" '^self 3 runs of SCHED-T in 24h skipped cleanup arms')"
+check "a run that started before the escalation is not new" no "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
+# One new skip beside answered ones is logged, not raised (RCA self 20261101-064656).
+mv "$LOGS/$((NOW-1600+3))000.log" "$LOGS/skip3.log"
+out=$(probe)
+check "one new skip is under the threshold"           no  "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
+check "it says so, with a verdict"                    yes "$(has "$out" '1 run.* skipped arms since the last self escalation.*verdict=self_skips_below_threshold')"
+mv "$LOGS/skip3.log" "$LOGS/$((NOW-1600+3))000.log"
 for n in 1 2 3; do mv "$LOGS/$((NOW-1600+n))000.log" "$LOGS/skip$n.log"; done
 rm -f "$FIX/state/state"
 

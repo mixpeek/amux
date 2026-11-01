@@ -1883,8 +1883,13 @@ check_self_runs() {
   # Raised again only when a run NEWER than the last self escalation skipped
   # (Mac self RCA 20261020-005306): the 24h count keeps runs from before a fix
   # for a day, and re-escalated them every 6h with nothing new to look at.
-  if [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
-    self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
+  # And the threshold counts only those new runs (Mac self RCA 20261101-064656):
+  # one skip at 02:42 raised six answered ones again as "7 runs", though a skipped
+  # arm runs next tick and one skip in 13 runs is not a constraint.
+  if [ "$n_skip_new" -ge "$SELF_SKIP_24H" ]; then
+    self_verdict "$n_skip_new runs of $SELF_SCHED_ID since the last self escalation skipped cleanup arms for lack of time ($n_skip in 24h)"
+  elif [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
+    echo "mac-cleanup: self: $n_skip_new run(s) skipped arms since the last self escalation, under the $SELF_SKIP_24H that make a constraint; the other $((n_skip-n_skip_new)) were already answered (verdict=self_skips_below_threshold)"
   elif [ "$n_skip" -ge "$SELF_SKIP_24H" ]; then
     echo "mac-cleanup: self: all $n_skip runs that skipped arms in 24h predate the last self escalation, which already answered them; not raised again until a new one (verdict=self_skips_already_escalated)"
   fi
@@ -3584,6 +3589,7 @@ reap_orphan_sqlite_backups "$DRY"
 # reads each container's cap, so a cap applied after it escalated a VM this same
 # tick had just brought within its caps.
 [ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
+tick_mark "health"
 system_health "$DRY"
 
 # ── report: the consumers this script must not touch ─────────────────────────
