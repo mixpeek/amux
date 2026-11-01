@@ -33237,6 +33237,24 @@ pub(crate) fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> 
     Some(hit)
 }
 
+/// At most one walk of `projects` per conversation a minute. The walk is one
+/// stat per project directory (8,262 on 2026-11-01) and a worker whose report
+/// names a transcript that is not on disk repeated it on every fleet build:
+/// these stats were 83% of `build_array`, which held every signal that does not
+/// come from a hook 6-12 s behind.
+fn transcript_walk_due(id: &str, now: std::time::Instant) -> bool {
+    static WALKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut walked = WALKED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if walked.get(id).is_some_and(|at| now.duration_since(*at) < EVERY) {
+        return false;
+    }
+    walked.retain(|_, at| now.duration_since(*at) < EVERY);
+    walked.insert(id.to_string(), now);
+    true
+}
+
 /// Known launch directories first, then the id itself: it is a UUID, so a
 /// match anywhere under `projects` is this conversation. The bool says the
 /// fallback was needed.
@@ -33247,6 +33265,9 @@ fn find_transcript(projects: &std::path::Path, bases: &[String], id: &str) -> Op
         if path.exists() {
             return Some((path, false));
         }
+    }
+    if !transcript_walk_due(id, std::time::Instant::now()) {
+        return None;
     }
     std::fs::read_dir(projects).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.exists()).map(|p| (p, true))
 }
@@ -36757,6 +36778,16 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_transcript_walks_the_projects_once_a_minute() {
+        let t = std::time::Instant::now();
+        let id = "walk-test-conversation";
+        assert!(transcript_walk_due(id, t));
+        assert!(!transcript_walk_due(id, t + std::time::Duration::from_secs(59)));
+        assert!(transcript_walk_due("walk-test-other", t), "per conversation");
+        assert!(transcript_walk_due(id, t + std::time::Duration::from_secs(60)));
+    }
+
     #[test]
     fn codex_latest_message_reads_real_rollout_text_and_skips_later_tools() {
         let records = vec![
