@@ -309,6 +309,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/git-hooks/test_pre_push_spa_gates.py
+      # AF-1073: pre-push runs the checks.yml shell tests that name a changed
+      # script, on the pushed commit, since land_gate.py runs none of them.
+      - name: the pre-push script tests refuse a script red, and only this push's (AF-1073)
+        run: |
+          set -euo pipefail
+          python3 scripts/git-hooks/test_pre_push_script_tests.py
       # The land gate (scripts/land_gate.py): the push legs on the real hook
       # with a fake approvals server, and the review's round rules on a fake
       # claude. No model, no network.

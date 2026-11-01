@@ -389,6 +389,117 @@ def _harness_guard_gate(refs):
     return 0
 
 
+# AF-1073: land_gate.py runs Rust tests and e2e specs and no scripts/test-*.sh,
+# so a script whose only test is a checks.yml step lands untested. 5d52181bc
+# (AF-1055) and 8d6057fb7 each reddened main's checks that way on 2026-10-30
+# and 10-31. This leg runs the shell tests checks.yml runs that name a changed
+# script, on the pushed tree, and blocks only on a failure the remote's tip
+# does not share.
+_SCRIPT_TEST_STEP = re.compile(r"^\s*\./(scripts/test-[A-Za-z0-9_.-]+\.sh)\b", re.M)
+_SCRIPT_TESTS_MAX = 12
+_SCRIPT_TEST_TIMEOUT_S = 300
+
+
+def _git_show(sha, path):
+    r = subprocess.run(["git", "show", "%s:%s" % (sha, path)], capture_output=True, text=True, timeout=30)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _script_tests_for(sha, touched):
+    """The checks.yml shell tests that name a changed script: (selected, wired
+    count). A changed test-*.sh selects itself."""
+    changed = [p for p in touched if p.startswith("scripts/") and "/" not in p[len("scripts/"):]]
+    if not changed:
+        return [], 0
+    wired = list(dict.fromkeys(_SCRIPT_TEST_STEP.findall(_git_show(sha, ".github/workflows/checks.yml"))))
+    picked = []
+    for t in wired:
+        if t in changed:
+            picked.append(t)
+            continue
+        body = _git_show(sha, t)
+        if any(os.path.basename(c) in body for c in changed):
+            picked.append(t)
+    return picked, len(wired)
+
+
+def _script_test_failures(sha, tests):
+    """Run `tests` on `sha`'s tree with no amux session in the environment, so
+    a test cannot reach the live server. Returns failing names, or None."""
+    tmp = tempfile.mkdtemp(prefix="amux-script-tests-")
+    try:
+        arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
+                              capture_output=True, text=True, timeout=60)
+        if arch.returncode != 0:
+            return None
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("AMUX_", "CC_", "GIT_")) and k not in ("TMUX", "TMUX_PANE")}
+        env["HOME"] = os.path.join(tmp, ".home")
+        os.makedirs(env["HOME"])
+        failing = []
+        for t in tests:
+            if not os.path.exists(os.path.join(tmp, t)):
+                continue
+            try:
+                r = subprocess.run(["bash", t], cwd=tmp, env=env, capture_output=True, text=True,
+                                   timeout=_SCRIPT_TEST_TIMEOUT_S)
+                if r.returncode != 0:
+                    failing.append((t, "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:])))
+            except subprocess.TimeoutExpired:
+                failing.append((t, "did not finish in %ds" % _SCRIPT_TEST_TIMEOUT_S))
+        return failing
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _script_tests_gate(refs):
+    """refs: [(local_sha, remote_sha, touched paths)]. Returns 1 to refuse."""
+    if os.environ.get("AMUX_SKIP_SCRIPT_TESTS", "").strip().lower() in ("1", "true", "yes", "on"):
+        _audit("script_tests", "verdict=script_tests_skipped")
+        return 0
+    for local, remote, touched in refs:
+        tests, wired = _script_tests_for(local, touched)
+        if not tests:
+            continue
+        short = local[:9]
+        dropped = tests[_SCRIPT_TESTS_MAX:]
+        tests = tests[:_SCRIPT_TESTS_MAX]
+        t0 = datetime.datetime.now()
+        failing = _script_test_failures(local, tests)
+        if failing is None:
+            sys.stderr.write("amux pre-push: script tests on %s could not run (git archive failed); "
+                             "CI's checks still runs them verdict=script_tests_unmeasured\n" % short)
+            _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
+            continue
+        inherited = []
+        if failing:
+            base = remote if remote != ZERO else subprocess.run(
+                ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
+                text=True, timeout=10).stdout.strip()
+            was = _script_test_failures(base, [t for t, _ in failing]) if base else None
+            if was is not None:
+                was_names = {t for t, _ in was}
+                inherited = [t for t, _ in failing if t in was_names]
+        mine = [(t, why) for t, why in failing if t not in inherited]
+        secs = (datetime.datetime.now() - t0).total_seconds()
+        verdict = "script_tests_fail" if mine else "script_tests_pass"
+        sys.stderr.write("amux pre-push: script tests on %s: %d of %d checks.yml shell tests name a "
+                         "changed script, %d failing from this push, %d already failing on the remote, "
+                         "%d not run (cap %d), %.0fs verdict=%s\n"
+                         % (short, len(tests), wired, len(mine), len(inherited), len(dropped),
+                            _SCRIPT_TESTS_MAX, secs, verdict))
+        _audit("script_tests", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f"
+               % (verdict, short, len(tests), len(mine), len(inherited), secs))
+        if mine:
+            sys.stderr.write("\nBLOCKED: this push fails shell tests that checks.yml runs:\n")
+            for t, why in mine:
+                sys.stderr.write("  %s\n    %s\n" % (t, why.replace("\n", "\n    ")))
+            sys.stderr.write("\nReproduce: bash <test> on your commit.\nOverride for this push, if "
+                             "you are deliberately landing it red:\n  AMUX_SKIP_SCRIPT_TESTS=1 git push ...\n")
+            return 1
+    return 0
+
+
 def _spa_gates(refs):
     """refs: [(local_sha, remote_sha, touched paths)]. Returns 1 to refuse."""
     if os.environ.get("AMUX_SKIP_SPA_GATES", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -631,7 +742,7 @@ def main():
             _r = subprocess.run(["git", "log", "--name-only", "--format="] + _rng,
                                 capture_output=True, text=True, timeout=30)
             _refs.append((_p[1], _p[3], [x for x in _r.stdout.splitlines() if x.strip()]))
-        if _spa_gates(_refs) or _harness_guard_gate(_refs):
+        if _spa_gates(_refs) or _harness_guard_gate(_refs) or _script_tests_gate(_refs):
             return 1
     except Exception as e:
         sys.stderr.write("amux pre-push: the pushed-commit gates errored (%s); CI still runs "
