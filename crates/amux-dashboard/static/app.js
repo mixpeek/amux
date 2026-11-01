@@ -1042,6 +1042,12 @@ let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle'
 // stopped; a paused worker still running filtered as working; the grid dot
 // showed a guessed (`unknown`) status as green.
 // `key` is what the badge shows; `group` is the filter/bucket it belongs to.
+// When the worker last did anything. last_activity is the last human or
+// message interaction, so a worker on a long run read "WORKING 12h ago".
+function _lastSeen(s) {
+  return Math.max(s.last_activity || 0, Math.floor(s.last_progress_at || 0));
+}
+
 function _workerStatus(s) {
   const g = (key, group) => ({ key, group: group || key });
   if (_workerLifecyclePending.has(s.name)) return g('pending', 'starting');
@@ -9339,7 +9345,7 @@ function render() {
           ${s.running && s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.running && s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
           ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
-          ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
+          ${_lastSeen(s) ? `<span class="last-active">${timeAgo(_lastSeen(s))}</span>` : ''}
           ${(() => {
             /* Bare numbers, no chips (Ethan: "just numbers no outline ...
                conservative with real estate"). Keep runtime status and board
@@ -11196,7 +11202,7 @@ function _renderPausedSection() {
   if (showExpanded) {
     html += '<div class="paused-body">';
     (q ? paused : allPaused).forEach(s => {
-      const ago = s.last_activity ? timeAgo(s.last_activity) : '';
+      const ago = _lastSeen(s) ? timeAgo(_lastSeen(s)) : '';
       const rawDir = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir.replace(/^\/Users\/[^/]+/, '~');
       const model = s.active_model || sessionConfiguredModel(s) || '';
@@ -11387,7 +11393,7 @@ function _renderArchivedSectionBody() {
   if (showExpanded) {
     html += '<div class="archived-body">';
     (q ? archived : allArchived).forEach(s => {
-      const ago = s.last_activity ? timeAgo(s.last_activity) : '';
+      const ago = _lastSeen(s) ? timeAgo(_lastSeen(s)) : '';
       const created = s.session_created ? new Date(s.session_created * 1000).toLocaleDateString([], {month:'short', day:'numeric', year:'2-digit'}) : '';
       const rawDir2 = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir2.replace(/^\/Users\/[^/]+/, '~');
