@@ -1,5 +1,40 @@
 [
   {
+    "hash": "ca2e0dd5650ff72ed2b6913f2eb54da0874bbff2",
+    "short": "ca2e0dd5",
+    "title": "Schedules behave through the daylight saving change",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "scheduler"
+    ],
+    "description": "When clocks fall back, the repeated hour no longer makes a schedule fire again and again. A daily or interval schedule set inside that hour now runs once and moves on to its next time."
+  },
+  {
+    "hash": "9d417bf6ec3628958a6d38028c005ff2255e161d",
+    "short": "9d417bf6",
+    "title": "A worker card shows when it last made progress",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "workers"
+    ],
+    "description": "A worker on a long autonomous run used to read \"WORKING 12h ago\" because the card showed its last message. The card now shows the newer of the last message and the last progress."
+  },
+  {
+    "hash": "79d136bf2c5485e5649fd080b40c0b7cb08e2dfb",
+    "short": "79d136bf",
+    "title": "A worker's status reaches its card at once",
+    "date": "2026-11-01",
+    "type": "perf",
+    "tags": [
+      "dashboard",
+      "workers"
+    ],
+    "description": "A change a worker reported took 6 to 12 seconds to show on its card, because the dashboard waited for the next full fleet update. Reports now appear right away."
+  },
+  {
     "hash": "1e0d1dca68c8ce20f11e59037adeb4f28450e4b2",
     "short": "1e0d1dca",
     "title": "The markdown editor keeps up with your typing on a phone",
