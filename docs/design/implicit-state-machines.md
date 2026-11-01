@@ -159,40 +159,40 @@ with `scripts/mutate.sh`) and a log verdict.
 |---|---|---|
 | 1 | Worker status (client) | Fixed 8ba9e7196: `_workerStatus` is the one client reading; e2e worker-status-one-reading |
 | 2 | Hook status producers | Checked: on every event both handle they report the same state; native-status also clears `blocked` on interrupt and failure. The real fix is the single journal (recommendation 1) |
-| 3 | Worker execution state | Fixed: idle after spawn and after a rate-limit resume apply only from the state they read (`update_worker_state_from`); an Error is always recorded |
-| 4 | Worker lifecycle vs CC_ARCHIVED | Fixed: archive and unarchive move a worker row's lifecycle with the env flag. Measured: all 6 rows are deleted, so live lanes use the env file today |
-| 5 | Session | Fixed: a new live session ends the old one as replaced; 0146 unique index |
-| 6 | Board card | Fixed 4aca05eb4: terminal statuses left only by force; harness_close; raw_status_write_guard |
-| 7 | Card leases | Fixed 4aca05eb4: lease generation survives a reclaim (0145). Two lease systems remain |
+| 3 | Worker execution state | Fixed c13122717: idle after spawn and after a rate-limit resume apply only from the state they read (`update_worker_state_from`); an Error is always recorded |
+| 4 | Worker lifecycle vs CC_ARCHIVED | Fixed c13122717: archive and unarchive move a worker row's lifecycle with the env flag. Measured: all 6 rows are deleted, so live lanes use the env file today |
+| 5 | Session | Fixed c13122717: a new live session ends the old one as replaced; 0146 unique index |
+| 6 | Board card | Fixed c13122717: terminal statuses left only by force; harness_close; raw_status_write_guard |
+| 7 | Card leases | Fixed c13122717: lease generation survives a reclaim (0145). Two lease systems remain |
 | 8 | Task attempts | Covered by #6 (harness closes now record attempts) |
 | 9 | Completion callback | Left: armed->pending inside save_patched is documented and tested in place |
-| 10 | Contract verify | Fixed: a result lands only while the contract is still verifying |
-| 11 | Message receipt | Fixed: uncertain->confirmed is guarded on uncertain |
-| 12 | Worker messages | Fixed: the orchestrator advances delivery through core's forward-only rule, CAS on the stored value |
-| 13 | Schedule re-arm | Fixed 4aca05eb4: re-enables only a row disabled for its own claim's reason and not owner-locked |
-| 14 | Pass-check | Fixed: a verdict is dropped if the schedule fired during the check (run_count guard) |
+| 10 | Contract verify | Fixed c13122717: a result lands only while the contract is still verifying |
+| 11 | Message receipt | Fixed c13122717: uncertain->confirmed is guarded on uncertain |
+| 12 | Worker messages | Fixed c13122717: the orchestrator advances delivery through core's forward-only rule, CAS on the stored value |
+| 13 | Schedule re-arm | Fixed c13122717: re-enables only a row disabled for its own claim's reason and not owner-locked |
+| 14 | Pass-check | Fixed c13122717: a verdict is dropped if the schedule fired during the check (run_count guard) |
 | 15 | Schedule run queued | Not a defect: the API path advances queued->delivered (the background sweep missed it) |
-| 16 | Land queue | Fixed 4aca05eb4: finishes require their claim generation |
-| 17 | Social queue | Fixed 4aca05eb4: finishes require the claim; a hung publish turns uncertain after 30 min |
-| 18 | Bridge outbound | Fixed: a post is claimed `sending` before the platform call; a stuck one is reported, never resent |
-| 19 | Overlap callbacks | Fixed: forward only from pending or retryable |
-| 20 | Goal keeper | Fixed: its record persists in ~/.amux/state/goal-keeper.json |
+| 16 | Land queue | Fixed c13122717: finishes require their claim generation |
+| 17 | Social queue | Fixed c13122717: finishes require the claim; a hung publish turns uncertain after 30 min |
+| 18 | Bridge outbound | Fixed c13122717: a post is claimed `sending` before the platform call; a stuck one is reported, never resent |
+| 19 | Overlap callbacks | Fixed c13122717: forward only from pending or retryable |
+| 20 | Goal keeper | Fixed c13122717: its record persists in ~/.amux/state/goal-keeper.json |
 | 21 | Builder stamp | Not a defect: the stamp answers "did the source change" and the identity "is the live image the elected commit"; a docs-only commit gets a ~1 s relabel build |
 | 22 | Build lock | Fixed 8d6057fb7: a young empty lock is held |
 | 23 | CLI land lock | Fixed 8d6057fb7: holder start time checked; installed |
-| 24 | Land gate receipts | Fixed: the newest receipt for a commit decides; a later failure revokes an earlier pass |
+| 24 | Land gate receipts | Awaiting owner approval (AMUX-6643, owner-tier file): the newest receipt for a commit decides; a later failure revokes an earlier pass |
 | 25 | CI watch | Fixed 8ba9e7196: an unreadable board is unknown, not closed |
 | 26 | Stall ladder | Not a defect: the tmp reaper keeps small files, and ladder files are bytes |
 | 27 | Cleanup tick cooldowns | Owner routed Mac maintenance to desktop (10-31 10:37) |
 | 28 | Staged-guard marker | Fixed 8d6057fb7: expires after 2 h |
-| 29 | Guard verdict outcome | Fixed: the attach is guarded on an unresolved row |
+| 29 | Guard verdict outcome | Fixed c13122717: the attach is guarded on an unresolved row |
 | 30 | Notifications | Fixed 8ba9e7196: claimed once across tabs; stale tabs re-baseline |
 | 31 | Optimistic pause | Fixed 8d6057fb7: an acknowledgement is held over older snapshots |
-| 32 | SSE connection flags | Fixed: a forced reconnect during polling opens the stream now instead of after the 30 s poll retry |
+| 32 | SSE connection flags | Fixed e0b7a27b1: a forced reconnect during polling opens the stream now instead of after the 30 s poll retry |
 | 33 | Offline outbox | Checked: every decision goes through _outboxMarkDecision or its reset, which set the companion flags together |
 | 34 | Version reload | Fixed 8d6057fb7: throttled per target version |
 | 35 | Peek overlay | Deliberate: a saved peek reopens after iOS evicts the app |
 | 36 | Queue mode | Fixed 8ba9e7196: skips the queue only on a fresh waiting |
 | 37 | Column collapse | Fixed 8ba9e7196: a corrupt saved value is dropped |
-| T5 | Media jobs; reclaim purge | Fixed: media writes require their claim; purge relabels only staged items |
+| T5 | Media jobs; reclaim purge | Fixed c13122717: media writes require their claim; purge relabels only staged items |
 | T5 | Email approval fate; ChatGPT revoke | Deliberate as written (fate derives state from the sentence a person reads; a replayed code always revokes) |
