@@ -1697,6 +1697,15 @@ pub(crate) fn enabled_schedule_clocks(
 fn enabled_schedule_firing_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "schedule.enabled_is_firing";
     static LAST_SILENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    // The host guard holds due schedules while the machine is critical, and the
+    // rows stay due. That is an answer about the host, not a silent schedule; a
+    // schedule that stays silent fails once the guard lets go.
+    if crate::runtime_jobs::host_guard::deferred_within("schedules", 300) {
+        return vec![InvariantResult::unknown(
+            ID,
+            "the host guard held schedules in the last 5 minutes",
+        )];
+    }
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "could not read the store")];
     };
