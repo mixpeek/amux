@@ -295,7 +295,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   # it there ran two builds and let the disk guard's rm race a live build
   # (implicit state machines inventory 2026-10-31, #22). Empty counts as
   # stale only once the lock is over a minute old.
-  lock_mtime=$(stat -f %m "$LOCK" 2>/dev/null || stat -c %Y "$LOCK" 2>/dev/null || echo 0)
+  # GNU form first (AF-1125): on Linux `stat -f` is filesystem mode, prints a
+  # "File: ..." block into lock_mtime, and the arithmetic below then aborts on
+  # `File: unbound variable`. BSD `stat -c` fails with nothing on stdout.
+  lock_mtime=$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)
   if [ -z "$owner" ] && [ $(( $(date +%s) - lock_mtime )) -lt 60 ]; then
     echo "== $(date '+%F %T') SKIP $built_sha — lock just taken, its pid not written yet verdict=build_lock_young" >> "$LOG"
     exit 0

@@ -8635,7 +8635,7 @@ _land_status() {
     # 13183349 min", 2026-10-03); its file's mtime is the best record left.
     if [ "${t%%-*}" = 000000000000 ]; then
       tag="at head (--to-head) "
-      since_t="$(stat -f %m "$q/$t" 2>/dev/null || stat -c %Y "$q/$t" 2>/dev/null || date +%s)"
+      since_t="$(stat -c %Y "$q/$t" 2>/dev/null || stat -f %m "$q/$t" 2>/dev/null || date +%s)"
     fi
     # Batch flag and land code beside each ticket (gs12-compute, 2026-10-02:
     # --status could not answer "is my ticket batchable now?").
@@ -10813,7 +10813,7 @@ p.communicate(msg.encode())
     # Reading that as 0 made it look decades old: gs12-cicd deleted
     # gs12-retrievers' brand-new lock at 12:10:44Z and two lanes pushed at
     # once. The directory's own mtime is the floor.
-    hsince="$(cat "$lock/since" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || date +%s)"
+    hsince="$(cat "$lock/since" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || date +%s)"
     # Only the head of the queue may take a lock over, so waiters behind it
     # cannot race each other into the same decision.
     # A holder whose `git push` or pre-push hook is still running is slow,
