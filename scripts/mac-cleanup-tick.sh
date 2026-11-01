@@ -2787,9 +2787,27 @@ state_put() { # <file> <key=value>...
 }
 # 0 if <class> may escalate now: never escalated, or the last one is older than the cooldown.
 escalation_due() { # <state_file> <class> <now> <cooldown_h>
-  local last; last=$(state_get "$1" "esc_$2")
+  local last cleared; last=$(state_get "$1" "esc_$2")
   [ -z "$last" ] && return 0
+  # The cooldown is per INCIDENT: a class that measured clear after its last
+  # escalation is a new incident now, and escalates at once. A flat cooldown
+  # suppressed a fresh incident that began inside it (implicit state machines
+  # inventory 2026-10-31, #27).
+  cleared=$(state_get "$1" "esc_$2_cleared")
+  [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && return 0
   [ $(( $3 - last )) -ge $(( $4 * 3600 )) ]
+}
+
+# Record, for every class escalated before, the first tick it measures clear.
+note_cleared_classes() { # <state_file> <verdict lines> <now>
+  local cls last cleared
+  for cls in $(sed -n 's/^esc_\([a-z0-9]*\)=[0-9][0-9]*$/\1/p' "$1" 2>/dev/null); do
+    printf '%s\n' "$2" | awk -v c="$cls" '$1==c{f=1} END{exit !f}' && continue
+    last=$(state_get "$1" "esc_$cls"); cleared=$(state_get "$1" "esc_${cls}_cleared")
+    [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && continue
+    state_put "$1" "esc_${cls}_cleared=$3"
+    echo "mac-cleanup: $cls measures clear since its last escalation; a new $cls incident will escalate at once verdict=escalation_class_cleared"
+  done
 }
 
 # The amux lane a process belongs to: walk its parent chain to a tmux PANE and
@@ -3905,6 +3923,7 @@ else
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
   grep -a 'verdict=vm_container_writer\|verdict=open_file_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /'
+  [ "$DRY" = "1" ] || note_cleared_classes "$STATE" "$verdicts" "$now"
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

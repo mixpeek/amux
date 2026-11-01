@@ -119,6 +119,13 @@ state_put "$S" esc_disk=10000
 check "inside the cooldown it is not due"             "no"  "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
 check "control: past the cooldown it is due again"    "yes" "$(escalation_due "$S" disk 31600 6 && echo yes || echo no)"
 check "the cooldown is per class"                     "yes" "$(escalation_due "$S" cpu 20000 6 && echo yes || echo no)"
+note_cleared_classes "$S" "disk burning 9G/h" 15000 >/dev/null
+check "#27: a class still constrained is not marked clear" "no" "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
+note_cleared_classes "$S" "cpu 15-min load 40" 16000 >/dev/null
+check "#27: a cleared class is recorded"              "16000" "$(state_get "$S" esc_disk_cleared)"
+check "#27: a new incident after a clear escalates inside the cooldown" "yes" "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
+state_put "$S" esc_disk=21000
+check "#27: once escalated again, the cooldown holds"  "no" "$(escalation_due "$S" disk 22000 6 && echo yes || echo no)"
 
 echo "3b. the hand-off prompt (DESKT-58)"
 first=$(escalation_message cpu "cpu load 40" /b.md /c.card "disk=600G load15=40/28" - - -)
