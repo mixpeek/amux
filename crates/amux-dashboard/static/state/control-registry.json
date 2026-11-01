@@ -330,6 +330,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_boardLiveTick": {
+      "kind": "command._boardLiveTick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_boardOneSet": {
       "kind": "command._boardOneSet",
       "feedback_required": true,

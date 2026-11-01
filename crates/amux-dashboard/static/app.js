@@ -48032,6 +48032,25 @@ function _renderBoardCard(item) {
 //
 // Heartbeat age is the useful number, not the lease's existence: a held card
 // whose holder stopped beating looks identical to a healthy one in the column.
+// A board can sit open for an hour with nothing to re-render it, and an age
+// computed once read "just now" for the whole lease after its worker stopped.
+// While a Working strip shows, the list is also read again: one kept "Working
+// now" over a stopped worker for 37 minutes on a long-open page (VID-147).
+function _boardLiveTick() {
+  if (document.hidden) return;
+  document.querySelectorAll('.lease-beat[data-at]').forEach(el => { el.textContent = timeAgo(Number(el.dataset.at)); });
+  if (activeView !== 'board' || !_boardActivityEntries().length) return;
+  const before = window._boardLiveSig;
+  // The poll's ETag names the last polled list, and a late stream snapshot can
+  // be older than it: every poll then answers 304 over a stale screen until the
+  // fleet next changes. Only here, while a strip shows, so a phone keeps its 304s.
+  _sessEtag = null;
+  fetchSessions().then(() => {
+    if (window._boardLiveSig !== before) window._clientDebug?.('board-activity-tick', { verdict: 'board_activity_caught_by_tick', measured: true, n_considered: (sessions || []).length });
+  }).catch(e => console.warn('board activity tick', e));
+}
+setInterval(_boardLiveTick, 30000);
+
 function _leaseChip(item) {
   const lease = item && item.lease;
   if (!lease || !lease.holder) return '';
@@ -48042,7 +48061,7 @@ function _leaseChip(item) {
   const attempt = Number(lease.attempt || 0);
   const label = esc(lease.holder)
     + (attempt > 1 ? ' &middot; attempt ' + attempt : '')
-    + (beat ? ' &middot; \u2665 ' + timeAgo(beat) : ' &middot; no heartbeat recorded');
+    + (beat ? ' &middot; \u2665 <span class="lease-beat" data-at="' + beat + '">' + timeAgo(beat) + '</span>' : ' &middot; no heartbeat recorded');
   const why = expired
     ? 'Lease EXPIRED ' + timeAgo(expires) + '. ' + lease.holder + ' still holds the card on the board, but the hold is no longer alive, so another worker may claim it.'
     : 'Held by ' + lease.holder + ' (attempt ' + (attempt || 1) + ', generation ' + (lease.generation || 1) + ')'
