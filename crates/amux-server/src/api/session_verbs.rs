@@ -4035,7 +4035,35 @@ pub async fn debug_context_health() -> Response {
 /// fallback when the cap contains no name record (a short or long-silent
 /// transcript), so this is never more expensive than the scan it replaces by
 /// more than one tail read.
+/// The title of a transcript, remembered until the file changes (AF-1146). A
+/// lane with no recorded conversation matches its name against every transcript
+/// in its project, and each read parses a 256 KB tail, so the fleet build spent
+/// 405 of 829 samples here on files that had not moved.
 fn transcript_display_name(jf: &Path) -> Option<String> {
+    type Names = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Option<String>)>;
+    const MAX_REMEMBERED: usize = 20_000;
+    static NAMES: std::sync::OnceLock<std::sync::Mutex<Names>> = std::sync::OnceLock::new();
+    let names = NAMES.get_or_init(Default::default);
+    let meta = std::fs::metadata(jf).ok()?;
+    let (len, mtime) = (meta.len(), meta.modified().ok()?);
+    if let Ok(names) = names.lock() {
+        if let Some((l, m, name)) = names.get(jf) {
+            if *l == len && *m == mtime {
+                return name.clone();
+            }
+        }
+    }
+    let name = read_transcript_display_name(jf);
+    if let Ok(mut names) = names.lock() {
+        if names.len() >= MAX_REMEMBERED {
+            names.clear();
+        }
+        names.insert(jf.to_path_buf(), (len, mtime, name.clone()));
+    }
+    name
+}
+
+fn read_transcript_display_name(jf: &Path) -> Option<String> {
     const NAME_TAIL_BYTES: u64 = 256 * 1024;
     let pick = |rec: &Value| -> Option<String> {
         for k in ["customTitle", "sessionName"] {
@@ -45130,6 +45158,23 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             1,
             "duplicated --resume: {cmd}"
         );
+    }
+
+    #[test]
+    fn a_transcript_title_is_read_again_only_when_the_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let jf = dir.path().join("t.jsonl");
+        std::fs::write(&jf, "{\"customTitle\":\"aaa\"}\n").unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("aaa"));
+        // Same size and mtime with other bytes: only a remembered name says aaa.
+        let mtime = std::fs::metadata(&jf).unwrap().modified().unwrap();
+        std::fs::write(&jf, "{\"customTitle\":\"bbb\"}\n").unwrap();
+        let f = std::fs::File::options().write(true).open(&jf).unwrap();
+        f.set_modified(mtime).unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("aaa"));
+        // Any change to the file reads it again.
+        f.set_modified(mtime + std::time::Duration::from_secs(1)).unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("bbb"));
     }
 
     #[test]
