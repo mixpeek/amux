@@ -1052,10 +1052,10 @@ PYIDENTITY
         if measure_live_identity && [ -n "$live" ]; then
           case "$built_sha" in "$live"*) healthy=1; break ;; esac
         fi
-        sleep 5; waited=$((waited + 5))
+        sleep 1; waited=$((waited + 1))
       done
       if [ "$healthy" = 1 ]; then
-        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s verdict=activation_healthy"
+        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) verdict=activation_healthy"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.
