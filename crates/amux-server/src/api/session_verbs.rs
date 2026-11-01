@@ -47196,7 +47196,10 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         };
         let response = post_dispatch(&state, &name, "stop", &HeaderMap::new(), &json!({})).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // A clean Stop takes about 4 s here, so 5 s failed under any contention
+        // (three land gates, 2026-11-01). The fixture's child lives 120 s, so
+        // 15 s still tells a Stop that waited on the composer from one that didn't.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let stopped = state.store.read().unwrap().query_row(
                 "SELECT count(*) FROM session_events WHERE session=?1 AND type='session.stopped'", [&name], |r|r.get::<_,i64>(0)).unwrap_or(0);
