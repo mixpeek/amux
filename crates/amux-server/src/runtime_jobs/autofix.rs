@@ -208,6 +208,19 @@ const LONG_BY_DESIGN: &[(&str, f64)] = &[
     // (unlike navigate) has nothing running AFTER the CDP wait that a wider
     // budget would need to cover.
     ("/api/browser/start", 30_000.0),
+    // POST /api/browser/routing/request (AF-1143). One call can start a real
+    // browser or walk the ladder to the next backend, so the wait is the
+    // driver's. The handler bounds the driver at 240s
+    // (api/browser_routing.rs `deadline_s`), and this budget is that bound.
+    // A goal or a CUA route gets 2700s for a cold image build; this table is
+    // per route, so such a run past 240s still files, which is right for a
+    // call that rare and that long.
+    //
+    // Measured over 7 days: 12,207 requests, p50 118ms, p90 1763ms, p99
+    // 13.9s, worst 106s, 177 past the 10s floor, and nothing past 120s. All
+    // of the slowest answered 200, so the 10s floor sits inside this route's
+    // normal tail.
+    ("/api/browser/routing/request", 240_000.0),
     // GET /api/email/inbox (AMUX-3519, third filing in one day on the same
     // residual): a count=480 metadata fetch is quota-bound at ~12-15s — the
     // 8-wide concurrency sits deliberately under Gmail's 250 units/s budget
