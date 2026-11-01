@@ -238,13 +238,9 @@ pub(crate) fn parse_gemini_from(path: &Path, offset: u64) -> (u64, Vec<GeminiTur
 }
 
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
-    index_once_at(
-        store,
-        home,
-        &gemini_chats_root(),
-        &crate::api::session_verbs::all_session_workdirs(),
-    )
-    .await
+    let workdirs =
+        tokio::task::spawn_blocking(crate::api::session_verbs::all_session_workdirs).await?;
+    index_once_at(store, home, &gemini_chats_root(), &workdirs).await
 }
 
 pub(crate) async fn index_once_at(
@@ -253,10 +249,36 @@ pub(crate) async fn index_once_at(
     root: &Path,
     workdirs: &BTreeMap<String, String>,
 ) -> anyhow::Result<usize> {
-    use super::token_ledger::{self, LedgerFileBatch, LedgerRow};
+    use super::token_ledger;
     if !root.is_dir() {
         return Ok(0);
     }
+    // On a blocking thread for the reason token_ledger::index_once_at gives.
+    let (table, batches) = {
+        let store = store.clone();
+        let home = home.to_path_buf();
+        let root = root.to_path_buf();
+        let workdirs = workdirs.clone();
+        tokio::task::spawn_blocking(move || scan_chats(&store, &home, &root, &workdirs)).await??
+    };
+
+    token_ledger::warn_unpriced("gemini", &table, &batches);
+    token_ledger::commit_ledger_batch(store, batches).await
+}
+
+type ChatScan = (
+    Vec<(String, [f64; 4])>,
+    Vec<super::token_ledger::LedgerFileBatch>,
+);
+
+/// The cursors, the walk and the parse: blocking by nature.
+fn scan_chats(
+    store: &SharedStore,
+    home: &Path,
+    root: &Path,
+    workdirs: &BTreeMap<String, String>,
+) -> anyhow::Result<ChatScan> {
+    use super::token_ledger::{self, LedgerFileBatch, LedgerRow};
     let table = token_ledger::prices(home);
     let owners = owners_by_hash(workdirs);
     let cursors = token_ledger::read_cursors(store)?;
@@ -307,8 +329,7 @@ pub(crate) async fn index_once_at(
         });
     }
 
-    token_ledger::warn_unpriced("gemini", &table, &batches);
-    token_ledger::commit_ledger_batch(store, batches).await
+    Ok((table, batches))
 }
 
 #[cfg(test)]

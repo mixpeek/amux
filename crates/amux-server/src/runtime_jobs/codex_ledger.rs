@@ -357,13 +357,14 @@ fn ownership_repairs(
 
 /// One pass over the codex rollouts. Returns how many ledger rows were written.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
-    index_once_at(
-        store,
-        home,
-        &codex_sessions_dir(),
-        &workspace_workdirs(home, crate::api::session_verbs::all_session_workdirs()),
-    )
-    .await
+    let workdirs = {
+        let home = home.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            workspace_workdirs(&home, crate::api::session_verbs::all_session_workdirs())
+        })
+        .await?
+    };
+    index_once_at(store, home, &codex_sessions_dir(), &workdirs).await
 }
 
 /// The pass with its roots injected, so a test drives a temp tree and a fixed
@@ -374,10 +375,78 @@ pub async fn index_once_at(
     sessions: &Path,
     workdirs: &BTreeMap<String, String>,
 ) -> anyhow::Result<usize> {
-    use super::token_ledger::{self, LedgerFileBatch, LedgerRow};
+    use super::token_ledger;
     if !sessions.is_dir() {
         return Ok(0);
     }
+    // On a blocking thread for the reason token_ledger::index_once_at gives.
+    let (table, batches, repairs) = {
+        let store = store.clone();
+        let home = home.to_path_buf();
+        let sessions = sessions.to_path_buf();
+        let workdirs = workdirs.clone();
+        tokio::task::spawn_blocking(move || scan_rollouts(&store, &home, &sessions, &workdirs))
+            .await??
+    };
+
+    token_ledger::warn_unpriced("codex", &table, &batches);
+    let inserted = token_ledger::commit_ledger_batch(store, batches).await?;
+    let repairs = store
+        .read_async(move |c| Ok(ownership_repairs(c, &repairs)?))
+        .await?;
+    let repaired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = repaired.clone();
+    if !repairs.is_empty() {
+        store
+            .write_async(move |c| {
+                let mut n = 0;
+                for (id, lane) in repairs {
+                    n += c.execute(
+                        "UPDATE token_ledger SET session=?2 WHERE id=?1 AND session='' AND task=''",
+                        rusqlite::params![id, lane],
+                    )?;
+                }
+                count.store(n, std::sync::atomic::Ordering::Relaxed);
+                if n > 0 {
+                    tracing::info!(
+                        measured = true,
+                        n_considered = n,
+                        verdict = "codex_workspace_usage_recovered",
+                        "unowned exact-match rollout rows assigned from durable workspace identity"
+                    );
+                }
+                Ok(crate::db::WriteOutcome {
+                    applied: n > 0,
+                    events: vec![],
+                })
+            })
+            .await?;
+    }
+    let recovered = repaired.load(std::sync::atomic::Ordering::Relaxed);
+    if recovered > 0 {
+        tracing::info!(verdict="codex_usage_owner_recovered", rows=recovered,
+            "bound previously unowned usage to validated CLI sessions");
+    }
+    if inserted > 0 || recovered > 0 {
+        token_ledger::attribute_tasks(store).await?;
+    }
+    Ok(inserted)
+}
+
+type RolloutScan = (
+    Vec<(String, [f64; 4])>,
+    Vec<super::token_ledger::LedgerFileBatch>,
+    Vec<(String, String)>,
+);
+
+/// The cursors, the walk and the parse: blocking by nature.
+fn scan_rollouts(
+    store: &SharedStore,
+    home: &Path,
+    sessions: &Path,
+    workdirs: &BTreeMap<String, String>,
+) -> anyhow::Result<RolloutScan> {
+    use super::token_ledger::{self, LedgerFileBatch, LedgerRow};
     let table = token_ledger::prices(home);
     let owners = unambiguous_owners(workdirs);
     let native = {
@@ -434,49 +503,7 @@ pub async fn index_once_at(
         });
     }
 
-    token_ledger::warn_unpriced("codex", &table, &batches);
-    let inserted = token_ledger::commit_ledger_batch(store, batches).await?;
-    let repairs = {
-        let c = store.read()?;
-        ownership_repairs(&c, &repairs)?
-    };
-    let repaired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count = repaired.clone();
-    if !repairs.is_empty() {
-        store
-            .write_async(move |c| {
-                let mut n = 0;
-                for (id, lane) in repairs {
-                    n += c.execute(
-                        "UPDATE token_ledger SET session=?2 WHERE id=?1 AND session='' AND task=''",
-                        rusqlite::params![id, lane],
-                    )?;
-                }
-                count.store(n, std::sync::atomic::Ordering::Relaxed);
-                if n > 0 {
-                    tracing::info!(
-                        measured = true,
-                        n_considered = n,
-                        verdict = "codex_workspace_usage_recovered",
-                        "unowned exact-match rollout rows assigned from durable workspace identity"
-                    );
-                }
-                Ok(crate::db::WriteOutcome {
-                    applied: n > 0,
-                    events: vec![],
-                })
-            })
-            .await?;
-    }
-    let recovered = repaired.load(std::sync::atomic::Ordering::Relaxed);
-    if recovered > 0 {
-        tracing::info!(verdict="codex_usage_owner_recovered", rows=recovered,
-            "bound previously unowned usage to validated CLI sessions");
-    }
-    if inserted > 0 || recovered > 0 {
-        token_ledger::attribute_tasks(store).await?;
-    }
-    Ok(inserted)
+    Ok((table, batches, repairs))
 }
 
 #[cfg(test)]
