@@ -20,8 +20,11 @@ test('a message pinned in a worker tab is marked, listed, kept and can be unpinn
   };
   await open();
   const row = page.locator('#peek-messages-list .pm-row').first();
-  await row.locator('.pm-dots').click();
-  await row.locator('.pm-menu-pin').click();
+  // A list refresh can close the row's menu between these two clicks.
+  await expect(async () => {
+    await row.locator('.pm-dots').click();
+    await row.locator('.pm-menu-pin').click({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
   await expect(row.locator('.pm-pin-mark')).toBeVisible();
   await expect(page.locator('#pm-pins-n')).toHaveText('1');
 
@@ -40,8 +43,11 @@ test('a message pinned in a worker tab is marked, listed, kept and can be unpinn
   await expect(page.locator('#pm-pins-btn')).toBeHidden();
 
   // Unpin from the list too: an older pin may not be on the current page.
-  await row.locator('.pm-dots').click();
-  await row.locator('.pm-menu-pin').click();
+  // A list refresh can close the row's menu between these two clicks.
+  await expect(async () => {
+    await row.locator('.pm-dots').click();
+    await row.locator('.pm-menu-pin').click({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
   await expect(page.locator('#pm-pins-n')).toHaveText('1');
   await page.locator('#pm-pins-btn').click();
   await page.locator('.pm-pin-unpin').first().click();
