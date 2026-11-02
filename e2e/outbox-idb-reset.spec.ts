@@ -50,6 +50,10 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     return performance.now() - t0;
   });
   expect(deadMs, 'a read on storage that stayed dead holds the pass under a second').toBeLessThan(1000);
+  // The episode's first report asked for the storage estimate. A report carries
+  // the last answer, so wait for that answer: on a loaded CI runner it can take
+  // longer than the reads above.
+  await expect.poll(() => page.evaluate(() => (0, eval)('_upqEstimate').answered)).toBeGreaterThan(0);
   // Past the report interval the next timeout reports once, with how many it
   // folded in and how long the episode has run.
   await page.evaluate(async () => {
