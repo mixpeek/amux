@@ -6194,3 +6194,14 @@ FIX: (proposed) decide "inherited" from more than one base run when the test
   and keep the panic text of a FAIL in the receipt. Separately, the routes that
   block past 15s under load (/api/board/derived, /api/debug/legacy-port) are
   the real defect.
+
+## A card moved to review names a reviewer the author cannot message, and nothing flags it as waiting on nobody
+AREA: board
+SEVERITY: blocks
+STATUS: open
+DATE: 2026-11-02
+SESSION: author
+CARD: none (author cannot file on amux-frustrations: `amux board request amux-frustrations ...` refused with cross_board_delegation_forbidden, "workers manage their own boards"; the card on author's own board is AUTHO-1, which is the card this entry is about)
+SYMPTOM: `amux board review AUTHO-1 --checked "Committed on the worktree branch" "npm test passes"` printed "the card moved to review, but the REVIEWER WAS NOT TOLD ... worker group boundary refused: author [{}] -> reviewer [{}]. Worker messages must stay within a shared group." The card is in review with reviewer=reviewer, and no review request reached them. Nothing nudged author or reviewer afterwards, and the card shows as a healthy review.
+COST: the card sat in review with no reviewer able to receive the request. It was not caught until the owner noticed. The move reported success, so the author had no signal to act on.
+FIX: (1) the review handoff should fail at the move when the named reviewer is outside the author's group, or route through a shared-group path. (2) A card in review whose reviewer was never notified should show as blocked on the reviewer, not as a healthy review. (3) A designated cross-lane reviewer should carry CC_RECEIVE_ANY=1, which the refusal text itself recommends.
