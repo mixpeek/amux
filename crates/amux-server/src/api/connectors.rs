@@ -2892,6 +2892,7 @@ async fn mint_connector_token(
             } else {
                 let minted = super::google_sa::mint_token_as(&scope, &a).await;
                 tracing::warn!(connector = %p.id, account = %a, missing = ?missing, sa_minted = minted.is_ok(),
+                    sa_error = minted.as_ref().err().map(String::as_str).unwrap_or(""),
                     measured = true, n_considered = 1, verdict = "connector_grant_lacks_scope",
                     "connector_token: the stored grant lacks requested scopes");
                 if minted.is_ok() { None } else { Some(a) }
@@ -3767,7 +3768,23 @@ pub(crate) async fn bearer_for(
     id: &str,
     account: &str,
 ) -> Result<String, Value> {
-    let q = std::collections::HashMap::from([("account".to_string(), account.to_string())]);
+    bearer_for_scopes(state, headers, id, account, None).await
+}
+
+/// `bearer_for`, asking only for `scopes` (space-separated) instead of all the
+/// connector's scopes. One scope the domain has not delegated fails a service
+/// account's whole request, so a caller that only reads should say so.
+pub(crate) async fn bearer_for_scopes(
+    state: AppState,
+    headers: HeaderMap,
+    id: &str,
+    account: &str,
+    scopes: Option<&str>,
+) -> Result<String, Value> {
+    let mut q = std::collections::HashMap::from([("account".to_string(), account.to_string())]);
+    if let Some(scopes) = scopes {
+        q.insert("scopes".to_string(), scopes.to_string());
+    }
     let resp = mint_connector_token(
         State(state),
         Extension(default_ctx()),

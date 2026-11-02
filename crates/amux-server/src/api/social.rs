@@ -70,6 +70,11 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
 pub const USER_AGENT: &str = concat!("amux/", env!("CARGO_PKG_VERSION"));
 
 type TokenFuture = Pin<Box<dyn Future<Output = Result<String, Value>> + Send>>;
+/// Reading a post's numbers needs no upload right (amux-gtm, 2026-11-02: the
+/// domain delegates these two and not youtube.upload, and asking for all three
+/// failed the whole mint).
+const YOUTUBE_READ_SCOPES: &str = "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly";
+
 type TokenSource = Arc<dyn Fn(AppState, HeaderMap, String) -> TokenFuture + Send + Sync>;
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -82,6 +87,8 @@ pub struct SocialCtx {
     pub youtube_upload: String,
     pub youtube_analytics: String,
     pub token: TokenSource,
+    /// The token for reading a post's numbers, with no upload scope.
+    pub read_token: TokenSource,
     /// Owner settings (`AMUX_SOCIAL_*`): server.env, then the process env.
     pub env: EnvSource,
     pub http: reqwest::Client,
@@ -99,6 +106,11 @@ impl SocialCtx {
                     super::connectors::bearer_for(state, headers, "google-youtube", &account).await
                 })
             }),
+            read_token: Arc::new(|state, headers, account| {
+                Box::pin(async move {
+                    super::connectors::bearer_for_scopes(state, headers, "google-youtube", &account, Some(YOUTUBE_READ_SCOPES)).await
+                })
+            }),
             http: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(600))
@@ -114,6 +126,7 @@ impl SocialCtx {
     /// For tests: every platform URL under one fake origin, and a fixed bearer.
     pub fn fake(origin: &str, bearer: &str, env: &[(&str, &str)]) -> Self {
         let bearer = bearer.to_string();
+        let read_bearer = bearer.clone();
         let env: std::collections::HashMap<String, String> =
             env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         SocialCtx {
@@ -123,6 +136,10 @@ impl SocialCtx {
             youtube_analytics: format!("{origin}/v2"),
             token: Arc::new(move |_, _, _| {
                 let b = bearer.clone();
+                Box::pin(async move { Ok(b) })
+            }),
+            read_token: Arc::new(move |_, _, _| {
+                let b = read_bearer.clone();
                 Box::pin(async move { Ok(b) })
             }),
             env: Arc::new(move |key| env.get(key).cloned()),
@@ -424,7 +441,7 @@ impl Publisher for YouTube {
             let account = post["account"].as_str().filter(|a| !a.is_empty()).map(String::from)
                 .or_else(|| account_for(ctx, "youtube", None))
                 .ok_or("the post has no account and AMUX_SOCIAL_YOUTUBE_ACCOUNT is unset")?;
-            let token = (ctx.token)(state.clone(), headers, account)
+            let token = (ctx.read_token)(state.clone(), headers, account)
                 .await
                 .map_err(|e| format!("no YouTube token: {e}"))?;
             youtube_metrics(ctx, &token, post["post_id"].as_str().unwrap_or(""), post["posted_at"].as_i64().unwrap_or(0)).await
@@ -833,6 +850,13 @@ pub async fn snapshot_pass(ctx: &SocialCtx, state: &AppState) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_numbers_asks_for_no_upload_scope() {
+        assert!(!super::YOUTUBE_READ_SCOPES.contains("upload"));
+        assert!(super::YOUTUBE_READ_SCOPES.contains("youtube.readonly"));
+        assert!(super::YOUTUBE_READ_SCOPES.contains("yt-analytics.readonly"));
+    }
 
     #[test]
     fn a_title_comes_from_the_caption_and_fits_youtube() {
