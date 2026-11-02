@@ -13798,8 +13798,7 @@ function _boardOneState(s) {
   if ('board_enabled' in _pbcPending) return _pbcPending.board_enabled ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
   // The server's own answer (2026-10-31): `board_used` is the predicate every
   // board gate enforces, so Off here means the board is not used at all. A
-  // worker nobody configured that still has its board reads On, and turning
-  // it Off makes it unused.
+  // worker nobody turned on reads Off (the board is opt-in since 2026-11-02).
   if (typeof s.board_used === 'boolean') return s.board_used ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
   const st = _boardSwitchStates(s, _pbcPending);
   return st.board_force_adherence.effective ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };

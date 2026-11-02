@@ -1024,6 +1024,17 @@ pub(crate) fn scoped_gate_on_in(
 }
 
 pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
+    lane_setting_in(home, lane, key).or_else(|| {
+        EnvFile::load(&home.join("amux.env"))
+            .get(key)
+            .and_then(|v| { let t = v.trim(); (!t.is_empty()).then(|| t.to_string()) })
+    })
+}
+
+/// The worker and group layers of `scoped_setting_in`, without the global one.
+/// For a switch that only means something when somebody chose it for this
+/// worker or its group, such as whether the worker uses the board at all.
+pub(crate) fn lane_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
     fn nonempty(v: &str) -> Option<String> {
         let t = v.trim();
         (!t.is_empty()).then(|| t.to_string())
@@ -1049,9 +1060,7 @@ pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -
             return Some(v);
         }
     }
-    EnvFile::load(&home.join("amux.env"))
-        .get(key)
-        .and_then(nonempty)
+    None
 }
 
 /// The effective cross-group sender policy and the explanation shown beside it.
