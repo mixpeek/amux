@@ -139,6 +139,12 @@ const USE_GRACE_S: i64 = 10;
 const SCAN_SHARE: f64 = 0.9;
 /// Reads are counted over this many days.
 const READ_WINDOW_DAYS: i64 = 7;
+/// How long a cold copy outlives the deletion of its link on the Mac before it
+/// is removed. Workers delete scratch by deleting its path, which on a moved
+/// folder removes only the link: 107 copies sat on Bulk with nothing pointing
+/// at them on 2026-11-02. Two weeks leaves time to notice a mistake, and the
+/// nightly backup keeps monthly snapshots for six months after that.
+const ORPHAN_GRACE_S: i64 = 14 * 86_400;
 /// A copy that keeps failing is abandoned after this many ticks.
 const MAX_COPY_ATTEMPTS: u32 = 5;
 const OLD: &str = ".amux-tier-old";
@@ -257,6 +263,10 @@ pub(crate) struct Folder {
     /// For a subfolder found under a root, that root's path.
     #[serde(default)]
     pub parent: Option<String>,
+    /// When the folder's path on the Mac was first seen gone while its copy
+    /// stayed on the cold drive: a person or worker deleted the link.
+    #[serde(default)]
+    pub orphaned_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -909,6 +919,7 @@ fn child(path: String, root: &Folder, adopted: Option<String>, now: i64) -> Fold
         promoted_at: None,
         each_subfolder: false,
         parent: Some(root.path.clone()),
+        orphaned_at: None,
     }
 }
 
@@ -954,6 +965,86 @@ pub(crate) fn discover(c: &mut Config) -> (usize, usize) {
         Some(r) => root_paths.contains(r) && (f.op.is_some() || f.dest.is_some() || std::fs::symlink_metadata(&f.path).is_ok()),
     });
     (added, before - c.folders.len())
+}
+
+// ── orphaned cold copies ────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Orphan {
+    No,
+    /// The link is gone, first seen now.
+    Seen,
+    /// The path is back (a person restored the link or the folder).
+    Back,
+    /// Gone for `ORPHAN_GRACE_S`: remove the cold copy.
+    Due,
+}
+
+pub(crate) fn orphan_state(f: &Folder, now: i64) -> Orphan {
+    if f.op.is_some() || f.dest.is_none() || f.each_subfolder {
+        return if f.orphaned_at.is_some() { Orphan::Back } else { Orphan::No };
+    }
+    match (location(f) == "missing", f.orphaned_at) {
+        (true, None) => Orphan::Seen,
+        (true, Some(t)) if now - t >= ORPHAN_GRACE_S => Orphan::Due,
+        (false, Some(_)) => Orphan::Back,
+        _ => Orphan::No,
+    }
+}
+
+/// Delete an orphaned cold copy, only strictly inside `cold_root`. Ok(false)
+/// when it was already gone.
+pub(crate) fn remove_orphan(cold_root: &Path, dest: &Path) -> Result<bool, String> {
+    let inside = dest.is_absolute()
+        && dest.starts_with(cold_root)
+        && dest.components().count() > cold_root.components().count() + 1
+        && !dest.components().any(|c| matches!(c, std::path::Component::ParentDir));
+    if !inside {
+        return Err(format!("{} is not inside the cold folder {}", dest.display(), cold_root.display()));
+    }
+    match std::fs::symlink_metadata(dest) {
+        Err(_) => Ok(false),
+        Ok(_) => std::fs::remove_dir_all(dest).map(|_| true).map_err(|e| format!("remove {}: {e}", dest.display())),
+    }
+}
+
+async fn reap_orphans(cfg: &Config, cold_root: &Path, rep: &mut TickReport) {
+    let now = now_secs();
+    for f in &cfg.folders {
+        let path = f.path.clone();
+        match orphan_state(f, now) {
+            Orphan::No => {}
+            Orphan::Seen => {
+                tracing::info!(path = %path, dest = ?f.dest, grace_days = ORPHAN_GRACE_S / 86_400, verdict = "tier_orphan_seen", "tiering: the link to a cold folder was deleted; its copy is removed after the grace period");
+                update_folder(&path, |x| x.orphaned_at = Some(now));
+            }
+            Orphan::Back => {
+                tracing::info!(path = %path, verdict = "tier_orphan_back", "tiering: an orphaned folder's path is back");
+                update_folder(&path, |x| x.orphaned_at = None);
+            }
+            Orphan::Due => {
+                let dest = PathBuf::from(f.dest.clone().unwrap_or_default());
+                let bytes = f.stats.as_ref().map(|s| s.bytes).unwrap_or(0);
+                let root = cold_root.to_path_buf();
+                let d = dest.clone();
+                let r = tokio::task::spawn_blocking(move || remove_orphan(&root, &d)).await.unwrap_or_else(|e| Err(e.to_string()));
+                match r {
+                    Ok(existed) => {
+                        tracing::info!(path = %path, dest = %dest.display(), bytes, existed, verdict = "tier_orphan_removed", "tiering: removed a cold copy whose link was deleted");
+                        rep.notes.push(format!("{path}: removed its cold copy {} ({}), link deleted over {} days ago", dest.display(), gb(bytes), ORPHAN_GRACE_S / 86_400));
+                        if let Err(e) = update(|c| c.folders.retain(|x| x.path != path)) {
+                            tracing::warn!(path = %path, error = %e, verdict = "tier_state_write_failed", "tiering: removed an orphan's copy but could not drop its entry");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path, error = %e, verdict = "tier_orphan_remove_failed", "tiering: could not remove an orphaned cold copy");
+                        let n = note("orphan_remove_failed", e);
+                        update_folder(&path, |x| x.last_error = Some(n));
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── the tick ────────────────────────────────────────────────────────────────
@@ -1031,6 +1122,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     let cold_root = PathBuf::from(&cfg.cold_root);
     let owners = reclaim_owner::Owners::probe().await;
     let mut rep = TickReport { at: now_secs(), trigger: trigger.into(), ..Default::default() };
+    reap_orphans(&cfg, &cold_root, &mut rep).await;
     // Capacity watermarks: low on space, move the coldest out sooner, until the
     // target is free again. `freed` is what this tick has moved off so far.
     let (mac_free, mac_total) = df_bytes(&home_dir()).unwrap_or((0, 0));
@@ -1561,6 +1653,7 @@ async fn add_folder(headers: HeaderMap, Json(body): Json<AddReq>) -> Response {
             promoted_at: None,
             each_subfolder: body.each_subfolder.unwrap_or(false) && adopted.is_none(),
             parent: None,
+            orphaned_at: None,
         });
         Ok(())
     });
@@ -1775,6 +1868,7 @@ mod tests {
             promoted_at: None,
             each_subfolder: false,
             parent: None,
+            orphaned_at: None,
         }
     }
 
@@ -2119,6 +2213,40 @@ mod tests {
         let st = measure_since(&r, Duration::from_secs(10), base.measured_at - 1);
         assert!(now_secs() - st.last_used < 60, "reading a source file is a use");
         assert_eq!(st.touched, 1, "and only that file was touched");
+    }
+
+    #[test]
+    fn a_cold_copy_whose_link_was_deleted_is_removed_after_the_grace_period() {
+        let d = tempfile::tempdir().unwrap();
+        let cold = d.path().join("cold");
+        let src = d.path().join("mac/run1");
+        let dest = dest_for(&cold, &src);
+        fs::create_dir_all(dest.join("sub")).unwrap();
+        fs::write(dest.join("sub/f"), "x").unwrap();
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&dest, &src).unwrap();
+        let mut f = folder(&src, Some(&dest));
+        let now = now_secs();
+        assert_eq!(orphan_state(&f, now), Orphan::No, "a live link is not an orphan");
+        fs::remove_file(&src).unwrap();
+        assert_eq!(orphan_state(&f, now), Orphan::Seen, "a deleted link starts the clock");
+        f.orphaned_at = Some(now);
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S - 1), Orphan::No, "inside the grace period nothing is removed");
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Due);
+        f.op = Some(Op { kind: Kind::ToMac, phase: Phase::Copy, dest: String::new(), manual: true, requested_by: String::new(), started_at: now, attempts: 0 });
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Back, "a folder mid-move is never an orphan");
+        f.op = None;
+        std::os::unix::fs::symlink(&dest, &src).unwrap();
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Back, "a restored link clears it");
+        // Removal stays strictly inside the cold folder.
+        assert!(remove_orphan(&cold, &cold).is_err(), "never the cold folder itself");
+        fs::create_dir_all(cold.join("Users")).unwrap();
+        assert!(remove_orphan(&cold, &cold.join("Users")).is_err(), "nor a top folder that holds every user's copies");
+        assert!(remove_orphan(&cold, &d.path().join("mac")).is_err(), "never outside it");
+        assert!(remove_orphan(&cold, &cold.join("x/../..")).is_err(), "no climbing out");
+        assert_eq!(remove_orphan(&cold, &dest), Ok(true));
+        assert!(!dest.exists() && cold.exists());
+        assert_eq!(remove_orphan(&cold, &dest), Ok(false), "already gone is fine");
     }
 
     #[test]

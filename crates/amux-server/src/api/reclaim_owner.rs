@@ -139,9 +139,11 @@ pub(crate) async fn refusal(p: &Path, o: &Owners) -> Option<Refusal> {
 
 /// What the caller will do to the path. Disk Cleanup deletes, so a primary
 /// clone (whose tracked files exist nowhere else on the disk) is refused
-/// outright. Tiering moves: rsync, verify, then a link at the same path, so
-/// nothing is lost, and a primary clone needs only what a worktree needs:
-/// no uncommitted change and no unpushed commit.
+/// outright, and a worktree needs no uncommitted change and no unpushed
+/// commit. Tiering moves: rsync, verify, then a link at the same path, so
+/// nothing is lost, uncommitted work included, and only a running worker's
+/// worktree is refused. Ethan, 2026-11-02, "do all": 120 idle gs12 clones
+/// with one stray change or a local commit held about 300 GB on the Mac.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Purpose {
     Delete,
@@ -151,10 +153,9 @@ enum Purpose {
 /// `refusal` for storage tiering, which moves a folder but leaves a link at its
 /// path, so the owner keeps reaching it. One rule differs: a SUBFOLDER of a
 /// running worker's scratch may move (the caller still requires it to be idle
-/// and closed). The worker's own folder still refuses. A whole clean, pushed
-/// checkout may move (`Purpose::Move`); a running worker's worktree, a
-/// checkout with uncommitted or unpushed work, and tracked files inside a
-/// repo still refuse. Ethan, 2026-10-29: "Yes, idle subfolders"; 2026-10-30:
+/// and closed). The worker's own folder still refuses. A whole checkout may
+/// move, uncommitted and unpushed work included (`Purpose::Move`); a running
+/// worker's worktree and tracked files inside a repo still refuse. Ethan, 2026-10-29: "Yes, idle subfolders"; 2026-10-30:
 /// "we need more shit offloaded". Disk Cleanup keeps `refusal`.
 pub(crate) async fn refusal_for_tiering(p: &Path, o: &Owners) -> (Option<Refusal>, bool) {
     let p = resolved(p);
@@ -266,6 +267,9 @@ async fn repo_root_rule(root: &Path, o: &Owners, why: Purpose) -> Option<Refusal
             ))
         }
         Ok(_) => {}
+    }
+    if why == Purpose::Move {
+        return None;
     }
     let status = match git(
         root,
@@ -427,17 +431,15 @@ mod tests {
         assert_eq!(refusal_for_tiering(t.path(), &o).await.0, None, "nor does moving the folder that holds it");
         // Tracked files INSIDE a repo still refuse: the link would replace them.
         assert_eq!(refusal_for_tiering(&r.join("customers"), &o).await.0.map(|x| x.class), Some(CLASS_GIT_TRACKED));
-        // Uncommitted work stays where its owner left it.
+        // A move copies uncommitted work along, so it moves too; deleting
+        // stays refused.
         std::fs::write(r.join("wip.txt"), "x").unwrap();
-        let dirty = refusal_for_tiering(&r, &o).await.0.expect("dirty refused");
-        assert_eq!(dirty.class, CLASS_WT_DIRTY);
-        assert!(dirty.reason.starts_with("git clone with 1 uncommitted"), "{}", dirty.reason);
-        let held = refusal_for_tiering(t.path(), &o).await.0.expect("holder refused");
-        assert_eq!(held.class, CLASS_WT_DIRTY, "{}", held.reason);
-        // So does a commit that is on no remote.
+        assert_eq!(refusal_for_tiering(&r, &o).await.0, None, "uncommitted work moves with the clone");
+        assert_eq!(refusal_for_tiering(t.path(), &o).await.0, None, "and with the folder holding it");
         sh(&r, &["add", "wip.txt"]);
         sh(&r, &["commit", "-qm", "local only"]);
-        assert_eq!(refusal_for_tiering(&r, &o).await.0.map(|x| x.class), Some(CLASS_WT_UNPUSHED));
+        assert_eq!(refusal_for_tiering(&r, &o).await.0, None, "so does a commit on no remote");
+        assert!(refusal(&r, &o).await.is_some(), "deleting it is still refused");
     }
 
     use super::*;
