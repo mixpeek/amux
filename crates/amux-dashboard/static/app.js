@@ -25054,6 +25054,25 @@ function _chipAction(chip, sessionName, isPeek) {
   }
 }
 
+// A press runs the chip the bar SHOWS (Ethan, 2026-11-02: "when i press these
+// it should be send not put in the input"). It used to look up _getChips()[i]
+// at click time, and a list replaced after the render (synced from another
+// device, or a migration) ran whatever chip now sat at that position: Yes and
+// Status? sent "continue", and a slash chip there filled the input instead.
+function _chipPress(el, sessionName, isPeek) {
+  const bar = el.parentElement;
+  const i = parseInt(el.dataset.chipIdx, 10);
+  const chip = bar && bar._chips && bar._chips[i];
+  if (!chip) return;
+  const now = _getChips()[i];
+  if (!now || now.id !== chip.id) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify({ kind: 'chip-list-moved', shown: chip.id, current: now ? now.id : null, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+    setTimeout(() => renderChips(bar, sessionName, isPeek), 0);
+  }
+  _chipAction(chip, sessionName, isPeek);
+}
+
 function renderChips(container, sessionName, isPeek) {
   const chips = _getChips();
   // Keystroke chips drive a terminal; a worker whose renderer is not a
@@ -25067,7 +25086,7 @@ function renderChips(container, sessionName, isPeek) {
     const cls = chip.danger ? 'chip danger' : 'chip';
     const drag = _chipEditing ? 'draggable="true"' : '';
     html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
-      + ' onclick="_chipAction(_getChips()[' + i + '],\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
+      + ' onclick="_chipPress(this,\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
       + (_chipEditing ? '<span class="chip-drag-handle">\u2630</span>' : '')
       + esc(chip.label)
       + (_chipEditing ? '<span class="chip-remove-btn" onclick="event.stopPropagation();removeChip(' + i + ')">\u00D7</span>' : '')
@@ -25079,6 +25098,7 @@ function renderChips(container, sessionName, isPeek) {
   html += '<div class="chip chip-edit-toggle' + (_chipEditing ? ' active' : '') + '" onclick="toggleChipEdit()">'
     + (_chipEditing ? '\u2713' : '\u270E') + '</div>';
   container.innerHTML = html;
+  container._chips = chips;
   if (_chipEditing) {
     container.classList.add('editing');
     _setupChipDrag(container, sessionName, isPeek);

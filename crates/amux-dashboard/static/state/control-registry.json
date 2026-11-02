@@ -810,6 +810,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chipPress": {
+      "kind": "command._chipPress",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,
