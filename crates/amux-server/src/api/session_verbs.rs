@@ -12206,11 +12206,24 @@ fn verb_resp(ok: bool, msg: String) -> Response {
 /// Submission may be accepted into Claude's native queue before a user turn
 /// exists. Require the provider's exact enqueue content and timestamp, never
 /// infer acceptance from a busy badge or from old identical text.
+/// How much of a transcript's tail can prove a send landed. 256 KB was too
+/// little: Claude Code now writes attachment records of 90-130 KB beside the
+/// prompt, so seconds into a turn the prompt was out of the window, the check
+/// read "never got the message" and sent it again (long-form-videos, 2026-11-01:
+/// prompt at byte 703 of a 542,708-byte transcript, same_text=0).
+const SUBMISSION_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+/// The last look before a second copy, which costs a turn: run once, so it can read more.
+const RESEND_TAIL_BYTES: u64 = 32 * 1024 * 1024;
+
 fn jsonl_submission_since(name: &str, text: &str, since: f64) -> bool {
+    jsonl_submission_in_tail(name, text, since, SUBMISSION_TAIL_BYTES)
+}
+
+fn jsonl_submission_in_tail(name: &str, text: &str, since: f64, tail_bytes: u64) -> bool {
     let Some(path) = session_jsonl_path(name) else {
         return false;
     };
-    let records = iter_jsonl_tail(&path, 262_144);
+    let records = iter_jsonl_tail(&path, tail_bytes);
     // AMUX-5018's regression check. One send that lands TWICE is invisible to
     // every existing signal: `submission_records_have` answers "did it land",
     // which is `true` for one copy and `true` for three, and the sender's
@@ -15100,7 +15113,7 @@ async fn retry_held_idle_draft(name: &str, text: &str, sent_at: f64) -> (Submiss
 fn resend_evidence(name: &str, text: &str, sent_at: f64) {
     let path = session_jsonl_path(name);
     let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
-    let records = path.as_ref().map(|p| iter_jsonl_tail(p, 262_144)).unwrap_or_default();
+    let records = path.as_ref().map(|p| iter_jsonl_tail(p, RESEND_TAIL_BYTES)).unwrap_or_default();
     let users: Vec<&Value> = records.iter().filter(|r| r["type"].as_str() == Some("user")).collect();
     let needle = text.trim();
     let same_text = users.iter().filter(|r| r["message"]["content"].as_str().is_some_and(|c| c.trim() == needle)).count();
@@ -15172,7 +15185,7 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                             // bound transcript with the text in it, and the narrow
                             // check missed it for a reason this line must show
                             // (VID-030 repro on 1bb4c086a).
-                            if jsonl_submission_since(&name, &text, sent_at - RESEND_LOOKBACK_S) {
+                            if jsonl_submission_in_tail(&name, &text, sent_at - RESEND_LOOKBACK_S, RESEND_TAIL_BYTES) {
                                 tracing::warn!(session = %name, sent_at, now = now_f64(), bound = transcript_is_bound(&name),
                                     path = ?session_jsonl_path(&name), measured = true, n_considered = 1,
                                     verdict = "direct_draft_resend_averted",
@@ -51277,6 +51290,24 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert!(body.contains(r#"break "direct_draft_lost""#), "and named lost if it still does not arrive");
         let resolved = &body[body.find("held direct message resolved").unwrap().saturating_sub(400)..];
         assert!(!resolved[..400].contains("direct_draft_lost"), "lost is never logged as resolved");
+    }
+
+    #[test]
+    fn a_prompt_behind_large_attachments_is_still_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let text = "Add a footer";
+        let prompt = json!({"type": "user", "timestamp": "2026-11-01T20:44:08.038Z", "message": {"role": "user", "content": text}});
+        let big = json!({"type": "attachment", "timestamp": "2026-11-01T20:44:09.000Z", "attachment": {"type": "skill_listing", "body": "x".repeat(130_000)}});
+        let mut body = prompt.to_string() + "\n";
+        for _ in 0..5 {
+            body.push_str(&big.to_string());
+            body.push('\n');
+        }
+        std::fs::write(&path, body).unwrap();
+        let at = parse_iso8601("2026-11-01T20:44:08.000Z").unwrap();
+        assert!(!submission_records_have(&iter_jsonl_tail(&path, 262_144), text, at), "the old window could not see it");
+        assert!(submission_records_have(&iter_jsonl_tail(&path, SUBMISSION_TAIL_BYTES), text, at));
     }
 
     #[test]
