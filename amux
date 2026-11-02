@@ -11698,11 +11698,22 @@ $f"
     # timed out and gs12-obs's land stopped on "Could not resolve host:
     # github.com" as if the hook had refused it, so the lane re-ran it by hand.
     local _net=0 _net_max="${AMUX_LAND_NET_RETRIES:-8}" _net_wait
+    # git opens the connection BEFORE pre-push runs, and GitHub closes an idle one
+    # at about 6 minutes, so a hook over that lost the push after every leg passed
+    # (2026-11-02: 611s of script tests, then "closed by remote host"). An ssh
+    # command the owner set keeps precedence, GIT_SSH included: GIT_SSH_COMMAND
+    # outranks it, so it is carried over rather than left to be overridden.
+    local _ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}"
+    [ -n "$_ssh" ] || [ -z "${GIT_SSH:-}" ] || _ssh="$(printf %q "$GIT_SSH")"
+    [ -n "$_ssh" ] || _ssh="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"
     while :; do
-    rc=0; out="$(set -o pipefail; env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" git push "$remote" "$stack_tip:$branch" 2>&1 \
+    rc=0; out="$(set -o pipefail; env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" GIT_SSH_COMMAND="$_ssh" git push "$remote" "$stack_tip:$branch" 2>&1 \
       | AMUX_TL="$_tl" perl -MTime::HiRes=time -ne 'BEGIN{$|=1; $t0=time; open($o,">>",$ENV{AMUX_TL}) or die} printf $o "%8.1fs %s", time-$t0, $_; print')" || rc=$?
     _land_leg_summary "$_tl" "$(( $(date +%s) - _t0p ))"
     _land_heal_core_worktree "the push and its hook (rc $rc)"
+    if [ $rc -ne 0 ] && printf '%s\n' "$out" | grep -q 'closed by remote host'; then
+      _land_log "WARN verdict=push_connection_lost: $remote closed the connection during the push, $(( $(date +%s) - _t0p ))s in (a hook that long outlived it)"
+    fi
     if [ $rc -ne 0 ] && [ "$_net" -lt "$_net_max" ] && printf '%s\n' "$out" | grep -qE "^(fatal: unable to access .*: (Could not resolve host|Failed to connect|Couldn't connect|Connection timed out|Operation timed out|Connection reset|Recv failure|SSL_ERROR_SYSCALL|The requested URL returned error: 5[0-9][0-9])|fatal: unable to connect|ssh: Could not resolve hostname|error: RPC failed|send-pack: unexpected disconnect)"; then
       _net=$((_net + 1))
       _net_wait=$(( ${AMUX_LAND_NET_BACKOFF_S:-60} * _net )); [ "$_net_wait" -gt 180 ] && _net_wait=180

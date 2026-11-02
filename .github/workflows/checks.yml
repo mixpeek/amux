@@ -107,6 +107,8 @@ jobs:
         run: python3 scripts/test-ci-checks.py
       - name: the shared-checkout guard's own matrix
         run: python3 ./scripts/git-hooks/test_git_shared_guard.py
+      - name: a land's push keeps its connection alive through a long hook
+        run: bash scripts/test-land-ssh-keepalive.sh
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
         run: node --test tests/ci-rust-key.test.mjs
       # Browser methods: the backend ladder, agent selection, and the OpAgent
@@ -732,7 +734,10 @@ jobs:
         run: |
           set -uo pipefail
           git config --global user.email ci@amux.test; git config --global user.name ci
-          bash scripts/test-land-regenerate.sh && NO_REGEN=1 bash scripts/test-land-regenerate.sh
+          # Two lines: under `bash -e`, a failure inside `a && b` does not stop a step
+          # unless it is the last line, so this test could fail and the step pass.
+          bash scripts/test-land-regenerate.sh
+          NO_REGEN=1 bash scripts/test-land-regenerate.sh
           bash scripts/test-land-regenerate-always.sh && bash scripts/test-land-regenerate-always.sh "" conflict && bash scripts/test-land-regenerate-always.sh "" failing && bash scripts/test-land-regenerate-always.sh "" worktree
       - name: land precheck verdict and attributed cancel (1/8)
         run: |
