@@ -145,6 +145,9 @@ const READ_WINDOW_DAYS: i64 = 7;
 /// at them on 2026-11-02. Two weeks leaves time to notice a mistake, and the
 /// nightly backup keeps monthly snapshots for six months after that.
 const ORPHAN_GRACE_S: i64 = 14 * 86_400;
+/// How long a leftover rsync gets to exit after each signal.
+const ORPHAN_TERM_WAIT: Duration = Duration::from_secs(10);
+const ORPHAN_KILL_WAIT: Duration = Duration::from_secs(5);
 /// A copy that keeps failing is abandoned after this many ticks.
 const MAX_COPY_ATTEMPTS: u32 = 5;
 const OLD: &str = ".amux-tier-old";
@@ -296,6 +299,10 @@ pub(crate) struct Op {
     pub started_at: i64,
     #[serde(default)]
     pub attempts: u32,
+    /// The rsync running for this op, while one is. A re-exec keeps this
+    /// process's children, so a resume must stop it before copying again.
+    #[serde(default)]
+    pub rsync_pid: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -569,9 +576,35 @@ pub(crate) fn rsync_bin() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("PATH").and_then(|v| std::env::split_paths(&v).map(|d| d.join("rsync")).find(|p| p.exists())))
 }
 
+type RsyncWatch = Box<dyn Fn(Option<u32>)>;
+
+thread_local! {
+    /// Told each rsync's pid as it starts and None as it ends, so the running
+    /// op can record it. Set for the length of one op on its blocking thread.
+    static RSYNC_WATCH: std::cell::RefCell<Option<RsyncWatch>> = const { std::cell::RefCell::new(None) };
+}
+
+fn rsync_watch(pid: Option<u32>) {
+    RSYNC_WATCH.with(|w| {
+        if let Some(f) = w.borrow().as_ref() {
+            f(pid);
+        }
+    });
+}
+
 fn rsync(args: &[&str]) -> Result<String, String> {
     let bin = rsync_bin().ok_or_else(|| "rsync is not installed".to_string())?;
-    let out = Command::new(bin).args(args).output().map_err(|e| format!("rsync: {e}"))?;
+    let child = Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("rsync: {e}"))?;
+    rsync_watch(Some(child.id()));
+    let waited = child.wait_with_output();
+    rsync_watch(None);
+    let out = waited.map_err(|e| format!("rsync: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "rsync {} exited {}: {}",
@@ -619,6 +652,50 @@ fn safe_to_remove(p: &Path) -> bool {
 
 fn io(what: &str, p: &Path, e: std::io::Error) -> String {
     format!("{what} {}: {e}", p.display())
+}
+
+// ── a copy left behind by a re-exec ─────────────────────────────────────────
+
+/// Is `pid` an rsync working on `dest`? Reads the command line, so a pid reused
+/// by anything else, or a sibling folder whose name starts the same, is a no.
+/// A dead child still unreaped has lost its arguments and reads as a no too.
+fn is_rsync_for(pid: u32, dest: &str) -> Result<bool, String> {
+    let out = Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().map_err(|e| format!("ps: {e}"))?;
+    let line = String::from_utf8_lossy(&out.stdout);
+    let is_rsync = line.split_whitespace().next().is_some_and(|c| Path::new(c).file_name().is_some_and(|n| n == "rsync"));
+    Ok(is_rsync && line.split_whitespace().any(|a| a.trim_end_matches('/') == dest.trim_end_matches('/')))
+}
+
+/// Stop that exact pid if it is still an rsync on `dest`: SIGTERM, then SIGKILL.
+/// Ok(true) when one was stopped. Err when it would not die, so the caller does
+/// not start a second copy beside it.
+fn stop_orphan_rsync(pid: u32, dest: &str) -> Result<bool, String> {
+    if !is_rsync_for(pid, dest)? {
+        return Ok(false);
+    }
+    for (signal, wait) in [(libc::SIGTERM, ORPHAN_TERM_WAIT), (libc::SIGKILL, ORPHAN_KILL_WAIT)] {
+        // SAFETY: kill and waitpid take plain integers. WNOHANG never blocks,
+        // and reaps the rsync when it is a child of this re-exec'd process.
+        unsafe { libc::kill(pid as libc::pid_t, signal) };
+        let start = Instant::now();
+        while start.elapsed() < wait {
+            unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+            if !is_rsync_for(pid, dest)? {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Err(format!("rsync {pid} on {dest} is still running after SIGKILL"))
+}
+
+/// Before resuming an op, stop the rsync its previous run left going.
+fn stop_op_orphan(path: &str, op: &Op) -> Result<(), String> {
+    let Some(pid) = op.rsync_pid else { return Ok(()) };
+    if stop_orphan_rsync(pid, &op.dest)? {
+        tracing::warn!(path, pid, dest = %op.dest, verdict = "tier_copy_orphan_killed", "tiering: stopped an rsync a restart left running, before copying again");
+    }
+    Ok(())
 }
 
 // ── the move itself ─────────────────────────────────────────────────────────
@@ -1219,7 +1296,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
             Kind::ToHdd => dest_for(&cold_root, Path::new(&path)).to_string_lossy().to_string(),
             Kind::ToMac => f.dest.clone().unwrap_or_default(),
         };
-        let op = Op { kind, phase: Phase::Copy, dest, manual, requested_by: by, started_at: now_secs(), attempts: 0 };
+        let op = Op { kind, phase: Phase::Copy, dest, manual, requested_by: by, started_at: now_secs(), attempts: 0, rsync_pid: None };
         let saved = op.clone();
         update_folder(&path, |x| {
             x.op = Some(saved);
@@ -1313,7 +1390,20 @@ async fn run_and_record(path: &str, op: Op, rep: &mut TickReport) {
                 }
             })
         };
-        run_op(&p, &job, &save_phase).map(|_| {
+        stop_op_orphan(&p, &job)?;
+        let watched = p.clone();
+        RSYNC_WATCH.with(|w| {
+            *w.borrow_mut() = Some(Box::new(move |pid| {
+                update_folder(&watched, |x| {
+                    if let Some(o) = x.op.as_mut() {
+                        o.rsync_pid = pid;
+                    }
+                })
+            }))
+        });
+        let ran = run_op(&p, &job, &save_phase);
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = None);
+        ran.map(|_| {
             let st = measure(Path::new(&p), MEASURE_BUDGET);
             (st, job)
         })
@@ -1788,7 +1878,7 @@ async fn request_move(headers: HeaderMap, Json(body): Json<MoveReq>) -> Response
             (Kind::ToMac, "mac") => return Err((StatusCode::CONFLICT, "already on this Mac".to_string())),
             (_, other) => return Err((StatusCode::CONFLICT, format!("cannot move it from where it is ({other})"))),
         }
-        f.op = Some(Op { kind, phase: Phase::Queued, dest: String::new(), manual: true, requested_by: by.clone(), started_at: now_secs(), attempts: 0 });
+        f.op = Some(Op { kind, phase: Phase::Queued, dest: String::new(), manual: true, requested_by: by.clone(), started_at: now_secs(), attempts: 0, rsync_pid: None });
         Ok(())
     });
     match r {
@@ -1847,7 +1937,7 @@ mod tests {
     }
 
     fn op(kind: Kind, phase: Phase, dest: &Path) -> Op {
-        Op { kind, phase, dest: dest.to_string_lossy().to_string(), manual: true, requested_by: "test".into(), started_at: 0, attempts: 0 }
+        Op { kind, phase, dest: dest.to_string_lossy().to_string(), manual: true, requested_by: "test".into(), started_at: 0, attempts: 0, rsync_pid: None }
     }
 
     fn folder(src: &Path, dest: Option<&Path>) -> Folder {
@@ -2215,6 +2305,72 @@ mod tests {
         assert_eq!(st.touched, 1, "and only that file was touched");
     }
 
+    /// A real rsync that stays running: its remote shell just sleeps.
+    fn hung_rsync(d: &Path, dest: &Path) -> std::process::Child {
+        let sh = d.join("slow-shell");
+        fs::write(&sh, "#!/bin/sh\nexec sleep 20\n").unwrap();
+        fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let child = Command::new(rsync_bin().unwrap())
+            .args(["-a", "-e", sh.to_str().unwrap(), "h:/from/", &format!("{}/", dest.display())])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !is_rsync_for(child.id(), dest.to_str().unwrap()).unwrap() {
+            assert!(start.elapsed() < Duration::from_secs(5), "the rsync never showed up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
+    }
+
+    #[test]
+    fn a_resumed_copy_stops_the_rsync_a_restart_left_running() {
+        let d = tempfile::tempdir().unwrap();
+        let dest = d.path().join("run1");
+        let mut held = hung_rsync(d.path(), &dest);
+        let pid = held.id();
+        let ds = dest.to_str().unwrap();
+        // Not this op's copy: left alone.
+        let sibling = format!("{ds}b");
+        assert_eq!(stop_orphan_rsync(pid, &sibling), Ok(false), "a folder whose name starts the same");
+        assert_eq!(stop_orphan_rsync(pid, "/somewhere/else"), Ok(false), "another destination");
+        assert!(is_rsync_for(pid, ds).unwrap(), "so it is still running");
+        let mut sleeper = Command::new("/bin/sh").args(["-c", "exec sleep 20", ds]).spawn().unwrap();
+        assert_eq!(stop_orphan_rsync(sleeper.id(), ds), Ok(false), "a reused pid that is not rsync, even naming the path");
+        assert!(sleeper.try_wait().unwrap().is_none(), "and that process lives");
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        // This op's copy: stopped, and only then does the resume go on.
+        let mut o = op(Kind::ToHdd, Phase::Copy, &dest);
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()), "no recorded pid, nothing to do");
+        assert!(is_rsync_for(pid, ds).unwrap());
+        o.rsync_pid = Some(pid);
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()));
+        assert!(!is_rsync_for(pid, ds).unwrap(), "the leftover rsync is gone");
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()), "a pid already gone is fine");
+        drop(held.try_wait());
+    }
+
+    #[test]
+    fn each_rsync_reports_its_pid_while_it_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let (src, dest) = (d.path().join("src"), d.path().join("dest"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("f"), "x").unwrap();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let s2 = seen.clone();
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = Some(Box::new(move |p| s2.borrow_mut().push(p))));
+        mirror(&src, &dest).unwrap();
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = None);
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen[0].is_some(), "the pid at the start");
+        assert_eq!(seen[1], None, "cleared at the end, so a stale pid is not left in the op");
+        assert!(dest.join("f").exists());
+    }
+
     #[test]
     fn a_cold_copy_whose_link_was_deleted_is_removed_after_the_grace_period() {
         let d = tempfile::tempdir().unwrap();
@@ -2233,7 +2389,7 @@ mod tests {
         f.orphaned_at = Some(now);
         assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S - 1), Orphan::No, "inside the grace period nothing is removed");
         assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Due);
-        f.op = Some(Op { kind: Kind::ToMac, phase: Phase::Copy, dest: String::new(), manual: true, requested_by: String::new(), started_at: now, attempts: 0 });
+        f.op = Some(Op { kind: Kind::ToMac, phase: Phase::Copy, dest: String::new(), manual: true, requested_by: String::new(), started_at: now, attempts: 0, rsync_pid: None });
         assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Back, "a folder mid-move is never an orphan");
         f.op = None;
         std::os::unix::fs::symlink(&dest, &src).unwrap();
