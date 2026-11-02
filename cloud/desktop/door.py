@@ -190,7 +190,7 @@ def fleet(path=None):
     return out
 
 
-def _amux(method, path, data=None, cookie=None, timeout=5):
+def _amux(method, path, data=None, cookie=None, timeout=5, content_type="application/x-www-form-urlencoded"):
     import ssl, urllib.request
     ctx = ssl.create_default_context()
     ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE   # loopback, self-signed
@@ -198,7 +198,7 @@ def _amux(method, path, data=None, cookie=None, timeout=5):
     if cookie:
         req.add_header("Cookie", "amux_member=" + cookie)
     if data is not None:
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        req.add_header("Content-Type", content_type)
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         return r.status, r.read()
 
@@ -577,7 +577,50 @@ def first_signin_add(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_first_signin")
         return True
     log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_signin_refused")
+    alert_refused_signin(user, ip)
     return False
+
+
+# A person with a valid credential on a new address used to reach the owner as a complaint that the
+# password did not work, and the owner had to find the address by hand (velocity audit 2026-11-02,
+# B4). Only code past the credential check gets here, so a guess cannot page anyone. The page the
+# person sees stays the same for a right and a wrong password, and the send runs on its own thread
+# so a right password takes no longer. The alert names the address and has no allow link: a link
+# would be built from a Host header, and a stolen password should not be one tap from access.
+REFUSED_ALERTS_PER_DAY = int(os.environ.get("DOOR_REFUSED_ALERTS_PER_DAY", "5"))
+_refused_alerts = {"ips": {}, "sent": []}
+_refused_alerts_lock = threading.Lock()
+
+
+def alert_refused_signin(user, ip, now=None):
+    """Tell the owner once per address per hour, at most REFUSED_ALERTS_PER_DAY a day. True if sent."""
+    now = now or time.time()
+    with _refused_alerts_lock:
+        if now - _refused_alerts["ips"].get(ip, 0) < 3600:
+            return False
+        sent = [t for t in _refused_alerts["sent"] if now - t < 86400]
+        if len(sent) >= REFUSED_ALERTS_PER_DAY:
+            _refused_alerts["sent"] = sent
+            log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_capped")
+            return False
+        _refused_alerts["sent"] = sent + [now]
+        _refused_alerts["ips"] = {k: v for k, v in _refused_alerts["ips"].items() if now - v < 3600}
+        _refused_alerts["ips"][ip] = now
+    threading.Thread(target=_send_refused_alert, args=(user, ip), daemon=True).start()
+    return True
+
+
+def _send_refused_alert(user, ip):
+    body = {"session": "amux-door", "reason": "a valid sign-in was refused by the address allowlist",
+            "message": "%s signed in correctly from %s, which is not on this server's allowlist, so they were "
+                       "refused. If that is them, add the address in Settings > Address allowlist, or over SSH: "
+                       "sudo python3 /opt/amux-door/door.py allowlist add %s. If it is not them, their password "
+                       "is known to someone else." % (user, ip, ip)}
+    try:
+        _amux("POST", "/api/alert/owner", data=json.dumps(body).encode(), timeout=10, content_type="application/json")
+        log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_sent")
+    except Exception as e:
+        log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_failed", reason=str(e)[:120])
 
 
 def note_blocked(ip, uri, now=None):
@@ -914,7 +957,8 @@ class Door(BaseHTTPRequestHandler):
             except PermissionError:
                 body = ("<!doctype html><meta charset=utf-8><title>Address not allowed</title><p>Your address, %s, "
                         "is not on this server's allowlist. Sign in from an address on the list and add it at "
-                        "/_door/allowlist, or ask the owner to.</p>" % html.escape(ip)).encode()
+                        "/_door/allowlist. The owner is told about a valid sign-in from a new address.</p>"
+                        % html.escape(ip)).encode()
                 return self.send(403, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             except Exception as e:
                 log(event="enter", ip=ip, verdict="door_enter_refused", reason=str(e)[:120])
@@ -1019,7 +1063,8 @@ class Door(BaseHTTPRequestHandler):
                 time.sleep(1.0)
                 log(event="signin", user=user, ip=ip, verdict="door_signin_allowlist_refused")
                 note_signin(False)
-                return self.page(nxt, user, "This address (%s) is not on this server's allowlist." % ip)
+                return self.page(nxt, user, "This address (%s) is not on this server's allowlist. "
+                                            "The owner is told about a valid sign-in from a new address." % ip)
         elif (form.get("lock") or [""])[0] == "1" and not os.path.exists(ALLOW_FILE) and check_password(user, pw):
             if user in admins({}):
                 update_allowlist(lambda d: d.update(enabled=True, first_signin=True, admins=[user]))

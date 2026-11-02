@@ -5,7 +5,7 @@ that signed in before (Ethan, 2026-10-31).
 
   python3 -m unittest cloud/desktop/test_door_allowlist.py
 """
-import base64, json, os, re, socket, subprocess, sys, tempfile, time, unittest, urllib.error, urllib.parse, urllib.request
+import base64, http.server, importlib.util, json, os, re, socket, subprocess, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DOOR = os.path.join(HERE, "door.py")
@@ -49,6 +49,18 @@ class DoorAllowlist(unittest.TestCase):
                        DOOR_ENTRY=os.path.join(etc, "none"), DOOR_ACTIVITY=os.path.join(etc, "activity.json"),
                        DOOR_UPDATE_STATUS=os.path.join(etc, "status.json"), DOOR_ALLOWLIST=cls.allow,
                        DOOR_FAIL_LIMIT="50")
+        alerts = cls.alerts = []
+        class FakeAmux(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                if self.path == "/api/alert/owner":
+                    alerts.append((self.headers.get("Content-Type"), json.loads(body)))
+                self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+            def log_message(self, *a):
+                pass
+        cls.fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAmux)
+        threading.Thread(target=cls.fake.serve_forever, daemon=True).start()
+        cls.env.update(DOOR_AMUX_URL="http://127.0.0.1:%d" % cls.fake.server_port, DOOR_REFUSED_ALERTS_PER_DAY="1000")
         cls.log = os.path.join(cls.tmp, "door.log")
         cls.proc = subprocess.Popen([sys.executable, DOOR, "serve"], env=cls.env,
                                     stdout=open(cls.log, "w"), stderr=subprocess.STDOUT)
@@ -61,6 +73,7 @@ class DoorAllowlist(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.proc.terminate(); cls.proc.wait(timeout=10)
+        cls.fake.shutdown()
 
     def set_list(self, data):
         if data is None:
@@ -151,6 +164,30 @@ class DoorAllowlist(unittest.TestCase):
         with open(self.log) as f:
             refused = [json.loads(l) for l in f if "door_signin_allowlist_refused" in l]
         self.assertIn("203.0.113.70", [r["ip"] for r in refused])
+
+    def alerts_for(self, ip):
+        return [body for _, body in self.alerts if ip in body["message"]]
+
+    def test_a_valid_sign_in_refused_tells_the_owner_once_and_a_guess_tells_nobody(self):
+        self.on((HOME, OWNER))
+        ip = "203.0.113.80"
+        self.login(ip)
+        for _ in range(50):
+            if self.alerts_for(ip):
+                break
+            time.sleep(0.1)
+        got = self.alerts_for(ip)
+        self.assertEqual(len(got), 1)
+        self.assertIn(OWNER, got[0]["message"])
+        self.assertNotIn(OWNER_PW, json.dumps(got[0]))
+        self.assertEqual(got[0]["session"], "amux-door")
+        self.assertEqual(self.alerts[-1][0], "application/json")
+        self.login(ip)
+        guess = "203.0.113.81"
+        self.login(guess, pw="not-it-1234")
+        time.sleep(0.5)
+        self.assertEqual(len(self.alerts_for(ip)), 1, "the second refusal in the hour stays quiet")
+        self.assertEqual(self.alerts_for(guess), [], "a wrong password pages nobody")
 
     def test_simultaneous_additions_all_survive(self):
         import importlib.util, threading
@@ -246,6 +283,33 @@ class DoorAllowlist(unittest.TestCase):
                              env=env, capture_output=True, text=True, check=True).stdout
         self.assertIn("2 address(es)", out)
         self.assertEqual(sorted(e["ip"] for e in self.get_list()["entries"]), ["198.51.100.5", "2001:db8::5"])
+
+
+class RefusedSigninAlertLimits(unittest.TestCase):
+    """The limits, on the shipped functions: per address per hour, then per day."""
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("door_under_test", DOOR)
+        self.door = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.door)
+        self.sent = []
+        self.door._send_refused_alert = lambda user, ip: self.sent.append(ip)
+        self.door.REFUSED_ALERTS_PER_DAY = 2
+
+    def settle(self):
+        for t in threading.enumerate():
+            if t is not threading.current_thread() and t.daemon:
+                t.join(1)
+
+    def test_one_per_address_per_hour_then_a_daily_cap(self):
+        a = self.door.alert_refused_signin
+        t = 1_000_000.0
+        self.assertTrue(a("u", "1.1.1.1", now=t))
+        self.assertFalse(a("u", "1.1.1.1", now=t + 3599), "same address inside the hour")
+        self.assertTrue(a("u", "1.1.1.1", now=t + 3601), "same address after the hour")
+        self.assertFalse(a("u", "2.2.2.2", now=t + 3602), "the day's cap")
+        self.assertTrue(a("u", "2.2.2.2", now=t + 86400 + 3602), "the cap is a rolling day")
+        self.settle()
+        self.assertEqual(self.sent, ["1.1.1.1", "1.1.1.1", "2.2.2.2"])
 
 
 if __name__ == "__main__":
