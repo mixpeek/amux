@@ -2874,6 +2874,31 @@ async fn mint_connector_token(
         }
         None => None,
     };
+    // A STORED GRANT ANSWERS ONLY FOR THE SCOPES IT HOLDS (amux-gtm, 2026-11-02).
+    // hello@amux.io's mailbox grant won every google-youtube mint, so the scopes
+    // delegated to the service account were never asked for and every YouTube
+    // read was a 403. When the grant lacks a requested scope and the service
+    // account can mint them all, the service account answers. If it cannot, the
+    // grant still does, and the log says what is missing.
+    let user_account = match user_account {
+        Some(a) if p.category == "Google" && super::google_sa::sa_usable_in(&ctx.home) => {
+            let missing = oauth_store::family_path(&ctx.home, family, &a)
+                .ok()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|grant| grant_missing_scopes(&grant, &scope))
+                .unwrap_or_default();
+            if missing.is_empty() {
+                Some(a)
+            } else {
+                let minted = super::google_sa::mint_token_as(&scope, &a).await;
+                tracing::warn!(connector = %p.id, account = %a, missing = ?missing, sa_minted = minted.is_ok(),
+                    measured = true, n_considered = 1, verdict = "connector_grant_lacks_scope",
+                    "connector_token: the stored grant lacks requested scopes");
+                if minted.is_ok() { None } else { Some(a) }
+            }
+        }
+        other => other,
+    };
     if user_account.is_none()
         && !(p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some())
     {
@@ -3712,6 +3737,30 @@ pub fn routes() -> Router<AppState> {
 /// spend the token and never return it (`api/social.rs`). `headers` carries the
 /// calling worker, so the same entitlement check applies; empty headers are the
 /// server itself. The error is the mint's JSON with any bearer removed.
+/// The requested scopes a stored grant (its JSON text) does not hold. A grant
+/// that names no scopes cannot be judged, so nothing reads as missing.
+fn grant_missing_scopes(grant: &str, requested: &str) -> Vec<String> {
+    let parsed: Value = serde_json::from_str(grant).unwrap_or_default();
+    let Some(held) = parsed["scopes"].as_str().filter(|h| !h.trim().is_empty()) else {
+        return Vec::new();
+    };
+    let held: std::collections::HashSet<&str> = held.split_whitespace().collect();
+    requested.split_whitespace().filter(|s| !held.contains(s)).map(str::to_string).collect()
+}
+
+#[cfg(test)]
+mod grant_scope_tests {
+    use super::grant_missing_scopes as m;
+    #[test]
+    fn a_mailbox_grant_does_not_answer_for_youtube() {
+        let grant = r#"{"scopes":"openid https://x/gmail.send https://x/drive"}"#;
+        assert_eq!(m(grant, "https://x/youtube.readonly https://x/drive"), vec!["https://x/youtube.readonly"]);
+        assert!(m(grant, "https://x/drive openid").is_empty(), "a grant holding every scope still answers");
+        assert!(m(r#"{"token":"t"}"#, "https://x/drive").is_empty(), "no recorded scopes cannot be judged");
+        assert!(m("not json", "https://x/drive").is_empty());
+    }
+}
+
 pub(crate) async fn bearer_for(
     state: AppState,
     headers: HeaderMap,
