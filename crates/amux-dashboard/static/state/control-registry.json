@@ -3642,6 +3642,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekChatStateSync": {
+      "kind": "command._peekChatStateSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekClearInput": {
       "kind": "command._peekClearInput",
       "feedback_required": true,

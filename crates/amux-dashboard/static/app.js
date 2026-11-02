@@ -7140,6 +7140,7 @@ async function _fetchSessionsOnce() {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
       sessions = _applyLifecycleAcks(data);
+      _peekChatStateSync();
       _stateQuery.set(['sessions'], data);
       _sessionsSnapshotEpoch++;
       // Quota-full store: drop the cache rather than let the throw break rendering.
@@ -14639,6 +14640,14 @@ async function _peekChatSet(on) {
     showToast(on ? 'Chat is on for ' + w : 'Chat is off for ' + w + ' (its history is kept)');
     setPeekTab('chat');
   } catch (e) { showToast('Chat: ' + (e.message || e)); }
+}
+// The Off panel is chosen when the tab opens, from the list the client holds
+// then. A new worker is not in it yet, so with Chat on by default the panel stayed
+// over the composer after the list caught up. Every fresh list settles it.
+function _peekChatStateSync() {
+  if (_peekTab !== 'chat' || !peekSession) return;
+  const panel = document.getElementById('peek-chat-panel');
+  if (panel && panel.classList.contains('active') === !!_peekChatTarget()) setPeekTab('chat');
 }
 function _peekChatPanelRender() {
   const p = document.getElementById('peek-chat-panel');
@@ -53234,6 +53243,7 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = _applyLifecycleAcks(msg.payload);
+          _peekChatStateSync();
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
           try { localStorage.setItem('amux_sessions_cache', j); localStorage.setItem('amux_sessions_cache_at', String(Date.now())); }
