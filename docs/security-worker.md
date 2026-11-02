@@ -31,6 +31,10 @@ certificate compromise (TS-2026-013).
   are not what ships. npm findings carry `scope`: `runtime` (still flagged
   with `--omit=dev`) or `dev-only` (build and test tooling)
 - macOS software updates
+- Apple entries in that list added since this macOS was installed, whatever their
+  age, because the main KEV check only looks back 14 days
+- Remote-access services (SSH, SMB, Screen Sharing, Remote Management) listening
+  on every interface, with the firewall state
 
 Each run writes `~/.amux/security-watch/<date>.json`. `state.json` there holds
 the ids already reported, so each finding is sent once. Each source reports
