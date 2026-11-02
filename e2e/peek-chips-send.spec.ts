@@ -4,6 +4,7 @@
 // the saved chip list changed under a rendered bar (another device's sync, a
 // migration): the bar used to look the chip up by position at click time.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 
 test('peek chips run the chip they show and leave the composer empty', async ({ page, request }, testInfo) => {
   await page.goto('/');
@@ -46,6 +47,6 @@ test('peek chips run the chip they show and leave the composer empty', async ({ 
     const calls = await page.evaluate(() => (window as any)._chipCalls.map((c: string) => c.replace(/^send \[[^\]]*\] /, 'send ')));
     expect(calls).toEqual(['send continue', 'send status?', 'keys Escape', 'send yes']);
   } finally {
-    await request.delete(`/api/sessions/${name}`, { headers: auth }).catch(() => {});
+    await cleanup('delete fixture worker', () => request.delete(`/api/sessions/${name}`, { headers: auth }), testInfo);
   }
 });

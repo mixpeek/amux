@@ -24,8 +24,11 @@ test('a cached worker deep link loads scoped history after all selection state i
   await cachedWorker(page);
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
+  // This pins the order of boot, not its speed: measured 2026-11-02, the request
+  // fired 8.0s after goto at load 22-39 on 28 cores, 4.7s of it fetching and
+  // parsing app.js, so a 5s limit failed every run on a busy Mac.
   const scopedHistory = page.waitForRequest(r => r.url().includes('/api/history?')
-    && new URL(r.url()).searchParams.get('session') === NAME, { timeout: 5000 });
+    && new URL(r.url()).searchParams.get('session') === NAME, { timeout: 30_000 });
   await page.goto('/#peek=' + NAME);
   await scopedHistory;
   await expect.poll(() => page.evaluate(() => eval('_peekMsgRows?.length'))).toBe(1);
