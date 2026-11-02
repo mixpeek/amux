@@ -76,14 +76,14 @@ rm -f "$FIX/state/state"
 
 echo "4. the run logs: slow, skipped, killed and blocked runs"
 newdb 1 <<<"600|ok|"; newlogs
-addlog slow 900 "mac-cleanup: done elapsed=500s purge=no skipped=none constraints=0"
+addlog slow 900 "mac-cleanup: done elapsed=560s purge=no skipped=none constraints=0"
 for n in 1 2 3; do addlog "skip$n" $((900+n*60)) "mac-cleanup: done elapsed=200s purge=no skipped=lane_tmp constraints=0"; done
 addlog killed 3000 "mac-cleanup: measured=true"
 addlog lock1 3600 "$LOCKED"; addlog lock2 7200 "$LOCKED"
 addlog live 60 "mac-cleanup: measured=true"
 addlog ancient 90000 "mac-cleanup: measured=true"
 out=$(probe)
-check "a slow run is a constraint"                    yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 500s, over the 480s warning')"
+check "a slow run is a constraint"                    yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 560s, over the 540s warning')"
 check "three runs that skipped arms are one"          yes "$(has "$out" '^self [0-9]* runs of SCHED-T.*skipped cleanup arms')"
 check "blocked fires are one, though recorded ok"     yes "$(has "$out" '^self 2 fires of SCHED-T in 24h found another tick holding the lock')"
 check "a killed run is counted, a blocked one is not" yes "$(has "$out" '1 killed before the done line, 2 found another tick running')"
@@ -113,15 +113,15 @@ rm -f "$FIX/state/state"
 
 echo "4b. a slow run older than 6h is reported, not escalated (RCA self 20261016-082126)"
 newdb 1 <<<"600|ok|"; newlogs
-addlog old 61200 "mac-cleanup: done elapsed=497s purge=no skipped=none constraints=0"
+addlog old 61200 "mac-cleanup: done elapsed=557s purge=no skipped=none constraints=0"
 addlog new 900 "mac-cleanup: done elapsed=402s purge=no skipped=none constraints=0"
 out=$(probe)
-check "the 24h line still names it and its age"      yes "$(has "$out" 'slowest 497s 17h ago, slowest in the last 6h 402s')"
+check "the 24h line still names it and its age"      yes "$(has "$out" 'slowest 557s 17h ago, slowest in the last 6h 402s')"
 check "no speed constraint from a pre-fix run"        no  "$(has "$out" '^self the slowest run')"
 check "it says why, with a verdict"                   yes "$(has "$out" 'verdict=self_slow_run_aged_out')"
-addlog new2 1800 "mac-cleanup: done elapsed=481s purge=no skipped=none constraints=0"
+addlog new2 1800 "mac-cleanup: done elapsed=541s purge=no skipped=none constraints=0"
 out=$(probe)
-check "a recent slow run still escalates"             yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 481s')"
+check "a recent slow run still escalates"             yes "$(has "$out" '^self the slowest run of SCHED-T in the last 6h took 541s')"
 
 echo "4c. GNU stat (the Linux CI runner): -f means --file-system, so the age read must try -c first"
 # The tick puts /usr/bin first on PATH, so on a Mac only a shell function can stand in
@@ -130,7 +130,7 @@ gnu_stat() { case "$1" in -f) printf '  File: "%s"\n    ID: 0 Type: ext4\n' "${3
 export -f gnu_stat
 out=$(stat() { gnu_stat "$@"; }; export -f stat; probe 2>&1 || true)
 check "an age read under GNU stat does not crash"     no  "$(has "$out" 'unbound variable')"
-check "and still judges the recent run"               yes "$(has "$out" 'slowest in the last 6h 481s')"
+check "and still judges the recent run"               yes "$(has "$out" 'slowest in the last 6h 541s')"
 
 echo "4d. a fire that met an earlier run of the same schedule lost nothing (RCA self 20261023-145529)"
 # Run logs are named after their start in ms. A manual run started 5 min before

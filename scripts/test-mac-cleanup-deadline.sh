@@ -70,7 +70,7 @@ got=$(TICK_PATH="$TICK" bash -c '
 IFS='|' read -r budget warn <<<"$got"
 check "the default deadline is under the warning"      yes "$([ "$budget" -lt "$warn" ] && echo yes || echo no)"
 got=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; echo "$TICK_BUDGET_S"')
-check "a deadline at or over the warning is clamped"   450 "$got"
+check "a deadline at or over the warning is clamped"   510 "$got"
 out=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"' | head -1)
 check "and the clamp says so"                         yes "$(has "$out" 'verdict=tick_budget_clamped')"
 got=$(TICK_PATH="$TICK" bash -c '
@@ -113,6 +113,8 @@ vals=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $(( TICK_BUDGET_S - TICK_RE
 arms=${vals% *}; reserve=${vals#* }
 check "arms get past the 335 s that skipped them" yes "$([ "$arms" -gt 350 ] && echo yes || echo no)"
 check "the worst verdicts (145 s) finish before the 600 s kill" yes "$([ $(( arms + 145 )) -lt 600 ] && echo yes || echo no)"
+warn=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $TICK_WARN_S' "$TICK" 2>/dev/null | tail -1)
+check "the warning sits above the designed worst case and below the kill" yes "$([ $(( arms + 145 )) -lt "$warn" ] && [ "$warn" -lt 600 ] && echo yes || echo no)"
 check "the reserve is not smaller than the usual verdicts" yes "$([ "$reserve" -ge 60 ] && echo yes || echo no)"
 
 echo

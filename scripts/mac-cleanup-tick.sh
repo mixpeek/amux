@@ -602,7 +602,10 @@ SENDFAIL_CARD_AFTER=${AMUX_CLEANUP_SENDFAIL_CARD_AFTER:-2}
 # 600s", twice on 2026-09-26 once the disk-writer search switched on under load
 # 48). The budgets are sized to stay under it, and the done line prints elapsed
 # time with a WARN past TICK_WARN_S so the next regression announces itself.
-TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-480}
+# 540, not 480 (Mac self RCA 20261102-094847): the 90 s reserve puts a loaded tick's
+# worst case at 505 s (arms to 360, verdicts 145), so 480 fired on a healthy 492 s
+# run (368 + 124 at load 63), 108 s short of the kill. 540 is 90% of the kill.
+TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-540}
 if [ "$TICK_BUDGET_S" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: tick budget ${TICK_BUDGET_S}s is not under the ${TICK_WARN_S}s warning; using $(( TICK_WARN_S - 30 ))s (verdict=tick_budget_clamped)"
   TICK_BUDGET_S=$(( TICK_WARN_S - 30 ))

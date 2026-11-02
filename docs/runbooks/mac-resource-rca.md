@@ -26,7 +26,7 @@ a `self ...` constraint, which escalates like any other class:
 |---|---|---|
 | runs in a row not ok (timed out, killed by a server restart, error) | 2 | `AMUX_CLEANUP_SELF_FAIL_STREAK` |
 | runs not ok in 24h | 4 | `AMUX_CLEANUP_SELF_FAIL_24H` |
-| slowest run over the tick's warning | 480s | `AMUX_CLEANUP_TICK_WARN_S` |
+| slowest run over the tick's warning | 540s | `AMUX_CLEANUP_TICK_WARN_S` |
 | runs that skipped arms for lack of time | 3 | `AMUX_CLEANUP_SELF_SKIP_24H` |
 | fires that met a running tick and did no work (recorded ok) | 2 | `AMUX_CLEANUP_SELF_COLLIDE_24H` |
 | times the launchd fallback had to run it | 3 | `AMUX_CLEANUP_SELF_FALLBACK_24H` |
