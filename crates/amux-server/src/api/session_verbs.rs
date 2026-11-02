@@ -75,6 +75,12 @@ macro_rules! cached_re {
 
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A live=1 peek's capture budget. The dashboard aborts a live poll at 3s
+/// (`refreshPeek`), so a capture still running past that answers nobody and,
+/// while the tmux server is stalled, stacks one more `capture-pane` child per
+/// open view on it. Measured 2026-11-02 (AF-1165): live peeks of 10-13s, each
+/// finishing beside a saved tmux-stall evidence file at load 45-70 on 28 cores.
+const LIVE_CAPTURE_TIMEOUT: Duration = Duration::from_millis(2500);
 /// `git worktree add` checks out the WHOLE tree into a new directory --
 /// tens of thousands of files on this repo (Ethan, 2026-09-18: "the ephemeral
 /// worker was expired again"). OP_TIMEOUT (5s) is sized for a quick metadata
@@ -1433,8 +1439,15 @@ pub(crate) async fn worker_pane_pids(name: &str) -> Vec<u32> {
 
 /// tmux capture-pane -e; lines<=0 → visible screen only (py:4406).
 pub(crate) async fn tmux_capture(name: &str, lines: i64) -> String {
+    tmux_capture_within(name, lines, CAPTURE_TIMEOUT).await.unwrap_or_default()
+}
+
+/// [`tmux_capture`] with its own budget, and `None` when tmux did not answer
+/// within it, so a caller can tell a stalled server from an empty pane. A
+/// capture tmux answered with an error (no such pane) is still `Some("")`.
+async fn tmux_capture_within(name: &str, lines: i64, budget: Duration) -> Option<String> {
     if session_backend(name) == "herdr" {
-        return herdr_capture(name, lines.max(1)).await;
+        return Some(herdr_capture(name, lines.max(1)).await);
     }
     let pt = pt(name);
     let start;
@@ -1444,11 +1457,12 @@ pub(crate) async fn tmux_capture(name: &str, lines: i64) -> String {
         args.push("-S");
         args.push(&start);
     }
-    match run_cmd("tmux", &args, CAPTURE_TIMEOUT).await {
+    match run_cmd("tmux", &args, budget).await {
         Some(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
         }
-        _ => String::new(),
+        Some(_) => Some(String::new()),
+        None => None,
     }
 }
 
@@ -20568,51 +20582,50 @@ fn peek_render(mut resp: Value, path: &str, steps: &[&str]) -> Value {
     resp
 }
 
-async fn peek_response_at(
-    name: &str,
-    lines: i64,
-    live_only: bool,
-    no_trim: bool,
-    table_cols: usize,
-) -> Value {
+/// The live=1 frame: the pane's screen only, no history. `None` when tmux did
+/// not answer within [`LIVE_CAPTURE_TIMEOUT`]; the caller says so rather than
+/// sending "(no output)", which reads as a pane that is really empty.
+async fn peek_live_response(name: &str, lines: i64, no_trim: bool) -> Option<Value> {
     let provider = provider_of(&parse_env(name));
-    if live_only {
-        let output = strip_scroll_pill(&tmux_capture(name, lines).await);
-        let live = if output.is_empty() {
-            String::new()
-        } else {
-            strip_launch_noise(output.trim())
-        };
-        // The live=1 trim needs the transcript the CLIENT is displaying; the
-        // rust origin re-renders it (bounded) instead of a process cache.
-        let mut trimmed = false;
-        let live = if !live.is_empty() && !no_trim && provider == "claude" {
-            let tr = render_session_transcript(name, 120_000);
-            if tr.is_empty() {
-                live
-            } else {
-                trimmed = true;
-                trim_live_overlap(&tr, &live)
-            }
-        } else {
+    let output = strip_scroll_pill(&tmux_capture_within(name, lines, LIVE_CAPTURE_TIMEOUT).await?);
+    let live = if output.is_empty() {
+        String::new()
+    } else {
+        strip_launch_noise(output.trim())
+    };
+    // The live=1 trim needs the transcript the CLIENT is displaying; the
+    // rust origin re-renders it (bounded) instead of a process cache.
+    let mut trimmed = false;
+    let live = if !live.is_empty() && !no_trim && provider == "claude" {
+        let tr = render_session_transcript(name, 120_000);
+        if tr.is_empty() {
             live
-        };
-        let lv = if live.is_empty() {
-            "(no output)".to_string()
         } else {
-            collapse_blank_runs(&live)
-        };
-        let mut steps = vec!["tmux-capture", "strip-scroll-pill", "strip-launch-noise"];
-        if trimmed {
-            steps.push("trim-live-overlap");
+            trimmed = true;
+            trim_live_overlap(&tr, &live)
         }
-        steps.push("collapse-blank-runs");
-        return peek_render(
-            json!({"name": name, "live_only": true, "live": lv, "output": lv}),
-            "tmux-live",
-            &steps,
-        );
+    } else {
+        live
+    };
+    let lv = if live.is_empty() {
+        "(no output)".to_string()
+    } else {
+        collapse_blank_runs(&live)
+    };
+    let mut steps = vec!["tmux-capture", "strip-scroll-pill", "strip-launch-noise"];
+    if trimmed {
+        steps.push("trim-live-overlap");
     }
+    steps.push("collapse-blank-runs");
+    Some(peek_render(
+        json!({"name": name, "live_only": true, "live": lv, "output": lv}),
+        "tmux-live",
+        &steps,
+    ))
+}
+
+async fn peek_response_at(name: &str, lines: i64, table_cols: usize) -> Value {
+    let provider = provider_of(&parse_env(name));
     let mut output = strip_scroll_pill(&tmux_capture(name, lines).await);
     if provider == "gemini" {
         output = clean_gemini_frame(&tmux_capture(name, 0).await);
@@ -32508,7 +32521,29 @@ pub(crate) async fn peek_verb(state: &AppState, name: &str, qs: &[(String, Strin
     // that function has six return points (live_only, alt-screen, normal,
     // short-output, empty…) and a key added to one of them is a key the
     // reader cannot rely on. One injection site covers every shape.
-    let mut resp = peek_response_at(name, lines, live_only, no_trim, table_cols).await;
+    let mut resp = if live_only {
+        let started = std::time::Instant::now();
+        match peek_live_response(name, lines, no_trim).await {
+            Some(v) => v,
+            None => {
+                // The dashboard keeps its last frame on a non-2xx, and the
+                // request log records a failure at its real duration rather
+                // than a 200 whose length is the timeout (AMUX-3709).
+                tracing::warn!(session = name, budget_ms = LIVE_CAPTURE_TIMEOUT.as_millis() as u64,
+                    elapsed_ms = started.elapsed().as_millis() as u64, measured = true, n_considered = 1,
+                    verdict = "live_capture_timeout",
+                    "live peek: tmux did not answer capture-pane within its budget; no frame sent (AF-1165)");
+                return jresp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error": "tmux did not answer within the live peek budget",
+                           "verdict": "live_capture_timeout", "name": name,
+                           "budget_ms": LIVE_CAPTURE_TIMEOUT.as_millis() as u64}),
+                );
+            }
+        }
+    } else {
+        peek_response_at(name, lines, table_cols).await
+    };
     if let (Some((cols, rows)), Some(obj)) = (tmux_pane_geometry(name).await, resp.as_object_mut())
     {
         obj.insert("pane_cols".into(), json!(cols));
@@ -47400,7 +47435,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         .unwrap();
         // No provider process/alternate screen. A fresh or stopped worker is
         // still the same conversation surface, with measured empty history.
-        let body = peek_response_at(&name, 300, false, false, 100).await;
+        let body = peek_response_at(&name, 300, 100).await;
         assert_eq!(body["name"], name);
         assert_eq!(body["history"], "");
         assert_eq!(body["history_lines"], 0);
@@ -57975,5 +58010,63 @@ mod refresh_fleet_shims_tests {
         assert!(refresh_fleet_shims(&dir).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("pgrep")).unwrap(), PKILL_GUARD_SHIM, "the stale pgrep shim was kept");
         assert_eq!(std::fs::read_to_string(dir.join("tmux")).unwrap(), TMUX_FLEET_SHIM);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod live_peek_budget_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const MODE: &str = "AMUX_LIVE_PEEK_BUDGET_TEST_MODE";
+
+    /// AF-1165: a stalled tmux server must cost a live peek its budget, not
+    /// CAPTURE_TIMEOUT, and must read as no frame rather than "(no output)".
+    /// Runs in a child whose PATH holds only a fake `tmux`, so it never reaches
+    /// the fleet's server. The answering case is the positive control: the same
+    /// fixture path produces a frame when tmux replies.
+    #[test]
+    fn a_stalled_tmux_ends_the_live_peek_inside_the_clients_deadline() {
+        let Ok(mode) = std::env::var(MODE) else {
+            for mode in ["stalled", "answering"] {
+                let t = tempfile::tempdir().unwrap();
+                let fake = t.path().join("tmux");
+                let script = if mode == "stalled" {
+                    "#!/bin/sh\nexec sleep 30\n"
+                } else {
+                    "#!/bin/sh\nprintf 'frame from the fake pane\\n'\n"
+                };
+                std::fs::write(&fake, script).unwrap();
+                std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "api::session_verbs::live_peek_budget_tests::a_stalled_tmux_ends_the_live_peek_inside_the_clients_deadline", "--nocapture"])
+                    .env(MODE, mode)
+                    .env("PATH", format!("{}:/bin:/usr/bin", t.path().display()))
+                    .env("AMUX_HOME", t.path())
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{mode}: {}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let started = std::time::Instant::now();
+            let resp = peek_live_response("af1165-fixture", 300, true).await;
+            let elapsed = started.elapsed();
+            if mode == "stalled" {
+                assert!(resp.is_none(), "a stalled tmux must not produce a frame: {resp:?}");
+                assert!(elapsed >= LIVE_CAPTURE_TIMEOUT, "gave up early: {elapsed:?}");
+                assert!(elapsed < Duration::from_secs(3), "outlived the dashboard's 3s deadline: {elapsed:?}");
+            } else {
+                let v = resp.expect("an answering tmux produces a frame");
+                assert_eq!(v["live"], "frame from the fake pane", "{v}");
+            }
+        });
     }
 }
