@@ -84,8 +84,10 @@ pub(crate) fn lane_has_board(session: &str) -> bool {
 
 /// The Board tab switches. Any of them on at the worker or group layer gives
 /// that worker a board (`board_unused_in`).
-const BOARD_SWITCH_KEYS: [&str; 5] = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", session_verbs::BOARD_CONTINUE_KEY,
-    "CC_AUTO_CONTINUE", crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY];
+/// Not the legacy CC_AUTO_CONTINUE: the Board switch never writes it alone, and
+/// 93 workers carried only that key on 2026-11-02, so the new default missed them.
+const BOARD_SWITCH_KEYS: [&str; 4] = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", session_verbs::BOARD_CONTINUE_KEY,
+    crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY];
 /// `on` restores the pre-2026-11-02 default: a worker nobody configured has a board.
 pub(crate) const BOARD_DEFAULT_KEY: &str = "AMUX_BOARD_DEFAULT";
 
@@ -1503,7 +1505,8 @@ mod tests {
             ("steer", "AMUX_BOARD_FORCE_ADHERENCE=1\n", false),
             ("pickup", "CC_AUTO_PICKUP=1\n", false),
             ("cont", "CC_BOARD_CONTINUE=1\n", false),
-            ("legacy", "CC_AUTO_CONTINUE=1\n", false),
+            ("legacy", "CC_AUTO_CONTINUE=1\n", true),
+            ("legacy-default-on", "CC_AUTO_CONTINUE=1\nAMUX_BOARD_DEFAULT=on\n", false),
             ("drain", "AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1\n", false),
             ("stale-project", "CC_PROJECT=p1\n", true),
             ("default-on", "AMUX_BOARD_DEFAULT=on\n", false),
