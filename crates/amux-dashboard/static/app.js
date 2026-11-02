@@ -21681,7 +21681,7 @@ function _paintPeekRegions(body) {
 }
 // The DOM a search pass built, so the next pass can reuse it.
 let _peekSearchDom = { hist: null, live: null, first: null };
-const _peekSearchStats = { reused: 0, rebuilt: 0 };
+const _peekSearchStats = { reused: 0, rebuilt: 0, phases: null };
 function _peekClearHighlights(body) {
   const parents = new Set();
   for (const mark of body.querySelectorAll('span.peek-highlight')) {
@@ -21696,19 +21696,29 @@ function _peekSearchTyped(value) {
   peekSearchQuery = value;
   document.getElementById('peek-search-wrap')?.classList.toggle('has-value', !!value);
   clearTimeout(_peekSearchTimer);
-  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? 120 : 0);
+  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? _peekSearchPause() : 0);
+}
+// A pass on a big page blocks for seconds (3.4 s at 55,000 elements, 6.7 s at
+// 154,000: Ethan, 2026-11-02, "increase the speed of peek search"), so the pause
+// follows what the last pass cost, and a word typed there runs one pass, not one
+// per letter.
+let _peekSearchLastMs = 0;
+function _peekSearchPause() {
+  return _peekSearchLastMs > 1000 ? 600 : _peekSearchLastMs > 250 ? 350 : 120;
 }
 // A typed search that blocks the page for over 100ms says so in the server log.
 function _peekSearchTimed() {
   const t0 = performance.now();
   applyPeekSearch();
   const ms = Math.round(performance.now() - t0);
+  _peekSearchLastMs = peekSearchQuery.trim() ? ms : 0;
   if (ms <= 100 || !peekSearchQuery.trim()) return;
   try {
     fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'peek-search-slow', session: peekSession, ver: APP_VER, ms,
         nodes: document.getElementById('peek-body')?.getElementsByTagName('*').length || 0,
         reused: _peekSearchStats.reused, rebuilt: _peekSearchStats.rebuilt,
+        phases: _peekSearchStats.phases, matches: _peekMatches.length,
         verdict: 'peek_search_slow', measured: true, n_considered: 1 }) }).catch(() => {});
   } catch (e) {}
 }
@@ -21733,6 +21743,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     if (countEl) countEl.textContent = '';
     return;
   }
+  const _t0 = performance.now();
   if (_peekHistHidden) _peekHistExpand(false);
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
@@ -21766,6 +21777,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     _peekSearchDom = { hist: null, live: null, first: null };
   }
   _peekSearchStats[reuse ? 'reused' : 'rebuilt']++;
+  const _t1 = performance.now();
   const roots = !_peekFiltersActive() ? [body]
     : [...body.querySelectorAll('.peek-prompt')].filter(el => _peekPromptMatchesFilters(el));
   _peekMatches = [];
@@ -21799,12 +21811,14 @@ function applyPeekSearch(keepIndex, doScroll) {
       entry.node.replaceWith(fragment);
     }
   }
-  if (!reuse) _peekReclassifyPrompts();
+  // The paint above already classified; a highlight does not change the text.
+  const _t2 = performance.now();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
   // Typed Find has the same late-history race as Locate: an empty live frame
   // is not proof that the requested text is absent from the arriving history.
   if (!keepIndex && doScroll !== false) _peekPendingFindScroll = !_peekMatches.length;
   _peekScrollTo(peekSearchIndex, doScroll);
+  _peekSearchStats.phases = { paint: Math.round(_t1 - _t0), mark: Math.round(_t2 - _t1), scroll: Math.round(performance.now() - _t2) };
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'none here · \u21b5 all logs';
 }
 
