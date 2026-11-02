@@ -9466,7 +9466,7 @@ function render() {
           // `desc` is absent and `desc_head` is the field that carries the line;
           // reading `.desc` rendered nothing for every worker.
           const shownCard = hasBoard ? (boardItems || []).find(c => c.id === displayTaskBoardId) : null;
-          const cardDesc = shownCard ? String(shownCard.desc || shownCard.desc_head || '').split('\n')[0].slice(0, 120) : '';
+          const cardDesc = shownCard ? _descPreviewLine(shownCard.desc || shownCard.desc_head).slice(0, 120) : '';
           return (showLlm
             ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
             : '')
@@ -9777,9 +9777,8 @@ function _bindPeekTaskIdentity(s, identity) {
   const runtime = _runtimeBoardPresentation(s);
   const cardId = runtime.cardId || '';
   const llmTask = s.task_override || '';
-  const boardTitle = runtime.syncing
-    ? 'Synchronizing runtime/board truth…'
-    : (s.task_name || cardId || '');
+  // Not a "syncing" placeholder: a Task line reads the task it last knew.
+  const boardTitle = s.task_name || cardId || '';
   const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
   row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
   if (showBoth) {
@@ -9877,18 +9876,25 @@ function _taskStaleAge(s) {
 // COMPACT ON PURPOSE: this badge sits in the worker list, which has to survive
 // 375px per crates/amux-dashboard/CLAUDE.md. The badge carries "19m"; the full
 // sentence goes in the title where it costs no width.
+// One line of a card's description as plain text: a preview shows no markdown
+// heading marks ("### Updated request").
+function _descPreviewLine(desc) {
+  return String(desc || '').split('\n')[0].replace(/^\s*#{1,6}\s+/, '');
+}
 function _idleMovedAt(s) {
   const at = Number(s && s.last_board_change_ts);
   return Number.isFinite(at) && at > 0 ? at : 0;
 }
+// A worker with no board has no card to have moved (the board is opt-in since
+// 2026-11-02), so "· never" said nothing about it.
 function _idleMovedSuffix(s) {
-  if (s?.isolated) return '';
+  if (s?.isolated || s?.board_used === false) return '';
   const at = _idleMovedAt(s);
   if (!at) return ' · never';
   return ' · ' + esc(timeAgo(at).replace(/ ago$/, ''));
 }
 function _idleMovedTitle(s) {
-  if (s?.isolated) return ' title="Idle — ready for your next message."';
+  if (s?.isolated || s?.board_used === false) return ' title="Idle — ready for your next message."';
   const at = _idleMovedAt(s);
   return at
     ? ' title="Idle right now. Last moved a board card ' + esc(timeAgo(at)) + '."'
@@ -48013,8 +48019,7 @@ function _renderBoardCard(item) {
   // is ALL slim ships of the description. Without this the card preview goes
   // blank for every card the moment the poll flips — the exact regression
   // list_body's own doc records from the last slimming attempt.
-  const firstLine = (item.desc !== undefined ? item.desc : (item.desc_head || ''))
-                      .split('\n')[0].slice(0, 80);
+  const firstLine = _descPreviewLine(item.desc !== undefined ? item.desc : item.desc_head).slice(0, 80);
   const pinned = item.pinned ? 1 : 0;
   // The server's exact runtime link drives live emphasis. A stale observed
   // claim is shown separately in amber, including cards outside Doing.
