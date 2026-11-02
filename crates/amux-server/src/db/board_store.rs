@@ -2915,6 +2915,14 @@ pub struct PlanningRow {
     pub session: Option<String>,
 }
 
+/// The read [`planning_tasks`] runs, answered by idx_issues_planning (AF-1006).
+fn planning_sql() -> String {
+    format!(
+        "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
+         WHERE i.deleted IS NULL GROUP BY i.id"
+    )
+}
+
 /// Every board row as a planning `Task`, without the heavy text columns.
 ///
 /// Ordering, filtering and the `to_task` mapping match [`list_issues`] exactly;
@@ -2926,10 +2934,7 @@ pub fn planning_tasks(
     conn: &Connection,
     archived: ArchivedFilter,
 ) -> rusqlite::Result<Vec<PlanningRow>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-         WHERE i.deleted IS NULL GROUP BY i.id"
-    ))?;
+    let mut stmt = conn.prepare(&planning_sql())?;
     let mut rows: Vec<(i64, f64, i64, PlanningRow)> = Vec::new();
     let mapped = stmt.query_map([], |r| {
         let archived_flag: i64 = r.get(8)?;
@@ -3245,7 +3250,7 @@ pub fn list_issues_by_ids(
 }
 
 /// The selection `light_rows` runs. Unfiltered, it is answered entirely by
-/// idx_issues_light_rows (AF-1144).
+/// idx_issues_planning (AF-1144).
 fn light_rows_sql(lanes: usize) -> String {
     format!(
         "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
@@ -5022,22 +5027,24 @@ mod tests {
         }
     }
 
-    /// AF-1144: the unfiltered selection must come from the covering index. On
-    /// the table it walks every card's desc to reach `status`.
+    /// AF-1144, AF-1006: both reads must come from the covering index. On the
+    /// table they walk every card's desc to reach `status`.
     #[test]
-    fn the_unfiltered_board_selection_never_touches_the_table() {
+    fn the_tick_and_the_board_selection_never_touch_the_table() {
         let home = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&home.path().join("db")).unwrap();
         let conn = store.read().unwrap();
-        let plan = conn
-            .prepare(&format!("EXPLAIN QUERY PLAN {}", super::light_rows_sql(0)))
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(3))
-            .unwrap()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("; ");
-        assert!(plan.contains("COVERING INDEX idx_issues_light_rows"), "{plan}");
+        for sql in [super::light_rows_sql(0), super::planning_sql()] {
+            let plan = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(plan.contains("COVERING INDEX idx_issues_planning"), "{plan}");
+        }
     }
 
     /// AMUX-4801: the live-work list is DERIVED and SQL-safe.
