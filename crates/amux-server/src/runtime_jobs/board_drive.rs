@@ -19352,3 +19352,33 @@ mod wip_cap_scope_tests {
         assert_eq!(super::wip_cap_in(home.path(), "etl", Some("0")), 1, "never below 1");
     }
 }
+
+#[cfg(test)]
+mod lane_status_index_tests {
+    use super::*;
+
+    /// AF-1120: the per-lane status reads must narrow to the lane's cards in
+    /// that status inside the index. On idx_issues_session they fetched every
+    /// card the lane ever had from the table, which the server sample showed as
+    /// page reads under lane_loop.
+    #[test]
+    fn a_lanes_status_reads_narrow_inside_the_index() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        let conn = store.read().unwrap();
+        for sql in [
+            format!("SELECT COUNT(*) FROM issues i WHERE {}", dispatchable_where()),
+            "SELECT i.id FROM issues i WHERE i.session=?1 AND i.status='backlog'".to_string(),
+        ] {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let unbound = vec![rusqlite::types::Null; stmt.parameter_count()];
+            let plan = stmt
+                .query_map(rusqlite::params_from_iter(unbound), |r| r.get::<_, String>(3))
+                .unwrap()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(plan.contains("idx_issues_session_status (session=? AND status=?)"), "{plan}");
+        }
+    }
+}
