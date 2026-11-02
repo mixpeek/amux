@@ -67953,6 +67953,7 @@ function _recSetSide(t) {
 }
 function _recBack() { document.getElementById('record-view').classList.remove('rec-open'); }
 async function _recSelect(id) {
+  if (id !== _recSel) _recLineQuery = '';
   _recSel = id;
   document.getElementById('record-view').classList.add('rec-open');
   document.querySelectorAll('#recorder-list .recorder-item').forEach(e => e.classList.toggle('selected', e.dataset.recId === id));
@@ -68028,8 +68029,14 @@ function _recRenderDetail() {
       body.innerHTML = '<div class="recorder-empty">' + esc(_recorderTranscriptWords(row) || 'No transcript yet.') + '</div>';
       return;
     }
+    const searching = document.activeElement && document.activeElement.classList.contains('rec-tsearch');
     body.innerHTML = '<input class="input rec-tsearch" type="search" placeholder="Search transcript" aria-label="Search transcript" oninput="_recFilterLines(this.value)">'
       + '<div id="rec-lines" class="rec-lines">' + segs.map(_recLineHtml).join('') + '</div>';
+    // A re-render keeps the search someone is typing, and the lines it hides.
+    const search = body.querySelector('.rec-tsearch');
+    search.value = _recLineQuery;
+    if (searching) search.focus();
+    _recFilterLines(_recLineQuery);
   } else if (_recTab === 'notes') {
     const n = d.notes || {};
     let h = '';
@@ -68052,8 +68059,10 @@ function _recRenderDetail() {
     body.innerHTML = '<table class="rec-details">' + rows.filter(r => r[1]).map(r => '<tr><th>' + esc(r[0]) + '</th><td>' + esc(String(r[1])) + '</td></tr>').join('') + '</table>';
   }
 }
+let _recLineQuery = '';
 function _recFilterLines(q) {
-  q = (q || '').toLowerCase();
+  _recLineQuery = q || '';
+  q = _recLineQuery.toLowerCase();
   document.querySelectorAll('#rec-lines .rec-line').forEach(e => { e.hidden = !!q && !e.textContent.toLowerCase().includes(q); });
 }
 function _recSeek(ms) {
