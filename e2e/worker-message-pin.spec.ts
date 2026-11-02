@@ -2,9 +2,10 @@
 // on the server, shows on the row and in the 📌 list, and survives a reload.
 import { test, expect } from './fixtures';
 
-test('a message pinned in a worker tab is marked, listed, kept and can be unpinned', async ({ page }) => {
+test('a message pinned in a worker tab is marked, listed, kept and can be unpinned', async ({ page }, testInfo) => {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
-  const name = 'zz-pin-' + Date.now();
+  // workerIndex: runs started in the same millisecond shared one worker's pins.
+  const name = 'zz-pin-' + testInfo.workerIndex + '-' + Date.now();
   await page.goto('/');
   const status = await page.evaluate(async n => {
     const post = (u: string, b: object) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
