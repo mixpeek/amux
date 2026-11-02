@@ -181,6 +181,10 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-friction-themes.sh
+      # MSG-103437. The advisory watch must never read as clean when it could not
+      # look, and every finding must reach the lane's message.
+      - name: the advisory watch fails closed
+        run: python3 scripts/test-advisory-watch.py
       - name: attachment metadata cannot manufacture cross-repo instructions (AF-888)
         run: python3 scripts/test-friction-attachments.py
       - name: peer collaboration cannot inflate board-drive nudge pressure (AF-890)

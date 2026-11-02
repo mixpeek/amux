@@ -6,6 +6,9 @@ Mixpeek product security (auth surfaces, tenant isolation, key handling in the
 Mixpeek app) stays with `mixpeek-security`. When a finding is in Mixpeek's
 product code, hand it to that worker with the evidence.
 
+amux's own code gets a proactive red-team run from the `amux-security` worker:
+`docs/security/RED-TEAM-LOOP.md`, with the surface map beside it.
+
 Created 2026-10-26 after the Tailscale "Tailworm" disclosure and the eMudhra
 certificate compromise (TS-2026-013).
 
