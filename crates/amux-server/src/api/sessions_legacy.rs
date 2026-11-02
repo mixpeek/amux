@@ -6516,6 +6516,28 @@ pub(crate) const NEW_WORKER_AUTOMATION_OFF: [(&str, &str); 6] = [
     ("AMUX_BOARD_FORCE_ADHERENCE", "0"),
 ];
 
+/// Is a worker's Chat tab on? On unless switched off (Ethan, 2026-11-02: "make it
+/// so chat is default enabled for all workers"). It is a flag: nothing runs until
+/// the first chat message. A worker turns it off with AMUX_CHAT_COMPANION=0, and a
+/// companion row has no Chat tab of its own.
+pub(crate) fn chat_on(value: Option<&str>, companion_of: Option<&str>) -> bool {
+    companion_of.is_none_or(|c| c.trim().is_empty())
+        && !value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+}
+
+#[cfg(test)]
+mod chat_default_tests {
+    use super::chat_on;
+    #[test]
+    fn chat_is_on_unless_switched_off() {
+        assert!(chat_on(None, None), "a worker nobody configured has Chat");
+        assert!(chat_on(Some("1"), None), "one already on stays on");
+        assert!(!chat_on(Some("0"), None), "an explicit off stays off");
+        assert!(!chat_on(None, Some("amux")), "a companion row has no Chat tab");
+        assert!(chat_on(None, Some("")));
+    }
+}
+
 pub async fn create_session_legacy(
     State(_state): State<AppState>,
     headers: HeaderMap,
@@ -6721,6 +6743,11 @@ pub async fn create_session_legacy(
         .unwrap_or(false)
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
+    }
+    // Chat is on unless asked otherwise (`chat_on`); `chat: false` creates a
+    // worker with it off.
+    if body.get("chat").is_some_and(|v| !crate::api::py_truthy(v)) {
+        pairs.push(("AMUX_CHAT_COMPANION", "0".to_string()));
     }
     // WORKTREE AT CREATE TIME (AMUX-4911). `worktree: false` is the dialog's
     // unchecked box, and it opts this worker out of group-level workspace
@@ -7337,12 +7364,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         if let Some(row) = out.last_mut() {
             row["goal"] = if configured_provider == "claude" { crate::runtime_jobs::goal_keeper::goal_payload(&name) } else { serde_json::Value::Null };
         }
-        // The worker page's Chat tab (AMUX-5350): off unless switched on; the
+        // The worker page's Chat tab (AMUX-5350): on unless switched off; the
         // companion chat worker names the worker it talks about. Set here, not
         // in the literal above, which is at json!'s recursion limit.
         if let Some(v) = out.last_mut() {
             v["peers"] = json!(env.get("CC_PEERS").map(|t| t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>()).unwrap_or_default());
-            v["chat_companion"] = json!(env.get("AMUX_CHAT_COMPANION").is_some_and(|x| x == "1"));
+            v["chat_companion"] = json!(chat_on(env.get("AMUX_CHAT_COMPANION").map(String::as_str), env.get("CC_COMPANION_OF").map(String::as_str)));
             v["companion_of"] = json!(env.get("CC_COMPANION_OF").cloned().unwrap_or_default());
             // Sparse worktree profile (AMUX-5341); empty = the repo's default.
             v["worktree_profile"] = json!(env.get("CC_WORKTREE_PROFILE").cloned().unwrap_or_default());

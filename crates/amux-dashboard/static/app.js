@@ -14588,8 +14588,8 @@ async function _simpleRender(gen) {
 // companion worker, `<worker>-chat`, listed in the fleet with its own board,
 // schedules and steering. The chat is now addressed as `<worker>@chat`, a key
 // no worker can have, and the server keeps its state under the worker
-// (chat_worker.rs, COMPANION LANES). The on switch is AMUX_CHAT_COMPANION on
-// the worker; nothing else is created.
+// (chat_worker.rs, COMPANION LANES). The switch is AMUX_CHAT_COMPANION on the
+// worker, on unless it says 0 (sessions_legacy.rs chat_on); nothing else is created.
 // The worker the peek composer writes to: this worker, or its chat companion
 // while the Chat tab shows one. Drafts are keyed on it, so text typed in the
 // Chat tab is the companion's draft and a send there clears it (it used to
@@ -14626,7 +14626,7 @@ async function _peekChatSet(on) {
   const w = peekSession;
   if (!w) return;
   try {
-    await _peekChatScope(w, { AMUX_CHAT_COMPANION: on ? '1' : null });
+    await _peekChatScope(w, { AMUX_CHAT_COMPANION: on ? '1' : '0' });
     // The session list is cached server-side, so the switch can be missing
     // from the first refresh; the tab would then keep the off panel over the
     // composer. Refresh until the state it shows is the one just set.
