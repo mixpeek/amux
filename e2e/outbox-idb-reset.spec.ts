@@ -61,6 +61,22 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
   expect(periodic.waited_ms, 'the stayed-dead default waits 250').toBe(250);
   expect(periodic.folded, 'it counts the timeouts it folded in').toBeGreaterThanOrEqual(2);
   expect(typeof periodic.episode_s).toBe('number');
+  // AF-1166: the report says how big the origin's storage is, from the
+  // estimate the episode start asked for, and that the estimate answered.
+  expect(typeof periodic.usage_bytes, 'the origin usage rides the report').toBe('number');
+  expect(periodic.quota_bytes).toBeGreaterThan(0);
+  expect(periodic.estimates_unanswered).toBe(0);
+  // A storage process that does not answer the estimate either says so on the
+  // next report, rather than repeating the last size it saw.
+  await page.evaluate(async () => {
+    (navigator.storage as any).estimate = () => new Promise(() => {});
+    for (let i = 0; i < 2; i++) {
+      (0, eval)('_upqEpisode').last -= 11 * 60 * 1000;
+      await (window as any)._upqListBounded();
+    }
+  });
+  await expect.poll(() => timeouts().length).toBe(4);
+  expect(timeouts()[3].estimates_unanswered, 'the hung estimate is counted').toBe(1);
 
   // Healthy again: the read opens a NEW connection rather than reusing the dropped one.
   const opened = await page.evaluate(async (before) => {

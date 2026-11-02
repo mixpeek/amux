@@ -4745,25 +4745,49 @@ const _UPQ_DEAD_MS = 250;
 // folded in, and the first good read reports the episode's length.
 const _UPQ_REPORT_EVERY_MS = 10 * 60 * 1000;
 let _upqEpisode = null; // {start, last, folded, timeouts}
+// HOW BIG IS THE STORAGE THAT STOPPED ANSWERING (AF-1166). On 2026-11-02 every
+// window of one Mac app timed out on IndexedDB reads, about 200 resets an hour
+// each, while reads still finished now and then. Slow and dead read the same
+// from here, and so does a large origin. Each report carries the origin's
+// usage and quota from the last estimate that answered, how long it took, and
+// how many asks are still out: an estimate that never answers says the storage
+// process itself is stuck, not this store.
+const _upqEstimate = {asked: 0, answered: 0, usage: null, quota: null, ms: null};
+function _upqStorageFields() {
+  const est = typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate;
+  // Read before asking again, so an ask counts as unanswered only once a later
+  // report finds it still out.
+  const fields = {usage_bytes: _upqEstimate.usage, quota_bytes: _upqEstimate.quota, estimate_ms: _upqEstimate.ms,
+    estimates_unanswered: est ? _upqEstimate.asked - _upqEstimate.answered : null};
+  if (est && _upqEstimate.asked === _upqEstimate.answered) {
+    _upqEstimate.asked++;
+    const t0 = Date.now();
+    navigator.storage.estimate()
+      .then(e => { _upqEstimate.usage = e.usage ?? null; _upqEstimate.quota = e.quota ?? null; _upqEstimate.ms = Date.now() - t0; })
+      .catch(() => {})
+      .finally(() => { _upqEstimate.answered++; });
+  }
+  return fields;
+}
 function _upqTimeoutReport(fields) {
   const now = Date.now();
   if (!_upqEpisode) {
     _upqEpisode = {start: now, last: now, folded: 0, timeouts: 1};
-    _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({episode_start: 1}, fields));
+    _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({episode_start: 1}, _upqStorageFields(), fields));
     return;
   }
   _upqEpisode.timeouts++;
   if (now - _upqEpisode.last < _UPQ_REPORT_EVERY_MS) { _upqEpisode.folded++; return; }
   _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({folded: _upqEpisode.folded,
-    episode_s: Math.round((now - _upqEpisode.start) / 1000)}, fields));
+    episode_s: Math.round((now - _upqEpisode.start) / 1000)}, _upqStorageFields(), fields));
   _upqEpisode.last = now;
   _upqEpisode.folded = 0;
 }
 function _upqReadOk() {
   _upqResetSinceOk = false;
   if (!_upqEpisode) return;
-  _outboxDiagnostic('outbox_upload_list_recovered', {timeouts: _upqEpisode.timeouts,
-    episode_s: Math.round((Date.now() - _upqEpisode.start) / 1000)});
+  _outboxDiagnostic('outbox_upload_list_recovered', Object.assign({timeouts: _upqEpisode.timeouts,
+    episode_s: Math.round((Date.now() - _upqEpisode.start) / 1000)}, _upqStorageFields()));
   _upqEpisode = null;
 }
 function _upqListBounded(ms) {
