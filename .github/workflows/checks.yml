@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
     steps:
       # Full history, blobs on demand: the client-version guard below diffs
       # against the push's base, which a shallow clone cannot reach.
@@ -105,6 +105,8 @@ jobs:
       # check once and that `verify` goes red on a missing, doubled or failed one.
       - name: the checks shards run the whole catalogue (scripts/ci-checks.py)
         run: python3 scripts/test-ci-checks.py
+      - name: the shared-checkout guard's own matrix
+        run: python3 ./scripts/git-hooks/test_git_shared_guard.py
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
         run: node --test tests/ci-rust-key.test.mjs
       # Browser methods: the backend ladder, agent selection, and the OpAgent
@@ -311,6 +313,9 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-pressure-tripwire.sh
+      - name: a mac pressure trip wakes the host-health worker first
+        run: |
+          set -uo pipefail
           # A trip wakes the host-health worker first and pages the owner
           # only when a worker cannot help (2026-10-30).
           ./scripts/test-host-responder.sh
@@ -729,22 +734,34 @@ jobs:
           git config --global user.email ci@amux.test; git config --global user.name ci
           bash scripts/test-land-regenerate.sh && NO_REGEN=1 bash scripts/test-land-regenerate.sh
           bash scripts/test-land-regenerate-always.sh && bash scripts/test-land-regenerate-always.sh "" conflict && bash scripts/test-land-regenerate-always.sh "" failing && bash scripts/test-land-regenerate-always.sh "" worktree
-      - name: land precheck verdict and attributed cancel (1/4)
+      - name: land precheck verdict and attributed cancel (1/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-gate-capped.sh && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-holder-pid-reused.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh
-      - name: land precheck verdict and attributed cancel (2/4)
+          bash scripts/test-land-gate-capped.sh && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh
+      - name: land precheck verdict and attributed cancel (2/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-merge-queue.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh
-      - name: land precheck verdict and attributed cancel (3/4)
+          bash scripts/test-land-holder-pid-reused.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh
+      - name: land precheck verdict and attributed cancel (3/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-guards.sh && bash scripts/test-land-queue-policy.sh
-      - name: land precheck verdict and attributed cancel (4/4)
+          bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh
+      - name: land precheck verdict and attributed cancel (4/8)
         run: |
           set -uo pipefail
-          bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
+          bash scripts/test-land-merge-queue.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh
+      - name: land precheck verdict and attributed cancel (5/8)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh
+      - name: land precheck verdict and attributed cancel (6/8)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-guards.sh && bash scripts/test-land-queue-policy.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh
+      - name: land precheck verdict and attributed cancel (7/8)
+        run: |
+          set -uo pipefail
+          bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
       - name: a lane resumes its own conversation, never whichever peer ran here last
         run: |
           set -uo pipefail
@@ -850,7 +867,6 @@ jobs:
           # file. Cheap (no cargo), so there is no reason it was not here.
           python3 ./scripts/git-hooks/test_remove_correction.py || exit $?
           python3 ./scripts/git-hooks/test_token_print.py || exit $?
-          python3 ./scripts/git-hooks/test_git_shared_guard.py || exit $?
           python3 ./scripts/git-hooks/test_post_push_verify.py || exit $?
           python3 ./scripts/git-hooks/test_land_push_guard.py
       # CLI dispatch tests (AEAB-17). Language-agnostic like the two steps above,

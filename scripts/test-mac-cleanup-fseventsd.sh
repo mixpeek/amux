@@ -117,7 +117,11 @@ FAKEFW="$FIX/fakefw.py"
 cat > "$FAKEFW" <<'PY'
 #!/usr/bin/env python3
 # Prints five paths into a block buffer, then waits; only a clean exit flushes it.
-import time
+# SIGINT ends it cleanly, as fswatch's own handler does. A background job in a
+# script starts with SIGINT ignored, so Python alone would ignore the stop, wait
+# out the sleep and pass after 60s without testing it. SIGALRM still loses the buffer.
+import signal, sys, time
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 for i in range(5):
     print("/a/b/f%d" % i)
 time.sleep(60)
