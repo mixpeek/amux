@@ -2024,10 +2024,18 @@ fn is_prompt_line(s: &str) -> bool {
 /// never became ready" on a lane that runs no Claude. Renamed so the next provider added to
 /// amux is a grep away from this function instead of a silent timeout.
 fn agent_ui_visible(clean_output: &str) -> bool {
-    let lines: Vec<&str> = clean_output
+    let mut lines: Vec<&str> = clean_output
         .lines()
         .filter(|l| !l.trim().is_empty())
         .collect();
+    // Claude Code draws its agent list under the footer while subagents run
+    // ("● main", "◯ general-purpose ..."). Read the footer above it: with those
+    // rows in the 3-line window the footer was missed, the status line read as a
+    // shell prompt, and every send to a working mxp-gs12 queued as a boot prompt
+    // for 30 minutes (mixpeek-dev, 2026-11-02).
+    while lines.last().is_some_and(|l| agent_list_row(l)) {
+        lines.pop();
+    }
     let shell_prompt = cached_re!(r"^.*[$%]\s");
     let n = lines.len();
     for l in &lines[n.saturating_sub(3)..] {
@@ -2142,15 +2150,23 @@ fn at_resume_picker(clean_output: &str) -> bool {
 }
 
 /// py:8307 _at_shell_prompt.
+/// A row of Claude Code's agent list, drawn below its footer.
+fn agent_list_row(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('\u{25cf}') || t.starts_with('\u{25ef}')
+}
+
 fn at_shell_prompt(clean_output: &str) -> bool {
     if agent_ui_visible(clean_output) {
         return false;
     }
     let lines: Vec<&str> = clean_output
         .lines()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !agent_list_row(l))
         .collect();
-    let ends = cached_re!(r"[$%]\s*$");
+    // A percentage ("wk 47%", a usage meter) is not a prompt: a prompt's `%`
+    // never follows a digit.
+    let ends = cached_re!(r"(^|[^0-9])[$%]\s*$");
     let leaks = cached_re!(r"^\S+[$%]\s");
     for l in &lines[lines.len().saturating_sub(5)..] {
         let ls = l.trim();
@@ -36971,6 +36987,20 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    /// The frame on mixpeek-dev, 2026-11-02: a working lane with subagents.
+    #[test]
+    fn a_working_lane_with_an_agent_list_is_not_at_a_shell_prompt() {
+        let frame = "\u{273b} Flowing\u{2026} (3m 50s \u{b7} 6.6k tokens)\n\
+\u{2500}\u{2500}\u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\u{2500}\n  amux \u{b7} wk 47%\n\
+  \u{23f5}\u{23f5} bypass permissions on \u{b7} 2 shells\n\n  \u{25cf} main\n\
+  \u{25ef} general-purpose  Correcting Vision trailer\n  \u{25ef} general-purpose  Reading evaluator.py";
+        assert!(agent_ui_visible(frame), "the footer above the agent list is visible");
+        assert!(!at_shell_prompt(frame));
+        assert!(!at_shell_prompt("  amux \u{b7} wk 47%"), "a usage meter is not a prompt");
+        assert!(at_shell_prompt("ethan@mixpeek-dev ~ %"), "a real zsh prompt still reads as one");
+        assert!(at_shell_prompt("amux$ "), "and a bash one");
+    }
+
     #[test]
     fn a_missing_transcript_walks_the_projects_once_a_minute() {
         let t = std::time::Instant::now();
