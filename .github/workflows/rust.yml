@@ -328,6 +328,10 @@ jobs:
       # large. Panic messages keep file:line without it (core::panic::Location).
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
+      # Symbols are a large share of the 2.8 GB archive every shard downloads
+      # (30 to 217s). Panics keep file:line; a native crash loses function names.
+      CARGO_PROFILE_DEV_STRIP: symbols
+      CARGO_PROFILE_TEST_STRIP: symbols
     steps:
       - uses: actions/checkout@v4
       # Writing the archive needs the room unpacking it does: on 4e127b986 this
@@ -820,7 +824,7 @@ jobs:
           node scripts/e2e-plan.mjs ${{ matrix.shard }} ${{ strategy.job-total }} "$RUNNER_TEMP/e2e-list.json" > "$RUNNER_TEMP/e2e-plan.json"
           echo "AMUX_E2E_PLAN=$RUNNER_TEMP/e2e-plan.json" >> "$GITHUB_ENV"
       - name: Golden scenarios (desktop + mobile + ios-safari)
-        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --global-timeout=1200000
+        run: npx playwright test --config e2e/playwright.config.ts --workers=3 --global-timeout=1200000
         env:
           AMUX_E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           AMUX_E2E_EVIDENCE_DIR: ci-results/shard-${{ matrix.shard }}
