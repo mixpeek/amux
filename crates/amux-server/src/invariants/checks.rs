@@ -3120,6 +3120,13 @@ pub fn shared_config_is_not_bare(path: &str, config: Option<&str>) -> InvariantR
     .evidence(json!({"config": path, "core_bare": bare, "core_worktree": worktree, "fix": fix, "measured": true, "n_considered": 1}))
 }
 
+/// The worktree copy, only when it is an edit: different from the checkout's
+/// own HEAD. `None` when it equals HEAD, so a clean but lagging checkout reads
+/// as a stale install rather than as an uncommitted edit (AF-1160).
+pub fn uncommitted_edit(on_disk: String, local_head: Option<&str>) -> Option<String> {
+    (local_head != Some(on_disk.as_str())).then_some(on_disk)
+}
+
 /// AF-132: the committed side must be read at CHECK time, not baked at build
 /// time. These scripts are not compiled into the binary's deploy unit — the
 /// builder rebuilds only on crates//Cargo.* commits — so a script-only commit
@@ -8689,6 +8696,12 @@ mod negative_controls {
         // DIFFERENT claim from a hand-edit — the remedy is committing the
         // tracked source, not reinstalling.
         let uncommitted = committed.to_string() + "# staged but not committed\n";
+        // AF-1160: a clean file at a lagging HEAD is not an edit, so it reaches
+        // the check as no worktree copy and reads as a stale install.
+        let lagging = "old bytes".to_string();
+        assert_eq!(uncommitted_edit(lagging.clone(), Some("old bytes")), None);
+        assert_eq!(uncommitted_edit(lagging.clone(), Some("other")), Some(lagging.clone()));
+        assert_eq!(uncommitted_edit(lagging.clone(), None), Some(lagging));
         let wt = installed_script_matches_committed(
             &GIT_SHARED_GUARD,
             committed,

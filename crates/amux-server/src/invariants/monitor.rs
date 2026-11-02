@@ -623,9 +623,20 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
                     .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
             })
         };
+        // Only a worktree copy that differs from this checkout's own HEAD is an
+        // edit. A shared checkout lags origin by hundreds of commits, so its
+        // clean file equals an install from that lagging HEAD, and the check
+        // told the lane to commit it, which would revert origin (AF-1160).
         let read_worktree = |rel: &str| -> Option<String> {
-            repo.as_ref()
-                .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+            let dir = repo.as_ref()?;
+            let on_disk = std::fs::read_to_string(dir.join(rel)).ok()?;
+            let local_head = std::process::Command::new("git")
+                .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{rel}")])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            checks::uncommitted_edit(on_disk, local_head.as_deref())
         };
         let amux_home = crate::config::ServerConfig::from_process_env().amux_home;
         let runtime = std::fs::read_to_string(amux_home.join("hooks/git-shared-guard.py"))
