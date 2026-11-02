@@ -4,15 +4,26 @@ Owner goal, 2026-11-02: "iterate until the full amux cicd is under 1 min".
 
 ## Where it stands
 
-Wall clock on main, first job start to last job end.
+Measured on main, 2026-11-02. `rust` is first job start to last job end; `checks`
+is run created to run finished, so it includes queueing.
 
-| Workflow | Before | Now | What changed |
+| Job or workflow | Before | Now | What changed |
 |---|---|---|---|
-| `checks` | 845 to 986s | 162s (run 41457028326) | 20 parallel shards from a catalogue; 30 shards and a fixed 60s stub follow |
-| `rust`, Rust commit | 1,570 to 1,930s | 1,179s (run 41458289010) | no separate `cargo check`, shards use `/mnt` |
-| `rust`, no Rust change | same as above | restores binaries by exact key; not yet measured | 42 of the last 100 main commits |
-| `harness recovery` | 540 to 760s | unchanged | |
-| `cloud image` | 820s | unchanged | not part of the deploy gate |
+| `checks` | 845 to 986s | 160 to 648s, median 457s | parallel shards; 750s of checks, median shard 44s |
+| `rust`, Rust commit | 1,570 to 1,930s | 805 to 1,895s | no separate `cargo check`, shards use `/mnt`, 3 e2e workers |
+| `rust`, no Rust change | same as above | 722 to 1,915s | restores binaries by exact key |
+| `check` job, no Rust change | 621s | 45 to 60s | a pass is keyed on the Rust inputs |
+| `test-build` job, no Rust change | 509s | 207 to 246s | restores the archive |
+| nextest archive | 2,827 MB | 2,425 MB | stripped test binaries |
+| e2e shard, median | about 520s | 448s (one run) | 3 workers; watch whether flakes rise |
+| `harness recovery` | 540 to 760s | 636 to 1,202s | unchanged, and it runs beside the queue |
+| `cloud image` | 820s | unchanged | outside the deploy gate; its CLI install is unpinned, so caching would freeze versions |
+
+Spans overlap heavily with queueing, and every `rust` run above ended red or was
+measured while flaky e2e specs still failed, so read them as ranges.
+
+**The queue is now a floor of its own.** One `checks` run waited 500s for a runner
+while its jobs took a median of 68s. Adding shards past this point adds waiting.
 
 ## What sets the floor
 
