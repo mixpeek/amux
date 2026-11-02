@@ -374,7 +374,10 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
             // From here the platform may receive it: every failure is uncertain.
             // What the page already lists, so a post with no caption can still
             // be found: it is the one that was not there before the click.
-            let _ = eval(state, "(()=>{window.__amuxSeenUrns=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].map(e=>e.getAttribute('data-urn'));return true})()").await;
+            if let Err(e) = eval(state, "(()=>{window.__amuxSeenUrns=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].map(e=>e.getAttribute('data-urn'));return true})()").await {
+                tracing::warn!(platform = "linkedin", account = t.account, error = %e, verdict = "social_browser_post_list_unread", measured = false,
+                    "could not note the page's posts before Post; a post without its caption cannot be found by being new");
+            }
             let clicked = eval(state, &format!("(()=>{{const b={POST_BUTTON_JS};if(!b)return false;b.click();return true}})()"))
                 .await
                 .map_err(|e| Failure::uncertain(format!("clicking Post: {e}")))?;
