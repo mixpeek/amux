@@ -62,7 +62,13 @@ try {
   check('no revert failed to build',!log().includes('land_red_revert_unbuildable'));
   for (const v of ['land_gate_green','land_red_revert_queued','land_push_receipt_adopted','land_red_reverted'])
     check('verdict in the log: '+v,log().includes(v));
-}catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});}
+}catch(e){
+  // A timed-out wait says only that it timed out: carry the queue, the episodes
+  // and the land log lines, so a red CI run shows where it stopped (AF-1162).
+  let land=null;try{land=await report();}catch(err){land=String(err);}
+  let lines=[];try{lines=log().split('\n').filter(l=>/verdict="land_|gh timed out/.test(l)).slice(-40);}catch{}
+  checks.push({name:'scenario completed',ok:false,detail:{error:String(e.stack||e),land,log:lines}});
+}
 finally{await amux.stop();}
 const receipt={measured:true,n_considered:checks.length,failed:checks.filter(x=>!x.ok).length,artifacts:amux.root,
   fixture_boundary:'real HTTPS land queue and land-red watch, local git/bare origin, stub gh, one controller SIGKILL at remote acceptance of the revert',checks};
