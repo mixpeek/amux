@@ -21081,7 +21081,9 @@ fn reachable_lanes(
     me: &str,
     lanes: &[(String, std::collections::HashMap<String, String>)],
 ) -> Vec<(String, std::collections::HashMap<String, String>)> {
-    lanes.iter().filter(|(n, _)| n == me || peer_input_refusal(me, n).is_none()).cloned().collect()
+    super::worker_messaging::without_refusal_logs(|| {
+        lanes.iter().filter(|(n, _)| n == me || peer_input_refusal(me, n).is_none()).cloned().collect()
+    })
 }
 
 /// The longest description the roster prints. Descriptions are meant to be one
