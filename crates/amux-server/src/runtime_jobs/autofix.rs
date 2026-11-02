@@ -174,6 +174,18 @@ fn latency_min_samples() -> i64 {
 /// on these routes that IS wrong.
 const LONG_BY_DESIGN: &[(&str, f64)] = &[
     ("/api/files/mdai/run", 150_000.0),
+    // GET /api/sessions/{name}/peek (AF-1167). The full peek (history) reads
+    // the pane with a 10s capture-pane bound, then geometry and the transcript,
+    // and the dashboard gives it 15s before aborting (`refreshPeek`). So 15s
+    // is this route's own deadline. A live=1 peek has its own 2.5s budget and
+    // answers 503 past it (AF-1165), so this entry hides nothing on that path.
+    //
+    // Measured 2026-11-02: every full peek past 10s finished beside saved
+    // tmux-stall evidence while the tmux server sat idle in select (534 of 612
+    // samples), at load 45-80 on 28 cores. The wait is spawning tmux clients
+    // on a loaded host. The control-mode client that removes the spawn
+    // (backend/tmux_ctl.rs) has been off since it crashed the fleet (AF-1056).
+    ("/api/sessions/{name}/peek", 15_000.0),
     // POST /api/browser/navigate (AMUX-3835). The duration is a REMOTE PAGE
     // LOAD plus a settle, so the wait belongs to the site, not to amux. The
     // budget is this endpoint's OWN bound, added up rather than guessed:
@@ -16960,6 +16972,20 @@ mod tests {
     /// value is that the route keeps ONE latency story it can still tell —
     /// "this hung", as against "this was big". A budget set to infinity, or a
     /// blanket exemption, silences both.
+    /// AF-1167: a real peek path reaches the budget through the same
+    /// normalizer the detector uses, the 13.1s full peeks measured on
+    /// 2026-11-02 sit under it, and a peek that outlives the dashboard's 15s
+    /// abort still files. A fast sibling verb (report) does not inherit it.
+    #[test]
+    fn a_full_peek_inside_the_dashboards_deadline_is_not_an_outlier() {
+        let target = rl::normalize_target_verb("/api/sessions/mixpeek-meta-worker/peek");
+        let budget = design_budget_ms(&target);
+        assert!(13_110.0 < budget, "{target}: {budget}");
+        assert!(budget <= 15_000.0, "past the dashboard's abort nobody receives it: {budget}");
+        let report = rl::normalize_target_verb("/api/sessions/mixpeek-meta-worker/report");
+        assert_eq!(design_budget_ms(&report), 0.0, "{report}");
+    }
+
     #[test]
     fn a_long_by_design_route_keeps_the_one_latency_story_that_is_still_wrong() {
         // The measurement that set the number: three consecutive calls at
