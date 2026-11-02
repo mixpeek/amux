@@ -26,12 +26,15 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     g._idb.getUploads = () => new Promise(() => {});
     return g.__opens;
   });
-  // CI's Linux WebKit does not always answer navigator.storage.estimate within
-  // the poll below (ae9e266ec's main run). The report handles that case, and the
-  // hung-estimate half of this spec pins it, so here WebKit gets an answer.
+  // CI's Linux WebKit has no navigator.storage at all, so nothing asks for an
+  // estimate there (rust run 41486647673). Give WebKit one, on every host, so the
+  // size and hung-estimate halves below run on it too.
   if (testInfo.project.name === 'ios-safari') {
     await page.evaluate(() => {
-      (navigator.storage as any).estimate = () => Promise.resolve({ usage: 1024, quota: 1048576 });
+      Object.defineProperty(navigator, 'storage', {
+        configurable: true,
+        value: { estimate: () => Promise.resolve({ usage: 1024, quota: 1048576 }) },
+      });
     });
   }
   const rows = await page.evaluate(() => (window as any)._upqListBounded(500));
