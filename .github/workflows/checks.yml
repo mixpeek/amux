@@ -12,23 +12,81 @@ on:
   pull_request:
 
 jobs:
-  checks:
+  # SHARDED (2026-11-02). Every check below used to run as one step of a single
+  # job, one after another: 136 steps, 14 to 16 minutes per run (845s on
+  # c71df3ef9), with a 20-minute timeout and a warning at 15. The checks are
+  # still listed below, unchanged, under `catalogue`, which never runs. `shard`
+  # runs them in parallel: scripts/ci-checks.py gives each shard a slice,
+  # balanced by the seconds in scripts/ci-checks-durations.json. `checks`
+  # passes only when every catalogue check ran exactly once, in some shard, and
+  # passed. Add a check by adding a step to `catalogue`: `name` and `run` only.
+  shard:
     runs-on: ubuntu-latest
-    # 20, not 10 (2026-10-24). The job is ~90 serial steps; passing runs took a
-    # median of 9 minutes, so 28 of the last 100 main runs hit the 10-minute
-    # limit and read as "cancelled". The deploy gate needs checks green on the
-    # same commit as rust, and only 7 of those 100 commits had both, so the Mac
-    # stayed 79 commits behind main. checks runs beside rust (16-25 min), so a
-    # longer budget does not slow a deploy. The last step warns at 15 minutes.
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
-      # Full history: the client-version guard below diffs against the push's
-      # base, which a shallow clone cannot reach.
+      # Full history, blobs on demand: the client-version guard below diffs
+      # against the push's base, which a shallow clone cannot reach.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Start the job clock
-        run: echo "CHECKS_T0=$(date +%s)" >> "$GITHUB_ENV"
+          filter: blob:none
+      # What the one serial job used to leave behind for every later step: the
+      # npm packages and a git identity (set by the land-regenerate step).
+      - name: Shared setup for every shard
+        run: |
+          npm ci --ignore-scripts
+          git config --global user.email ci@amux.test; git config --global user.name ci
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+      - name: Checks (shard ${{ matrix.shard }}/${{ strategy.job-total }})
+        run: python3 scripts/ci-checks.py run ${{ matrix.shard }}/${{ strategy.job-total }} --out "$RUNNER_TEMP/checks-shard-${{ matrix.shard }}.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checks-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checks-shard-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  checks:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            .github/workflows/checks.yml
+            scripts/ci-checks.py
+            scripts/ci-checks-durations.json
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: checks-shard-*
+          path: ${{ runner.temp }}/checks-results
+      - name: Every catalogue check ran exactly once and passed
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install --quiet pyyaml
+          python3 scripts/ci-checks.py verify "$RUNNER_TEMP/checks-results"
+          python3 scripts/ci-checks.py durations "$RUNNER_TEMP/checks-results" > "$RUNNER_TEMP/ci-checks-durations.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-checks-durations
+          path: ${{ runner.temp }}/ci-checks-durations.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The checks themselves. Never runs as a job: scripts/ci-checks.py reads these
+  # steps and `shard` runs them. Each step is `name` + `run`, nothing else.
+  catalogue:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
       - name: Browser evidence and lifecycle cleanup controls (AF-768, AF-773)
         run: |
           npm ci --ignore-scripts
@@ -43,6 +101,10 @@ jobs:
       # rust.yml lets a PR reuse main's compiled server and tests when this key
       # matches. A key that missed a compile input would hand a PR a stale
       # binary and a false green, so its input classes are pinned here.
+      # The shards above run this catalogue; this proves the planner owns every
+      # check once and that `verify` goes red on a missing, doubled or failed one.
+      - name: the checks shards run the whole catalogue (scripts/ci-checks.py)
+        run: python3 scripts/test-ci-checks.py
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
         run: node --test tests/ci-rust-key.test.mjs
       # Browser methods: the backend ladder, agent selection, and the OpAgent
@@ -480,10 +542,13 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-claude-tmp.sh
-      - name: a hot fseventsd names the directory feeding it and escalates (DESKT-81)
+      - name: a hot fseventsd names the directory feeding it and escalates (DESKT-81) (1/2)
         run: |
           set -uo pipefail
           ./scripts/test-mac-cleanup-fseventsd.sh
+      - name: a hot fseventsd names the directory feeding it and escalates (DESKT-81) (2/2)
+        run: |
+          set -uo pipefail
           ./scripts/test-mac-health-pass.sh
       - name: cargo tests run at most AMUX_TEST_THREADS threads, and the tick names an uncapped test binary
         run: |
@@ -664,10 +729,22 @@ jobs:
           git config --global user.email ci@amux.test; git config --global user.name ci
           bash scripts/test-land-regenerate.sh && NO_REGEN=1 bash scripts/test-land-regenerate.sh
           bash scripts/test-land-regenerate-always.sh && bash scripts/test-land-regenerate-always.sh "" conflict && bash scripts/test-land-regenerate-always.sh "" failing && bash scripts/test-land-regenerate-always.sh "" worktree
-      - name: land precheck verdict and attributed cancel
+      - name: land precheck verdict and attributed cancel (1/4)
         run: |
           set -uo pipefail
-          bash scripts/test-land-gate-capped.sh && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-holder-pid-reused.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh && bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-merge-queue.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-guards.sh && bash scripts/test-land-queue-policy.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
+          bash scripts/test-land-gate-capped.sh && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh && bash scripts/test-land-holder-pid-reused.sh && bash scripts/test-land-cancel-shared-checkout.sh && bash scripts/test-land-refusal-spares.sh && bash scripts/test-land-demote-sticks.sh
+      - name: land precheck verdict and attributed cancel (2/4)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-to-head.sh && bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-merge-queue.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh
+      - name: land precheck verdict and attributed cancel (3/4)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh && bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-guards.sh && bash scripts/test-land-queue-policy.sh
+      - name: land precheck verdict and attributed cancel (4/4)
+        run: |
+          set -uo pipefail
+          bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh && bash scripts/test-pipeline-bottlenecks-throughput.sh && bash scripts/test-pipeline-bottlenecks-constraints.sh && python3 scripts/test-pipeline-bottlenecks-host.py
       - name: a lane resumes its own conversation, never whichever peer ran here last
         run: |
           set -uo pipefail
@@ -745,7 +822,7 @@ jobs:
       # pinning is "stays silent when it should" - which no Rust test can see,
       # because the hook is a separate Python file that ships by install, not by
       # build. Language-agnostic, so it belongs here rather than in rust.yml.
-      - name: staged-guard prints noise only when it has something to say (AF-342)
+      - name: staged-guard prints noise only when it has something to say (AF-342) (1/2)
         run: |
           set -uo pipefail
           ./scripts/test-staged-guard-render.sh
@@ -762,6 +839,9 @@ jobs:
           ./scripts/test-commit-stamp.sh
           ./scripts/test-mass-delete-gate.sh
           ./scripts/test-observed-edits-walk.sh
+      - name: staged-guard prints noise only when it has something to say (AF-342) (2/2)
+        run: |
+          set -uo pipefail
           ./scripts/test-hook-drift-notice.sh
           # The shared-checkout guard's own 114-case matrix. It existed and ran
           # NOWHERE: not in CI, not in pre-commit. A safety-critical guard whose
@@ -885,7 +965,7 @@ jobs:
       # Its control (nothing cleared above the floor) and its last-resort case
       # (the shared dir must STILL be reachable) are what stop the fix becoming
       # either a no-op or a reintroduction of the disk-full outage.
-      - name: SessionStart freshness + deployment and watchdog recovery
+      - name: SessionStart freshness + deployment and watchdog recovery (1/3)
         run: |
           set -uo pipefail
           ./scripts/test-session-freshness.sh
@@ -902,6 +982,9 @@ jobs:
           # step has no -e, so a middle line's failure would otherwise not count.
           python3 scripts/tests/test_claude_rotate.py || exit 1
           ./scripts/test-main-ci-watch.sh
+      - name: SessionStart freshness + deployment and watchdog recovery (2/3)
+        run: |
+          set -uo pipefail
           ./scripts/test-board-refusal-why.sh
           # A replacement is complete and signed before its one visible rename;
           # persistent listener loss makes the external watchdog reload only the
@@ -927,6 +1010,9 @@ jobs:
           # The builder compiles main's tip while its CI runs (2026-10-29).
           ./scripts/test-rust-prebuild.sh
           python3 ./scripts/test-watchdog-recovery.py
+      - name: SessionStart freshness + deployment and watchdog recovery (3/3)
+        run: |
+          set -uo pipefail
           # AEAB-36: a board write that never reached the server must say so,
           # and must never be confused with one the server refused. Its (c)/(d)
           # controls are the load-bearing half — a CLI that shouted "cannot
@@ -1015,12 +1101,3 @@ jobs:
           # normal checkout, which is exactly how this went unnoticed. Both
           # directions confirmed to fail before wiring in.
           ./scripts/test-install-hooks-worktree.sh
-      # Says when the job is near its budget, before it starts timing out again.
-      - name: Job time against its 20-minute budget
-        if: always()
-        run: |
-          used=$(( $(date +%s) - CHECKS_T0 ))
-          echo "verdict=checks_duration seconds=$used budget=1200 measured=true"
-          if [ "$used" -gt 900 ]; then
-            echo "::warning title=checks_near_timeout::checks took ${used}s of its 1200s budget; split it or speed up its slowest steps"
-          fi
