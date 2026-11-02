@@ -12,6 +12,10 @@
 #             their tickets
 #   enforce   lost runner: dispatched once more, lands
 #   enforce   dispatch fails: rc 6, nothing pushed to main
+#   enforce   only no-code paths: lands with no candidate; an excluded path or code
+#             beside it gets one; its check can still refuse
+#   enforce   main moves under a green candidate: carried when nothing overlaps or
+#             the new commit is no-code, re-composed when a file is shared
 #   shadow    candidate dispatched, main pushed directly even when it is red
 #   misconfigured (no workflow): lands directly with a WARN
 set -uo pipefail
@@ -36,7 +40,15 @@ if [ "$1 $2" = "workflow run" ]; then
   [ -f "$H/dispatch-fails" ] && { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; }
   ref=""; prev=""; for a in "$@"; do [ "$prev" = --ref ] && ref="$a"; prev="$a"; done
   sha="$(git --git-dir="$O" rev-parse -q --verify "refs/heads/$ref")" || { echo "no ref $ref" >&2; exit 1; }
-  echo "$ref $sha" >> "$H/dispatched"; exit 0
+  echo "$ref $sha" >> "$H/dispatched"
+  # Main moves while this candidate runs, once.
+  if [ -f "$H/move-main" ]; then
+    f="$(cat "$H/move-main")"; rm -f "$H/move-main"
+    W="$(mktemp -d)"; git clone -q "$O" "$W" 2>/dev/null
+    ( cd "$W" && git config user.email m@m && git config user.name m && mkdir -p "$(dirname "$f")" && echo moved > "$f" && git add -A && git commit -qm "moved $f" && git push -q origin HEAD:main ) 2>/dev/null
+    rm -rf "$W"
+  fi
+  exit 0
 fi
 [ "$1" = api ] || exit 2
 case "$2" in
@@ -75,7 +87,7 @@ land() { # extra args...
   HOME="$H" FAKE_GH_HOME="$H" AMUX_LAND_MQ_GH="$H/bin/gh" AMUX_LAND_MQ_POLL_S=0 AMUX_LAND_NET_BACKOFF_S=0 \
     AMUX_LAND_NOTIFY=0 AMUX_WORKER=lmq bash "$AM" land --tries 6 "$@" > "$H/out" 2>&1
 }
-commit_file() { echo "$2" > "$1"; git add "$1"; git commit -qm "add $1"; }
+commit_file() { mkdir -p "$(dirname "$1")"; echo "$2" > "$1"; git add "$1"; git commit -qm "add $1"; }
 main_has() { git --git-dir="$H/origin.git" cat-file -e "main:$1" 2>/dev/null; }
 mq_refs() { git --git-dir="$H/origin.git" for-each-ref --format='%(refname)' refs/heads/mq/ | grep -c . ; }
 dispatches() { cat "$H/dispatched" 2>/dev/null | grep -c . ; }
@@ -151,6 +163,70 @@ land; rc=$?
 { [ "$rc" = 6 ] && [ "$(git --git-dir="$H/origin.git" rev-parse main)" = "$base" ] && [ "$(mq_refs)" = 0 ]; } \
   && ok "enforce dispatch failure: rc 6, nothing on main, no ref left" || bad "dispatch failure rc=$rc refs=$(mq_refs)"
 grep -q "candidate not measured (unmeasured - - dispatch_failed" "$H/.amux/logs/land.log" && ok "enforce dispatch failure: land.log says why" || bad "no unmeasured line"
+done_case
+
+# --- enforce, a stack of only no-code paths
+nocode() { git config --add amux.landMergeQueueNoCodePath 'research/*'; git config --add amux.landMergeQueueNoCodePath '!research/cicd/*'; }
+setup; queue_on; nocode; commit_file research/notes.md x
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has research/notes.md && [ "$(dispatches)" = 0 ]; } \
+  && ok "no-code: lands with no candidate" || bad "no-code rc=$rc dispatches=$(dispatches)"
+done_case
+
+setup; queue_on; nocode; commit_file research/cicd/runs.py x
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has research/cicd/runs.py && [ "$(dispatches)" = 1 ]; } \
+  && ok "no-code: an excluded path still gets a candidate" || bad "excluded rc=$rc dispatches=$(dispatches)"
+done_case
+
+setup; queue_on; nocode; commit_file research/notes.md x; commit_file code.py y
+land; rc=$?
+{ [ "$rc" = 0 ] && [ "$(dispatches)" = 1 ]; } && ok "no-code: code beside it still gets a candidate" || bad "mixed rc=$rc dispatches=$(dispatches)"
+done_case
+
+setup; queue_on; nocode; git config amux.landMergeQueueNoCodeCheck 'echo planted secret; exit 1'; base="$(git rev-parse origin/main)"; commit_file research/notes.md x
+land; rc=$?
+{ [ "$rc" = 6 ] && [ "$(git --git-dir="$H/origin.git" rev-parse main)" = "$base" ]; } \
+  && ok "no-code: its check still refuses, nothing on main" || bad "no-code check rc=$rc"
+done_case
+
+setup; queue_on; nocode; git config amux.landMergeQueueNoCodeCheck 'git cat-file -e "$AMUX_LAND_TIP:research/notes.md"'; commit_file research/notes.md x
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has research/notes.md; } && ok "no-code: its check sees the stack's tip" || bad "no-code tip rc=$rc"
+done_case
+
+setup; queue_on; nocode; mkdir research; git mv f research/f; git commit -qm "move f"
+land; rc=$?
+{ [ "$rc" = 0 ] && [ "$(dispatches)" = 1 ]; } && ok "no-code: code renamed under a no-code path still gets a candidate" || bad "rename rc=$rc dispatches=$(dispatches)"
+done_case
+
+# The check refuses a waiter's file: the holder still lands, alone, and the waiter keeps its place.
+setup; queue_on; nocode; git config amux.landMergeQueueNoCodeCheck '! git cat-file -e "$AMUX_LAND_TIP:research/planted.md"'; commit_file research/notes.md x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 research/planted.md
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has research/notes.md && ! main_has research/planted.md && [ "$(ls "$q" | grep -c .)" = 1 ]; } \
+  && ok "no-code: a batch its check refuses lands the holder alone, the waiter keeps its ticket" || bad "no-code batch rc=$rc tickets=$(ls "$q")"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- enforce, main moves under a green candidate
+setup; queue_on; commit_file g1 x; echo other.txt > "$H/move-main"
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has g1 && main_has other.txt && [ "$(dispatches)" = 1 ]; } \
+  && ok "moved main, no shared file: the green candidate lands, replayed, with no second run" || bad "carried rc=$rc dispatches=$(dispatches)"
+done_case
+
+setup; queue_on; commit_file g1 x; echo g1 > "$H/move-main"
+land; rc=$?
+{ grep -q "re-composing on the new tip" "$H/.amux/logs/land.log" && ! grep -q "replayed onto the new tip" "$H/.amux/logs/land.log"; } \
+  && ok "moved main on the same file: not carried" || bad "overlap rc=$rc dispatches=$(dispatches)"
+done_case
+
+setup; queue_on; nocode; commit_file g1 x; echo research/notes.md > "$H/move-main"
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has g1 && [ "$(dispatches)" = 1 ]; } && ok "moved main by a no-code commit: carried" || bad "no-code move rc=$rc dispatches=$(dispatches)"
 done_case
 
 # --- shadow
