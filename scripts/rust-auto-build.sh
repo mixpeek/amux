@@ -64,6 +64,35 @@ ids=[r.get("schedule_id","?") for r in rows if isinstance(r,dict) and r.get("sta
 print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 }
 
+# Wait for the server to report $1 live, for $2 seconds; sets $waited and
+# returns 0 once it does. The server holds adoption of a new binary while a
+# shell schedule run is in flight, for up to AMUX_ADOPT_SHELL_DEFER_MAX_S
+# (lib.rs SELF_ADOPT, default 900). Rolling back at $2 during that hold threw
+# away good builds: 6 rollbacks from 2026-10-30 to 11-02, c71df3ef9 among
+# them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
+# in flight, up to $2 plus the hold, and says so once.
+wait_live_identity() {
+  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs=""
+  case "$hold" in ''|*[!0-9]*) hold=900 ;; esac
+  waited=0
+  while :; do
+    if measure_live_identity && [ -n "$live" ]; then
+      case "$sha" in "$live"*) return 0 ;; esac
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      [ "$waited" -lt $((limit + hold)) ] || return 1
+      # Re-read the scheduler every 15s, not every second.
+      if [ $(( (waited - limit) % 15 )) = 0 ]; then runs=$(shell_runs_in_flight $((limit + hold))); fi
+      [ -n "$runs" ] || return 1
+      if [ "$said" = 0 ]; then
+        said=1
+        echo "== ACTIVATION WAIT EXTENDED sha=$sha: not live after ${limit}s while shell run(s) $runs hold adoption; waiting up to $((limit + hold))s verdict=activation_wait_shell_hold"
+      fi
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+}
+
 # THE BASH CLI SHIPS WITH THE SERVER IT TALKS TO. This builder installs only
 # amux-server; the bash `amux` in ~/.local/bin and /usr/local/bin was copied
 # once by install.sh and then went stale. Measured 2026-09-27: the server
@@ -1048,12 +1077,7 @@ PYIDENTITY
     if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
       limit="${AMUX_ACTIVATION_HEALTH_S:-300}"; waited=0; healthy=0
       case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
-      while [ "$waited" -lt "$limit" ]; do
-        if measure_live_identity && [ -n "$live" ]; then
-          case "$built_sha" in "$live"*) healthy=1; break ;; esac
-        fi
-        sleep 1; waited=$((waited + 1))
-      done
+      if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
         echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) verdict=activation_healthy"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
@@ -1063,7 +1087,7 @@ PYIDENTITY
         mv -f "${INSTALL}.rollback" "$INSTALL"
         if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
         printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
-        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${limit}s" \
+        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${waited}s" \
              "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
       fi
     fi

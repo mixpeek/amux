@@ -215,6 +215,13 @@ jobs:
         run: |
           set -uo pipefail
           ./scripts/test-tmux-watchdog.sh
+      # A build the server is holding for a shell schedule run is not a failed
+      # boot: the builder waits out that hold before rolling back. Runs the
+      # shipped wait_live_identity with stubbed identity and scheduler.
+      - name: the builder does not roll back a build the server is holding
+        run: |
+          set -uo pipefail
+          ./scripts/test-activation-health-wait.sh
       # AMUX-4732. The report reaches each lane as a CARD now, because the
       # 2026-09-14 attempt went out as peer MESSAGES and the two lanes that were
       # down never received it: both grew ~6 GB more while the one that was up
