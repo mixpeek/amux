@@ -5,7 +5,7 @@
 // next pass opens a fresh one, and says whether a reset had already happened.
 import { test, expect } from './fixtures';
 
-test('a hung upload-list read resets the IndexedDB connection; the next read opens a fresh one', async ({ page }) => {
+test('a hung upload-list read resets the IndexedDB connection; the next read opens a fresh one', async ({ page }, testInfo) => {
   test.setTimeout(60_000);
   const beacons: any[] = [];
   page.on('request', r => {
@@ -26,6 +26,14 @@ test('a hung upload-list read resets the IndexedDB connection; the next read ope
     g._idb.getUploads = () => new Promise(() => {});
     return g.__opens;
   });
+  // CI's Linux WebKit does not always answer navigator.storage.estimate within
+  // the poll below (ae9e266ec's main run). The report handles that case, and the
+  // hung-estimate half of this spec pins it, so here WebKit gets an answer.
+  if (testInfo.project.name === 'ios-safari') {
+    await page.evaluate(() => {
+      (navigator.storage as any).estimate = () => Promise.resolve({ usage: 1024, quota: 1048576 });
+    });
+  }
   const rows = await page.evaluate(() => (window as any)._upqListBounded(500));
   expect(rows).toEqual([]);
   await expect.poll(() => beacons.filter(b => b.verdict === 'idb_connection_reset').length).toBe(1);
