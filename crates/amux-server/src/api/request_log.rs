@@ -3787,6 +3787,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/history/{id}/reply",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/history/{id}/card",
         methods: &["PUT"],
     },

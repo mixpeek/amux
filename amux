@@ -9110,6 +9110,21 @@ print(("linked MSG-%s to %s: %s" % (mid, sha, reason)) if sha else ("closed MSG-
 PY
     return $?
   fi
+  if [[ "${1:-}" == "reply" ]]; then
+    local id="${2:-}"
+    [[ "$id" =~ ^(MSG-)?[0-9]+$ ]] || die "usage: amux requests reply MSG-<id>"
+    curl -sk --connect-timeout 5 --max-time 30 "$AMUX_API/api/history/${id#MSG-}/reply" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"): sys.exit(d["error"])
+if not d.get("measured"): sys.exit("not read: " + d.get("why_unmeasured", "unknown"))
+if not d.get("found"): sys.exit("MSG-%s is not in the current transcript of %s" % (d["id"], d["session"]))
+if not d.get("text") and d.get("ended") == "next_input": sys.exit("another message reached %s before it answered MSG-%s; read the reply to that one" % (d["session"], d["id"]))
+if not d.get("text"): sys.exit("%s has not answered MSG-%s yet" % (d["session"], d["id"]))
+print(d["text"])
+if not d.get("ended"): print("(turn still open)")'
+    return $?
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --days)  days="${2:-7}"; shift 2 ;;
@@ -9120,6 +9135,7 @@ PY
         cat <<'HELP'
 Usage: amux requests [<worker>...|--all] [--days N] [--open] [--json]
        amux requests close [--sha <commit>] MSG-<id> <reason>
+       amux requests reply MSG-<id>    what the worker answered, from its transcript
 
 The owner's requests to a worker (default: $AMUX_SESSION) and where each one
 stands: open, on main, live (in the running build), or closed.
