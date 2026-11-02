@@ -153,7 +153,13 @@ async fn until_in(state: &AppState, session: &str, script: &str, secs: u64) -> R
     Ok(false)
 }
 
-const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*post\\s*$/i.test(b.innerText||''));return b&&!b.disabled?b:null})()";
+/// The Post button of the composer in view: the LAST VISIBLE one, for the same
+/// reason as `visible_editor_js`. This took the first match, so after baf01fdb2
+/// the caption went into the visible composer and the click went to the hidden,
+/// empty copy, which LinkedIn published (amux-gtm, 2026-11-02:
+/// urn:li:ugcPost:7523066574971412480). e2e/social-linkedin-post-button.spec.ts
+/// runs this string in a browser.
+const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].filter(b=>/^\\s*post\\s*$/i.test(b.innerText||'')&&b.getClientRects().length&&getComputedStyle(b).visibility!=='hidden').pop();return b&&!b.disabled?b:null})()";
 
 /// JS for the editor Post submits: the LAST VISIBLE match. The media step
 /// leaves an earlier, hidden copy of the composer in the page, and
@@ -366,6 +372,9 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                     .with(json!({"draft": true, "composed": true})));
             }
             // From here the platform may receive it: every failure is uncertain.
+            // What the page already lists, so a post with no caption can still
+            // be found: it is the one that was not there before the click.
+            let _ = eval(state, "(()=>{window.__amuxSeenUrns=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].map(e=>e.getAttribute('data-urn'));return true})()").await;
             let clicked = eval(state, &format!("(()=>{{const b={POST_BUTTON_JS};if(!b)return false;b.click();return true}})()"))
                 .await
                 .map_err(|e| Failure::uncertain(format!("clicking Post: {e}")))?;
@@ -377,7 +386,7 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
             // list) the newest post carrying this caption.
             let head: String = d.caption.trim().chars().take(40).collect();
             let link_js = format!(
-                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>(e.innerText||'').includes({}));return p?'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/':''}})()",
+                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>(e.innerText||'').includes({}));if(p)return 'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/';const seen=window.__amuxSeenUrns;const n=seen&&[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>!seen.includes(e.getAttribute('data-urn')));return n?'https://www.linkedin.com/feed/update/'+n.getAttribute('data-urn')+'/':''}})()",
                 json!(head)
             );
             let mut url = String::new();
@@ -391,6 +400,8 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             let Some(urn) = url.split("/feed/update/").nth(1).map(|s| s.trim_end_matches('/').split('?').next().unwrap_or("").to_string()).filter(|s| s.starts_with("urn:li:")) else {
+                tracing::warn!(platform = "linkedin", account = t.account, verdict = "social_browser_no_post_link", measured = true, n_considered = 1,
+                    "clicked Post and found no View post link and no new post on the page");
                 return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link within 30 s: check the feed before resending"));
             };
             // READ THE PUBLISHED POST BACK (amux-gtm, 2026-10-31): the composer
