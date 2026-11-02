@@ -886,7 +886,7 @@
 - **Hypothesis:** The third-largest landing guide (54 visitors in 7 days, 3.7% GitHub clicks, 0 /start/ views) answers "best self-hosted AI coding tools" without saying early that amux is self-hosted for free and has a hosted option. One sentence in the opening answer, with the repo and /start/ linked, lifts GitHub clicks to 7%+.
 - **Page:** /guides/best-self-hosted-ai-coding-tools-2026/
 - **KPI:** `cta_click` goal=github and goal=cloud on that path per landing visitor, `data-cta-loc="exp145-answer"`
-- **Status:** `queued`. Start after EXP-142 scores (2026-10-27), so two answer-first tests are not read in the same week on overlapping traffic.
+- **Status:** `concluded: not run`. Replaced on 2026-11-02 by EXP-156, which changes the same page's top box.
 - **Effort:** XS
 
 ### EXP-146: Cloud blocks and an answer-first opening on /guides/background-agents-compared/
@@ -929,7 +929,8 @@
 - **Hypothesis:** The multiplexers roundup is the highest-traffic content landing page (54 landing visitors in 7 days) and the best GitHub converter among them, but only 1.9% of its landing visitors reach /start/. Its Cloud boxes sit above the table of contents and after the FAQ, far from the feature matrix where readers compare tools. Naming amux Cloud in the short answer and adding a Cloud box right after the matrix ("every local multiplexer here stops when your laptop sleeps") lifts the /start/ view rate without lowering GitHub clicks; the top box's second button changes from "See pricing" to "Self-host free on GitHub".
 - **Page:** /guides/best-ai-agent-multiplexers-2026/
 - **KPI:** /start/ views with `source=best-ai-agent-multiplexers-2026`, and `cta_click` goal=cloud and goal=github on that path per landing visitor; spots `cloud-inline-top`, `cloud-inline-mid`, `cloud-inline-end`
-- **Status:** `running`, started 2026-10-26, score 2026-11-02. Baseline (site-funnel.py --days 7, 2026-10-19 to 10-26): 14.8% GitHub click, 1.9% /start/ view from 54 landing visitors.
+- **Status:** `concluded`, no_effect. Started 2026-10-26, scored 2026-11-02. Baseline (site-funnel.py --days 7, 2026-10-19 to 10-26): 14.8% GitHub click, 1.9% /start/ view from 54 landing visitors.
+- **Score (2026-11-02):** no_effect. Post window (10-26 to 11-02): 67 landing visitors, 11.9% clicked GitHub (8), 0.0% viewed /start/ (0), against 14.8% (8) and 1.9% (1) of 54 before. None of the three Cloud boxes (top, mid, end) drew a `cta_click` goal=cloud, and no /start/ view since 10-19 carries this source. All 6 tracked GitHub clicks on the path came from body links, so the new GitHub button in the top box did no visible harm or good. The boxes stay because they cost nothing. This page's readers go to GitHub, so more Cloud copy here is unlikely to pay.
 - **Implementation:** Job 2 enrichment (43b4bbf0f): short answer names amux Cloud, cloud-inline-mid box after the matrix with the Team pitch, top box GitHub button, Superset card rewritten as Paradev, stale "only multiplexer with a phone app" and "amux (MIT)" claims fixed.
 - **Effort:** XS
 
@@ -973,6 +974,32 @@
 - **Status:** `running`, started 2026-11-01, score 2026-11-08. Baseline (site-funnel.py --days 7, 2026-10-25 to 11-01): 0.0% GitHub click as first-touch lander, 0.0% /start/ view from 10 landing visitors. At this traffic, expect to extend the score date or read it as inconclusive.
 - **Implementation:** Job 2 enrichment (57af51cd8): Start amux Cloud button in the existing top box, tagged cloud-inline-top, and an end block with cloud-inline-end.
 - **Effort:** XS
+
+### EXP-156: Top box opens with the free install on /guides/best-self-hosted-ai-coding-tools-2026/
+- **Hypothesis:** This is the largest gap in the funnel report (45 landing visitors in 7 days, 0 GitHub clicks, 0 /start/ views). Its top box pitched Cloud to people searching for self-hosted tools and had no GitHub button. Opening the box with the free self-hosted install and offering Cloud to people who don't want to keep a machine on lifts GitHub clicks to 5%+ and /start/ views to 2%+.
+- **Page:** /guides/best-self-hosted-ai-coding-tools-2026/
+- **KPI:** /start/ views with `source=best-self-hosted-ai-coding-tools-2026`, and `cta_click` goal=cloud and goal=github on that path per landing visitor; spots `cloud-inline-top`, `cloud-inline-end`
+- **Status:** `running`, started 2026-11-02, score 2026-11-09. Baseline (site-funnel.py --days 7, 2026-10-26 to 11-02): 0.0% GitHub click, 0.0% /start/ view from 45 landing visitors.
+- **Implementation:** Job 2 enrichment (3f33e0ca0): top box copy rewritten, "See pricing" replaced by "Self-host free on GitHub" in the top and end boxes, date stamps updated.
+- **Effort:** XS
+
+## Which Cloud boxes have produced anything (read before picking the next page)
+
+Measured 2026-11-02 over 10-19 to 11-02, HogQL on project 378145, distinct people. `cta_click` goal=cloud by spot, content pages only:
+
+| spot | people | pages |
+|---|---|---|
+| cloud-inline-top | 10 | best-claude-code-session-managers 4, harness-engineering 3, best-terminal-ai-coding-agents 1, best-self-hosted 1, ai-coding-tools-pricing 1 |
+| cloud-inline-mid | 0 | |
+| cloud-inline-end | 0 | |
+
+/start/ views by `source=` in the same window: harness-engineering 12, best-claude-code-session-managers 4, ai-coding-tools-pricing 3, claude-code-headless 2, best-self-hosted 1, best-terminal-ai-coding-agents 1; 39 people had no source.
+
+What this says:
+- Only the top box has drawn a tracked Cloud click. Mid and end boxes have drawn none across every page that has them, so stop adding mid boxes as the treatment.
+- harness-engineering shows 12 /start/ views with its source against 3 tracked clicks, and claude-code-headless shows 2 against 0, while EXP-148 read 0 /start/ views from its landers. Either `cta_click` misses clicks or these people entered the page some other way than landing on it. Not diagnosed; read `/start/` views by `source`, as well as lander rates, when scoring.
+- Two roundups have 0 Cloud clicks and 0 sourced /start/ views despite traffic: best-ai-agent-multiplexers (top, mid and end boxes) and the orchestrators post. Session-managers, the same page shape, is the best content page. The difference is unexplained.
+- Paid has read 0 for six daily reports. In the last 7 days 35 people viewed /start/, 3 started the form and 1 reached checkout, so the largest drop is on /start/ itself. A CTA on one more content page will not fix that.
 
 ## Concluded Experiments
 
@@ -1097,6 +1124,7 @@
 | EXP-147: Mid-page Cloud block and a "where it runs" answer on harness-engineering | 2026-10-23 | 2026-10-30 | 125 landers: 6.4% GitHub (8), 3.2% /start/ (4) vs 4.7% (5) and 0.0% (0) of 106 before; /start/ p about 0.06; mid block drew 0 clicks, top block 3 | win (small sample, top and end blocks) |
 | EXP-148: Short answer, "where to run it" table and mid-page Cloud block on claude-code-headless | 2026-10-24 | 2026-10-31 | 50 landers: 0 GitHub, 0 /start/, 0 cta_click of any kind vs 0 and 0 of 33 before | no_effect |
 | EXP-149: Short answer, Cloud blocks and corrected amux facts on the orchestrators roundup | 2026-10-25 | 2026-11-01 | 12 landers: 8.3% GitHub (1), 0.0% /start/ vs 0 and 0 of 13 before; one person, too few to read | inconclusive |
+| EXP-150: Mid-page Cloud box, Cloud in the short answer and Paradev facts on the multiplexers roundup | 2026-10-26 | 2026-11-02 | 67 landers: 11.9% GitHub (8), 0.0% /start/ vs 14.8% (8) and 1.9% (1) of 54 before; no Cloud click on any box | no_effect |
 
 ---
 
@@ -1106,6 +1134,7 @@ _Updated by SCHED-149 Job 9 after each run with PostHog data and experiment resu
 
 | Date | Finding | Action taken |
 |------|---------|--------------|
+| 2026-11-02 | Funnel report (7 days to 11-02): 1073 visitors (+20%), GitHub clicks 8.9% (95 people, prior 80, +19%), new stars 6 (prior 5), /start/ views 35 (3.3%, prior 28, +25%), 3 form starts, 1 submit, 1 checkout, 0 paid (prior 1), install copies 19 (prior 15), Mac app 7 (prior 7), iPhone app 7 (prior 5), walkthrough 22 (prior 32). Sources: direct 512 (4.3% GH, 4.7% /start/), search 451 (12.2%, 1.8%), ai 66 (25.8% GH, 4.5% /start/). Content pages with /start/ views: ai-coding-tools-pricing (4.8% of 21), best-claude-code-session-managers (3.7% of 54, 24.1% GH), ai-agent-sandboxing (2.7% of 37, EXP-142), harness-engineering (2.0% of 148, EXP-143). Gaps: best-self-hosted (45), claude-code-headless (43), legacy-code-modernization (20), ai-coding-tools-compared (13), /demos/ (12), spec-driven-development (12). Sixth report in a row with 0 paid. Only cloud-inline-top boxes have ever drawn a Cloud click (10 people since 10-19; mid and end 0). | **Scored EXP-150: no_effect** (67 landers, 0 /start/). **Shipped EXP-156** on best-self-hosted (3f33e0ca0, Job 2), scores 2026-11-09; EXP-145 replaced. New /compare/amux-vs-emdash/ and Emdash in the multiplexers roundup, now 13 tools. Added "Which Cloud boxes have produced anything" above. Changelog: 5 entries. Next due: EXP-142 on 11-03. |
 | 2026-11-01 | Funnel report (7 days to 11-01): 1015 visitors (+15%), GitHub clicks 9.2% (93 people, prior 80, +16%), new stars 3 (prior 7), /start/ views 27 (2.7%, prior 33, -18%), 1 form start, 0 submits, 0 paid (prior 1), install copies 19 (prior 12), Mac app 7 (prior 5), iPhone app 4 (prior 5), walkthrough 23 (prior 29). Sources: direct 483 (4.6% GH, 3.3% /start/), search 419 (12.2%, 2.1%), ai 67 (26.9% GH, 3.0% /start/). Content pages with /start/ views: best-claude-code-session-managers (6.2% of 48, 27.1% GH), ai-agent-sandboxing (2.7% of 37, EXP-142), best-self-hosted (2.6% of 38), harness-engineering (2.2% of 139, EXP-143). The pricing blog fell to 0.0% GH and 0.0% /start/ of 23 after EXP-144's small win, and the multiplexers roundup stayed at 0.0% /start/ (11.7% GH of 60, EXP-150 scores 11-02). Gaps: claude-code-headless (42), ai-coding-tools-pricing (23), legacy-code-modernization (19), ai-agent-security-hardening (16), ai-coding-tools-compared (14), spec-driven-development (14), /demos/ (10). Fifth report in a row with 0 paid. | **Scored EXP-149: inconclusive** (12 landers, 1 GitHub click). **Shipped EXP-155** on /demos/ (57af51cd8, Job 2), scores 2026-11-08. New /compare/amux-vs-ccmanager/ and Agent Deck and CCManager added to the session-managers roundup, now 8 tools (73707da81). Changelog: 3 entries. Next due: EXP-150 on 11-02. |
 | 2026-10-31 | Funnel report (7 days to 10-31): 1014 visitors (+15%), GitHub clicks 9.6% (97 people, prior 77, +26%), new stars 5 (prior 8), /start/ views 32 (3.2%, prior 31), 2 form starts, 0 submits, 0 paid (prior 1), install copies 19 (prior 7), Mac app 11 (prior 1), iPhone app 5 (prior 4), walkthrough 25 (prior 28). Sources: direct 486 (5.1% GH, 3.1% /start/), search 409 (11.7%, 3.4%), ai 70 (30.0% GH, 4.3% /start/). Content pages with /start/ views: best-claude-code-session-managers (7.0% of 43), ai-coding-tools-pricing (5.0% of 20), best-terminal-ai-coding-agents (4.3% of 23), harness-engineering (3.0% of 134, EXP-143), ai-agent-sandboxing (2.5% of 40, EXP-142), best-self-hosted (2.3% of 43). The multiplexers roundup fell to 0.0% /start/ (15.7% GH of 51, EXP-150). Gaps: claude-code-headless (50), spec-driven-development (16, EXP-152), legacy-code-modernization (16, EXP-151), ai-agent-security-hardening (15, EXP-153), /demos/ (10), ai-coding-tools-compared (10). Fourth report in a row with 0 paid. Repo: 548 stars, 445 unique viewers in 14 days, amux.io the top referrer (130 unique). | **Scored EXP-148: no_effect** (50 landers, no click of any kind; blocks kept). **Shipped EXP-154** on the best AI coding tools roundup (e27bf7c06, Job 2), scores 2026-11-07. New /compare/amux-vs-agent-deck/ (37b259e85) from Agent Deck's README and releases. Changelog: 6 entries (markdown editor speed on phones, board Triage, message pins, Usage & Optimization, Cmd-K files, bulk schedule actions). Next due: EXP-149 on 11-01. |
 | 2026-10-30 | Funnel report (7 days to 10-30): 1004 visitors (+19%), GitHub clicks 9.3% (93 people, prior 76, +22%), new stars 5 (prior 11), /start/ views 32 (3.2%, prior 27), 2 form starts, 0 submits, 0 paid (prior 1), install copies 17 (prior 6), Mac app 9 (prior 1), iPhone app 6 (prior 3). Sources: direct 495 (4.4% GH, 2.2% /start/), search 395 (12.4%, 4.3%), ai 68 (27.9% GH, 5.9% /start/). Content pages with /start/ views: best-claude-code-session-managers (9.5% of 42), best-terminal-ai-coding-agents (4.8% of 21), best-self-hosted (4.5% of 44), ai-coding-tools-pricing (4.5% of 22), harness-engineering (3.2% of 125), ai-agent-sandboxing (2.4% of 41, EXP-142), best-ai-agent-multiplexers (1.8% of 55, EXP-150). /start/ by `source=` over 14 days: harness-engineering 6, session-managers 4. Gaps: claude-code-headless (48, EXP-148), spec-driven-development (16, EXP-152), ai-agent-security-hardening (16), legacy-code-modernization (15, EXP-151), /demos/ (12), ai-coding-tools-compared (11). Third report in a row with 0 paid. | **Scored EXP-147: win (small sample)**, credited to the top and end Cloud blocks; its mid block drew 0 clicks. **Started EXP-143** on harness-engineering (one-line amux answer, exp143-answer). **Shipped EXP-153** on the security hardening guide (Job 2), scores 2026-11-06. New /compare/amux-vs-claude-code-agent-view/ from Anthropic's agent view docs, and the 2026-09-11 agent view blog post corrected (it described agent view as a subagent pane; it lists independent background sessions) with its canonical pointed at the compare page. Nothing else due: EXP-148 scores 10-31. |

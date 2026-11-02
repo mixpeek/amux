@@ -1,5 +1,65 @@
 [
   {
+    "hash": "c71df3ef96b3f5ad70970c7820b7b44ac6e0ebf3",
+    "short": "c71df3ef",
+    "title": "Codex workers use the model in your Codex config",
+    "date": "2026-11-02",
+    "type": "fix",
+    "tags": [
+      "codex",
+      "workers"
+    ],
+    "description": "A Codex worker created with no model now uses the model set in your Codex config file. Before, amux passed its own default, which could fail on a ChatGPT login that codex handled fine when run directly."
+  },
+  {
+    "hash": "eedc4195ae4d84f3a30a8ad4ddfc40cd8ddf954f",
+    "short": "eedc4195",
+    "title": "A chip press runs the chip you see",
+    "date": "2026-11-02",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "composer"
+    ],
+    "description": "Chips sync between devices, so the saved list could change after the bar rendered, and a press would run whatever chip now sat in that position. A press now runs the chip the bar shows."
+  },
+  {
+    "hash": "df12c587194780bb5d6a0261a474cb30034ca95a",
+    "short": "df12c587",
+    "title": "Pin a message from a worker's Messages tab",
+    "date": "2026-11-01",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "workers"
+    ],
+    "description": "A row's menu now pins or unpins a message, and a pin count opens the list of pinned messages. Choosing one puts its text in the composer, and each item has its own Unpin. Pins live on the server, so they follow the worker across your devices."
+  },
+  {
+    "hash": "508443bc19489b9e1ac1364290b62677b89e0674",
+    "short": "508443bc",
+    "title": "Your priorities outrank a card's age on the board",
+    "date": "2026-11-01",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "A P0 or P1 card now beats any older card when a worker picks its next task, so a two-day-old card no longer jumps ahead of an urgent one. A pin still leads, and age orders cards within a tier."
+  },
+  {
+    "hash": "f882cddef58d5913e17b76d9efa6fc77f12b8233",
+    "short": "f882cdde",
+    "title": "A board move the server refuses snaps back",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "board",
+      "dashboard"
+    ],
+    "description": "Dragging a card used to leave it in the new column until a reload even when the server refused the move. The card now returns to its column and the toast says why. Offline and queued moves stay where you put them."
+  },
+  {
     "hash": "ca2e0dd5650ff72ed2b6913f2eb54da0874bbff2",
     "short": "ca2e0dd5",
     "title": "Schedules behave through the daylight saving change",
