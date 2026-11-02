@@ -3336,6 +3336,21 @@ EOF
 }
 
 # Stop every idle running VM. Sets VMS_STOPPED. Records each stop.
+# The pressure the idle-VM arm acts on: the worse of the tick's first reading and
+# this one. Purge runs in between and relieves pressure for a moment, so the
+# later reading alone skipped this arm with swap at 98% (Mac cpu RCA
+# 20261102-114812: 2 at the start, 1 here, no "idle VMs" line in the run).
+vm_arm_pressure() { # <start> <now>
+  local start=$1 now=$2
+  case "$start" in ''|*[!0-9]*) start=-1 ;; esac
+  if [ "$start" -gt "$now" ]; then
+    echo "mac-cleanup: idle VMs judged on pressure $start from the tick's start, $now after purge (verdict=vm_arm_start_pressure)" >&2
+    echo "$start"
+  else
+    echo "$now"
+  fi
+}
+
 stop_idle_vms() { # <dry:0|1> <why>
   local dry=$1 why=$2 p rc n_busy=0 n_unk=0 profiles cmd
   VMS_STOPPED=0
@@ -3654,6 +3669,7 @@ fi
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && tick_arm "lane tmp" LANE_TMP_BUDGET_S && reap_lane_tmp "$DRY"
 VMS_STOPPED=0
 vm_level=$($PRESSURE_CMD 2>/dev/null); case "$vm_level" in ''|*[!0-9]*) vm_level=-1 ;; esac
+vm_level=$(vm_arm_pressure "${level:-}" "$vm_level")
 if [ "$vm_level" -ge 2 ]; then stop_idle_vms "$DRY" "memory pressure $vm_level"; stop_idle_docker_desktop "$DRY" "memory pressure $vm_level"
 elif [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then stop_idle_vms "$DRY" "disk under ${TARGET_TIGHT_FREE_GB}G"; fi
 tick_arm "worktrees" WORKTREE_BUDGET_S && reap_idle_worktrees "$WORKTREE_ROOTS" "$WORKTREE_IDLE_H" "$DRY"

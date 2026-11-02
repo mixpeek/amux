@@ -115,6 +115,17 @@ check "arms get past the 335 s that skipped them" yes "$([ "$arms" -gt 350 ] && 
 check "the worst verdicts (145 s) finish before the 600 s kill" yes "$([ $(( arms + 145 )) -lt 600 ] && echo yes || echo no)"
 warn=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $TICK_WARN_S' "$TICK" 2>/dev/null | tail -1)
 check "the warning sits above the designed worst case and below the kill" yes "$([ $(( arms + 145 )) -lt "$warn" ] && [ "$warn" -lt 600 ] && echo yes || echo no)"
+# Purge between the two readings must not talk the idle-VM arm out of running.
+vmfn=$(awk '/^vm_arm_pressure\(\) \{/,/^}$/' "$TICK")
+vmp() { bash -c "$vmfn"'
+vm_arm_pressure "$1" "$2"' _ "$1" "$2" 2>/dev/null; }
+vmlog() { bash -c "$vmfn"'
+vm_arm_pressure "$1" "$2"' _ "$1" "$2" 2>&1 >/dev/null; }
+check "pressure 2 before purge still reaches the VM arm" 2 "$(vmp 2 1)"
+check "and it says so, with its verdict"                 yes "$(has "$(vmlog 2 1)" 'verdict=vm_arm_start_pressure')"
+check "a later, worse reading wins"                      1 "$(vmp 0 1)"
+check "an unreadable first reading uses the later one"   1 "$(vmp x 1)"
+check "the VM arm reads through it"                      yes "$(grep -qE 'vm_level=.\(vm_arm_pressure ' "$TICK" && echo yes || echo no)"
 check "the reserve is not smaller than the usual verdicts" yes "$([ "$reserve" -ge 60 ] && echo yes || echo no)"
 
 echo
