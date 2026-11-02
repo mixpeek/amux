@@ -67,6 +67,9 @@ pub struct Entry {
     pub ov: GuardOverrides,
     /// The checkout the land came from, when the client named one.
     pub tree: Option<String>,
+    /// A revert the queue built itself (api::land_red): it has no receipt, so
+    /// the land gate's owner and trailer legs judge it and its receipt leg does not.
+    pub revert: bool,
 }
 
 /// What became of one entry.
@@ -121,6 +124,18 @@ pub struct RepoPolicy {
     pub regenerate: bool,
     pub regenerate_always: bool,
     pub regenerable: Vec<String>,
+    /// amux.queueChecks: the workflows that say main is green (api::land_red).
+    pub checks: Vec<String>,
+    pub on_red: OnRed,
+}
+
+/// amux.queueOnRed: what a red main after a land gets. `fix` unless declared.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum OnRed {
+    Off,
+    #[default]
+    Fix,
+    Revert,
 }
 
 async fn conf_all(tree: &Path, rev: &str, key: &str) -> Vec<String> {
@@ -151,6 +166,12 @@ pub async fn repo_policy(tree: &Path, rev: &str) -> RepoPolicy {
         regenerate: !conf_all(tree, rev, "amux.landRegenerate").await.is_empty(),
         regenerate_always: !one(conf_all(tree, rev, "amux.landRegenerateWhen").await).eq_ignore_ascii_case("conflict"),
         regenerable: conf_all(tree, rev, "amux.landRegenerable").await,
+        checks: conf_all(tree, rev, "amux.queueChecks").await,
+        on_red: match one(conf_all(tree, rev, "amux.queueOnRed").await).to_ascii_lowercase().as_str() {
+            "revert" => OnRed::Revert,
+            "off" => OnRed::Off,
+            _ => OnRed::Fix,
+        },
     }
 }
 
@@ -244,8 +265,7 @@ async fn land_gate_leg(tree: &Path, dir: &Path, main: &str, spans: &[Span]) -> R
     // Per candidate: batches of two repositories run at once, each with its own scripts.
     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let scratch = home().join("tmp").join("land").join(format!("gate-{}-{name}", std::process::id()));
-    let _ = std::fs::create_dir_all(&scratch);
-    let ready = std::fs::write(scratch.join("land_gate.py"), py).and(std::fs::write(scratch.join("land_review.py"), review));
+    let ready = std::fs::create_dir_all(&scratch).and(std::fs::write(scratch.join("land_gate.py"), py)).and(std::fs::write(scratch.join("land_review.py"), review));
     let mut refusal = ready.err().map(|e| format!("could not write the land gate: {e}"));
     for s in spans {
         if refusal.is_some() {
@@ -253,7 +273,7 @@ async fn land_gate_leg(tree: &Path, dir: &Path, main: &str, spans: &[Span]) -> R
         }
         let run = tokio::process::Command::new("python3").arg(scratch.join("land_gate.py"))
             .args(["--pre-push", "--local", &s.tip, "--remote", &s.base]).current_dir(dir)
-            .env("AMUX_SESSION", &s.entry.lane).env("AMUX_LAND_GATE_REQUIRED", "1")
+            .env("AMUX_SESSION", &s.entry.lane).env("AMUX_LAND_GATE_REQUIRED", if s.entry.revert { "0" } else { "1" })
             .kill_on_drop(true).output();
         match tokio::time::timeout(Duration::from_secs(GUARD_TIMEOUT_S), run).await {
             Ok(Ok(o)) if o.status.success() => {}
@@ -262,7 +282,10 @@ async fn land_gate_leg(tree: &Path, dir: &Path, main: &str, spans: &[Span]) -> R
             Err(_) => refusal = Some(format!("the land gate timed out after {GUARD_TIMEOUT_S}s")),
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
+    if let Err(e) = std::fs::remove_dir_all(&scratch) {
+        tracing::warn!(dir = %scratch.display(), error = %e, measured = true, n_considered = 1, verdict = "land_gate_scratch_left",
+            "the land gate's scratch dir stayed behind; the next batch overwrites it");
+    }
     refusal.map_or(Ok(()), Err)
 }
 
@@ -887,18 +910,18 @@ pub async fn tick(state: &AppState) -> usize {
         }
         Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
     }).await;
-    type Row = (i64, String, String, String, Option<String>, bool, Option<String>);
+    type Row = (i64, String, String, String, Option<String>, bool, Option<String>, String);
     let rows: Vec<Row> = state.store.read_async(|c| {
-        let mut st = c.prepare("SELECT id, repo, lane, sha, freeze_override, allow_reused_message, tree FROM land_queue WHERE state = 'queued'
+        let mut st = c.prepare("SELECT id, repo, lane, sha, freeze_override, allow_reused_message, tree, kind FROM land_queue WHERE state = 'queued'
                                 AND repo NOT IN (SELECT repo FROM land_queue WHERE state = 'running')
                                 ORDER BY priority DESC, id")?;
-        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0, r.get(6)?)))?
+        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, i64>(5)? != 0, r.get(6)?, r.get(7)?)))?
             .collect::<rusqlite::Result<Vec<Row>>>()?;
         Ok(v)
     }).await.unwrap_or_default();
     let mut by_repo: Vec<(String, Vec<Entry>)> = Vec::new();
-    for (id, repo, lane, sha, freeze, allow_reused_message, tree) in rows {
-        let e = Entry { id, repo: repo.clone(), lane, sha, ov: GuardOverrides { freeze, allow_reused_message }, tree };
+    for (id, repo, lane, sha, freeze, allow_reused_message, tree, kind) in rows {
+        let e = Entry { id, repo: repo.clone(), lane, sha, ov: GuardOverrides { freeze, allow_reused_message }, tree, revert: kind == "revert" };
         match by_repo.iter_mut().find(|(r, _)| *r == repo) {
             Some((_, v)) => v.push(e),
             None => by_repo.push((repo, vec![e])),
@@ -910,6 +933,12 @@ pub async fn tick(state: &AppState) -> usize {
         let max = crate::api::contract::lane_setting(&home(), &first, "AMUX_LAND_BATCH_MAX")
             .and_then(|v| v.trim().trim_matches('"').parse::<usize>().ok()).filter(|n| *n > 0).unwrap_or(DEFAULT_BATCH_MAX);
         entries.truncate(max);
+        // A revert lands alone, so its push says one thing to CI and to the watch.
+        match entries.iter().position(|e| e.revert) {
+            Some(0) => entries.truncate(1),
+            Some(i) => entries.truncate(i),
+            None => {}
+        }
         let ids: Vec<i64> = entries.iter().map(|e| e.id).collect();
         let ids2 = ids.clone();
         let claimed = state.store.write_async(move |conn| {
@@ -1276,7 +1305,8 @@ async fn status_route(State(state): State<AppState>, Query(q): Query<HashMap<Str
     let items: Vec<Value> = rows.iter().map(|r| json!({"id": r.0, "repo": r.1, "lane": r.2, "sha": r.3, "priority": r.4 != 0,
         "state": r.5, "merged_sha": if r.5 == "merged" { r.6.as_deref() } else { None },
         "push_candidate_sha": if matches!(r.5.as_str(), "queued" | "running") { r.6.as_deref() } else { None }, "output": r.7.as_deref().map(|o| tail(o, if one.is_some() { 4000 } else { 600 })), "queued_at": r.8, "done_at": r.9, "gate_verdict": r.10})).collect();
-    Json(json!({"since_h": since_h, "measured": true, "n_considered": n, "wait_p95_min": p95,
+    let red = crate::api::land_red::episodes(&state, since).await;
+    Json(json!({"since_h": since_h, "measured": true, "n_considered": n, "wait_p95_min": p95, "red": red,
         "why_unmeasured": if n == 0 { Some("no land finished in the window") } else { None },
         "items": items, "contract": "docs/orchestration-contract.md (rule 5)"})).into_response()
 }
@@ -1302,10 +1332,10 @@ async fn policy_route(Query(q): Query<HashMap<String, String>>) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn sh(dir: &Path, args: &[&str]) -> String {
+    pub(crate) fn sh(dir: &Path, args: &[&str]) -> String {
         let o = std::process::Command::new("git").arg("-C").arg(dir)
             .args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).output().unwrap();
         assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
@@ -1313,7 +1343,7 @@ mod tests {
     }
 
     /// origin (bare) plus one clone, with identity set so cherry-pick works.
-    fn fixture(d: &Path) -> PathBuf {
+    pub(crate) fn fixture(d: &Path) -> PathBuf {
         let origin = d.join("origin.git");
         std::fs::create_dir_all(&origin).unwrap();
         sh(&origin, &["init", "-q", "--bare", "-b", "main"]);
@@ -1330,7 +1360,7 @@ mod tests {
         lane
     }
 
-    fn commit(tree: &Path, file: &str, body: &str) -> String {
+    pub(crate) fn commit(tree: &Path, file: &str, body: &str) -> String {
         sh(tree, &["checkout", "-q", "--detach", "origin/main"]);
         std::fs::write(tree.join(file), body).unwrap();
         sh(tree, &["add", file]);
@@ -1407,7 +1437,7 @@ mod tests {
         assert!(matches!(again[0].1, Outcome::Merged(_)));
     }
 
-    fn app() -> AppState {
+    pub(crate) fn app() -> AppState {
         let dir = tempfile::tempdir().unwrap();
         let store = crate::db::Store::open(&dir.path().join("land-test.db")).unwrap();
         crate::test_tempdirs::keep(dir);
@@ -1420,7 +1450,7 @@ mod tests {
         }
     }
 
-    async fn call(state: &AppState, method: &str, uri: &str, lane: &str, body: Value) -> (StatusCode, Value) {
+    pub(crate) async fn call(state: &AppState, method: &str, uri: &str, lane: &str, body: Value) -> (StatusCode, Value) {
         use tower::ServiceExt;
         let req = axum::http::Request::builder().method(method).uri(uri)
             .header("content-type", "application/json").header("x-amux-session", lane)
@@ -1738,7 +1768,7 @@ mod tests {
     }
 
     /// Put `files` on origin/main through the seed clone, and update the lane.
-    fn seed_commit(root: &Path, lane: &Path, files: &[(&str, &str)]) {
+    pub(crate) fn seed_commit(root: &Path, lane: &Path, files: &[(&str, &str)]) {
         let seed = root.join("seed");
         sh(&seed, &["fetch", "-q", "origin", "main"]);
         sh(&seed, &["reset", "-q", "--hard", "origin/main"]);
@@ -1758,7 +1788,7 @@ mod tests {
         Entry { id, repo: "r".into(), lane: "l".into(), sha: sha.into(), ..Default::default() }
     }
 
-    fn on_main(lane: &Path) -> String {
+    pub(crate) fn on_main(lane: &Path) -> String {
         sh(lane, &["fetch", "-q", "origin"]);
         sh(lane, &["ls-tree", "-r", "--name-only", "origin/main"])
     }

@@ -21,6 +21,7 @@ pub(crate) mod board_groom;
 pub mod prompt_block;
 pub mod land_approvals;
 pub mod land_queue;
+pub mod land_red;
 pub mod worker_identity;
 pub mod contract_fresh;
 pub mod prod_change;
