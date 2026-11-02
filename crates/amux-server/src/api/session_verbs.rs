@@ -1417,16 +1417,17 @@ pub(crate) async fn running_workers() -> std::collections::BTreeSet<String> {
 }
 
 async fn tmux_sessions_set() -> std::collections::BTreeSet<String> {
-    let Some(out) = tmux(&["list-sessions", "-F", "#{session_name}"]).await else {
-        return Default::default();
-    };
+    tmux_sessions_measured().await.unwrap_or_default()
+}
+
+/// `None` means tmux never answered (a stall or timeout), so nothing was
+/// measured. A non-zero exit is an answer: no server means no sessions.
+async fn tmux_sessions_measured() -> Option<std::collections::BTreeSet<String>> {
+    let out = tmux(&["list-sessions", "-F", "#{session_name}"]).await?;
     if !out.status.success() {
-        return Default::default();
+        return Some(Default::default());
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .collect()
+    Some(String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).collect())
 }
 
 /// The pane process ids of a worker's tmux session, for reading what its
@@ -3507,6 +3508,46 @@ fn claude_session_flag(name: &str, conv_id: &str, resumable: bool) -> String {
         format!("--resume {conv_id} --name {}", sh_quote(name))
     } else {
         format!("--name {}", sh_quote(name))
+    }
+}
+
+/// Why a worker that has run before is about to start with no conversation to
+/// resume. `None` for a first start, or when it will resume.
+fn conversation_lost_reason(conv_id: &str, resumable: bool, start_count: i64) -> Option<&'static str> {
+    if resumable {
+        None
+    } else if !conv_id.is_empty() {
+        Some("transcript_missing")
+    } else if start_count > 0 {
+        Some("no_conversation_id")
+    } else {
+        None
+    }
+}
+
+/// Records the reason a sender is told, and the line a log sweep counts. Resume
+/// failure used to swap a worker's conversation with no trace at all.
+fn note_conversation_lost(name: &str, meta: &mut Map<String, Value>, reason: Option<&str>) {
+    let Some(reason) = reason else {
+        meta.remove("start_conversation_lost");
+        return;
+    };
+    tracing::warn!(session = name, reason, measured = true, n_considered = 1,
+        verdict = "worker_started_new_conversation",
+        "a worker that had run before started a new conversation; its earlier context is gone");
+    meta.insert("start_conversation_lost".into(), json!(reason));
+}
+
+#[cfg(test)]
+mod conversation_lost_tests {
+    use super::conversation_lost_reason as reason;
+
+    #[test]
+    fn only_a_worker_that_ran_before_and_cannot_resume_has_lost_a_conversation() {
+        assert_eq!(reason("id", true, 3), None);
+        assert_eq!(reason("", false, 0), None, "a first start has nothing to lose");
+        assert_eq!(reason("id", false, 3), Some("transcript_missing"));
+        assert_eq!(reason("", false, 3), Some("no_conversation_id"));
     }
 }
 
@@ -11043,34 +11084,42 @@ async fn pane_has_live_child(name: &str) -> Option<bool> {
 }
 
 pub(crate) async fn is_running(name: &str) -> bool {
+    running_measured(name).await.unwrap_or(false)
+}
+
+/// [`is_running`] that can say it does not know. `None` is a tmux stall: the
+/// worker may be mid-turn. A start or a wake must act only on `Some(false)`,
+/// because starting a live worker kills it (2026-11-02, a stall under host
+/// pressure read `mem` as stopped, and the send that followed killed it).
+async fn running_measured(name: &str) -> Option<bool> {
     if let crate::api::worker_exec::Dispatch::Handled(r) =
         crate::api::worker_exec::adapter_for_session(name).running(name)
     {
-        return r;
+        return Some(r);
     }
     let cfg = parse_env(name);
     if !iterm2_id(&cfg).is_empty() {
-        return false;
+        return Some(false);
     }
     if backend_of_cfg(&cfg) == "herdr" {
-        return herdr_agent_running(name).await;
+        return Some(herdr_agent_running(name).await);
     }
     let tmux_sess = tmux_name(name);
-    if !tmux_sessions_set().await.contains(&tmux_sess) {
-        return false;
+    if !tmux_sessions_measured().await?.contains(&tmux_sess) {
+        return Some(false);
     }
     let output = tmux_capture(name, 10).await;
     if output.is_empty() {
-        return true;
+        return Some(true);
     }
     if at_shell_prompt(&output) {
-        return false;
+        return Some(false);
     }
     // Shell alive but childless == claude gone even without a visible prompt.
     if pane_has_live_child(name).await == Some(false) {
-        return false;
+        return Some(false);
     }
-    true
+    Some(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -14135,12 +14184,30 @@ async fn send_text_inner_bound_body(
         }
     }
     let mut needs_wake = false;
+    let mut tmux_unanswered = false;
     if !out_st.is_empty() && at_shell_prompt(&strip_ansi(&out_st)) {
         needs_wake = true; // terminal visible but Claude has exited
-    } else if !is_running(name).await {
-        needs_wake = true;
+    } else {
+        match running_measured(name).await {
+            Some(true) => {}
+            Some(false) => needs_wake = true,
+            None => tmux_unanswered = true,
+        }
     }
-    if needs_wake {
+    if tmux_unanswered && !from_steering {
+        // The worker may be alive, so it is not started. The durable row reaches
+        // it at its next boundary, once tmux answers.
+        tracing::warn!(session = name, measured = false, n_considered = 1,
+            verdict = "send_held_tmux_unanswered",
+            "tmux did not answer, so the send queued instead of starting the worker");
+        let (ok, msg) = queue_boot_prompt(state, name, text, origin).await;
+        return if ok && !text.trim().is_empty() {
+            (true, "queued (steering) — tmux did not answer, worker left as it is".into())
+        } else {
+            (ok, msg)
+        };
+    }
+    if needs_wake || tmux_unanswered {
         if from_steering {
             return (
                 false,
@@ -14158,6 +14225,13 @@ async fn send_text_inner_bound_body(
         let (ok, error) = start_session_as("send-boot", state, name, "", false).await;
         if !ok {
             tracing::warn!(session=name,%error,measured=true,n_considered=1,verdict="boot_delivery_start_failed","start failed; accepted prompt remains queued for explicit recovery");
+        }
+        let lost = meta_str(&load_meta(name), "start_conversation_lost");
+        if ok && !lost.is_empty() {
+            return (
+                queued.0,
+                format!("{}; the worker was stopped and started a NEW conversation ({lost}), so it has lost its earlier context", queued.1),
+            );
         }
         return queued;
     }
@@ -15668,6 +15742,8 @@ async fn startup_shell_command(
     result
 }
 
+const TMUX_UNANSWERED_START: &str = "tmux did not answer; worker left as it is, try again shortly";
+
 fn shell_start_failed(name: &str, error: &str) -> (bool, String) {
     update_meta(
         name,
@@ -16373,8 +16449,15 @@ pub(crate) async fn start_session(
         );
     }
     note_project_env_ignored(name, &cfg);
-    if is_running(name).await {
-        return (true, "already running".into());
+    match running_measured(name).await {
+        Some(true) => return (true, "already running".into()),
+        Some(false) => {}
+        None => {
+            tracing::warn!(session = name, caller, measured = false, n_considered = 1,
+                verdict = "start_held_tmux_unanswered",
+                "tmux did not answer, so the start left the worker as it is");
+            return (false, TMUX_UNANSWERED_START.into());
+        }
     }
     if cfg.get("CC_ARCHIVED") == Some("1") {
         return (false, "session is archived; wake it first".into());
@@ -16811,6 +16894,8 @@ pub(crate) async fn start_session(
             }
         }
         session_flag = claude_session_flag(name, &conv_id, resumable);
+        let lost = conversation_lost_reason(&conv_id, resumable, meta_i64(&meta, "start_count"));
+        note_conversation_lost(name, &mut meta, lost);
     }
     let defaults = EnvFile::load(&home().join("defaults.env"));
     let default_flags = defaults.get_or("CC_DEFAULT_FLAGS", "").to_string();
@@ -17406,7 +17491,13 @@ pub(crate) async fn start_session(
     };
 
     let tmux_sess = tmux_name(name);
-    let tmux_exists = tmux_sessions_set().await.contains(&tmux_sess);
+    let Some(tmux_sessions) = tmux_sessions_measured().await else {
+        tracing::warn!(session = name, caller, measured = false, n_considered = 1,
+            verdict = "start_held_tmux_unanswered",
+            "tmux stopped answering during the start, so the worker was left as it is");
+        return shell_start_failed(name, TMUX_UNANSWERED_START);
+    };
+    let tmux_exists = tmux_sessions.contains(&tmux_sess);
     if tmux_exists {
         // A stopped worker keeps its tmux session and shell. Updating
         // server.env and pressing Start must not reuse the credentials that
@@ -17536,6 +17627,17 @@ pub(crate) async fn start_session(
     if tmux_exists {
         // Reuse the surviving tmux session (py:24589).
         let output = tmux_capture(name, 10).await;
+        // Everything below interrupts or kills the pane. The is_running check at
+        // the top said this worker was gone, so a visible agent with a live
+        // process is a disagreement, and the process table wins.
+        if agent_ui_visible(&strip_ansi(&output)) && pane_has_live_child(name).await == Some(true)
+        {
+            tracing::warn!(session = name, caller, measured = true, n_considered = 1,
+                verdict = "start_found_live_worker",
+                "start found the agent alive in its pane; left it running");
+            update_meta(name, &[("boot_readiness_pending", json!(false))]);
+            return (true, "already running".into());
+        }
         if at_shell_prompt(&strip_ansi(&output)) {
             send_key(name, "C-c").await;
             sleep_ms(100).await;
@@ -17846,6 +17948,7 @@ pub(crate) async fn start_session(
             // --resume failed: fresh start with --name (py:24762).
             meta.remove("cc_session_name");
             meta.remove("cc_conversation_id");
+            note_conversation_lost(name, &mut meta, Some("resume_failed"));
             save_meta(name, &meta);
             send_key(name, "C-c").await;
             sleep_ms(100).await;
