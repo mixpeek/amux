@@ -446,6 +446,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Ask | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Messages | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Trends | `_msgSetMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Show answer | `_msgShowAnswer` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | … | `_msgsGoToPage` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | All workers | `_msgsScopeOpen` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | All workers | `_msgsScopeSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
