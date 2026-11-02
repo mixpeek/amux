@@ -3511,6 +3511,68 @@ fn claude_session_flag(name: &str, conv_id: &str, resumable: bool) -> String {
     }
 }
 
+/// Shell lines that take the owner's git and GitHub credentials away from a
+/// worker of a server that is not the primary (a demo or private server, whose
+/// AMUX_HOME is not ~/.amux). `None` for the primary server, or when the server
+/// sets AMUX_WORKER_GIT_CREDENTIALS=1.
+///
+/// 2026-11-02: a demo worker found ~/Dev/amux and pushed a branch to the public
+/// repo with the owner's gh login and ssh-agent. This stops accidents only: the
+/// keychain and any key file stay readable to the same macOS user.
+fn private_server_git_rc(amux_home: &Path, user_claude_home: &Path) -> Option<String> {
+    if std::env::var("AMUX_WORKER_GIT_CREDENTIALS").as_deref() == Ok("1") {
+        return None;
+    }
+    let primary = user_claude_home.parent()?.join(".amux");
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(amux_home) == canon(&primary) {
+        return None;
+    }
+    let dir = amux_home.join("worker-git");
+    let config = dir.join("gitconfig");
+    let gh = dir.join("gh");
+    std::fs::create_dir_all(&gh).ok()?;
+    // An empty credential.helper resets every helper a lower config named.
+    std::fs::write(
+        &config,
+        "[user]\n\tname = amux demo worker\n\temail = demo-worker@amux.invalid\n[credential]\n\thelper =\n",
+    )
+    .ok()?;
+    let q = |p: &Path| sh_quote(&p.to_string_lossy());
+    Some(format!(
+        "export GIT_CONFIG_GLOBAL={} GIT_CONFIG_NOSYSTEM=1 GH_CONFIG_DIR={} GIT_TERMINAL_PROMPT=0 \
+         GIT_SSH_COMMAND='ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes'; \
+         unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN SSH_AUTH_SOCK GIT_ASKPASS SSH_ASKPASS; ",
+        q(&config),
+        q(&gh)
+    ))
+}
+
+#[cfg(test)]
+mod private_server_git_tests {
+    use super::private_server_git_rc;
+
+    #[test]
+    fn only_a_non_primary_server_scrubs_its_workers_git_credentials() {
+        let user = tempfile::tempdir().unwrap();
+        let primary = user.path().join(".amux");
+        std::fs::create_dir_all(&primary).unwrap();
+        let claude = user.path().join(".claude");
+        assert_eq!(private_server_git_rc(&primary, &claude), None);
+
+        let demo = tempfile::tempdir().unwrap();
+        let rc = private_server_git_rc(demo.path(), &claude).expect("a demo server scrubs");
+        for needle in ["GIT_CONFIG_GLOBAL=", "GIT_CONFIG_NOSYSTEM=1", "GH_CONFIG_DIR=",
+            "GIT_TERMINAL_PROMPT=0", "IdentityFile=/dev/null", "unset GH_TOKEN GITHUB_TOKEN",
+            "SSH_AUTH_SOCK"] {
+            assert!(rc.contains(needle), "{needle} missing from {rc}");
+        }
+        let cfg = std::fs::read_to_string(demo.path().join("worker-git/gitconfig")).unwrap();
+        assert!(cfg.contains("helper =\n"), "{cfg}");
+        assert!(!cfg.contains("osxkeychain") && !cfg.contains("gh auth"), "{cfg}");
+    }
+}
+
 /// Why a worker that has run before is about to start with no conversation to
 /// resume. `None` for a first start, or when it will resume.
 fn conversation_lost_reason(conv_id: &str, resumable: bool, start_count: i64) -> Option<&'static str> {
@@ -17341,6 +17403,12 @@ pub(crate) async fn start_session(
     // routing after sourcing them, including when reusing an existing shell.
     for (key, value) in &harness_env {
         shell_rc.push_str(&format!("export {key}={}; ", sh_quote(value)));
+    }
+    if let Some(rc) = private_server_git_rc(&home(), &claude_home()) {
+        shell_rc.push_str(&rc);
+        tracing::info!(session = name, home = %home().display(), measured = true, n_considered = 1,
+            verdict = "worker_git_credentials_scrubbed",
+            "a worker of a non-primary server launched without the owner's git or GitHub credentials");
     }
     if !isolated {
         shell_rc.push_str(WORKER_SYSTEM_PATH_RC);
