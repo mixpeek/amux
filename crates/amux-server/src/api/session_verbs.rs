@@ -6422,7 +6422,11 @@ fn is_yolo_enabled(flags: &str, cfg: &EnvFile) -> bool {
 
 pub(crate) fn default_model_for_provider(provider: &str) -> String {
     match provider {
-        "codex" => "gpt-5.5".into(),
+        // The owner's own Codex config decides first (long-form-videos,
+        // 2026-11-02): a pinned gpt-5.5 overrode `model = ...` in
+        // ~/.codex/config.toml, and a ChatGPT login refuses gpt-5.5, so a
+        // worker created with no model failed its first prompt.
+        "codex" => codex_config_model().unwrap_or_else(|| "gpt-5.5".into()),
         "gemini" => "auto".into(),
         // Ollama runs via `codex --oss --local-provider ollama --model <model>`.
         "ollama" => crate::provider::static_providers::ollama_default_model(),
@@ -6437,6 +6441,43 @@ pub(crate) fn default_model_for_provider(provider: &str) -> String {
         // fleet-wide (`AMUX_OPENCODE_MODEL`).
         "opencode" => crate::opencode::default_model(),
         _ => get_default_model(),
+    }
+}
+
+/// The top-level `model` in Codex's own config (`$CODEX_HOME/config.toml`,
+/// else `~/.codex/config.toml`), which `codex` itself uses when no `--model`
+/// is given. A profile's or a provider table's `model` is not the default.
+pub(crate) fn codex_config_model() -> Option<String> {
+    let dir = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))?;
+    codex_config_model_in(&std::fs::read_to_string(dir.join("config.toml")).ok()?)
+}
+
+pub(crate) fn codex_config_model_in(text: &str) -> Option<String> {
+    let model = match text.parse::<toml::Table>() {
+        Ok(t) => t.get("model").and_then(|v| v.as_str()).map(str::trim).filter(|m| !m.is_empty()).map(str::to_string),
+        Err(e) => {
+            tracing::warn!(verdict = "codex_config_unparsed", measured = false, error = %e,
+                "codex config.toml did not parse; Codex workers fall back to amux's default model");
+            None
+        }
+    };
+    tracing::debug!(verdict = "codex_default_model", from_config = model.is_some(), measured = true, n_considered = 1,
+        "resolved a Codex worker's default model");
+    model
+}
+
+#[cfg(test)]
+mod codex_config_model_tests {
+    #[test]
+    fn the_owners_codex_config_model_is_the_default() {
+        use super::codex_config_model_in as m;
+        assert_eq!(m("model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"xhigh\"\n").as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(m("[profiles.fast]\nmodel = \"o9\"\n"), None, "a profile's model is not the default");
+        assert_eq!(m("model_reasoning_effort = \"xhigh\"\n"), None);
+        assert_eq!(m("model = \"\"\n"), None);
+        assert_eq!(m("model = [broken"), None);
     }
 }
 
