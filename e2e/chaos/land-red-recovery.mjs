@@ -59,6 +59,7 @@ try {
   await new Promise(res=>setTimeout(res,25000));
   const again=await report();
   check('a second restart changes nothing',mainSha()===accepted&&again.red.length===1&&again.red[0].state==='reverted',again.red);
+  check('no revert failed to build',!log().includes('land_red_revert_unbuildable'));
   for (const v of ['land_gate_green','land_red_revert_queued','land_push_receipt_adopted','land_red_reverted'])
     check('verdict in the log: '+v,log().includes(v));
 }catch(e){checks.push({name:'scenario completed',ok:false,detail:String(e.stack||e)});}

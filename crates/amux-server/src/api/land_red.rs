@@ -346,10 +346,7 @@ async fn build_revert(tree: &Path, row: &Landed, evidence: &str) -> Result<Strin
     };
     git(tree, &["fetch", "-q", "origin", "main"]).await?;
     let main = git(tree, &["rev-parse", "origin/main"]).await?;
-    let merge = format!("--merge-base={to}");
-    let tree_id = git(tree, &["merge-tree", "--write-tree", &merge, &main, from]).await
-        .map_err(|_| format!("the revert conflicts with origin/main {}", short(&main)))?;
-    let tree_id = tree_id.lines().next().unwrap_or("").to_string();
+    let tree_id = revert_tree(tree, &main, from, to).await?;
     let subject = git(tree, &["log", "-1", "--format=%s", to]).await.unwrap_or_default();
     let msg = format!("Revert \"{subject}\" (land {id})\n\n{evidence}\n\nThis reverts commit {to}.\n\nRevert: land the change again once its red is fixed\nAmux-Land-Revert: {id}\nAmux-Session: amux-land\n", id = row.id);
     let who = ["-c", "user.name=amux land queue", "-c", "user.email=land-queue@amux.invalid"];
@@ -359,6 +356,52 @@ async fn build_revert(tree: &Path, row: &Landed, evidence: &str) -> Result<Strin
     // A ref, so the commit outlives a gc while it waits for its turn.
     git(tree, &["update-ref", &format!("refs/amux/land-revert/{}", row.id), &sha]).await?;
     Ok(sha)
+}
+
+/// git with a private index, optionally fed `stdin`.
+async fn git_idx(tree: &Path, idx: &Path, args: &[&str], stdin: Option<Vec<u8>>) -> Result<String, String> {
+    let mut c = tokio::process::Command::new("git");
+    c.arg("-C").arg(tree).args(args).env("GIT_INDEX_FILE", idx).kill_on_drop(true)
+        .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("git {} did not start: {e}", args.join(" ")))?;
+    if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        use tokio::io::AsyncWriteExt;
+        pipe.write_all(&bytes).await.map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    }
+    let o = child.wait_with_output().await.map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if o.status.success() {
+        Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&o.stderr).trim().chars().take(400).collect::<String>())
+    }
+}
+
+/// main's tree with `from..to` taken back out, built in a private index with
+/// `git apply --cached -R`, which every git has. `merge-tree --merge-base` needs
+/// git 2.40, and on the 2.39 in rust:bookworm every revert failed to build and
+/// became a fix (harness-recovery job 125100056947, 2026-11-02).
+async fn revert_tree(tree: &Path, main: &str, from: &str, to: &str) -> Result<String, String> {
+    let diff = tokio::process::Command::new("git").arg("-C").arg(tree)
+        .args(["diff", "--binary", "--full-index", from, to]).kill_on_drop(true).output().await
+        .map_err(|e| format!("git diff did not start: {e}"))?;
+    if !diff.status.success() {
+        return Err(format!("git diff {from}..{to}: {}", String::from_utf8_lossy(&diff.stderr).trim()));
+    }
+    let idx = home().join("tmp").join("land").join(format!("revert-index-{}-{}", std::process::id(), short(to)));
+    if let Some(d) = idx.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
+    }
+    let out = async {
+        git_idx(tree, &idx, &["read-tree", main], None).await?;
+        if !diff.stdout.is_empty() {
+            git_idx(tree, &idx, &["apply", "--cached", "-R"], Some(diff.stdout.clone())).await
+                .map_err(|e| format!("the revert conflicts with origin/main {}: {e}", short(main)))?;
+        }
+        git_idx(tree, &idx, &["write-tree"], None).await
+    }.await;
+    let _ = std::fs::remove_file(&idx);
+    out
 }
 
 /// The revert row and the episode, in one transaction.
@@ -426,7 +469,11 @@ async fn act(state: &AppState, push: &Push, tree: &Path, on_red: OnRed, failed: 
                 false
             }
         },
-        Err(why) => open_fix(state, push, &format!("The revert could not be built: {why}."), &ev).await,
+        Err(why) => {
+            tracing::warn!(repo = %push.repo, sha = %push.tip, reason = %why, measured = true, n_considered = 1,
+                verdict = "land_red_revert_unbuildable", "the revert commit could not be built; the lane gets a fix instead");
+            open_fix(state, push, &format!("The revert could not be built: {why}."), &ev).await
+        }
     }
 }
 
