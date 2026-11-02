@@ -10,13 +10,13 @@
   <meta name="keywords" content="amux vs jules, jules google alternative, jules ai coding agent, background coding agent comparison, autonomous coding agent open source, jules vs claude code, google jules alternative">
   <link rel="canonical" href="https://amux.io/compare/amux-vs-jules/">
   <meta property="og:title" content="amux vs Jules (Google) — Background Coding Agents Compared (2026)">
-  <meta property="og:description" content="Jules is Google's background AI coding agent. amux is an open-source fleet of them. Here's how they compare on autonomy, scale, cost, and control.">
+  <meta property="og:description" content="Jules is Google's background AI coding agent. amux is a self-hosted fleet of them. Here's how they compare on autonomy, scale, cost, and control.">
   <meta property="og:url" content="https://amux.io/compare/amux-vs-jules/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="amux vs Jules (Google) — Background Coding Agents Compared (2026)">
-  <meta name="twitter:description" content="Jules is Google's background AI coding agent. amux is an open-source fleet of them. Self-hosted vs cloud-managed, fleet-first vs single-task.">
+  <meta name="twitter:description" content="Jules is Google's background AI coding agent. amux is a self-hosted fleet of them. Self-hosted vs cloud-managed, fleet-first vs single-task.">
   <meta name="twitter:image" content="https://amux.io/og-image.png">
   <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -69,7 +69,7 @@
         "name": "What is the main difference between amux and Jules?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Scale and control. Jules is a single-agent cloud service — you submit one task, it runs in Google's sandbox. amux is an open-source control plane for running dozens of agents simultaneously on your own infrastructure. With amux you can run 10-50 Claude Code, Codex, or Gemini CLI agents in parallel, with a shared kanban board, atomic task claiming, usage-limit resume, stall alerts, and monitoring from your phone. amux is also model-agnostic; Jules is Gemini-only."
+          "text": "Scale and control. Jules is a single-agent cloud service — you submit one task, it runs in Google's sandbox. amux is a self-hosted control plane for running dozens of agents simultaneously on your own infrastructure. With amux you can run 10-50 Claude Code, Codex, or Gemini CLI agents in parallel, with a shared kanban board, atomic task claiming, usage-limit resume, stall alerts, and monitoring from your phone. amux is also model-agnostic; Jules is Gemini-only."
         }
       },
       {
@@ -77,7 +77,7 @@
         "name": "Is amux a Jules alternative?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "If you want a 'submit an issue, get back a PR' cloud service, Jules and similar tools are purpose-built for that. If you want to run 20 parallel tasks overnight from your own machine, use multiple AI providers, and have a dashboard to monitor everything, amux is the better fit. They're not direct replacements — Jules is a cloud micro-service, amux is an open-source orchestration platform."
+          "text": "If you want a 'submit an issue, get back a PR' cloud service, Jules and similar tools are purpose-built for that. If you want to run 20 parallel tasks overnight from your own machine, use multiple AI providers, and have a dashboard to monitor everything, amux is the better fit. They're not direct replacements — Jules is a cloud micro-service, amux is a self-hosted orchestration platform."
         }
       },
       {
@@ -93,7 +93,7 @@
         "name": "Can I self-host Jules?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "No. Jules runs entirely on Google's cloud infrastructure. amux is open-source (MIT + Commons Clause) and self-hosted on your own machine or cloud VM. With amux you control your code, your infrastructure, and your API keys — nothing runs in a third-party sandbox."
+          "text": "No. Jules runs entirely on Google's cloud infrastructure. amux is source-available (MIT + Commons Clause) and self-hosted on your own machine or cloud VM. With amux you control your code, your infrastructure, and your API keys — nothing runs in a third-party sandbox."
         }
       }
     ]
@@ -127,13 +127,13 @@
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/compare/">Compare</a> <span class="sep">›</span> <span>amux vs Jules</span></div>
 
     <h1>amux vs Jules (Google)</h1>
-    <p class="subtitle">Jules is Google's cloud-hosted autonomous coding agent for GitHub issues. amux is an open-source control plane that runs a fleet of them — dozens of agents simultaneously, on your own infrastructure, with your choice of model. Here is how they compare. <em>Updated October 2026.</em></p>
+    <p class="subtitle">Jules is Google's cloud-hosted autonomous coding agent for GitHub issues. amux is a self-hosted control plane that runs a fleet of them — dozens of agents simultaneously, on your own infrastructure, with your choice of model. Here is how they compare. <em>Updated October 2026.</em></p>
 
     <!-- EXP-007: compare pages GitHub CTA -->
 
     <p><strong>Jules</strong> (Google) is an autonomous AI coding agent that connects to your GitHub repository and resolves issues autonomously. You assign an issue to Jules; it analyzes the problem, writes code, opens a draft PR, and asks for review. It runs entirely in Google's cloud, powered by Gemini models. Jules focuses on the single-task-at-a-time workflow: assign one issue, get back a PR.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and scheduler. Single Rust binary, MIT + Commons Clause licensed, zero external dependencies.</p>
+    <p><strong>amux</strong> is a self-hosted control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of Claude Code, Codex, or Gemini CLI sessions simultaneously. Built-in kanban board with atomic task claiming, notes, CRM, Gmail API, browser automation, and scheduler. Single Rust binary, MIT + Commons Clause licensed, zero external dependencies.</p>
 
     <h2>At a Glance</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">
@@ -313,12 +313,12 @@
 
     <details style="border:1px solid var(--border);border-radius:6px;padding:1rem;margin:0.8rem 0;">
       <summary style="cursor:pointer;font-weight:600;">Can I self-host Jules?</summary>
-      <p style="margin:0.8rem 0 0;">No. Jules is a managed Google cloud service. amux is open-source (MIT + Commons Clause) and fully self-hosted — your machine, your keys, your infrastructure. Nothing runs in a third-party sandbox.</p>
+      <p style="margin:0.8rem 0 0;">No. Jules is a managed Google cloud service. amux is source-available (MIT + Commons Clause) and fully self-hosted — your machine, your keys, your infrastructure. Nothing runs in a third-party sandbox.</p>
     </details>
 
     <div class="cta-box">
       <h3>Run your AI engineering team from one dashboard</h3>
-      <p>amux is the open-source control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with usage-limit resume, kanban, and iOS app monitoring. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
+      <p>amux is the self-hosted control plane for running a fleet of AI coding agents — Claude Code, Codex, Gemini CLI — simultaneously, with usage-limit resume, kanban, and iOS app monitoring. Single Rust binary, zero dependencies, MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -340,7 +340,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

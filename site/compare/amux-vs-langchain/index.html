@@ -139,7 +139,7 @@
     </div>
 
     <h2>What each tool actually is</h2>
-    <p><strong>amux</strong> is an open-source control plane for AI agent teams. It runs Claude Code, Codex CLI, or Gemini CLI sessions in isolated tmux windows, aggregates all sessions into one web dashboard, and keeps agents going through usage limits: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot. It also ships built-in coordination primitives: a kanban board with atomic task claiming, a CRM, Gmail, a browser controller, and a scheduler. Single Rust binary, zero external dependencies.</p>
+    <p><strong>amux</strong> is a self-hosted control plane for AI agent teams. It runs Claude Code, Codex CLI, or Gemini CLI sessions in isolated tmux windows, aggregates all sessions into one web dashboard, and keeps agents going through usage limits: delivery is held and resumes at the provider's reset, and on macOS every worker comes back in its own conversation after a reboot. It also ships built-in coordination primitives: a kanban board with atomic task claiming, a CRM, Gmail, a browser controller, and a scheduler. Single Rust binary, zero external dependencies.</p>
     <p><strong>LangChain</strong> is a Python (and JavaScript) SDK for building agent logic: composing sequences of LLM calls, tool invocations, retrievers, and memory into chains or graphs. LangGraph, LangChain's graph-based extension, lets you define agent state machines with conditional routing. LangSmith provides tracing and evaluation. The framework handles what the agent does; it doesn't manage the process running it.</p>
 
     <h2>Side-by-side comparison</h2>
@@ -307,12 +307,12 @@
     </details>
     <details style="border:1px solid var(--border);border-radius:6px;padding:0.75rem 1rem;margin:0.5rem 0">
       <summary style="cursor:pointer;font-weight:600">What does amux cost vs LangSmith?</summary>
-      <p style="margin-top:0.75rem">amux is free and open source (MIT + Commons Clause). LangSmith, LangChain's observability and evaluation platform, has a free tier for individual developers and paid tiers for teams. The amux dashboard runs locally: no SaaS subscription, no data sent to external services.</p>
+      <p style="margin-top:0.75rem">amux is free to self-host and source-available (MIT + Commons Clause). LangSmith, LangChain's observability and evaluation platform, has a free tier for individual developers and paid tiers for teams. The amux dashboard runs locally: no SaaS subscription, no data sent to external services.</p>
     </details>
 
     <div class="cta-box">
       <h3>Run your AI engineering team with amux</h3>
-      <p>Open-source control plane for Claude Code, Codex, and Gemini CLI agents. Usage-limit resume, kanban board, phone monitoring. Single Rust binary.</p>
+      <p>Self-hosted control plane for Claude Code, Codex, and Gemini CLI agents. Usage-limit resume, kanban board, phone monitoring. Single Rust binary.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre>
@@ -324,7 +324,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

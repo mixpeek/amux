@@ -157,7 +157,7 @@
       <tbody>
         <tr><td><strong>CLI command</strong></td><td class="old"><code>gemini</code></td><td class="new"><code>agy</code></td></tr>
         <tr><td><strong>Extensions</strong></td><td class="old">Extensions (<code>~/.gemini/extensions/</code>)</td><td class="new">Plugins (renamed, new path)</td></tr>
-        <tr><td><strong>Open source</strong></td><td class="old">&#x2714; Apache 2.0 (GitHub)</td><td class="new">&#x2718; Closed source</td></tr>
+        <tr><td><strong>License</strong></td><td class="old">&#x2714; Apache 2.0 (GitHub)</td><td class="new">&#x2718; Closed source</td></tr>
         <tr><td><strong>Free tier</strong></td><td class="old">1,000 req/day (Google account)</td><td class="new">Requires Google AI Pro/Ultra plan</td></tr>
         <tr><td><strong>Underlying model</strong></td><td class="old">Gemini 2.5 Pro / Flash</td><td class="new">Gemini 3.5 Flash / Pro</td></tr>
         <tr><td><strong>IDE integration</strong></td><td class="old">Gemini Code Assist (VS Code extension)</td><td class="new">Antigravity IDE (VS Code fork)</td></tr>
@@ -331,7 +331,7 @@ tmux new-session -s antigravity-agent -d 'agy -p "work on feature branch"'</code
           <tr><td><strong>Context window</strong></td><td>1M tokens</td><td class="same">1M tokens</td><td>200K tokens</td></tr>
           <tr><td><strong>Free tier</strong></td><td>1,000 req/day</td><td class="cross">None (Pro required)</td><td class="cross">None (Pro required)</td></tr>
           <tr><td><strong>Starting price</strong></td><td class="cross">$0 (ending)</td><td>~$20/mo (Google AI Pro)</td><td>$20/mo (<a href="https://www.anthropic.com/pricing" target="_blank" rel="noopener">Claude Pro</a>)</td></tr>
-          <tr><td><strong>Open source</strong></td><td class="check">&#x2714; Apache 2.0</td><td class="cross">&#x2718; Closed source</td><td class="cross">&#x2718; Closed source</td></tr>
+          <tr><td><strong>License</strong></td><td class="check">&#x2714; Apache 2.0</td><td class="cross">&#x2718; Closed source</td><td class="cross">&#x2718; Closed source</td></tr>
           <tr><td><strong>Hooks</strong></td><td class="check">&#x2714;</td><td class="check">&#x2714;</td><td class="check">&#x2714; (CLAUDE.md + hooks)</td></tr>
           <tr><td><strong>Subagents</strong></td><td class="check">&#x2714;</td><td class="check">&#x2714;</td><td class="check">&#x2714; (Agent SDK)</td></tr>
           <tr><td><strong>Extensions/Plugins</strong></td><td>&#x2714; Extensions</td><td>&#x2714; Plugins</td><td class="check">&#x2714; <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP servers</a></td></tr>
@@ -347,7 +347,7 @@ tmux new-session -s antigravity-agent -d 'agy -p "work on feature branch"'</code
     <!-- ─── AMUX ─── -->
     <h2 id="amux">Running Antigravity CLI with amux</h2>
 
-    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is an open-source control plane for managing multiple AI coding agent sessions from a single web dashboard. It works with any terminal-based agent &mdash; including Antigravity CLI. If you run Antigravity sessions alongside <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> sessions, amux coordinates them through shared <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> windows.</p>
+    <p><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is a self-hosted control plane for managing multiple AI coding agent sessions from a single web dashboard. It works with any terminal-based agent &mdash; including Antigravity CLI. If you run Antigravity sessions alongside <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">Claude Code</a> sessions, amux coordinates them through shared <a href="https://github.com/tmux/tmux" target="_blank" rel="noopener">tmux</a> windows.</p>
 
     <div class="info-box">
       <strong>amux is agent-agnostic.</strong> The web dashboard, <a href="/guides/kanban-board-for-agents/">kanban board</a>, REST API, <a href="/guides/self-healing-configuration/">stall detection and alerts</a>, and inter-session messaging all work with any process running in a tmux session. Replacing <code>gemini</code> with <code>agy</code> in your amux session launch commands is all that is required.
@@ -416,7 +416,7 @@ tmux new-session -s agy-worker-1 -d 'agy'
     <!-- ─── CTA ─── -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;margin:3rem 0;text-align:center;">
       <h3 style="margin:0 0 0.75rem;">Orchestrate Antigravity CLI alongside Claude Code</h3>
-      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux is a free, open-source control plane for running multiple AI coding agent sessions in parallel — including Antigravity CLI. Web dashboard, stall alerts, kanban board, mobile app.</p>
+      <p style="margin:0 0 1.5rem;color:var(--dim);font-size:0.92rem;">amux is a free, self-hosted control plane for running multiple AI coding agent sessions in parallel — including Antigravity CLI. Web dashboard, stall alerts, kanban board, mobile app.</p>
       <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap;">
         <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:var(--c-green);color:var(--code-bg);font-weight:700;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">View on GitHub</a>
         <a href="/guides/getting-started/" style="border:1px solid var(--border);color:var(--dim);font-weight:600;padding:0.75rem 1.75rem;border-radius:8px;text-decoration:none;font-size:0.95rem;">Getting Started Guide</a>
@@ -460,7 +460,7 @@ tmux new-session -s agy-worker-1 -d 'agy'
         <a href="/compare/amux-vs-goose/">amux vs Goose</a>
       </div>
     </div>
-    <p class="footer-copy">&copy; 2026 <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek, Inc.</a> &mdash; amux is open source (MIT + Commons Clause). <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
+    <p class="footer-copy">&copy; 2026 <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek, Inc.</a> &mdash; amux is source-available (MIT + Commons Clause). <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
   </footer>
 
   <script>

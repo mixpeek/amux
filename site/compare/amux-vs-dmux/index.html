@@ -92,7 +92,7 @@
     <p>If you've ever wanted "<code>tmux new-window</code> but it also makes a git worktree and starts Claude Code in it," dmux is that tool.</p>
 
     <h3>amux</h3>
-    <p>amux is an open-source orchestration platform built around <code>amux-server-rs</code> &mdash; a single Rust binary that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be observed, recovered, and coordinated.</p>
+    <p>amux is a self-hosted orchestration platform built around <code>amux-server-rs</code> &mdash; a single Rust binary that runs a local HTTPS server, manages tmux sessions, and serves a web dashboard. It treats parallel agents as a fleet that needs to be observed, recovered, and coordinated.</p>
     <p>Key features:</p>
     <ul>
       <li>Web dashboard at <code>https://localhost:8824</code> with live status, token spend, and a send bar</li>
@@ -421,7 +421,7 @@ amux serve
     <h3>Are there other parallel AI agent tools I should consider?</h3>
     <p>Yes &mdash; the category is growing. Look at <a href="/compare/amux-vs-claude-code-agent-teams/">Claude Code Agent Teams</a> (Anthropic's built-in feature), cmux (native macOS), NTM (lightweight TUI), and the broader <a href="/compare/">comparison index</a>. The <a href="/guides/agentmaxxing/">agentmaxxing guide</a> includes a feature matrix across all of them.</p>
 
-    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with usage-limit and reboot recovery, mobile monitoring, and token tracking. One Rust binary. Open source.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <div class="cta-box" style="margin-top:3rem;"><h3>Try amux</h3><p>Run dozens of Claude Code agents in parallel with usage-limit and reboot recovery, mobile monitoring, and token tracking. One Rust binary. Free to self-host.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
@@ -431,7 +431,7 @@ amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" 
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

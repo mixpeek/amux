@@ -54,7 +54,7 @@
 
     <p><strong>OpenAI Symphony</strong> (open-sourced June 2026) is a ticket-driven autonomous coding pipeline. It polls a Linear issue board, claims tickets, spawns Codex CLI agents in parallel, and opens GitHub pull requests — no human input required during execution. Written in Elixir/OTP, MIT licensed. Designed as a reference implementation for autonomous coding at OpenAI's internal scale.</p>
 
-    <p><strong>amux</strong> is an open-source control plane for running a parallel AI engineering team. It runs Claude Code sessions in tmux, monitored from a web dashboard or mobile app, with a built-in kanban board, usage-limit resume, and REST API for agent coordination. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
+    <p><strong>amux</strong> is a self-hosted control plane for running a parallel AI engineering team. It runs Claude Code sessions in tmux, monitored from a web dashboard or mobile app, with a built-in kanban board, usage-limit resume, and REST API for agent coordination. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
 
     <p>For the deep-dive comparison including architecture breakdown, workflow analysis, fault tolerance details, and the "500% PR increase" claim, see the <a href="/compare/amux-vs-symphony/">complete amux vs Symphony comparison</a>.</p>
 
@@ -116,7 +116,7 @@
 
     <div class="cta-box">
       <h3>Get started with amux</h3>
-      <p>Run an AI engineering team from your dashboard or phone. Open source, one Rust binary.</p>
+      <p>Run an AI engineering team from your dashboard or phone. Free to self-host, one Rust binary.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -129,7 +129,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

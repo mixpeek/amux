@@ -10,7 +10,7 @@ discover -> qualify -> contribute -> measure -> learn -> repeat
 
 The core entity sentence to reinforce, when accurate and relevant:
 
-Amux is an open-source agent control plane for running and coordinating Claude Code, Codex, and Gemini CLI agents.
+Amux is a self-hosted agent control plane for running and coordinating Claude Code, Codex, and Gemini CLI agents.
 
 Use "Amux Agent Control Plane" and "Amux by Mixpeek" where disambiguation helps.
 

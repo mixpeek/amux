@@ -561,7 +561,7 @@ $ docker run --rm \
     <!-- ───────────────────────────── SECTION: WITH AMUX ───────────────────────────── -->
     <h2 id="with-amux">Run an AI Engineering Team Headless with amux</h2>
 
-    <p>amux is an open-source <a href="/guides/agent-control-plane/">agent control plane</a> that gives you an AI engineering team you can run unattended from a single dashboard or your phone. It orchestrates Claude Code, OpenAI Codex CLI, and Gemini CLI sessions in parallel &mdash; handling supervision, observability, cost tracking, and orchestration in a single Rust binary, without requiring any of the scripting above.</p>
+    <p>amux is a self-hosted <a href="/guides/agent-control-plane/">agent control plane</a> that gives you an AI engineering team you can run unattended from a single dashboard or your phone. It orchestrates Claude Code, OpenAI Codex CLI, and Gemini CLI sessions in parallel &mdash; handling supervision, observability, cost tracking, and orchestration in a single Rust binary, without requiring any of the scripting above.</p>
 
     <p>The difference is most visible in a side-by-side:</p>
 
@@ -624,7 +624,7 @@ $ amux serve  <span class="comment"># → https://localhost:8824</span></code></
 
     <p><strong>Append-only execution log:</strong> Every headless session gets an event-sourced execution log &mdash; an append-only record of what each agent did, every tool call, every decision. You can replay the log after a failed overnight run to see exactly where things went wrong, without having been watching the terminal. This is the observability primitive that makes headless AI engineering teams debuggable.</p>
 
-    <p>amux is open source (MIT + Commons Clause) and has over 500 stars on <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. There is also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> for monitoring your agent fleet from your phone.</p>
+    <p>amux is source-available (MIT + Commons Clause) and has over 500 stars on <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>. There is also a <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> for monitoring your agent fleet from your phone.</p>
 
     <p>If you&rsquo;re running one or two headless agents, the raw <code>claude --print</code> approach from earlier in this guide is perfectly fine. If you&rsquo;re running five or more, or anything overnight, use a control plane &mdash; either amux or something equivalent. The scripting to replicate its features yourself is a weekend project, but maintaining that scripting as Claude Code evolves is not.</p>
 
@@ -780,7 +780,7 @@ $ amux serve  <span class="comment"># → https://localhost:8824</span></code></
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Open-source control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
+          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
         </div>
         <div class="footer-link-cols">
           <div class="footer-col">

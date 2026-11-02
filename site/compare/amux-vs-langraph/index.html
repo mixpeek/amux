@@ -61,7 +61,7 @@
         "name": "What is the difference between amux and LangGraph?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "LangGraph is a Python/TypeScript framework (~38k GitHub stars, MIT) for building stateful multi-agent workflows in code — you define graph nodes as functions, wire them with edges, and manage state with checkpoints. amux (310 ★, MIT+CC) is an open-source fleet operator for running Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with usage-limit resume, a kanban board, mobile management via iOS app, CRM, email, and browser automation. LangGraph builds agent logic; amux runs coding-agent sessions."
+          "text": "LangGraph is a Python/TypeScript framework (~38k GitHub stars, MIT) for building stateful multi-agent workflows in code — you define graph nodes as functions, wire them with edges, and manage state with checkpoints. amux (310 ★, MIT + Commons Clause) is a self-hosted fleet operator for running Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with usage-limit resume, a kanban board, mobile management via iOS app, CRM, email, and browser automation. LangGraph builds agent logic; amux runs coding-agent sessions."
         }
       },
       {
@@ -130,7 +130,7 @@
     <p class="subtitle">LangGraph builds the decision graph. amux runs the coding-agent fleet. <em>Updated July 2026.</em></p>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem 1.75rem;margin:2rem 0;">
-      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>Quick answer:</strong> LangGraph (~38k ★, MIT) is a Python/TypeScript framework for building stateful multi-agent workflows in code — nodes are functions, edges are transitions, state is checkpointed. amux (310 ★, MIT+CC) is an open-source control plane that runs Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with built-in usage-limit resume, kanban coordination, and mobile management via iOS app. <strong>LangGraph defines how agents decide; amux manages the sessions that execute.</strong> Most teams that need both eventually combine them.</p>
+      <p style="margin:0;font-size:1.05rem;line-height:1.7;"><strong>Quick answer:</strong> LangGraph (~38k ★, MIT) is a Python/TypeScript framework for building stateful multi-agent workflows in code — nodes are functions, edges are transitions, state is checkpointed. amux (310 ★, MIT + Commons Clause) is a self-hosted control plane that runs Claude Code, Codex, and Gemini CLI sessions from a web dashboard, with built-in usage-limit resume, kanban coordination, and mobile management via iOS app. <strong>LangGraph defines how agents decide; amux manages the sessions that execute.</strong> Most teams that need both eventually combine them.</p>
     </div>
 
     <!-- EXP-007 -->
@@ -359,7 +359,7 @@ def coding_node(state):
 
     <div class="cta-box">
       <h3>Run your AI agent fleet from one dashboard</h3>
-      <p>amux is the open-source control plane for Claude Code, Codex, and Gemini CLI sessions — usage-limit resume, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Rust binary, MIT + Commons Clause.</p>
+      <p>amux is the self-hosted control plane for Claude Code, Codex, and Gemini CLI sessions — usage-limit resume, kanban board, iOS app, and REST API for integration with LangGraph and other orchestrators. Single Rust binary, MIT + Commons Clause.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # → https://localhost:8824</code></pre>
@@ -380,7 +380,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

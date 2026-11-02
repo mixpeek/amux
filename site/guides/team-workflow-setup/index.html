@@ -61,7 +61,7 @@
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.4rem 1.6rem;margin:1.5rem 0;">
       <strong style="font-size:0.85rem;">Answer in 3 sentences</strong>
-      <p style="font-size:0.92rem;color:var(--dim);margin:0.6rem 0 0;line-height:1.75;">Running an AI engineering team means launching dozens of parallel coding agents — Claude Code, Codex, or Gemini CLI — and coordinating their work through a shared board, dashboard, and stall alerts instead of sprint planning and Slack threads. The human role shifts from writing code to writing specs, reviewing output, and making architectural decisions. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the open-source control plane that makes this practical: one Rust binary gives you parallel session management, a kanban board, a mobile-first dashboard, and resume after usage limits — all visible from your phone.</p>
+      <p style="font-size:0.92rem;color:var(--dim);margin:0.6rem 0 0;line-height:1.75;">Running an AI engineering team means launching dozens of parallel coding agents — Claude Code, Codex, or Gemini CLI — and coordinating their work through a shared board, dashboard, and stall alerts instead of sprint planning and Slack threads. The human role shifts from writing code to writing specs, reviewing output, and making architectural decisions. <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">amux</a> is the self-hosted control plane that makes this practical: one Rust binary gives you parallel session management, a kanban board, a mobile-first dashboard, and resume after usage limits — all visible from your phone.</p>
     </div>
 
     <nav class="toc" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.6rem;margin:2rem 0;">
@@ -370,7 +370,7 @@ cx-tests-frontend   <span class="comment"># Codex CLI session, frontend tests</s
           <span style="color:var(--muted);font-size:0.8rem;">Q</span> How much does running a team of agents cost per month?
         </summary>
         <div style="padding:0 1.2rem 1rem;font-size:0.88rem;color:var(--dim);line-height:1.7;">
-          amux itself is open source (MIT + Commons Clause) and free. The cost is your AI API usage — Claude Code, Codex, or Gemini CLI tokens. A well-run team of 5 developers, each running 5&ndash;10 agents per day, typically spends $200&ndash;$800/month in API costs. That's equivalent to a fraction of one developer salary, for output that rivals a team twice the size. The <a href="/guides/ai-coding-agent-costs/">AI coding agent cost guide</a> breaks down the math and optimization strategies.
+          amux itself is source-available (MIT + Commons Clause) and free. The cost is your AI API usage — Claude Code, Codex, or Gemini CLI tokens. A well-run team of 5 developers, each running 5&ndash;10 agents per day, typically spends $200&ndash;$800/month in API costs. That's equivalent to a fraction of one developer salary, for output that rivals a team twice the size. The <a href="/guides/ai-coding-agent-costs/">AI coding agent cost guide</a> breaks down the math and optimization strategies.
         </div>
       </details>
       <details style="border:1px solid var(--border);border-radius:8px;padding:0;">
@@ -391,13 +391,13 @@ cx-tests-frontend   <span class="comment"># Codex CLI session, frontend tests</s
         <li><a href="/guides/remote-access-tailscale/">Remote access with Tailscale</a> — secure access from anywhere, step by step</li>
         <li><a href="/guides/self-healing-configuration/">Recovery configuration</a> — usage-limit resume, reboot restore and stall alerts for overnight runs</li>
         <li><a href="/guides/running-10-plus-agents/">Running 10+ agents</a> — scaling beyond a handful of sessions</li>
-        <li><a href="/pricing/">Pricing</a> — amux is open source (MIT + Commons Clause) and free; see managed options</li>
+        <li><a href="/pricing/">Pricing</a> — amux is source-available (MIT + Commons Clause) and free; see managed options</li>
       </ul>
     </div>
 
     <div class="cta-box">
       <h3>Run your AI engineering team with amux</h3>
-      <p>Open-source control plane for AI agent teams — usage-limit resume, kanban, CRM, and email built in. MIT + Commons Clause.</p>
+      <p>Self-hosted control plane for AI agent teams — usage-limit resume, kanban, CRM, and email built in. MIT + Commons Clause.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -411,7 +411,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

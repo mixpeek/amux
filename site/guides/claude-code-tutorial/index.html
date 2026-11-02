@@ -73,7 +73,7 @@
       {
         "@type": "Question",
         "name": "How do I run multiple Claude Code agents in parallel?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Use amux (open source, MIT + Commons Clause). Install with: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. Then register your project (amux register myproject --dir ~/Dev/myproject) and start sessions. Each session gets its own git worktree, its own Claude Code instance, and its own task. The amux dashboard shows all agents' output in real time." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Use amux (source-available, MIT + Commons Clause). Install with: git clone https://github.com/mixpeek/amux && cd amux && ./install.sh. Then register your project (amux register myproject --dir ~/Dev/myproject) and start sessions. Each session gets its own git worktree, its own Claude Code instance, and its own task. The amux dashboard shows all agents' output in real time." }
       },
       {
         "@type": "Question",
@@ -88,7 +88,7 @@
       {
         "@type": "Question",
         "name": "What is the difference between Claude Code and amux?",
-        "acceptedAnswer": { "@type": "Answer", "text": "Claude Code is Anthropic's AI coding agent — it takes a task and autonomously reads, edits, and runs code. amux is an open-source control plane that runs, monitors, and resumes dozens of Claude Code sessions in parallel. Claude Code is the individual agent; amux is the team of agents plus the dashboard to manage them. amux also works with Codex CLI and Gemini CLI." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Claude Code is Anthropic's AI coding agent — it takes a task and autonomously reads, edits, and runs code. amux is a self-hosted control plane that runs, monitors, and resumes dozens of Claude Code sessions in parallel. Claude Code is the individual agent; amux is the team of agents plus the dashboard to manage them. amux also works with Codex CLI and Gemini CLI." }
       },
       {
         "@type": "Question",
@@ -313,14 +313,14 @@ amux register myproject --dir ~/Dev/myproject --yolo</code></pre>
       <li>Read <a href="/guides/multi-runtime-agent-setup/">Multi-runtime agent setup</a> to run Claude Code, Codex, and Gemini CLI together</li>
     </ul>
 
-    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Usage-limit resume, single Rust binary, zero external dependencies. MIT + Commons Clause.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">iOS App</a></div>
+    <div class="cta-box"><h3>Run your AI engineering team with amux</h3><p>Self-hosted control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser. Usage-limit resume, single Rust binary, zero external dependencies. MIT + Commons Clause.</p><pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a> <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">iOS App</a></div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

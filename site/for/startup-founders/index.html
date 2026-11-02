@@ -70,7 +70,7 @@
         "name": "How much does it cost to run an AI engineering team with amux?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux itself is free and open source (MIT + Commons Clause). You self-host it — a $5–10/month cloud VM is sufficient for most use cases. Your costs come from AI tokens: Claude Sonnet 4.6 costs roughly $3 per million input tokens and $15 per million output tokens. A typical 8-hour coding agent session generating 2 million output tokens costs about $30. Running 5 agents in parallel for a full day is therefore around $150 in API costs — a fraction of a single engineer-day. Use the amux cost calculator to model your exact scenario."
+          "text": "amux itself is free to self-host and source-available (MIT + Commons Clause). You self-host it — a $5–10/month cloud VM is sufficient for most use cases. Your costs come from AI tokens: Claude Sonnet 4.6 costs roughly $3 per million input tokens and $15 per million output tokens. A typical 8-hour coding agent session generating 2 million output tokens costs about $30. Running 5 agents in parallel for a full day is therefore around $150 in API costs — a fraction of a single engineer-day. Use the amux cost calculator to model your exact scenario."
         }
       },
       {
@@ -155,7 +155,7 @@
     <h1>Run an AI Engineering Team Without Hiring</h1>
     <p class="subtitle">Startup founders use amux to coordinate a fleet of Claude Code, Codex, or Gemini CLI agents that build features, fix bugs, write tests, and draft docs in parallel — managed from one dashboard or their phone. Updated October 2026.</p>
 
-    <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is an open-source control plane for AI agent teams</strong>: it runs and monitors dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
+    <p>In 2026, the constraint on a startup's engineering output is no longer team size — it is the quality of your task definitions and the discipline of your review process. <strong>amux is a self-hosted control plane for AI agent teams</strong>: it runs and monitors dozens of parallel coding sessions so a founder can ship what previously required a 5–10 person engineering team.</p>
 
     <p>The limiting factor shifts from headcount to your vision. amux handles the coordination infrastructure: a shared kanban board, live session monitoring, a steering queue for mid-run guidance, token cost tracking, and mobile access so you can manage the whole operation from your phone.</p>
 
@@ -298,7 +298,7 @@
     <p>The trade-off: amux agents need clear task definitions and human review of outputs. They are not autonomous junior engineers — they are powerful execution tools that amplify a founder's direction. The founders who get the most from amux are opinionated about what to build and disciplined about reviewing what the agents produce.</p>
 
     <h2>Open Source, Self-Hosted, No Per-Seat Fees</h2>
-    <p>amux is open source (MIT + Commons Clause). The entire server is a single Rust binary with zero external dependencies — no Docker, no complex build process, no cloud account required. You run it on your laptop or a small cloud VM. You pay nothing to amux. Your costs are:</p>
+    <p>amux is source-available (MIT + Commons Clause). The entire server is a single Rust binary with zero external dependencies — no Docker, no complex build process, no cloud account required. You run it on your laptop or a small cloud VM. You pay nothing to amux. Your costs are:</p>
     <ul>
       <li><strong>AI tokens</strong> — billed directly by Anthropic (Claude), OpenAI (Codex), or Google (Gemini CLI) at standard API rates</li>
       <li><strong>Server hosting</strong> (optional) — a $5–10/month VM on any cloud provider if you want 24/7 agent operation. Not required if you run agents from your laptop.</li>
@@ -327,7 +327,7 @@
 
     <div class="cta-box">
       <h3>Start running your AI engineering team today</h3>
-      <p>amux is open-source, free to self-host, and installs in minutes. No per-seat fees, no vendor lock-in.</p>
+      <p>amux is source-available, free to self-host, and installs in minutes. No per-seat fees, no vendor lock-in.</p>
       <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myapp --dir ~/Dev/myapp --yolo
 amux serve  # → https://localhost:8824</code></pre>
@@ -372,7 +372,7 @@ amux serve  # → https://localhost:8824</code></pre>
     <p>amux requires basic technical comfort — you run it from the command line and configure it with a text file. If you can use Git and a terminal, you can run amux. For founders who want the benefits without the setup, <a href="/concierge/">amux Concierge</a> provides managed onboarding. The ongoing operation (sending tasks to agents, reviewing output, managing the board) is accessible from the amux dashboard with no command-line required.</p>
 
     <h3>How much does it cost to run an AI engineering team with amux?</h3>
-    <p>amux itself is free and open source (MIT + Commons Clause). You self-host it on a $5–10/month cloud VM. Your costs come from AI tokens: Claude Sonnet 4.6 costs roughly $3 per million input tokens and $15 per million output tokens. A typical 8-hour coding agent session costs about $20–50 in API costs. Running 5 agents in parallel for a full day is therefore around $100–250 — a fraction of a single engineer-day. Use the <a href="/tools/ai-agent-cost-calculator/">cost calculator</a> to model your specific scenario.</p>
+    <p>amux itself is free to self-host and source-available (MIT + Commons Clause). You self-host it on a $5–10/month cloud VM. Your costs come from AI tokens: Claude Sonnet 4.6 costs roughly $3 per million input tokens and $15 per million output tokens. A typical 8-hour coding agent session costs about $20–50 in API costs. Running 5 agents in parallel for a full day is therefore around $100–250 — a fraction of a single engineer-day. Use the <a href="/tools/ai-agent-cost-calculator/">cost calculator</a> to model your specific scenario.</p>
 
     <h3>What's the difference between amux and just running Claude Code?</h3>
     <p>Claude Code runs one session at a time in one terminal. amux runs dozens simultaneously — with a shared kanban board, live status monitoring for all sessions, a steering queue, cost tracking, CRM, email, browser automation, and mobile access. amux does not modify Claude Code; it manages tmux sessions that run it headlessly. The difference is a single contractor working alone versus a coordinated team working from a shared dashboard.</p>
@@ -412,7 +412,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>
