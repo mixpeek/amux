@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#1e2330">
   <title>Get amux Cloud: your own amux server</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Sign up for amux Cloud: a dedicated amux server at yourname.amux.io, from $39 a month. amux itself is free and open source.">
+  <meta name="description" content="Sign up for amux Cloud: a dedicated amux server at yourname.amux.io, from $39 a month. amux itself is free to self-host.">
   <link rel="canonical" href="https://amux.io/start/">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,7 +25,7 @@
     .field{display:block;margin:16px 0}
     .field span{display:block;font-weight:600;margin-bottom:6px}
     .field input{width:100%;box-sizing:border-box;min-height:44px;padding:0 12px;font:inherit;border-radius:var(--radius);border:1px solid var(--line-2);background:var(--bg-3);color:var(--fg)}
-    .field.lock{display:grid;grid-template-columns:44px 1fr;align-items:center}.field.lock input{width:22px;min-height:44px;margin:0;accent-color:var(--accent,#58a6ff)}.field.lock span{margin:0}.field.lock .hint{grid-column:2}
+    .field.lock{display:grid;grid-template-columns:44px 1fr;align-items:center}.field.lock input{width:22px;min-height:44px;margin:0;accent-color:var(--accent,#58a6ff)}.field.lock label{font-weight:600;cursor:pointer;min-height:44px;display:flex;align-items:center}.field.lock .hint{grid-column:2}
     .slug{display:flex;align-items:center;gap:6px}.slug input{flex:1}
     .hint{color:var(--fg-mute);font-size:.85rem;margin-top:6px;min-height:1.2em}
     .hint.bad{color:var(--err)}.hint.good{color:var(--ok)}
@@ -58,7 +58,6 @@
           <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
         </div>
       </div>
-      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
@@ -67,11 +66,6 @@
     <h1>Get amux Cloud</h1>
     <p class="subtitle">Your own amux server, running 24/7, ready in about three minutes.</p>
     <div id="canceled" class="free-note" style="display:none">Checkout was canceled and nothing was charged. Your choices are still below.</div>
-    <div class="free-note">
-      <strong>Just trying amux?</strong> It is free and open source with every feature, and runs on your own machine:
-      <a href="https://github.com/mixpeek/amux#install">install it in two minutes</a>.
-      amux Cloud runs the same amux for you on a dedicated server, so your workers keep going when your laptop sleeps.
-    </div>
     <ul>
       <li>A dedicated server for you alone, at <code>yourname.amux.io</code> with HTTPS</li>
       <li>Workers and schedules run around the clock</li>
@@ -93,12 +87,16 @@
         <div class="hint">Receipts go here, and you sign in to your server with it.</div></label>
       <label class="field"><span>Password for your server</span><input id="pw" type="password" autocomplete="new-password" minlength="10">
         <div class="hint">At least 10 characters. It is scrambled in this browser before anything is sent, and only your server can check it.</div></label>
-      <label class="field lock"><input id="iplock" type="checkbox"> <span>Only let my current address reach my server</span>
-        <div class="hint">Every other address is refused, even with your password. You can add addresses later on your server's allowlist page, and each teammate's first sign-in adds theirs.</div></label>
+      <div class="field lock"><input id="iplock" type="checkbox"> <label for="iplock">Only let my current address reach my server</label>
+        <div class="hint">Optional. Every other address is refused, even with your password. You can add addresses later on your server's allowlist page, and each teammate's first sign-in adds theirs.</div></div>
       <button class="btn btn-primary go" id="go" type="submit">Continue to payment</button>
       <div class="err" id="err" role="alert"></div>
       <p class="hint">Payment is handled by Stripe. Have a promotion code? Enter it on the next page. <a href="/security/">What amux can and cannot access</a>.</p>
     </form>
+    <div class="free-note" data-cta-loc="start-selfhost">
+      <strong>Only trying amux?</strong> It is free to self-host with every feature, source-available under MIT + Commons Clause:
+      <a href="https://github.com/mixpeek/amux#install">install it on your own machine</a>. Cloud runs the same amux on a dedicated server, so workers keep going when your laptop sleeps.
+    </div>
   </main>
   <footer class="sub-footer">
     <div class="footer-inner">

@@ -109,8 +109,20 @@ LIVE = ("(properties.$host = 'amux.io' or toString(properties.server_side) = 'tr
         "and coalesce(toString(properties.test), '') != 'true'")
 
 
-def people(key, start, end):
-    """One row per visitor with a pageview in [start, end): first touch plus goal flags."""
+# A /start/?source=<page> URL is only ever produced by a link on amux.io, and a click on one
+# sends amux.io as the referrer. The same URL arriving with no referrer is a mail link scanner
+# or a crawler fetching the page's links (2026-11-03: 18 of 52 /start/ viewers in a week, single
+# pageview, several throwing Outlook Safe Links' "Object Not Found Matching Id" rejection).
+# Such a pageview does not count as a /start/ view, and a person with nothing else is dropped.
+SCAN_HIT = ("(event = '$pageview' and properties.$pathname in ('/start/', '/start') "
+            "and properties.$current_url like '%source=%' "
+            "and coalesce(toString(properties.$referrer), '$direct') in ('$direct', ''))")
+
+
+def people(key, start, end, dropped=None):
+    """One row per visitor with a pageview in [start, end): first touch plus goal flags.
+
+    `dropped`, when a dict, gets the count of people excluded as scanner hits (SCAN_HIT)."""
     sql = f"""
 select person_id,
   argMinIf(properties.$pathname, timestamp, event = '$pageview') as landing,
@@ -120,7 +132,8 @@ select person_id,
   countIf(event = '$pageview') as pv,
   countIf((event = 'cta_click' and properties.goal = 'github') or {GH_LINK}) > 0 as github,
   countIf(event = 'cta_click' and properties.goal = 'cloud') > 0 as cloud_click,
-  countIf(event = '$pageview' and properties.$pathname in ('/start/', '/start')) > 0 as start_view,
+  countIf(event = '$pageview' and properties.$pathname in ('/start/', '/start') and not {SCAN_HIT}) > 0 as start_view,
+  countIf({SCAN_HIT}) as scan_hits,
   countIf(event = 'signup_form_start') > 0 as form_start,
   countIf(event = 'signup_submit') > 0 as submit,
   countIf(event = 'checkout_redirect') > 0 as checkout,
@@ -138,14 +151,19 @@ where timestamp >= toDateTime('{start:%Y-%m-%d %H:%M:%S}') and timestamp < toDat
 group by person_id
 having pv > 0
 limit 100000"""
-    cols = ["person", "landing", "ref", "utm", "device", "pv", "github", "cloud_click", "start_view",
+    cols = ["person", "landing", "ref", "utm", "device", "pv", "github", "cloud_click", "start_view", "scan_hits",
             "form_start", "submit", "checkout", "paid", "ready", "canceled", "install_copy", "ios", "mac", "walkthrough", "concierge"]
     rows = [dict(zip(cols, r)) for r in hogql(key, sql)]
-    for r in rows:
+    kept = [r for r in rows if r["scan_hits"] < r["pv"]]
+    if dropped is not None:
+        dropped["people"] = len(rows) - len(kept)
+        dropped["hits"] = sum(r["scan_hits"] for r in rows)
+    for r in kept:
         r["source"] = source_of(r["ref"], r["utm"])
         for c in cols[6:]:
-            r[c] = bool(r[c])
-    return rows
+            if c != "scan_hits":
+                r[c] = bool(r[c])
+    return kept
 
 
 def event_counts(key, start, end):
@@ -360,11 +378,15 @@ def split(rows, key):
     return {k: summarize(v) for k, v in groups.items()}
 
 
-def render(days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab=None, ab_days=28, gh=None):
+def render(days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab=None, ab_days=28, gh=None, scans=None, pscans=None):
     L = []
     L.append("# amux.io funnel: %s to %s (%d days, vs the %d before)" % (start.date(), (end - dt.timedelta(seconds=1)).date(), days, days))
     L.append("")
     L.append("Visitors are people with a pageview on amux.io (localhost and test checkouts excluded): **%d** (prior %d, %s)." % (now["visitors"], prior["visitors"], delta(now["visitors"], prior["visitors"])))
+    if scans is not None:
+        L.append("")
+        L.append("/start/?source= pageviews with no referrer (mail link scanners and crawlers; a click on amux.io always sends one) are not counted as /start/ views: %d this window, %d prior. People with nothing else were left out of every count: %d (prior %d)." % (
+            scans.get("hits", 0), (pscans or {}).get("hits", 0), scans.get("people", 0), (pscans or {}).get("people", 0)))
     L.append("")
     L.append("| step | people | % of visitors | prior | change |")
     L.append("|---|---|---|---|---|")
@@ -440,7 +462,8 @@ def main():
     end = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
     start = end - dt.timedelta(days=a.days)
     prior_start = start - dt.timedelta(days=a.days)
-    rows, prow = people(key, start, end), people(key, prior_start, start)
+    scans, pscans = {}, {}
+    rows, prow = people(key, start, end, scans), people(key, prior_start, start, pscans)
     now, prior = summarize(rows), summarize(prow)
     by_source, by_landing = split(rows, "source"), split(rows, "landing")
     events, spots = event_counts(key, start, end), cta_spots(key, start, end)
@@ -451,9 +474,10 @@ def main():
     if a.json:
         print(json.dumps({"window": {"start": start.isoformat(), "end": end.isoformat(), "days": a.days},
                           "now": now, "prior": prior, "by_source": by_source, "by_landing": by_landing,
-                          "events": events, "cta_spots": spots, "stars": stars, "ab": ab, "github": gh}, indent=1, default=str))
+                          "events": events, "cta_spots": spots, "stars": stars, "ab": ab, "github": gh,
+                          "scanner_hits": {"now": scans, "prior": pscans}}, indent=1, default=str))
     else:
-        print(render(a.days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab, a.ab_days, gh))
+        print(render(a.days, start, end, now, prior, by_source, by_landing, events, spots, stars, ab, a.ab_days, gh, scans, pscans))
     return 0
 
 

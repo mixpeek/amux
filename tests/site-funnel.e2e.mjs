@@ -96,6 +96,13 @@ const er = await evs(p, 'signup_error');
 ok(er.length === 1, 'failed checkout API -> signup_error ' + JSON.stringify(er));
 ok(checkoutBody && 'ph' in checkoutBody && 'ab' in checkoutBody && checkoutBody.plan === 'solo', 'checkout body carries ph and ab for server-side attribution ' + JSON.stringify(checkoutBody && { ph: checkoutBody.ph, ab: checkoutBody.ab }));
 ok(p.errs.length === 0, 'no JS errors on /start/ ' + p.errs.join('|'));
+// EXP-157: no exit above the form, and the IP-lock hint does not toggle the box.
+ok(await p.locator('.site-header a[href="/#get"]').count() === 0, '/start/ header has no Get started link away from the form');
+ok(await p.evaluate(() => { const f = document.getElementById('f'), n = document.querySelector('.free-note[data-cta-loc="start-selfhost"]'); return !!n && !!(f.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'self-host note sits below the form');
+await p.click('.field.lock .hint');
+ok(!(await p.isChecked('#iplock')), 'clicking the IP-lock hint leaves the box unchecked');
+await p.click('label[for="iplock"]');
+ok(await p.isChecked('#iplock'), 'clicking the IP-lock label checks the box');
 
 // Welcome page: paid once per order
 p = await page();
