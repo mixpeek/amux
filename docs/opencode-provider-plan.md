@@ -350,6 +350,42 @@ board, a script) can now switch a live worker without ending its session.
 Shipping a route was deliberately left out: it needs the dashboard's
 confirmation flow, and a route nobody calls is worse than a tested capability.
 
+### M9 — boundary asks become real, and decidable
+
+M6 built the enforcement seam and proved it with a fixture; measurement then
+showed it was **inert in production**: opencode auto-approves unless a session's
+permission ruleset says `ask`, so the policy never saw a call (zero asks in the
+log, ever). Two measurements fixed the input side of the same problem (see
+`docs/serve-spike-results.md`):
+
+- `POST /api/session` accepts **`permissions: [{action, resource, effect}]`** —
+  so amux polices a worker per session, without editing the owner's
+  `~/.config/opencode/opencode.jsonc` or dropping a file into a project.
+- An ask carries the predicate input: `shell` → the command in `resources[0]`,
+  `edit` → the diff in `metadata.files[].patch`, `external_directory` → a path
+  pattern. All 20 registry rules are decidable from that; **no plugin needed.**
+
+`boundary_policy::session_permission_ruleset()` derives the ruleset from the
+ENABLED registry (`shell` when a rule names Bash, `edit` when one names
+Write/Edit, `external_directory` when one has a `path` predicate), all `ask` —
+never `deny`, because a refusal must be logged with its reason and opencode's
+`deny` refuses before amux can say why. An empty ruleset logs
+`verdict=boundary_ruleset_empty`, since "asks nothing" is exactly how this gap
+looked before.
+
+The obsolete "path-decidable tool list" is gone with it: a `path` predicate is
+decided from `locations` whatever the tool, which is precisely the case the
+list used to skip (the vault rule names `Bash`, and `Bash` was never in it).
+
+### M10 — the model switch gets its door
+
+`AgentProtocol::set_model` had no caller. Rather than add a second way to change
+a model, `PATCH /api/sessions/<name>/config {"model": …}` — the door that already
+exists — now switches opencode live through the protocol and answers
+`{"mode": "hot", "live": true}`. When the live switch fails it answers 422 with
+`mode: "next_session"`: the durable config still changed, and the next session
+uses it, which is the honest half-apply rather than a claim.
+
 ---
 
 ## Risks / honest limits

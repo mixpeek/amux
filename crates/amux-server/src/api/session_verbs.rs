@@ -35519,6 +35519,55 @@ async fn config_patch_with_liveness(
         {
             return jresp(status, json!({"error": error}));
         }
+        // M10: opencode can switch a LIVE session's model over its own HTTP API
+        // (the measured `POST /api/session/{id}/model`, 204). Doing it here, in
+        // the door that already exists, keeps ONE way to change a model instead
+        // of two that disagree — the alternative (a second route) is exactly the
+        // drift this repo's rules are about.
+        //
+        // Only when nothing else is in the request: an `effort` change has no
+        // opencode equivalent here, so that case keeps the old path rather than
+        // half-applying a two-part change.
+        if current_provider == "opencode"
+            && was_running
+            && !model_val.is_empty()
+            && body.get("effort").is_none()
+        {
+            if let Some(protocol) = crate::opencode::process_protocol() {
+                let row = state.store.read().ok().and_then(|conn| {
+                    crate::db::queries::get_worker(&conn, name).ok().flatten()
+                });
+                let worker = row.and_then(|r| amux_core::ids::WorkerId::parse(&r.id).ok());
+                if let Some(worker) = worker {
+                    match protocol.set_model(&worker, &model_val).await {
+                        Ok(()) => {
+                            tracing::info!(
+                                session = %name, model = %model_val, measured = true, n_considered = 1,
+                                verdict = "opencode_model_switched_live",
+                                "opencode model switched on the live session; subsequent turns use it"
+                            );
+                            set_confirmed_active_model(name, &current_provider, Some(&model_val));
+                            return jresp(StatusCode::OK, json!({
+                                "ok": true, "applied": true, "mode": "hot", "live": true,
+                                "model": model_val,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                session = %name, model = %model_val, error = %e, measured = true, n_considered = 1,
+                                verdict = "opencode_model_switch_failed",
+                                "the live opencode session refused the model switch; the durable config still changed"
+                            );
+                            return jresp(StatusCode::UNPROCESSABLE_ENTITY, json!({
+                                "ok": false, "applied": false, "mode": "next_session", "live": false,
+                                "model": model_val,
+                                "error": format!("the live session could not switch model ({e}); the next session will use it"),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
         let rep = apply_live_config_change(
             state,
             name,
