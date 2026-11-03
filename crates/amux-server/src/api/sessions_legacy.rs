@@ -790,20 +790,35 @@ fn record_task_changes(store: &crate::db::SharedStore, conn: &rusqlite::Connecti
     }
     let n = changes.len();
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
-    let res = store.write(move |c| {
-        for (name, from, to, src, card) in &changes {
-            c.execute(
-                "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
-                rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
-            )?;
+    // THE LIST BUILD DOES NOT WAIT FOR THIS WRITE. It used to, and the one
+    // writer thread is often busy with a long job (the storage sweep, the
+    // orchestrator's WIP evaluation). On 2026-11-02 that held the single fleet
+    // build for 19 s at the median and 234 s at worst, and every client waited
+    // 30 s for a 503 (378 sessions_cache_stuck in five hours). The rename
+    // history can land a few seconds late; the list cannot.
+    let store = store.clone();
+    let queued = std::time::Instant::now();
+    let spawned = std::thread::Builder::new().name("task-history-write".into()).spawn(move || {
+        let res = store.write(move |c| {
+            for (name, from, to, src, card) in &changes {
+                c.execute(
+                    "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
+                    rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+        let waited_ms = queued.elapsed().as_millis() as u64;
+        match res {
+            Ok(_) => tracing::info!(target: "amux::sessions", n, waited_ms, measured = true, n_considered = n,
+                verdict = "task_renamed_recorded", "recorded worker task-name changes"),
+            Err(e) => tracing::warn!(target: "amux::sessions", n, waited_ms, error = %e, verdict = "task_history_write_failed",
+                "could not record worker task-name changes"),
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     });
-    match res {
-        Ok(_) => tracing::info!(target: "amux::sessions", n, measured = true, n_considered = n,
-            verdict = "task_renamed_recorded", "recorded worker task-name changes"),
-        Err(e) => tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
-            "could not record worker task-name changes"),
+    if let Err(e) = spawned {
+        tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
+            "could not start the task-name history write");
     }
 }
 
@@ -11757,6 +11772,42 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert_eq!(task_name_changes(&stopped, &mut last)[0].4, "AMUX-9", "a stopped worker's board-named task keeps its card");
         let c = task_name_changes(&snap("Ship the stopwatch"), &mut last);
         assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
+    }
+
+    /// 2026-11-02: the list build waited on this write while the writer ran a
+    /// long job, so /api/sessions answered 503 after 30 s. A busy writer must
+    /// not hold the build, and the rename must still be recorded.
+    #[test]
+    fn task_name_history_write_does_not_hold_the_list_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let busy = store.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            busy.write(move |_| {
+                started_tx.send(()).ok();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            })
+        });
+        started_rx.recv().unwrap();
+        let name = format!("zz-history-{}", std::process::id());
+        let conn = store.read().unwrap();
+        let t = std::time::Instant::now();
+        record_task_changes(&store, &conn, &[json!({"name": name, "task_name": "Ship it", "task_source": "generated_title"})]);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1),
+            "record_task_changes waited {:?} on a busy writer", t.elapsed());
+        holder.join().unwrap().unwrap();
+        let count = || -> i64 {
+            store.read().unwrap().query_row(
+                "SELECT COUNT(*) FROM session_events WHERE type='task.renamed' AND session=?1",
+                [&name], |r| r.get(0)).unwrap()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(count(), 1, "the rename is recorded once the writer is free");
     }
 
     #[test]
