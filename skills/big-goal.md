@@ -68,7 +68,7 @@ New workers, if the goal needs them, go in one group with the coordinator, so th
 
 The coordinator (you, or the worker the owner names) owns no row. It gets two schedules (`POST /api/schedules`, with `X-Amux-Session`):
 - **Measure, hourly, `kind: "shell"`:** run every checker, append one line to a log (time, each owner's number, its 6-hour change, an ETA at that rate), and exit non-zero only when a number has not moved for the stall window or a checker cannot tell. This costs no model.
-- **Act, hourly, `kind: "tmux"` to the coordinator:** read the newest log line. Post it to whoever owns the goal as one line, with `amux post p:<their name or email> --stdin` (it lands in your own thread and @mentions them). Order the owner of the biggest real gap to work on it. At the next fire, confirm the worker took it up (its task or its number changed). If a fire has nothing to act on, it says so in one line and stops.
+- **Act, hourly, `kind: "tmux"` to the coordinator:** read the newest log line. Post it to whoever owns the goal as one line, with `amux post p:owner --stdin` for the workspace owner, or `p:<email>` for another person (it lands in your own thread and @mentions them). Check the exit code and log a failed post: a wrong address returns 400 and nothing else shows it. Order the owner of the biggest real gap to work on it. At the next fire, confirm the worker took it up (its task or its number changed). If a fire has nothing to act on, it says so in one line and stops.
 
 Do not give the coordinator a /goal on the owners' numbers. It cannot move them itself.
 
