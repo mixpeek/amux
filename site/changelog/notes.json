@@ -1,5 +1,65 @@
 [
   {
+    "hash": "0b0fea23efe5a67a6cca3c4638744d9f0c074a14",
+    "short": "0b0fea23",
+    "title": "Freeze a workspace in the Mac app",
+    "date": "2026-11-03",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "workspaces"
+    ],
+    "description": "Window > Workspaces > Freeze Workspace (Option-Command-F) locks the tabs, names and workers in the open workspace so nothing gets closed, renamed or moved by accident. You can still resize windows, dividers and zoom. A frozen window says so under its title."
+  },
+  {
+    "hash": "a39e5a64ba8990f96afe05433e7d5c2b55788ec1",
+    "short": "a39e5a64",
+    "title": "See what a worker answered from the Messages menu",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "mobile"
+    ],
+    "description": "A message's row menu now has Show answer, which reads the worker's reply from its transcript. You can check what a worker said on your phone without opening a terminal, and a missing answer says why."
+  },
+  {
+    "hash": "b9d44b290c70187f6aaaa0b304eeb133076c44c4",
+    "short": "b9d44b29",
+    "title": "Every worker has Chat by default",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "chat",
+      "workers"
+    ],
+    "description": "Chat is now on for every worker unless you switch it off, including workers that already existed. Nothing runs until you send the first chat message, and workers that had it on are unchanged."
+  },
+  {
+    "hash": "539ab95a8949b0ea58e0a5baec323c88a5f03515",
+    "short": "539ab95a",
+    "title": "The board is opt-in per worker",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "A worker uses the shared board only when its own settings or its group turn a Board switch on. Workers without it no longer get every prompt filed as a card or receive board nudges."
+  },
+  {
+    "hash": "58e71c7ea2b341879b7c63f78d640373cf5556a0",
+    "short": "58e71c7e",
+    "title": "The Messages row menu stays open while the list updates",
+    "date": "2026-11-03",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "dashboard"
+    ],
+    "description": "Live updates used to redraw the Messages list even when nothing changed, which closed an open row menu and could make Pin, Copy or Show answer miss. The list now redraws only on a real change and keeps the menu open."
+  },
+  {
     "hash": "c71df3ef96b3f5ad70970c7820b7b44ac6e0ebf3",
     "short": "c71df3ef",
     "title": "Codex workers use the model in your Codex config",
