@@ -69,23 +69,32 @@ pub(crate) fn query_terms(question: &str) -> Vec<String> {
     out
 }
 
-/// Score every row against the question: the sum of the IDF of each question
-/// word it contains. A row must share at least two words with the question
-/// (or its only one, for a one-word question) to count as a match.
+/// Score every row against the question with BM25 (k1 1.2, b 0.75) over the
+/// question words it contains: a rare word counts for more, and a long row
+/// counts each word for less. Without the length term a worker's long status
+/// report, which mentions half the question's words in passing, outranked the
+/// owner's one-paragraph message that was the answer (MSG-103447 ranked 15th;
+/// with it, 1st of 11,690). A row must share at least two words with the
+/// question (or its only one, for a one-word question) to count as a match.
 /// Returns (row index, score), best first.
 pub(crate) fn rank(question: &str, rows: &[Row]) -> Vec<(usize, f64)> {
     let q = query_terms(question);
     if q.is_empty() || rows.is_empty() {
         return Vec::new();
     }
-    let docs: Vec<HashSet<String>> = rows
+    let (docs, lens): (Vec<HashSet<String>>, Vec<f64>) = rows
         .iter()
         .map(|r| {
             let text: String = r.text.chars().take(SCORED_CHARS).collect();
-            terms(&text).into_iter().filter(|t| q.contains(t)).collect()
+            let all = terms(&text);
+            let len = all.len() as f64;
+            (all.into_iter().filter(|t| q.contains(t)).collect(), len)
         })
-        .collect();
+        .unzip();
     let n = docs.len() as f64;
+    let avg_len = (lens.iter().sum::<f64>() / n).max(1.0);
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
     let mut df: HashMap<&str, usize> = HashMap::new();
     for d in &docs {
         for t in d {
@@ -98,7 +107,10 @@ pub(crate) fn rank(question: &str, rows: &[Row]) -> Vec<(usize, f64)> {
         .iter()
         .enumerate()
         .filter(|(_, d)| d.len() >= need)
-        .map(|(i, d)| (i, d.iter().map(|t| idf(t)).sum::<f64>()))
+        .map(|(i, d)| {
+            let norm = (K1 + 1.0) / (1.0 + K1 * (1.0 - B + B * lens[i] / avg_len));
+            (i, d.iter().map(|t| idf(t)).sum::<f64>() * norm)
+        })
         .collect();
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(rows[b.0].ts.cmp(&rows[a.0].ts)));
     scored
@@ -206,6 +218,16 @@ mod tests {
         rows.push(row(99, 0, "the ns manifest for the mixpeek image"));
         let ranked = rank("mixpeek ns manifest", &rows);
         assert_eq!(ranked.first().map(|(i, _)| rows[*i].id), Some(99));
+    }
+
+    #[test]
+    fn a_short_message_beats_a_long_one_that_mentions_the_same_words_in_passing() {
+        let filler = "status ".repeat(400);
+        let mut rows: Vec<Row> = (0..30).map(|i| row(i, i, "unrelated note")).collect();
+        rows.push(row(100, 0, &format!("{filler} mixpeek image ns manifest {filler}")));
+        rows.push(row(101, 0, "iterate using the mixpeek image on the ns manifest"));
+        let ranked = rank("mixpeek image ns manifest", &rows);
+        assert_eq!(ranked.first().map(|(i, _)| rows[*i].id), Some(101));
     }
 
     #[test]
