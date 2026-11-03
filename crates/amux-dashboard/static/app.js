@@ -58734,11 +58734,11 @@ async function _askRun(peek) {
   // matches with who, when and how each opens. One tap opens the message.
   const best = Array.isArray(d.best_matches) ? d.best_matches : [];
   const bestHtml = best.length
-    ? '<div style="margin-top:var(--space-2-5);">'
-      + '<div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-1);">closest matches:</div>'
-      + best.map(m => '<button class="btn" style="display:block;width:100%;text-align:left;white-space:normal;font-size:var(--fs-xs);padding:var(--space-1-5) var(--space-2);margin-bottom:var(--space-1);min-height:44px;" onclick="_askOpenCitation('
+    ? '<div class="ask-best">'
+      + '<div class="ask-best-label">closest matches:</div>'
+      + best.map(m => '<button class="btn ask-best-row" onclick="_askOpenCitation('
         + JSON.stringify(m.id) + ')"><b>MSG-' + esc(m.id) + '</b> · ' + esc(m.session || '') + ' · ' + esc(m.at || '')
-        + '<br><span style="color:var(--dim);">' + esc(String(m.snippet || '').replace(/\s+/g, ' ').slice(0, 220)) + '</span></button>').join('')
+        + '<br><span class="ask-best-snippet">' + esc(String(m.snippet || '').replace(/\s+/g, ' ').slice(0, 220)) + '</span></button>').join('')
       + '</div>'
     : '';
   const shown = cited.concat(best.map(m => m.id));

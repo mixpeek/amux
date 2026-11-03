@@ -10935,3 +10935,10 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
     line-height: 1.55; padding: var(--space-3) var(--space-3) var(--space-12); }
   .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
 }
+
+/* Ask: the closest matches under an answer, one tappable row each. */
+.ask-best { margin-top: var(--space-2-5); }
+.ask-best-label { font-size: var(--fs-xs); color: var(--dim); margin-bottom: var(--space-1); }
+.ask-best-row { display: block; width: 100%; text-align: left; white-space: normal; font-size: var(--fs-xs);
+  padding: var(--space-1-5) var(--space-2); margin-bottom: var(--space-1); min-height: 44px; }
+.ask-best-snippet { color: var(--dim); }
