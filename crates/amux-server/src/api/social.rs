@@ -61,7 +61,7 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
     ("instagram", "not_built", "Graph API content publishing: @amux_io as a Business account linked to a Facebook Page, and a Meta app with publishing approved."),
     ("tiktok", "not_built", "Content Posting API: posts are visible only to the account until TikTok audits the app."),
     ("x", "built", "browser publisher on the `ethan` profile, posting as @ethansteininger only with account \"ethan\" (his sign-off per post); needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). No amux X account is signed in; metrics are not built."),
-    ("linkedin", "built", "browser publisher on the `ethan` profile: account \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). Metrics are not built."),
+    ("linkedin", "built", "browser publisher on the `ethan` profile: account \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). Metrics come from the amux page's analytics table (page posts only, last 14 days)."),
 ];
 
 /// Every platform call names amux. dev.to answers 403 to a request with no
@@ -864,6 +864,16 @@ mod tests {
         assert_eq!(youtube_title(Some("  "), "cap"), "cap");
         assert_eq!(youtube_title(Some("a <b> c"), ""), "a b c");
         assert_eq!(youtube_title(Some(&"x".repeat(150)), "").chars().count(), 100);
+    }
+
+    #[test]
+    fn linkedin_page_posts_are_measured() {
+        // e39611d5c built LinkedIn's metrics read, but the windows job never
+        // polled it: five page posts had no snapshot (amux-gtm, 2026-11-03).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0134_social_posts.sql")).unwrap();
+        conn.execute("INSERT INTO social_posts (platform, account, post_id, posted_at) VALUES ('linkedin', 'amux', 'urn:li:ugcPost:1', 1000)", []).unwrap();
+        assert_eq!(due_windows(&conn, 1000 + 86_400, 3).unwrap(), vec![(1, "24h")]);
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub const MAX_ATTEMPTS: i64 = 3;
 
 /// Every platform with a publisher, in the order `GET /api/social` lists them.
 /// The metrics windows are read for exactly these.
-pub const PUBLISHERS: &[&str] = &["youtube", "devto"];
+pub const PUBLISHERS: &[&str] = &["youtube", "devto", "linkedin"];
 
 /// What to post: the request, with the account already resolved.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -142,9 +142,9 @@ pub fn publisher(platform: &str) -> Option<&'static dyn Publisher> {
     match platform {
         "youtube" => Some(&social::YouTube),
         "devto" => Some(&super::social_devto::DevTo),
+        "linkedin" => Some(&super::social_browser::LinkedIn),
         // Not in PUBLISHERS yet: it reads no metrics, and the windows job would
         // retry a read that cannot succeed on every pass.
-        "linkedin" => Some(&super::social_browser::LinkedIn),
         "x" => Some(&super::social_browser::X),
         _ => None,
     }
