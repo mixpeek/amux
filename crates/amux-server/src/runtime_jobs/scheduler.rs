@@ -3495,6 +3495,7 @@ pub async fn run_scheduler(
     let retry = RetryPolicy::default();
     let mut shadow_seen: HashMap<String, String> = HashMap::new();
     let mut dispatch = FireDispatch::default();
+    let mut moot_ticks: u64 = 0;
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_TICK_SECS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tracing::info!(
@@ -3551,6 +3552,11 @@ pub async fn run_scheduler(
         // (schedule_check.rs). Firing mode only: a re-fire is a fire.
         if enabled {
             super::schedule_check::spawn_sweep(store.clone(), deliverer.clone());
+            // Failure cards a delete or disable already answered, every ~10 min.
+            moot_ticks += 1;
+            if moot_ticks % super::schedule_failure::MOOT_SWEEP_TICKS == 1 {
+                super::schedule_failure::spawn_moot_sweep(store.clone());
+            }
         }
     }
 }
