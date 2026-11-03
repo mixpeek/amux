@@ -689,12 +689,14 @@ pub fn moot_reason(exists: bool, enabled: bool, streak: i64) -> Option<&'static 
 /// (`resolve_owner_card`), but a delete, a disable, a worker's retirement pause
 /// or an earlier build left the card standing. Measured 2026-11-03: of 15 such
 /// cards in the owner's queue, 6 named deleted schedules, 5 disabled ones and 1
-/// a schedule passing again, up to 20 days old. Returns (considered, closed).
+/// a schedule passing again, up to 20 days old. A delete is soft: the row stays
+/// with `deleted` set and often `enabled=1`, so `deleted` counts as gone (three
+/// cards survived the first live sweep on that). Returns (considered, closed).
 pub async fn reconcile_moot_cards(store: &SharedStore, now: i64) -> anyhow::Result<(usize, usize)> {
     let open: Vec<(String, String, bool, bool, i64)> = store
         .read_async(|conn| {
             let mut st = conn.prepare(
-                "SELECT i.id, substr(i.source_ref, 15), s.id IS NOT NULL, COALESCE(s.enabled,0), \
+                "SELECT i.id, substr(i.source_ref, 15), s.id IS NOT NULL AND COALESCE(s.deleted,0)=0, COALESCE(s.enabled,0), \
                  COALESCE(s.failure_streak,0) FROM issues i \
                  LEFT JOIN schedules s ON s.id = substr(i.source_ref, 15) \
                  WHERE i.source_ref LIKE 'sched-failure:%' AND COALESCE(i.archived,0)=0 \
@@ -1255,7 +1257,7 @@ mod tests {
     async fn a_deleted_or_disabled_schedule_closes_its_failure_card() {
         let (fx, _g) = fixture(&[("raw", "CC_TAGS=plg\nCC_ISOLATED=1\n")]);
         let store = fx.store.clone();
-        for id in ["SCHED-21", "SCHED-22", "SCHED-23"] {
+        for id in ["SCHED-21", "SCHED-22", "SCHED-23", "SCHED-24"] {
             add(&store, sched(id, "raw")).await;
             on_run_outcome_with(&store, &sched(id, "raw"), &exit(1, "boom"), "cron-rs", &Up(true)).await;
             assert_eq!(owner_cards(&store, id).await[0].1, "needsyou");
@@ -1263,10 +1265,13 @@ mod tests {
         store.write_async(|c| {
             c.execute("DELETE FROM schedules WHERE id='SCHED-21'", [])?;
             c.execute("UPDATE schedules SET enabled=0 WHERE id='SCHED-22'", [])?;
+            // The API's delete: the row stays, enabled, with `deleted` stamped.
+            c.execute("UPDATE schedules SET deleted=1793000000 WHERE id='SCHED-24'", [])?;
             Ok(WriteOutcome { applied: true, events: vec![] })
         }).await.unwrap();
         let (considered, closed) = reconcile_moot_cards(&store, 1_800_000_000).await.unwrap();
-        assert_eq!((considered, closed), (3, 2));
+        assert_eq!((considered, closed), (4, 3));
+        assert!(owner_cards(&store, "SCHED-24").await[0].3.contains("deleted"), "a soft delete is a delete");
         let c21 = owner_cards(&store, "SCHED-21").await;
         assert_eq!(c21[0].1, "done");
         assert!(c21[0].3.contains("deleted"), "{}", c21[0].3);
