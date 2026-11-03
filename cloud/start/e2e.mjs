@@ -34,10 +34,10 @@ try {
   await step('A0 homepage leads to /start', async () => {
     await page.goto(`https://amux.io/?x=${RUN}`);
     const hero = await page.locator('#hero-start').getAttribute('href');
-    await page.locator('#start a[href="/start/?plan=team"]').scrollIntoViewIfNeeded();
+    await page.locator('#get a[href="/start/?plan=team"]').scrollIntoViewIfNeeded();
     await shot('00-home-plans');
-    await Promise.all([page.waitForURL(/\/start\/\?plan=team/), page.locator('#start a[href="/start/?plan=team"]').click()]);
-    if (hero !== '/start/') throw new Error('hero CTA points at ' + hero);
+    await Promise.all([page.waitForURL(/\/start\/\?plan=team/), page.locator('#get a[href="/start/?plan=team"]').click()]);
+    if (hero !== '/start/?source=home') throw new Error('hero CTA points at ' + hero);
     // The visitor's own URL from here on, plus this run's test function (live Stripe otherwise).
     return { hero, landed: new URL(page.url()).pathname + new URL(page.url()).search };
   });

@@ -30,7 +30,6 @@ ok(c.some(x => x[0] === 'register_for_session' && x[1].session_source === 'ai'),
 await p.click('.site-header a[href="https://github.com/mixpeek/amux"]');
 await p.click('.hero a[href="https://github.com/mixpeek/amux"]');
 await p.click('.hero a[href^="/start/"]');
-await p.click('#hero-watch');
 await p.click('#hero-ios');
 await p.click('#hero-mac');
 await p.click('.site-header a[href="#get"]');
@@ -41,7 +40,9 @@ const has = (g, s) => cta.some(e => e.goal === g && e.spot === s);
 ok(has('github', 'header'), 'header star click -> goal github, spot header');
 ok(has('github', 'hero'), 'hero star click -> goal github, spot hero');
 ok(has('cloud', 'hero'), 'hero cloud click -> goal cloud, spot hero');
-ok(has('walkthrough', 'hero'), 'hero walkthrough -> goal walkthrough');
+ok(cta.find(e => e.goal === 'cloud' && e.spot === 'hero')?.href === '/start/?source=home', 'hero cloud link carries source=home');
+ok(await p.evaluate(() => /\/home\/demo-desktop\.mp4$/.test(document.getElementById('demo-desk').currentSrc)), 'desktop hero loads the dashboard demo clip');
+ok(await p.evaluate(() => new Promise(r => { const v = document.getElementById('demo-desk'); const t0 = v.currentTime; setTimeout(() => r(v.currentTime > t0), 1500); })), 'the demo clip is playing');
 ok(has('pricing', 'header'), 'Get started -> goal pricing, spot header');
 ok(has('ios', 'hero'), 'hero iPhone app -> goal ios');
 ok(has('mac', 'hero'), 'hero Mac app -> goal mac, not github');
