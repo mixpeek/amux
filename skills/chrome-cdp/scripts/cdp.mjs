@@ -709,7 +709,10 @@ async function runDaemon(targetId) {
           `${out.local_storage_set ? `, ${out.local_storage_set} localStorage keys` : ''}, ${reason}). ` +
           `Next time: AMUX_PROFILE=${out.profile}`;
       }
-      if (out.sign_in_instead && !rotatingNoted.has(site)) {
+      if (out.verdict === 'cdp_sync_identity_mismatch_skipped') {
+        syncNote = `[amux] ${out.sign_in_instead}`;
+        process.stderr.write(`[amux] WARN ${site}: amux profile '${out.profile}' is signed in as another account; not overwritten (verdict=cdp_sync_identity_mismatch_skipped)\n`);
+      } else if (out.sign_in_instead && !rotatingNoted.has(site)) {
         // Said once per site per daemon: the copy is refused every time, the advice need not repeat.
         rotatingNoted.add(site);
         syncNote = (syncNote ? syncNote + '\n' : '') + `[amux] ${out.sign_in_instead}`;
