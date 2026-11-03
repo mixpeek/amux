@@ -27817,8 +27817,8 @@ function _peekMessagesRender() {
               '<br><button class="btn" style="margin-top:var(--space-2-5);min-height:36px;" ' +
               'onclick="_peekMessagesLoad(false)">Retry</button>')
       : _note(_empty);
-  list.innerHTML = (_body || _placeholder)
-    + (!_body && !_loaded ? '' : moreHTML);
+  _msgListWrite(list, (_body || _placeholder)
+    + (!_body && !_loaded ? '' : moreHTML));
   _peekMessagesBadge();
   _msgTaskChipsFill(list);
 }
@@ -61805,6 +61805,20 @@ function _msgSelToggle(key, ev) {
 function _msgSelAll(visibleKeys) { visibleKeys.forEach(k => _msgSel.add(k)); _messagesRender(); }
 function _msgSelNone() { _msgSel.clear(); _messagesRender(); }
 
+// The Messages lists re-render on every poll and SSE event. A rewrite replaced
+// the button under a finger and closed the row menu mid-tap, so skip one that
+// changes nothing and put an open menu back after one that does.
+function _msgListWrite(list, html) {
+  if (list._msgListHtml === html && list.firstChild === list._msgListFirst) return;
+  const openKey = list.querySelector('.msg-menu.open')?.closest('[data-msg-key]')?.dataset.msgKey;
+  list.innerHTML = html;
+  list._msgListHtml = html;
+  list._msgListFirst = list.firstChild;
+  if (openKey == null) return;
+  const row = list.querySelector('[data-msg-key="' + CSS.escape(openKey) + '"]');
+  row?.querySelector('.msg-menu')?.classList.add('open');
+}
+
 // The per-row overflow menu. One open at a time; click anywhere closes it.
 function _msgMenu(btn, ev) {
   if (ev) ev.stopPropagation();
@@ -61958,7 +61972,7 @@ function _messagesRender() {
   // (sticky, one per calendar day) is the review-by-calendar pattern (Ethan):
   // rows are newest-first, so each header labels the day of the messages below
   // it; `data-day` lets the date picker scroll straight to a day.
-  list.innerHTML = rows.map(m => {
+  _msgListWrite(list, rows.map(m => {
     const _ts = m.time || m.ts;
     let dateHdr = '';
     const _day = _msgDayKey(_ts);
@@ -61972,7 +61986,7 @@ function _messagesRender() {
     }
     _prevTs = _ts;
     return dateHdr + burst + _cmdHistItemHTML(m, _msgCtxMessages());
-  }).join('');
+  }).join(''));
   _msgTaskChipsFill(list);
 }
 
