@@ -60,6 +60,8 @@ A worker can set only its own worker layer, so each owner does step 1 itself. If
 
 Keep the board off for every owner and the coordinator. Off has been the default for a worker nobody configured since 2026-11-02, and Off means no card is filed for the worker, nothing about the board is typed into it, and no dispatch or nudge competes with its goal. Check `board_used` is false on `GET /api/sessions` for each one; if it is true, ask the owner to switch the Board tab off. The record of the work is the checker output, the coordinator's hourly log line, Messages history and `amux requests`, none of which needs a board.
 
+If the owner wants the board on for these workers, the board only records: it files and keeps cards and types nothing into the worker (amux's default; only `AMUX_BOARD_STEERS=1` lets it steer, so never set that for a goal worker). Then make the cards the plan's rows, one per row, owned by the row's worker, and close a card only when that owner's checker reports the row met. A task the board captures from a message gets the triage tag (`amux board triage <ID>`), so it waits until accepted and never jumps ahead of the goal.
+
 New workers, if the goal needs them, go in one group with the coordinator, so they can message each other. Never create an isolated worker for this.
 
 ## 5. The coordinator gets a schedule, not a goal

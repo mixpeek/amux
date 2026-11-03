@@ -13753,7 +13753,7 @@ async function _scopeEditSave() {
 const _BOARD_SWITCHES = [
   { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
     label: 'Board steers this worker',
-    note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board is not used for this worker.' },
+    note: 'Lets the board type into this worker (start cards, nudge and remind it) only where AMUX_BOARD_STEERS=1 is set; otherwise the board records only. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board is not used for this worker.' },
   { field: 'board_auto_pickup', value: 'auto_pickup_raw', active: 'auto_pickup', own: 'auto_pickup_own', parents: ['board_force_adherence'],
     label: 'Start To Do cards when idle',
     note: 'When the worker goes idle it claims its next To Do card and starts on it.' },
@@ -13810,7 +13810,7 @@ function _boardOneState(s) {
   const st = _boardSwitchStates(s, _pbcPending);
   return st.board_force_adherence.effective ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
 }
-const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards when it is idle, keeps it going on unfinished cards, refills To Do from Backlog, turns task-like messages into cards, and nudges and reminds it. Off: the board is not used for this worker. No cards are filed for it, nothing about the board is typed into it, and its own board calls are refused.';
+const _BOARD_ONE_NOTE = 'On: the board keeps this worker\u2019s cards and turns task-like messages into cards. It never types into the worker: no card starts, nudges or reminders, unless AMUX_BOARD_STEERS=1 is set in its scope. Off: the board is not used for this worker. No cards are filed for it, nothing about the board is typed into it, and its own board calls are refused.';
 function _boardOneSwitchHTML(name, s, cls) {
   const b = _boardOneState(s);
   const dis = s && s.isolated ? ' disabled' : '';

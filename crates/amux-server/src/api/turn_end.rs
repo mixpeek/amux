@@ -1561,19 +1561,25 @@ mod tests {
             "a raw conversation must not become a board ask even with a stale recorder flag");
     }
 
-    /// "Board steers this worker" off (the default) means no turn-end nudge is
-    /// typed into the lane; on, they are.
+    /// No turn-end nudge is typed into a lane unless the board may steer it:
+    /// "Board steers this worker" on AND AMUX_BOARD_STEERS on. A Board switch
+    /// that is on (force adherence) alone only records (Ethan, 2026-11-03:
+    /// "board tasks even if enabled shouldnt intervene").
     #[test]
     fn turn_end_nudges_follow_board_steering() {
         let home = tempfile::tempdir().unwrap();
         let _guard = crate::api::settings::test_env::set_home(home.path());
+        std::env::remove_var(crate::api::board_lifecycle::STEERS_KEY);
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
         std::fs::write(home.path().join("sessions/quiet.env"), "CC_DIR=\"/tmp\"\n").unwrap();
-        std::fs::write(home.path().join("sessions/steered.env"),
+        std::fs::write(home.path().join("sessions/board-on.env"),
             "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=1\n").unwrap();
+        std::fs::write(home.path().join("sessions/steered.env"),
+            "CC_DIR=\"/tmp\"\nAMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_BOARD_STEERS=1\n").unwrap();
         for what in ["owner-ask", "promise", "sigkill-resume"] {
             assert!(!nudges_wanted("quiet", what), "{what} must not reach a lane with board steering off");
-            assert!(nudges_wanted("steered", what), "{what} reaches a lane with board steering on");
+            assert!(!nudges_wanted("board-on", what), "{what} must not reach a lane whose board only records");
+            assert!(nudges_wanted("steered", what), "{what} reaches a lane the board may steer");
         }
     }
 

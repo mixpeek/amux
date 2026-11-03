@@ -826,6 +826,12 @@ pub trait Fleet: Send + Sync {
     fn board_adherence(&self, _lane: &str) -> bool {
         true
     }
+    /// Whether the board may act on this lane at all (`AMUX_BOARD_STEERS`,
+    /// default off: the board records, it does not intervene). Test fleets
+    /// model a lane that opted in.
+    fn board_steers(&self, _lane: &str) -> bool {
+        true
+    }
     /// `CC_TAGS`, lowercased — for explicit-mode status scoping (py:16096).
     fn tags(&self, lane: &str) -> Vec<String>;
     /// Isolation is a selection veto, not merely a delivery refusal: claiming
@@ -986,7 +992,10 @@ impl Fleet for LiveFleet {
         crate::api::session_verbs::session_is_isolated(lane)
     }
     fn auto_continue_enabled(&self, lane: &str) -> bool {
-        crate::api::session_verbs::board_continue_on(lane)
+        crate::api::session_verbs::board_continue_on(lane) && crate::api::board_lifecycle::board_steers(lane)
+    }
+    fn board_steers(&self, lane: &str) -> bool {
+        crate::api::board_lifecycle::board_steers(lane)
     }
     async fn is_running(&self, lane: &str) -> bool {
         crate::api::session_verbs::is_running(lane).await
@@ -7654,7 +7663,7 @@ fn publish_lane(trace: LaneTrace) {
 /// thought we got rid of these injections when board adherence is disabled").
 /// Dispatch of real todo work is a separate switch (auto-pickup).
 pub(crate) fn board_reminders_wanted(lane: &str) -> bool {
-    crate::api::board_lifecycle::force_adherence(lane)
+    crate::api::board_lifecycle::force_adherence(lane) && crate::api::board_lifecycle::board_steers(lane)
 }
 
 fn nudge_delivery_failed(lane: &str, target: &str, card: &str, error: &str) -> LaneTrace {
@@ -7926,6 +7935,19 @@ async fn drive_lane<F: Fleet>(state: &AppState, fleet: &F, lane: &str) -> LaneTr
     if !fleet.auto_pickup_enabled(lane) {
         return LaneTrace::skip(lane, "opted-out", "CC_AUTO_PICKUP=0 in the session env")
             .with_counts(eligible, open);
+    }
+    // The board records; it does not act on the worker unless AMUX_BOARD_STEERS
+    // is on for it (board_lifecycle::board_steers). Before any claim, so a card
+    // is never claimed for a lane that will not be told about it.
+    if !fleet.board_steers(lane) {
+        tracing::debug!(target: "amux::board_drive", session = lane, eligible, open, measured = true, n_considered = 1,
+            verdict = "board_records_only", "board_drive: the board records this lane's cards and does not steer it");
+        return LaneTrace::skip(
+            lane,
+            "board-records-only",
+            "the board keeps this worker's cards and does not type into it; AMUX_BOARD_STEERS=1 lets it steer",
+        )
+        .with_counts(eligible, open);
     }
     // FORCE-ADHERENCE OFF MEANS THE BOARD DOES NOT STEER THIS WORKER (Ethan,
     // 2026-09-24, after a needs:you re-nag and then an auto-pickup were pasted
@@ -11593,6 +11615,7 @@ mod tests {
         delivery_error: std::sync::Mutex<Option<String>>,
         suppress_about: std::sync::atomic::AtomicBool,
         adherence: std::sync::atomic::AtomicBool,
+        steers: std::sync::atomic::AtomicBool,
     }
     impl Default for BoundaryFleet {
         fn default() -> Self {
@@ -11613,6 +11636,7 @@ mod tests {
                 delivery_error: std::sync::Mutex::new(None),
                 suppress_about: std::sync::atomic::AtomicBool::new(false),
                 adherence: std::sync::atomic::AtomicBool::new(true),
+                steers: std::sync::atomic::AtomicBool::new(true),
             }
         }
     }
@@ -11627,6 +11651,9 @@ mod tests {
         }
         fn board_adherence(&self, _: &str) -> bool {
             self.adherence.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn board_steers(&self, _: &str) -> bool {
+            self.steers.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn tags(&self, _: &str) -> Vec<String> {
             vec![]
@@ -14184,6 +14211,14 @@ mod tests {
             .enabled
             .store(false, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(drive_lane(&state, &opted, "lane").await.reason, "opted-out");
+        // A lane whose board only records (AMUX_BOARD_STEERS off, the default)
+        // is never started, claimed for or typed into, even with pickup on.
+        let records = BoundaryFleet::default();
+        records.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        records.steers.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(drive_lane(&state, &records, "lane").await.reason, "board-records-only");
+        assert_eq!(records.starts.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(records.delivered.lock().unwrap().is_empty(), "nothing typed into a records-only lane");
     }
 
     /// AMUX-4542. A RUNNING isolated lane at a turn boundary, with a claimable

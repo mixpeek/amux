@@ -58,6 +58,20 @@ pub(crate) fn force_adherence(session: &str) -> bool {
 }
 pub(crate) const DECOMPOSE_KEY: &str = POLICY_KEY;
 
+/// THE BOARD RECORDS; IT DOES NOT ACT ON THE WORKER (Ethan, 2026-11-03: "board
+/// tasks even if enabled shouldnt intervene"; 11-02: "the board is just
+/// getting in the models way"). With the Board switch on, cards are still filed
+/// and kept, and nothing is typed into the worker: no To Do pickup, no keep
+/// going, no backlog refill, no reminder, no staged owner command. Measured
+/// 11-03: 7 workers had the board on and 4 of them were being steered, while
+/// goal-driven lanes showed two drivers (board nudges and the goal keeper)
+/// competing for one worker. `AMUX_BOARD_STEERS=1` at a scope (worker, group or
+/// amux.env) lets the board steer that worker again; process env wins.
+pub(crate) const STEERS_KEY: &str = "AMUX_BOARD_STEERS";
+pub(crate) fn board_steers(session: &str) -> bool {
+    setting(session, STEERS_KEY).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
 /// BOARD OFF (Ethan, 2026-10-17: "make sure that if all these are off, the
 /// board is not used - that means putting shit on the board, standing messages
 /// about the board, etc."). A worker whose own settings leave all four Board
@@ -166,6 +180,7 @@ pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
     setting(session, STAGE_OWNER_COMMANDS_KEY).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         && enabled(session)
         && force_adherence(session)
+        && board_steers(session)
         && board_intake::model_client().is_some()
         && !session_verbs::session_is_isolated(session)
         && amux_core::board::title_from_prompt(text).is_some()
@@ -2473,5 +2488,30 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod board_steers_tests {
+    use super::*;
+
+    /// The board steers a worker only when AMUX_BOARD_STEERS says so, at any
+    /// scope; the Board switch's own keys alone only record.
+    #[test]
+    fn the_board_steers_only_where_amux_board_steers_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::env::remove_var(STEERS_KEY);
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::create_dir_all(dir.path().join("env")).unwrap();
+        std::fs::write(dir.path().join("sessions/on.env"),
+            "AMUX_BOARD_FORCE_ADHERENCE=1\nCC_AUTO_PICKUP=1\nCC_BOARD_CONTINUE=1\n").unwrap();
+        std::fs::write(dir.path().join("sessions/steered.env"),
+            "AMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_BOARD_STEERS=1\n").unwrap();
+        assert!(force_adherence("on"));
+        assert!(!board_steers("on"), "a Board switch that is on only records");
+        assert!(board_steers("steered"));
+        assert!(!crate::runtime_jobs::board_drive::board_reminders_wanted("on"));
+        assert!(crate::runtime_jobs::board_drive::board_reminders_wanted("steered"));
     }
 }
