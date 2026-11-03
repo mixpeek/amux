@@ -259,10 +259,12 @@ pub(crate) fn matches_note(matches: &[i64]) -> String {
     let ids: Vec<String> = matches.iter().take(20).map(|id| format!("MSG-{id}")).collect();
     format!(
         "\nCLOSEST BY SHARED WORDS (best first): {}.\n\
-         The asker may remember a message only roughly and in other words. If the question asks whether a message \
-         exists, and none matches exactly, name the one or two that come closest, with their ids, and say how each \
-         differs; do not answer that none exists while a close one is in the messages. A message often refers to \
-         the ones just before it in the same worker's conversation (\"this\", \"that\"): read those to judge what it is about.\n",
+         The asker remembers the message roughly and in their own words, so judge by MEANING, never by matching the \
+         wording: a message that covers most of what the question describes IS the message. When the question asks \
+         whether a message exists, open with yes or no; on yes, lead with that message's id and what it said, then \
+         note any part of the description it lacks. Answer that none exists only when no message covers most of it. \
+         A message often refers to the ones just before it in the same worker's conversation (\"this\", \"that\"): \
+         read those to judge what it is about.\n",
         ids.join(", ")
     )
 }
