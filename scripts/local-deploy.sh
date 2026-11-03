@@ -125,13 +125,39 @@ if [ "$SKIP_BUILD" = "0" ]; then
   command -v cargo >/dev/null || die "cargo is not on PATH"
   build_start="$(date +%s)"
   say "building --profile deploy from $SHORT (this is the long part)"
-  if ! nice -n 5 env \
+
+  # One build, with the incremental setting chosen by the caller. Output is kept
+  # so a LINK failure can be recognised rather than merely reported.
+  build_once() {
+    nice -n 5 env \
       CARGO_TARGET_DIR="$TARGET_DIR" \
-      CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}" \
+      CARGO_INCREMENTAL="$1" \
       CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" \
-      "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server; then
-    die "cargo build failed — nothing installed, the running server is untouched"
+      "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server
+  }
+  build_log="$(mktemp -t local-deploy-build.XXXXXX)"
+  if ! build_once "${CARGO_INCREMENTAL:-1}" > "$build_log" 2>&1; then
+    cat "$build_log"
+    # AF-1012: a stale incremental cache fails the LINK, not the compile —
+    # `rust-lld: error: undefined hidden symbol: … (.llvm.NNN)` for code that
+    # compiles fine. rust-auto-build.sh's remedy is to clear the incremental
+    # trees; measured 2026-11-03 that is NOT enough, because the already-linked
+    # rlib in deps/ stays poisoned and cargo reuses it. One retry with
+    # CARGO_INCREMENTAL=0 changes the flags, forces a clean recompile and avoids
+    # the whole class. Without this the operator gets a link error and no path.
+    if grep -qE 'undefined hidden symbol|undefined reference to|symbol\(s\) not found' "$build_log"; then
+      say "link failed on stale incremental symbols (AF-1012); retrying ONCE with CARGO_INCREMENTAL=0"
+      tracing_verdict="local_deploy_incremental_link_retry"
+      if ! build_once 0 > "$build_log" 2>&1; then
+        cat "$build_log"
+        die "cargo build failed twice (second attempt without incremental) — nothing installed, the running server is untouched"
+      fi
+      say "$tracing_verdict ok"
+    else
+      die "cargo build failed — nothing installed, the running server is untouched"
+    fi
   fi
+  rm -f "$build_log"
   # A stale artifact from an earlier successful build sits at this same path and
   # would pass every later `[ -x ]` check after a FAILED build. Compare mtime to
   # the moment we started instead of trusting the path.
