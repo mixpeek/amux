@@ -17862,8 +17862,9 @@ function _frozenWorker(next) {
   if (!window.__amuxFrozen || !peekSession || next === peekSession) return false;
   if (!document.getElementById('peek-overlay')?.classList.contains('active')) return false;
   showToast('This workspace is frozen. Unfreeze it in Window > Workspaces.');
-  try { fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'}, keepalive:true,
-    body: JSON.stringify({kind:'frozen_refused', what: next ? 'switch_worker' : 'close_worker', worker: peekSession})}).catch(() => {}); } catch (e) {}
+  fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'}, keepalive:true,
+    body: JSON.stringify({kind:'frozen_refused', what: next ? 'switch_worker' : 'close_worker', worker: peekSession})})
+    .catch(e => console.warn('frozen_refused beacon failed', e));
   return true;
 }
 
