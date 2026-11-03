@@ -3084,8 +3084,15 @@ keep_docker_context() { # <profile>
 #  - A plain file under LANE_TMP_KEEP_FILE_KB is kept. Those are hand-written
 #    scripts and configs; the space this reaper exists for (101 GB on
 #    2026-10-04) was build trees and extracts, never small files.
+#  - A directory holding a .amux-keep file at its top is kept (backend,
+#    2026-11-03): ~/.amux/tmp/backend/evalset2 held the only copy of 340 hand
+#    labels beside multi-MB embeddings, idled past the floor and was removed.
+#    The tick logged only a count, so backend could not tell what removed it.
+#    Every removal is now one line with path, size and idle floor, in the run's
+#    output and appended to $STATE_DIR/lane-tmp-removed.log.
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 ledger=""
+  [ -n "${STATE_DIR:-}" ] && ledger="$STATE_DIR/lane-tmp-removed.log"
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   # A directory of a few small files is kept like a small file (mxp-gs12,
   # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
@@ -3133,6 +3140,7 @@ reap_lane_tmp() { # <dry:0|1>
     if [ "$rc" = 142 ]; then n_unk=$((n_unk+1)); continue; fi
     [ -n "$out" ] && continue
     if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
+    if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.amux-keep" ]; then n_marked=$((n_marked+1)); continue; fi
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
@@ -3146,13 +3154,25 @@ reap_lane_tmp() { # <dry:0|1>
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
-    if [ "$dry" = 1 ]; then n=$((n+1)); kb=$((kb+${k:-0})); continue; fi
-    rm -rf -- "${e:?}" 2>/dev/null && { n=$((n+1)); kb=$((kb+${k:-0})); }
+    if [ "$dry" = 1 ]; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp would remove $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min)"
+      continue
+    fi
+    if rm -rf -- "${e:?}" 2>/dev/null; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp removed $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min) (verdict=lane_tmp_entry_removed)"
+      if [ -n "$ledger" ]; then
+        mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tidle_min=%s\n' "$(date '+%F %T %z')" "${e#"$root"/}" "${k:-0}" "$e" "$LANE_TMP_IDLE_MIN" >> "$ledger"
+      fi
+    else
+      echo "mac-cleanup:   lane tmp WARN could not remove $e (verdict=lane_tmp_entry_remove_failed)"
+    fi
   done
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>

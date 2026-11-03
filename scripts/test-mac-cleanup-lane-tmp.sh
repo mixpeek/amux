@@ -82,6 +82,19 @@ printf '%s' "$out7" | grep -q '2 not reached inside the 1s budget, the next tick
 mkdir -p "$R7/lane/0first"; touch -t 202609300000 "$R7/lane/0first"
 PATH="$STUB:$PATH" SLOW_FIND_S=2 STATE_DIR="$ST7" LANE_TMP_ROOT="$R7" LANE_TMP_IDLE_MIN=1440 LANE_TMP_WALK_S=10 LANE_TMP_BUDGET_S=1 bash -c ". '$F'; reap_lane_tmp 0" >/dev/null
 [ ! -e "$R7/lane/bSLOW" ] && [ -d "$R7/lane/0first" ] && echo "ok   the next pass resumes at the cursor, ahead of an earlier entry" || { echo "FAIL cursor: $(ls "$R7/lane" | tr '\n' ' ')"; fail=1; }
+# backend, 2026-11-03: hand labels beside big embeddings were removed with only
+# a count logged. Each removal names its path, size and floor, in the output
+# and in a ledger; a .amux-keep file at an entry's top keeps the entry.
+R8="$T/root8"; ST8="$T/state8"; mkdir -p "$R8/w/evalset2" "$R8/w/scratchbuild"
+echo '[]' > "$R8/w/evalset2/labelled.json"; head -c 2000000 /dev/zero > "$R8/w/evalset2/emb.npz"; : > "$R8/w/evalset2/.amux-keep"
+head -c 2000000 /dev/zero > "$R8/w/scratchbuild/out.o"
+touch -t 202609300000 "$R8/w/evalset2"/* "$R8/w/evalset2/.amux-keep" "$R8/w/evalset2" "$R8/w/scratchbuild/out.o" "$R8/w/scratchbuild"
+outd="$(STATE_DIR="$ST8" LANE_TMP_ROOT="$R8" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 1")"
+printf '%s' "$outd" | grep -qF "lane tmp would remove $R8/w/scratchbuild (1M" && [ -d "$R8/w/scratchbuild" ] && [ ! -s "$ST8/lane-tmp-removed.log" ] && echo "ok   a dry run names each entry it would remove and touches nothing" || { echo "FAIL dry run: $outd"; fail=1; }
+out8="$(STATE_DIR="$ST8" LANE_TMP_ROOT="$R8" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 0")"
+[ -f "$R8/w/evalset2/labelled.json" ] && printf '%s' "$out8" | grep -q '1 marked .amux-keep' && echo "ok   a directory marked .amux-keep is kept and counted" || { echo "FAIL keep marker: $out8"; fail=1; }
+[ ! -e "$R8/w/scratchbuild" ] && printf '%s' "$out8" | grep -qF "lane tmp removed $R8/w/scratchbuild (1M, nothing changed in 1440 min) (verdict=lane_tmp_entry_removed)" && echo "ok   each removal is logged with its path, size and floor" || { echo "FAIL per-entry line: $out8"; fail=1; }
+grep -qF "$(printf 'w/scratchbuild\t')" "$ST8/lane-tmp-removed.log" 2>/dev/null && ! grep -q evalset2 "$ST8/lane-tmp-removed.log" && echo "ok   and appended to the removal ledger" || { echo "FAIL ledger: $(cat "$ST8/lane-tmp-removed.log" 2>&1)"; fail=1; }
 kill "$holder" 2>/dev/null; wait 2>/dev/null
 rm -f "$F"; rm -rf -- "${T:?}"
 exit $fail
