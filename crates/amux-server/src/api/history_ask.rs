@@ -30,6 +30,8 @@ use crate::api::AppState;
 /// The corpus cap. Wide enough for a real question, bounded so one ask cannot
 /// send the whole history to a model.
 const DEFAULT_LIMIT: usize = 400;
+/// Messages in the window scored for relevance. 14 days is ~11,700 today.
+const MAX_SCAN: usize = 50_000;
 const MAX_LIMIT: usize = 1200;
 const DEFAULT_DAYS: u32 = 14;
 const MAX_DAYS: u32 = 365;
@@ -131,17 +133,7 @@ pub(crate) fn render_corpus(rows: &[Row], budget: usize) -> (String, usize) {
     let mut lines: Vec<String> = Vec::new();
     let mut used = 0;
     for row in rows.iter().rev() {
-        let text: String = row.text.chars().take(MAX_TEXT_CHARS).collect();
-        let stamp = chrono_stamp(row.ts);
-        let line = format!(
-            "[MSG-{}] {} · {} · {}{}: {}",
-            row.id,
-            stamp,
-            row.session,
-            row.kind,
-            row.context,
-            text.trim()
-        );
+        let line = render_line(row);
         let cost = line.chars().count() + 1;
         if used + cost > budget {
             break;
@@ -152,6 +144,20 @@ pub(crate) fn render_corpus(rows: &[Row], budget: usize) -> (String, usize) {
     let included = lines.len();
     lines.reverse();
     (lines.join("\n"), included)
+}
+
+/// One corpus line, as the model reads it.
+pub(crate) fn render_line(row: &Row) -> String {
+    let text: String = row.text.chars().take(MAX_TEXT_CHARS).collect();
+    format!(
+        "[MSG-{}] {} · {} · {}{}: {}",
+        row.id,
+        chrono_stamp(row.ts),
+        row.session,
+        row.kind,
+        row.context,
+        text.trim()
+    )
 }
 
 fn chrono_stamp(ts_ms: i64) -> String {
@@ -231,7 +237,8 @@ MESSAGES (oldest first):\n{corpus}\n",
             )
         },
         truncation_note = if included < available {
-            ". The rest were dropped from the OLD end to fit, so say so if the answer depends on older traffic"
+            ". These are the messages that best match the question plus the newest ones; the rest were left out to fit, \
+             so say so if the answer may be in messages you cannot see"
         } else {
             ""
         },
@@ -308,7 +315,7 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
         cutoff_ms,
         session.as_deref(),
         human_only,
-        limit,
+        MAX_SCAN,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -333,7 +340,22 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
             }),
         );
     }
-    let (corpus, included) = render_corpus(&rows, MAX_PROMPT_CHARS);
+    // RELEVANCE FIRST, THEN RECENCY (history_ask_rank): the messages that best
+    // match the question (and the one before it, which a follow-up refers to)
+    // take up to half the prompt, the newest fill the rest. Before this only
+    // the newest fit, about a day and a half of a 14-day window.
+    let rank_query = match body.history.last() {
+        Some(prev) => format!("{question} {}", prev.question),
+        None => question.clone(),
+    };
+    let (picked, n_relevant) = super::history_ask_rank::select(
+        &rank_query,
+        &rows,
+        MAX_PROMPT_CHARS,
+        limit,
+        |r| render_line(r).chars().count() + 1,
+    );
+    let (corpus, included) = render_corpus(&picked, MAX_PROMPT_CHARS);
     // The corpus is built FIRST and against its own budget, so a long thread
     // cannot take evidence out of the answer.
     let (thread, history_turns) = render_history(&body.history, MAX_HISTORY_CHARS);
@@ -395,7 +417,7 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
         }
     };
     tracing::info!(target: "amux::history_ask", verdict = "ask_answered", measured = true,
-        n_considered = included, n_available = available, window_days = days, elapsed_ms,
+        n_considered = included, n_available = available, n_relevant, window_days = days, elapsed_ms,
         scope = %scope, "answered a question about the messages");
     reply(
         StatusCode::OK,
@@ -405,7 +427,12 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
             "measured": true,
             "n_considered": included,
             "n_available": available,
-            "truncated": included < rows.len() || rows.len() < available,
+            "truncated": included < available,
+            // How many of the sent messages were chosen because they match the
+            // question; the rest are the newest. 0 means nothing in the window
+            // shared two words with it, so the answer is over recent traffic only.
+            "n_relevant": n_relevant,
+            "n_scanned": rows.len(),
             "window_days": days,
             "session": session,
             "model": model,
@@ -979,7 +1006,7 @@ mod tests {
             prompt.contains(&format!("{included} message(s) of {}", rows.len())),
             "{prompt}"
         );
-        assert!(prompt.contains("dropped from the OLD end"), "{prompt}");
+        assert!(prompt.contains("best match the question"), "{prompt}");
     }
 
     fn turn(q: &str, a: &str) -> AskTurn {

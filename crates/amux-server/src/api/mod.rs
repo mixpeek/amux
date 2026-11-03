@@ -81,6 +81,7 @@ pub mod harness;
 pub mod health;
 pub mod history;
 pub mod history_ask;
+pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
 pub mod invariants_api;

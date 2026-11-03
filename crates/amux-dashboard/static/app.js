@@ -58684,7 +58684,9 @@ async function _askRun(peek) {
   if (metaEl) metaEl.textContent = 'answered over ' + considered + ' of ' + available
     + ' message' + (d.n_available === 1 ? '' : 's') + ' from ' + scope
     + ', last ' + d.window_days + ' day' + (d.window_days === 1 ? '' : 's')
-    + (d.truncated ? ' (oldest dropped to fit)' : '')
+    + (d.truncated
+      ? (d.n_relevant ? ' (' + d.n_relevant.toLocaleString() + ' best matches plus the newest)' : ' (no close matches; the newest)')
+      : '')
     + (d.history_turns ? ' \u00b7 follow-up with ' + d.history_turns + ' earlier exchange' + (d.history_turns === 1 ? '' : 's') : '')
     + secs;
   const thread = _askThreadFor(peek);
