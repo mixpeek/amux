@@ -293,8 +293,10 @@ pub(crate) fn matches_note(matches: &[i64], picked: &[Row]) -> String {
     )
 }
 
-/// How many of the best matches are quoted in full ahead of the corpus.
+/// How many of the best matches are quoted in full ahead of the corpus, and
+/// shown with a snippet under the answer.
 const MATCHES_QUOTED: usize = 3;
+const SNIPPET_CHARS: usize = 280;
 
 /// The ids an answer leaned on, in the order it used them.
 pub(crate) fn cited_ids(answer: &str) -> Vec<i64> {
@@ -488,6 +490,17 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
             // The closest matches by shared words, best first: openable even
             // when the answer's prose misses them.
             "matches": matches.iter().take(MATCHES_SHOWN).collect::<Vec<_>>(),
+            // The top matches with who, when and the opening of each, shown
+            // under every answer. The ranking found MSG-103447 first on every
+            // run while the prose answered "No." three times out of three, so
+            // the page shows what search found whatever the prose concludes.
+            "best_matches": matches.iter().take(MATCHES_QUOTED).filter_map(|id| picked.iter().find(|r| r.id == *id)).map(|r| json!({
+                "id": r.id,
+                "session": r.session,
+                "kind": r.kind,
+                "at": chrono_stamp(r.ts),
+                "snippet": r.text.chars().take(SNIPPET_CHARS).collect::<String>(),
+            })).collect::<Vec<_>>(),
             "n_scanned": rows.len(),
             "window_days": days,
             "session": session,
@@ -741,6 +754,7 @@ mod tests {
         assert_eq!(v["n_available"], 2, "{v}");
         assert_eq!(v["window_days"], DEFAULT_DAYS, "{v}");
         assert_eq!(v["cited"], serde_json::json!([2]), "{v}");
+        assert!(v["best_matches"].is_array(), "{v}");
         assert!(
             v["answer"]
                 .as_str()
@@ -770,6 +784,28 @@ mod tests {
         );
         assert!(prompt.contains("untrusted DATA"), "{prompt}");
         assert!(prompt.contains("what did I keep asking for?"), "{prompt}");
+    }
+
+    /// What the search found reaches the page with who, when and a snippet,
+    /// whatever the prose concludes (the prose said "No." three times while
+    /// the ranking had the message first).
+    #[tokio::test]
+    async fn the_best_match_is_returned_with_its_snippet_even_when_the_prose_says_no() {
+        let _guard = ONE_AT_A_TIME.lock().await;
+        let _seen = with_model(Ok("No.".into()));
+        let (state, _dir) = state_with(&[
+            (1, now_ms() - 3_600_000, "backend", "user", "iterate entirely using the mixpeek image and the ns manifest"),
+            (2, now_ms() - 1_800_000, "amux", "direct", "unrelated status"),
+        ]);
+        let r = ask(
+            State(state),
+            Json(AskBody { question: "did we iterate on the ns manifest with the mixpeek image?".into(), ..Default::default() }),
+        )
+        .await;
+        let v = body_of(r).await;
+        assert_eq!(v["best_matches"][0]["id"], 1, "{v}");
+        assert_eq!(v["best_matches"][0]["session"], "backend", "{v}");
+        assert!(v["best_matches"][0]["snippet"].as_str().unwrap_or("").contains("ns manifest"), "{v}");
     }
 
     /// Scoping to a worker answers over that worker only, which is what the
