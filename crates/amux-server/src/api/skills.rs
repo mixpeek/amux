@@ -393,6 +393,9 @@ pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] = &[
     ("pr-merge", include_str!("../../../../skills/pr-merge.md")),
     ("e2e-test", include_str!("../../../../skills/e2e-test.md")),
     ("worker-audit", include_str!("../../../../skills/worker-audit.md")),
+    // Ethan, 2026-11-03: "an amux-wide skill that sets up the scaffolding ...
+    // for any large goal".
+    ("big-goal", include_str!("../../../../skills/big-goal.md")),
 ];
 
 /// The frontmatter line that lets amux keep a shipped command current. A user
@@ -768,7 +771,7 @@ mod write_tests {
     #[test]
     fn the_core_skills_ship() {
         let names: Vec<&str> = SHIPPED_COMMANDS.iter().map(|(n, _)| *n).collect();
-        for want in ["slop", "iterate", "codex", "muse", "imessage", "pr-merge", "e2e-test", "worker-audit"] {
+        for want in ["slop", "iterate", "codex", "muse", "imessage", "pr-merge", "e2e-test", "worker-audit", "big-goal"] {
             assert!(names.contains(&want), "{want} is not shipped: {names:?}");
         }
         let audit = SHIPPED_COMMANDS.iter().find(|(n, _)| *n == "worker-audit").unwrap().1;
