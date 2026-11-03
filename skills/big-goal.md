@@ -58,6 +58,8 @@ For each owner, send it (`amux send <worker> --stdin`) an order to do two things
 
 A worker can set only its own worker layer, so each owner does step 1 itself. If an owner is isolated, amux refuses your send: give the owner the exact text to paste and say so in your report.
 
+Keep the board off for every owner and the coordinator. Off has been the default for a worker nobody configured since 2026-11-02, and Off means no card is filed for the worker, nothing about the board is typed into it, and no dispatch or nudge competes with its goal. Check `board_used` is false on `GET /api/sessions` for each one; if it is true, ask the owner to switch the Board tab off. The record of the work is the checker output, the coordinator's hourly log line, Messages history and `amux requests`, none of which needs a board.
+
 New workers, if the goal needs them, go in one group with the coordinator, so they can message each other. Never create an isolated worker for this.
 
 ## 5. The coordinator gets a schedule, not a goal
