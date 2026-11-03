@@ -146,6 +146,7 @@ const READ_WINDOW_DAYS: i64 = 7;
 /// nightly backup keeps monthly snapshots for six months after that.
 const ORPHAN_GRACE_S: i64 = 14 * 86_400;
 /// How long a leftover rsync gets to exit after each signal.
+const COLD_READ_LIMIT: Duration = Duration::from_secs(10);
 const ORPHAN_TERM_WAIT: Duration = Duration::from_secs(10);
 const ORPHAN_KILL_WAIT: Duration = Duration::from_secs(5);
 /// A copy that keeps failing is abandoned after this many ticks.
@@ -929,6 +930,37 @@ fn volume_of(p: &Path) -> Option<PathBuf> {
     }
 }
 
+/// A read that never returns, as when macOS holds it for a privacy permission,
+/// would otherwise stop every later tick with no word of why. Only one read waits
+/// at a time, so a permission that stays unanswered costs one thread.
+fn cold_read_blocked(limit: Duration, pending: &'static AtomicBool, read: impl FnOnce() -> std::io::Result<()> + Send + 'static) -> Option<String> {
+    if pending.swap(true, Ordering::SeqCst) {
+        return Some("an earlier read has not returned".into());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = read();
+        pending.store(false, Ordering::SeqCst);
+        if tx.send(res).is_err() {
+            tracing::debug!(verdict = "tier_cold_read_late", "tiering: a cold drive read returned after its limit");
+        }
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => Some(e.to_string()),
+        Ok(_) => None,
+        Err(_) => Some(format!("a read did not return within {}s", limit.as_secs())),
+    }
+}
+
+async fn cold_root_blocked(cold_root: &Path) -> Option<String> {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if cold_root.as_os_str().is_empty() {
+        return None;
+    }
+    let root = cold_root.to_path_buf();
+    tokio::task::spawn_blocking(move || cold_read_blocked(COLD_READ_LIMIT, &PENDING, move || std::fs::read_dir(&root).map(|_| ()))).await.unwrap_or(None)
+}
+
 fn ensure_cold_root(cold_root: &Path) -> Result<(), String> {
     // Under /Volumes, the volume itself must be MOUNTED, checked by device, not
     // just present: writing under an unplugged drive's leftover folder would
@@ -1199,6 +1231,11 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     let cold_root = PathBuf::from(&cfg.cold_root);
     let owners = reclaim_owner::Owners::probe().await;
     let mut rep = TickReport { at: now_secs(), trigger: trigger.into(), ..Default::default() };
+    if let Some(why) = cold_root_blocked(&cold_root).await {
+        tracing::warn!(cold_root = %cold_root.display(), why = %why, verdict = "tier_cold_root_blocked", "tiering: cannot read the cold drive, so nothing moves this tick");
+        rep.notes.push(format!("cannot read {}: {why}. In System Settings, Privacy & Security, give amux-server-rs Full Disk Access", cold_root.display()));
+        return Some(rep);
+    }
     reap_orphans(&cfg, &cold_root, &mut rep).await;
     // Capacity watermarks: low on space, move the coldest out sooner, until the
     // target is free again. `freed` is what this tick has moved off so far.
@@ -2351,6 +2388,38 @@ mod tests {
         assert!(!is_rsync_for(pid, ds).unwrap(), "the leftover rsync is gone");
         assert_eq!(stop_op_orphan("/x", &o), Ok(()), "a pid already gone is fine");
         drop(held.try_wait());
+    }
+
+    #[test]
+    fn a_cold_read_that_never_returns_is_named_and_does_not_pile_up() {
+        static PENDING: AtomicBool = AtomicBool::new(false);
+        let limit = Duration::from_millis(50);
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Ok(())), None);
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Err(std::io::ErrorKind::NotFound.into())), None, "a missing folder is the mount check's to report");
+        assert!(cold_read_blocked(limit, &PENDING, || Err(std::io::ErrorKind::PermissionDenied.into())).is_some());
+        std::thread::sleep(limit);
+
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let why = cold_read_blocked(limit, &PENDING, move || {
+            held.recv().ok();
+            Ok(())
+        });
+        assert!(why.is_some_and(|w| w.contains("did not return")));
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let r2 = ran.clone();
+        let why = cold_read_blocked(limit, &PENDING, move || {
+            r2.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(why.is_some_and(|w| w.contains("earlier read")));
+        assert!(!ran.load(Ordering::SeqCst), "no second thread while one waits");
+
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while PENDING.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Ok(())), None, "a granted permission recovers with no restart");
     }
 
     #[test]
