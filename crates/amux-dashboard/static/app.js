@@ -58692,13 +58692,17 @@ async function _askRun(peek) {
   const thread = _askThreadFor(peek);
   thread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
-  const cites = Array.isArray(d.cited) && d.cited.length
+  // One row of message buttons: what the answer cited, and the closest
+  // matches by shared words, so a message the prose missed is still one tap away.
+  const idRow = (label, ids) => Array.isArray(ids) && ids.length
     ? '<div style="margin-top:var(--space-2-5);display:flex;gap:var(--space-1-5);flex-wrap:wrap;align-items:center;">'
-      + '<span style="font-size:var(--fs-xs);color:var(--dim);">cited:</span>'
-      + d.cited.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
+      + '<span style="font-size:var(--fs-xs);color:var(--dim);">' + label + ':</span>'
+      + ids.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
         + JSON.stringify(id) + ')">MSG-' + esc(id) + '</button>').join('') + '</div>'
     : '';
-  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + cites);
+  const cited = Array.isArray(d.cited) ? d.cited : [];
+  const closest = (Array.isArray(d.matches) ? d.matches : []).filter(id => !cited.includes(id));
+  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + idRow('cited', cited) + idRow('closest', closest));
 }
 /// Open the message an answer cited, so a claim can be checked against the row.
 async function _askOpenCitation(id) {

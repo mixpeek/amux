@@ -245,6 +245,27 @@ MESSAGES (oldest first):\n{corpus}\n",
     )
 }
 
+/// How many of the best matches the answer returns as `matches`.
+const MATCHES_SHOWN: usize = 8;
+
+/// The best matches, named to the model. 2026-11-03: MSG-103447 was in the
+/// corpus (15th by shared words) and the answer still said "I don't see a
+/// message", because its wording differed from the question's. People ask
+/// about a message they remember roughly.
+pub(crate) fn matches_note(matches: &[i64]) -> String {
+    if matches.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<String> = matches.iter().take(20).map(|id| format!("MSG-{id}")).collect();
+    format!(
+        "\nCLOSEST BY SHARED WORDS (best first): {}.\n\
+         The asker may remember a message only roughly and in other words. If the question asks whether a message \
+         exists, and none matches exactly, name the one or two that come closest, with their ids, and say how each \
+         differs; do not answer that none exists while a close one is in the messages.\n",
+        ids.join(", ")
+    )
+}
+
 /// The ids an answer leaned on, in the order it used them.
 pub(crate) fn cited_ids(answer: &str) -> Vec<i64> {
     let mut out: Vec<i64> = Vec::new();
@@ -348,20 +369,21 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
         Some(prev) => format!("{question} {}", prev.question),
         None => question.clone(),
     };
-    let (picked, n_relevant) = super::history_ask_rank::select(
+    let (picked, matches) = super::history_ask_rank::select(
         &rank_query,
         &rows,
         MAX_PROMPT_CHARS,
         limit,
         |r| render_line(r).chars().count() + 1,
     );
+    let n_relevant = matches.len();
     let (corpus, included) = render_corpus(&picked, MAX_PROMPT_CHARS);
     // The corpus is built FIRST and against its own budget, so a long thread
     // cannot take evidence out of the answer.
     let (thread, history_turns) = render_history(&body.history, MAX_HISTORY_CHARS);
     let prompt = build_prompt(
         &question, &scope, days, &corpus, included, available, &thread,
-    );
+    ) + &matches_note(&matches);
     let model = super::mdai::resolve_model(None);
     let started = std::time::Instant::now();
     // ONE retry, and the caller owns it deliberately. The read-only client
@@ -432,6 +454,9 @@ pub async fn ask(State(state): State<AppState>, Json(body): Json<AskBody>) -> Re
             // question; the rest are the newest. 0 means nothing in the window
             // shared two words with it, so the answer is over recent traffic only.
             "n_relevant": n_relevant,
+            // The closest matches by shared words, best first: openable even
+            // when the answer's prose misses them.
+            "matches": matches.iter().take(MATCHES_SHOWN).collect::<Vec<_>>(),
             "n_scanned": rows.len(),
             "window_days": days,
             "session": session,

@@ -107,26 +107,34 @@ pub(crate) fn rank(question: &str, rows: &[Row]) -> Vec<(usize, f64)> {
 /// Pick the rows to send: the best matches first, up to RELEVANT_MAX and half
 /// of `budget` characters (as `line_cost` measures a row), then the newest
 /// rows until the budget is spent or `recent_max` are taken. Returns the
-/// chosen rows OLDEST FIRST, the order the corpus is rendered in, and how many
-/// were chosen as matches.
+/// chosen rows OLDEST FIRST, the order the corpus is rendered in, and the ids
+/// chosen as matches, best first.
+///
+/// A message that contains the question word for word is the asker's own
+/// question (pasted into a worker, or asked before), never its answer: it
+/// would always rank first, so it is left out of the matches.
 pub(crate) fn select(
     question: &str,
     rows: &[Row],
     budget: usize,
     recent_max: usize,
     line_cost: impl Fn(&Row) -> usize,
-) -> (Vec<Row>, usize) {
+) -> (Vec<Row>, Vec<i64>) {
     let mut chosen: HashSet<usize> = HashSet::new();
     let mut used = 0;
-    let mut relevant = 0;
-    for (i, _) in rank(question, rows).into_iter().take(RELEVANT_MAX) {
+    let mut matches: Vec<i64> = Vec::new();
+    let asked = question.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let is_the_question = |r: &Row| {
+        asked.len() >= 20 && r.text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase().contains(&asked)
+    };
+    for (i, _) in rank(question, rows).into_iter().filter(|(i, _)| !is_the_question(&rows[*i])).take(RELEVANT_MAX) {
         let cost = line_cost(&rows[i]);
         if used + cost > budget / RELEVANT_SHARE {
             continue;
         }
         used += cost;
         chosen.insert(i);
-        relevant += 1;
+        matches.push(rows[i].id);
     }
     // Newest first by timestamp, whatever order the caller loaded them in.
     let mut by_new: Vec<usize> = (0..rows.len()).collect();
@@ -149,7 +157,7 @@ pub(crate) fn select(
     }
     let mut out: Vec<Row> = chosen.into_iter().map(|i| rows[i].clone()).collect();
     out.sort_by(|a, b| a.ts.cmp(&b.ts).then(a.id.cmp(&b.id)));
-    (out, relevant)
+    (out, matches)
 }
 
 #[cfg(test)]
@@ -173,9 +181,11 @@ mod tests {
             rows.push(row(200_000 + i, 10_000 + i, &format!("status update {i}: the mixpeek build is green, image pushed")));
         }
         let q = "did we have a message around using the hiking video to validate e2e using mixpeek local image to iterate on a ns manifest?";
-        let (picked, relevant) = select(q, &rows, 2_000, 400, |r| r.text.len() + 1);
+        rows.push(row(104_094, 20_000, &format!("i know i asked this and cant find it: \"{q}\"")));
+        let (picked, matches) = select(q, &rows, 2_000, 400, |r| r.text.len() + 1);
         assert!(picked.iter().any(|r| r.id == 103_447), "the answering message is sent");
-        assert!(relevant >= 1, "{relevant}");
+        assert_eq!(matches.first(), Some(&103_447), "and named first: {matches:?}");
+        assert!(!matches.contains(&104_094), "the asker's own question is not a match");
         assert!(picked.windows(2).all(|w| w[0].ts <= w[1].ts), "oldest first");
         assert!(picked.iter().any(|r| r.id == 200_499), "the newest still fill the rest");
     }
@@ -184,8 +194,8 @@ mod tests {
     fn the_recent_fill_keeps_the_newest_whatever_order_the_rows_came_in() {
         // Newest first, the order load_rows returns.
         let rows: Vec<Row> = (0..50).rev().map(|i| row(i, i * 10, &format!("note {i}"))).collect();
-        let (picked, relevant) = select("zebra quartz", &rows, 100, 400, |_| 10);
-        assert_eq!(relevant, 0);
+        let (picked, matches) = select("zebra quartz", &rows, 100, 400, |_| 10);
+        assert!(matches.is_empty());
         let ids: Vec<i64> = picked.iter().map(|r| r.id).collect();
         assert_eq!(ids, (40..50).collect::<Vec<_>>(), "the ten newest, oldest first");
     }
