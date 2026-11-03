@@ -20,6 +20,14 @@ use super::history_ask::Row;
 /// Matched messages kept at most, and the share of the prompt they may take.
 pub(crate) const RELEVANT_MAX: usize = 150;
 const RELEVANT_SHARE: usize = 2;
+/// The best matches whose conversation comes with them: the messages just
+/// before each in the same session, within a day. A message often says
+/// "this" about the one before it: MSG-103447 ("make sure youre doing this
+/// entirely ... using the mixpeek image") never says "hiking", and without its
+/// predecessors in backend's thread the model judged it unrelated.
+const THREAD_OF: usize = 5;
+const THREAD_BEFORE: usize = 3;
+const THREAD_WINDOW_MS: i64 = 86_400_000;
 /// Characters of a message that are scored, so one pasted transcript cannot
 /// match every question.
 const SCORED_CHARS: usize = 4000;
@@ -148,6 +156,30 @@ pub(crate) fn select(
         chosen.insert(i);
         matches.push(rows[i].id);
     }
+    // The conversation each top match answers.
+    let tops: Vec<usize> = matches
+        .iter()
+        .take(THREAD_OF)
+        .filter_map(|id| rows.iter().position(|r| r.id == *id))
+        .collect();
+    for m in tops {
+        let (session, ts) = (&rows[m].session, rows[m].ts);
+        let mut before: Vec<usize> = (0..rows.len())
+            .filter(|&j| j != m && rows[j].session == *session && rows[j].ts <= ts && ts - rows[j].ts <= THREAD_WINDOW_MS)
+            .collect();
+        before.sort_by(|a, b| rows[*b].ts.cmp(&rows[*a].ts).then(rows[*b].id.cmp(&rows[*a].id)));
+        for j in before.into_iter().take(THREAD_BEFORE) {
+            if chosen.contains(&j) {
+                continue;
+            }
+            let cost = line_cost(&rows[j]);
+            if used + cost > budget / RELEVANT_SHARE {
+                break;
+            }
+            used += cost;
+            chosen.insert(j);
+        }
+    }
     // Newest first by timestamp, whatever order the caller loaded them in.
     let mut by_new: Vec<usize> = (0..rows.len()).collect();
     by_new.sort_by(|a, b| rows[*b].ts.cmp(&rows[*a].ts).then(rows[*b].id.cmp(&rows[*a].id)));
@@ -228,6 +260,24 @@ mod tests {
         rows.push(row(101, 0, "iterate using the mixpeek image on the ns manifest"));
         let ranked = rank("mixpeek image ns manifest", &rows);
         assert_eq!(ranked.first().map(|(i, _)| rows[*i].id), Some(101));
+    }
+
+    #[test]
+    fn a_top_match_brings_the_messages_before_it_in_its_conversation() {
+        let mut rows = vec![
+            Row { session: "backend".into(), ..row(1, 1_000, "process all the hiking footage on the sd card") },
+            Row { session: "backend".into(), ..row(2, 2_000, "what models did you use for the feature extractors?") },
+            Row { session: "backend".into(), ..row(3, 3_000, "iterate entirely using the mixpeek image and the ns manifest") },
+            Row { session: "other".into(), ..row(4, 2_500, "unrelated chatter") },
+        ];
+        for i in 0..200 {
+            rows.push(row(1_000 + i, 100_000 + i, "newer traffic that fills the recent budget"));
+        }
+        let (picked, matches) = select("mixpeek image ns manifest", &rows, 2_000, 0, |r| r.text.len() + 1);
+        assert_eq!(matches.first(), Some(&3));
+        let ids: Vec<i64> = picked.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&1) && ids.contains(&2), "its conversation comes with it: {ids:?}");
+        assert!(!ids.contains(&4), "another session's message does not: {ids:?}");
     }
 
     #[test]
