@@ -96,6 +96,9 @@ struct Target {
     /// JavaScript returning true when the open composer posts as this account.
     identity_js: &'static str,
     media_label: &'static str,
+    /// The list the account's new posts appear on, read again after Post when
+    /// no "View post" link shows; "" to skip that lookup.
+    list_url: &'static str,
 }
 
 const PERSONAL: Target = Target {
@@ -107,6 +110,8 @@ const PERSONAL: Target = Target {
     editor: "div[role=textbox].ProseMirror, div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "true",
     media_label: "Media",
+    // The feed is full of other people's posts: a new one there is not ours.
+    list_url: "",
 };
 
 const PAGE: Target = Target {
@@ -121,6 +126,7 @@ const PAGE: Target = Target {
     editor: "[role=dialog] div.ql-editor[role=textbox][aria-placeholder^='What do you want'], [role=dialog] div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "(()=>{const d=[...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''));return !!d&&[...d.querySelectorAll('button')].some(b=>/^\\s*amux\\b/i.test(b.innerText||''))})()",
     media_label: "Add media",
+    list_url: "https://www.linkedin.com/company/146906104/admin/page-posts/published/",
 };
 
 fn target(account: &str) -> Option<&'static Target> {
@@ -176,13 +182,18 @@ fn visible_editor_js(editor: &str) -> String {
 /// Whether the visible composer's text box holds the whole caption
 /// (whitespace collapsed). Read back after typing and again right before Post.
 async fn caption_in_editor(state: &AppState, editor: &str, caption: &str) -> Result<bool, String> {
+    // The editor's own model where it has one (Quill keeps it on its
+    // container), else what the box shows.
     let js = format!(
-        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e={};return !!e&&n(e.innerText).includes(n({}))}})()",
+        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e={};if(!e)return false;const c=e.closest('.ql-container');const q=c&&c.__quill;const t=q&&typeof q.getText==='function'?q.getText():e.innerText;return n(t).includes(n({}))}})()",
         visible_editor_js(editor),
         json!(caption)
     );
     Ok(eval(state, &js).await? == json!(true))
 }
+
+/// Seconds between typing the caption and the read-back before Post.
+const CAPTION_SETTLE_S: u64 = 3;
 
 /// Close the composer without posting, discarding what was typed.
 async fn discard(state: &AppState) {
@@ -255,6 +266,14 @@ async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure>
         return Err(Failure::retry("could not focus LinkedIn's visible text box"));
     }
     drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
+    // LET THE COMPOSER TAKE THE TEXT IN BEFORE POST. Every video post typed
+    // its caption and clicked Post within a second (audit: files, then type
+    // 6 s later, then Post), and three of them published with no caption
+    // while the box showed it (amux-gtm, 2026-11-03: AMX-D3ACA3,
+    // urn:li:ugcPost:7523429064787959808). A composed draft shows the text in
+    // the editor's own model a second after typing; the post reads LinkedIn's
+    // state, which follows the editor, so it gets time to catch up.
+    tokio::time::sleep(Duration::from_secs(CAPTION_SETTLE_S)).await;
     if !caption_in_editor(state, editor, &d.caption).await.map_err(Failure::retry)? {
         discard(state).await;
         return Err(Failure::retry("the caption did not land in the LinkedIn composer"));
@@ -402,10 +421,41 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
+            // A video post shows no "View post" link and does not reach the
+            // open list while it processes (amux-gtm, 2026-11-03: no link, and
+            // the post was on the list later). Reload the list and take the
+            // post with this caption, or the one that was not there before.
+            if url.is_empty() && !t.list_url.is_empty() {
+                let seen = match eval(state, "JSON.stringify(window.__amuxSeenUrns||null)").await {
+                    Ok(Value::String(s)) => s,
+                    _ => "null".to_string(),
+                };
+                // The reload clears the page's note of what was there before Post: put it back.
+                let listed = format!("(()=>{{window.__amuxSeenUrns={seen};return document.querySelectorAll('[data-urn^=\"urn:li:\"]').length>0}})()");
+                for _ in 0..8 {
+                    if let Err(e) = super::browser::drive(state, SESSION, "navigate", json!({"url": t.list_url})).await {
+                        tracing::warn!(platform = "linkedin", account = t.account, error = %e, verdict = "social_browser_list_reload_failed",
+                            "could not reload the post list while looking for the post");
+                        continue;
+                    }
+                    if !until(state, &listed, 15).await.unwrap_or(false) {
+                        continue;
+                    }
+                    if let Ok(Value::String(h)) = eval(state, &link_js).await {
+                        if !h.is_empty() {
+                            tracing::info!(platform = "linkedin", account = t.account, verdict = "social_browser_post_found_on_list", measured = true, n_considered = 1,
+                                "no View post link after Post; found the post on the account's post list");
+                            url = h;
+                            break;
+                        }
+                    }
+                }
+            }
             let Some(urn) = url.split("/feed/update/").nth(1).map(|s| s.trim_end_matches('/').split('?').next().unwrap_or("").to_string()).filter(|s| s.starts_with("urn:li:")) else {
                 tracing::warn!(platform = "linkedin", account = t.account, verdict = "social_browser_no_post_link", measured = true, n_considered = 1,
                     "clicked Post and found no View post link and no new post on the page");
-                return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link within 30 s: check the feed before resending"));
+                return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link and the post list showed no new post within about 2 minutes: check the page's posts before resending")
+                    .with(json!({"verdict": "social_browser_no_post_link"})));
             };
             // READ THE PUBLISHED POST BACK (amux-gtm, 2026-10-31): the composer
             // read-back passed while the post went out with no caption. Open
@@ -422,7 +472,7 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                 return Err(Failure::uncertain(format!(
                     "posted, but the published post does not show the caption: add it with Edit post at {url}; do not resend"
                 ))
-                .with(json!({"post_id": urn, "url": url, "caption_on_post": false})));
+                .with(json!({"post_id": urn, "url": url, "caption_on_post": false, "verdict": "social_browser_posted_without_caption"})));
             }
             tracing::info!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted", "LinkedIn post published through the browser");
             Ok(Published {
