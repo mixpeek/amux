@@ -2007,7 +2007,7 @@ impl AgentProtocol for StructuredCliProtocol {
     /// The override always wins over the registered model, and the log says
     /// which of the two happened, because "the model is still the old one" must
     /// be answerable from the log alone.
-    async fn set_model(&self, worker: &WorkerId, model: &str) -> Result<()> {
+    async fn set_model(&self, worker: &WorkerId, model: &str) -> Result<bool> {
         let model = model.trim();
         if model.is_empty() {
             return Err(ProtocolError::Rejected(
@@ -2030,7 +2030,7 @@ impl AgentProtocol for StructuredCliProtocol {
                 verdict = "model switched on the live session; subsequent turns use it",
                 "worker model switched"
             );
-            return Ok(());
+            return Ok(true);
         }
         if let Some(session) = acp_session {
             session.set_model(model).await?;
@@ -2042,7 +2042,7 @@ impl AgentProtocol for StructuredCliProtocol {
                 verdict = "model switched on the live session; subsequent turns use it",
                 "worker model switched"
             );
-            return Ok(());
+            return Ok(true);
         }
         tracing::info!(
             worker = %shared.worker,
@@ -2052,7 +2052,7 @@ impl AgentProtocol for StructuredCliProtocol {
             verdict = "no live session; the override applies when the next one is created",
             "worker model switched"
         );
-        Ok(())
+        Ok(false)
     }
 
     async fn resume(&self, worker: &WorkerId) -> Result<()> {
@@ -3651,10 +3651,14 @@ mod tests {
         proto.send_prompt(&w, prompt("m7-1")).await.expect("admit");
         let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
 
-        proto
+        let live = proto
             .set_model(&w, "opencode-go/deepseek-v4.1-flash")
             .await
             .expect("a live session must accept a model switch");
+        assert!(
+            live,
+            "a switch that reached a live session must report live=true — the HTTP door              answers `live` from exactly this value"
+        );
 
         let seen = models.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "exactly one switch on the wire: {seen:?}");
@@ -3688,10 +3692,14 @@ mod tests {
                 conversation: None,
             },
         );
-        proto
+        let live = proto
             .set_model(&w, "opencode-go/deepseek-v4.1-flash")
             .await
             .expect("no session yet is not an error");
+        assert!(
+            !live,
+            "with no live session the switch is only RECORDED; reporting live=true here was              the bug this fixes"
+        );
 
         let mut rx = proto.events(&w);
         proto.send_prompt(&w, prompt("m7-2")).await.expect("admit");
