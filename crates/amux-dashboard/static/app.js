@@ -17855,7 +17855,20 @@ function _selectWorkerType(id) {
   if (prompt) prompt.placeholder = t.renderer === 'chat' ? 'First message (optional)' : 'What should Claude work on first?';
 }
 
+// The Mac app's Freeze Workspace (desktop/amux-workspace.swift) sets
+// window.__amuxFrozen: a page showing a worker keeps showing that worker.
+// True, with a toast and a beacon, when `next` would replace or close it.
+function _frozenWorker(next) {
+  if (!window.__amuxFrozen || !peekSession || next === peekSession) return false;
+  if (!document.getElementById('peek-overlay')?.classList.contains('active')) return false;
+  showToast('This workspace is frozen. Unfreeze it in Window > Workspaces.');
+  try { fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'}, keepalive:true,
+    body: JSON.stringify({kind:'frozen_refused', what: next ? 'switch_worker' : 'close_worker', worker: peekSession})}).catch(() => {}); } catch (e) {}
+  return true;
+}
+
 function openPeek(name, opts) {
+  if (_frozenWorker(name)) return;
   _peekAgentsReset();
   _vxOnPeekOpen(name);   // switching worker ends another worker's live conversation
   if (_chat.name && _chat.name !== name) _chatUnmount();
@@ -18211,6 +18224,7 @@ async function _peekAgentRefresh() {
 }
 
 function closePeek() {
+  if (_frozenWorker(null)) return;
   _chatUnmount();
   _vxOnPeekClose();   // a live Converse conversation must not keep the mic open
   _peekFollowBottom = false;

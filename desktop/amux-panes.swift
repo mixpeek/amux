@@ -248,6 +248,7 @@ final class PaneView: NSView {
         header.onClick = { [weak self] i in self?.selectTab(i) }
         header.onDrag = { [weak self] p, i in self?.dragged(to: p, tab: i) }
         header.onDrop = { [weak self] p, i in self?.dropped(at: p, tab: i) }
+        header.frozen = { [weak self] in self?.grid?.host?.app?.isFrozen ?? false }
         paintHeader()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -275,6 +276,7 @@ final class PaneView: NSView {
         while items.count < t.count {
             let it = PaneTabItem()
             it.onClose = { [weak self, weak it] in if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }) { s.closeTab(i) } }
+            it.frozen = { [weak self] in self?.grid?.host?.app?.isFrozen ?? false }
             it.onRename = { [weak self, weak it] in
                 if let s = self, let it = it, let i = s.items.firstIndex(where: { $0 === it }), i < s.tabs.count {
                     let c = s.tabs[i]
@@ -285,9 +287,12 @@ final class PaneView: NSView {
             items.append(it)
             header.addSubview(it)
         }
-        for (i, c) in t.enumerated() { items[i].set(title: grid?.label(c) ?? c.pageTitle, active: c === controller, closable: true) }
+        // A frozen workspace keeps its tabs: no close, new, split or move buttons.
+        let frozen = grid?.host?.app?.isFrozen ?? false
+        for (i, c) in t.enumerated() { items[i].set(title: grid?.label(c) ?? c.pageTitle, active: c === controller, closable: !frozen) }
         zoomButton.contentTintColor = grid?.zoomed == id ? .controlAccentColor : .secondaryLabelColor
-        nestButton.isHidden = !(grid?.canNest(id) ?? false)
+        nestButton.isHidden = frozen || !(grid?.canNest(id) ?? false)
+        for b in [newButton, tabButton, closeButton] { b.isHidden = frozen }
         needsLayout = true
     }
 
@@ -358,11 +363,12 @@ final class PaneTabItem: NSView {
     private let close = NSButton()
     var onClose: (() -> Void)?
     var onRename: (() -> Void)?
+    var frozen: (() -> Bool)?
     private var active = false
 
     // Right-click a strip tab to name it, as a window tab can be.
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard onRename != nil else { return nil }
+        guard onRename != nil, !(frozen?() ?? false) else { return nil }
         let m = NSMenu()
         let r = NSMenuItem(title: "Rename Tab…", action: #selector(renameTapped), keyEquivalent: "")
         r.target = self
@@ -413,6 +419,8 @@ final class PaneHeader: NSView {
     var onClick: ((Int?) -> Void)?
     var onDrag: ((NSPoint, Int?) -> Void)?
     var onDrop: ((NSPoint, Int?) -> Void)?
+    /// A frozen workspace: a press only picks a tab, it never drags one.
+    var frozen: (() -> Bool)?
     override func mouseDown(with e: NSEvent) {
         guard let w = window else { return }
         let start = NSEvent.mouseLocation
@@ -421,12 +429,12 @@ final class PaneHeader: NSView {
         while let ev = w.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
             let p = NSEvent.mouseLocation
             if ev.type == .leftMouseUp { break }
-            if !dragging, hypot(p.x - start.x, p.y - start.y) > 6 { dragging = true; NSCursor.closedHand.push() }
+            if !dragging, !(frozen?() ?? false), hypot(p.x - start.x, p.y - start.y) > 6 { dragging = true; NSCursor.closedHand.push() }
             if dragging { onDrag?(p, i) }
         }
         if dragging { NSCursor.pop(); onDrop?(NSEvent.mouseLocation, i) } else if i != nil { onClick?(i) }
     }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    override func resetCursorRects() { if !(frozen?() ?? false) { addCursorRect(bounds, cursor: .openHand) } }
 }
 
 struct SavedTab: Codable {
@@ -697,6 +705,7 @@ extension AppDelegate {
     /// another pane. A pane left with no tabs closes and its neighbour takes the
     /// space; a window left with one page is a plain window again.
     func undockPane(_ c: DashboardWindowController, to dest: PaneDestination, from grid: PaneGrid? = nil) {
+        if frozen("pane_tab_moved") { return }
         // The grid it leaves: the one named (a pane's own controls name theirs),
         // else the one it is a tab of. A split inside a tab is a tab of the grid
         // above it, and the host of its own.
@@ -860,6 +869,7 @@ extension AppDelegate {
     /// "Split this tab": the tab pane `id` shows becomes a split of its own,
     /// that page and a second copy of it side by side, each with its own tabs.
     func nestSplit(_ c: DashboardWindowController, in g: PaneGrid, url: URL? = nil) {
+        if frozen("split") { return }
         guard let id = g.id(of: c), g.canNest(id) else {
             dlog("verdict=pane_nest_refused reason=\(c.grid != nil && c !== g.host ? "already_split" : "too_deep") depth=\(c.depth)")
             return
@@ -946,6 +956,7 @@ extension AppDelegate {
     /// the right of `c`'s pane, as if a tab of it were dropped on that edge.
     /// A full grid takes it as a tab of the pane instead (dockPane).
     func splitPane(_ c: DashboardWindowController, url: URL?) {
+        if frozen("split") { return }
         // A page already in a pane splits THAT pane: its tab becomes a split of
         // its own, beside its neighbours rather than taking a neighbour's room
         // (owner, 2026-10-29: "if i do a split button in a worker it should
@@ -976,6 +987,7 @@ extension AppDelegate {
 
     /// A new tab in pane `id`, on the worker list like any new tab.
     func newTab(inPane id: Int, of g: PaneGrid) {
+        if frozen("new_tab") { return }
         guard let host = g.host else { return }
         let n = DashboardWindowController(app: self, frame: host.rootHost.window?.frame, configuration: nil)
         controllers.append(n)
@@ -1058,6 +1070,7 @@ extension AppDelegate {
 
     /// The window a tab tore off into, finished by a drop on a pane zone.
     func finishPaneDrop(_ drop: PaneDropTarget, at p: NSPoint, from group: [NSWindow], source: NSRect, pressed: NSWindow? = nil) {
+        if frozen("tab_docked") { return }
         let alone = group.filter { w in controllers.contains { $0.window === w } && w.isVisible && (w.tabbedWindows?.count ?? 1) == 1 }
         // The window the tab became, when AppKit tore it off. Dropped on a
         // window's own page AppKit cancels the drag instead and the tab stays

@@ -2208,6 +2208,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_frozenWorker": {
+      "kind": "command._frozenWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fsRename": {
       "kind": "command._fsRename",
       "feedback_required": true,

@@ -690,11 +690,13 @@ extension AppDelegate {
 
     func startTabDragTracking() {
         tabDragMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
+            if self?.frozenTabPress(e) == true { return nil }
             self?.tabPressed(e)
             return e
         }
         tabMenuMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] e in
-            (self?.tabRightClicked(e) ?? false) ? nil : e
+            if self?.frozenTabMenu(e) == true { return nil }
+            return (self?.tabRightClicked(e) ?? false) ? nil : e
         }
         // The fallback that needs no press: a window that leaves a tab group
         // while the button is down is a tab being dragged out, however AppKit
@@ -714,6 +716,8 @@ extension AppDelegate {
             if let was = tabGroupSeen[id], was.tabs > 1, n == 1 { leavers.append((w, was.frame)) }
         }
         tabGroupSeen = now
+        // A drag AppKit ran without giving the press monitor the press got past the freeze.
+        if !leavers.isEmpty, isFrozen, Pointer.buttonDown { dlog("verdict=frozen_tab_escaped left_alone=\(leavers.count)") }
         guard !leavers.isEmpty, !(tabDragTimer?.isValid ?? false), Date().timeIntervalSince(lastTabPlaced) > 2,
               snapEnabled, !NSEvent.modifierFlags.contains(.option) else { return }
         // Which of the windows left alone is the torn tab is decided at the
@@ -855,11 +859,11 @@ extension AppDelegate {
         return true
     }
     @objc func renameTargetTab(_ sender: Any?) { if let c = tabMenuTarget { promptRename(c, wholeTab: true) } }
-    @objc func clearTargetTabName(_ sender: Any?) { tabMenuTarget?.renameTab(nil) }
-    @objc func moveTargetTab(_ sender: Any?) { tabMenuTarget?.window?.moveTabToNewWindow(nil) }
+    @objc func clearTargetTabName(_ sender: Any?) { if !frozen("rename") { tabMenuTarget?.renameTab(nil) } }
+    @objc func moveTargetTab(_ sender: Any?) { if !frozen("tab_moved") { tabMenuTarget?.window?.moveTabToNewWindow(nil) } }
     @objc func closeTargetTab(_ sender: Any?) { tabMenuTarget?.window?.performClose(nil) }
     @objc func closeOtherTabs(_ sender: Any?) {
-        guard let w = tabMenuTarget?.window else { return }
+        guard !frozen("close_tab"), let w = tabMenuTarget?.window else { return }
         for o in (w.tabbedWindows ?? []) where o !== w { o.performClose(nil) }
     }
 
@@ -867,6 +871,7 @@ extension AppDelegate {
     /// From the window's tab bar (`wholeTab`), a tab split into panes is
     /// named as a whole; from a pane's own tab strip, only that page.
     func promptRename(_ c: DashboardWindowController, wholeTab: Bool = false) {
+        if frozen("rename") { return }
         let whole = wholeTab && c.grid != nil
         let a = NSAlert()
         a.messageText = "Rename Tab"
@@ -958,7 +963,10 @@ extension AppDelegate {
                 dlog("verdict=test_press_tab title=\(t) buttons=\(b.count) tabs=\(group.count)")
             }
             if let e = NSEvent.mouseEvent(with: .leftMouseDown, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { tabPressed(e) }
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                // As the press monitor does: a frozen tab bar picks the tab and stops there.
+                if frozenTabPress(e) { dlog("verdict=test_press_tab_frozen") } else { tabPressed(e) }
+            }
         }
         switch url.path {
         case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
@@ -1105,6 +1113,11 @@ extension AppDelegate {
             if let w = q.first(where: { $0.name == "worker" })?.value { openNotificationTab("#peek=" + w, why: "worker") }
             else if let h = q.first(where: { $0.name == "hash" })?.value { openNotificationTab(h, why: "message") }
         case "/hide": NSApp.hide(nil)
+        // Workspaces > Freeze Workspace, and the menu and close paths it guards.
+        case "/freeze": if isFrozen != (q.first { $0.name == "on" }?.value != "0") { toggleFreeze(nil) }
+        case "/menu-move-tab": arrangeTarget?.moveTabToNewWindow(NSMenuItem())
+        case "/close-tab": arrangeTarget?.performClose(nil)
+        case "/new-window": newWindow(nil)
         // View > Reload Pane Ignoring Cache, as ⌘⇧R reaches it.
         case "/reload-ignoring-cache": reloadIgnoringCache(nil)
         // Run a script in the shown tab's page (download-e2e.py starts a page
@@ -1174,7 +1187,8 @@ extension AppDelegate {
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w, "tooltip": w.tab.toolTip ?? "",
                                         "connection": w.tab.accessoryView?.toolTip ?? "",
-                                        "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? ""]
+                                        "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? "",
+                                        "subtitle": w.subtitle]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
                     d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }
@@ -1198,10 +1212,15 @@ extension AppDelegate {
                     d["pane_shown"] = g.tree.leaves.map { g.views[$0]?.window != nil }
                     d["focused"] = g.focused.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
                     d["zoomed"] = g.zoomed.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
+                    // Per pane, the header buttons showing (amux-panes.swift), by their tooltips' first word.
+                    d["pane_buttons"] = g.tree.leaves.map { id in g.views[id]?.header.subviews.compactMap { v -> String? in
+                        guard let b = v as? NSButton, !b.isHidden else { return nil }
+                        return b.toolTip?.split(separator: " ").first.map(String.init)
+                    }.sorted() ?? [] }
                 }
                 return d
             }
-            let st: [String: Any] = ["preview": snapPreview.panel.isVisible,
+            let st: [String: Any] = ["preview": snapPreview.panel.isVisible, "frozen": isFrozen,
                                      "hidden_panes": controllers.filter { $0.paneHost != nil && $0.window?.isVisible == false }.count,
                                      // What a drop at the pointer hits: the window server's front window there.
                                      "pointer_window": NSWindow.windowNumber(at: Pointer.location, belowWindowWithWindowNumber: 0),
@@ -1405,4 +1424,97 @@ func globeKeyName(_ e: NSEvent) -> String? {
     guard let ch = e.charactersIgnoringModifiers?.uppercased(), ch.count == 1,
           let u = ch.unicodeScalars.first, CharacterSet.alphanumerics.contains(u), u.isASCII else { return nil }
     return ch
+}
+
+// ── Freeze Workspace ──
+// A frozen workspace keeps what it shows (owner, 2026-11-03: "freeze a
+// workspace, so i can't change the tabs, names of tabs, workers etc but i can
+// make them bigger/smaller"). Refused while frozen: new, closed, renamed,
+// moved, dragged, docked or split tabs, windows and panes, and a page leaving
+// the worker it shows (app.js _frozenWorker). Still free: window size and
+// place, dividers, pane zoom, page zoom, focus, and picking which tab shows.
+// Each refusal beeps and logs verdict=frozen_refused. Kept per workspace by
+// name in this Mac's config; "" is the unsaved set open when none is.
+extension AppDelegate {
+    var freezeKey: String { config.activeWorkspace ?? "" }
+    var isFrozen: Bool { (config.frozenWorkspaces ?? []).contains(freezeKey) }
+
+    @objc func toggleFreeze(_ sender: Any?) {
+        var c = loadConfig()
+        let k = c.activeWorkspace ?? ""
+        var set = c.frozenWorkspaces ?? []
+        if set.contains(k) { set.removeAll { $0 == k } } else { set.append(k) }
+        c.frozenWorkspaces = set.isEmpty ? nil : set
+        saveConfig(c)
+        config = c
+        dlog("verdict=\(isFrozen ? "workspace_frozen" : "workspace_unfrozen") workspace=\(k.isEmpty ? "unsaved" : k)")
+        applyFreeze()
+        rebuildLayoutsMenu()
+    }
+
+    func applyFreeze() { controllers.forEach { $0.applyFreeze() } }
+
+    /// True, with a beep and a log line, when the workspace is frozen and
+    /// `what` must not happen.
+    func frozen(_ what: String) -> Bool {
+        guard isFrozen else { return false }
+        NSSound.beep()
+        dlog("verdict=frozen_refused what=\(what) workspace=\(freezeKey.isEmpty ? "unsaved" : freezeKey)")
+        return true
+    }
+
+    /// The y-range of `w`'s tab bar, in window coordinates: AppKit's tab
+    /// buttons, else the strip just above the page.
+    func tabBarBand(_ w: NSWindow) -> ClosedRange<CGFloat>? {
+        let frames = tabButtonFrames(in: w)
+        if let lo = frames.map({ $0.minY }).min(), let hi = frames.map({ $0.maxY }).max() { return lo...hi }
+        guard let top = w.contentView?.frame.maxY else { return nil }
+        return top...(top + 30)
+    }
+
+    /// A press in a frozen window's tab bar picks the tab under it and goes no
+    /// further, so AppKit never starts a drag, a close or a new tab.
+    func frozenTabPress(_ e: NSEvent) -> Bool {
+        guard isFrozen, let w = e.window, controllers.contains(where: { $0.window === w }),
+              let group = w.tabbedWindows, group.count > 1, !w.styleMask.contains(.fullScreen),
+              let band = tabBarBand(w), band.contains(e.locationInWindow.y) else { return false }
+        if let tw = tabWindow(at: e.locationInWindow, in: w, group: group), tw !== w {
+            w.tabGroup?.selectedWindow = tw
+            tw.makeKeyAndOrderFront(nil)
+        }
+        return true
+    }
+
+    /// A right-click on a frozen tab bar offers only Unfreeze.
+    func frozenTabMenu(_ e: NSEvent) -> Bool {
+        guard isFrozen, let w = e.window, controllers.contains(where: { $0.window === w }),
+              (w.tabbedWindows?.count ?? 1) > 1, let band = tabBarBand(w), band.contains(e.locationInWindow.y),
+              let v = w.contentView?.superview ?? w.contentView else { return false }
+        let m = NSMenu()
+        let i = NSMenuItem(title: "Unfreeze Workspace", action: #selector(toggleFreeze(_:)), keyEquivalent: "")
+        i.target = self
+        m.addItem(i)
+        NSMenu.popUpContextMenu(m, with: e, for: v)
+        return true
+    }
+}
+
+extension DashboardWindowController {
+    /// Tells the page and the pane strips whether the workspace is frozen, and
+    /// says so under the window's title.
+    func applyFreeze() {
+        let on = app?.isFrozen ?? false
+        webView.evaluateJavaScript("window.__amuxFrozen = \(on); 0", completionHandler: nil)
+        updateTitle()
+    }
+}
+
+/// A dashboard window. Window > Merge All Windows and Move Tab to New Window
+/// are AppKit's own; from the menu, a frozen workspace refuses them.
+final class AmuxWindow: NSWindow {
+    private func refused(_ sender: Any?, _ what: String) -> Bool {
+        sender is NSMenuItem && ((NSApp.delegate as? AppDelegate)?.frozen(what) ?? false)
+    }
+    override func moveTabToNewWindow(_ sender: Any?) { if !refused(sender, "tab_moved") { super.moveTabToNewWindow(sender) } }
+    override func mergeAllWindows(_ sender: Any?) { if !refused(sender, "tabs_merged") { super.mergeAllWindows(sender) } }
 }
