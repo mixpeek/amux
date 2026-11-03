@@ -476,9 +476,34 @@ impl ServeClient {
     /// Create a session scoped to `cwd`, pinned to `model` when one is given.
     /// Returns the `ses_…` id — persist it as the conversation ref.
     pub async fn create_session(&self, cwd: &Path, model: Option<&str>) -> Result<String> {
+        self.create_session_with_permissions(cwd, model, None).await
+    }
+
+    /// Create a session that also carries a **permission ruleset** (M9).
+    ///
+    /// MEASURED 2026-11-03 on 2.2.4: `POST /api/session` accepts
+    /// `permissions: [{action, resource, effect}]` where effect is
+    /// `allow|deny|ask`, and an `ask` rule is what makes a tool call produce a
+    /// permission request at all. Without it opencode auto-approves, so a
+    /// boundary policy has nothing to answer — which is why boundary
+    /// enforcement for opencode workers was inert before this.
+    ///
+    /// The action vocabulary is opencode's, not ours: `shell` (not "bash"),
+    /// `edit` (covers write), `external_directory` (a path outside the
+    /// workspace). `resource: "*"` applies the effect to every target; the
+    /// decision is amux's policy, per call, with the reason logged.
+    pub async fn create_session_with_permissions(
+        &self,
+        cwd: &Path,
+        model: Option<&str>,
+        permissions: Option<&Value>,
+    ) -> Result<String> {
         let mut body = json!({"location": {"directory": cwd.to_string_lossy()}});
         if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
             body["model"] = model_ref(model);
+        }
+        if let Some(p) = permissions.filter(|p| p.as_array().is_some_and(|a| !a.is_empty())) {
+            body["permissions"] = p.clone();
         }
         let v = self
             .send_json(reqwest::Method::POST, "/api/session", Some(body))
@@ -942,6 +967,21 @@ impl ServeSession {
         model: Option<&str>,
         resume: Option<&str>,
     ) -> Result<(Self, Opened)> {
+        Self::open_with_permissions(client, cwd, model, resume, None).await
+    }
+
+    /// [`ServeSession::open`], plus the permission ruleset the session should be
+    /// created with (see [`ServeClient::create_session_with_permissions`]). A
+    /// resumed session keeps the ruleset it was created with — opencode has no
+    /// per-session ruleset update, so continuity of policy rides continuity of
+    /// the session.
+    pub async fn open_with_permissions(
+        client: ServeClient,
+        cwd: &Path,
+        model: Option<&str>,
+        resume: Option<&str>,
+        permissions: Option<&Value>,
+    ) -> Result<(Self, Opened)> {
         let mut out = Opened::default();
         if let Some(id) = resume.map(str::trim).filter(|s| !s.is_empty()) {
             match client.session_exists(id).await {
@@ -969,7 +1009,9 @@ impl ServeSession {
                 Err(e) => return Err(e),
             }
         }
-        let session_id = client.create_session(cwd, model).await?;
+        let session_id = client
+            .create_session_with_permissions(cwd, model, permissions)
+            .await?;
         tracing::info!(session = %session_id, cwd = %cwd.display(),
             resumed = out.resumed, "serve session created");
         out.session_id = session_id.clone();
@@ -1150,6 +1192,31 @@ pub struct PermissionRequest {
 /// is exactly the failure mode this transport exists to avoid. The server's
 /// `message` text becomes [`PermissionAsk::title`], which is where ACP keeps
 /// its human title.
+/// The written content of an `edit` ask, out of `metadata.files[].patch`.
+///
+/// MEASURED 2026-11-03 on 2.2.4: the patch is a unified diff whose added lines
+/// are the text about to be written —
+/// `"@@ -0,0 +1,1 @@\n+TOP-SECRET\n"`. Joining every file's patch keeps a
+/// multi-file edit accountable file by file, and the `+`/context markers are
+/// left in: a rule that matches a secret matches it either way, and stripping
+/// markers would be a second parser to get wrong.
+fn edit_patch(row: &Value) -> Option<String> {
+    let files = row
+        .get("metadata")
+        .and_then(|m| m.get("files"))
+        .and_then(Value::as_array)?;
+    let mut out = String::new();
+    for f in files {
+        if let Some(p) = f.get("patch").and_then(Value::as_str) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(p);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 pub fn permission_requests(body: &Value) -> Vec<PermissionRequest> {
     let Some(rows) = body.get("data").and_then(Value::as_array) else {
         return Vec::new();
@@ -1172,6 +1239,20 @@ pub fn permission_requests(body: &Value) -> Vec<PermissionRequest> {
                 id,
                 session_id,
                 ask: PermissionAsk {
+                    // The INPUT the policy needs, extracted per measured action
+                    // (2026-11-03, real asks on 2.2.4):
+                    //  - `shell`  → `resources[0]` IS the command;
+                    //  - `edit`   → `metadata.files[].patch` IS the diff,
+                    //               written content included;
+                    //  - anything else → the paths in `locations` are the
+                    //               whole predicate.
+                    // This is what makes match_all/match_none/content_any
+                    // decidable instead of structurally impossible.
+                    input: match action.as_str() {
+                        "shell" => resources.first().cloned(),
+                        "edit" => edit_patch(row),
+                        _ => None,
+                    },
                     tool: action,
                     title: row
                         .get("message")
@@ -3680,6 +3761,7 @@ mod tests {
                 title: None,
                 kind: Some("tool".into()),
                 locations: vec!["/tmp/ws/perm.txt".into()],
+                input: None,
                 // An ask that only ever offered "reject".
                 option_ids: vec!["reject".to_string()],
             },

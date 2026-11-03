@@ -36,25 +36,17 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde_json::{json, Value};
+
 use crate::api::boundaries;
 use crate::opencode::acp::{AllowOncePolicy, Approval, ApprovalPolicy, PermissionAsk};
 
-/// File tools whose decisions can be made from the paths the ask carries.
-///
-/// Everything else (`Bash` above all) needs the command text, which no ask
-/// provides — that is the whole reason this list exists rather than a blanket
-/// "any deny rule that names the tool".
-const PATH_DECIDABLE_TOOLS: &[&str] = &[
-    "write",
-    "edit",
-    "multiedit",
-    "notebookedit",
-    "read",
-    "grep",
-    "glob",
-    "ls",
-    "list",
-];
+// NOTE (M9): there is no longer a "path-decidable tool" list. A `path`
+// predicate is decided from the ask's `locations`, whatever the tool — a
+// `shell` ask puts its command there, an `edit` ask its file, and an
+// `external_directory` ask the path pattern. Keeping a tool allowlist meant a
+// rule was skipped for tools it named but did not list, which is how the vault
+// boundary missed `Bash`.
 
 /// opencode's tool names → the names `boundaries.toml` writes rules against.
 ///
@@ -82,6 +74,61 @@ pub fn boundary_tool_name(opencode_tool: &str) -> String {
             }
         }
     }
+}
+
+/// The ruleset amux asks opencode to enforce for a NEW session (M9).
+///
+/// MEASURED 2026-11-03 on 2.2.4: without an `ask` rule opencode auto-approves,
+/// so the policy never sees anything and boundary enforcement is inert. The
+/// actions come from opencode's own permission vocabulary, not ours:
+///
+/// | boundary rules name | permission action to ask on |
+/// |---|---|
+/// | `Bash` | `shell` — `resources[0]` is the command |
+/// | `Write`/`Edit`/… | `edit` — `metadata.files[].patch` is the diff |
+/// | any rule with a `path` predicate | `external_directory` — the path pattern |
+///
+/// Derived from the ENABLED registry, so a box with every boundary disabled
+/// gets an empty ruleset and pays nothing. Everything is `ask` rather than
+/// `deny`: a boundary decision must be logged with its reason, and opencode's
+/// `deny` would refuse before amux could say why.
+pub fn session_permission_ruleset() -> Value {
+    let (registry, _source, _errors) = boundaries::load();
+    let (mut shell, mut edit, mut extdir) = (false, false, false);
+    for boundary in registry.iter() {
+        if boundary.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+            continue;
+        }
+        let Some(rules) = boundary.get("deny").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for rule in rules.iter().filter_map(|r| r.as_table()) {
+            if rule.contains_key("path") {
+                extdir = true;
+            }
+            for tool in rule
+                .get("tools")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str())
+            {
+                match tool.to_ascii_lowercase().as_str() {
+                    "bash" | "shell" => shell = true,
+                    "write" | "edit" | "multiedit" | "notebookedit" => edit = true,
+                    "read" | "grep" | "glob" | "ls" | "list" => extdir = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (action, needed) in [("shell", shell), ("edit", edit), ("external_directory", extdir)] {
+        if needed {
+            out.push(json!({"action": action, "resource": "*", "effect": "ask"}));
+        }
+    }
+    Value::Array(out)
 }
 
 /// What the policy decided, and why — the log line's content.
@@ -159,7 +206,6 @@ impl BoundaryPolicy {
     /// prompt and routes nothing.
     pub fn decide_detailed(&self, ask: &PermissionAsk) -> Decision {
         let tool = boundary_tool_name(&ask.tool);
-        let path_decidable = PATH_DECIDABLE_TOOLS.contains(&ask.tool.trim().to_ascii_lowercase().as_str());
         let mut decision = Decision::allow();
 
         for boundary in self.registry.iter() {
@@ -185,40 +231,102 @@ impl BoundaryPolicy {
                     continue;
                 }
                 let reason = rule.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                // A `path` predicate on a file tool: the ask names the paths, so
-                // this is decidable. `content_any` makes it undecidable even
-                // then — the rule only applies to certain content, which an ask
-                // never carries.
-                let has_content_rule = rule.get("content_any").is_some();
-                let path = rule.get("path").and_then(|v| v.as_str());
-                if let (Some(re), true) = (path, path_decidable) {
-                    if has_content_rule {
-                        decision.undecidable.push(id.to_string());
-                        continue;
+                // Predicates are evaluated in the order that matches what the
+                // registry MEANS, and a refused call names the first one that
+                // fires. Each predicate is decisive where it applies; only a
+                // predicate whose INPUT is absent makes the rule undecidable.
+                let path_rule = rule.get("path").and_then(|v| v.as_str());
+                let content_rule = rule.get("content_any").and_then(|v| v.as_str());
+                let needs_command =
+                    rule.contains_key("match_all") || rule.contains_key("match_none");
+
+                // (a) A path match is decisive ON ITS OWN. The registry's path
+                // predicates are written for tools that carry paths, and an ask
+                // that names the path has already answered the question — which
+                // is why the vault rule refuses a write to `…/vault/x` without
+                // needing a shell command to inspect.
+                if let Some(p) = path_rule {
+                    match compile(p) {
+                        Some(re) => {
+                            if ask.locations.iter().any(|loc| re.is_match(loc)) {
+                                return Decision {
+                                    approval: Approval::Reject,
+                                    refused_by: Some((id.to_string(), reason.to_string())),
+                                    matched_path: ask.locations.first().cloned(),
+                                    undecidable: decision.undecidable,
+                                };
+                            }
+                        }
+                        None => {
+                            warn_bad_regex(id, p);
+                            decision.undecidable.push(id.to_string());
+                            continue;
+                        }
                     }
-                    let Ok(re) = regex::RegexBuilder::new(re).case_insensitive(true).build() else {
-                        // A rule we cannot compile must not silently pass: say
-                        // so and keep it out of the "enforced" column.
-                        tracing::warn!(
-                            boundary = id,
-                            pattern = re,
-                            verdict = "boundary deny `path` regex does not compile; rule not enforced",
-                            "boundary rule unusable"
-                        );
-                        continue;
-                    };
-                    if let Some(hit) = ask.locations.iter().find(|p| re.is_match(p)) {
-                        return Decision {
-                            approval: Approval::Reject,
-                            refused_by: Some((id.to_string(), reason.to_string())),
-                            matched_path: Some(hit.clone()),
-                            undecidable: decision.undecidable,
-                        };
-                    }
-                    continue;
                 }
-                if path.is_none() && !has_content_rule && rule.get("match_all").is_none() {
-                    // `tools` alone: the rule refuses the tool outright.
+
+                // (b) content_any — the text about to be written, from the
+                // `edit` patch. Decidable only when the ask carries it.
+                if let Some(p) = content_rule {
+                    match ask.input.as_deref() {
+                        Some(text) => {
+                            if compile(p).is_some_and(|re| re.is_match(text)) {
+                                return Decision {
+                                    approval: Approval::Reject,
+                                    refused_by: Some((id.to_string(), reason.to_string())),
+                                    matched_path: None,
+                                    undecidable: decision.undecidable,
+                                };
+                            }
+                        }
+                        None => {
+                            decision.undecidable.push(id.to_string());
+                            continue;
+                        }
+                    }
+                }
+
+                // (c) match_all / match_none — the shell command, which a
+                // `shell` ask carries verbatim in `resources[0]`.
+                if needs_command {
+                    match ask.input.as_deref() {
+                        None => {
+                            decision.undecidable.push(id.to_string());
+                            continue;
+                        }
+                        Some(text) => {
+                            let all_ok = rule
+                                .get("match_all")
+                                .and_then(|v| v.as_array())
+                                .map(|pats| {
+                                    pats.iter().filter_map(|v| v.as_str()).all(|p| {
+                                        compile(p).is_some_and(|re| re.is_match(text))
+                                    })
+                                })
+                                .unwrap_or(true);
+                            let none_hit = rule
+                                .get("match_none")
+                                .and_then(|v| v.as_array())
+                                .map(|pats| {
+                                    pats.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .any(|p| compile(p).is_some_and(|re| re.is_match(text)))
+                                })
+                                .unwrap_or(false);
+                            if all_ok && !none_hit {
+                                return Decision {
+                                    approval: Approval::Reject,
+                                    refused_by: Some((id.to_string(), reason.to_string())),
+                                    matched_path: None,
+                                    undecidable: decision.undecidable,
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // (d) `tools` alone: the rule refuses the tool outright.
+                if path_rule.is_none() && content_rule.is_none() && !needs_command {
                     return Decision {
                         approval: Approval::Reject,
                         refused_by: Some((id.to_string(), reason.to_string())),
@@ -226,11 +334,33 @@ impl BoundaryPolicy {
                         undecidable: decision.undecidable,
                     };
                 }
-                // Needs the command text or the content: not in an ask.
-                decision.undecidable.push(id.to_string());
             }
         }
         decision
+    }
+}
+
+/// Compile a rule regex the way `boundaries.toml` documents it: Python `re`,
+/// case-insensitive. `None` means the pattern is broken — which is reported by
+/// [`warn_bad_regex`] and treated as unevaluable, never as a match.
+fn compile(pattern: &str) -> Option<regex::Regex> {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .ok()
+}
+
+fn warn_bad_regex(boundary: &str, pattern: &str) {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let key = format!("{boundary}/{pattern}");
+    if seen.lock().map(|mut s| s.insert(key)).unwrap_or(false) {
+        tracing::warn!(
+            boundary,
+            pattern,
+            verdict = "boundary_rule_unusable",
+            "a boundaries.toml regex does not compile; rules using it are NOT enforced"
+        );
     }
 }
 
@@ -324,8 +454,38 @@ mod tests {
             title: locations.first().map(|p| p.to_string()),
             kind: None,
             locations: locations.iter().map(|p| p.to_string()).collect(),
+            input: None,
             option_ids: vec!["once".into(), "always".into(), "reject".into()],
         }
+    }
+
+    /// An ask carrying the call's INPUT, in the shapes MEASURED on 2.2.4
+    /// (2026-11-03): `shell` puts the command in `resources[0]`, `edit` puts the
+    /// diff in `metadata.files[].patch`.
+    fn ask_with_input(action: &str, resources: &[&str], input: &str) -> PermissionAsk {
+        PermissionAsk {
+            tool: action.to_string(),
+            title: resources.first().map(|p| p.to_string()),
+            kind: Some("tool".into()),
+            locations: resources.iter().map(|p| p.to_string()).collect(),
+            input: Some(input.to_string()),
+            option_ids: vec!["once".into(), "always".into(), "reject".into()],
+        }
+    }
+
+    /// The payments boundary, verbatim from `boundaries.toml`.
+    fn payments_registry() -> Vec<toml::Table> {
+        let text = r#"
+[[boundary]]
+id = "payments"
+[[boundary.deny]]
+tools = ["Bash"]
+match_all = ['\b(curl|wget|http|httpie|python3?|node|ruby)\b', '(api\.stripe\.com|api\.brex\.com|api(-m)?\.paypal\.com)']
+reason = "Payments go through `amux order` only."
+"#;
+        let t: toml::Table = toml::from_str(text).unwrap();
+        t.get("boundary").and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect()).unwrap()
     }
 
     /// The registry's own vault rule, copied from `boundaries.toml` so the test
@@ -432,6 +592,94 @@ reason = "shell is not allowed here"
     /// that are PATH-decidable, run against this evaluator. The Python hook
     /// checks the whole corpus; this checks the part an ask can decide, so the
     /// two evaluators cannot drift on the paths without a test failing.
+    /// M9's headline: the payments rule — `match_all` on a bash command — is now
+    /// DECIDABLE, because a `shell` ask carries the command in `resources[0]`.
+    /// Before M9 this exact call was allowed with a `boundary_not_decidable`
+    /// log line, which is why the gap mattered.
+    #[test]
+    fn a_shell_ask_is_refused_by_a_command_rule_now_that_the_command_is_carried() {
+        let policy = BoundaryPolicy::from_registry(payments_registry());
+        let d = policy.decide_detailed(&ask_with_input(
+            "shell",
+            &["curl -s https://api.stripe.com/v1/charges -u k:"],
+            "curl -s https://api.stripe.com/v1/charges -u k:",
+        ));
+        assert_eq!(d.approval, Approval::Reject, "{d:?}");
+        let (boundary, _reason) = d.refused_by.clone().expect("names its boundary");
+        assert_eq!(boundary, "payments");
+        assert!(d.undecidable.is_empty(), "{d:?}");
+
+        // The registry's own ALLOW example: reading about stripe is not paying.
+        let ok = policy.decide_detailed(&ask_with_input(
+            "shell",
+            &["grep -rn api.stripe.com docs/"],
+            "grep -rn api.stripe.com docs/",
+        ));
+        assert_eq!(ok.approval, Approval::AllowOnce, "{ok:?}");
+    }
+
+    /// `content_any` becomes decidable from an `edit` ask's patch — the text
+    /// about to be written, measured as a unified diff.
+    #[test]
+    fn an_edit_ask_is_refused_by_a_content_rule_when_the_patch_carries_it() {
+        let text = r#"
+[[boundary]]
+id = "secrets"
+[[boundary.deny]]
+tools = ["Write", "Edit"]
+content_any = 'sk_live_[A-Za-z0-9]+'
+reason = "a live secret must never be written to a file"
+"#;
+        let parsed: toml::Table = toml::from_str(text).unwrap();
+        let reg: Vec<toml::Table> = parsed.get("boundary").and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect()).unwrap();
+        let policy = BoundaryPolicy::from_registry(reg);
+        let patch = "Index: k.txt\n@@ -0,0 +1,1 @@\n+sk_live_ABC123\n";
+        let d = policy.decide_detailed(&ask_with_input("edit", &["k.txt"], patch));
+        assert_eq!(d.approval, Approval::Reject, "the written secret must be refused: {d:?}");
+
+        // Writing something harmless on the same rule is allowed.
+        let ok = policy.decide_detailed(&ask_with_input("edit", &["k.txt"], "+hello\n"));
+        assert_eq!(ok.approval, Approval::AllowOnce, "{ok:?}");
+    }
+
+    /// An ask with NO input still cannot decide a command rule — the fallback
+    /// has to survive, or a transport that carries less would silently start
+    /// allowing (or refusing) everything.
+    #[test]
+    fn without_input_a_command_rule_is_still_reported_as_undecidable() {
+        let policy = BoundaryPolicy::from_registry(payments_registry());
+        let d = policy.decide_detailed(&ask("shell", &[]));
+        assert_eq!(d.approval, Approval::AllowOnce, "{d:?}");
+        assert_eq!(d.undecidable, vec!["payments".to_string()], "{d:?}");
+    }
+
+    /// The ruleset is what makes any of this fire: without an `ask` rule
+    /// opencode auto-approves and the policy is never consulted.
+    #[test]
+    fn the_session_ruleset_asks_for_the_actions_the_registry_polices() {
+        let rs = session_permission_ruleset();
+        let actions: Vec<&str> = rs
+            .as_array()
+            .expect("a ruleset array")
+            .iter()
+            .filter_map(|r| r.get("action").and_then(|v| v.as_str()))
+            .collect();
+        assert!(actions.contains(&"shell"), "Bash rules need shell asks: {actions:?}");
+        assert!(actions.contains(&"edit"), "Write/Edit rules need edit asks: {actions:?}");
+        assert!(
+            actions.contains(&"external_directory"),
+            "a path rule needs path asks: {actions:?}"
+        );
+        // Every rule is `ask`, never `deny`: a boundary decision must be logged
+        // with its reason, and opencode's deny would refuse before amux can say
+        // why.
+        for rule in rs.as_array().unwrap() {
+            assert_eq!(rule.get("effect").and_then(|v| v.as_str()), Some("ask"), "{rule}");
+            assert_eq!(rule.get("resource").and_then(|v| v.as_str()), Some("*"), "{rule}");
+        }
+    }
+
     #[test]
     fn the_registry_path_examples_agree_with_this_evaluator() {
         let (registry, _src, errors) = boundaries::load();

@@ -1142,11 +1142,39 @@ impl StructuredCliProtocol {
         let hub = self.serve_hub()?;
         let resume = shared.conversation.lock().unwrap().clone();
         let model = shared.effective_model_now();
-        let (session, opened) = serve::ServeSession::open(
+        // M9: a session is created with the permission ruleset that makes
+        // boundary enforcement possible at all. Without an `ask` rule opencode
+        // auto-approves and the policy never sees a call — measured 2026-11-03.
+        let permissions = boundary_policy::session_permission_ruleset();
+        let actions: Vec<&str> = permissions
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|r| r.get("action").and_then(|v| v.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if actions.is_empty() {
+            tracing::warn!(
+                worker = %shared.worker,
+                verdict = "boundary_ruleset_empty",
+                "no enabled boundary names a tool, so this session asks for nothing and \
+                 boundaries are NOT enforced for it",
+            );
+        } else {
+            tracing::info!(
+                worker = %shared.worker,
+                asks = ?actions,
+                verdict = "boundary_ruleset_applied",
+                "permission ruleset applied to the new session",
+            );
+        }
+        let (session, opened) = serve::ServeSession::open_with_permissions(
             client,
             &shared.config.cwd,
             model.as_deref(),
             resume.as_deref(),
+            Some(&permissions),
         )
         .await?;
         tracing::info!(

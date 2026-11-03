@@ -200,6 +200,30 @@ Two properties, and the second is the one worth keeping:
   serve instances. A restart costs one interrupted turn, not a forked
   conversation.
 
+### What a permission ask actually carries (M9, 2026-11-03, 2.2.4)
+
+The question that decided whether `boundaries.toml` could ever be enforced for
+opencode: can a policy see the call's INPUT, or only its paths? Measured by
+creating real sessions with `permissions: [{action, resource: "*", effect: "ask"}`
+and reading the asks they produced:
+
+| ask `action` | fires for | carries |
+|---|---|---|
+| `shell` | bash / any command | **`resources[0]` = the full command** (`curl -s https://api.stripe.com/v1/charges -u k:`) plus `save: ["curl *"]` |
+| `edit` | write / edit | `resources[]` = file paths, and **`metadata.files[].patch` = the unified diff**, written content included (`+TOP-SECRET`) |
+| `external_directory` | a path outside the workspace | `resources[]` = a **path pattern** (`/home/pv/.amux/vault/*`) |
+
+Two corrections to what amux had assumed: the action vocabulary is opencode's
+(`shell`, `edit`, `external_directory` — **not** `bash`/`write`; `bash` as an
+action name matches nothing, so a ruleset written that way enforces nothing),
+and the `ask` effect on a session ruleset is what makes tools ask at all —
+without it opencode auto-approves and **no** policy is ever consulted.
+
+That is what made the 14 `match_all`/`match_none`/`content_any` rules decidable:
+commands come from `resources[0]`, written content from the patch. A
+plugin-side hook (the third option) is therefore not needed for boundary
+enforcement — recorded here so the idea is not re-derived.
+
 ## Measured error shapes
 
 ```jsonc
