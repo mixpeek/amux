@@ -35540,15 +35540,30 @@ async fn config_patch_with_liveness(
                 let worker = row.and_then(|r| amux_core::ids::WorkerId::parse(&r.id).ok());
                 if let Some(worker) = worker {
                     match protocol.set_model(&worker, &model_val).await {
-                        Ok(()) => {
-                            tracing::info!(
-                                session = %name, model = %model_val, measured = true, n_considered = 1,
-                                verdict = "opencode_model_switched_live",
-                                "opencode model switched on the live session; subsequent turns use it"
-                            );
+                        Ok(live) => {
+                            // `live` is the difference between "the running
+                            // session now uses it" and "the next session will".
+                            // Reporting `live: true` for both was a claim the
+                            // door could not keep (the protocol returns Ok for
+                            // an override with no session at all).
+                            if live {
+                                tracing::info!(
+                                    session = %name, model = %model_val, measured = true, n_considered = 1,
+                                    verdict = "opencode_model_switched_live",
+                                    "opencode model switched on the live session; subsequent turns use it"
+                                );
+                            } else {
+                                tracing::info!(
+                                    session = %name, model = %model_val, measured = true, n_considered = 1,
+                                    verdict = "opencode_model_next_session",
+                                    "no live opencode session yet; the switch applies when the next one is created"
+                                );
+                            }
                             set_confirmed_active_model(name, &current_provider, Some(&model_val));
                             return jresp(StatusCode::OK, json!({
-                                "ok": true, "applied": true, "mode": "hot", "live": true,
+                                "ok": true, "applied": true,
+                                "mode": if live { "hot" } else { "next_session" },
+                                "live": live,
                                 "model": model_val,
                             }));
                         }
