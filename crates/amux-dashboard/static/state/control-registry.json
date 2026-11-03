@@ -1410,6 +1410,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictStoreHung": {
+      "kind": "command._dictStoreHung",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictToggleRec": {
       "kind": "command._dictToggleRec",
       "feedback_required": true,

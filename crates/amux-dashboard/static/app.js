@@ -28319,7 +28319,19 @@ async function _dictOutbox() {
 // A take in progress is saved every second (`dict_live`), so a reload or a
 // crash mid-dictation keeps it: the next page load files it in the outbox as
 // a recovered clip, and it is transcribed like any other.
+// Once a storage write has hung, dictation leaves storage alone for two
+// minutes and sends from memory: every take otherwise paid two 5 s waits, under
+// "Could not save on this device — sending now…" (owner, 2026-11-03). The
+// connection is dropped so the next use reopens it; beaconed as dict_storage_hung.
+let _dictStoreDownUntil = 0;
+function _dictStoreHung(why) {
+  _dictStoreDownUntil = Date.now() + 120000;
+  _idb.reset(why);   // catches its own errors
+  _dictBeacon('dict_storage_hung', { why });
+}
+const _dictStoreDown = () => Date.now() < _dictStoreDownUntil;
 async function _dictLiveSave(chunk) {
+  if (_dictStoreDown()) return;
   try {
     const live = (await _idb.get('dict_live')) || {started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
     live.chunks.push(chunk);
@@ -28334,7 +28346,7 @@ async function _dictLiveClear() {
     await Promise.race([_idb.set('dict_live', null),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_live_clear_timeout')), _DICT_READ_MS); })]);
   } catch(e) {
-    if (e && e.message === 'dict_live_clear_timeout') _dictBeacon('dict_live_clear_timeout', { waited_ms: _DICT_READ_MS });
+    if (e && e.message === 'dict_live_clear_timeout') _dictStoreHung('dict_live_clear_timeout');
   } finally { clearTimeout(timer); }
 }
 async function _dictRecoverLive() {
@@ -28380,6 +28392,7 @@ async function _dictOutboxAdd(blob, mime, ms) {
       state: 'pending', attempts: 0, last: 0, error: '', text: '' }]));
     return id;
   } catch (e) {
+    if (e && e.message === 'dict_write_timeout') _dictStoreHung('dict_write_timeout');
     try { amuxTrack('dictation_outbox_add_failed', {error: String((e && e.message) || e).slice(0, 120), bytes: blob.size, measured: true, n_considered: 1}); } catch (_) {}
     return null;
   }
@@ -28401,13 +28414,15 @@ async function _dictUpload() {
   _dictChunks = [];
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
-  const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  const online_ = typeof online === 'undefined' || online;
+  const id = _dictStoreDown() && online_ ? null : await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
   if (id === null) {
     // This device's storage would not take it: send it now, from memory, rather
     // than lose it. The live take is kept until the send answers.
-    _dictStatus('Could not save on this device — sending now…');
+    _dictStatus('Transcribing… (' + _dictKB(blob.size) + ')');
+    _dictBeacon('dict_sent_unsaved', { bytes: blob.size, storage_down: _dictStoreDown() });
     const txt = await _dictSendDirect(blob, mime, ms);
-    if (txt !== null) { await _dictLiveClear(); _dictClosePopup(false); }
+    if (txt !== null) { _dictLiveClear(); _dictClosePopup(false); }
     return;
   }
   await _dictLiveClear();                              // the take now lives in the outbox

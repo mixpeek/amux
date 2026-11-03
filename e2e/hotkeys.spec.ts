@@ -92,6 +92,44 @@ test('🌐🌐 starts dictation even when storage hangs, and 🌐🌐 again fini
   await expect(page.locator('#hotkeys-view .hk-row', { hasText: '🌐🌐' }).first()).toBeVisible();
 });
 
+// Owner, 2026-11-03: "Could not save on this device — sending now…". With the
+// Mac app's storage hung, each take waited 5 s to save, then 5 s more to clear.
+// After the first hang, a take goes straight from memory: the transcript must
+// land well inside one 5 s storage wait, and the alarming line never shows.
+test('once storage has hung, a take is transcribed from memory without waiting on it', async ({ page, browserName }) => {
+  test.skip(browserName === 'webkit', "Playwright's WebKit delivers no MediaRecorder data for a synthesized stream");
+  test.skip(!(await page.evaluate(() => 'MediaRecorder' in window)), 'this browser has no MediaRecorder');
+  await settle(page, true);
+  await page.route('**/api/dictate?**', route => route.fulfill({ json: { text: 'from memory', id: 1 } }));
+  await page.evaluate(() => {
+    const idb = (globalThis as any).eval('_idb');
+    const hang = () => new Promise(() => {});
+    idb.set = (k: string, v: unknown) => k === 'dict_live' ? hang() : Promise.resolve();
+    idb.update = hang;
+  });
+  await page.evaluate("switchView('scheduler')");
+  const input = page.locator('#sched-search');
+  const pop = page.locator('#dict-popup');
+  const statuses: string[] = [];
+  await page.exposeFunction('__dictSeen', (t: string) => { statuses.push(t); });
+  await page.evaluate(() => new MutationObserver(() => (window as any).__dictSeen(document.getElementById('dict-popup-status')!.textContent))
+    .observe(document.getElementById('dict-popup-status')!, { childList: true, characterData: true, subtree: true }));
+  for (const take of [1, 2]) {
+    await input.fill('');
+    await input.click();
+    await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe'));
+    await expect(page.locator('#dict-popup-status')).toHaveText(/^Listening/, { timeout: 4000 });
+    await page.waitForTimeout(1500);
+    const t0 = Date.now();
+    await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe'));
+    await expect(input).toHaveValue('from memory', { timeout: 15000 });
+    await expect(pop).not.toHaveClass(/open/, { timeout: 15000 });
+    // Take 1 meets the hang (one bounded wait); take 2 must not wait at all.
+    if (take === 2) expect(Date.now() - t0, statuses.join(' | ')).toBeLessThan(3000);
+  }
+  expect(statuses.filter(t => /Could not save/.test(t))).toEqual([]);
+});
+
 test('the tab lists hotkeys and built-ins, refuses collisions, and saves across a reload', async ({ page }) => {
   await settle(page);
   await page.evaluate("switchView('hotkeys')");
