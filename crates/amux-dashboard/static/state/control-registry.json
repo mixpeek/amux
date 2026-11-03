@@ -1332,6 +1332,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictLiveClear": {
+      "kind": "command._dictLiveClear",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictLoad": {
       "kind": "command._dictLoad",
       "feedback_required": true,

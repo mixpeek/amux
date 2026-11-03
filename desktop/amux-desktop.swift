@@ -1009,6 +1009,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tabDragMonitor: Any?
     var globeMonitor: Any?
     var globeDown = false, globeUsed = false
+    var lastGlobeTap: TimeInterval = 0
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
     var lastTabPlaced = Date.distantPast

@@ -28208,7 +28208,11 @@ async function _dictStartRec() {
   try { _dictRecorder = new MediaRecorder(_dictStream, opts); }
   catch(e) { try { _dictRecorder = new MediaRecorder(_dictStream); } catch(e2) { showToast('Recorder unavailable'); return; } }
   _dictChunks = [];
-  await _dictLiveClear();
+  // Not awaited: in the Mac app a storage write can hang for minutes, and the
+  // recorder waited on it with the popup on "Starting mic…" at 0:00 (owner,
+  // 2026-11-03). Storage runs its writes in order, so this clear still lands
+  // before the first second is saved.
+  _dictLiveClear();
   _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { _dictChunks.push(e.data); _dictLiveSave(e.data); } };
   _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictLiveClear(); _dictStatus('Cancelled'); } else _dictUpload(); };
   // 1 s slices: each second reaches IndexedDB as it is spoken (see _dictLiveSave).
@@ -28322,7 +28326,17 @@ async function _dictLiveSave(chunk) {
     await _idb.set('dict_live', live);
   } catch(e) {}
 }
-async function _dictLiveClear() { try { await _idb.set('dict_live', null); } catch(e) {} }
+// Bounded like the outbox read: a clear that never settles must not hold up
+// whoever awaits it (the upload after Done does). A timeout is beaconed.
+async function _dictLiveClear() {
+  let timer;
+  try {
+    await Promise.race([_idb.set('dict_live', null),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_live_clear_timeout')), _DICT_READ_MS); })]);
+  } catch(e) {
+    if (e && e.message === 'dict_live_clear_timeout') _dictBeacon('dict_live_clear_timeout', { waited_ms: _DICT_READ_MS });
+  } finally { clearTimeout(timer); }
+}
 async function _dictRecoverLive() {
   let live = null;
   try { live = await _idb.get('dict_live'); } catch(e) { return; }
@@ -74152,6 +74166,7 @@ const _HK_BUILTIN = [
 const _HK_DEFAULTS = [
   { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
   { id: 'hk-dictate-keys', action: 'dictate', type: 'keys', trigger: 'Alt+Shift+M', enabled: true, remove: true, indicator: false },
+  { id: 'hk-dictate-globe', action: 'dictate', type: 'keys', trigger: 'Globe Globe', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
@@ -74219,7 +74234,7 @@ function _hkComboFromEvent(e) {
 }
 function _hkKeyChips(combo) {
   const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐' };
-  return '<span class="hk-keys">' + String(combo || '').split('+').filter(Boolean)
+  return '<span class="hk-keys">' + String(combo || '').split(/[+ ]/).filter(Boolean)
     .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
 }
 function _hkTriggerHtml(h) {
@@ -74235,7 +74250,7 @@ function _hkConflict(h, list) {
   } else {
     const parts = t.split('+');
     // 🌐 works alone or with a key (the Mac app hands it over: _hkNativeKey).
-    if (t !== 'Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
+    if (t !== 'Globe' && t !== 'Globe Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
       return 'A shortcut needs ⌘, ⌥, ⌃ or 🌐 (⇧ alone is how capitals are typed)';
     const b = _HK_BUILTIN.find(x => x.combo === t);
     if (b) return 'amux already uses this for ' + b.label;
@@ -74255,7 +74270,9 @@ function _hkTextField(el) {
 function _hkRun(h, el) {
   const a = _HK_ACTIONS[h.action];
   try {
-    if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
+    // The same hotkey finishes a take it started, like the popup's Done.
+    if (h.action === 'dictate' && _dictRecording) _dictStopRec();
+    else if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
     else if (h.action === 'new_task') {
       const text = el && el.value ? el.value.trim() : '';
       openBoardAdd();
@@ -74328,14 +74345,22 @@ document.addEventListener('keydown', e => {
 // THE GLOBE KEY (owner, 2026-10-29: "i want to use the globe button on my
 // keyboard as a hotkey too"). A page never sees 🌐: macOS keeps it from the
 // browser. The Mac app watches it and calls this with "Globe" (pressed and
-// released alone) or "Globe+R" (held with a key). A recording takes it like
-// any combination; otherwise the hotkey bound to it runs.
-window._hkNativeKey = function (combo) {
+// released alone), "Globe Globe" (tapped twice) or "Globe+R" (held with a
+// key). A recording takes it like any combination; otherwise the hotkey bound
+// to it runs. `info.mac_dictation` is true when macOS also starts its own
+// dictation on 🌐🌐, which the owner is told once.
+let _hkMacDictWarned = false;
+window._hkNativeKey = function (combo, info) {
   combo = String(combo || '');
-  if (!/^Globe(\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  if (!/^Globe( Globe|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
   if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
   const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
   if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }
+  if (combo === 'Globe Globe' && info && info.mac_dictation && !_hkMacDictWarned) {
+    _hkMacDictWarned = true;
+    showToast('macOS also starts its own dictation on 🌐🌐. To leave it to amux: System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.');
+    _hkBeacon('hotkey_globe_double_mac_dictation_on', { trigger: combo });
+  }
   _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
   return 'ran';
 };

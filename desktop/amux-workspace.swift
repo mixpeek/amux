@@ -653,7 +653,7 @@ extension AppDelegate {
                     self.globeUsed = false
                 } else if self.globeDown {
                     self.globeDown = false
-                    if !self.globeUsed { self.sendGlobe("Globe") }
+                    if !self.globeUsed { self.globeTapped() }
                 }
                 return e
             }
@@ -673,11 +673,23 @@ extension AppDelegate {
         }
     }
 
+    /// A second tap within 0.45 s is "Globe Globe" (owner, 2026-11-03: "make
+    /// hot key for starting dictation pressing globe twice"). The first tap
+    /// still goes out at once as "Globe", so a single tap never waits.
+    func globeTapped() {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastGlobeTap < 0.45 { lastGlobeTap = 0; sendGlobe("Globe Globe") }
+        else { lastGlobeTap = now; sendGlobe("Globe") }
+    }
+
     func sendGlobe(_ combo: String) {
         guard let c = focusedPage() else { return }
         let lit = String(data: (try? JSONSerialization.data(withJSONObject: [combo])) ?? Data(), encoding: .utf8)?.dropFirst().dropLast() ?? ""
-        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit)) : 'no_hook'") { r, _ in
-            dlog("verdict=globe_key combo=\(combo) page=\(c.viewHash) result=\(r ?? "-")")
+        // macOS starts its own dictation on 🌐🌐 when Keyboard > "Press 🌐 key to"
+        // is Start Dictation (AppleFnUsageType 3); the page says so once.
+        let macDictation = UserDefaults(suiteName: "com.apple.HIToolbox")?.integer(forKey: "AppleFnUsageType") == 3
+        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit), {mac_dictation: \(macDictation)}) : 'no_hook'") { r, _ in
+            dlog("verdict=globe_key combo=\(combo) mac_dictation=\(macDictation) page=\(c.viewHash) result=\(r ?? "-")")
         }
     }
 
