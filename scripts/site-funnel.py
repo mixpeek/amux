@@ -109,11 +109,13 @@ LIVE = ("(properties.$host = 'amux.io' or toString(properties.server_side) = 'tr
         "and coalesce(toString(properties.test), '') != 'true'")
 
 
-# A /start/?source=<page> URL is only ever produced by a link on amux.io, and a click on one
-# sends amux.io as the referrer. The same URL arriving with no referrer is a mail link scanner
-# or a crawler fetching the page's links (2026-11-03: 18 of 52 /start/ viewers in a week, single
-# pageview, several throwing Outlook Safe Links' "Object Not Found Matching Id" rejection).
-# Such a pageview does not count as a /start/ view, and a person with nothing else is dropped.
+# A /start/?source=<page> URL is only ever produced by a link on amux.io. A person whose every
+# pageview is such a URL with no referrer never saw the page that holds the link: a mail link
+# scanner or a crawler fetching the page's links (2026-11-03: 22 of 52 /start/ viewers in a week,
+# one pageview each, several throwing Outlook Safe Links' "Object Not Found Matching Id"
+# rejection). Those people are dropped. PostHog keeps the session's first referrer on later
+# pageviews, so a real click from a page reached directly also reads $direct; that is why the
+# rule is per person (nothing else viewed) and never per pageview.
 SCAN_HIT = ("(event = '$pageview' and properties.$pathname in ('/start/', '/start') "
             "and properties.$current_url like '%source=%' "
             "and coalesce(toString(properties.$referrer), '$direct') in ('$direct', ''))")
@@ -122,7 +124,7 @@ SCAN_HIT = ("(event = '$pageview' and properties.$pathname in ('/start/', '/star
 def people(key, start, end, dropped=None):
     """One row per visitor with a pageview in [start, end): first touch plus goal flags.
 
-    `dropped`, when a dict, gets the count of people excluded as scanner hits (SCAN_HIT)."""
+    `dropped`, when a dict, gets the people excluded because every pageview was a SCAN_HIT."""
     sql = f"""
 select person_id,
   argMinIf(properties.$pathname, timestamp, event = '$pageview') as landing,
@@ -132,7 +134,7 @@ select person_id,
   countIf(event = '$pageview') as pv,
   countIf((event = 'cta_click' and properties.goal = 'github') or {GH_LINK}) > 0 as github,
   countIf(event = 'cta_click' and properties.goal = 'cloud') > 0 as cloud_click,
-  countIf(event = '$pageview' and properties.$pathname in ('/start/', '/start') and not {SCAN_HIT}) > 0 as start_view,
+  countIf(event = '$pageview' and properties.$pathname in ('/start/', '/start')) > 0 as start_view,
   countIf({SCAN_HIT}) as scan_hits,
   countIf(event = 'signup_form_start') > 0 as form_start,
   countIf(event = 'signup_submit') > 0 as submit,
@@ -157,7 +159,7 @@ limit 100000"""
     kept = [r for r in rows if r["scan_hits"] < r["pv"]]
     if dropped is not None:
         dropped["people"] = len(rows) - len(kept)
-        dropped["hits"] = sum(r["scan_hits"] for r in rows)
+        dropped["hits"] = sum(r["scan_hits"] for r in rows if r["scan_hits"] >= r["pv"])
     for r in kept:
         r["source"] = source_of(r["ref"], r["utm"])
         for c in cols[6:]:
@@ -385,8 +387,8 @@ def render(days, start, end, now, prior, by_source, by_landing, events, spots, s
     L.append("Visitors are people with a pageview on amux.io (localhost and test checkouts excluded): **%d** (prior %d, %s)." % (now["visitors"], prior["visitors"], delta(now["visitors"], prior["visitors"])))
     if scans is not None:
         L.append("")
-        L.append("/start/?source= pageviews with no referrer (mail link scanners and crawlers; a click on amux.io always sends one) are not counted as /start/ views: %d this window, %d prior. People with nothing else were left out of every count: %d (prior %d)." % (
-            scans.get("hits", 0), (pscans or {}).get("hits", 0), scans.get("people", 0), (pscans or {}).get("people", 0)))
+        L.append("Left out of every count: %d people (prior %d) whose only pageviews were /start/?source= links with no referrer, %d hits (prior %d). They never saw the page holding the link, so they are mail link scanners and crawlers." % (
+            scans.get("people", 0), (pscans or {}).get("people", 0), scans.get("hits", 0), (pscans or {}).get("hits", 0)))
     L.append("")
     L.append("| step | people | % of visitors | prior | change |")
     L.append("|---|---|---|---|---|")
