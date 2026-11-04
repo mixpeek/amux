@@ -964,7 +964,9 @@ def resume_stranded(force=False):
 # run /login": something read the login while it was being replaced. That write
 # is Claude Code's, so the gap is measured here and the workers it hits are
 # resumed, the same way limit-parked workers are.
-AUTH_LOST = re.compile(r"Not logged in.{0,40}/login")
+# 2026-11-03: "Login expired · Please run /login" did not match this, and
+# mixpeek-meta-worker stayed stopped through two later switches.
+AUTH_LOST = re.compile(r"(Not logged in|Login expired).{0,40}/login")
 
 
 class LoginGapProbe:
@@ -1015,7 +1017,7 @@ def gap_stats(samples):
 def auth_lost(screen):
     """True when Claude's not-logged-in error is among the last lines on screen,
     which is where a turn that died on it leaves it."""
-    lines = [l for l in (screen or "").splitlines() if l.strip()][-8:]
+    lines = [l for l in (screen or "").splitlines() if l.strip()][-10:]
     return any(AUTH_LOST.search(l) for l in lines)
 
 

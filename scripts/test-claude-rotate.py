@@ -181,6 +181,22 @@ expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) == 0, "a prov
 expect(_j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])["claudeAiOauth"]["refreshToken"] == "a2",
        "with the refreshed token from the trial, not the stale saved one")
 
+# The expired-login wording strands a worker the same way as "Not logged in",
+# with the footer lines below it (mixpeek-meta-worker, 2026-11-03).
+_expired_pane = """\u23fa Login expired \u00b7 Please run /login
+
+\u273b Churned for 3m 14s \u00b7 done 11:48 PM
+
+\u2500\u2500\u2500 mixpeek-meta-worker \u2500
+\u276f
+\u2500\u2500\u2500
+  getmixpeek \u00b7 wk 95%
+  bypass permissions on (shift+tab to cycle) \u00b7 5 agents
+                                 Update installed \u00b7 /restart to apply
+"""
+expect(rot.auth_lost(_expired_pane), "an expired login on screen counts as a lost login")
+expect(not rot.auth_lost("we discussed logins\n\u276f\n"), "a pane with no login error does not")
+
 
 # Nothing under the preempt line: the roomiest account wins over the
 # soonest-resetting nearly full one.
