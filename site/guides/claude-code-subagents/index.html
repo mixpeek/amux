@@ -346,7 +346,7 @@ done
     <h3>Should I use subagents or amux for parallel coding?</h3>
     <p>Both. Subagents inside a session for context efficiency and concurrent lookups. amux outside for true parallel throughput across isolated git worktrees with usage-limit resume, monitoring, and per-session token tracking. They compose; they do not compete.</p>
 
-    <div class="cta-box"><h3>Run dozens of Claude Code sessions in parallel with amux</h3><p>Subagents keep one session focused. amux multiplies sessions. Open source, one Rust binary, web dashboard + mobile PWA.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
+    <div class="cta-box"><h3>Run dozens of Claude Code sessions in parallel with amux</h3><p>Subagents keep one session focused. amux multiplies sessions. Free to self-host, one Rust binary, web dashboard + mobile PWA.</p><pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
