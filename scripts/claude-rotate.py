@@ -1474,15 +1474,22 @@ def trial_login(target, saved):
         if not (_kc_write(svc, CRED_ACCT, cred) if USE_KEYCHAIN else _file_write(_cli_cred_file(folder), cred)):
             log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
             return None
-        if probe(config_dir=folder) is None:
+        windows = probe(config_dir=folder)
+        # The CLI may have refreshed the token in the folder, which ends the saved
+        # one. Keep the newest whatever the probe said, before the folder goes.
+        raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        try:
+            fresh = json.loads(raw or "{}").get("claudeAiOauth") or oauth
+        except ValueError:
+            fresh = oauth
+        if fresh != oauth:
+            _kc_write(STORE_SVC, target, json.dumps(dict(saved, claudeAiOauth=fresh, captured=time.time())))
+            log("claude_rotate_trial_token_kept", measured=True, n_considered=1, target=target)
+        if windows is None:
             log("claude_rotate_stored_login_unproven", measured=True, n_considered=1, target=target,
                 note="it did not read /usage in a scratch folder; the shared credential was not touched")
             return None
-        raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
-        try:
-            return json.loads(raw or "{}").get("claudeAiOauth") or oauth
-        except ValueError:
-            return oauth
+        return fresh
     finally:
         if USE_KEYCHAIN:
             subprocess.run(["security", "delete-generic-password", "-s", svc, "-a", CRED_ACCT], capture_output=True)
@@ -1511,8 +1518,6 @@ def stored_switch(target, before, reason, started):
                 probed=False, restored=False, shared_untouched=True)
             continue
         oauth = fresh
-        if via == "stored_login":
-            _kc_write(STORE_SVC, target, json.dumps(dict(saved, claudeAiOauth=fresh, captured=time.time())))
         prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
         prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
         try:

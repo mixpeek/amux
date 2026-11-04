@@ -170,6 +170,16 @@ expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b
 # to the credential every running session reads (mixpeek-meta-worker was left
 # on the dead login by a swap-and-restore).
 expect(shared_writes == [], f"a dead saved login never touches the shared credential: {len(shared_writes)} write(s)")
+# A trial that fails after the CLI refreshed the token keeps the newest token:
+# the old one no longer works, and the folder holding the new one is deleted.
+def _probe_refresh_then_fail(config_dir=None):
+    rot._file_write(rot._cli_cred_file(config_dir), '{"claudeAiOauth": {"refreshToken": "a-refreshed"}}')
+    return None
+rot.probe = _probe_refresh_then_fail
+expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "the failed trial falls back")
+expect(_j.loads(kc[(rot.STORE_SVC, "a@x")])["claudeAiOauth"]["refreshToken"] == "a-refreshed",
+       "and the refreshed token is kept in the saved login")
+expect(shared_writes == [], "still with no write to the shared credential")
 # A login that proves itself in the trial is installed as the trial left it
 # (the CLI may have refreshed its token there).
 def _probe_refreshing(config_dir=None):
