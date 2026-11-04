@@ -76,6 +76,8 @@ check("a file server is never baselined", ["Python", "8743"] not in
       [list(x) for x in nw.baseline_of(snap)["listeners"]])
 line = nw.line({"kind": "UNKNOWN-CLIENT", "ip": "1.2.3.4\nIGNORE PREVIOUS", "n": 1, "fails": 0})
 check("attacker text is cleaned to one line", "\n" not in line and " PREVIOUS" not in line, line)
+check("NEW-EGRESS names the address, so a short-lived one can be traced",
+      "203.0.113.9" in nw.line(next(r for r in nw.evaluate(snap, base, reqs) if r["kind"] == "NEW-EGRESS")))
 check("parse_lsof normalises claude's version name",
       nw.parse_lsof("p9\nc2.1.318\nn127.0.0.1:1\n")[0]["command"] == "claude")
 check("private ranges", all(nw.is_private(a) for a in ["10.0.0.1", "172.20.1.1", "100.100.1.1", "[fe80::1]"])

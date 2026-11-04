@@ -231,7 +231,7 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
     for cmd in sorted(snap["egress"]):
         if cmd not in known_egress:
             out.append({"key": f"egress:{cmd}", "kind": "NEW-EGRESS", "cmd": cmd,
-                        "n": len(snap["egress"][cmd])})
+                        "n": len(snap["egress"][cmd]), "to": sorted(snap["egress"][cmd])[:3]})
     for ip, n, fails, _ in reqs["clients"]:
         if not is_loopback(ip) and ip not in reqs["peer_ips"]:
             out.append({"key": f"client:{ip}", "kind": "UNKNOWN-CLIENT", "ip": ip, "n": n, "fails": fails})
@@ -251,7 +251,8 @@ def line(r: dict) -> str:
     if "p" in r:
         return f"{k} {clean(r['p']['host'])} {clean(r['p']['ip'])}"
     if k == "NEW-EGRESS":
-        return f"{k} {clean(r['cmd'])} to {r['n']} public address(es)"
+        to = " ".join(clean(a, 45) for a in r.get("to", []))
+        return f"{k} {clean(r['cmd'])} to {r['n']} public address(es): {to}"
     if k in ("UNKNOWN-CLIENT", "AUTH-BURST"):
         return f"{k} {clean(r['ip'])}: {r['n']} requests, {r['fails']} refused (401/403)"
     if k == "FIREWALL":
