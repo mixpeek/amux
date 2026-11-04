@@ -243,6 +243,22 @@ expect(t5 == "try", "an old unproven mark expires")
 t6, _ = rot.decide("join", [row("join", 0, 50), row("mixpeek", 0, 97)], {"switched_at": 0})
 expect(t6 is None, "a working account is not left for one at 97%")
 
+# A held account is not ranked until its hold passes (2026-11-04: this Mac
+# moved onto the one account the mixpeek-dev VM could still use).
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_fut = (rot.now() + rot.dt.timedelta(days=2)).isoformat()
+_past = (rot.now() - rot.dt.timedelta(minutes=1)).isoformat()
+rot.save(rot.ACCOUNTS, {"accounts": {
+    "held@x": {"seven_day": {"used_percentage": 2}, "hold_until": _fut},
+    "free@x": {"seven_day": {"used_percentage": 40}},
+    "lapsed@x": {"seven_day": {"used_percentage": 10}, "hold_until": _past}}})
+_ranked = [r["email"] for r in rot.rank()]
+expect("held@x" not in _ranked and "free@x" in _ranked, f"a held account is not ranked: {_ranked}")
+expect("lapsed@x" in _ranked, "a hold that has passed no longer applies")
+_t7, _w7 = rot.decide("held@x", rot.rank(), {"switched_at": 0})
+expect(_t7 in ("free@x", "lapsed@x"), f"holding the current account moves off it, got {(_t7, _w7)}")
+rot.save(rot.ACCOUNTS, _saved_accounts)
+
 # Nothing under the preempt line: the roomiest account wins over the
 # soonest-resetting nearly full one.
 rows = [row("a", 99, 26, "2026-10-17T21:00:00-04:00"), row("b", 53, 95, "2026-10-23T03:00:00-04:00"),

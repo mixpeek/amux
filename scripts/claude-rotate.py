@@ -473,6 +473,17 @@ def window(w, at):
     return (0.0 if reset and reset <= at else float(used)), reset
 
 
+def held(a, at):
+    """An account held off until `hold_until` (`hold <email> <until>`). Two
+    machines share some accounts, and each machine's rotator sees only its own
+    readings: 2026-11-04 this Mac moved onto ethan@mixpeekvectors.com, the
+    only account the mixpeek-dev VM could still use, so both drew one weekly
+    window. A held account is no target, and holding the current one moves
+    this machine off it on the next tick."""
+    until = _reset(a.get("hold_until"))
+    return bool(until) and until > at
+
+
 def rank(at=None):
     at = at or now()
     rows = []
@@ -487,7 +498,7 @@ def rank(at=None):
             if side and not _expired(side["claudeAiOauth"]):
                 accounts[email] = {}
     for email, a in accounts.items():
-        if a.get("disabled"):
+        if a.get("disabled") or held(a, at):
             continue
         u5, r5 = window(a.get("five_hour"), at)
         u7, r7 = window(a.get("seven_day"), at)
@@ -1831,6 +1842,23 @@ def main(argv):
         elif os.path.exists(ENABLED_FILE):
             os.remove(ENABLED_FILE)
         print(log("claude_rotate_" + ("enabled" if cmd == "on" else "disabled"), measured=True, n_considered=1, file=ENABLED_FILE))
+        return 0
+    if cmd == "hold" and len(argv) in (4, 5):
+        # hold <email> <until ISO-8601> [why]   ("now" as <until> lifts it)
+        email, until = argv[2].lower(), argv[3]
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        if until == "now":
+            acct.pop("hold_until", None)
+            acct.pop("hold_why", None)
+        else:
+            if _reset(until) is None or _reset(until).tzinfo is None:
+                print("hold: <until> must be ISO-8601 with a zone, e.g. 2026-11-07T06:00:00+00:00", file=sys.stderr)
+                return 2
+            acct["hold_until"], acct["hold_why"] = until, (argv[4] if len(argv) == 5 else "")
+        save(ACCOUNTS, data)
+        print(log("claude_rotate_hold_set" if until != "now" else "claude_rotate_hold_lifted", measured=True,
+                  n_considered=1, account=email, until=acct.get("hold_until"), why=acct.get("hold_why")))
         return 0
     if cmd == "probe":
         return 0 if probe() else 1
