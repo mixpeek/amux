@@ -145,6 +145,7 @@ pub mod ids {
     pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
+    pub const DECISION_DIGEST: &str = "decision-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
@@ -211,6 +212,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::MODEL_CATALOG_REFRESH,
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
+    ids::DECISION_DIGEST,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
@@ -1016,6 +1018,46 @@ pub const CATALOG: &[Doc] = &[
         detail: None,
     },
     Doc {
+        id: ids::DECISION_DIGEST,
+        name: "Decision digest",
+        purpose: "Once a local day, sends the owner every needsyou card with its recommendation \
+                  and the date it takes effect unless vetoed. Classification fails closed: \
+                  only a typed decision whose worker declared it internal and reversible can \
+                  apply, and money, outside sends and customer data never do. Default on; \
+                  AMUX_DECISION_DIGEST_APPLY=0 is the off switch. Z15.",
+        env: &[
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST",
+                effect: "0 stops the digest and every application (re-read every tick)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_APPLY",
+                effect: "default on; 0 at worker, group or global scope, or in server.env for the \
+                         fleet, stops applying and leaves a dry run (owner-only key)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_HOUR",
+                effect: "local hour the digest becomes due (default 9, capped at 15); defaults apply \
+                         8 hours after it is sent",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_WAIT_DAYS",
+                effect: "days from first publication to the effect date (default 2, floored at 2)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DECISION_DIGEST_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/decision-digest"),
+    },
+    Doc {
         id: ids::EMAIL_APPROVAL_DIGEST,
         name: "Email approval digest",
         purpose: "Once a local day, when outbound email drafts are waiting for approval, sends \
@@ -1504,6 +1546,12 @@ pub fn classify(f: &Facts, now: f64) -> &'static str {
         if now - started > limit {
             return "hung";
         }
+        // A tick in flight within its budget is the loop running, whatever
+        // the previous tick's end says (AF-1084). tiering ended a tick at
+        // T+300, began the next at T+505 and was still moving gigabytes to the
+        // HDD at T+985, logging a move a minute; last_tick_at was 780 s old
+        // against a 765 s limit, so it read "stalled" and filed a card.
+        return "ok";
     }
     match f.last_tick_at {
         Some(t) if now - t > limit => "stalled",
@@ -2179,6 +2227,24 @@ mod tests {
            // NEGATIVE CONTROL: a tick in flight for 30s is just a slow tick.
         assert_eq!(classify(&f, T + 30.0), "ok");
         assert_eq!(classify(&f, T + 70.0), "hung");
+    }
+
+    /// AF-1084: a previous tick that ended past the budget does not make a
+    /// job stalled while a newer tick is running inside its budget.
+    #[test]
+    fn a_running_tick_is_not_stalled_by_an_old_previous_end() {
+        let running = Facts {
+            last_tick_at: Some(T - 50.0),
+            in_flight_since: Some(T),
+            ..base()
+        }; // 65s budget
+        assert_eq!(classify(&running, T + 30.0), "ok", "previous end is 80 s old, but a tick is running");
+        assert_eq!(classify(&running, T + 70.0), "hung", "past the budget it is still hung");
+        let idle = Facts {
+            last_tick_at: Some(T - 50.0),
+            ..base()
+        };
+        assert_eq!(classify(&idle, T + 30.0), "stalled", "with nothing running, an old end is stalled");
     }
 
     #[test]

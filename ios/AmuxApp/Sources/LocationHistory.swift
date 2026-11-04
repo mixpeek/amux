@@ -97,9 +97,114 @@ enum LocationMode: String, CaseIterable {
     case saver
 }
 
+/// The `CLLocationManager` settings for standard updates: the iOS 16 Full
+/// detail path and the iOS 17+ stall backstop. Kept pure so a test pins them.
+struct StandardUpdatesConfig: Equatable {
+    var desiredAccuracy: CLLocationAccuracy
+    var distanceFilter: CLLocationDistance
+    var activityType: CLActivityType
+    var pausesAutomatically: Bool
+    var allowsBackground: Bool
+    var showsIndicator: Bool
+}
+
 enum LocationRules {
     /// Points per upload request.
     static let batchSize = 1000
+
+    /// Standard updates for a mode, or nil when the mode runs none.
+    ///
+    /// ENERGY (2026-10-31, owner: "very efficient with energy/service use best
+    /// practices"): `pausesAutomatically` is true. It was false, which kept
+    /// navigation-grade GPS on at about 1 Hz for as long as the phone sat
+    /// still, while the design doc and the Settings text promise "close to
+    /// nothing while still". With it on, iOS stops the updates when the phone
+    /// stays put and the recorder restarts them on the next significant-change
+    /// or visit wake-up (the same services that already relaunch the app). The
+    /// iOS 17+ live stream pauses itself and is unaffected. Accuracy and the
+    /// distance filter stay raw: every fix while moving is the owner's call
+    /// (Ethan, 2026-10-01, raw capture).
+    static func standardUpdates(for mode: LocationMode) -> StandardUpdatesConfig? {
+        switch mode {
+        case .full:
+            return StandardUpdatesConfig(desiredAccuracy: kCLLocationAccuracyBestForNavigation,
+                                         distanceFilter: kCLDistanceFilterNone,
+                                         activityType: .otherNavigation,
+                                         pausesAutomatically: true,
+                                         allowsBackground: true,
+                                         showsIndicator: true)
+        case .saver:
+            return nil   // significant changes and visits only
+        }
+    }
+
+    // MARK: Upload pacing
+    //
+    // ENERGY (2026-10-31): every upload powers up the cellular radio, which
+    // then stays in a high-power tail for several seconds after the request.
+    // Before this, a failed upload left `lastUpload` unchanged, so with no
+    // network every new fix (about one a second in Full detail) fired another
+    // request and re-read the whole buffer. Now an upload waits for its
+    // interval since the last ATTEMPT, a failure backs off exponentially, and
+    // the background interval is longer than the foreground one so a moving
+    // phone wakes the radio a few times an hour instead of sixty. Nothing is
+    // lost by waiting: points are on disk before any upload is tried.
+
+    /// Seconds between uploads while amux is on screen.
+    static let foregroundUploadS: Double = 60
+    /// Seconds between uploads while amux records in the background.
+    static let backgroundUploadS: Double = 300
+    /// The longest a failing upload waits before trying again.
+    static let maxBackoffS: Double = 1800
+
+    /// How long to wait after `failures` failed uploads in a row.
+    static func backoff(failures: Int) -> Double {
+        guard failures > 0 else { return 0 }
+        return min(60 * pow(2, Double(min(failures, 16) - 1)), maxBackoffS)
+    }
+
+    /// Whether an automatic upload should run now. `interval` is the pacing for
+    /// the trigger (foreground, background, or 0 for "now": backgrounding, a
+    /// visit, coming to the foreground). A full batch goes at once unless the
+    /// server has been failing; a backoff holds every automatic trigger.
+    static func uploadDue(waiting: Int, now: Double, lastAttempt: Double,
+                          failures: Int, interval: Double) -> Bool {
+        guard waiting > 0 else { return false }
+        let since = now - lastAttempt
+        if failures > 0 { return since >= backoff(failures: failures) }
+        if waiting >= batchSize { return true }
+        return since >= interval
+    }
+
+    /// Motion updates not stored yet, oldest first. Live updates and history
+    /// queries overlap (the first live update repeats the current activity),
+    /// so both go through this to store each once. An update with the same
+    /// start time as the last stored one is kept when its flags or confidence
+    /// changed (Core Motion revises an activity in place): raw capture.
+    static func newMotion(_ items: [MotionSample], afterTs last: Double,
+                          lastStored: MotionSample?) -> [MotionSample] {
+        var out: [MotionSample] = []
+        var cursorTs = last
+        var cursor = lastStored
+        for m in items.sorted(by: { $0.ts < $1.ts }) {
+            if m.ts < cursorTs { continue }
+            if m.ts == cursorTs {
+                // Same start time: keep only a revision of a reading we know.
+                guard let c = cursor, !sameMotion(c, m) else { continue }
+            }
+            out.append(m)
+            cursorTs = m.ts
+            cursor = m
+        }
+        return out
+    }
+
+    /// Same reading, ignoring the id.
+    static func sameMotion(_ a: MotionSample, _ b: MotionSample) -> Bool {
+        a.ts == b.ts && a.stationary == b.stationary && a.walking == b.walking && a.running == b.running
+            && a.cycling == b.cycling && a.automotive == b.automotive && a.unknown == b.unknown
+            && a.confidence == b.confidence
+    }
 
     /// Haversine distance in metres.
     static func distance(_ aLat: Double, _ aLon: Double, _ bLat: Double, _ bLon: Double) -> Double {
@@ -181,7 +286,24 @@ final class DurableBuffer<T: Codable & Identifiable> where T.ID == String {
         return readLocked()
     }
 
-    func first(_ n: Int) -> [T] { Array(all().prefix(n)) }
+    /// The oldest `n` items. Decodes only as many lines as it needs, so a
+    /// large offline backlog costs one batch of decoding per upload rather
+    /// than the whole file (2026-10-31, energy).
+    func first(_ n: Int) -> [T] {
+        guard n > 0 else { return [] }
+        lock.lock(); defer { lock.unlock() }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty else { return [] }
+        let dec = JSONDecoder()
+        var out: [T] = []
+        out.reserveCapacity(min(n, 1024))
+        for line in data.split(separator: 0x0A) {
+            if let item = try? dec.decode(T.self, from: Data(line)) {
+                out.append(item)
+                if out.count == n { break }
+            }
+        }
+        return out
+    }
 
     var count: Int {
         lock.lock(); defer { lock.unlock() }

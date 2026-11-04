@@ -59,3 +59,20 @@ test('a page with no rotating token reports none', async () => {
   assert.deepEqual(cap.rotatingSessionKeys, []);
   assert.deepEqual(cap.localStorage, [['theme', 'dark']]);
 });
+
+// 2026-11-03: a Chrome profile signed in to X as @amux_dev saved its x.com
+// login over amux profile 'ethan' (@ethansteininger). An automatic sync must
+// refresh the same account and never switch to another.
+const twid = (v) => ({ name: 'twid', value: v, domain: '.x.com', path: '/', secure: true, httpOnly: false });
+
+test('identityOf reads the account cookie only for sites that have one', () => {
+  assert.equal(ps.identityOf([twid('u%3D1')], 'x.com'), 'twid=u%3D1');
+  assert.equal(ps.identityOf([], 'x.com'), null);
+  assert.equal(ps.identityOf([twid('u%3D1')], 'example.com'), null);
+});
+
+test('a save that would switch the signed-in account is a switch; the same account is not', () => {
+  assert.equal(ps.switchesIdentity([twid('u%3D111')], [twid('u%3D222')], 'x.com'), true);
+  assert.equal(ps.switchesIdentity([twid('u%3D111')], [twid('u%3D111')], 'x.com'), false);
+  assert.equal(ps.switchesIdentity([], [twid('u%3D222')], 'x.com'), false, 'a signed-out profile may be signed in');
+});

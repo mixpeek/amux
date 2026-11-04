@@ -1466,6 +1466,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/board-groom/staleness",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/board-groom/{lane}",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/debug/send-profile",
         methods: &["GET"],
     },
@@ -2214,6 +2222,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/velocity",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity/optimize",
         methods: &["GET"],
     },
     RouteEntry {
@@ -3053,6 +3065,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/conversations/{conv}/typing", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/posts/{id}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/conversations/posts/{id}/reactions", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/posts/{id}/pin", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/unfurl", methods: &["GET"] },
     RouteEntry { path: "/api/conversations/channels", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/conversations/channels/{name}", methods: &["PATCH"] },
@@ -3286,6 +3299,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/needs-input/auto/sweep",
         methods: &["POST"],
+    },
+    // Z15 daily decision digest.
+    RouteEntry {
+        path: "/api/decision-digest",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/veto",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/recommendation",
+        methods: &["PUT"],
     },
     RouteEntry {
         path: "/api/connectors",
@@ -3749,7 +3775,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // route.callers_have_routes census read the TABLE and reported them unrouted.
     // Caught by tests/route_table.rs's completeness scan (both were named).
     RouteEntry {
+        path: "/api/history/pins",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/history/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/history/{id}/pin",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/history/{id}/reply",
         methods: &["GET"],
     },
     RouteEntry {

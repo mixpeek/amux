@@ -314,38 +314,14 @@ async fn needsyou_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
             let id = card.id.clone();
             let age = card.age_days;
             let note = format!("Auto-discarded: {age} days in needsyou with no resolution");
-            let hhmm = chrono::Utc::now().format("%H:%M").to_string();
             let _ = state
                 .store
                 .write_async(move |conn| {
-                    let old_desc: String = conn
-                        .query_row(
-                            "SELECT COALESCE(\"desc\", '') FROM issues WHERE id = ?1",
-                            rusqlite::params![&id],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or_default();
-                    let new_desc = if old_desc.trim().is_empty() {
-                        note.clone()
-                    } else {
-                        format!("{}\n{note}", old_desc.trim_end())
-                    };
-                    let old_log: Option<String> = conn
-                        .query_row(
-                            "SELECT log FROM issues WHERE id = ?1",
-                            rusqlite::params![&id],
-                            |r| r.get(0),
-                        )
-                        .ok();
-                    let new_log = bs::append_log(old_log.as_deref(), &hhmm, &note);
-                    conn.execute(
-                        "UPDATE issues SET status = 'discarded', \"desc\" = ?1, log = ?2, \
-                         updated = ?3 WHERE id = ?4",
-                        rusqlite::params![new_desc, new_log, now_secs, &id],
-                    )?;
+                    let out = crate::db::advance::harness_close(conn, &id, "discarded", "harness:board-hygiene",
+                        Some(&format!("\n{note}")), &note)?;
                     Ok(crate::db::WriteOutcome {
-                        applied: true,
-                        events: vec![],
+                        applied: out.is_some(),
+                        events: out.map(|o| o.events).unwrap_or_default(),
                     })
                 })
                 .await;
@@ -431,25 +407,13 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
         let id = card.id.clone();
         let age = card.age_hours;
         let note = format!("Auto-discarded: autofix todo card stale for {age}h");
-        let hhmm = chrono::Utc::now().format("%H:%M").to_string();
         let _ = state
             .store
             .write_async(move |conn| {
-                let old_log: Option<String> = conn
-                    .query_row(
-                        "SELECT log FROM issues WHERE id = ?1",
-                        rusqlite::params![&id],
-                        |r| r.get(0),
-                    )
-                    .ok();
-                let new_log = bs::append_log(old_log.as_deref(), &hhmm, &note);
-                conn.execute(
-                    "UPDATE issues SET status = 'discarded', log = ?1, updated = ?2 WHERE id = ?3",
-                    rusqlite::params![new_log, now_secs, &id],
-                )?;
+                let out = crate::db::advance::harness_close(conn, &id, "discarded", "harness:board-hygiene", None, &note)?;
                 Ok(crate::db::WriteOutcome {
-                    applied: true,
-                    events: vec![],
+                    applied: out.is_some(),
+                    events: out.map(|o| o.events).unwrap_or_default(),
                 })
             })
             .await;
@@ -549,11 +513,52 @@ async fn stale_sweep(state: &AppState, now_secs: i64) -> (usize, usize) {
     (autofix_discarded, backlog_flagged)
 }
 
+/// Offer every running lane with stale cards one grooming turn
+/// (`api::board_groom`, docs/design/board-cards-stay-current.md step 2): the
+/// worker judges its own cards; this only finds them. At most one turn a lane a
+/// day; isolated, board-off and switched-off lanes are skipped there.
+/// Returns (lanes with stale cards, turns delivered), or the reason the board
+/// could not be read, so the tick never reports a measurement it did not make.
+async fn groom_sweep(state: &AppState, now_secs: i64) -> Result<(usize, usize), String> {
+    let days = crate::api::board_groom::stale_days();
+    let report = state
+        .store
+        .read_async(move |conn| Ok(crate::api::board_groom::staleness_report(conn, now_secs, days)?))
+        .await
+        .map_err(|e| e.to_string())?;
+    let lanes: Vec<String> = report["lanes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| l["stale"].as_i64().unwrap_or(0) > 0)
+        .filter_map(|l| l["lane"].as_str().map(str::to_string))
+        .collect();
+    let mut delivered = 0usize;
+    for lane in &lanes {
+        if !crate::api::session_verbs::is_running(lane).await {
+            continue;
+        }
+        let v = crate::api::board_groom::groom_lane(state, lane, false, false).await;
+        if v["ok"].as_bool() == Some(true) {
+            delivered += 1;
+        }
+    }
+    Ok((lanes.len(), delivered))
+}
+
 pub async fn tick(state: AppState) {
     let now_secs = crate::config::now_f64() as i64;
 
     let (ny_warned, ny_discarded) = needsyou_sweep(&state, now_secs).await;
     let (af_discarded, bl_flagged) = stale_sweep(&state, now_secs).await;
+    // Unconditional, including zero (AF-178): a sweep that only speaks with news
+    // cannot say it ran. A board it could not read says so (land review F1).
+    match groom_sweep(&state, now_secs).await {
+        Ok((groom_lanes, groom_delivered)) => tracing::info!(lanes_with_stale = groom_lanes, groom_delivered,
+            measured = true, n_considered = groom_lanes, verdict = "board_groom_sweep", "board_hygiene: grooming pass"),
+        Err(e) => tracing::warn!(error = %e, measured = false, n_considered = 0,
+            verdict = "board_groom_sweep_unmeasured", "board_hygiene: grooming pass could not read the board"),
+    }
 
     if ny_warned > 0 || ny_discarded > 0 || af_discarded > 0 || bl_flagged > 0 {
         tracing::info!(

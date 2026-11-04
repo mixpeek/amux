@@ -18,6 +18,12 @@ final class RecorderBridge: NSObject, RecorderHost {
     weak var webView: WKWebView?
     private var token: String?
     private var started = false
+    /// Pushes status (level, elapsed) four times a second while recording with
+    /// the app on screen, as the Mac app does once a second. Without it the
+    /// page heard only of finished segments, so the clock and the waveform sat
+    /// still and a working recording looked dead (owner, 2026-10-31). In the
+    /// background nobody sees the page, so it stops: no wake-ups for nothing.
+    private var pushTimer: Timer?
 
     private final class TrustAll: NSObject, URLSessionDelegate {
         func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
@@ -54,9 +60,11 @@ final class RecorderBridge: NSObject, RecorderHost {
         started = true
         let r = NativeRecorder.shared
         r.recoverInterrupted()
-        r.onChange = { [weak self] in self?.push() }
+        r.onChange = { [weak self] in self?.push(); self?.syncPushTimer() }
         r.startShipping(host: self)
         let nc = NotificationCenter.default
+        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.syncPushTimer() }
+        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.syncPushTimer() }
         nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
             let type = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
             NativeRecorder.shared.interrupted(type == .began)
@@ -86,6 +94,22 @@ final class RecorderBridge: NSObject, RecorderHost {
         default: break
         }
         push()
+        syncPushTimer()
+    }
+
+    func syncPushTimer() {
+        DispatchQueue.main.async {
+            let want = NativeRecorder.shared.state == "recording" && UIApplication.shared.applicationState == .active
+            if want, self.pushTimer == nil {
+                let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.push() }
+                t.tolerance = 0.1   // lets iOS coalesce the wake-ups
+                RunLoop.main.add(t, forMode: .common)
+                self.pushTimer = t
+            } else if !want, let t = self.pushTimer {
+                t.invalidate()
+                self.pushTimer = nil
+            }
+        }
     }
 
     func push() {

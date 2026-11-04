@@ -491,8 +491,12 @@ pub fn fires_per_day(expr: &ScheduleExpr) -> Option<f64> {
         // cron, and the `cron` crate already owns that: walk the next 24 hours
         // and count. Bounded, because `* * * * *` yields 1440 and a malformed
         // schedule could in principle yield more.
+        // Counted in UTC: a rate does not change with daylight saving, and a
+        // local walk across the fall-back night counted 87 fires for
+        // `*/15 * * * *` instead of 96 (2026-10-31 evening, the eve of the
+        // Nov 1 change).
         ScheduleExpr::Cron(sched) => {
-            let now = chrono::Local::now();
+            let now = chrono::Utc::now();
             let until = now + ChronoDuration::days(1);
             let n = sched
                 .after(&now)
@@ -865,18 +869,40 @@ fn at_local_time(date: NaiveDate, hour: u32, minute: u32) -> Option<DateTime<Loc
 pub(crate) fn resolve_local(n: NaiveDateTime) -> Option<DateTime<Local>> {
     match Local.from_local_datetime(&n) {
         LocalResult::Single(t) => Some(t),
-        LocalResult::Ambiguous(earliest, _) => Some(earliest),
+        // The order of the two is chrono's, and on macOS the later one comes
+        // first: a `daily at 1am` that fired at the first 1:00 was handed the
+        // second 1:00, whose text is the same, and re-fired every tick
+        // (2026-11-01, SCHED-124).
+        LocalResult::Ambiguous(a, b) => Some(a.min(b)),
         LocalResult::None => {
             for h in 1..=3 {
                 match Local.from_local_datetime(&(n + ChronoDuration::hours(h))) {
                     LocalResult::Single(t) => return Some(t),
-                    LocalResult::Ambiguous(earliest, _) => return Some(earliest),
+                    LocalResult::Ambiguous(a, b) => return Some(a.min(b)),
                     LocalResult::None => continue,
                 }
             }
             None
         }
     }
+}
+
+/// True while a `next_run` in the repeated hour of a DST fall-back names its
+/// second occurrence. The stored text has no zone, so `every 1h` set at the
+/// first 1:42 stores "01:42", which already compares as due. A row that ran
+/// at or after the first occurrence is waiting for the second.
+fn fall_back_held(next_run: &str, last_run: i64, now: DateTime<Local>) -> bool {
+    let Ok(n) = NaiveDateTime::parse_from_str(next_run, "%Y-%m-%dT%H:%M") else { return false };
+    match Local.from_local_datetime(&n) {
+        LocalResult::Ambiguous(a, b) => {
+            held_for_second_occurrence(a.min(b).timestamp(), a.max(b).timestamp(), last_run, now.timestamp())
+        }
+        _ => false,
+    }
+}
+
+fn held_for_second_occurrence(first: i64, second: i64, last_run: i64, now: i64) -> bool {
+    last_run >= first && now < second
 }
 
 /// Format an instant the way Python stores `next_run`/`run_at`: local
@@ -2749,6 +2775,16 @@ async fn scheduler_tick_inner(
         Ok(due_schedules(&conn, &ns)?)
     })
     .await??;
+    let due: Vec<DurableSchedule> = due
+        .into_iter()
+        .filter(|s| {
+            let held = fall_back_held(s.str_field("next_run"), s.i64_field("last_run", 0), now);
+            if held {
+                tracing::info!(id = s.id(), next_run = s.str_field("next_run"), verdict = "schedule_fall_back_held", "schedule waits for the second occurrence of a repeated hour");
+            }
+            !held
+        })
+        .collect();
 
     let mut report = TickReport {
         due: due.len(),
@@ -2888,6 +2924,11 @@ struct Claim {
     /// The claim disabled the row because this was its last fire (a one-shot,
     /// or a bound reached). A reserve refusal re-arms exactly these.
     ended_by_claim: bool,
+    /// The `disabled_reason` that claim wrote. A re-arm re-enables only a row
+    /// still disabled for this reason and not locked by the owner: a row
+    /// something else disabled in between (the owner, a failure streak, a
+    /// retired worker) stays off (implicit state machines inventory #13).
+    claim_reason: String,
 }
 
 /// Fire one due schedule: CLAIM the occurrence, DELIVER outside the write
@@ -2935,6 +2976,7 @@ async fn fire_one(
                 || !sched.enabled()
                 || stored_next.is_empty()
                 || stored_next.as_str() > now_str.as_str()
+                || fall_back_held(&stored_next, sched.i64_field("last_run", 0), now)
             {
                 return Ok(WriteOutcome {
                     applied: false,
@@ -3039,11 +3081,13 @@ async fn fire_one(
                 rusqlite::params![occurrences.len() as i64, sched.id()],
             )?;
             let mut ended_by_claim = false;
+            let mut claim_reason = String::new();
 
             if sched.str_field("sched_type") == "once" {
+                claim_reason = format!("one-shot: fired at {now_str}");
                 conn.execute(
                     "UPDATE schedules SET enabled=0, last_run=?1, updated=?1, disabled_reason=?3 WHERE id=?2",
-                    rusqlite::params![now_ts, sched.id(), format!("one-shot: fired at {now_str}")],
+                    rusqlite::params![now_ts, sched.id(), claim_reason],
                 )?;
                 // run-once disable is audited exactly like Python's
                 // ("run-once" source; ours is suffixed for the dual period).
@@ -3077,6 +3121,9 @@ async fn fire_one(
                 };
                 if let Some(reason) = after.end_reason(Some(&next)) {
                     ended_by_claim = super::schedule_lifecycle::end_schedule(conn, sched.id(), &reason)?;
+                    if ended_by_claim {
+                        claim_reason = reason;
+                    }
                 }
             }
 
@@ -3148,6 +3195,7 @@ async fn fire_one(
                 notes,
                 run_ids,
                 ended_by_claim,
+                claim_reason,
             });
             Ok(WriteOutcome {
                 applied: true,
@@ -3201,6 +3249,7 @@ async fn fire_one(
     let reserve_refused_all = !outcomes.is_empty()
         && outcomes.iter().all(|o| matches!(o, RunOutcome::Refused { reason } if reason.starts_with("schedule PAUSED: the plan window")));
     let ended_by_claim = claim.ended_by_claim;
+    let claim_reason = claim.claim_reason.clone();
     let fixed_date = claim
         .sched
         .schedule_expr()
@@ -3284,8 +3333,9 @@ async fn fire_one(
                         .unwrap_or_default();
                     if bounds_before.end_reason(Some(&next)).is_none() {
                         let changed = conn.execute(
-                            "UPDATE schedules SET enabled=1, disabled_reason=NULL WHERE id=?1 AND enabled=0 AND deleted IS NULL AND version=?2 AND command=?3 AND session=?4",
-                            rusqlite::params![sid, expected_version, expected_command, expected_session])?;
+                            "UPDATE schedules SET enabled=1, disabled_reason=NULL WHERE id=?1 AND enabled=0 AND deleted IS NULL AND version=?2 AND command=?3 AND session=?4 \
+                             AND COALESCE(disabled_reason,'') = ?5 AND COALESCE(locked_by,'') = ''",
+                            rusqlite::params![sid, expected_version, expected_command, expected_session, claim_reason])?;
                         if changed > 0 {
                             insert_audit(conn, &sid, "enabled", "0", "1", "wake-condition-rs", "")?;
                         }
@@ -3308,8 +3358,9 @@ async fn fire_one(
             if retry_once {
                 let changed = if ended_by_claim {
                     conn.execute(
-                        "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5",
-                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session])?
+                        "UPDATE schedules SET enabled=1, next_run=?1, disabled_reason=NULL WHERE id=?2 AND enabled=0 AND deleted IS NULL AND version=?3 AND command=?4 AND session=?5 \
+                         AND COALESCE(disabled_reason,'') = ?6 AND COALESCE(locked_by,'') = ''",
+                        rusqlite::params![retry_at, sid, expected_version, expected_command, expected_session, claim_reason])?
                 } else {
                     // A fixed-date cron is still enabled; only its next fire moves.
                     conn.execute(
@@ -3444,6 +3495,7 @@ pub async fn run_scheduler(
     let retry = RetryPolicy::default();
     let mut shadow_seen: HashMap<String, String> = HashMap::new();
     let mut dispatch = FireDispatch::default();
+    let mut moot_ticks: u64 = 0;
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(SCHEDULER_TICK_SECS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tracing::info!(
@@ -3500,6 +3552,11 @@ pub async fn run_scheduler(
         // (schedule_check.rs). Firing mode only: a re-fire is a fire.
         if enabled {
             super::schedule_check::spawn_sweep(store.clone(), deliverer.clone());
+            // Failure cards a delete or disable already answered, every ~10 min.
+            moot_ticks += 1;
+            if moot_ticks % super::schedule_failure::MOOT_SWEEP_TICKS == 1 {
+                super::schedule_failure::spawn_moot_sweep(store.clone());
+            }
         }
     }
 }
@@ -3600,6 +3657,28 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+    /// AF-1082: the startup reconcile's three status='running' statements run
+    /// inside the single writer; on the migrated schema they use the partial
+    /// index instead of scanning every run (149,741 rows, held up to 42 s).
+    #[test]
+    fn the_startup_reconcile_reads_running_runs_through_their_index() {
+        let conn = crate::db::migrate::test_memdb();
+        for sql in [
+            "SELECT schedule_id, COUNT(*) FROM schedule_runs WHERE status='running' GROUP BY schedule_id ORDER BY schedule_id",
+            "UPDATE schedule_runs SET status='interrupted' WHERE status='running' AND delivery IS NULL",
+            "UPDATE schedule_runs SET status='interrupted' WHERE status='running' AND delivery='shell'",
+        ] {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(plan.iter().any(|p| p.contains("idx_schedule_runs_running")), "{sql}: {plan:?}");
+        }
+    }
+
     #[test]
     fn firing_defaults_on_and_only_explicit_off_words_disable_it() {
         use super::firing_from;
@@ -4706,6 +4785,32 @@ mod tests {
     }
 
     // ---- next-run correctness around boundaries --------------------------
+
+    #[test]
+    fn a_fired_daily_is_not_handed_the_repeated_hour_again() {
+        // Runs where the zone has a fall-back (this Mac, and any TZ=America/*
+        // run); `measured` says so, since a UTC host has no repeated hour.
+        let n = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(1, 0, 0).unwrap();
+        let LocalResult::Ambiguous(a, b) = Local.from_local_datetime(&n) else {
+            eprintln!("measured=false: no repeated hour in this zone");
+            return;
+        };
+        let (first, second) = (a.min(b), a.max(b));
+        assert_eq!(resolve_local(n), Some(first));
+        let expr = ScheduleExpr::parse("daily at 1am").unwrap();
+        let next = expr.next_run_after(first + ChronoDuration::seconds(6)).unwrap();
+        assert_eq!(next.date_naive(), NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
+        assert!(fall_back_held("2026-11-01T01:00", first.timestamp(), first + ChronoDuration::minutes(30)));
+        assert!(!fall_back_held("2026-11-01T01:00", first.timestamp(), second));
+    }
+
+    #[test]
+    fn an_interval_across_the_repeated_hour_waits_for_the_second_occurrence() {
+        let (first, second) = (1_000, 4_600);
+        assert!(held_for_second_occurrence(first, second, 1_300, 1_330), "ran after the first: wait");
+        assert!(!held_for_second_occurrence(first, second, 1_300, second), "the second has come");
+        assert!(!held_for_second_occurrence(first, second, 900, 1_000), "not run yet: the first is due");
+    }
 
     #[test]
     fn next_run_month_and_week_boundaries() {

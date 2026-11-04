@@ -16,9 +16,11 @@
 //!
 //! Two signals, both required: the transcript's latest `goal_status`
 //! attachment says `met: false`, AND the provider's footer shows
-//! "/goal active" (a cleared goal leaves no footer). The worker must be idle
-//! on an authoritative report for `AMUX_GOAL_CONTINUE_IDLE_S` (120s), which
-//! also means Claude Code's own loop did not continue it.
+//! "/goal active" (a cleared goal leaves no footer). The worker's turn must
+//! have ended (a background shell may still run) with no progress for
+//! `AMUX_GOAL_CONTINUE_IDLE_S` (120s), which also means Claude Code's own loop
+//! did not continue it. Auto-continue lanes are included: the keeper defers to
+//! board-drive only when board-drive actually delivered within the interval.
 //!
 //! # Bounds
 //!
@@ -297,6 +299,9 @@ pub fn goal_payload(name: &str) -> Value {
         },
     };
     v["checker"] = checker;
+    if let Some((line, since)) = crate::api::prompt_block::current(name) {
+        v["blocked_on_prompt"] = serde_json::json!({"line": line, "since": since});
+    }
     v
 }
 
@@ -442,6 +447,14 @@ pub(crate) fn goal_view(goal: Option<Goal>, footer: impl FnOnce() -> Option<bool
 /// None when the pane cannot be read.
 type FooterCache = Mutex<HashMap<String, (std::time::Instant, Option<bool>)>>;
 
+/// A permission prompt replaces the footer, so its absence there says nothing
+/// about the goal: this is only read when the transcript holds an unmet goal,
+/// and a lane on a prompt read "cleared" for 24 minutes (mixpeek-dev,
+/// 2026-11-01) while it was blocked and still owed the goal.
+fn footer_shows_goal(pane: &str) -> bool {
+    pane.contains("/goal active") || crate::api::prompt_block::prompt_line(pane).is_some()
+}
+
 pub(crate) fn footer_goal_active(name: &str) -> Option<bool> {
     static CACHE: std::sync::OnceLock<FooterCache> = std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -460,7 +473,7 @@ pub(crate) fn footer_goal_active(name: &str) -> Option<bool> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("/goal active"));
+        .map(|o| footer_shows_goal(&String::from_utf8_lossy(&o.stdout)));
     if let Ok(mut map) = cache.lock() {
         map.insert(name.to_string(), (std::time::Instant::now(), v));
     }
@@ -509,7 +522,8 @@ pub fn foreign_input_since(records: &[Value], since: f64) -> bool {
     })
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Keep {
     condition: String,
     last_sent: f64,
@@ -523,11 +537,48 @@ struct Keep {
     rearmed_after_limit: bool,
     /// Agent deaths at or before this were already listed in a continue.
     listed_until: i64,
+    /// A background shell or subagents are running. A worker told to continue
+    /// may rightly wait on them, so that turn is not a no-progress turn: the
+    /// two-strike budget would stop the keeper before the wait ended.
+    background_live: bool,
+    /// The first-seen time of the permission prompt last reported.
+    prompt_reported: f64,
+}
+
+/// Kept on disk, so a server restart does not hand every stuck goal a fresh
+/// no-progress budget or forget that it already gave up (implicit state
+/// machines inventory 2026-10-31, #20). Loaded on first use, saved after each
+/// tick.
+fn state_path() -> std::path::PathBuf {
+    crate::api::session_verbs::home().join("state").join("goal-keeper.json")
 }
 
 fn state() -> &'static Mutex<HashMap<String, Keep>> {
     static S: std::sync::OnceLock<Mutex<HashMap<String, Keep>>> = std::sync::OnceLock::new();
-    S.get_or_init(|| Mutex::new(HashMap::new()))
+    S.get_or_init(|| Mutex::new(load_state(&state_path())))
+}
+
+fn load_state(path: &std::path::Path) -> HashMap<String, Keep> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
+            tracing::warn!(path = %path.display(), error = %e, verdict = "goal_keeper_state_unreadable", measured = false,
+                "the goal keeper's saved state could not be read; starting fresh");
+            HashMap::new()
+        }),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_state(path: &std::path::Path, map: &HashMap<String, Keep>) {
+    let Ok(body) = serde_json::to_string(map) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    if std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, path)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(path = %path.display(), verdict = "goal_keeper_state_unsaved", "the goal keeper could not save its state");
+    }
 }
 
 /// What to do for one worker, given its transcript, footer and keeper state.
@@ -647,7 +698,7 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
     if k.last_sent > 0.0 && foreign_input_since(records, k.last_sent) {
         k.no_progress = 0;
         k.exhausted_logged = false;
-    } else if k.last_sent > 0.0 && limit != LimitGate::Over && !limit_hit_since(records, k.last_sent) {
+    } else if k.last_sent > 0.0 && limit != LimitGate::Over && !k.background_live && !limit_hit_since(records, k.last_sent) {
         if tool_uses_since(records, k.last_sent) == 0 {
             k.no_progress += 1;
         } else {
@@ -669,6 +720,16 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
         "{MARK} {lead} Keep going on everything you can do without the owner. \
          If every remaining step needs the owner, list those in one line and stop."
     ))
+}
+
+/// A continue with the lane's top card named. An owner-ranked card (pinned, p0
+/// or p1) comes before everything else, including the work in hand.
+fn with_top_card(text: String, top: Option<&(String, String, bool)>) -> String {
+    match top {
+        Some((id, title, true)) => format!("{text} Your top priority is {id}, \"{title}\": do it before anything else, parking what you hold if you must."),
+        Some((id, title, false)) => format!("{text} Next on your board: {id}, \"{title}\"."),
+        None => text,
+    }
 }
 
 /// The dedupe key for "this goal was reported met": one notice per goal
@@ -701,6 +762,65 @@ async fn notify_met_once(app: &crate::api::AppState, name: &str, condition: &str
         "the /goal is met; told the owner by web push ({delivered} of {} subscription(s) delivered)", results.len());
 }
 
+/// The worker's turn is over, so a continue lands between turns. A finished
+/// turn with a background shell or subagents still running (`agent_state:
+/// active`) counts: Claude Code queues a paste whatever runs behind it, the
+/// rule board-drive and steering already use. A worker waiting on a prompt,
+/// an approval or a limit does not.
+fn turn_ended_for_goal(s: &Value) -> bool {
+    s["turn_state"] == "completed" && (s["agent_state"] == "idle" || (s["agent_state"] == "active" && background_live(s)))
+}
+
+fn background_live(s: &Value) -> bool {
+    s["activity"] == "background_shell" || s["activity"] == "subagents"
+}
+
+/// How long the worker must be quiet before a continue. Working subagents
+/// report progress and one finishing wakes the parent, so silence this long
+/// means one is stuck; the wait keeps a healthy fan-out from being nagged.
+fn quiet_needed(s: &Value, idle_s: f64) -> f64 {
+    if s["activity"] == "subagents" {
+        idle_s.max(env_f64("AMUX_GOAL_CONTINUE_SUBAGENT_IDLE_S", 1800.0))
+    } else {
+        idle_s
+    }
+}
+
+/// A worker with an open goal cannot continue past a permission prompt, and
+/// the keeper cannot answer one (D2). Say so once per prompt: a lane sat on
+/// one for 24 minutes with nothing telling anybody (mixpeek-dev, 2026-11-01).
+async fn report_goal_prompt(app: &crate::api::AppState, name: &str, line: &str, since: f64, now: f64) {
+    if now - since < env_f64("AMUX_GOAL_PROMPT_REPORT_S", 120.0) {
+        return;
+    }
+    if state().lock().map_or(true, |map| map.get(name).is_some_and(|k| k.prompt_reported == since)) {
+        return;
+    }
+    let n = name.to_string();
+    let goal = tokio::task::spawn_blocking(move || goal_payload(&n)).await.unwrap_or_default();
+    if !matches!(goal["state"].as_str(), Some("unmet" | "unknown")) {
+        return;
+    }
+    // Marked only once there is something to report: a goal set while the
+    // prompt is up still gets its report.
+    if let Ok(mut map) = state().lock() {
+        map.entry(name.to_string()).or_default().prompt_reported = since;
+    }
+    tracing::warn!(target: "amux::goal_keeper", session = %name, prompt = %line, age_s = (now - since) as i64,
+        verdict = "goal_blocked_on_permission_prompt", measured = true, n_considered = 1,
+        "a worker with an unmet /goal is stopped on a permission prompt; the keeper cannot answer it");
+    crate::push::send_all(app, &format!("{name} is stopped on a permission prompt"), line, name,
+        &format!("goal-prompt:{name}"), &format!("/#peek={name}")).await;
+}
+
+/// Where a worker's goal check runs: its worktree when it has one. The base
+/// directory holds a different checkout, so a check could read "not met" forever.
+fn goal_check_dir(s: &Value) -> &str {
+    s["worktree_path"].as_str().filter(|p| s["worktree_active"] == true && !p.is_empty())
+        .or(s["dir"].as_str())
+        .unwrap_or("")
+}
+
 async fn tick(app: crate::api::AppState) {
     let Ok(sessions) = crate::api::sessions_legacy::legacy_sessions_values(app.store.clone()).await else {
         return;
@@ -725,21 +845,26 @@ async fn tick(app: crate::api::AppState) {
         }
         // The worker's own checker runs whatever the worker is doing: it is
         // shell, costs no turn, and drives the goal tile and the stall alert.
-        super::goal_check::maybe_run(&app, &name, s["dir"].as_str().unwrap_or(""), now);
+        super::goal_check::maybe_run(&app, &name, goal_check_dir(s), now);
         // A lane the goal-loop guard parked on the owner is not continued:
         // continuing it is the loop (AMUX-5277).
         if stamped.contains(&name) {
             continue;
         }
-        // Board-drive's standing orders already continue these.
-        if s["auto_continue"] == true {
-            continue;
+        // Auto-continue lanes used to be skipped here as "board-drive continues
+        // these". Board-drive continues only a lane it has a card for, and it
+        // read tubescience-parity as `mid-turn` while a background shell ran:
+        // on 2026-10-31 neither continued it for 18 min with its checker at
+        // 4/10. Board-drive now records each delivery as a wake, so the
+        // recent-wake check below is the deferral, and only when it acted.
+        if let Some((line, since)) = crate::api::prompt_block::current(&name) {
+            report_goal_prompt(&app, &name, &line, since, now).await;
         }
-        if s["agent_state"] != "idle" || s["turn_state"] != "completed" {
+        if !turn_ended_for_goal(s) {
             continue;
         }
         let Some(progress_at) = s["last_progress_at"].as_f64() else { continue };
-        if now - progress_at < idle_s || !enabled(&name) {
+        if now - progress_at < quiet_needed(s, idle_s) || !enabled(&name) {
             continue;
         }
         let Some(path) = crate::api::session_verbs::session_jsonl_path(&name) else { continue };
@@ -787,6 +912,7 @@ async fn tick(app: crate::api::AppState) {
         let (decision, listed_until, rearmed) = {
             let Ok(mut map) = state().lock() else { return };
             let k = map.entry(name.clone()).or_default();
+            k.background_live = background_live(s);
             let d = decide_with(k, &goal, &res, &records, now, gate);
             if let LimitGate::Holding { reset_at } = gate {
                 if k.held_for_reset != reset_at {
@@ -833,6 +959,13 @@ async fn tick(app: crate::api::AppState) {
                     killed.into_iter().filter(|k| alr::kill_is_over(k, now_s, account_changed_at)).collect();
                 let window_pct = alr::fresh_window_pct();
                 let text = alr::resume_text(&text, &over, window_pct, &name);
+                // "Keep going" left the lane to pick its own next step, and
+                // lanes drifted off direct orders. Name dispatch's top card.
+                let top = (!crate::api::session_verbs::session_is_isolated(&name))
+                    .then(|| app.store.read().ok().and_then(|c| super::board_drive::top_card(&c, &name, now)))
+                    .flatten();
+                let top_id = top.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+                let text = with_top_card(text, top.as_ref());
                 let home = crate::api::session_verbs::home();
                 let (text, carried) = super::receipts::attach(&home, &name, &text);
                 let out = crate::api::session_verbs::deliver_automated(&app, &name, &text, &format!("goal:{name}")).await;
@@ -874,9 +1007,13 @@ async fn tick(app: crate::api::AppState) {
                     submitted = ?out.submitted, refused = out.refused, measured = true, n_considered = 1,
                     killed_agents_listed = over.len(), agent_notifications_considered = notes_considered,
                     window_pct = ?window_pct, limit_gate = ?gate,
+                    top_card = %top_id, auto_continue = s["auto_continue"] == true, activity = %s["activity"].as_str().unwrap_or(""),
                     "continued a worker whose /goal is not met: {}", out.message);
             }
         }
+    }
+    if let Ok(map) = state().lock() {
+        save_state(&state_path(), &map);
     }
     tracing::debug!(target: "amux::goal_keeper", measured = true, n_considered = considered, "goal keeper tick");
 }
@@ -899,6 +1036,83 @@ pub fn spawn(app: crate::api::AppState) -> super::PeriodicTask {
 
 #[cfg(test)]
 mod tests {
+    /// mixpeek-dev 2026-10-31 21:43-22:01Z: tubescience-parity's turn had
+    /// ended with one background shell open, its checker at 4/10, and the
+    /// keeper skipped it for 18 min as not idle.
+    #[test]
+    fn a_turn_ended_with_a_background_shell_is_continued() {
+        use serde_json::json;
+        let f = super::turn_ended_for_goal;
+        let shell = json!({"turn_state": "completed", "agent_state": "active", "activity": "background_shell", "auto_continue": true});
+        assert!(f(&shell), "the repro shape");
+        assert!(f(&json!({"turn_state": "completed", "agent_state": "idle", "activity": "none"})));
+        assert!(!f(&json!({"turn_state": "running", "agent_state": "active", "activity": "tool"})), "mid-turn");
+        let subagents = json!({"turn_state": "completed", "agent_state": "active", "activity": "subagents"});
+        assert!(f(&subagents), "a stuck subagent must not stall the goal");
+        assert_eq!(super::quiet_needed(&subagents, 120.0), 1800.0, "a healthy fan-out is not nagged");
+        assert_eq!(super::quiet_needed(&shell, 120.0), 120.0);
+        assert!(!f(&json!({"turn_state": "completed", "agent_state": "waiting", "activity": "waiting_for_input"})));
+        assert!(!f(&json!({"turn_state": "completed", "agent_state": "rate_limited", "activity": "rate_limited"})));
+    }
+
+    #[test]
+    fn a_goal_check_runs_in_the_worktree_when_the_worker_has_one() {
+        let on = serde_json::json!({"dir": "/repo", "worktree_active": true, "worktree_path": "/repo/.worktrees/w"});
+        assert_eq!(super::goal_check_dir(&on), "/repo/.worktrees/w");
+        let off = serde_json::json!({"dir": "/repo", "worktree_active": false, "worktree_path": "/repo/.worktrees/w"});
+        assert_eq!(super::goal_check_dir(&off), "/repo");
+    }
+
+    /// #20: the keeper's record survives a restart (save, then a fresh load).
+    #[test]
+    fn the_keeper_record_survives_a_restart() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("goal-keeper.json");
+        let mut map = HashMap::new();
+        map.insert("w".to_string(), Keep { condition: "ship it".into(), no_progress: 3, exhausted_logged: true, ..Default::default() });
+        save_state(&path, &map);
+        let back = load_state(&path);
+        let k = back.get("w").expect("saved");
+        assert_eq!((k.condition.as_str(), k.no_progress, k.exhausted_logged), ("ship it", 3, true));
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(load_state(&path).is_empty(), "a corrupt file starts fresh instead of failing");
+    }
+
+    /// Waiting on background work is a right answer to a continue. Counting
+    /// it left the keeper exhausted for a job that was still running.
+    #[test]
+    fn a_continue_answered_by_waiting_on_background_work_is_not_no_progress() {
+        let goal = super::Goal { met: false, condition: "ship".into(), ts: 1.0, cleared: None };
+        let res = super::Resolved { state: "unmet", why: String::new(), active: true, footer: Some(true) };
+        let run = |live| {
+            let mut k = super::Keep { condition: "ship".into(), last_sent: 1000.0, background_live: live, ..Default::default() };
+            let _ = super::decide(&mut k, &goal, &res, &[], 1000.0 + super::interval_s() + 1.0);
+            k.no_progress
+        };
+        assert_eq!(run(true), 0);
+        assert_eq!(run(false), 1, "with nothing running it still counts");
+    }
+
+    #[test]
+    fn a_permission_prompt_hiding_the_footer_does_not_read_as_cleared() {
+        let prompt = "This shell -c script runs rm and could not be checked\nDo you want to proceed?\n\u{276f} 1. Yes\n  2. No\nEsc to cancel";
+        assert!(super::footer_shows_goal(prompt));
+        assert!(super::footer_shows_goal("x\n/goal active (10m)"));
+        assert!(!super::footer_shows_goal("\u{276f} \n\u{23f5}\u{23f5} bypass permissions on"), "a real clear still reads cleared");
+    }
+
+    #[test]
+    fn a_continue_names_the_lanes_top_card() {
+        let ranked = ("MG-1".to_string(), "ship".to_string(), true);
+        let plain = ("MG-2".to_string(), "tidy".to_string(), false);
+        let t = |c| super::with_top_card("go.".into(), c);
+        assert!(t(Some(&ranked)).contains("top priority is MG-1"), "{}", t(Some(&ranked)));
+        assert!(t(Some(&plain)).contains("Next on your board: MG-2"));
+        assert!(!t(Some(&plain)).contains("before anything else"), "only an owner-ranked card overrides");
+        assert_eq!(t(None), "go.");
+    }
+
     #[test]
     fn a_met_goal_is_noticed_once_per_condition() {
         let a = super::met_notice_key("ship dark mode");

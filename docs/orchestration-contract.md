@@ -43,6 +43,56 @@ Additions from goal spec 12:
 | A4 | Stateful systems get a production-scale test bed; restore, replay and scale tests run there before production | environment |
 | A5 | Capacity is a scheduling input: provider usage caps, host pressure and the land queue gate dispatch | runner |
 
+## Rule 5 by repository declaration
+
+A repository opts every land into the server queue with one committed key in
+`.amux/land.conf`, read from origin/main, so a change cannot weaken its own gate:
+
+```
+[amux]
+	queueGate = scripts/ci-fast-gate.sh "$AMUX_LAND_BASE" "$AMUX_LAND_TIP"
+```
+
+The gate runs on origin/main plus everything ahead of the entry, with the
+program the command runs restored to origin/main's bytes. `AMUX_LAND_BASE` is
+that main and `AMUX_LAND_TIP` the composed commit. `queueGateTimeout` overrides
+the 900 s budget. Red refuses the entry and bisects a batch; a gate that cannot
+start or times out refuses without blame, because that is no verdict. Declared
+repositories also get the client's `landRegenerate` and `landRegenerable`
+handling and `landFastGate` on the server push, and the repository's
+`scripts/land_gate.py` owner and receipt legs run per entry.
+
+`amux land` is then the one path, for every lane, and it waits for the outcome.
+No declaration means the old path, and every land says so
+(`verdict=land_gate_undeclared`). `AMUX_LAND_QUEUE_DECLARED=0` in `server.env`
+turns declarations off for the server; `AMUX_LAND_CLIENT=1
+AMUX_LAND_CLIENT_REASON=<why>` skips the queue once, logged, which is how a fix
+to a broken declaration or a broken server lands.
+
+## A red main after a land
+
+A declaring repository names what green means and what a red gets:
+
+```
+[amux]
+	queueChecks = rust
+	queueChecks = checks
+	queueOnRed = revert
+```
+
+`queueOnRed` is `fix` (the default), `revert` or `off`; with no `queueChecks`
+nothing is watched. `api/land_red.rs` judges each queue push once, oldest
+first. A red is attributed only when the push's base was green, no newer main is
+green, and the failure survives one re-run of the failed jobs. A flaky,
+unmeasured or unattributed red changes nothing and stays with
+`scripts/main-ci-watch.sh`. An attributed red from one entry gets a revert
+commit, which joins the queue at priority and passes the same gate as any land;
+everything else gets a card on each lane (a batch of several entries, a revert
+that conflicts or is refused, a revert budget of 2 a day and 1 at a time). A
+revert is never reverted, and each repository and sha gets one episode. The
+lane is told. `GET /api/land` lists them under `red`. `AMUX_LAND_RED=0` in
+`server.env` stops the watch.
+
 ## Phases
 
 | Phase | Rules | Exit, measured |

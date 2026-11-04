@@ -6,6 +6,9 @@ Mixpeek product security (auth surfaces, tenant isolation, key handling in the
 Mixpeek app) stays with `mixpeek-security`. When a finding is in Mixpeek's
 product code, hand it to that worker with the evidence.
 
+amux's own code gets a proactive red-team run from the `amux-security` worker:
+`docs/security/RED-TEAM-LOOP.md`, with the surface map beside it.
+
 Created 2026-10-26 after the Tailscale "Tailworm" disclosure and the eMudhra
 certificate compromise (TS-2026-013).
 
@@ -28,6 +31,10 @@ certificate compromise (TS-2026-013).
   are not what ships. npm findings carry `scope`: `runtime` (still flagged
   with `--omit=dev`) or `dev-only` (build and test tooling)
 - macOS software updates
+- Apple entries in that list added since this macOS was installed, whatever their
+  age, because the main KEV check only looks back 14 days
+- Remote-access services (SSH, SMB, Screen Sharing, Remote Management) listening
+  on every interface, with the firewall state
 
 Each run writes `~/.amux/security-watch/<date>.json`. `state.json` there holds
 the ids already reported, so each finding is sent once. Each source reports

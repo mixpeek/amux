@@ -21,7 +21,8 @@ test('#edit= opens a markdown file in Edit, #path= in Preview', async ({page}) =
     // its preview for #path= (owner, 2026-10-29, the editor redesign).
     await page.goto('/#edit=' + enc(md));
     await expect(page.locator('#mdx')).toHaveAttribute('data-mode', /edit|split/, {timeout: 15000});
-    await expect(page.locator('#file-save-btn')).toBeVisible();
+    // Edits save themselves, so the status says Saved and Save appears once there is something to save.
+    await expect(page.locator('#mdx-dirty')).toHaveText('Saved');
     expect(await page.evaluate('_fileData && _fileData.path')).toBe(md);
 
     await page.goto('about:blank');

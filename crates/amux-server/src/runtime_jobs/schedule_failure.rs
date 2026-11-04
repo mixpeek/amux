@@ -48,7 +48,8 @@
 //! Every decision is logged with a stable verdict:
 //! `schedule_failure_notified`, `schedule_failure_routed_owner`,
 //! `schedule_failure_suppressed_dupe`, `schedule_failure_streak_reset`,
-//! `schedule_paused_owner_gone` (see [`should_pause_orphan`]).
+//! `schedule_paused_owner_gone` (see [`should_pause_orphan`]),
+//! `schedule_failure_card_moot` (see [`reconcile_moot_cards`]).
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -648,26 +649,124 @@ async fn resolve_owner_card(store: &SharedStore, id: &str, now: i64) -> anyhow::
             let Some(card) = open else {
                 return Ok(WriteOutcome { applied: false, events: vec![] });
             };
-            conn.execute(
-                "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
-                 rev = COALESCE(rev,0) + 1 WHERE id=?3",
-                rusqlite::params![note, now, card],
-            )?;
+            let Some(out) = crate::db::advance::harness_close(conn, &card, "done", "harness:schedule-failure", Some(&note),
+                "closed by the harness: the schedule recovered")?
+            else {
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            };
             *slot_w.lock().expect("card slot") = Some(card.clone());
-            Ok(WriteOutcome {
-                applied: true,
-                events: vec![PendingEvent {
-                    entity_type: amux_core::revision::EntityType::Task,
-                    entity_id: card.clone(),
-                    mutation: amux_core::revision::MutationKind::Updated,
-                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
-                }],
-            })
+            let mut events = out.events;
+            events.push(PendingEvent {
+                entity_type: amux_core::revision::EntityType::Task,
+                entity_id: card.clone(),
+                mutation: amux_core::revision::MutationKind::Updated,
+                payload: Some(json!({"id": card, "source": "schedule_failure"})),
+            });
+            Ok(WriteOutcome { applied: true, events })
         })
         .await?;
     let card = slot.lock().expect("card slot").take();
     Ok(card)
 }
+
+/// Why an open "keeps failing" card no longer has a question in it, if it does
+/// not: the schedule was deleted, disabled, or passes again. `None` keeps it.
+pub fn moot_reason(exists: bool, enabled: bool, streak: i64) -> Option<&'static str> {
+    if !exists {
+        Some("the schedule was deleted")
+    } else if !enabled {
+        Some("the schedule was disabled")
+    } else if streak == 0 {
+        Some("the schedule passes again")
+    } else {
+        None
+    }
+}
+
+/// Close every open failure card whose question is already answered.
+///
+/// The card asks the owner to fix, move or disable a schedule. A pass closes it
+/// (`resolve_owner_card`), but a delete, a disable, a worker's retirement pause
+/// or an earlier build left the card standing. Measured 2026-11-03: of 15 such
+/// cards in the owner's queue, 6 named deleted schedules, 5 disabled ones and 1
+/// a schedule passing again, up to 20 days old. A delete is soft: the row stays
+/// with `deleted` set and often `enabled=1`, so `deleted` counts as gone (three
+/// cards survived the first live sweep on that). Returns (considered, closed).
+pub async fn reconcile_moot_cards(store: &SharedStore, now: i64) -> anyhow::Result<(usize, usize)> {
+    let open: Vec<(String, String, bool, bool, i64)> = store
+        .read_async(|conn| {
+            let mut st = conn.prepare(
+                "SELECT i.id, substr(i.source_ref, 15), s.id IS NOT NULL AND COALESCE(s.deleted,0)=0, COALESCE(s.enabled,0), \
+                 COALESCE(s.failure_streak,0) FROM issues i \
+                 LEFT JOIN schedules s ON s.id = substr(i.source_ref, 15) \
+                 WHERE i.source_ref LIKE 'sched-failure:%' AND COALESCE(i.archived,0)=0 \
+                 AND i.status NOT IN ('done','verified','discarded')",
+            )?;
+            let rows = st
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0, r.get(4)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await?;
+    let considered = open.len();
+    let moot: Vec<(String, String, &'static str)> = open
+        .into_iter()
+        .filter_map(|(card, sched, exists, enabled, streak)| {
+            moot_reason(exists, enabled, streak).map(|why| (card, sched, why))
+        })
+        .collect();
+    if moot.is_empty() {
+        return Ok((considered, 0));
+    }
+    let stamp = fmt_ts(now);
+    let closed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String, &'static str)>::new()));
+    let closed_w = closed.clone();
+    store
+        .write_async(move |conn| {
+            let mut events = Vec::new();
+            for (card, sched, why) in &moot {
+                let note = format!("\n\n---\n{stamp}\nClosed by the harness: {why}, so this question is answered.");
+                // harness_close re-reads the card, so one closed meanwhile is left alone.
+                if let Some(out) = crate::db::advance::harness_close(conn, card, "done", "harness:schedule-failure",
+                    Some(&note), &format!("closed by the harness: {why}"))?
+                {
+                    events.extend(out.events);
+                    events.push(PendingEvent {
+                        entity_type: amux_core::revision::EntityType::Task,
+                        entity_id: card.clone(),
+                        mutation: amux_core::revision::MutationKind::Updated,
+                        payload: Some(json!({"id": card, "source": "schedule_failure"})),
+                    });
+                    if let Ok(mut v) = closed_w.lock() {
+                        v.push((card.clone(), sched.clone(), why));
+                    }
+                }
+            }
+            Ok(WriteOutcome { applied: !events.is_empty(), events })
+        })
+        .await?;
+    let closed = closed.lock().map(|v| v.clone()).unwrap_or_default();
+    for (card, sched, why) in &closed {
+        tracing::info!(schedule = %sched, card = %card, why = %why, verdict = "schedule_failure_card_moot",
+            measured = true, n_considered = considered, "closed a failure card whose question was already answered");
+    }
+    Ok((considered, closed.len()))
+}
+
+/// Run [`reconcile_moot_cards`] in the background; the scheduler loop calls it
+/// every [`MOOT_SWEEP_TICKS`] ticks.
+pub fn spawn_moot_sweep(store: SharedStore) {
+    tokio::spawn(async move {
+        let now = chrono::Utc::now().timestamp();
+        if let Err(e) = reconcile_moot_cards(&store, now).await {
+            tracing::warn!(error = %e, verdict = "schedule_failure_moot_sweep_error", measured = false,
+                "could not reconcile failure cards against their schedules");
+        }
+    });
+}
+
+/// Scheduler ticks between sweeps for answered failure cards (~10 min at 30 s).
+pub const MOOT_SWEEP_TICKS: u64 = 20;
 
 /// Disable the schedule and close the harness's own open card for it with the
 /// reason. Returns that card's id, or "" when there was none.
@@ -721,17 +820,19 @@ async fn pause_orphan(
             if let Some(card) = open {
                 // The card asked "fix it, move it, or disable it?"; the harness
                 // disabled it, so the question is answered.
-                conn.execute(
-                    "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
-                     rev = COALESCE(rev,0) + 1 WHERE id=?3",
-                    rusqlite::params![note, now, card],
-                )?;
-                events.push(PendingEvent {
-                    entity_type: amux_core::revision::EntityType::Task,
-                    entity_id: card.clone(),
-                    mutation: amux_core::revision::MutationKind::Updated,
-                    payload: Some(json!({"id": card, "source": "schedule_failure"})),
-                });
+                // An Updated event only for a card the harness really closed
+                // (land review F1: a refused close emitted a false update).
+                if let Some(out) = crate::db::advance::harness_close(conn, &card, "done", "harness:schedule-failure", Some(&note),
+                    "closed by the harness: it disabled the schedule")?
+                {
+                    events.extend(out.events);
+                    events.push(PendingEvent {
+                        entity_type: amux_core::revision::EntityType::Task,
+                        entity_id: card.clone(),
+                        mutation: amux_core::revision::MutationKind::Updated,
+                        payload: Some(json!({"id": card, "source": "schedule_failure"})),
+                    });
+                }
                 *slot_w.lock().expect("card slot") = card;
             }
             Ok(WriteOutcome { applied: true, events })
@@ -1148,6 +1249,43 @@ mod tests {
         assert_eq!(state(&store, "SCHED-11").await.0, 0);
         on_run_outcome_with(&store, &sched("SCHED-11", "raw"), &ok(), "cron-rs", &Up(true)).await;
         assert_eq!(owner_cards(&store, "SCHED-11").await[0].1, "done");
+    }
+
+    /// A deleted or disabled schedule answers its "fix, move or disable?" card;
+    /// a still-failing enabled one keeps it.
+    #[tokio::test]
+    async fn a_deleted_or_disabled_schedule_closes_its_failure_card() {
+        let (fx, _g) = fixture(&[("raw", "CC_TAGS=plg\nCC_ISOLATED=1\n")]);
+        let store = fx.store.clone();
+        for id in ["SCHED-21", "SCHED-22", "SCHED-23", "SCHED-24"] {
+            add(&store, sched(id, "raw")).await;
+            on_run_outcome_with(&store, &sched(id, "raw"), &exit(1, "boom"), "cron-rs", &Up(true)).await;
+            assert_eq!(owner_cards(&store, id).await[0].1, "needsyou");
+        }
+        store.write_async(|c| {
+            c.execute("DELETE FROM schedules WHERE id='SCHED-21'", [])?;
+            c.execute("UPDATE schedules SET enabled=0 WHERE id='SCHED-22'", [])?;
+            // The API's delete: the row stays, enabled, with `deleted` stamped.
+            c.execute("UPDATE schedules SET deleted=1793000000 WHERE id='SCHED-24'", [])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).await.unwrap();
+        let (considered, closed) = reconcile_moot_cards(&store, 1_800_000_000).await.unwrap();
+        assert_eq!((considered, closed), (4, 3));
+        assert!(owner_cards(&store, "SCHED-24").await[0].3.contains("deleted"), "a soft delete is a delete");
+        let c21 = owner_cards(&store, "SCHED-21").await;
+        assert_eq!(c21[0].1, "done");
+        assert!(c21[0].3.contains("deleted"), "{}", c21[0].3);
+        assert!(owner_cards(&store, "SCHED-22").await[0].3.contains("disabled"));
+        assert_eq!(owner_cards(&store, "SCHED-23").await[0].1, "needsyou", "still failing and enabled: kept");
+        assert_eq!(reconcile_moot_cards(&store, 1_800_000_000).await.unwrap(), (1, 0), "idempotent");
+    }
+
+    #[test]
+    fn moot_reason_keeps_only_a_live_failing_schedule() {
+        assert_eq!(moot_reason(true, true, 2), None);
+        assert!(moot_reason(false, true, 2).unwrap().contains("deleted"));
+        assert!(moot_reason(true, false, 2).unwrap().contains("disabled"));
+        assert!(moot_reason(true, true, 0).unwrap().contains("passes"));
     }
 
     /// AF-1052: the lookup every passing fire makes runs on an index. As a full

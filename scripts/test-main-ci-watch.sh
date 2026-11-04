@@ -89,7 +89,8 @@ out=""; body=""; method=GET; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out
 case "$method" in
   POST) printf '%s\n' "$body" >> "$CARD_BODIES"; printf '{"id":"AMUX-1","card_created":true}' > "$out"; printf 201 ;;
   PATCH) printf '%s %s\n' "$url" "$body" >> "$PATCHES"; [ -n "$out" ] && printf '{}' > "$out"; printf 200 ;;
-  GET) printf '{"id":"AMUX-1","status":"%s"}' "$(cat "$CARD_STATUS")" ;;
+  GET) [ "${CARD_GET_FAIL:-0}" = 1 ] && { printf 000; exit 28; }
+       printf '{"id":"AMUX-1","status":"%s"}' "$(cat "$CARD_STATUS")" > "$out"; printf 200 ;;
 esac
 CURL
 chmod +x "$BIN/curl"
@@ -110,6 +111,20 @@ echo discarded > "$FIX/card_status"
 python3 -c "import json; p='$FIX/state.json'; s=json.load(open(p)); s['rust.yml']['card']='AMUX-1'; json.dump(s,open(p,'w'))"
 out=$(run3 "$(printf '204\tfailure\tddd444ddd444\thttps://example/run/204')")
 check "a retired card is not written into"    2 "$(grep -c . "$FIX/bodies")"
+
+echo "3b. a board that cannot be read is not a closed card"
+rm -f "$FIX/state.json" "$FIX/bodies" "$FIX/patches"; echo todo > "$FIX/card_status"
+out=$(run3 "$(printf '211\tfailure\taaa111aaa111\thttps://example/run/211')")
+check "the stretch has its card"              AMUX-1 "$(python3 -c "import json; print(json.load(open('$FIX/state.json'))['rust.yml'].get('card',''))")"
+out=$(CARD_GET_FAIL=1 run3 "$(printf '212\tfailure\tbbb222bbb222\thttps://example/run/212')" || true)
+check "red + unreadable board: no duplicate"  1 "$(grep -c . "$FIX/bodies")"
+check "it says the board was unreadable"      yes "$(has "$out" '"verdict":"main_ci_watch_board_unreadable"')"
+check "the run stays unseen for a retry"      "211.1" "$(python3 -c "import json; print(json.load(open('$FIX/state.json'))['rust.yml'].get('seen',''))")"
+out=$(CARD_GET_FAIL=1 run3 "$(printf '213\tsuccess\tccc333ccc333\thttps://example/run/213')" || true)
+check "green + unreadable board: card kept"   AMUX-1 "$(python3 -c "import json; print(json.load(open('$FIX/state.json'))['rust.yml'].get('card',''))")"
+check "and nothing was closed"                yes "$(has "$out" '"cards_closed":0')"
+out=$(run3 "$(printf '213\tsuccess\tccc333ccc333\thttps://example/run/213')")
+check "readable again: the green run closes it" yes "$(has "$out" '"cards_closed":1')"
 
 echo "4. a first attempt that failed only in e2e is re-run once; a second failure is reported"
 rm -f "$FIX/state.json" "$FIX/bodies" "$FIX/patches" "$FIX/reruns"; echo todo > "$FIX/card_status"

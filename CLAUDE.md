@@ -1,170 +1,80 @@
+<!-- rules: parent=VISION.md owner=amux-vision enforces=all -->
 # amux
 
-- Whenever you fix a bug: 1) fix it at the root cause, 2) make it surface in amux logs so a sweep would catch it.
-- Standing harness rule: if normal worker progress needs a manual
-  override, restart, retry, board-status edit, or file move, treat that need as
-  an Amux defect. Implement bounded, logged discovery and recovery, then rerun
-  the original lifecycle case. Preserve failed evidence; never bypass budget,
-  customer-outbound, or human artifact-review gates. Host-resolvable operational
-  failures must not become permanent waits or `needs you` dependencies.
+**Read `VISION.md` first.** It holds what amux is for and the invariants A1-A11 every change
+keeps. Name the ones your change touches in its commit body and board card (`Vision: A2, A5`).
+This file says how to work here. Each folder's `CLAUDE.md` says what is true of that folder:
+`crates/amux-server`, `crates/amux-dashboard`, `desktop`, `scripts`, `e2e`, `cloud`.
 
-Rust workspace (`crates/amux-core`, `amux-server`, `amux-cli`, `amux-dashboard`)
-serving a static SPA on **port 8824**. Use `$AMUX_URL` or `$(amux url)`.
+## The rule tree
 
-8822 is retired. `tests/legacy_port_guard.rs` fails the build if it reappears.
-If your `$AMUX_URL` still says 8822, use `$(amux url)` (reads `~/.amux/endpoint.json`).
+- `VISION.md` is the root. Every `CLAUDE.md` starts with a header naming its parent (the
+  nearest `CLAUDE.md` above it, or `VISION.md`), its owner and the invariants it enforces, and
+  has an `AGENTS.md` symlink beside it so Codex and Gemini read the same rules.
+- A rule file cites invariants by id and never restates them (A10). A new rule goes in the
+  deepest folder it is true of. `scripts/check_rules_tree.py` refuses a missing header, a wrong
+  parent, an unknown invariant or a missing `AGENTS.md`; `--map` prints the tree.
+- The values every review applies are `.claude/rules/ethos.md`. `.claude/rules/` also holds
+  `frustrations.md` (logging friction) and `harness-order.md` (form completion).
 
-The Python server was deleted at `792ce1f`. Do not resurrect it.
+## Basics
 
-## Ethos
+- Rust workspace (`crates/amux-core`, `amux-server`, `amux-cli`, `amux-dashboard`) serving
+  the dashboard on **port 8824**. Use `$AMUX_URL` or `$(amux url)`. 8822 is retired
+  (`tests/legacy_port_guard.rs`). The Python server was deleted at `792ce1f`; do not resurrect it.
+- `amux` is the Bash CLI. Publish a resolved, reviewed checkout with `make install-cli`
+  (`BIN_DIR=/usr/local/bin` for that copy). Never symlink the installed client into a mutable
+  worktree or copy it by hand.
+- `~/.amux/server.env` holds persistent settings, loaded at startup as defaults. Credential
+  values live only there (the repo is public); names are in `docs/credentials.md`. After an
+  edit: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`.
+- `CLAUDE.local.md` (gitignored) holds per-machine notes, such as host inventory, that must not
+  be public. `docs/ops/linux-and-remote-builds.md` covers Linux boxes, integration branches and
+  remote builds.
 
-Gut-check every feature against `.claude/rules/ethos.md` (8 rules). The core question:
-when the next model is better, does this feature get better with it, or become the ceiling?
+## Working (A4, A6)
 
-## Isolated workers
+- **A bug fix brings two things:** the fix at the root cause, and a log signal (a counter, a
+  WARN line, a verdict field) so the next instance announces itself.
+- **A manual override is a defect.** If normal worker progress needs a restart, retry,
+  board-status edit or file move, build bounded, logged discovery and recovery, then rerun the
+  original case. Keep failed evidence; never bypass budget, customer-outbound or artifact-review
+  gates. A failure the host can resolve never becomes a permanent wait or a `needs you`.
+- **You run inside amux.** Fix rough edges at the root. Log friction to `frustrations.md`
+  (format in `.claude/rules/frustrations.md`).
 
-Isolated means direct owner-to-CLI transport: no board capture or attribution,
-command decomposition, injected prompts, automated schedule/steering, or Amux
-routing, behavioral hooks or MCP. Passive provider lifecycle observation is allowed
-for status only: it must not add context, change permissions, send prompts, or
-trigger boards. Preserve owner input, delivery receipts and message history.
-Explicit owner queuing is transport only. Isolation overrides stale worker
-metadata; a restarted raw CLI must not inherit harness routing.
-Three owner-configured exceptions reach isolated workers: their schedules, the
-goal keeper continuing an owner-set Claude Code `/goal` that is not met
-(`AMUX_GOAL_CONTINUE=0` opts out), and the worker boundaries in
-`boundaries.toml` (payments, email, credentials, resources, the subagent cap),
-whose guard refuses the same tool calls for isolated workers
-(`apply_to_isolated = false` opts out). The guard knows an isolated worker by
-`AMUX_ISOLATED_WORKER`.
-A refusal injects no prompt and routes nothing.
-A chat speaks for the owner: a worker's Chat tab or a `chat`-type worker can read,
-send to, queue for and leave card notes that reach any worker, isolated included.
+## Landing a change (A6)
 
-## Primitives (do not reinvent)
+- **Everything on main: no branches, no forks** (Ethan, 2026-10-24). Work in a detached worktree
+  at `origin/main`, commit, then `git fetch origin main && git rebase origin/main && git push
+  origin HEAD:main`, retrying a lost race. The pre-commit hook refuses a commit on a branch that
+  forked from `origin/main`.
+- **Gate before main: `amux land`** (or `scripts/land_gate.py`, then push). It replays your
+  commits onto origin/main and runs the tests of every changed Rust module, the e2e specs
+  `scripts/ci-affected.mjs` selects, and a review against `REVIEW.md`. A test that passes on
+  rerun, or also fails on main, is named and does not block. The pre-push hook refuses an
+  agent's commits with no passing receipt (`AMUX_SKIP_LAND_GATE=1` with
+  `AMUX_SKIP_LAND_GATE_REASON` skips once, logged). Tiers are in `scripts/review-tiers.txt`:
+  `[owner]` paths need the owner's approval of that exact diff, `[deep]` paths a `Revert:`
+  trailer. Close a finding with `scripts/land_gate.py --resolve <id> "<why>"`.
+- **Before pushing,** `scripts/push-consent.sh` names whose commits you would carry and who
+  cannot be asked; ask the others. Run gates on a detached worktree: the shared checkout holds
+  other lanes' uncommitted files. Why, with the incidents: `docs/ops/pushing.md`.
+- **Only main deploys.** The builder activates the newest `origin/main` commit whose `checks`
+  passed (`scripts/CLAUDE.md`). A local commit, branch, fork or hand-built binary deploys
+  nothing; never copy a build over `~/.local/bin/amux-server-rs`. A fix is live when `/health`'s
+  `commit` matches; Settings and `GET /api/pull` show what the server runs against main.
+- **A red main is the first thing to fix.** SCHED-713 (`scripts/main-ci-watch.sh`) reruns a
+  first attempt that failed only in e2e, then keeps one card on the amux lane per red stretch.
+- **No auto-pull of the shared checkout.** `amux sync-checkout` (`--check` to only report)
+  fast-forwards when nothing can be lost and otherwise names the blockers.
+- **Shared checkout habits:** a pre-fix specimen is `<your-sha>^`, never `HEAD~1`; bracket
+  measurements with `/health`'s `build` (the builder swaps the binary when main moves).
 
-board, workers, schedulers, filesystem, groups, memories, environment, messages.
-If a request decomposes into these, the work is configuration and UX. Do not add a
-ninth thing that re-expresses them.
+## Verification (A4)
 
-## Reuse existing paradigms (UI and code)
-
-Before building a view, find the one amux already has for that job and render
-through it: a folder is the file view (`_feCrumbsHtml`, `_feBuildRow`,
-`_feParentRow`, `_feEmptyRow`, `_feStatusText`), a prompt is `showConfirm` /
-`showPrompt`, a dialog is `.modal-overlay > .modal`. If it lacks a hook you need
-(a root, an open callback, a filter), add the hook to the shared one. A second
-table, dialog or list with its own markup drifts from the first on every later
-change. Specimen, 2026-10-16: the MDAI tab grew its own folder table, breadcrumb
-and "Folder" line beside the Files tab, and Ethan asked for it to be "the same
-file directory / file view as any other file view". Catalogue:
-`docs/ui-style-guide.md`.
-
-## Dogfooding + two-fix rule
-
-You run inside amux. Fix rough edges at the root, not with workarounds. Every bug fix
-owes two things: the fix, and a log signal so the next instance self-announces
-(counter, WARN line, verdict field). Log friction to `frustrations.md` (format in
-`.claude/rules/frustrations.md`).
-
-## Structure
-
-- `crates/amux-server` -- axum server: `src/api/`, `src/db/`, `migrations/`, `src/runtime_jobs/`
-- `crates/amux-dashboard` -- SPA: `static/` (`index.html`, `app.js`, `app.css`, `sw.js`)
-- `crates/amux-core` / `crates/amux-cli` -- shared types; Rust CLI
-- `amux` -- Bash CLI source. Publish a resolved, reviewed checkout with
-  `make install-cli` (`BIN_DIR=/usr/local/bin` for that additional installation).
-  The installer validates a private snapshot and atomically replaces the client.
-  Never symlink the installed client into a mutable worktree or copy it by hand.
-- `e2e/` -- Playwright; `crates/amux-server/tests/` -- integration tests
-- `cloud/` -- cloud.amux.io (read `cloud/README.md` first)
-
-## Hooks
-
-Tool-event hooks need a `matcher` (regex). `"*"` is invalid; use `".*"`.
-Verify a hook by what it WROTE, not by the settings file.
-
-## Workflow
-
-- **Everything on main: no branches, no forks** (Ethan, 2026-10-24). A task is done when it
-  is on `origin/main`. Work in a detached worktree at `origin/main`, commit, then
-  `git fetch origin main && git rebase origin/main && git push origin HEAD:main` (retry on a
-  lost race). The pre-commit hook refuses a commit onto a branch that has forked from
-  `origin/main` (`fork_commit`), because those commits can never deploy.
-- **Gate before main: `amux land` (or `scripts/land_gate.py`, then push).** It replays
-  your commits onto origin/main and runs what turns main red: the tests of every changed
-  Rust module and crate, the e2e specs `scripts/ci-affected.mjs` selects, and a
-  fresh-context review against `REVIEW.md`. A test that passes on rerun, or that also fails
-  on origin/main, is named and does not block. The pre-push hook refuses an agent's
-  commits with no passing receipt (`AMUX_SKIP_LAND_GATE=1` with
-  `AMUX_SKIP_LAND_GATE_REASON` skips once, logged). Tiers in `scripts/review-tiers.txt`,
-  read from origin/main: `[owner]` paths (money, credentials, the guards) need the owner's
-  approval of that exact diff; `[deep]` paths need a `Revert:` trailer. A review finding is
-  fixed or closed with `scripts/land_gate.py --resolve <id> "<why>"`; after three rounds the
-  review stops hunting and says to rethink. `amux explain <path>` writes an explainer of a
-  slice of the code. Reviewer scoring: `scripts/land_review_eval.py --score`.
-- **Only main deploys.** The builder activates the newest `origin/main` commit whose
-  `checks` workflow passed, within about a minute. It compiles the tip while its CI runs
-  (`scripts/rust-prebuild.sh`), and puts the previous binary back if the new one does not
-  report healthy (`AMUX_ACTIVATION_ROLLBACK`, on by default). The gate is
-  `AMUX_CI_REQUIRED_WORKFLOWS` (default `checks`) in `~/.amux/server.env`; the slow `rust`
-  e2e suite runs after deploy (owner, 2026-10-29). A local commit, a branch, a fork or a
-  hand-built binary deploys nothing and is replaced. Never copy a build over
-  `~/.local/bin/amux-server-rs`: on 2026-10-24 a hand build of a two-week-old fork ran the
-  Mac for hours. Settings shows what the server runs against main (`GET /api/pull`).
-- **A red main holds the server.** Until one main commit passes `checks`, nothing newer
-  deploys (2026-10-24: a week red, 73 commits behind). A red `rust` run no longer holds it;
-  it is the first thing to fix all the same. SCHED-713
-  (`scripts/main-ci-watch.sh`) re-runs a first attempt that failed only in e2e once, then
-  keeps ONE card on the amux lane per red stretch. `deploy.served_commit_is_current` in
-  `/api/health/invariants` says when the gate is holding. A red main is the first thing to fix.
-- **No auto-pull.** Shared checkout; the freshness hook reports staleness, the human decides.
-  Asked to bring a checkout current, run `amux sync-checkout` (`--check` to only report): it
-  fast-forwards when nothing can be lost and otherwise names the blockers in seconds. Do not
-  diff the tree by hand.
-- **Bash CLI ships via `make install-cli`** (also part of `install.sh`).
-  `check-and-commit.sh` checks saves; installation validates the exact published bytes.
-  The server ships when its commit is on origin/main and passes CI.
-- **`CARGO_TARGET_DIR=~/.amux/rust-build-target`** -- one shared build dir, never per-session.
-- **Bracket measurements with `/health`'s `build`** -- the builder swaps the binary when main moves.
-  Use `commit` for "did source change?", `build` for "same process image?".
-- **Pre-fix specimen: `<your-sha>^`**, never `HEAD~1` (shared checkout).
-- **Client version is derived; do not bump it.** app.js/sw.js hold `__AMUX_ASSET_VER__`;
-  the server stamps a content hash of `static/` (amux-dashboard `build.rs`) when serving.
-- Syntax gates: `cargo check --workspace`. Before push: `cargo clippy --workspace --all-targets -- -D warnings`.
-  Tests: `scripts/test-contended.sh -p amux-server` (same args as `cargo test`, same exit status).
-- **Prefer offloading any of the above to remote hardware (see the remote-build convention below)
-  over running them in an interactive pane at all.** If a local run is genuinely unavoidable, run
-  it through `scripts/safe-cargo.sh <cargo args>` instead of bare `cargo` — every process in an
-  interactive amux pane shares one systemd scope, and an OOM-killed `cargo`/`clippy` process
-  inside that scope takes the WHOLE PANE down with it, not just the build (confirmed via
-  journalctl, AMUX-70/frustrations.md 2026-09-01). The wrapper runs cargo in its own sibling
-  scope so an OOM kill there can't cascade into the session.
-  **A red suite here is not automatically a regression.** This box builds and tests amux
-  continuously, so the auto-builder can rewrite the shared binary while your tests spawn it,
-  and the ETXTBSY family surfaces as failures in modules you never touched (AMUX-3853: 8
-  failures in `opencode::structured`, 15/15 green on an immediate rerun). Plain `cargo test`
-  cannot tell you which kind of run you got, so every green also silently means "and nothing
-  was building" and every red looks like your fault. The wrapper prints that missing clause
-  beside the result, in both directions. Use plain `cargo test` when you want the raw thing.
-
-## Crash and stateful recovery
-
-Every durable harness change includes recovery at its failure boundary. Use real
-SIGKILL/restart tests, preserve failed evidence, adopt completed receipts, and
-assert no duplicate delivery or false success. Supervise consumer futures and
-keep isolation, owner stops and authorization gates intact. See
-`docs/harness-recovery.md` and `scripts/test-harness-recovery.sh`; retaining rows
-alone is not proof that unfinished work recovers.
-
-## Verification
-
-`VERIFY.md` names the proof for each surface: the literal command, and what a
-pass looks like. The board refuses `done` without evidence (AF-321) and its
-refusal points here.
-
-Paste the command AND its result line into `--evidence`. A command with no
-result is a claim that you ran it.
+`VERIFY.md` names the proof for each surface: the command, and what a pass looks like. The board
+refuses `done` without evidence (AF-321). Paste the command and its result line:
 
 ```bash
 amux board done <ID> --evidence-stdin <<'EOF'
@@ -172,420 +82,23 @@ scripts/test-contended.sh -p amux-server -> test result: ok. 1571 passed
 EOF
 ```
 
-`none: <reason>` is the honest answer when a card genuinely produced no artifact.
-It is stored and counted, not a bypass.
+`none: <reason>` is the honest answer when a card produced no artifact.
 
-## Observability
+## Observability (A5)
 
-Use the server's diagnostic endpoints before writing a grep:
+Use the server's diagnostic endpoints before writing a grep, and read `measured` before the
+number:
 
 | Endpoint | Use |
 |---|---|
 | `GET /api/logs/analyze?since_h=24` | Error groups with verdicts |
-| `GET /api/logs/stats?since_h=24` | Traffic/latency rollup |
-| `GET /api/debug/routes` | Route table as JSON |
-| `GET /api/health/invariants` | Failing invariants (passing ones only visible in `/api/debug/invariants`) |
-| `GET /api/debug/sse?since_h=24` | Is the realtime backbone carrying the fleet, or has it dropped clients onto polling? `live_connections` + `opened_total` (per-PROCESS: the builder restarts this binary on every commit and all SSE connections die with it) joined with `stale_reconnects`, the client-side beacon fired at the 18s zombie trigger. Neither half answers alone — from the server a reconnect looks like a laptop lid; only the client knows it declared the stream stale. A 0 shortly after a deploy is a ramp-up, not a verdict; `live_connections` is the discriminator. |
+| `GET /api/logs/stats?since_h=24` | Traffic and latency |
+| `GET /api/debug/routes` | The route table |
+| `GET /api/health/invariants` | Failing invariants (`/api/debug/invariants` shows all) |
+| `GET /api/debug/sse?since_h=24` | Live SSE connections against client stale reconnects |
+| `GET /api/debug/send-profile` | Where each send to a worker spends its time |
 | `GET /api/debug/tmux` | Fleet discovery from inside the server |
 
-**Read `measured` before you read the number.** Every diagnostic endpoint
-answers with `measured` (did the probe run) and `n_considered` (how big the
-population was). `total_errors: 0, measured: true, n_considered: 4210` is a
-quiet window; `total_errors: 0, measured: false` is a probe that never ran, and
-`why_unmeasured` says what stopped it. Those two used to be the same payload,
-which is 41 of 83 frustration entries (AF-320). A new diagnostic route without
-both fields fails `tests/diagnostic_contract.rs`.
-
-Raw logs: `~/.amux/logs/server-rs.log`
-
-**Grep them with `-a`.** A single NUL byte anywhere in the file makes grep call
-the whole thing binary and SUPPRESS match output, while `-c` keeps counting
-lines. Same file, same pattern, measured 2026-09-04: `grep -c` 17, `grep -o` 8,
-`grep -ao` 17. Nineteen NUL bytes in 67 MB did that, and grep says nothing when
-its output goes to a pipe. AF-481 removed the source (a sentinel that reached a
-warn), but any logged payload can reintroduce one, so pass `-a` rather than
-trusting the file.
-
-Also: `grep -c $'\0'` does not count NUL bytes. bash cannot put a NUL in a
-string, so that argument is the EMPTY string and the command is `grep -c ''`,
-which counts every line. It reads like a NUL count and is a line count. Read the
-bytes if you need the real figure.
-
-## Reading CI: use the App token, and CHECK that you got it
-
-`gh` here defaults to the user identity (`esteininger`, id 15973166) on a **5000/hr**
-budget shared by every amux lane. A GitHub App is already provisioned on this box
-and sits on its own larger budget:
-
-```bash
-eval "$(~/.amux/github-app/get-token.sh)"
-gh api rate_limit --jq '.resources.core | "limit=\(.limit) remaining=\(.remaining)"'
-```
-
-**The limit number is the check, and it costs nothing** because `rate_limit` is not
-itself counted. `limit=5000` means you are on the shared user budget; anything
-higher means you got the App. Measured 2026-09-01: bare `gh` reported
-`limit=5000 remaining=4999`, the App `limit=8700 remaining=8625`.
-
-Run the check, do not assume the eval worked. `get-token.sh`'s own docstring records
-why: if the script exits non-zero the `eval` sets nothing, `gh` falls back to user
-auth, and you are back on the contended budget with no sign that anything happened.
-
-**And the token EXPIRES, so one check at the start is not a check for a long job.**
-Measured 2026-09-22: a fresh `eval` returned `--expires-in 2095`, about 35 minutes.
-Anything that outlives that (a CI watcher, a gate run, a slow push) starts getting
-`401 Bad credentials` partway through, and the shape of that failure is the danger:
-a 401 body contains no job names, so a loop asking "are any checks still pending?"
-counts zero and reads it as FINISHED. A watcher that cannot see must say so, never
-report all-clear. Require a positive signal, like a non-empty `check_runs` array,
-before you believe a verdict.
-
-`get-token.sh` already solves the common case and neither flag is named above,
-which is why this paragraph exists:
-
-```bash
-eval "$(~/.amux/github-app/get-token.sh --min-remaining 1800)"  # token good for >=N more seconds
-~/.amux/github-app/get-token.sh --expires-in                    # seconds remaining, no token
-```
-
-**`--min-remaining` REFRESHES, it does not refuse**, whatever the script's own
-one-line summary says: if the cached token has under N seconds left it skips the
-cache and mints a new one, so it exits 0 with a token either way. Measured today,
-`--min-remaining 999999` took `--expires-in` from 2073 to 2965 rather than failing.
-Do not treat a non-zero exit as the signal that your token was too old, because
-there is not one.
-
-The ceiling is about 50 minutes, since the cache refreshes at that mark. A job
-that can outlive that gets no help from any single eval: re-eval on every pass
-instead of once at the top.
-
-**Do not poll `gh` in a loop.** Secondary limits are per-account and trigger on
-request RATE, so one lane's 30s `until` loop 403s every other lane, on every
-endpoint, including a plain repo read. On 2026-09-01 two lanes lost CI visibility
-for hours that way, and `gh api rate_limit` reported `used: 0, remaining: 5000`
-throughout, because the counter it reads is not the counter being enforced. Use
-ScheduleWakeup, or one delay sized to the job. (AF-396)
-
-## Deploy
-
-**Before `git push origin main`:**
-```bash
-git fetch origin
-scripts/push-consent.sh          # who must you ask, and who CANNOT be asked
-```
-If foreign commits exist, ask their author before pushing.
-
-**Some authors cannot be asked, and the script names them rather than leaving you
-to not know.** An ISOLATED lane refuses sends carrying a worker origin, so for its
-commits that instruction has no truthful path — the two moves are push unasked
-while a MANDATORY rule says otherwise, or never push. Found live 2026-09-07, when
-a consent poll named 16 of 23 commits and missed 5 belonging to an isolated `amux`
-(AF-548). Pushing is defensible: a lane committing to shared main has already
-accepted that a peer will push it. Claiming consent you could not obtain is not.
-State the exemption; a named exemption is a truthful path and silence is not.
-
-**And a green Rust gate is not push-readiness for the range.** `cargo clippy
---workspace` and `cargo test -p amux-server` are scoped to a LANGUAGE and get
-quoted as a verdict on a PUSH. In that same range 10 of 23 commits touched no
-`.rs` file at all, including the commit of the lane that asked. The script prints
-both counts so the denominator travels with the verdict.
-
-**Run gates on a DETACHED worktree, not this one.** Every local check here reads a
-tree with other lanes' uncommitted files in it, so a green is a claim about your
-peers' drafts as much as about your commits:
-```bash
-git worktree add --detach /tmp/push-check main
-git -C /tmp/push-check status --porcelain --untracked-files=no   # must be empty
-```
-This is how the 2026-09-07 push was found to carry a test that passes alone and
-fails in the suite (AF-549) — 2013 passed, 1 failed, on bytes nobody had ever
-compiled in isolation.
-
-When user says "deploy": `git add` + `git commit` + verify above + `git push origin main`.
-
-A fix in `git log` is not live until `/health`'s `commit` matches.
-
-## Local integration testing while PRs await upstream merge
-
-A session's `gh` account can be a **fork-and-PR contributor** on the upstream
-repo with zero write access there (`push`/`admin`/`maintain` all `false` —
-check with `gh api /repos/<owner>/<repo> | jq .permissions`, not by trying an
-action and reading the error), even though it has full admin on its own fork.
-That session cannot merge PRs, re-run failed CI jobs, or trigger the upstream
-auto-builder — those need someone who IS a collaborator on the upstream repo.
-Confirmed 2026-08-28: `gh run rerun` and the Actions "re-run" API both 403
-identically ("Must have admin rights to Repository"), so there is no CLI path
-around a missing merge permission — only a NEW PUSH triggers fresh CI, since
-pushing a branch only needs write access to the FORK.
-
-**While several PRs sit open and green awaiting that merge, build a LOCAL
-integration branch instead of waiting idle:**
-
-```bash
-git fetch origin main --quiet
-git checkout -b local/all-features-testing origin/main --quiet
-git merge <branch-1> --no-edit   # smallest/lowest-risk PRs first
-git merge <branch-2> --no-edit   # ... in ascending size/conflict-risk order
-# largest, most conflict-prone PRs last — you now know exactly what collides
-```
-
-This branch is **LOCAL ONLY — never pushed, never opened as a PR.** It exists
-so the checkout's live server (whichever branch this shared checkout has
-HEAD on becomes the fleet's live build — see Workflow above) can serve
-everyone's in-flight work at once for real testing, without that testing
-being mistaken for review or merged history anywhere.
-
-**Migration numbering WILL collide.** Two PRs rebased independently onto the
-same `main` baseline often each claim the same next-free migration `version:
-N` for their own new migration — neither is wrong on its own branch, but
-combined they're a duplicate. Symptom: a merge conflict in `db/migrate.rs`
-where both sides declare the same `version:`. Fix: renumber the LOSING side's
-migration to the next actually-free slot (`git mv` the `.sql` file to match,
-update its `name:` field too) — pick either side, but do it consistently and
-say so in the merge commit, since the same collision recurs every time this
-branch is refreshed until the PRs merge upstream in some order for real.
-
-**Refreshing as PRs get new commits or upstream moves:** don't try to
-fast-forward a diverged integration branch — delete and rebuild it the same
-way, `git branch -D local/all-features-testing` then redo the merge
-sequence. It is disposable by design; the real history lives on each PR's
-own branch.
-
-**Getting the local build to auto-adopt:** the builder (`scripts/
-rust-auto-build.sh`, `Committed after every completed task... within ~60s`
-above) is only ever scheduled by a **launchd** agent
-(`com.amux.server-rs-builder`) — macOS-only. On Linux there is no
-`amux-builder.timer` equivalent unless it's installed — confirmed live
-2026-08-28: the builder's own log showed its last invocation was 2 days
-stale, `Terminated` mid-build, with nothing scheduled to ever retry it,
-because this box had never had that service installed. Without it,
-`/health`'s `commit` silently stops moving and nobody notices until they ask
-"is my fix actually live" and it isn't.
-
-This does NOT mean Linux has no systemd supervision at all — it was a wrong
-generalization from one missing unit. `amux.service` (the server itself,
-`Restart=always`) and `amux-worker-start.service` (starts the `amux` lane's
-tmux+Claude process on boot) were BOTH already installed and enabled on this
-box, confirmed by a real, deliberate reboot test on 2026-08-28: both came
-back automatically with zero manual intervention, `amux.service` is in fact
-what was silently auto-respawning the server during an earlier redeploy in
-that same session (mistaken for a mystery supervisor at the time). Only the
-BUILDER unit was the actual gap. `scripts/amux-builder.service.template` +
-`.timer.template` are now installed on this box too (generated to
-`~/.config/systemd/user/`, `daemon-reload`'d) and — as of 2026-08-31 —
-`amux-builder.timer` is **enabled and live**, polling every 60s.
-
-**Correction 2026-08-31, superseding the original "leave it disabled" note
-below**: this paragraph used to warn that enabling the timer meant "a
-restart kills every live Claude session" and left the decision to whoever
-was driving. That warning is now stale. Root cause (INIT-1, closed
-2026-08-30, see `frustrations.md`): `amux.service` used to run with
-systemd's default `KillMode=mixed`, and the tmux server hosting every
-worker session lives in that unit's own cgroup (spawned by
-`ExecStartPre`, and cgroup membership is sticky across tmux's own
-self-daemonization) — so ANY restart of `amux.service`, reboot or an
-ordinary auto-builder deploy, SIGKILLed the whole cgroup, tmux and every
-live Claude session included. The fix, already shipped and verified
-**loaded** (`systemctl --user show amux.service -p KillMode` → `process`,
-confirmed live 2026-08-31, not just present in the unit file): `amux.service`
-now sets `KillMode=process`, so systemd only signals its own tracked main
-PID on stop/restart and leaves every other process in the cgroup — tmux
-server, every pane, every Claude process — untouched. A commit-triggered
-auto-restart no longer kills any session, so the timer is safe to run
-enabled, which is now this box's actual state.
-
-This does NOT cover a real reboot, which is a different failure path with
-its own still-open gap — see the reboot findings a few paragraphs below.
-
-**Playwright MCP servers had NO supervision at all** until 2026-08-28 (found
-during the same reboot test — the 5 lanes came back for everything
-`amux.service`-adjacent, and stayed down for everything else). Fixed with a
-template unit, `scripts/amux-playwright-mcp@.service.template` +
-`scripts/amux-playwright-mcp.sh` (the wrapper resolves systemd's `%i` —
-`"<lane>-<port>"` — into a port and a per-lane profile dir, then `exec`s
-`npx @playwright/mcp` so systemd tracks the real process, not a wrapper
-shell). Installed and enabled live on this box:
-```bash
-for i in frontstage-8931 synthesia-8932 backstage-8933 amux-8934 infra-8935; do
-  systemctl --user enable --now amux-playwright-mcp@$i.service
-done
-```
-Crash-recovery verified live: `kill -9` on the running process → systemd
-schedules a restart within `RestartSec=5` → port answers again ~12s later.
-Note `--host 0.0.0.0` is baked into the wrapper — binding to `localhost`
-resolves IPv6-loopback-only on this box and silently breaks every IPv4 MCP
-client (a separate bug found and fixed the same day, see frontstage's
-diagnosis in git log around commit `8d1aea47`).
-
-**Found while wiring this up: both `.service.template` files had a real,
-never-caught path bug.** `ExecStart=$SCRIPT_DIR/rust-auto-build.sh` (and the
-playwright template had the same shape) — but `$SCRIPT_DIR` in `install.sh`
-resolves to the REPO ROOT, and the scripts actually live at
-`scripts/rust-auto-build.sh` / `scripts/amux-playwright-mcp.sh`. Both
-templates would have failed to start with "No such file or directory" had
-anyone actually installed them via `install.sh` — which is exactly why it
-was never caught: `amux-builder.service` had never been installed on any
-Linux box until today. Fixed both templates to reference `$SCRIPT_DIR/
-scripts/...`.
-
-An LXC container `reboot` (not just a server restart) was also deliberately
-tested end to end on 2026-08-28. Full findings: `amux-server-rs` and the
-`amux` lane's tmux+Claude session both came back with zero manual steps
-(systemd, as above); `frontstage` and any other non-`amux` lane did not
-(no unit restarts them — worth a `feature/systemd-linux`-style template per
-lane if this fleet keeps growing); the Proxmox LXC `onboot` flag is unset
-for this container (vmid 250, node `virt`) — irrelevant for a clean
-in-container `reboot` (LXC handles that as a real restart) but means a crash
-or host-level reboot would NOT bring the container back on its own — a real,
-separate gap, not yet fixed.
-
-**A clean multi-way merge with ZERO conflict markers is not proof the
-result is correct** — confirmed live 2026-08-28, building the integration
-branch: a `git merge` of `feature/central-secrets-sops` reported
-`Auto-merging crates/amux-server/src/lib.rs` with no conflict, and silently
-dropped a `pub mod secrets;` declaration, an `AppState` struct field, and a
-~15-line secret-store init block — three separate deletions, zero warning.
-Every LOCAL build on this box kept passing for hours afterward, because
-each one kept reusing/rebuilding from the SAME already-corrupted commit —
-a build that only re-verifies its own prior state can't catch a defect
-baked into that state. What actually caught it: building the exact same
-commit from a truly independent starting point (a fresh `git clone` onto
-different hardware, see below) — that failed to compile immediately with
-"cannot find `secrets` in `crate`", which no amount of re-running the same
-local build ever would have surfaced. If a merge into this branch touches
-a file that ALSO changed in an earlier merged branch, diff the result
-against the ORIGINAL branch that owns the code (`diff <(git show
-<branch>:<file>) <file>`) rather than trusting "no conflict" as sufficient
-— especially for any file every branch's own commits kept touching (like
-`lib.rs`'s `async_main`, where every phase adds its own spawn).
-
-**Offloading a build to faster/idle hardware.** This box is genuinely
-resource-constrained (4 threads, i3-7020U) — worth doing for anything past
-a quick `cargo check`, if you have spare hardware reachable over SSH.
-Specific hostnames/users/specs are NOT documented here — this is a public
-repo, and machine names + SSH access patterns are reconnaissance info about
-personal infrastructure even though they aren't credentials. See
-`CLAUDE.local.md` (gitignored, per-checkout — see the "Local/internal AI
-notes" pointer below) if this checkout has one populated.
-
-The technique, which IS safe to share: same architecture, different OS/libc
-still needs a matching environment — a binary linked against a newer glibc
-will not start on an older one. The reliable fix: build inside a Docker
-container on the remote host that matches THIS container's own base image
-(`debian:trixie` here), not the remote host's native OS — that guarantees
-glibc compatibility regardless of what the remote host itself runs. Use a
-persistent, named container (not `--rm`) plus `docker exec -d` for the
-actual build command, so setup survives a dropped SSH session; `tar` the
-source over SSH if the remote host lacks `rsync`. Cross-arch (e.g. Apple
-Silicon → x86_64 Linux) adds QEMU emulation (3-10x slowdown) or a
-Rosetta-backed VM (Colima `--vm-type=vz --vz-rosetta`, ~20-30% overhead) —
-only worth it if same-arch hardware isn't available.
-
-**Measured speedup, same commit, both `--release`:** this container (i3,
-4 threads, throttled to `jobs=1`/`incremental=false` for its own memory
-safety — see the cargo config note above) took **26m48s**. A remote 8-thread
-host, full default parallelism, in a matching Docker container, took
-**6m21s** — about 4.2x faster. Worth the ~1 minute of setup for anything
-beyond a quick local `cargo check`.
-
-**A remote build must ship the REAL source, not `git clone` the remote's
-own idea of it.** Confirmed live 2026-08-28: a remote-build helper script
-did `git clone .../mixpeek/amux.git && git checkout <local-only-sha> ||
-git checkout main` — the local-only merge commit (never pushed) obviously
-didn't exist on GitHub, the `checkout` failed, and the `||` silently fell
-back to `main`. The build succeeded, deployed, and `/health` went green —
-on the WRONG commit, missing every locally-merged feature branch, with
-nothing in the build log or health check distinguishing it from a correct
-build. `cargo build` cannot fail on "compiled the wrong source" — that
-class of error is invisible to every gate that only checks whether the
-build succeeded. Ship the actual worktree (`tar --exclude .git --exclude
-target -cf - . | ssh host 'tar -xf - -C dest'`, or `rsync` if available),
-never a fresh clone, when the commit being tested is local-only. If a
-clone is unavoidable, verify after the fact: `ssh host 'cd dest &&
-git rev-parse HEAD'` must equal the local `git rev-parse HEAD` — a
-`checkout <sha> || checkout main` fallback must be treated as a failure
-to report, never a silent success path.
-
-**Swapping the live binary needs `mv`, not `cp`, and a real port-release
-wait — get either wrong and the "fix" produces a stuck process burning
-100% CPU with the server DOWN.** Confirmed live 2026-08-28, deploying the
-build above:
-1. `sudo -n bash -c 'cp ... ~/.local/bin/...'` runs as **root**, whose
-   `$HOME` is `/root` — `~` inside that script did NOT expand to the
-   syseng homedir it looked like it would from the outer shell. The copy
-   silently failed (`cannot stat`), no binary changed, and nothing said so
-   loudly enough to notice before declaring the deploy done. Don't sudo a
-   file the calling user already owns — there is no privilege boundary to
-   cross, only a `$HOME` to accidentally swap.
-2. `cp new_binary ~/.local/bin/amux-server-rs` while that exact path is
-   the running process's executable fails with `Text file busy` — `cp`
-   truncates-and-writes the target in place, which the kernel refuses
-   against a mapped executable. The fix is `cp new_binary path.new &&
-   mv path.new path` — `mv` on the same filesystem is a rename, which
-   swaps the directory entry atomically without touching the inode the
-   old process still has open, so the old process keeps running its old
-   image right up until you kill it, with no window where the path points
-   at a half-written file.
-3. `kill` + immediate `nohup new_binary &` raced the OS's own socket
-   teardown: the new process bound `AddrInUse` because the killed
-   process's SIGTERM handler hadn't released port 8824 yet, and a THIRD
-   process (spawned same way, retried before checking) came up holding
-   the OLD binary (because step 1's swap had failed) and spun at 99.6%
-   CPU indefinitely with no further log lines — no crash, no exit, just a
-   silent busy-loop with the server not listening. Kill, then poll
-   `ss -tlnp | grep <port>` until it's actually empty before starting the
-   replacement — don't assume `kill` returning means the socket is free.
-4. **Verify the running binary is the one you just built**, don't infer
-   it from the deploy script exiting 0: `md5sum /proc/<pid>/exe` compared
-   against the source file you copied. `/health`'s `commit` field is the
-   cheaper first check but only catches wrong-COMMIT bugs (see the item
-   above); it says nothing about wrong-BINARY-on-disk bugs where the
-   commit field itself came from a build that never actually landed.
-
-**Local/internal AI notes.** This checkout may have a `CLAUDE.local.md`
-(gitignored, never committed or pushed) alongside this file — read it if
-present. It's where per-machine specifics that shouldn't be in a public
-repo live: remote host inventory, SSH access patterns, anything that's
-reconnaissance info about personal infrastructure rather than a credential
-(credentials never belong in either file — see `docs/credentials.md`'s
-names-only-here / values-in-`server.env` split, same idea). If you learn
-something host-specific worth remembering, put it there, not here.
-
-## Single-codebase rule
-
-Server code is identical for local and cloud. No `if IS_CLOUD` branches.
-Differences driven by env vars/headers from the gateway, not build flags.
-
-## Server config
-
-`~/.amux/server.env` -- persistent env vars, loaded at startup as setdefault.
-Credential VALUES live here only (repo is public). Inventory: `docs/credentials.md`.
-After editing: `launchctl kickstart -k gui/$(id -u)/com.amux.server-rs`.
-
-## iCal sync
-
-Events only (not schedules/board). `GET /api/calendar.ics` locally. S3 key is random
-and lives only in `server.env`. Never commit the actual URL (repo is public).
-
-## Browser Automation
-
-Use `amux browser route start '{"profile":"<saved-profile>","url":"https://..."}'`,
-then `amux browser route state`, `amux browser route shot`, and
-`amux browser route action '{"action":"click","selector":"..."}'`.
-Omit `profile` and the route uses the profile `amux browser for <url>` picks for
-that site. Backends are tried in the `ladder` of `browser-methods.toml` (Amux →
-CDP copy of the Chrome profile set in Browser → Browser route settings → CUA
-when enabled). When another worker holds the profile, the Amux backend joins
-its browser in a tab of your own (live sign-ins); it falls to the CDP copy only
-if joining fails, or with `"join":false`. The result's `route` names the actual
-backend, profile, how the profile was chosen, and every attempt. After a
-handoff, observe again before acting; uncertain actions are never replayed.
-Scope refusals remain refusals. Login-cookie evidence is not live auth proof.
-`amux browser route goal '{"task":"..."}'` hands a whole task to an agent method
-from `browser-methods.toml` (OpAgent first; disabled until its model is served),
-which drives the route and returns its answer and a trajectory.
-Raw CDP (`/chrome-cdp`, Playwright `connectOverCDP`) is a fallback only when a
-route cannot do the job (Ethan, 2026-10-27): `cdp_port` is withheld from
-`/api/browser/status`, `start` and route responses unless the caller passes
-`cdp_reason`, and what it then gets is a logging proxy (`api/cdp_proxy.rs`), so
-the grant and every page-acting command land in `amux audit <worker>`.
+Raw logs: `~/.amux/logs/server-rs.log`. Grep them with `-a`: one NUL byte makes grep treat the
+file as binary and hide matches. Reading CI from here: `docs/ops/reading-ci.md` (use the App
+token, and never poll `gh` in a loop).

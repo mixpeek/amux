@@ -272,12 +272,17 @@ pub async fn record(store: &SharedStore, results: Vec<InvariantResult>, duration
                         .prepare_cached(
                         "INSERT INTO _amux_invariant_incident
                            (invariant_id, entity_key, status, first_seen, last_seen,
-                            occurrences, expected, observed, evidence)
-                         VALUES (?1,?2,?3,?4,?4,1,?5,?6,?7)
+                            occurrences, expected, observed, evidence, episode_occurrences)
+                         VALUES (?1,?2,?3,?4,?4,1,?5,?6,?7,1)
                          ON CONFLICT(invariant_id, entity_key) DO UPDATE SET
                            status      = excluded.status,
                            last_seen   = excluded.last_seen,
                            occurrences = _amux_invariant_incident.occurrences + 1,
+                           -- The current failing run only (AF-1126): what the
+                           -- autofix threshold reads. Restarts at 1 on a reopen,
+                           -- judged on the pre-update resolved_at like `episode`.
+                           episode_occurrences = CASE WHEN _amux_invariant_incident.resolved_at IS NULL
+                               THEN _amux_invariant_incident.episode_occurrences + 1 ELSE 1 END,
                            expected    = excluded.expected,
                            observed    = excluded.observed,
                            evidence    = excluded.evidence,
@@ -998,6 +1003,35 @@ mod tests {
             inc[0]["occurrences"], 2,
             "history is preserved across the flap"
         );
+    }
+
+    /// AF-1126: the autofix threshold counts the CURRENT failing run. A pair
+    /// with a long history that healed must not file on its first new blip
+    /// (amux-gtm: 117 lifetime failures, one blip, healed 52 s later), and a
+    /// run that does reach the threshold still files.
+    #[tokio::test]
+    async fn a_healed_incident_files_on_its_new_run_not_its_lifetime_count() {
+        let (s, _d) = store();
+        let fail = || vec![InvariantResult::fail("x", "a", "b").entity("w1")];
+        for _ in 0..5 {
+            record(&s, fail(), 1).await;
+        }
+        record(&s, vec![InvariantResult::pass("x").entity("w1")], 1).await;
+        record(&s, fail(), 1).await;
+        let detect = |s: &SharedStore| {
+            let now = crate::runtime_jobs::registry::unix_now();
+            let conn = s.read().unwrap();
+            let (found, suppressed) = crate::runtime_jobs::autofix::detect_invariants(&conn, now);
+            let run: (i64, i64) = conn.query_row(
+                "SELECT occurrences, episode_occurrences FROM _amux_invariant_incident WHERE entity_key = 'w1'",
+                [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            (found.iter().filter(|f| f.signature.contains("|x|")).count(),
+             suppressed.iter().filter(|f| f.signature.contains("|x|")).count(), run)
+        };
+        assert_eq!(detect(&s), (0, 1, (6, 1)), "one failure after a heal: the run is 1, so it is noise");
+        record(&s, fail(), 1).await;
+        record(&s, fail(), 1).await;
+        assert_eq!(detect(&s), (1, 0, (8, 3)), "three in this run: it files");
     }
 
     /// Unknown must NOT open an incident (it is a gap in observation, not a

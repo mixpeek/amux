@@ -259,13 +259,8 @@ else
   printf '%s\n' "$REPO" > "$MARKER"
 fi
 
-say "BUILD $target from detached $REF worktree=$WORK (source checkout=$REPO)"
-# The builder's own authority check compares against this ref, so hand it the
-# ELECTED sha: passing $REF made it refuse every held-back green commit.
-rc=0
-AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-build.sh" || rc=$?
-
-# BUILD WHILE CI RUNS (owner, 2026-10-29: "we need to speed up how this
+# Before the pass below, which takes about 10 s and is the gap between a push
+# and its compile. BUILD WHILE CI RUNS (owner, 2026-10-29: "we need to speed up how this
 # works"). With the tip still pending, compile it now in the builder's stable
 # directory, so when it goes green its activation finds nothing to compile.
 # From a copy of the target's script, in the background: this worktree moves
@@ -282,4 +277,10 @@ if [ "${AMUX_DEPLOY_PREBUILD:-1}" = 1 ] && [ "$target" != "$tip" ] && [ "${tip_s
   disown 2>/dev/null || true
   say "PREBUILD tip $tip while its CI runs (pid $!) verdict=prebuild_launched"
 fi
+say "BUILD $target from detached $REF worktree=$WORK (source checkout=$REPO)"
+# The builder's own authority check compares against this ref, so hand it the
+# ELECTED sha: passing $REF made it refuse every held-back green commit.
+rc=0
+AMUX_REPO="$WORK" AMUX_RS_ACTIVATION_REF="$target" "$WORK/scripts/rust-auto-build.sh" || rc=$?
+
 exit "$rc"

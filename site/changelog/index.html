@@ -19,9 +19,9 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Changelog","item":"https://amux.io/changelog/"}]}</script>
 
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Open-source control plane for running an AI engineering team — launch and monitor dozens of parallel Claude Code, Codex, or Gemini CLI agents from one dashboard or your phone, with usage-limit resume and stall alerts. Built-in kanban board, CRM, Gmail, browser automation, scheduler, and skills. MIT + Commons Clause, single Rust binary, zero external dependencies.","url":"https://amux.io/","downloadUrl":"https://github.com/mixpeek/amux","softwareVersion":"0.9.x","releaseNotes":"https://amux.io/changelog/","license":"https://github.com/mixpeek/amux/blob/main/LICENSE","author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"amux","applicationCategory":"DeveloperApplication","operatingSystem":"macOS, Linux","description":"Self-hosted control plane for running an AI engineering team — launch and monitor dozens of parallel Claude Code, Codex, or Gemini CLI agents from one dashboard or your phone, with usage-limit resume and stall alerts. Built-in kanban board, CRM, Gmail, browser automation, scheduler, and skills. MIT + Commons Clause, single Rust binary, zero external dependencies.","url":"https://amux.io/","downloadUrl":"https://github.com/mixpeek/amux","softwareVersion":"0.9.x","releaseNotes":"https://amux.io/changelog/","license":"https://github.com/mixpeek/amux/blob/main/LICENSE","author":{"@type":"Organization","name":"Mixpeek","url":"https://mixpeek.com"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
 
-  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "ItemList", "name": "amux Changelog", "description": "Recent amux releases and features", "url": "https://amux.io/changelog/", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "An HTML folder opens as a website, and app links stay in the viewer", "description": "Open an HTML file from the Files tab and amux serves its whole folder as a website, with working links between pages, on a private address only you can open for 12 hours. Links inside an app now stay in the viewer instead of breaking out to a new tab, and an app whose session lapsed asks to reopen rather than showing an error.", "url": "https://amux.io/changelog/#a4038b38"}, {"@type": "ListItem", "position": 2, "name": "A worker you @mention in Messages sees only its own thread", "description": "When you @mention a worker in a reply, it now gets that thread's earlier posts and nothing else, and a mention that starts a new thread arrives with no unrelated history. Workers answer the question you asked without picking up other conversations from the same channel.", "url": "https://amux.io/changelog/#0d6ad3f0"}, {"@type": "ListItem", "position": 3, "name": "The dashboard returns to live updates after a reconnect", "description": "After a few failed reconnects, for example during a deploy restart, a dashboard window fell back to polling the whole board every five seconds and never went back. It now keeps retrying the live stream and stops polling the moment it reconnects, which also clears a stuck Sync error pill when you come back online.", "url": "https://amux.io/changelog/#7997643c"}, {"@type": "ListItem", "position": 4, "name": "Deploys go live faster and roll back on their own", "description": "A new main commit goes live as soon as its fast checks pass, while the long end-to-end suite runs after the deploy. amux compiles the build while CI runs, and if the new build comes up unhealthy it rolls back to the last good one without anyone stepping in.", "url": "https://amux.io/changelog/#87fc8ca1"}, {"@type": "ListItem", "position": 5, "name": "Storage tiers move idle folders to a cold drive and back", "description": "The Disk tab has a Storage tiers section: pick a cold drive, add folders to watch, and amux moves each folder to the drive when it sits idle and back when it is used. A link stays at the original path, so you and your agents keep using the same path and never see the move. Folders that keep growing are tiered one subfolder at a time.", "url": "https://amux.io/changelog/#3189c682"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "ItemList", "name": "amux Changelog", "description": "Recent amux releases and features", "url": "https://amux.io/changelog/", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Freeze a workspace in the Mac app", "description": "Window > Workspaces > Freeze Workspace (Option-Command-F) locks the tabs, names and workers in the open workspace so nothing gets closed, renamed or moved by accident. You can still resize windows, dividers and zoom. A frozen window says so under its title.", "url": "https://amux.io/changelog/#0b0fea23"}, {"@type": "ListItem", "position": 2, "name": "See what a worker answered from the Messages menu", "description": "A message's row menu now has Show answer, which reads the worker's reply from its transcript. You can check what a worker said on your phone without opening a terminal, and a missing answer says why.", "url": "https://amux.io/changelog/#a39e5a64"}, {"@type": "ListItem", "position": 3, "name": "Every worker has Chat by default", "description": "Chat is now on for every worker unless you switch it off, including workers that already existed. Nothing runs until you send the first chat message, and workers that had it on are unchanged.", "url": "https://amux.io/changelog/#b9d44b29"}, {"@type": "ListItem", "position": 4, "name": "The board is opt-in per worker", "description": "A worker uses the shared board only when its own settings or its group turn a Board switch on. Workers without it no longer get every prompt filed as a card or receive board nudges.", "url": "https://amux.io/changelog/#539ab95a"}, {"@type": "ListItem", "position": 5, "name": "The Messages row menu stays open while the list updates", "description": "Live updates used to redraw the Messages list even when nothing changed, which closed an open row menu and could make Pin, Copy or Show answer miss. The list now redraws only on a real change and keeps the menu open.", "url": "https://amux.io/changelog/#58e71c7e"}]}</script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -79,10 +79,8 @@
 <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
         <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
@@ -128,7 +126,7 @@
   <div id="entries"></div>
 
   <div class="github-cta">
-    <h3>amux is open source</h3>
+    <h3>amux is source-available</h3>
     <p>MIT + Commons Clause. One Rust binary plus SQLite.</p>
     <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Star on GitHub</a>
   </div>
@@ -172,7 +170,7 @@
       var desc = e.description ? '<p class="entry-desc">' + escHtml(e.description) + '</p>' : '';
       var tagsHtml = tags ? '<div class="entry-tags">' + tags + '</div>' : '';
       var ghUrl = 'https://github.com/mixpeek/amux/commit/' + e.hash;
-      return '<div class="entry" data-type="' + escHtml(e.type||'') + '">' +
+      return '<div class="entry" id="' + escHtml(e.short || '') + '" data-type="' + escHtml(e.type||'') + '">' +
         '<div class="entry-date-col">' +
           '<div class="entry-date">' + escHtml(e.date || '') + '</div>' +
           '<a href="' + escHtml(ghUrl) + '" target="_blank" rel="noopener" class="entry-hash" title="View commit on GitHub">' + escHtml(e.short || '') + '</a>' +
@@ -191,6 +189,9 @@
       document.getElementById('loading').style.display = 'none';
       allEntries = data;
       renderEntries();
+      // The ItemList links each entry as /changelog/#<short>; entries render after load, so scroll here.
+      var target = location.hash && document.getElementById(location.hash.slice(1));
+      if (target) target.scrollIntoView();
     })
     .catch(function(err) {
       document.getElementById('loading').style.display = 'none';
@@ -205,7 +206,7 @@
     <div class="footer-top">
       <div class="footer-brand-col">
         <a href="/" class="footer-logo">amux</a>
-        <p>Open-source control plane for AI agents.</p>
+        <p>Self-hosted control plane for AI agents.</p>
       </div>
       <div class="footer-col">
         <div class="footer-col-label">Resources</div>

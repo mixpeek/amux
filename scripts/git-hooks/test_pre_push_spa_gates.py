@@ -122,6 +122,11 @@ def main():
         write(work, "crates/amux-dashboard/static/app.js", "// GOOD\n")
         r = git(work, "push", "origin", "main")
         check("push breaking a dashboard suite is refused", r.returncode != 0, True)
+        if r.returncode == 0:
+            # Say WHY, where CI shows it: on 2026-10-31 this failed in CI only
+            # (09:38Z on) with every later check red and nothing to read.
+            print("  hook stderr on the push that should have been refused:\n    "
+                  + "\n    ".join(r.stderr.strip().splitlines()[-12:]))
         check("refusal names the failing test", "app.js says GOOD" in r.stderr, True)
         check("a red already on the remote is not blamed on this push",
               "the readme is not red" in r.stderr.split("BLOCKED")[-1], False)

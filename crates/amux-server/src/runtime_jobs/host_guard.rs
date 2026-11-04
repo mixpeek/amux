@@ -222,6 +222,16 @@ pub fn admit_automation(what: &str) -> bool {
     false
 }
 
+/// Did the guard hold `what` within the last `secs`? A loop it held looks the
+/// same as a stopped loop from outside, so a check that reads silence asks here
+/// first (AF-1155: eight minutes of held schedules filed as "gone silent").
+pub fn deferred_within(what: &str, secs: i64) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    deferrals()
+        .lock()
+        .is_ok_and(|d| d.1.get(what).is_some_and(|last| now - last <= secs))
+}
+
 // ---- probes ---------------------------------------------------------------
 
 /// Absolute paths first: the server's launchd PATH has no /usr/sbin, so a bare
@@ -769,6 +779,17 @@ pub fn spawn() -> super::PeriodicTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_loop_reads_as_held_for_the_window_and_not_after() {
+        let name = format!("test-loop-{}", ulid::Ulid::new());
+        assert!(!deferred_within(&name, 300));
+        let now = chrono::Utc::now().timestamp();
+        deferrals().lock().unwrap().1.insert(name.clone(), now - 100);
+        assert!(deferred_within(&name, 300));
+        assert!(!deferred_within(&name, 60));
+    }
+
 
     /// Live probe of THIS machine, report-only (level Ok never renices).
     /// `cargo test -p amux-server --lib -- --ignored host_guard_live_probe --nocapture`

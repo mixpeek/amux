@@ -70,6 +70,10 @@ jobs:
               dest = target / path.parent.name / path.name
               dest.parent.mkdir(exist_ok=True)
               shutil.copy2(path, dest)
+              # A failed scenario keeps its server log: the receipt alone says that
+              # a wait timed out, never why (AF-1162).
+              if '"failed": 0' not in path.read_text() and (path.parent / 'server.log').is_file():
+                  shutil.copy2(path.parent / 'server.log', dest.parent / 'server.log')
           if os.environ['REQUIRE_COMPLETE'] == 'true':
               assert (target / 'binary.sha256').is_file(), 'missing tested binary identity'
               receipts = list(target.glob('controller-state/test-receipts/*.tsv'))
@@ -77,7 +81,13 @@ jobs:
               for receipt in receipts:
                   data = receipt.read_text()
                   assert '# rc\t0\n' in data and '# source_state\tstable_before_after\n' in data, data[:1000]
-              assert len(list(target.glob('amux-chaos-*/recovery-receipt.json'))) == 12, 'missing orchestration receipts'
+              # Expected count from the scenario list itself, so adding a scenario
+              # cannot silently break this step (it read a literal 12 when the 13th landed).
+              import re
+              listed = re.findall(r'(e2e/chaos/\S+\.mjs)', pathlib.Path('scripts/test-harness-recovery.sh').read_text().split('CHAOS_SCENARIOS=(', 1)[1].split(')', 1)[0])
+              expected = sum('recovery-receipt.json' in pathlib.Path(s).read_text() for s in listed)
+              found = len(list(target.glob('amux-chaos-*/recovery-receipt.json')))
+              assert expected and found == expected, f'missing orchestration receipts: {found} of {expected}'
           PY
       - name: Retain measured recovery receipts even on failure
         if: always()

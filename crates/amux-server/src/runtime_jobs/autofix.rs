@@ -174,6 +174,18 @@ fn latency_min_samples() -> i64 {
 /// on these routes that IS wrong.
 const LONG_BY_DESIGN: &[(&str, f64)] = &[
     ("/api/files/mdai/run", 150_000.0),
+    // GET /api/sessions/{name}/peek (AF-1167). The full peek (history) reads
+    // the pane with a 10s capture-pane bound, then geometry and the transcript,
+    // and the dashboard gives it 15s before aborting (`refreshPeek`). So 15s
+    // is this route's own deadline. A live=1 peek has its own 2.5s budget and
+    // answers 503 past it (AF-1165), so this entry hides nothing on that path.
+    //
+    // Measured 2026-11-02: every full peek past 10s finished beside saved
+    // tmux-stall evidence while the tmux server sat idle in select (534 of 612
+    // samples), at load 45-80 on 28 cores. The wait is spawning tmux clients
+    // on a loaded host. The control-mode client that removes the spawn
+    // (backend/tmux_ctl.rs) has been off since it crashed the fleet (AF-1056).
+    ("/api/sessions/{name}/peek", 15_000.0),
     // POST /api/browser/navigate (AMUX-3835). The duration is a REMOTE PAGE
     // LOAD plus a settle, so the wait belongs to the site, not to amux. The
     // budget is this endpoint's OWN bound, added up rather than guessed:
@@ -208,6 +220,19 @@ const LONG_BY_DESIGN: &[(&str, f64)] = &[
     // (unlike navigate) has nothing running AFTER the CDP wait that a wider
     // budget would need to cover.
     ("/api/browser/start", 30_000.0),
+    // POST /api/browser/routing/request (AF-1143). One call can start a real
+    // browser or walk the ladder to the next backend, so the wait is the
+    // driver's. The handler bounds the driver at 240s
+    // (api/browser_routing.rs `deadline_s`), and this budget is that bound.
+    // A goal or a CUA route gets 2700s for a cold image build; this table is
+    // per route, so such a run past 240s still files, which is right for a
+    // call that rare and that long.
+    //
+    // Measured over 7 days: 12,207 requests, p50 118ms, p90 1763ms, p99
+    // 13.9s, worst 106s, 177 past the 10s floor, and nothing past 120s. All
+    // of the slowest answered 200, so the 10s floor sits inside this route's
+    // normal tail.
+    ("/api/browser/routing/request", 240_000.0),
     // GET /api/email/inbox (AMUX-3519, third filing in one day on the same
     // residual): a count=480 metadata fetch is quota-bound at ~12-15s — the
     // 8-wide concurrency sits deliberately under Gmail's 250 units/s budget
@@ -5388,11 +5413,17 @@ pub fn detect_invariants(conn: &Connection, now: f64) -> (Vec<Finding>, Vec<Supp
         // its self-heal epoch in there (InvariantResult::heals_at), and that is
         // what separates "held red on purpose until Tuesday" from "a fault that
         // is getting worse". Without it the two file identical cards.
-        "SELECT invariant_id, entity_key, status, first_seen, last_seen, occurrences, \
+        //
+        // The count is the CURRENT failing run (AF-1126), not `occurrences`,
+        // which totals every failure since first_seen: an incident with 117
+        // lifetime failures filed on one blip an hour after it had healed. A
+        // row written before that column existed reads 0 and falls back.
+        "SELECT invariant_id, entity_key, status, first_seen, last_seen, \
+                CASE WHEN COALESCE(episode_occurrences, 0) > 0 THEN episode_occurrences ELSE occurrences END AS run, \
                 expected, observed, COALESCE(evidence, ''), COALESCE(episode, 1) \
          FROM _amux_invariant_incident WHERE resolved_at IS NULL AND status = 'fail' \
          AND last_seen >= ?1 \
-         ORDER BY occurrences DESC LIMIT 200",
+         ORDER BY run DESC LIMIT 200",
     ) else {
         return (out, suppressed);
     };
@@ -7160,6 +7191,14 @@ pub fn connector_findings_from_rollup(rollup: &serde_json::Value, now: f64) -> V
                 continue;
             }
             let http_st = leg.get("http").and_then(|v| v.as_u64()).unwrap_or(0);
+            // A 5xx is the PROVIDER failing, not it rejecting the token, so it
+            // files nothing, like `unreachable` (AF-1085: Google Calendar
+            // answered 503 "Backend Error" for esteininger21@gmail.com, the card
+            // said the token was rejected, and the next canary read 200). A 4xx
+            // is the API refusing this credential or grant, which is the rot.
+            if http_st >= 500 {
+                continue;
+            }
             out.push(Finding {
                 kind: DetectorKind::ConnectorAuth,
                 signature: format!("connector-canary|{account}|{svc}"),
@@ -11025,6 +11064,8 @@ mod tests {
                     "gmail": {"status": "ok", "http": 200},
                     "calendar": {"status": "api_error", "http": 403, "detail": "insufficientPermissions"},
                     "drive": {"status": "not_granted"},
+                    // AF-1085: a provider's own failure is not token rot.
+                    "sheets": {"status": "api_error", "http": 503, "detail": "Backend Error"},
                     "slack": {"status": "unreachable", "detail": "dns"},
                 }},
             ],
@@ -16931,6 +16972,20 @@ mod tests {
     /// value is that the route keeps ONE latency story it can still tell —
     /// "this hung", as against "this was big". A budget set to infinity, or a
     /// blanket exemption, silences both.
+    /// AF-1167: a real peek path reaches the budget through the same
+    /// normalizer the detector uses, the 13.1s full peeks measured on
+    /// 2026-11-02 sit under it, and a peek that outlives the dashboard's 15s
+    /// abort still files. A fast sibling verb (report) does not inherit it.
+    #[test]
+    fn a_full_peek_inside_the_dashboards_deadline_is_not_an_outlier() {
+        let target = rl::normalize_target_verb("/api/sessions/mixpeek-meta-worker/peek");
+        let budget = design_budget_ms(&target);
+        assert!(13_110.0 < budget, "{target}: {budget}");
+        assert!(budget <= 15_000.0, "past the dashboard's abort nobody receives it: {budget}");
+        let report = rl::normalize_target_verb("/api/sessions/mixpeek-meta-worker/report");
+        assert_eq!(design_budget_ms(&report), 0.0, "{report}");
+    }
+
     #[test]
     fn a_long_by_design_route_keeps_the_one_latency_story_that_is_still_wrong() {
         // The measurement that set the number: three consecutive calls at
@@ -18121,16 +18176,17 @@ mod tests {
             // worse of the two failures.
             // `episode` likewise mirrors migration 0081 (AMUX-4798), with the
             // same DEFAULT 1, so a fixture row that does not name one behaves
-            // like every incident that predates the column.
+            // like every incident that predates the column. `episode_occurrences`
+            // mirrors 0147 (AF-1126); 0 makes the filer read `occurrences`.
             "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
              status TEXT, first_seen REAL, last_seen REAL, occurrences INTEGER, \
              resolved_at REAL, expected TEXT, observed TEXT, evidence TEXT, \
-             episode INTEGER NOT NULL DEFAULT 1);",
+             episode INTEGER NOT NULL DEFAULT 1, episode_occurrences INTEGER NOT NULL DEFAULT 0);",
         )
         .unwrap();
         for r in rows {
             conn.execute(
-                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10)",
+                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,0)",
                 rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
             )
             .unwrap();
@@ -18147,7 +18203,7 @@ mod tests {
             "CREATE TABLE _amux_invariant_incident (invariant_id TEXT, entity_key TEXT, \
              status TEXT, first_seen REAL, last_seen REAL, occurrences INTEGER, \
              resolved_at REAL, expected TEXT, observed TEXT, evidence TEXT, \
-             episode INTEGER NOT NULL DEFAULT 1); \
+             episode INTEGER NOT NULL DEFAULT 1, episode_occurrences INTEGER NOT NULL DEFAULT 0); \
              CREATE TABLE session_events (idem TEXT); \
              CREATE UNIQUE INDEX idx_sev_idem ON session_events(idem) WHERE idem IS NOT NULL; \
              CREATE TABLE issues (id TEXT, source_ref TEXT, status TEXT, \
@@ -18156,7 +18212,7 @@ mod tests {
         .unwrap();
         for r in rows {
             conn.execute(
-                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10)",
+                "INSERT INTO _amux_invariant_incident VALUES (?1,?2,?3,?4,?5,?6,NULL,?7,?8,?9,?10,0)",
                 rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
             )
             .unwrap();

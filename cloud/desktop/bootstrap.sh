@@ -24,6 +24,11 @@
 # Optional: AMUX_UPDATES=source (self-updating source install, see below),
 # AMUX_UPDATE_FOLLOW_MIN (with source: fetch main every n minutes),
 # TS_AUTHKEY, AMUX_PASSWORD (the RDP/unix password), SWAP_GB,
+# CLAUDE_CODE_OAUTH_TOKEN (workers use the subscription; the API key then stays out),
+# AMUX_SSH_KEYS, AMUX_SSH_PASSWORD_AUTH=1, AMUX_GITHUB_REPOS + GITHUB_TOKEN, AMUX_GIT_NAME,
+# AMUX_GIT_EMAIL, AMUX_CLAUDE_ROTATE=1, AMUX_BEHIND_CLOUDFLARE=1 (web from Cloudflare only;
+# the DNS record must be proxied). cloud/desktop/provision-gcp.sh creates the VM and DNS
+# and runs this with all of them from one env file.
 # AMUX_IMAGE, AMUX_TENANT=0 (keeps the server's ops-health cards on the board).
 # A DNS A record for AMUX_DOMAIN must point at this box before Caddy can get a
 # certificate. A user listed without a password gets a random one, printed once.
@@ -155,7 +160,11 @@ if ! id "$USER_NAME" &>/dev/null; then
   useradd -m -s /bin/bash -G sudo "$USER_NAME"
   PW="${AMUX_PASSWORD:-$(openssl rand -base64 18)}"
   echo "$USER_NAME:$PW" | chpasswd
-  [[ -n "${AMUX_PASSWORD:-}" ]] || log "RDP password for $USER_NAME (shown once): $PW"
+  # Never into the log (mixpeek-dev, 2026-10-31: the log printed it in the clear).
+  if [[ -z "${AMUX_PASSWORD:-}" ]]; then
+    install -m 600 /dev/null /root/amux-rdp-password && printf '%s\n' "$PW" > /root/amux-rdp-password
+    log "RDP password for $USER_NAME written to /root/amux-rdp-password (root only)"
+  fi
 fi
 HOME_DIR=$(getent passwd "$USER_NAME" | cut -d: -f6)
 as_user() { sudo -u "$USER_NAME" -H "$@"; }
@@ -324,7 +333,20 @@ set_env() {  # replace-or-append one KEY=value line
   printf '%s=%s\n' "$k" "$v" >> "$ENV_FILE.tmp"
   mv "$ENV_FILE.tmp" "$ENV_FILE"
 }
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] && set_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+# CLAUDE LOGIN: a subscription token wins. A key in server.env reaches every worker's
+# environment and Claude Code bills it (mixpeek-dev, 2026-10-31: workers hit the key's workspace
+# cap while a subscription token sat unused), so with both given the key stays out of the
+# workers' environment. AMUX_PREFER_API_KEY=1 keeps the key.
+API_KEY_FOR_WORKERS="${ANTHROPIC_API_KEY:-}"
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  set_env CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN"
+  if [[ "${AMUX_PREFER_API_KEY:-0}" != 1 ]]; then
+    API_KEY_FOR_WORKERS=""
+    grep -v '^ANTHROPIC_API_KEY=' "$ENV_FILE" > "$ENV_FILE.tmp" || true; mv "$ENV_FILE.tmp" "$ENV_FILE"
+    log "Claude: workers use the subscription token (ANTHROPIC_API_KEY left out; AMUX_PREFER_API_KEY=1 to bill the key)"
+  fi
+fi
+[[ -n "$API_KEY_FOR_WORKERS" ]] && set_env ANTHROPIC_API_KEY "$API_KEY_FOR_WORKERS"
 # A customer box: the server's own invariant/disk cards are operator noise on
 # the customer's board (same reasoning as the cloud image, AMUX-3014).
 [[ "${AMUX_TENANT:-1}" == "1" ]] && set_env AMUX_OPS_HEALTH_CARDS 0
@@ -371,8 +393,8 @@ CS="$HOME_DIR/.claude/settings.json"; [[ -s "$CS" ]] || echo '{}' > "$CS"
 #    customer. update.sh updates all three agent CLIs daily instead.
 jq '. * {"skipDangerousModePermissionPrompt": true, "env": {"DISABLE_AUTOUPDATER": "1"}}' "$CS" > "$CS.tmp" && mv "$CS.tmp" "$CS"
 CJ="$HOME_DIR/.claude.json"; [[ -s "$CJ" ]] || echo '{}' > "$CJ"
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  jq --arg k "${ANTHROPIC_API_KEY: -20}" \
+if [[ -n "$API_KEY_FOR_WORKERS" ]]; then
+  jq --arg k "${API_KEY_FOR_WORKERS: -20}" \
     '.hasCompletedOnboarding = true
      | .customApiKeyResponses.approved = ((.customApiKeyResponses.approved // []) + [$k] | unique)
      | .customApiKeyResponses.rejected = (.customApiKeyResponses.rejected // [])' \
@@ -583,6 +605,17 @@ if [[ "$FLEET" == 1 ]]; then
 fi
 chown root:amux-door /etc/amux-door/users.new; chmod 640 /etc/amux-door/users.new
 mv /etc/amux-door/users.new /etc/amux-door/users
+# Address allowlist chosen at signup (cloud/start: "only my address"): AMUX_IP_ALLOWLIST is the
+# address the owner signed up from, or "1" to let each account's first sign-in add its address.
+# Set once: after that the owner edits it at /_door/allowlist.
+if [[ -n "${AMUX_IP_ALLOWLIST:-}" && ! -f /etc/amux-door/allowlist.json ]]; then
+  python3 /opt/amux-door/door.py allowlist on >/dev/null
+  if [[ "$AMUX_IP_ALLOWLIST" != 1 ]]; then
+    python3 /opt/amux-door/door.py allowlist add "$AMUX_IP_ALLOWLIST" "${WEB_USERS%%:*}" "signed up from here" >/dev/null \
+      || log "WARN: allowlist address $AMUX_IP_ALLOWLIST was not added; first sign-in will add one"
+  fi
+  log "address allowlist on ($(python3 -c 'import json;print(len(json.load(open("/etc/amux-door/allowlist.json"))["entries"]))') address(es))"
+fi
 systemctl daemon-reload
 systemctl enable amux-door >/dev/null
 systemctl restart amux-door
@@ -678,6 +711,15 @@ sudo -u caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >
 systemctl enable caddy >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 
+# ── Edge: SSH limits, fail2ban, security upgrades, the visitor's real address for the door, and
+# with AMUX_BEHIND_CLOUDFLARE=1 web ports open to Cloudflare only (cloud/desktop/edge-harden.sh;
+# update.sh re-runs it so Cloudflare's list stays current). ──
+install -d /etc/amux
+if [[ "${AMUX_BEHIND_CLOUDFLARE:-0}" == 1 ]]; then echo cloudflare > /etc/amux/edge; fi
+EDGE_SH="$(dirname "$(readlink -f "$0")")/edge-harden.sh"
+[[ -f "$EDGE_SH" ]] || EDGE_SH="$SRC/cloud/desktop/edge-harden.sh"
+if [[ -f "$EDGE_SH" ]]; then bash "$EDGE_SH" | while read -r l; do log "$l"; done; else log "WARN: edge-harden.sh not found; host not hardened"; fi
+
 # ── Self-updates for a standalone host (amux Cloud, cloud/start) ──
 # No control plane reaches these servers, so each one keeps itself current: every two minutes it
 # follows main's newest image and the checkout, rolls back (and holds) a build that fails /health,
@@ -714,6 +756,71 @@ UNIT
   log "self-updates: amux-update.timer $(systemctl is-active amux-update.timer), first run: $(python3 -c 'import json;print(json.load(open("/var/lib/amux-update/status.json"))["verdict"])' 2>/dev/null || echo none)"
 fi
 
+# ── SSH: keys only. A public box sees thousands of password guesses a day (sandbox: 6,767 failed
+# attempts in one day, 2026-10-29). AMUX_SSH_PASSWORD_AUTH=1 keeps passwords. AMUX_SSH_KEYS
+# (newline-separated public keys) lets them log in as $USER_NAME. ──
+if [[ -n "${AMUX_SSH_KEYS:-}" ]]; then
+  install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$HOME_DIR/.ssh"
+  touch "$HOME_DIR/.ssh/authorized_keys"
+  while IFS= read -r k; do
+    [[ -n "$k" ]] && ! grep -qxF "$k" "$HOME_DIR/.ssh/authorized_keys" && printf '%s\n' "$k" >> "$HOME_DIR/.ssh/authorized_keys"
+  done <<< "$AMUX_SSH_KEYS"
+  chown "$USER_NAME:$USER_NAME" "$HOME_DIR/.ssh/authorized_keys"; chmod 600 "$HOME_DIR/.ssh/authorized_keys"
+fi
+if [[ "${AMUX_SSH_PASSWORD_AUTH:-0}" != 1 && "$FLEET" == 0 ]]; then
+  printf '# amux bootstrap: keys only. Revert: delete this file, systemctl reload ssh.\nPasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
+    > /etc/ssh/sshd_config.d/00-amux-no-password.conf
+  sshd -t && systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+  log "ssh: password logins off ($(sshd -T 2>/dev/null | grep -i '^passwordauthentication' || echo unread))"
+fi
+
+# ── GitHub: AMUX_GITHUB_REPOS="owner/repo owner/other" gives $USER_NAME push access to each repo
+# with its own deploy key (GitHub allows a deploy key on one repo only), an SSH alias per repo
+# (github.com-<owner>-<repo>) and a clone in ~/Dev/<repo>. With GITHUB_TOKEN (admin on the repos)
+# the keys are registered with write access; without it they are written to
+# /root/amux-deploy-keys.txt to add by hand, and the clone waits for the next run.
+# AMUX_GIT_NAME / AMUX_GIT_EMAIL set the commit identity. ──
+if [[ -n "${AMUX_GIT_NAME:-}" ]]; then as_user git config --global user.name "$AMUX_GIT_NAME"; fi
+if [[ -n "${AMUX_GIT_EMAIL:-}" ]]; then as_user git config --global user.email "$AMUX_GIT_EMAIL"; fi
+if [[ -n "${AMUX_GITHUB_REPOS:-}" ]]; then
+  install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$HOME_DIR/.ssh" "$HOME_DIR/Dev"
+  as_user bash -c 'ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; sort -u -o ~/.ssh/known_hosts ~/.ssh/known_hosts'
+  : > /root/amux-deploy-keys.txt; chmod 600 /root/amux-deploy-keys.txt
+  for repo in $AMUX_GITHUB_REPOS; do
+    slug="${repo//\//-}"; key="$HOME_DIR/.ssh/github_$slug"; alias="github.com-$slug"
+    [[ -f "$key" ]] || as_user ssh-keygen -q -t ed25519 -N "" -C "$DOMAIN deploy key for $repo" -f "$key"
+    grep -q "^Host $alias\$" "$HOME_DIR/.ssh/config" 2>/dev/null || printf 'Host %s\n  HostName github.com\n  User git\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$alias" "$key" >> "$HOME_DIR/.ssh/config"
+    chown "$USER_NAME:$USER_NAME" "$HOME_DIR/.ssh/config"; chmod 600 "$HOME_DIR/.ssh/config"
+    registered=no
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      code=$(curl -s -o /tmp/amux-deploy-key.json -w '%{http_code}' -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+        -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$repo/keys" \
+        -d "$(jq -n --arg t "$DOMAIN" --arg k "$(cat "$key.pub")" '{title:$t,key:$k,read_only:false}')" || true)
+      if [[ "$code" == 201 ]] || grep -q 'key is already in use' /tmp/amux-deploy-key.json 2>/dev/null; then registered=yes; fi
+      rm -f /tmp/amux-deploy-key.json
+    fi
+    [[ "$registered" == yes ]] || printf '%s (write access): %s\n' "$repo" "$(cat "$key.pub")" >> /root/amux-deploy-keys.txt
+    if as_user ssh -o BatchMode=yes -T "$alias" 2>&1 | grep -q "successfully authenticated"; then
+      dir="$HOME_DIR/Dev/${repo#*/}"
+      [[ -d "$dir/.git" ]] || as_user git clone -q "git@$alias:$repo.git" "$dir" || log "WARN: clone of $repo failed"
+      log "github: $repo ready at $dir (deploy key, alias $alias)"
+    else
+      log "github: $repo deploy key not active yet; add it from /root/amux-deploy-keys.txt and re-run"
+    fi
+  done
+fi
+
+# ── Claude account rotation (AMUX_CLAUDE_ROTATE=1): scripts/claude-rotate.py switches the box's
+# Claude login among the subscription accounts before one runs out. Each account signs in once
+# into its own folder (cloud/desktop/claude-accounts.sh, run from a machine with a browser), which
+# then drops CLAUDE_CODE_OAUTH_TOKEN from server.env: a fixed token would pin every worker to one
+# account. After that, switches need no browser. ──
+if [[ "${AMUX_CLAUDE_ROTATE:-0}" == 1 && -f "$SRC/scripts/claude-rotate-install.sh" ]]; then
+  as_user env CLAUDE_ROTATE_ENABLE=1 bash "$SRC/scripts/claude-rotate-install.sh" >/dev/null 2>&1 \
+    && log "claude-rotate: installed and on (sign accounts in with cloud/desktop/claude-accounts.sh)" \
+    || log "WARN: claude-rotate install failed; run scripts/claude-rotate-install.sh as $USER_NAME"
+fi
+
 # ── Verify: every line below is computed, none asserted ──
 sleep 4
 LOCAL=$(curl -sk --max-time 5 https://127.0.0.1:8824/health | jq -r '.commit // empty' 2>/dev/null || true)
@@ -722,7 +829,8 @@ KEY_SET=$(grep -c '^ANTHROPIC_API_KEY=.' "$ENV_FILE" || true)
 log "image: $IMAGE ($IMAGE_ID)"
 log "amux /health on loopback, commit: ${LOCAL:-UNREACHABLE}"
 log "https://$DOMAIN/api/sessions without credentials: HTTP $ANON (401 expected; 000 = no cert yet, check DNS)"
-log "ANTHROPIC_API_KEY lines in server.env: $KEY_SET"
+log "ANTHROPIC_API_KEY lines in server.env: $KEY_SET, CLAUDE_CODE_OAUTH_TOKEN lines: $(grep -c '^CLAUDE_CODE_OAUTH_TOKEN=.' "$ENV_FILE" || true)"
 log "xrdp listeners on 3389: $(ss -tln | grep -c ':3389 ' || true)"
+log "edge: $(cat /etc/amux/edge 2>/dev/null || echo direct), web rules open to anyone: $(ufw status | grep -cE '^(80|443|8443)/tcp( \(v6\))? +ALLOW +Anywhere' || true)"
 [[ -n "$CREDS_OUT" ]] && log "generated web credentials (shown once):$CREDS_OUT"
 log "connect from another amux: AMUX_API=https://<user>:<pw>@$DOMAIN amux ls"

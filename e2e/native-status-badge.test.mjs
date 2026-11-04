@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const source=fs.readFileSync('crates/amux-dashboard/static/app.js','utf8');
-const code=source.slice(source.indexOf('const _workerLifecyclePending ='),source.indexOf('function updatePeekStatus()'));
+// The badge reads the one client status function, _workerStatus.
+const code=source.slice(source.indexOf('function _workerStatus('),source.indexOf('function _sessStatusKey('))
+ +source.slice(source.indexOf('const _workerLifecyclePending ='),source.indexOf('function updatePeekStatus()'));
 function badge(worker) {
  const ctx=vm.createContext({esc:String,escJs:String,_agentsChip:()=>'',_waitingTitle:()=>'',_waitingLabel:()=> 'needs input',_idleMovedTitle:()=>'',_idleMovedSuffix:()=>''});
  vm.runInContext(code,ctx);

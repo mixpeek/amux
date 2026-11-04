@@ -550,6 +550,7 @@
         <section class="settings-section" id="connection-session">
           <button class="btn" id="connection-sign-out" onclick="_connectionSignOut()">Sign out of this server</button>
           <button class="btn" id="connection-cloud-account" style="display:none" onclick="_appBridge('settings')">amux Cloud account</button>
+          <a class="btn" id="connection-allowlist" style="display:none" href="/_door/allowlist">Address allowlist</a>
           <p class="connection-help" id="connection-sign-out-help">Ends this connection on this device. Then sign in again, or connect to another server by its address.</p>
         </section>
         <div class="settings-sep"></div>
@@ -771,6 +772,7 @@
 <div class="tab-bar">
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
   <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
   <button id="tab-calendar" onclick="switchView('calendar')"><span class="tab-ico">🗓</span><span class="tab-lbl">Calendar</span></button>
@@ -1049,7 +1051,7 @@
       </button>
       <div class="recorder-readout">
         <div id="recorder-elapsed" class="recorder-elapsed">0:00</div>
-        <div class="recorder-level" aria-hidden="true"><div id="recorder-level-fill" class="recorder-level-fill"></div></div>
+        <canvas id="recorder-wave" class="recorder-wave" aria-hidden="true"></canvas>
         <div id="recorder-status" class="recorder-status" role="status" aria-live="polite">Tap to record. Each second is saved on this device as it records.</div>
       </div>
       <div id="rec-meters" class="rec-meters" aria-hidden="true"></div>
@@ -1146,10 +1148,6 @@
     <button class="fe-tb-btn" id="files-back-session-btn" onclick="closeExplore()" title="Return to worker" style="display:none;background:var(--purple);color:var(--on-solid);border-color:var(--purple);font-size:var(--fs-xs);white-space:nowrap;gap:var(--space-1);font-weight:600;">
       &#x2190; <span id="files-back-session-label">Back</span>
     </button>
-    <button class="fe-tb-btn fe-tb-nav" onclick="_filesUp()" title="Go up to the parent folder">
-      <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 10.5V3M3.5 6l3-3 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 1.5h9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-      <span>Up</span>
-    </button>
     <div id="files-breadcrumb" class="fe-breadcrumb"></div>
     <!-- Primary labeled actions (hidden on mobile, where they move into the More menu) -->
     <div class="fe-tb-actions">
@@ -1186,15 +1184,10 @@
     <span id="files-cache-status" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex-shrink:0;"><span class="upq-badge" style="display:none;"></span></span>
     <!-- More menu (the ellipsis menu): the full action list, always available -->
     <div class="fe-tb-overflow" id="files-overflow-wrap">
-      <button class="fe-tb-btn" onclick="_filesOverflowToggle()" title="More actions" id="files-overflow-btn">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="3" r="1.1" fill="currentColor"/><circle cx="7" cy="7" r="1.1" fill="currentColor"/><circle cx="7" cy="11" r="1.1" fill="currentColor"/></svg>
-        <span class="fe-more-lbl">More</span>
+      <button class="fe-tb-btn" onclick="_filesOverflowToggle()" title="More" aria-label="More" aria-haspopup="menu" id="files-overflow-btn">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="3" r="1.1" fill="currentColor"/><circle cx="7" cy="7" r="1.1" fill="currentColor"/><circle cx="7" cy="11" r="1.1" fill="currentColor"/></svg>
       </button>
       <div id="files-overflow-menu" class="fe-tb-overflow-menu">
-        <button class="fe-tb-oitem" onclick="_filesUp();_filesOverflowClose()">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 10.5V3M3.5 6l3-3 3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 1.5h9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-          Up to parent folder
-        </button>
         <button class="fe-tb-oitem" onclick="loadFiles(_filesCwd);_filesOverflowClose()">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 6.5 6.5 1 12 6.5M2.5 5v6.5h3V8.5h2v3h3V5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
           Go to home directory
@@ -1248,8 +1241,15 @@
       </div>
     </div>
   </div>
-  <!-- Quick-access bookmarks -->
+  <!-- Quick-access row: a filter (kept per device), then its chips on one line -->
   <div id="files-bookmarks" style="padding:var(--space-1) var(--space-2-5);border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card);display:flex;gap:var(--space-1-5);overflow-x:auto;scrollbar-width:none;align-items:center;">
+    <select id="files-row-filter" class="input" aria-label="Show in this row" title="What this row shows (kept on this device)" onchange="_filesRowFilterSet(this.value)">
+      <option value="all">All</option>
+      <option value="pinned">Pinned</option>
+      <option value="recent">Recent</option>
+      <option value="modified">Modified</option>
+      <option value="shared">Shared</option>
+    </select>
     <div id="files-bookmarks-list" style="display:flex;gap:var(--space-1);flex-wrap:nowrap;"></div>
     <button id="files-bm-add" onclick="_filesPinMenu(this)" style="background:none;border:1px dashed var(--border);border-radius:var(--radius-sm);color:var(--dim);font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-1-5);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="Bookmark current folder">+</button>
     <button id="files-lib-btn" onclick="_libOpen()" style="display:none;margin-left:auto;background:var(--accent);color:var(--shade);border:none;border-radius:var(--radius-sm);font-size:var(--fs-xs);font-weight:600;padding:var(--space-0-5) var(--space-2);cursor:pointer;white-space:nowrap;flex-shrink:0;" title="View this folder as a searchable library">&#x1F4DA; Library</button>
@@ -1869,7 +1869,7 @@
       <button class="metrics-modebtn active" id="metricsmode-system" onclick="_metricsSetMode('system')">System</button>
       <button class="metrics-modebtn" id="metricsmode-host" onclick="_metricsSetMode('host')">Host</button>
       <button class="metrics-modebtn" id="metricsmode-resources" onclick="_metricsSetMode('resources')">Resources</button>
-      <button class="metrics-modebtn" id="metricsmode-velocity" onclick="_metricsSetMode('velocity')">Velocity</button>
+      <button class="metrics-modebtn" id="metricsmode-velocity" onclick="_metricsSetMode('velocity')">Usage</button>
       <button class="metrics-modebtn" id="metricsmode-disk" onclick="switchView('disk')">Disk Cleanup</button>
     </div>
     <div id="metrics-content"><div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading metrics&hellip;</div></div>
@@ -2121,6 +2121,9 @@
     .upq-badge { display:inline-block; margin-left:var(--space-2); font-size:var(--fs-xs);
       padding:var(--space-0-5) var(--space-2); border-radius:var(--radius-xl); background:color-mix(in srgb, var(--yellow) 16%, transparent);
       color:var(--yellow); border:1px solid color-mix(in srgb, var(--yellow) 45%, transparent); }
+    .upq-badge-link { cursor:pointer; }
+    .upq-badge-link:hover { background:color-mix(in srgb, var(--yellow) 26%, transparent); }
+    .upq-badge-link:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
     /* Peek messages multi-select (AMUX-2319) */
     #pm-selbar { display:none; gap:var(--space-2); align-items:center; flex-wrap:wrap;
       padding:var(--space-2) var(--space-2-5); margin:0 var(--space-2-5) var(--space-1-5); border:1px solid var(--accent);
@@ -2188,6 +2191,7 @@
         <div class="cv-head-title" id="cv-title"></div>
         <div class="cv-head-meta" id="cv-meta"></div>
       </div>
+      <button type="button" class="btn cv-pins-btn" id="cv-pins-btn" hidden onclick="_cvShowPins()" aria-label="Pinned messages" title="Pinned messages">&#x1F4CC; <span id="cv-pins-n"></span></button>
       <div class="cv-head-people" id="cv-head-people"></div>
     </header>
     <div id="cv-posts" class="cv-posts" aria-live="polite" onscroll="_cvOnScroll(this)"></div>
@@ -2218,7 +2222,6 @@
       <div class="send-split cv-send-split"><button class="btn primary send-split-main" id="cv-send" onclick="_cvSend()" aria-label="Send">Send</button></div>
     </div>
     <div class="cv-voice-bar" id="cv-voice-main" hidden></div>
-    <div class="cv-hint" id="cv-hint"><span>@person to notify a teammate</span><span>@worker to give a worker a task</span><span>Shift + Enter for a new line</span></div>
   </section>
   <!-- A thread (Slack's): the post, its replies, and a composer that reaches
        every worker already in the thread without a fresh @mention. -->
@@ -3637,6 +3640,7 @@
     <div class="peek-tasks-add" style="gap:var(--space-2);padding:var(--space-2) var(--space-2-5);">
       <input type="search" id="peek-messages-search" placeholder="Search messages sent to this worker&hellip;" oninput="_peekMessagesRender()"
         style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-1) var(--space-2-5);font-size:var(--fs-md);color:var(--text);outline:none;">
+      <button type="button" class="btn cv-pins-btn" id="pm-pins-btn" hidden onclick="_pmShowPins()" aria-label="Pinned messages" title="Pinned messages">&#x1F4CC; <span id="pm-pins-n"></span></button>
       <!-- The kind chips ride in this row on wide screens (one control row per
            tab, 2026-10-23); they scroll sideways when there are many. -->
       <div id="peek-messages-filter" style="display:flex;gap:var(--space-1);flex:0 1 auto;min-width:0;max-width:50%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;"></div>
@@ -3823,6 +3827,13 @@
       </div>
       <span id="peek-sched-stats" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"></span>
       <button class="btn" onclick="_peekNewSchedule()" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);flex:none;min-height:36px;">+ New</button>
+    </div>
+    <div class="sx-bulk" id="peek-sched-bulk" hidden>
+      <span id="peek-sched-bulk-n"></span>
+      <button class="btn" onclick="_sxBulk('pause', peekSession)">Pause</button>
+      <button class="btn" onclick="_sxBulk('resume', peekSession)">Resume</button>
+      <button class="btn danger" onclick="_sxBulk('delete', peekSession)">Delete</button>
+      <button class="btn" onclick="_sxClearSelection(peekSession)">Clear</button>
     </div>
     <div class="peek-tasks-list" id="peek-schedules-list" style="padding:var(--space-2-5) var(--space-3);"></div>
     <details id="peek-sched-runs-details" style="border-top:1px solid var(--border);padding:0 var(--space-3);padding-bottom:max(var(--space-2-5),env(safe-area-inset-bottom));flex-shrink:0;">
@@ -4191,7 +4202,7 @@
     <button class="nav-back-btn" type="button" aria-label="Back" title="Back" hidden>&#x2039;</button>
     <div class="file-title-wrap">
       <h2 id="file-title">file</h2>
-      <div id="file-subpath" class="file-subpath"></div>
+      <div class="file-meta-row"><div id="file-subpath" class="file-subpath"></div><span id="file-fresh" class="file-fresh" role="status" hidden></span></div>
     </div>
     <div class="file-view-tabs" id="file-view-tabs" style="display:none;">
       <button class="file-view-tab active" id="file-tab-preview" onclick="setFileViewMode('preview')">Preview</button>
@@ -4202,12 +4213,13 @@
     <button id="file-present-btn" onclick="_filePresent()" title="Present full screen (arrow keys to move, Esc to exit)" style="display:none;">&#x25B6; Present</button>
     <button class="file-menu-btn" id="file-menu-btn" onclick="_toggleFileMenu(event)" title="More actions" aria-label="More actions">&#x22EF;</button>
     <div class="file-actions" id="file-actions">
+      <button class="file-view-tab" id="file-tab-worker" onclick="_fileOpenInWorker()" title="Hand this file to a worker with instructions">Open in worker&#x2026;</button>
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
       <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-readaloud" onclick="_ttsSpeak(_mdToSpeech(_fileData&&_fileData.content),this)" title="Read aloud" style="display:none;">&#x1F50A; Read Aloud</button>
-      <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy to clipboard">Copy</button>
-      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy relative path">Path</button>
-      <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy deep link">Link</button>
+      <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy the file's text">Copy text</button>
+      <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy the file's path">Copy path</button>
+      <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy a link that opens this file">Copy link</button>
       <button class="file-view-tab" id="file-download-btn" onclick="_fileDownload()" style="display:none;">&#x2B07; Download</button>
       <button class="file-view-tab" id="file-tab-pin" onclick="_filePinOverlay()" title="Float as overlay on desktop">&#x1F4CC; Pin</button>
     </div><!-- /file-actions -->
@@ -4231,10 +4243,12 @@
   <div id="mdx" class="mdx" hidden data-mode="preview">
     <section class="mdx-pane mdx-src" id="mdx-src" aria-label="Markdown source">
       <div class="mdx-bar" id="mdx-src-bar">
-        <div class="mdx-seg" id="mdx-mode" role="tablist" aria-label="Layout">
-          <button type="button" role="tab" data-m="edit" onclick="_mdxSetMode('edit', true)" title="Source only">Edit</button>
-          <button type="button" role="tab" data-m="preview" onclick="_mdxSetMode('preview', true)" title="Preview only">Preview</button>
-          <button type="button" role="tab" data-m="split" onclick="_mdxSetMode('split', true)" title="Source and preview side by side">Split</button>
+        <div class="mdx-seg" id="mdx-mode" role="tablist" aria-label="View">
+          <button type="button" role="tab" data-m="preview" onclick="_mdxView('preview')" title="The rendered note">Preview</button>
+          <button type="button" role="tab" data-m="edit" onclick="_mdxView('edit')" title="The markdown source">Edit</button>
+          <button type="button" role="tab" data-m="diff" onclick="_mdxView('diff')" title="What changed since the last save, or since a commit chosen in History">Diff</button>
+          <button type="button" role="tab" data-m="history" onclick="_mdxView('history')" title="Earlier versions from git">History</button>
+          <button type="button" class="mdx-split" data-m="split" onclick="_mdxToggleSplit()" aria-pressed="false" title="Show the preview beside the source" aria-label="Side by side">&#x25EB;</button>
         </div>
         <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting">
           <button type="button" data-t="heading" title="Heading (cycles # to ###)" aria-label="Heading"><b>H</b></button>
@@ -4263,15 +4277,12 @@
     </section>
     <section class="mdx-pane mdx-view" id="mdx-view" aria-label="Rendered">
       <div class="mdx-bar" id="mdx-view-bar">
-        <div class="mdx-seg" id="mdx-tab" role="tablist" aria-label="Show">
-          <button type="button" role="tab" data-v="preview" onclick="_mdxTabClick('preview')">Preview</button>
-          <button type="button" role="tab" data-v="diff" onclick="_mdxTabClick('diff')">Diff</button>
-          <button type="button" role="tab" data-v="history" onclick="_mdxTabClick('history')">History</button>
-        </div>
         <span class="mdx-spacer"></span>
+        <span class="mdx-preview-acts" id="mdx-preview-acts">
         <select id="mdx-copy-as" class="mdx-copy-as" aria-label="Copy as" title="What Copy copies">
           <option value="md">Markdown</option><option value="html">HTML</option><option value="text">Text</option></select>
         <button type="button" class="mdx-icon" id="mdx-copy" title="Copy" aria-label="Copy">&#x29C9;</button>
+        </span>
         <button type="button" class="mdx-icon" id="mdx-full" title="Full screen (Esc to leave)" aria-label="Full screen">&#x26F6;</button>
       </div>
       <div class="mdx-out" id="mdx-out-host"></div>
@@ -4427,7 +4438,12 @@
      `.tab-customize-wrap`: position:relative, and not a scroller. -->
 <div class="tab-customizer-menu" id="peek-tab-customizer-menu" style="display:none;"></div>
 <script src="/state/kernel.js"></script>
-<script src="/app.js"></script>
+<!-- Versioned so a page only ever runs the app.js its own HTML was built with.
+     "/app.js" was one URL across builds, and the service worker answers it cache
+     first: on 2026-10-31 the Mac app ran Oct 30's app.js under the current HTML
+     and _cvSelect threw on the removed #cv-hint (client-action-error, ver
+     6e9da384b503 against a server on f5697fa825ec), reload after reload. -->
+<script src="/app.js?v=__AMUX_ASSET_VER__"></script>
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"></script>
 <!-- marked + DOMPurify + remend, served by amux so markdown renders offline (scripts/build-md.mjs) -->

@@ -1,0 +1,21 @@
+name: gate
+# The deploy gate: under a minute, so a good commit can be live within two
+# (Ethan, 2026-11-01: "iterate until full amux cicd is sub 2 min"). checks and
+# rust still run the whole suite on every push, and a red one still opens a
+# card through SCHED-713. The builder's own compile and boot health check gate
+# the Rust side.
+on:
+  push:
+    branches: [main]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+      - name: Secret scan
+        run: scripts/ci-secret-scan.sh
+      - name: Fast gate
+        run: scripts/ci-fast-gate.sh "${{ github.event.before }}" "$GITHUB_SHA"

@@ -4551,6 +4551,25 @@ pub async fn export_board(
         .into_response()
 }
 
+fn count_response(p: &ListParams, total: usize) -> Response {
+    Json(json!({
+        "count": total,
+        "filter": {
+            "status": p.status.clone(),
+            "session": p.session.clone(),
+            "archived": p.archived.clone(),
+            "done_limit": p.done_limit,
+            "quota": p.quota.clone(),
+        },
+        "note": "count of what THIS filter would return, computed from the same \
+                 filter+cap the list runs. Terminal statuses are capped unless you pass \
+                 done_limit=0 or all=1, so a count taken with different params will \
+                 differ from one taken with these — pass the SAME params you will \
+                 fetch with.",
+    }))
+    .into_response()
+}
+
 pub async fn list_board(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4730,6 +4749,22 @@ pub async fn list_board(
     });
     let ids_asked = ids.as_ref().map(|v| v.len());
     let store = state.store.clone();
+    // A plain count needs no card bodies: hydrating them to take a length cost
+    // the dashboard's archive badge 3.4 s on average (AF-1151). Quota and ids
+    // have their own selections, so they stay on the path below.
+    if qp_truthy(p.count.as_deref()) && !quota && ids.is_none() {
+        return match store
+            .read_async(move |conn| {
+                Ok(bs::count_issues_capped(
+                    conn, &status_f, &session_f, archived, done_limit,
+                )?)
+            })
+            .await
+        {
+            Ok(total) => count_response(&p, total),
+            Err(e) => internal(e),
+        };
+    }
     let list_started = std::time::Instant::now();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         // Phase marks for `board_list_slow` (AMUX-5374): a slow read has to say
@@ -4813,22 +4848,7 @@ pub async fn list_board(
     // error rather than a plausible-looking one-element array, and a client
     // reading `.length` on `{"count": 662}` gets undefined rather than 1.
     if qp_truthy(p.count.as_deref()) {
-        return Json(json!({
-            "count": total,
-            "filter": {
-                "status": p.status.clone(),
-                "session": p.session.clone(),
-                "archived": p.archived.clone(),
-                "done_limit": p.done_limit,
-                "quota": p.quota.clone(),
-            },
-            "note": "count of what THIS filter would return, computed from the same \
-                     filter+cap the list runs. Terminal statuses are capped unless you pass \
-                     done_limit=0 or all=1, so a count taken with different params will \
-                     differ from one taken with these — pass the SAME params you will \
-                     fetch with.",
-        }))
-        .into_response();
+        return count_response(&p, total);
     }
 
     // TWO-FIXES (AMUX-3154): the terminal cap already reports itself in
@@ -8292,8 +8312,11 @@ async fn update_overlap_callback(
         .store
         .write_async(move |conn| {
             conn.execute(
+                // Forward only: `queued` is final, so a late retry result
+                // cannot pull a delivered callback back (implicit state
+                // machines inventory 2026-10-31, #19).
                 "UPDATE board_overlap_callbacks SET state=?1, error=?2, updated_at=?3 \
-                 WHERE coordination_id=?4 AND target_session=?5",
+                 WHERE coordination_id=?4 AND target_session=?5 AND state IN ('pending', 'retryable')",
                 rusqlite::params![
                     next_state,
                     error,
@@ -11227,7 +11250,36 @@ pub async fn patch_item(
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());
-                if requested_owner.as_deref() != Some(caller_lane.as_str()) {
+                // AF-1069: a card whose owner is no longer registered is
+                // orphaned, and discarding it was already open to any worker
+                // (AF-1048 discarded 17 such cards while every reassignment
+                // of them was refused). Moving it to a live, non-isolated lane
+                // keeps the work, so that is allowed too, and logged. A card a
+                // registered worker owns stays theirs.
+                let orphan_rescue = requested_owner.as_deref().is_some_and(|to| {
+                    let from = row.session.as_deref().unwrap_or("").trim();
+                    // The owner's board (ETHAN) has no worker registration
+                    // either, and holds the asks waiting on the owner: never
+                    // orphaned, and neither is a card a human owns.
+                    !from.is_empty()
+                        && !from.eq_ignore_ascii_case(super::turn_end::owner_name().trim())
+                        && row.owner_type != "human"
+                        && !super::session_verbs::session_is_registered(from)
+                        && super::session_verbs::session_is_registered(to)
+                        && super::session_verbs::parse_env(to).get("CC_ISOLATED") != Some("1")
+                });
+                if orphan_rescue {
+                    tracing::info!(
+                        caller = %caller_lane,
+                        card = %id_w,
+                        from = ?row.session,
+                        to = ?requested_owner,
+                        measured = true,
+                        n_considered = 1,
+                        verdict = "orphaned_card_reassigned",
+                        "a card whose owner is no longer registered moved to a live lane"
+                    );
+                } else if requested_owner.as_deref() != Some(caller_lane.as_str()) {
                     tracing::warn!(
                         caller = %caller_lane,
                         card = %id_w,

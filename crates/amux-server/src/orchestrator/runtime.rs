@@ -429,9 +429,12 @@ impl Runtime {
                 let reply = self
                     .store
                     .write_async(move |conn| {
-                        let n = crate::db::queries::update_worker_state(
+                        // Only while still rate limited: a stop or error that
+                        // landed since the reading is kept (#3).
+                        let n = crate::db::queries::update_worker_state_from(
                             conn,
                             &worker_id,
+                            "rate_limited",
                             &amux_core::worker::WorkerState::Idle { since: state_at },
                             &updated_at,
                         )?;
@@ -1198,6 +1201,12 @@ impl Runtime {
                     )?;
                     let mut events = Vec::new();
                     if n > 0 {
+                        // The next claim continues from here (0145).
+                        conn.execute(
+                            "INSERT INTO _amux_lease_generations (task_id, generation) VALUES (?1, ?2)
+                             ON CONFLICT(task_id) DO UPDATE SET generation = MAX(generation, excluded.generation)",
+                            params![task, generation],
+                        )?;
                         let measured_at = Utc::now();
                         let recovery_ms = measured_at
                             .signed_duration_since(expired_at)
@@ -1466,7 +1475,7 @@ impl Runtime {
                         "INSERT OR IGNORE INTO _amux_leases
                          (task_id, worker_id, acquired_at, expires_at, generation)
                          VALUES (?1, ?2, ?3, ?4,
-                                 COALESCE((SELECT generation + 1 FROM _amux_leases WHERE task_id = ?1), 0))",
+                                 COALESCE((SELECT generation + 1 FROM _amux_lease_generations WHERE task_id = ?1), 0))",
                         params![task, worker, acquired, expires],
                     )?;
                     let mut events = Vec::new();
@@ -2118,14 +2127,26 @@ impl Runtime {
                         }
                     }
                     let mid = msg_id.to_string();
-                    let delivered =
-                        serde_json::json!({"state": "delivered", "at": now.to_rfc3339()});
                     self.store
                         .write_async(move |conn| {
+                            // Through core's forward-only rule (advance_delivery),
+                            // and compare-and-swap on the stored value, instead of
+                            // hand-built JSON gated by `LIKE '%queued%'`
+                            // (implicit state machines inventory 2026-10-31, #12).
+                            let Some(mut msg) = crate::api::messages::message_by_id(conn, &mid)? else {
+                                return Ok(WriteOutcome { applied: false, events: vec![] });
+                            };
+                            let before: String = conn.query_row(
+                                "SELECT delivery FROM _amux_messages WHERE id = ?1", params![mid], |r| r.get(0))?;
+                            if let Err(e) = msg.advance_delivery(amux_core::message::DeliveryState::Delivered { at: now }) {
+                                tracing::info!(message = %mid, from = %e.from, verdict = "message_delivery_not_advanced",
+                                    "the message is already past queued; delivery left as it is");
+                                return Ok(WriteOutcome { applied: false, events: vec![] });
+                            }
+                            let after = serde_json::to_string(&msg.delivery).unwrap_or_default();
                             let n = conn.execute(
-                                "UPDATE _amux_messages SET delivery = ?2
-                                 WHERE id = ?1 AND delivery LIKE '%queued%'",
-                                params![mid, delivered.to_string()],
+                                "UPDATE _amux_messages SET delivery = ?2 WHERE id = ?1 AND delivery = ?3",
+                                params![mid, after, before],
                             )?;
                             Ok(WriteOutcome {
                                 applied: n > 0,
@@ -3268,6 +3289,12 @@ mod adherence_tests {
              the execution command and could never be sent"
         );
         assert_eq!(leases_for(&first_task), 1, "the verification turn is leased");
+        let generation: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT generation FROM _amux_leases WHERE task_id = ?1", params![first_task], |r| r.get(0))
+            .unwrap();
+        assert_eq!(generation, 1, "a lease claimed after a reclaim is the next generation, not 0 again");
 
         // The verification turn runs and leaves the card `done` (the worker
         // made no claim about it); its lease reaches expiry.
@@ -3527,6 +3554,11 @@ mod adherence_tests {
             1,
             "the source message remains durable when no task is minted"
         );
+        // Delivery advanced through core (#12): a parseable Delivered state.
+        let delivery: String = store.read().unwrap()
+            .query_row("SELECT delivery FROM _amux_messages", [], |r| r.get(0)).unwrap();
+        let parsed: amux_core::message::DeliveryState = serde_json::from_str(&delivery).unwrap();
+        assert!(matches!(parsed, amux_core::message::DeliveryState::Delivered { .. }), "{delivery}");
     }
 
     /// AMUX-2613 E2E regression: the ledger card minted from a delivered

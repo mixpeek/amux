@@ -32,16 +32,29 @@ const projection = {
   blocked_by_outside: ['MG-2292'],
 };
 
+const optimize = {
+  window_days: 30, measured: true, n_considered: 120,
+  totals: { spend_usd: 428.6, finished_cards: 32, cards: 40, success_rate: 80, cost_per_success_usd: 9.1, potential_savings_usd_month: 96.4 },
+  by_group: [{ group: 'customers', spend_usd: 200 }, { group: 'gs12', spend_usd: 150 }],
+  opportunities: [{ kind: 'background_spend', owner: 'amux', source: 'steer:board-drive', est_usd_month: 60.5,
+    evidence: 'amux nudged this lane about a card: $2.02 over 40 turns in the last 720 h', action: 'make the trigger narrower' }],
+  workers: [], spend_note: 'API-equivalent dollars',
+};
+
 async function openVelocity(page: Page, mock = true) {
   if (mock) {
     await page.route(/\/api\/velocity\/[^/?]+\/projection/, r => r.fulfill({ json: projection }));
     await page.route(/\/api\/velocity\/[^/?]+(\?|$)/, r => r.fulfill({ json: detail }));
     await page.route(/\/api\/velocity(\?|$)/, r => r.fulfill({ json: fleet }));
+    // Last: Playwright tries the newest route first, and the per-worker stub
+    // above would otherwise answer /api/velocity/optimize too.
+    await page.route(/\/api\/velocity\/optimize(\?|$)/, r => r.fulfill({ json: optimize }));
   }
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction("typeof switchView === 'function' && typeof _metricsSetMode === 'function'");
-  await page.evaluate("switchView('metrics')");
+  // The Usage tab opens Metrics in its Usage mode.
+  await page.evaluate("openUsage()");
   // A phone opens Metrics with the worker sidebar over the content; close it as a user would.
   await page.evaluate("_metricsSidebarOpen = false; _metricsApplySidebarState()");
   await page.locator('#metricsmode-velocity').click();
@@ -50,6 +63,10 @@ async function openVelocity(page: Page, mock = true) {
 
 test('the fleet ranks by wasted hours and a worker opens its waste and projection', async ({ page }) => {
   await openVelocity(page);
+  await expect(page.locator('#usage-spend')).toContainText('$428.6');
+  await expect(page.locator('#usage-finished')).toContainText('80% of 40');
+  await expect(page.locator('#usage-savings')).toContainText('$96.4');
+  await expect(page.locator('.usage-opportunity[data-owner="amux"]')).toContainText('$60.5/mo');
   const rows = page.locator('.velocity-row');
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText('tubescience-parity');

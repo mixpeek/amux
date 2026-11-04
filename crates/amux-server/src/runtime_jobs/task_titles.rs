@@ -129,7 +129,9 @@ async fn tick(app: crate::api::AppState) {
             continue;
         }
         considered += 1;
-        let Some(path) = sv::session_jsonl_path(&name) else {
+        // A guessed transcript in a shared folder is a peer's, and its title
+        // would land on this worker's card (VID-030).
+        let Some(path) = sv::session_jsonl_path(&name).filter(|_| sv::transcript_is_bound(&name)) else {
             no_transcript += 1;
             continue;
         };

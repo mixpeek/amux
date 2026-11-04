@@ -25,7 +25,7 @@ Every step resolves down this ladder, preferring the highest-reliability rung th
 | Rung | Mechanism | When | Cost/reliability |
 |---|---|---|---|
 | 1. API / CDP | direct HTTP call, Chrome DevTools Protocol, DOM selector | target exposes it | fast, cheap, deterministic |
-| 2. Browser vision agent | `/api/browser/agent` + saved profile | dynamic web UI, no stable selector | medium |
+| 2. Browser vision agent | `amux browser route goal` + saved profile | dynamic web UI, no stable selector | medium |
 | 3. Desktop computer-use | Claude vision loop → real mouse/keyboard (cliclick/pyautogui) | native app, no API — **local only** | slow, most brittle |
 
 Cache the resolved plan while the UI is stable; **re-plan on failure**. This gets determinism's speed/cost with vision's resilience.
@@ -92,7 +92,7 @@ robot_runs (SQLite in amux.db)  ──► run log, pass/fail, stopped-at, artifa
 |---|---|
 | Triggers | scheduler (`/api/schedules`) — cron/interval/manual |
 | Auth to sites | saved browser profiles (`/api/browser/profiles`) |
-| Execution (browser) | `/api/browser/agent`, `/api/browser/action`, `chrome-cdp` skill, Playwright |
+| Execution (browser) | `amux browser route`, `/api/browser/action`, `chrome-cdp` skill, Playwright |
 | Run evidence | `/api/browser/screenshot` + the `record` skill (MP4/GIF per run) |
 | Storage / history | MD files (source) + SQLite `robot_runs` (history) + board (optional per-run issue) |
 | Live monitoring | existing SSE + peek/dashboard already on your phone |
@@ -144,7 +144,7 @@ Per `CLAUDE.md`, the server code is identical local and cloud — no `IS_CLOUD` 
 
 **MVP (phase 1) — browser only.** You already own the whole stack.
 - `/api/robots/*` CRUD over `~/.amux/robots/*.md`
-- Runner: rung 1 (CDP/DOM) + rung 2 (`/api/browser/agent`), profile-scoped
+- Runner: rung 1 (CDP/DOM) + rung 2 (`amux browser route goal`), profile-scoped
 - Manual Run + schedule trigger (reuse `/api/schedules`)
 - `robot_runs` table + run detail with screenshots and recording
 - Automations tab (list + editor + run detail)

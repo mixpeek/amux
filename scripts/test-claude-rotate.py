@@ -137,7 +137,14 @@ expect(stored == 13, f"the probe's 13% stands, got {stored}")
 # failed swap puts the previous login back.
 kc = {(rot.CRED_SVC, rot.CRED_ACCT): '{"claudeAiOauth": {"refreshToken": "old"}, "mcpOAuth": {"m": 1}}'}
 rot._kc_read = lambda s, a: kc.get((s, a))
-rot._kc_write = lambda s, a, v: kc.__setitem__((s, a), v) or True
+shared_writes = []
+def _w(s, a, v):
+    if s == rot.CRED_SVC:
+        shared_writes.append(v)
+    kc[(s, a)] = v
+    return True
+rot._kc_write = _w
+rot.USE_KEYCHAIN = False  # the scratch login of a trial goes to a file, never the real Keychain
 rot.capture_login = lambda: None
 rot.resume_stranded = lambda force=False: None
 rot.resume_auth_lost = lambda: None
@@ -146,19 +153,95 @@ rot.save(rot.CLAUDE_JSON, {"oauthAccount": {"emailAddress": "a@x"}})
 expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) is None, "no stored login: browser fallback")
 kc[(rot.STORE_SVC, "b@x")] = '{"claudeAiOauth": {"refreshToken": "new"}, "oauthAccount": {"emailAddress": "b@x"}}'
 rot.cli_email = lambda: rot.load(rot.CLAUDE_JSON, {})["oauthAccount"]["emailAddress"]
-rot.probe = lambda: {"seven_day": {}}
+rot.probe = lambda config_dir=None: {"seven_day": {}}
 expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) == 0, "stored login switches by CLI")
 import json as _j
 cred = _j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])
 expect(cred["claudeAiOauth"]["refreshToken"] == "new" and cred["mcpOAuth"] == {"m": 1},
        "the swap replaces only claudeAiOauth and keeps MCP logins")
-rot.probe = lambda: None
+rot.probe = lambda config_dir=None: None
 kc[(rot.STORE_SVC, "a@x")] = '{"claudeAiOauth": {"refreshToken": "a"}, "oauthAccount": {"emailAddress": "a@x"}}'
 before = kc[(rot.CRED_SVC, rot.CRED_ACCT)]
+shared_writes.clear()
 expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "an unproven swap falls back")
 expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b@x",
        "and the previous login is restored")
+# 2026-11-03: a dead saved login is tried in a scratch folder and never written
+# to the credential every running session reads (mixpeek-meta-worker was left
+# on the dead login by a swap-and-restore).
+expect(shared_writes == [], f"a dead saved login never touches the shared credential: {len(shared_writes)} write(s)")
+expect("a@x" in (rot.load(rot.STATE, {}).get("unproven") or {}), "and is marked unproven for the next pick")
+# A trial that fails after the CLI refreshed the token keeps the newest token:
+# the old one no longer works, and the folder holding the new one is deleted.
+def _probe_refresh_then_fail(config_dir=None):
+    rot._file_write(rot._cli_cred_file(config_dir), '{"claudeAiOauth": {"refreshToken": "a-refreshed"}}')
+    return None
+rot.probe = _probe_refresh_then_fail
+expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "the failed trial falls back")
+expect(_j.loads(kc[(rot.STORE_SVC, "a@x")])["claudeAiOauth"]["refreshToken"] == "a-refreshed",
+       "and the refreshed token is kept in the saved login")
+expect(shared_writes == [], "still with no write to the shared credential")
+# A login that proves itself in the trial is installed as the trial left it
+# (the CLI may have refreshed its token there).
+def _probe_refreshing(config_dir=None):
+    if config_dir:
+        rot._file_write(rot._cli_cred_file(config_dir), '{"claudeAiOauth": {"refreshToken": "a2"}}')
+    return {"seven_day": {}}
+rot.probe = _probe_refreshing
+expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) == 0, "a proven login switches")
+expect(_j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])["claudeAiOauth"]["refreshToken"] == "a2",
+       "with the refreshed token from the trial, not the stale saved one")
 
+# A login whose /usage is rate limited still answered, so the trial passes it.
+# The probe itself runs on tmux: drive the shipped function with a fake pane.
+_fresh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(_fresh)
+_panes = []
+def _fake_tmux(*args):
+    class R: stdout = _panes[0] if args[0] == "capture-pane" else ""
+    return R()
+_fresh.tmux = _fake_tmux
+_sleep = _fresh.time.sleep
+_fresh.time.sleep = lambda _s: None
+_cfg = tempfile.mkdtemp()
+_fresh.save(os.path.join(_cfg, ".claude.json"), {"oauthAccount": {"emailAddress": "t@x"}})
+_panes[:] = ["\u276f\nError: Usage endpoint is rate limited until 1am.\n"]
+expect(_fresh.probe(config_dir=_cfg) == {"rate_limited": True}, "a rate-limited /usage proves the login answered")
+_panes[:] = ["\u23fa Login expired \u00b7 Please run /login\n\u276f\n"]
+expect(_fresh.probe(config_dir=_cfg) is None, "an expired login fails the trial")
+_fresh.time.sleep = _sleep
+
+# The expired-login wording strands a worker the same way as "Not logged in",
+# with the footer lines below it (mixpeek-meta-worker, 2026-11-03).
+_expired_pane = """\u23fa Login expired \u00b7 Please run /login
+
+\u273b Churned for 3m 14s \u00b7 done 11:48 PM
+
+\u2500\u2500\u2500 mixpeek-meta-worker \u2500
+\u276f
+\u2500\u2500\u2500
+  getmixpeek \u00b7 wk 95%
+  bypass permissions on (shift+tab to cycle) \u00b7 5 agents
+                                 Update installed \u00b7 /restart to apply
+"""
+expect(rot.auth_lost(_expired_pane), "an expired login on screen counts as a lost login")
+expect(not rot.auth_lost("we discussed logins\n\u276f\n"), "a pane with no login error does not")
+
+
+# mixpeek-dev, 2026-11-04 06:13Z: the current account at 100%, every other at
+# 96% or more (so none "usable"), and the one with room left had an unproven
+# login. The fleet stopped on the weekly limit. Now an account with anything
+# left beats one with nothing, and an unproven login is never a target.
+spent_rows = [row("vectors", 0, 100), row("join", 0, 96), row("mixpeek", 0, 97), row("try", 0, 85)]
+st = {"switched_at": 0, "unproven": {"try": _t.time()}}
+t3, why3 = rot.decide("vectors", spent_rows, st)
+expect((t3, why3) == ("join", "current_exhausted_last_headroom"), f"spent current takes the last headroom, got {(t3, why3)}")
+t4, why4 = rot.decide("vectors", [row("vectors", 0, 100), row("try", 0, 20)], {"switched_at": 0, "unproven": {"try": _t.time()}})
+expect(t4 is None, f"an unproven login is not a target even with room, got {(t4, why4)}")
+t5, _ = rot.decide("vectors", [row("vectors", 0, 100), row("try", 0, 20)], {"switched_at": 0, "unproven": {"try": _t.time() - rot.FAIL_BACKOFF_S - 5}})
+expect(t5 == "try", "an old unproven mark expires")
+t6, _ = rot.decide("join", [row("join", 0, 50), row("mixpeek", 0, 97)], {"switched_at": 0})
+expect(t6 is None, "a working account is not left for one at 97%")
 
 # Nothing under the preempt line: the roomiest account wins over the
 # soonest-resetting nearly full one.

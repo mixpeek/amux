@@ -605,19 +605,38 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             "/../../scripts/git-hooks/git-shared-guard.py"
         ));
         let repo = crate::api::self_update::repo_dir();
+        // ORIGIN/MAIN FIRST, THEN HEAD (AF-1107): the source install.sh's
+        // install_hook_from_head reads, in the same order. A shared checkout's
+        // HEAD lags origin by hundreds of commits, so a hook installed from
+        // origin/main read as "DRIFTED from HEAD" while it was exactly the
+        // committed bytes (fa9954062dd9 installed == origin/main, HEAD
+        // d0a5a83631d8, 2026-10-31).
         let read_head = |rel: &str| -> Option<String> {
             let dir = repo.as_ref()?;
-            let out = std::process::Command::new("git")
+            ["origin/main", "HEAD"].iter().find_map(|r| {
+                let out = std::process::Command::new("git")
+                    .args(["-C", &dir.to_string_lossy(), "show", &format!("{r}:{rel}")])
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            })
+        };
+        // Only a worktree copy that differs from this checkout's own HEAD is an
+        // edit. A shared checkout lags origin by hundreds of commits, so its
+        // clean file equals an install from that lagging HEAD, and the check
+        // told the lane to commit it, which would revert origin (AF-1160).
+        let read_worktree = |rel: &str| -> Option<String> {
+            let dir = repo.as_ref()?;
+            let on_disk = std::fs::read_to_string(dir.join(rel)).ok()?;
+            let local_head = std::process::Command::new("git")
                 .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{rel}")])
                 .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-        };
-        let read_worktree = |rel: &str| -> Option<String> {
-            repo.as_ref()
-                .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            checks::uncommitted_edit(on_disk, local_head.as_deref())
         };
         let amux_home = crate::config::ServerConfig::from_process_env().amux_home;
         let runtime = std::fs::read_to_string(amux_home.join("hooks/git-shared-guard.py"))
@@ -652,6 +671,12 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             wt.as_deref(),
             runtime,
         ));
+
+        // -- 6a'. the shared checkout is not bare (AF-1116).
+        if let Some(dir) = repo.as_ref() {
+            let cfg = dir.join(".git").join("config");
+            out.push(checks::shared_config_is_not_bare(&cfg.to_string_lossy(), std::fs::read_to_string(&cfg).ok().as_deref()));
+        }
 
         // -- 6b. the DEPLOY path is still ticking (AMUX-4809). launchd stopped
         // firing com.amux.server-rs-builder for 59 consecutive cycles and
@@ -715,6 +740,26 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
         out.extend(checks::installed_script_matches_committed(
             &checks::BOUNDARY_GUARD,
             crate::api::boundaries::DEFAULT_GUARD,
+            head.as_deref(),
+            wt.as_deref(),
+            runtime,
+        ));
+
+        // -- the repo's pre-push hook, same rule (AF-1129). No repo, or a linked
+        // worktree whose .git is a file, reads as unreadable: Unknown, not a pass.
+        const BAKED_PRE_PUSH: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/git-hooks/pre-push"
+        ));
+        let runtime = repo
+            .as_ref()
+            .ok_or_else(|| "no repo".to_string())
+            .and_then(|d| std::fs::read_to_string(d.join(checks::PRE_PUSH_HOOK.runtime_path)).map_err(|e| e.to_string()));
+        let head = read_head(checks::PRE_PUSH_HOOK.committed_path);
+        let wt = read_worktree(checks::PRE_PUSH_HOOK.committed_path);
+        out.extend(checks::installed_script_matches_committed(
+            &checks::PRE_PUSH_HOOK,
+            BAKED_PRE_PUSH,
             head.as_deref(),
             wt.as_deref(),
             runtime,
@@ -1513,15 +1558,21 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
 /// The query `schedule.enabled_is_firing` runs, as a `const` so a test drives
 /// the SHIPPED SQL. `deleted IS NULL AND enabled = 1` is the scheduler's own
 /// due predicate (scheduler.rs `due_schedules`), so this check judges exactly
-/// the rows the scheduler would fire. Column 8 is the newest re-enable or
-/// expression change from `schedule_audit`: a schedule switched back on today
-/// has not been silent since its last fire a month ago.
+/// the rows the scheduler would fire. Column 8 is the newest re-enable,
+/// expression change or PATCH from `schedule_audit`: a schedule switched back
+/// on today has not been silent since its last fire a month ago. Every PATCH
+/// recomputes `next_run` from the moment of the edit (api/schedules.rs), so a
+/// brief edit restarts the clock too (AF-1062: SCHED-880, every 120m, last ran
+/// 00:29Z, its command PATCHed at 01:37:57Z moved next_run to 03:37, and this
+/// check called it silent at 03:34). Only `api-patch` rows count: the run
+/// path's own `pass_state` writes are not edits.
 pub(crate) const ENABLED_SCHEDULE_CLOCK_SQL: &str =
     "SELECT s.id, COALESCE(s.title,''), COALESCE(s.schedule_expr,''), \
             COALESCE(s.sched_type,'recurring'), s.last_run, s.created, \
             COALESCE(s.next_run,''), s.not_before, \
             (SELECT MAX(a.ts) FROM schedule_audit a WHERE a.schedule_id = s.id \
-               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr')) \
+               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr' \
+                    OR a.source = 'api-patch')) \
      FROM schedules s WHERE s.deleted IS NULL AND s.enabled = 1";
 
 /// `last_run` is declared TEXT and has held unix ints, floats and digit
@@ -1657,6 +1708,15 @@ pub(crate) fn enabled_schedule_clocks(
 fn enabled_schedule_firing_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "schedule.enabled_is_firing";
     static LAST_SILENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    // The host guard holds due schedules while the machine is critical, and the
+    // rows stay due. That is an answer about the host, not a silent schedule; a
+    // schedule that stays silent fails once the guard lets go.
+    if crate::runtime_jobs::host_guard::deferred_within("schedules", 300) {
+        return vec![InvariantResult::unknown(
+            ID,
+            "the host guard held schedules in the last 5 minutes",
+        )];
+    }
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "could not read the store")];
     };
@@ -1742,8 +1802,20 @@ fn provider_launch_check() -> Vec<InvariantResult> {
 /// and failed 151 times on mixpeek-seo, whose every owner prompt is kept that
 /// way. Reading the recorded verdict is the fix the comment below asks for.
 fn counts_toward_capture(session: &str, text: &str, intake_state: &str) -> bool {
-    intake_state != "board_capture_off" && measures_board_capture(session, text)
+    !matches!(intake_state, "board_capture_off" | INTAKE_DECIDED_NO_TASK)
+        && measures_board_capture(session, text)
 }
+
+/// Intake read the prompt and found no task in it: a question, information or
+/// policy. Committed with no task ids is its answer, not a dropped card
+/// (AF-1150: four questions to mvs-infra failed the check as "silently dropped").
+const INTAKE_DECIDED_NO_TASK: &str = "decided_no_task";
+
+const INTAKE_STATE_SQL: &str = "CASE WHEN NOT json_valid(intake_result) THEN '' \
+     WHEN json_extract(intake_result, '$.state') = 'committed' \
+      AND COALESCE(json_array_length(intake_result, '$.task_ids'), 0) = 0 \
+     THEN 'decided_no_task' \
+     ELSE COALESCE(json_extract(intake_result, '$.state'), '') END";
 
 fn measures_board_capture(session: &str, text: &str) -> bool {
     !session.is_empty()
@@ -1783,13 +1855,11 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
     let rows: Vec<(String, String, bool, i64, String)> = {
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT session, text, card_id IS NOT NULL, ts, \
-                    CASE WHEN json_valid(intake_result) \
-                         THEN COALESCE(json_extract(intake_result, '$.state'), '') ELSE '' END \
+        let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT session, text, card_id IS NOT NULL, ts, {INTAKE_STATE_SQL} \
                FROM cmd_history \
              WHERE type = 'user' AND ts > (strftime('%s','now') - ?1) * 1000",
-        ) else {
+        )) else {
             return vec![InvariantResult::unknown(ID, "cmd_history query failed")];
         };
         stmt.query_map(rusqlite::params![lookback_s], |r| {
@@ -2300,10 +2370,16 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
                 .copied()
                 .unwrap_or(checks::HeldWork { open: 0, doing: 0 })
         });
+        let registered_age_s = std::fs::metadata(crate::api::session_verbs::env_path(&name))
+            .and_then(|m| m.created())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() as i64);
         lanes.push(checks::LaneRunState {
             name,
             is_running,
             held,
+            registered_age_s,
         });
     }
     checks::registered_lanes_are_running(&lanes)
@@ -3306,6 +3382,13 @@ async fn served_commit_check() -> Vec<InvariantResult> {
                 .as_ref()
                 .and_then(|g| checks::target_wait_s(g, served, chrono::Utc::now().timestamp())),
             restart_pending: installed_awaiting_restart(served),
+            gate_verdict: crate::api::self_update::gate_state().as_ref().and_then(|g| g["verdict"].as_str().map(str::to_string)),
+            gate_target: crate::api::self_update::gate_state().as_ref().and_then(|g| g["target"].as_str().map(str::to_string)),
+            target_is_served: crate::api::self_update::gate_state().as_ref().is_some_and(|g| {
+                let t = g["target"].as_str().unwrap_or("");
+                let n = t.len().min(served.len());
+                n >= 7 && t[..n] == served[..n]
+            }),
         }),
         "",
         checks::deploy_lag_threshold_s(),
@@ -3433,7 +3516,11 @@ async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
     let managed: Vec<_> = per_lane
         .into_iter()
         .filter(|(lane, _)| {
-            !lane.is_empty() && !crate::api::session_verbs::session_is_isolated(lane)
+            !lane.is_empty()
+                && !crate::api::session_verbs::session_is_isolated(lane)
+                // The owner's board (ETHAN) has no worker registration and is
+                // not dispatched: its cards wait on the owner, not on a lane.
+                && !lane.eq_ignore_ascii_case(crate::api::turn_end::owner_name().trim())
         })
         .collect();
     let total = managed.iter().map(|(_, n)| n).sum();
@@ -5531,6 +5618,30 @@ mod enabled_schedule_clock_sql_tests {
         assert_eq!(verdict(&c).0, Status::Pass);
     }
 
+    /// AF-1062: a PATCH that edits only the brief recomputes next_run from the
+    /// edit, so the clock restarts there; a check's pass_state write does not.
+    #[test]
+    fn a_patched_brief_restarts_the_clock_and_a_check_write_does_not() {
+        let c = db();
+        add(&c, "BRIEF", "every 120m", 1, Some(NOW - 11_100), NOW - 900_000);
+        let (st, obs, _) = verdict(&c);
+        assert_eq!(st, Status::Fail, "silent 3h05m on a 2h cadence: {obs}");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'pass_state','','ok','check')",
+            [NOW - 600],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Fail, "a check's write is not an edit");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'command','old brief','new brief','api-patch')",
+            [NOW - 7_000],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Pass, "an edit 1h57m ago restarts the 2h clock");
+    }
+
     #[test]
     fn one_shot_and_unparseable_rows_are_counted_not_judged() {
         let c = db();
@@ -5575,5 +5686,29 @@ mod capture_off_tests {
         assert!(super::counts_toward_capture("lane-a", ask, ""), "an ordinary prompt counts");
         assert!(!super::counts_toward_capture("lane-a", ask, "board_capture_off"), "a deliberate no-card does not");
         assert!(super::counts_toward_capture("lane-a", ask, "captured"), "other intake states still count");
+    }
+
+    /// AF-1150: the state comes from the row, so the proof runs the real SQL.
+    #[test]
+    fn a_prompt_intake_found_no_task_in_does_not_count() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let state = |raw: Option<&str>| -> String {
+            conn.query_row(
+                &format!("SELECT {} FROM (SELECT ?1 AS intake_result)", super::INTAKE_STATE_SQL),
+                [raw],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let ask = "can you review this and come up with a robust plan for the seo pages";
+        let question = state(Some(r#"{"state":"committed","task_ids":[]}"#));
+        assert_eq!(question, super::INTAKE_DECIDED_NO_TASK);
+        assert!(!super::counts_toward_capture("lane-a", ask, &question));
+        let carded = state(Some(r#"{"state":"committed","task_ids":["AF-1"]}"#));
+        assert_eq!(carded, "committed", "a committed task keeps its state");
+        assert!(super::counts_toward_capture("lane-a", ask, &carded));
+        assert_eq!(state(None), "", "no verdict still counts as a possible drop");
+        assert_eq!(state(Some("not json")), "");
+        assert_eq!(state(Some(r#"{"state":"board_capture_off"}"#)), "board_capture_off");
     }
 }

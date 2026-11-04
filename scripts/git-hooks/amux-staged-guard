@@ -50,7 +50,7 @@ import json, os, shlex, ssl, subprocess, sys, time, urllib.error, urllib.request
 # `^`-anchored, because an unanchored match now finds the comment line first
 # (checked: it returned empty, which would have made `grep -L` match nothing and
 # report a clean fleet).
-GUARD_VERSION = 20
+GUARD_VERSION = 21
 
 # AF-929: the AC-297 severity upgrade below is structurally blind to
 # `git commit <pathspec>` (confirmed empirically, scratch repo, 2026-09-18) --
@@ -212,12 +212,26 @@ def _marker_path(sess, top):
     return os.path.join(d, "guard-block-%s-%s.json" % (sess, h))
 
 
+# A block marker older than this is an episode that ended without a commit:
+# left in place it resolved a commit days later as trimmed or reallowed, with
+# a huge elapsed time (implicit state machines inventory 2026-10-31, #28).
+MARKER_TTL_S = int(os.environ.get("AMUX_GUARD_MARKER_TTL_S") or 7200)
+
+
 def _read_marker(sess, top):
+    path = _marker_path(sess, top)
     try:
-        with open(_marker_path(sess, top)) as fh:
-            return json.load(fh)
+        with open(path) as fh:
+            m = json.load(fh)
     except Exception:
         return None
+    if time.time() - float(m.get("ts") or 0) > MARKER_TTL_S:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    return m
 
 
 def _write_marker(sess, top, verdict_id, paths):

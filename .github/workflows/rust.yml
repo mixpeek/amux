@@ -154,19 +154,51 @@ jobs:
         if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
         with:
           components: clippy
+      # Clippy and doctests are a function of the Rust inputs, so one pass per key
+      # is enough: the marker is saved only after both passed. static/ is outside
+      # the key and neither gate reads it.
+      - name: Rust-input key (scripts/ci-rust-key.mjs)
+        id: key
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
+        run: |
+          set -uo pipefail
+          if key=$(node scripts/ci-rust-key.mjs); then
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); running clippy and doctests, and not caching"
+          fi
+      - name: Restore a passed clippy and doctest verdict for these exact Rust inputs
+        id: passed
+        if: steps.key.outputs.key != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/rust-gates-passed
+          key: rust-gates-passed-${{ steps.key.outputs.key }}
+      - name: Say whether the Rust gates ran
+        if: steps.passed.outputs.cache-hit == 'true'
+        run: |
+          echo "skipped: clippy and doctests already passed on identical Rust inputs (key ${{ steps.key.outputs.key }})."
       - uses: Swatinem/rust-cache@v2
-        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
-      - name: cargo check (workspace)
-        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
-        run: cargo check --workspace --all-targets
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none' && steps.passed.outputs.cache-hit != 'true'
+      # No separate `cargo check`: clippy --all-targets compiles the same targets
+      # and fails on the same errors. Running both cost 189s (c71df3ef9).
       - name: clippy (deny warnings)
-        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none' && steps.passed.outputs.cache-hit != 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
       # nextest (the `test` shards below) cannot run doctests, so they run
       # here, beside check and clippy, rather than on the test critical path.
       - name: cargo test --doc (workspace)
-        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none'
+        if: needs.affected.outputs.rust != 'targeted' && needs.affected.outputs.rust != 'none' && steps.passed.outputs.cache-hit != 'true'
         run: cargo test --doc --workspace
+      - name: Record the passed verdict (push to main only)
+        if: github.event_name == 'push' && steps.key.outputs.key != '' && steps.passed.outputs.cache-hit != 'true'
+        run: date -u +%FT%TZ > "$RUNNER_TEMP/rust-gates-passed"
+      - name: Save the passed verdict
+        if: github.event_name == 'push' && steps.key.outputs.key != '' && steps.passed.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/rust-gates-passed
+          key: rust-gates-passed-${{ steps.key.outputs.key }}
       # AF-74. The `amux` bash CLI is a shipped client with no compiler behind
       # it, and `bash -n` (the pre-commit gate) proves the file PARSES, not that
       # its names resolve. This catches the classes shellcheck CAN see.
@@ -296,8 +328,19 @@ jobs:
       # large. Panic messages keep file:line without it (core::panic::Location).
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
+      # Symbols are a large share of the 2.8 GB archive every shard downloads
+      # (30 to 217s). Panics keep file:line; a native crash loses function names.
+      CARGO_PROFILE_DEV_STRIP: symbols
+      CARGO_PROFILE_TEST_STRIP: symbols
     steps:
       - uses: actions/checkout@v4
+      # Writing the archive needs the room unpacking it does: on 4e127b986 this
+      # job hit "No space left on device" with 128 binaries, red for every shard.
+      - name: Free runner disk for the test archive
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          echo "free after cleanup: $(df -BG --output=avail / | tail -1 | tr -d ' ')"
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust-input key (scripts/ci-rust-key.mjs)
         id: key
@@ -310,9 +353,12 @@ jobs:
           else
             echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); compiling, and not caching"
           fi
-      - name: Restore main's nextest archive (rust=targeted PR)
+      # A push to main restores too (2026-11-02): 42 of the last 100 main commits
+      # changed no Rust input, and each paid the full compile for byte-identical
+      # binaries. It still runs the full suite, from the restored archive.
+      - name: Restore main's nextest archive (push to main, or rust=targeted PR)
         id: restore
-        if: ${{ github.event_name == 'pull_request' && needs.affected.outputs.rust == 'targeted' && steps.key.outputs.key != '' }}
+        if: ${{ steps.key.outputs.key != '' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.affected.outputs.rust == 'targeted')) }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/nextest.tar.zst
@@ -334,10 +380,10 @@ jobs:
           key: deps-opt2
       - uses: taiki-e/install-action@nextest
       - name: Build all workspace test binaries into a nextest archive
-        if: ${{ needs.affected.outputs.rust != 'targeted' }}
+        if: ${{ needs.affected.outputs.rust != 'targeted' && steps.restore.outputs.cache-hit != 'true' }}
         run: cargo nextest archive --workspace --archive-file ${{ runner.temp }}/nextest.tar.zst
-      - name: Save the archive for PRs (push to main only)
-        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+      - name: Save the archive (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' && steps.restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/nextest.tar.zst
@@ -425,16 +471,32 @@ jobs:
       # disk"), and the archive only grows. The runner image's Android SDK,
       # .NET, GHC and CodeQL are never used here and are most of its disk.
       # The free space is printed so the next shortfall names itself.
-      - name: Free runner disk for the test archive
+      # The runner's second disk holds the archive and what it unpacks to, so the
+      # shard skips deleting preinstalled toolchains: that took 60 to 107s per
+      # shard on c71df3ef9. A bind mount, because the binaries carry compiled-in
+      # $GITHUB_WORKSPACE/target paths and the tree guard expects a directory
+      # there. With no room on /mnt it falls back to the deletion.
+      - name: Room for the test archive
         run: |
-          df -h / | tail -1
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
-          echo "free after cleanup: $(df -BG --output=avail / | tail -1 | tr -d ' ')"
+          df -h / /mnt || true
+          avail=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc 0-9)
+          if [ "${avail:-0}" -ge 20 ]; then
+            sudo mkdir -p /mnt/nx/target
+            sudo chown -R "$(id -u):$(id -g)" /mnt/nx
+            mkdir -p "$GITHUB_WORKSPACE/target"
+            sudo mount --bind /mnt/nx/target "$GITHUB_WORKSPACE/target"
+            echo "NX_SCRATCH=/mnt/nx" >> "$GITHUB_ENV"
+            echo "verdict=test_shard_scratch where=mnt avail_g=$avail measured=true"
+          else
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+            echo "NX_SCRATCH=$RUNNER_TEMP" >> "$GITHUB_ENV"
+            echo "verdict=test_shard_scratch where=root avail_g=$(df -BG --output=avail / | tail -1 | tr -dc 0-9) measured=true"
+          fi
       - uses: taiki-e/install-action@nextest
       - uses: actions/download-artifact@v4
         with:
           name: nextest-archive
-          path: ${{ runner.temp }}
+          path: ${{ env.NX_SCRATCH }}
       # AF-150 (AREA silent-partial). A test fixture created a directory in the
       # checkout to prove a refusal, the refusal was later removed, and the
       # residue outlived the run — turning a green test red on every machine
@@ -464,9 +526,16 @@ jobs:
         env:
           AMUX_REQUIRE_TMUX: '1'
           RUST_FILTER: ${{ needs.affected.outputs.rust_filter }}
+          ARCHIVE: ${{ needs.test-build.outputs.archive }}
         run: |
           set -uo pipefail
           command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
+          # static/ is not in the Rust key, so restored binaries embed an older
+          # dashboard; the tests must read this commit's.
+          if [ "$ARCHIVE" = cache ]; then
+            export AMUX_DASHBOARD_DIR="$GITHUB_WORKSPACE/crates/amux-dashboard/static"
+            echo "tests: restored archive (identical Rust inputs), dashboard from this checkout"
+          fi
           # Extracting into the workspace puts the binaries back at the target/
           # path env!("CARGO_BIN_EXE_*") baked in at compile time (target/ is
           # gitignored, so the residue guard does not see it). --no-fail-fast
@@ -477,12 +546,12 @@ jobs:
             filter=(-E "$RUST_FILTER")
           fi
           bash scripts/test-tree-clean.sh cargo nextest run \
-            --archive-file "$RUNNER_TEMP/nextest.tar.zst" \
+            --archive-file "$NX_SCRATCH/nextest.tar.zst" \
             --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite \
             --partition count:${{ matrix.shard }}/${{ strategy.job-total }} --no-fail-fast "${filter[@]}"
           rc=$?
           if [ "$rc" != "0" ] && [ "$rc" != "3" ]; then
-            echo "disk at exit: $(df -BG --output=avail / | tail -1 | tr -d ' ') free; archive $(du -h "$RUNNER_TEMP/nextest.tar.zst" | cut -f1)"
+            echo "disk at exit: $(df -BG --output=avail / | tail -1 | tr -d ' ') free; archive $(du -h "$NX_SCRATCH/nextest.tar.zst" | cut -f1)"
           fi
           if [ "$rc" = "3" ]; then
             echo "::warning title=Tree residue::A test left residue in the checkout. Advisory during the AF-150 trial period; the diff is above. Fix the FIXTURE, not .gitignore."
@@ -565,9 +634,9 @@ jobs:
           else
             echo "::warning title=No Rust-input key::scripts/ci-rust-key.mjs could not key this tree (output above); building, and not caching"
           fi
-      - name: Restore main's server binary (PR with no Rust compile input changed)
+      - name: Restore main's server binary (push to main, or PR with no Rust compile input changed)
         id: restore
-        if: ${{ github.event_name == 'pull_request' && (needs.affected.outputs.rust == 'targeted' || needs.affected.outputs.rust == 'none') && steps.key.outputs.key != '' }}
+        if: ${{ steps.key.outputs.key != '' && (github.event_name == 'push' || (github.event_name == 'pull_request' && (needs.affected.outputs.rust == 'targeted' || needs.affected.outputs.rust == 'none'))) }}
         uses: actions/cache/restore@v4
         with:
           path: target/debug/amux-server
@@ -597,8 +666,8 @@ jobs:
             echo "source=built" >> "$GITHUB_OUTPUT"
             echo "server-bin: COMPILED in this run (event=$GITHUB_EVENT_NAME, rust=$RUST_SCOPE, cache key ${KEY:+server-bin-$KEY}${KEY:-none}${HIT:+, restore missed})"
           fi
-      - name: Save the binary for PRs (push to main only)
-        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' }}
+      - name: Save the binary (push to main only)
+        if: ${{ github.event_name == 'push' && steps.key.outputs.key != '' && steps.restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: target/debug/amux-server
@@ -693,9 +762,20 @@ jobs:
       - name: Install compiler and private server runtime
         # The browser image contains browser libraries, not Rust's C compiler
         # or the private HTTPS/tmux fixture tools. Install this smaller set.
+        # AF-1123: run 41254145128 lost two shards to an unreachable
+        # azure.archive.ubuntu.com (exit 100) while security.ubuntu.com
+        # answered. Retry, then fall back to archive.ubuntu.com and say so.
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 tmux openssl lsof procps rsync
+          pkgs="python3 tmux openssl lsof procps rsync"
+          apt_install() {
+            apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+              apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends $pkgs
+          }
+          if ! apt_install; then
+            echo "::warning title=apt mirror::azure.archive.ubuntu.com unreachable; retrying via archive.ubuntu.com"
+            sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+            apt_install
+          fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
       - name: Install locked packages and verify preinstalled browsers
@@ -744,7 +824,7 @@ jobs:
           node scripts/e2e-plan.mjs ${{ matrix.shard }} ${{ strategy.job-total }} "$RUNNER_TEMP/e2e-list.json" > "$RUNNER_TEMP/e2e-plan.json"
           echo "AMUX_E2E_PLAN=$RUNNER_TEMP/e2e-plan.json" >> "$GITHUB_ENV"
       - name: Golden scenarios (desktop + mobile + ios-safari)
-        run: npx playwright test --config e2e/playwright.config.ts --workers=2 --global-timeout=1200000
+        run: npx playwright test --config e2e/playwright.config.ts --workers=3 --global-timeout=1200000
         env:
           AMUX_E2E_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           AMUX_E2E_EVIDENCE_DIR: ci-results/shard-${{ matrix.shard }}

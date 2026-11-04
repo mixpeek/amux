@@ -790,20 +790,35 @@ fn record_task_changes(store: &crate::db::SharedStore, conn: &rusqlite::Connecti
     }
     let n = changes.len();
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
-    let res = store.write(move |c| {
-        for (name, from, to, src, card) in &changes {
-            c.execute(
-                "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
-                rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
-            )?;
+    // THE LIST BUILD DOES NOT WAIT FOR THIS WRITE. It used to, and the one
+    // writer thread is often busy with a long job (the storage sweep, the
+    // orchestrator's WIP evaluation). On 2026-11-02 that held the single fleet
+    // build for 19 s at the median and 234 s at worst, and every client waited
+    // 30 s for a 503 (378 sessions_cache_stuck in five hours). The rename
+    // history can land a few seconds late; the list cannot.
+    let store = store.clone();
+    let queued = std::time::Instant::now();
+    let spawned = std::thread::Builder::new().name("task-history-write".into()).spawn(move || {
+        let res = store.write(move |c| {
+            for (name, from, to, src, card) in &changes {
+                c.execute(
+                    "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
+                    rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+        let waited_ms = queued.elapsed().as_millis() as u64;
+        match res {
+            Ok(_) => tracing::info!(target: "amux::sessions", n, waited_ms, measured = true, n_considered = n,
+                verdict = "task_renamed_recorded", "recorded worker task-name changes"),
+            Err(e) => tracing::warn!(target: "amux::sessions", n, waited_ms, error = %e, verdict = "task_history_write_failed",
+                "could not record worker task-name changes"),
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     });
-    match res {
-        Ok(_) => tracing::info!(target: "amux::sessions", n, measured = true, n_considered = n,
-            verdict = "task_renamed_recorded", "recorded worker task-name changes"),
-        Err(e) => tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
-            "could not record worker task-name changes"),
+    if let Err(e) = spawned {
+        tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
+            "could not start the task-name history write");
     }
 }
 
@@ -1315,26 +1330,60 @@ pub(crate) fn is_question(text: &str) -> bool {
 
 /// The last thing the assistant SAID (text, not tool calls) in a Claude Code
 /// transcript between two unix times. One JSON object per line.
+#[cfg(test)]
 pub(crate) fn last_assistant_text(jsonl: &str, from: f64, to: f64) -> Option<String> {
     let mut last = None;
     for line in jsonl.lines() {
-        let Ok(e) = serde_json::from_str::<Value>(line) else { continue };
-        if e["type"] != "assistant" {
-            continue;
-        }
-        let Some(at) = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else { continue };
-        let at = at.timestamp_millis() as f64 / 1000.0;
-        if at < from || at > to {
-            continue;
-        }
-        let text: String = e["message"]["content"].as_array().into_iter().flatten()
-            .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !text.is_empty() {
+        if let Some(text) = assistant_text_in_window(line, from, to) {
             last = Some(text);
         }
     }
     last
+}
+
+/// [`last_assistant_text`] over a transcript file, a line at a time. AF-1081:
+/// transcripts reach 455 MB (p90 89 MB), and reading one whole and parsing
+/// every line made a cold GET /api/task-history/requests take 6 s, 55 s
+/// under load.
+fn last_assistant_text_in_file(path: &std::path::Path, from: f64, to: f64) -> Option<String> {
+    use std::io::BufRead;
+    let mut last = None;
+    for line in std::io::BufReader::new(std::fs::File::open(path).ok()?).lines().map_while(Result::ok) {
+        if let Some(text) = assistant_text_in_window(&line, from, to) {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// The assistant text on one transcript line, when its timestamp is in the
+/// window. The type and timestamp are read off the raw line first, so the
+/// full JSON parse runs only for the lines that can answer (AF-1081).
+fn assistant_text_in_window(line: &str, from: f64, to: f64) -> Option<String> {
+    if !line.contains("\"assistant\"") {
+        return None;
+    }
+    // The top-level timestamp follows `message` on a transcript line, so the
+    // LAST one is it; a tool input's own timestamp key comes earlier. The
+    // parsed field is checked again below, so a miss only costs a parse.
+    let key = "\"timestamp\":\"";
+    let raw_at = line.rfind(key).map(|i| &line[i + key.len()..]).and_then(|r| r.split('"').next())?;
+    let at = chrono::DateTime::parse_from_rfc3339(raw_at).ok()?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let e: Value = serde_json::from_str(line).ok()?;
+    if e["type"] != "assistant" {
+        return None;
+    }
+    let at = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let text: String = e["message"]["content"].as_array().into_iter().flatten()
+        .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
 }
 
 /// Each open question and the window its answer must fall in: (id, asked at,
@@ -1355,6 +1404,17 @@ pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64
 /// question arrived, then the first Stop after that submit, and only if it
 /// stopped before the owner's next message. A Stop belonging to a turn already
 /// running when the question came in is never taken. Returns (began, stop, sid).
+/// Each question's own-turn stop, from one ts-sorted scan of the turn events.
+/// A window `(id, asked_at, next, until)` sees exactly the events a query for
+/// `ts >= asked_at - 5 AND ts < until` returned (AF-1081).
+pub(crate) fn stops_in_windows(events: &[(f64, String, String)], windows: &[(i64, f64, f64, f64)]) -> Vec<(i64, f64, f64, String)> {
+    windows.iter().filter_map(|&(id, at, next, until)| {
+        let a = events.partition_point(|e| e.0 < at - 5.0);
+        let b = events.partition_point(|e| e.0 < until);
+        own_turn_stop(&events[a..b.max(a)], at, next).map(|(began, stop, sid)| (id, began, stop, sid))
+    }).collect()
+}
+
 pub(crate) fn own_turn_stop(events: &[(f64, String, String)], asked_at: f64, next: f64) -> Option<(f64, f64, String)> {
     let began = events.iter().find(|(ts, ev, _)| *ts >= asked_at - 5.0 && ev == "UserPromptSubmit")?.0;
     let (stop, _, sid) = events.iter().find(|(ts, ev, _)| *ts > began && ev == "Stop")?;
@@ -1369,10 +1429,21 @@ fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
     if session_id.is_empty() || session_id.contains('/') {
         return None;
     }
+    // A transcript does not move, and the search stats every project folder
+    // (8,257 on 2026-10-31), so a found path is kept (AF-1081).
+    static FOUND: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>> =
+        std::sync::LazyLock::new(Default::default);
+    if let Some(p) = FOUND.lock().ok().and_then(|m| m.get(session_id).cloned()).filter(|p| p.is_file()) {
+        return Some(p);
+    }
     let root = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".claude").join("projects");
-    std::fs::read_dir(root).ok()?.flatten()
+    let found = std::fs::read_dir(root).ok()?.flatten()
         .map(|d| d.path().join(format!("{session_id}.jsonl")))
-        .find(|p| p.is_file())
+        .find(|p| p.is_file())?;
+    if let Ok(mut m) = FOUND.lock() {
+        m.insert(session_id.to_string(), found.clone());
+    }
+    Some(found)
 }
 
 /// GET /api/task-history/requests?session=&days=7: the owner's requests to one
@@ -1381,6 +1452,65 @@ fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
 /// cited by a commit on origin/main is on main (live when the running build
 /// has it, and only for the repo this server deploys); closed with `amux
 /// requests close` is closed; the rest are open. Cached a minute per worker.
+/// One git read per (command, repo, window) for 60 s, shared by every caller
+/// (AF-1081). The dashboard asks for every worker card at once and ~40 lanes
+/// share the mixpeek checkout, so each ran its own git log at the same moment:
+/// 0.8 s alone, ~5 s each under that contention. A per-key lock makes the
+/// concurrent callers wait for the one read instead of each spawning their
+/// own; a failed read is not kept, so the next caller tries again.
+fn shared_git_stdout(key: String, read: impl FnOnce() -> Option<String>) -> Option<std::sync::Arc<String>> {
+    type Slot = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<String>)>>>;
+    static SLOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Slot>>> =
+        std::sync::LazyLock::new(Default::default);
+    let slot = SLOTS.lock().ok()?.entry(key).or_default().clone();
+    let mut held = slot.lock().ok()?;
+    if let Some((at, out)) = held.as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(60) {
+            return Some(out.clone());
+        }
+    }
+    let out = std::sync::Arc::new(read()?);
+    *held = Some((std::time::Instant::now(), out.clone()));
+    Some(out)
+}
+
+/// The answer per (session, days), with when it was computed.
+static OWNER_REQUESTS_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
+    std::sync::LazyLock::new(Default::default);
+/// Keys whose refresh is running, so an expired answer starts one refresh.
+static OWNER_REQUESTS_REFRESHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// What a GET does with the cached answer for its key (AF-1081).
+#[derive(Debug, PartialEq)]
+pub(crate) enum CachedAnswer {
+    /// Under 60 s old: serve it.
+    Fresh,
+    /// Older: serve it now and refresh behind the reply, so a card never waits
+    /// on git (the first read per repo still took 1.5-2.8 s on a loaded box
+    /// after the shared read, 2026-10-31).
+    Stale,
+    /// Nothing cached (the first call after a restart): answer "computing"
+    /// at once and compute behind the reply (AF-1083).
+    Missing,
+}
+
+/// How long one worker's owner-request count is served without a refresh.
+/// Hog RCA 20261031-084253: at 60 s every open dashboard re-read cmd_history
+/// and git log for each worker card every minute, and owner_requests was
+/// 15.5% of the server's busy samples while it ran at 448% on two ticks. A
+/// count of your open asks does not need minute freshness; a stale answer is
+/// still served at once and refreshed behind it.
+pub(crate) const OWNER_REQUESTS_FRESH: std::time::Duration = std::time::Duration::from_secs(300);
+
+pub(crate) fn cached_answer(age: Option<std::time::Duration>) -> CachedAnswer {
+    match age {
+        Some(a) if a < OWNER_REQUESTS_FRESH => CachedAnswer::Fresh,
+        Some(_) => CachedAnswer::Stale,
+        None => CachedAnswer::Missing,
+    }
+}
+
 pub async fn owner_requests(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -1389,14 +1519,56 @@ pub async fn owner_requests(
         return (StatusCode::BAD_REQUEST, Json(json!({"error": "session is required", "measured": false, "n_considered": 0}))).into_response();
     };
     let days = q.get("days").and_then(|v| v.parse::<f64>().ok()).unwrap_or(7.0).clamp(1.0, 30.0);
-    static CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
-        std::sync::LazyLock::new(Default::default);
     let key = format!("{session}|{days}");
-    if let Some((at, v)) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
-        if at.elapsed() < std::time::Duration::from_secs(60) {
-            return Json(v).into_response();
-        }
+    let cached = OWNER_REQUESTS_CACHE.lock().ok().and_then(|c| c.get(&key).cloned());
+    let verdict = cached_answer(cached.as_ref().map(|(at, _)| at.elapsed()));
+    if let (CachedAnswer::Fresh, Some((_, v))) = (&verdict, &cached) {
+        return Json(v.clone()).into_response();
     }
+    // Stale or missing: one refresh per key, behind the reply.
+    let start = OWNER_REQUESTS_REFRESHING.lock().map(|mut r| r.insert(key.clone())).unwrap_or(false);
+    if start {
+        let k = key.clone();
+        let who = session.clone();
+        tokio::spawn(async move {
+            // AT MOST FOUR COMPUTES AT ONCE (AF-1083). After a restart every
+            // worker card asks at once with nothing cached; computing them all
+            // inline held each request 34-74 s (13:35Z and 14:33Z, 2026-10-31)
+            // and filled the read pool for every other endpoint.
+            static COMPUTES: std::sync::LazyLock<tokio::sync::Semaphore> =
+                std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+            if let Ok(_permit) = COMPUTES.acquire().await {
+                let _ = compute_owner_requests(state, who, days, k.clone()).await;
+            }
+            if let Ok(mut r) = OWNER_REQUESTS_REFRESHING.lock() {
+                r.remove(&k);
+            }
+        });
+    }
+    match cached {
+        Some((at, mut v)) => {
+            v["cached_age_s"] = json!(at.elapsed().as_secs());
+            v["refreshing"] = json!(true);
+            Json(v).into_response()
+        }
+        // The dashboard ignores measured:false and asks again on its next pass.
+        None => Json(json!({"measured": false, "n_considered": 0, "session": session, "days": days, "computing": true,
+            "why_unmeasured": "not computed since the server started; computing now, ask again in a few seconds"})).into_response(),
+    }
+}
+
+/// Compute the answer and cache it. Split from the handler so an expired
+/// answer can be refreshed behind the reply.
+async fn compute_owner_requests(state: AppState, session: String, days: f64, key: String) -> Response {
+    // Per-phase wall time, in the answer and in a WARN past 1 s (AF-1081): the
+    // cold GET was 3-6 s and the first fix aimed at the wrong phase.
+    let t0 = std::time::Instant::now();
+    let mut phases = serde_json::Map::new();
+    let mut mark = |name: &str, since: &mut std::time::Instant| {
+        phases.insert(format!("{name}_ms"), json!(since.elapsed().as_millis() as u64));
+        *since = std::time::Instant::now();
+    };
+    let mut lap = std::time::Instant::now();
     let who = session.clone();
     let since_ms = ((chrono::Utc::now().timestamp() as f64 - days * 86400.0) * 1000.0) as i64;
     let msgs = state.store.read_async(move |c| {
@@ -1414,6 +1586,7 @@ pub async fn owner_requests(
         Ok(m) => m,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
     };
+    mark("messages", &mut lap);
     let closed: std::collections::HashMap<i64, (String, Option<String>)> =
         std::fs::read_to_string(crate::api::session_verbs::home().join("requests-closed.json")).ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -1428,17 +1601,25 @@ pub async fn owner_requests(
     // took over 60 s on 2026-10-30).
     let mine: std::collections::HashSet<i64> = msgs.iter().map(|m| m.0).collect();
     let closed_shas: Vec<String> = closed.iter().filter(|(id, _)| mine.contains(id)).filter_map(|(_, c)| c.1.clone()).collect();
+    // No requests in the window: nothing for git to settle (AF-1081: the
+    // dashboard asks for every worker card at once, and workers with none
+    // were each spending 5 s in a git log contended by 40 others).
+    let no_requests = msgs.is_empty();
     let git = tokio::task::spawn_blocking(move || {
+        if no_requests {
+            return Err("no owner requests in the window, so git was not read".to_string());
+        }
         let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
-        let mut cmd = std::process::Command::new("git");
-        cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
-            .arg(format!("--since={} days ago", days as i64 + 3))
-            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        let out = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests")
-            .ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
+        let log = shared_git_stdout(format!("log|{}|{}", repo.display(), days as i64), || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
+                .arg(format!("--since={} days ago", days as i64 + 3))
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests").map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        }).ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
         let msg_id = regex::Regex::new(r"MSG-(\d+)").expect("static regex");
         let mut landed = std::collections::HashMap::new();
-        for rec in String::from_utf8_lossy(&out.stdout).split('\x1e') {
+        for rec in log.split('\x1e') {
             let Some((sha, body)) = rec.trim_start_matches('\n').split_once('\x1f') else { continue };
             for c in msg_id.captures_iter(body) {
                 if let Ok(n) = c[1].parse::<i64>() {
@@ -1467,13 +1648,16 @@ pub async fn owner_requests(
             // One rev-list over the window the log read, not a merge-base per
             // sha: a landed sha came from that window, so it is in the build
             // exactly when the build's history over the window lists it.
-            let mut cmd = std::process::Command::new("git");
-            cmd.arg("-C").arg(&repo).args(["rev-list", &build])
-                .arg(format!("--since={} days ago", days as i64 + 3))
-                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
-            if let Some(o) = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success()) {
-                let in_build: std::collections::HashSet<String> =
-                    String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect();
+            let listed = shared_git_stdout(format!("rev-list|{}|{build}|{}", repo.display(), days as i64), || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&repo).args(["rev-list", &build])
+                    .arg(format!("--since={} days ago", days as i64 + 3))
+                    .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+                run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            });
+            if let Some(listed) = listed {
+                let in_build: std::collections::HashSet<String> = listed.lines().map(str::to_string).collect();
                 for sha in landed.values() {
                     live.insert(sha.clone(), in_build.contains(sha));
                 }
@@ -1495,6 +1679,7 @@ pub async fn owner_requests(
         let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         Ok::<_, String>((landed, deploys, live, name, closed_on_main))
     }).await.unwrap_or_else(|e| Err(e.to_string()));
+    mark("git", &mut lap);
     let (landed, deploys, live, repo_name, closed_on_main, git_why) = match git {
         Ok((l, d, v, n, c)) => (l, d, v, n, c, Value::Null),
         Err(e) => (Default::default(), false, Default::default(), String::new(), Default::default(), json!(e)),
@@ -1509,43 +1694,71 @@ pub async fn owner_requests(
     let who = session.clone();
     let qs = questions.clone();
     let stops: Vec<(i64, f64, f64, String)> = state.store.read_async(move |c| {
-        let mut out = Vec::new();
-        let mut evq = c.prepare(
+        // Events up to the next message are all the rule can use; a day caps an open end.
+        let windows: Vec<(i64, f64, f64, f64)> = qs.into_iter().map(|(id, at, next)| (id, at, next, next.min(at + 86_400.0))).collect();
+        let (Some(lo), Some(hi)) = (
+            windows.iter().map(|w| w.1 - 5.0).reduce(f64::min),
+            windows.iter().map(|w| w.3).reduce(f64::max),
+        ) else {
+            return Ok(Vec::new());
+        };
+        // ONE scan over the span of every window, then each window is a slice
+        // of it (AF-1081). A query per window re-read the overlapping day-long
+        // windows: 1.5-2.8 s for 36-55 questions, against 0.3-0.8 s for one scan.
+        let events: Vec<(f64, String, String)> = c.prepare(
             "SELECT ts, json_extract(data,'$.event'), COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
              WHERE session = ?1 AND type = 'session.native_status' AND ts >= ?2 AND ts < ?3 \
              AND json_extract(data,'$.event') IN ('UserPromptSubmit','Stop') ORDER BY ts",
-        )?;
-        for (id, at, next) in qs {
-            // Events up to the next message are all the rule can use; a day caps an open end.
-            let until = next.min(at + 86_400.0);
-            let events: Vec<(f64, String, String)> = evq
-                .query_map(rusqlite::params![who, at - 5.0, until], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .flatten().collect();
-            if let Some((began, stop, sid)) = own_turn_stop(&events, at, next) {
-                out.push((id, began, stop, sid));
-            }
-        }
-        Ok(out)
+        )?
+        .query_map(rusqlite::params![who, lo, hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .flatten().collect();
+        Ok(stops_in_windows(&events, &windows))
     }).await.unwrap_or_default();
+    mark("turn_events", &mut lap);
+    // A turn that has stopped never changes its reply, so each answer is read
+    // from its transcript once, keyed by the message, the turn's session and
+    // its stop (AF-1081).
+    type AnswerKey = (i64, String, i64);
+    static ANSWERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<AnswerKey, Option<String>>>> =
+        std::sync::LazyLock::new(Default::default);
     let answered: std::collections::HashMap<i64, String> = tokio::task::spawn_blocking(move || {
         stops.into_iter().filter_map(|(id, at, stop, sid)| {
-            let text = std::fs::read_to_string(transcript_for(&sid)?).ok()?;
-            let reply = last_assistant_text(&text, at - 5.0, stop + 5.0)?;
+            let key = (id, sid.clone(), stop as i64);
+            let known = ANSWERS.lock().ok().and_then(|m| m.get(&key).cloned());
+            let reply = match known {
+                Some(r) => r,
+                None => {
+                    let path = transcript_for(&sid)?;
+                    let r = last_assistant_text_in_file(&path, at - 5.0, stop + 5.0);
+                    if let Ok(mut m) = ANSWERS.lock() {
+                        m.insert(key, r.clone());
+                    }
+                    r
+                }
+            }?;
             Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
         }).collect()
     }).await.unwrap_or_default();
+    mark("answers", &mut lap);
     let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None }, &answered);
     let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
     let now_ms = chrono::Utc::now().timestamp_millis();
+    let total_ms = t0.elapsed().as_millis() as u64;
+    if total_ms > 1000 {
+        let phase_ms = Value::Object(phases.clone()).to_string();
+        tracing::warn!(target: "amux::owner_requests", session = %session, total_ms, phases = %phase_ms,
+            n_considered = rows.len(), measured = true, "verdict=owner_requests_slow");
+    }
     let body = json!({
         "measured": true, "n_considered": rows.len(), "session": session, "days": days,
+        "took_ms": total_ms, "phases": Value::Object(phases),
         "repo": repo_name, "deploys": deploys,
         "git_measured": git_why.is_null(), "git_why_unmeasured": git_why,
         "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "answered": count("answered"), "closed": count("closed")},
         "requests": rows.iter().map(|r| json!({"id": format!("MSG-{}", r.id), "status": r.status, "evidence": r.evidence,
             "age_h": ((now_ms - r.ts_ms) as f64 / 3_600_000.0 * 10.0).round() / 10.0, "text": r.text})).collect::<Vec<_>>(),
     });
-    if let Ok(mut c) = CACHE.lock() {
+    if let Ok(mut c) = OWNER_REQUESTS_CACHE.lock() {
         c.insert(key, (std::time::Instant::now(), body.clone()));
     }
     Json(body).into_response()
@@ -4349,6 +4562,82 @@ mod subagent_walk_tests {
         assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cold_cache_answers_computing_at_once_and_the_next_ask_gets_the_answer() {
+        // AF-1083: after a restart every card asked at once and each computed
+        // inline, 34-74 s per request. The first ask now answers at once.
+        use axum::extract::{Query, State};
+        let state = crate::api::standing_approvals::tests::test_state();
+        let q = || Query(std::collections::HashMap::from([("session".to_string(), format!("af1083-{}", std::process::id()))]));
+        let body = |r: Response| async move {
+            serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+        };
+        let t0 = std::time::Instant::now();
+        let first = body(owner_requests(State(state.clone()), q()).await).await;
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "the first ask waited {:?}", t0.elapsed());
+        assert_eq!((first["measured"].as_bool(), first["computing"].as_bool()), (Some(false), Some(true)), "{first}");
+        let mut got = Value::Null;
+        for _ in 0..100 {
+            got = body(owner_requests(State(state.clone()), q()).await).await;
+            if got["measured"].as_bool() == Some(true) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(got["measured"].as_bool(), Some(true), "the background compute never landed: {got}");
+    }
+
+    #[test]
+    fn an_expired_answer_is_served_and_refreshed_and_a_missing_one_is_computed_behind_the_reply() {
+        use std::time::Duration;
+        assert_eq!(cached_answer(Some(Duration::from_secs(299))), CachedAnswer::Fresh, "a minute-old count is served, not recomputed");
+        assert_eq!(cached_answer(Some(Duration::from_secs(300))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(Some(Duration::from_secs(3600))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(None), CachedAnswer::Missing);
+    }
+
+    #[test]
+    fn concurrent_callers_share_one_git_read_and_a_failed_read_is_not_kept() {
+        // AF-1081: ~40 cards asked at once, each running its own git log.
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let key = format!("test|{}", std::process::id());
+        let handles: Vec<_> = (0..8).map(|_| {
+            let (reads, key) = (reads.clone(), key.clone());
+            std::thread::spawn(move || shared_git_stdout(key, || {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                Some("abc".to_string())
+            }))
+        }).collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().as_deref().map(String::as_str), Some("abc"));
+        }
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "eight concurrent callers, one read");
+        let failing = format!("test-fail|{}", std::process::id());
+        assert!(shared_git_stdout(failing.clone(), || None).is_none());
+        assert_eq!(shared_git_stdout(failing, || Some("ok".into())).as_deref().map(String::as_str), Some("ok"), "a failed read is retried");
+    }
+
+    #[test]
+    fn one_scan_sliced_per_window_matches_a_query_per_window() {
+        // AF-1081: the handler now scans the turn events once and slices them.
+        // Overlapping day-long windows, an event 3 s before a question (inside
+        // the 5 s lead) and one exactly at `until` (outside) must all agree
+        // with filtering the events window by window, as the old query did.
+        let ev = |ts: f64, e: &str, sid: &str| (ts, e.to_string(), sid.to_string());
+        let events = vec![
+            ev(97.0, "UserPromptSubmit", "a"), ev(150.0, "Stop", "a"),
+            ev(200.0, "UserPromptSubmit", "b"), ev(300.0, "Stop", "b"),
+            ev(400.0, "UserPromptSubmit", "c"), ev(500.0, "Stop", "c"),
+        ];
+        let windows = vec![(1, 100.0, 180.0, 180.0), (2, 210.0, 400.0, 300.0), (3, 205.0, 1000.0, 1000.0), (4, 402.0, 900.0, 900.0)];
+        let naive: Vec<_> = windows.iter().filter_map(|&(id, at, next, until)| {
+            let w: Vec<_> = events.iter().filter(|e| e.0 >= at - 5.0 && e.0 < until).cloned().collect();
+            own_turn_stop(&w, at, next).map(|(b, s, sid)| (id, b, s, sid))
+        }).collect();
+        assert_eq!(stops_in_windows(&events, &windows), naive);
+        assert!(naive.iter().any(|r| r.0 == 1), "the prompt 3 s before the question still counts");
+        assert!(!naive.iter().any(|r| r.0 == 2), "a Stop exactly at until is outside the window");
+    }
+
     /// AF-1059: a question answered in its own turn reads answered with the
     /// reply; an ask, or anything landed or closed, is untouched.
     #[test]
@@ -4398,6 +4687,31 @@ mod subagent_walk_tests {
             "a turn that began within the tolerance but ended before the question arrived");
         let w = question_windows(&ms, &|id| id == 21);
         assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
+    }
+
+    /// AF-1081: the file reader streams and filters lines before parsing, and
+    /// must answer exactly what the whole-text reader answers, including when
+    /// a tool input carries its own earlier timestamp key.
+    #[test]
+    fn the_streamed_transcript_reader_agrees_with_the_whole_text_reader() {
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        let line = |ty: &str, at: &str, content: &str| format!(
+            r#"{{"type":"{ty}","message":{{"content":{content}}},"uuid":"u","timestamp":"{at}"}}"#);
+        let jsonl = [
+            line("user", "2026-10-25T13:08:00Z", r#"[{"type":"text","text":"is the assistant done?"}]"#),
+            line("assistant", "2026-10-25T13:08:30Z", r#"[{"type":"tool_use","input":{"timestamp":"2026-10-25T09:00:00Z"}},{"type":"text","text":"Checked the job."}]"#),
+            line("assistant", "2026-10-25T13:09:00Z", r#"[{"type":"text","text":"It finished at noon."}]"#),
+            line("assistant", "2026-10-25T14:00:00Z", r#"[{"type":"text","text":"Later reply."}]"#),
+        ].join("\n");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, &jsonl).unwrap();
+        for (from, to) in [("2026-10-25T13:08:00Z", "2026-10-25T13:09:05Z"), ("2026-10-25T13:08:00Z", "2026-10-25T13:08:40Z"),
+                           ("2026-10-25T15:00:00Z", "2026-10-25T16:00:00Z")] {
+            assert_eq!(last_assistant_text_in_file(&path, t(from), t(to)), last_assistant_text(&jsonl, t(from), t(to)), "{from}..{to}");
+        }
+        assert_eq!(last_assistant_text_in_file(&path, t("2026-10-25T13:08:00Z"), t("2026-10-25T13:08:40Z")).as_deref(),
+            Some("Checked the job."), "the tool input's earlier timestamp does not move the line out of its window");
     }
 
     fn touch(p: &std::path::Path) {
@@ -5190,7 +5504,91 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 /// load.
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let json = legacy_sessions_array_built(store)?;
-    Ok(apply_config_overlays(json))
+    Ok(apply_status_reports(apply_config_overlays(json)))
+}
+
+// A STATUS REPORT SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
+// 2026-11-01: "make the status of workers more accurate and timely"). A hook
+// report pushes SSE immediately, but readers got the last snapshot, which is
+// rebuilt only once a build's own length has passed (median 8 s measured, so a
+// flip took 6-12 s to appear). Reports newer than the snapshot's build start
+// are laid over it the way config writes are; the next build retires them.
+// native_status::apply and report_post feed it.
+fn status_reports() -> &'static std::sync::Mutex<std::collections::HashMap<String, (f64, String)>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (f64, String)>>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Record a report the writer just stored, for readers of the last snapshot.
+pub fn note_status_report(name: &str, state: &str, ts: f64) {
+    if let Ok(mut r) = status_reports().lock() {
+        r.insert(name.to_string(), (ts, state.to_string()));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn pending_status_report(name: &str) -> Option<String> {
+    status_reports().lock().ok()?.get(name).map(|(_, state)| state.clone())
+}
+
+fn apply_status_reports(json: String) -> String {
+    let built_at = build_array_cache().lock().map(|c| c.stamp).unwrap_or(0.0);
+    let pending: Vec<(String, (f64, String))> = {
+        let Ok(mut r) = status_reports().lock() else { return json };
+        r.retain(|_, (ts, _)| *ts >= built_at);
+        r.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    if pending.is_empty() {
+        return json;
+    }
+    let Ok(mut rows) = serde_json::from_str::<Vec<Value>>(&json) else { return json };
+    let mut flipped = 0usize;
+    for row in rows.iter_mut() {
+        let name = row["name"].as_str().unwrap_or("");
+        if let Some((_, (ts, state))) = pending.iter().find(|(n, _)| n == name) {
+            flipped += lay_status_report(row, state, *ts) as usize;
+        }
+    }
+    tracing::debug!(target: "amux::sessions", flipped, pending = pending.len(), measured = true,
+        n_considered = rows.len(), verdict = "sessions_status_report_applied",
+        "status reports were laid over a session list built before them");
+    serde_json::to_string(&rows).unwrap_or(json)
+}
+
+/// One report over one row. Returns whether the status moved. Only turn edges
+/// move: a rate limit, an API error or a stopped worker stay what the build
+/// decided, and a turn that ended with its own job or subagents still running
+/// stays active.
+fn lay_status_report(row: &mut Value, state: &str, ts: f64) -> bool {
+    if row["running"] != true {
+        return false;
+    }
+    if row["self_report"].is_object() {
+        row["self_report"]["state"] = json!(state);
+        row["self_report"]["ts"] = json!(ts as i64);
+    }
+    if row["last_progress_at"].as_f64().unwrap_or(0.0) < ts {
+        row["last_progress_at"] = json!(ts);
+    }
+    let busy = row["agents_working"].as_i64().unwrap_or(0) > 0
+        || row["background_jobs"].as_array().is_some_and(|j| j.iter().any(|b| b["waiting"] != true));
+    let current = row["status"].as_str().unwrap_or("");
+    let (status, turn, activity) = match (state, current) {
+        ("active", "idle" | "waiting" | "blocked") => ("active", "running", "working"),
+        ("idle", "active") if !busy => ("idle", "completed", "none"),
+        ("waiting", "active" | "idle") => ("waiting", "waiting", "waiting_for_input"),
+        ("blocked", "active" | "idle") => ("blocked", "waiting", "waiting_for_approval"),
+        _ => return false,
+    };
+    row["status"] = json!(status);
+    row["agent_state"] = json!(status);
+    row["turn_state"] = json!(turn);
+    row["activity"] = json!(activity);
+    row["status_authority"] = json!("authoritative");
+    if let Some(o) = row.as_object_mut() {
+        o.remove("waiting_reason");
+    }
+    true
 }
 
 // A CONFIG WRITE SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
@@ -6133,6 +6531,28 @@ pub(crate) const NEW_WORKER_AUTOMATION_OFF: [(&str, &str); 6] = [
     ("AMUX_BOARD_FORCE_ADHERENCE", "0"),
 ];
 
+/// Is a worker's Chat tab on? On unless switched off (Ethan, 2026-11-02: "make it
+/// so chat is default enabled for all workers"). It is a flag: nothing runs until
+/// the first chat message. A worker turns it off with AMUX_CHAT_COMPANION=0, and a
+/// companion row has no Chat tab of its own.
+pub(crate) fn chat_on(value: Option<&str>, companion_of: Option<&str>) -> bool {
+    companion_of.is_none_or(|c| c.trim().is_empty())
+        && !value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+}
+
+#[cfg(test)]
+mod chat_default_tests {
+    use super::chat_on;
+    #[test]
+    fn chat_is_on_unless_switched_off() {
+        assert!(chat_on(None, None), "a worker nobody configured has Chat");
+        assert!(chat_on(Some("1"), None), "one already on stays on");
+        assert!(!chat_on(Some("0"), None), "an explicit off stays off");
+        assert!(!chat_on(None, Some("amux")), "a companion row has no Chat tab");
+        assert!(chat_on(None, Some("")));
+    }
+}
+
 pub async fn create_session_legacy(
     State(_state): State<AppState>,
     headers: HeaderMap,
@@ -6338,6 +6758,11 @@ pub async fn create_session_legacy(
         .unwrap_or(false)
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
+    }
+    // Chat is on unless asked otherwise (`chat_on`); `chat: false` creates a
+    // worker with it off.
+    if body.get("chat").is_some_and(|v| !crate::api::py_truthy(v)) {
+        pairs.push(("AMUX_CHAT_COMPANION", "0".to_string()));
     }
     // WORKTREE AT CREATE TIME (AMUX-4911). `worktree: false` is the dialog's
     // unchecked box, and it opts this worker out of group-level workspace
@@ -6758,6 +7183,10 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "auto_drain_backlog": crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(&name),
             "board_decompose": crate::api::board_lifecycle::enabled(&name),
             "board_force_adherence": crate::api::board_lifecycle::force_adherence(&name),
+            // Whether amux uses the board for this worker at all: the same
+            // predicate every board gate enforces. The worker page's switch
+            // reads this, so Off on screen always means unused (2026-10-31).
+            "board_used": !crate::api::board_lifecycle::no_board(&name),
             "auto_drain_backlog_own": env.contains_key(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY),
             // AMUX-3048: the raw event-driven count behind agents_working, so a
             // LEAKED count (a lost SubagentStop pinning a lane "working") is
@@ -6950,12 +7379,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         if let Some(row) = out.last_mut() {
             row["goal"] = if configured_provider == "claude" { crate::runtime_jobs::goal_keeper::goal_payload(&name) } else { serde_json::Value::Null };
         }
-        // The worker page's Chat tab (AMUX-5350): off unless switched on; the
+        // The worker page's Chat tab (AMUX-5350): on unless switched off; the
         // companion chat worker names the worker it talks about. Set here, not
         // in the literal above, which is at json!'s recursion limit.
         if let Some(v) = out.last_mut() {
             v["peers"] = json!(env.get("CC_PEERS").map(|t| t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>()).unwrap_or_default());
-            v["chat_companion"] = json!(env.get("AMUX_CHAT_COMPANION").is_some_and(|x| x == "1"));
+            v["chat_companion"] = json!(chat_on(env.get("AMUX_CHAT_COMPANION").map(String::as_str), env.get("CC_COMPANION_OF").map(String::as_str)));
             v["companion_of"] = json!(env.get("CC_COMPANION_OF").cloned().unwrap_or_default());
             // Sparse worktree profile (AMUX-5341); empty = the repo's default.
             v["worktree_profile"] = json!(env.get("CC_WORKTREE_PROFILE").cloned().unwrap_or_default());
@@ -9400,6 +9829,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_report_moves_a_turn_edge_and_nothing_else() {
+        let row = |status: &str| json!({"running": true, "status": status, "self_report": {"state": "x", "ts": 1}, "last_progress_at": 5.0, "agents_working": 0, "background_jobs": [], "waiting_reason": "owner"});
+        let mut r = row("waiting");
+        assert!(lay_status_report(&mut r, "active", 100.0));
+        assert_eq!((r["status"].as_str(), r["activity"].as_str(), r["waiting_reason"].is_null()), (Some("active"), Some("working"), true));
+        assert_eq!((r["last_progress_at"].as_f64(), r["self_report"]["ts"].as_i64()), (Some(100.0), Some(100)));
+
+        let mut r = row("active");
+        assert!(lay_status_report(&mut r, "idle", 100.0));
+        assert_eq!(r["status"], "idle");
+
+        // A turn that ended with work still running stays active.
+        let mut r = row("active");
+        r["agents_working"] = json!(2);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": false}]);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": true}]);
+        assert!(lay_status_report(&mut r, "idle", 100.0), "a watch loop is not work");
+
+        for held in ["rate_limited", "api_error", "error", "starting"] {
+            let mut r = row(held);
+            assert!(!lay_status_report(&mut r, "active", 100.0), "{held}");
+            assert_eq!(r["status"], held);
+        }
+        let mut r = row("idle");
+        r["running"] = json!(false);
+        assert!(!lay_status_report(&mut r, "active", 100.0));
+    }
+
+    #[test]
     fn status_blank_when_not_running() {
         let s = signals();
         assert_eq!(s.derive_status("x", false), "");
@@ -11310,6 +11772,42 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert_eq!(task_name_changes(&stopped, &mut last)[0].4, "AMUX-9", "a stopped worker's board-named task keeps its card");
         let c = task_name_changes(&snap("Ship the stopwatch"), &mut last);
         assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
+    }
+
+    /// 2026-11-02: the list build waited on this write while the writer ran a
+    /// long job, so /api/sessions answered 503 after 30 s. A busy writer must
+    /// not hold the build, and the rename must still be recorded.
+    #[test]
+    fn task_name_history_write_does_not_hold_the_list_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let busy = store.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            busy.write(move |_| {
+                started_tx.send(()).ok();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            })
+        });
+        started_rx.recv().unwrap();
+        let name = format!("zz-history-{}", std::process::id());
+        let conn = store.read().unwrap();
+        let t = std::time::Instant::now();
+        record_task_changes(&store, &conn, &[json!({"name": name, "task_name": "Ship it", "task_source": "generated_title"})]);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1),
+            "record_task_changes waited {:?} on a busy writer", t.elapsed());
+        holder.join().unwrap().unwrap();
+        let count = || -> i64 {
+            store.read().unwrap().query_row(
+                "SELECT COUNT(*) FROM session_events WHERE type='task.renamed' AND session=?1",
+                [&name], |r| r.get(0)).unwrap()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(count(), 1, "the rename is recorded once the writer is free");
     }
 
     #[test]

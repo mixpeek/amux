@@ -139,6 +139,16 @@ const USE_GRACE_S: i64 = 10;
 const SCAN_SHARE: f64 = 0.9;
 /// Reads are counted over this many days.
 const READ_WINDOW_DAYS: i64 = 7;
+/// How long a cold copy outlives the deletion of its link on the Mac before it
+/// is removed. Workers delete scratch by deleting its path, which on a moved
+/// folder removes only the link: 107 copies sat on Bulk with nothing pointing
+/// at them on 2026-11-02. Two weeks leaves time to notice a mistake, and the
+/// nightly backup keeps monthly snapshots for six months after that.
+const ORPHAN_GRACE_S: i64 = 14 * 86_400;
+/// How long a leftover rsync gets to exit after each signal.
+const COLD_READ_LIMIT: Duration = Duration::from_secs(10);
+const ORPHAN_TERM_WAIT: Duration = Duration::from_secs(10);
+const ORPHAN_KILL_WAIT: Duration = Duration::from_secs(5);
 /// A copy that keeps failing is abandoned after this many ticks.
 const MAX_COPY_ATTEMPTS: u32 = 5;
 const OLD: &str = ".amux-tier-old";
@@ -257,6 +267,10 @@ pub(crate) struct Folder {
     /// For a subfolder found under a root, that root's path.
     #[serde(default)]
     pub parent: Option<String>,
+    /// When the folder's path on the Mac was first seen gone while its copy
+    /// stayed on the cold drive: a person or worker deleted the link.
+    #[serde(default)]
+    pub orphaned_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +300,10 @@ pub(crate) struct Op {
     pub started_at: i64,
     #[serde(default)]
     pub attempts: u32,
+    /// The rsync running for this op, while one is. A re-exec keeps this
+    /// process's children, so a resume must stop it before copying again.
+    #[serde(default)]
+    pub rsync_pid: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -304,6 +322,11 @@ pub(crate) struct Stats {
     /// Files whose atime moved past the previous measurement: reads since then.
     #[serde(default)]
     pub touched: u64,
+    /// The part of `bytes` in files hard-linked elsewhere (`git clone` of a
+    /// local path links its objects). Moving this folder frees none of it
+    /// until every other link is gone too.
+    #[serde(default)]
+    pub shared_bytes: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -436,35 +459,60 @@ pub(crate) fn measure(root: &Path, budget: Duration) -> Stats {
 /// `measure`, also counting files read (atime) after `since`.
 pub(crate) fn measure_since(root: &Path, budget: Duration, since: i64) -> Stats {
     let start = Instant::now();
-    let mut st = Stats { bytes: 0, files: 0, last_used: 0, measured_at: now_secs(), complete: true, newest_write: 0, touched: 0 };
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut st = Stats { bytes: 0, files: 0, last_used: 0, measured_at: now_secs(), complete: true, newest_write: 0, touched: 0, shared_bytes: 0 };
+    // Each entry carries whether it is inside a `.git` directory.
+    let mut stack = vec![(root.to_path_buf(), false)];
+    while let Some((dir, in_git)) = stack.pop() {
         if start.elapsed() > budget {
             st.complete = false;
             break;
         }
-        if let Ok(m) = std::fs::metadata(&dir) {
-            st.last_used = st.last_used.max(m.mtime());
-            st.newest_write = st.newest_write.max(m.mtime());
+        if !in_git {
+            if let Ok(m) = std::fs::metadata(&dir) {
+                st.last_used = st.last_used.max(m.mtime());
+                st.newest_write = st.newest_write.max(m.mtime());
+            }
         }
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             // DirEntry::metadata does not follow symlinks on unix.
             let Ok(m) = e.metadata() else { continue };
             if m.is_dir() {
-                stack.push(e.path());
+                stack.push((e.path(), in_git || e.file_name() == ".git"));
                 continue;
             }
             st.files += 1;
             st.bytes += m.blocks() * 512;
-            st.last_used = st.last_used.max(m.mtime()).max(m.atime());
+            if m.nlink() > 1 {
+                st.shared_bytes += m.blocks() * 512;
+            }
+            if in_git && (m.nlink() > 1 || !git_write_is_use(&e.file_name())) {
+                continue;
+            }
+            st.last_used = st.last_used.max(m.mtime());
             st.newest_write = st.newest_write.max(m.mtime());
+            if in_git {
+                continue;
+            }
+            st.last_used = st.last_used.max(m.atime());
             if m.atime() > since {
                 st.touched += 1;
             }
         }
     }
     st
+}
+
+/// Inside `.git`, reads are never use: `git status` (which this module's own
+/// gate runs on every check) reads the index, and on 2026-10-30 that made 85
+/// idle checkouts read as used within hours, every pass, so none could ever
+/// move. Writes count, a commit or fetch is real work, except the index and
+/// its lock, which `git status` refreshes on its own. A hard-linked file in
+/// `.git` is shared with sibling clones and one inode has one mtime: on
+/// 2026-11-01 a single clone's commit made 45 gs12 clones (360 GB) read as
+/// written at the same second, so its timestamps say nothing about this one.
+fn git_write_is_use(name: &std::ffi::OsStr) -> bool {
+    !matches!(name.to_str(), Some("index" | "index.lock" | "FETCH_HEAD"))
 }
 
 /// Is any file under `p` open, or any process working inside it?
@@ -529,9 +577,35 @@ pub(crate) fn rsync_bin() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("PATH").and_then(|v| std::env::split_paths(&v).map(|d| d.join("rsync")).find(|p| p.exists())))
 }
 
+type RsyncWatch = Box<dyn Fn(Option<u32>)>;
+
+thread_local! {
+    /// Told each rsync's pid as it starts and None as it ends, so the running
+    /// op can record it. Set for the length of one op on its blocking thread.
+    static RSYNC_WATCH: std::cell::RefCell<Option<RsyncWatch>> = const { std::cell::RefCell::new(None) };
+}
+
+fn rsync_watch(pid: Option<u32>) {
+    RSYNC_WATCH.with(|w| {
+        if let Some(f) = w.borrow().as_ref() {
+            f(pid);
+        }
+    });
+}
+
 fn rsync(args: &[&str]) -> Result<String, String> {
     let bin = rsync_bin().ok_or_else(|| "rsync is not installed".to_string())?;
-    let out = Command::new(bin).args(args).output().map_err(|e| format!("rsync: {e}"))?;
+    let child = Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("rsync: {e}"))?;
+    rsync_watch(Some(child.id()));
+    let waited = child.wait_with_output();
+    rsync_watch(None);
+    let out = waited.map_err(|e| format!("rsync: {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "rsync {} exited {}: {}",
@@ -579,6 +653,50 @@ fn safe_to_remove(p: &Path) -> bool {
 
 fn io(what: &str, p: &Path, e: std::io::Error) -> String {
     format!("{what} {}: {e}", p.display())
+}
+
+// ── a copy left behind by a re-exec ─────────────────────────────────────────
+
+/// Is `pid` an rsync working on `dest`? Reads the command line, so a pid reused
+/// by anything else, or a sibling folder whose name starts the same, is a no.
+/// A dead child still unreaped has lost its arguments and reads as a no too.
+fn is_rsync_for(pid: u32, dest: &str) -> Result<bool, String> {
+    let out = Command::new("ps").args(["-ww", "-o", "args=", "-p", &pid.to_string()]).output().map_err(|e| format!("ps: {e}"))?;
+    let line = String::from_utf8_lossy(&out.stdout);
+    let is_rsync = line.split_whitespace().next().is_some_and(|c| Path::new(c).file_name().is_some_and(|n| n == "rsync"));
+    Ok(is_rsync && line.split_whitespace().any(|a| a.trim_end_matches('/') == dest.trim_end_matches('/')))
+}
+
+/// Stop that exact pid if it is still an rsync on `dest`: SIGTERM, then SIGKILL.
+/// Ok(true) when one was stopped. Err when it would not die, so the caller does
+/// not start a second copy beside it.
+fn stop_orphan_rsync(pid: u32, dest: &str) -> Result<bool, String> {
+    if !is_rsync_for(pid, dest)? {
+        return Ok(false);
+    }
+    for (signal, wait) in [(libc::SIGTERM, ORPHAN_TERM_WAIT), (libc::SIGKILL, ORPHAN_KILL_WAIT)] {
+        // SAFETY: kill and waitpid take plain integers. WNOHANG never blocks,
+        // and reaps the rsync when it is a child of this re-exec'd process.
+        unsafe { libc::kill(pid as libc::pid_t, signal) };
+        let start = Instant::now();
+        while start.elapsed() < wait {
+            unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+            if !is_rsync_for(pid, dest)? {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Err(format!("rsync {pid} on {dest} is still running after SIGKILL"))
+}
+
+/// Before resuming an op, stop the rsync its previous run left going.
+fn stop_op_orphan(path: &str, op: &Op) -> Result<(), String> {
+    let Some(pid) = op.rsync_pid else { return Ok(()) };
+    if stop_orphan_rsync(pid, &op.dest)? {
+        tracing::warn!(path, pid, dest = %op.dest, verdict = "tier_copy_orphan_killed", "tiering: stopped an rsync a restart left running, before copying again");
+    }
+    Ok(())
 }
 
 // ── the move itself ─────────────────────────────────────────────────────────
@@ -812,6 +930,37 @@ fn volume_of(p: &Path) -> Option<PathBuf> {
     }
 }
 
+/// A read that never returns, as when macOS holds it for a privacy permission,
+/// would otherwise stop every later tick with no word of why. Only one read waits
+/// at a time, so a permission that stays unanswered costs one thread.
+fn cold_read_blocked(limit: Duration, pending: &'static AtomicBool, read: impl FnOnce() -> std::io::Result<()> + Send + 'static) -> Option<String> {
+    if pending.swap(true, Ordering::SeqCst) {
+        return Some("an earlier read has not returned".into());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let res = read();
+        pending.store(false, Ordering::SeqCst);
+        if tx.send(res).is_err() {
+            tracing::debug!(verdict = "tier_cold_read_late", "tiering: a cold drive read returned after its limit");
+        }
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::PermissionDenied => Some(e.to_string()),
+        Ok(_) => None,
+        Err(_) => Some(format!("a read did not return within {}s", limit.as_secs())),
+    }
+}
+
+async fn cold_root_blocked(cold_root: &Path) -> Option<String> {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if cold_root.as_os_str().is_empty() {
+        return None;
+    }
+    let root = cold_root.to_path_buf();
+    tokio::task::spawn_blocking(move || cold_read_blocked(COLD_READ_LIMIT, &PENDING, move || std::fs::read_dir(&root).map(|_| ()))).await.unwrap_or(None)
+}
+
 fn ensure_cold_root(cold_root: &Path) -> Result<(), String> {
     // Under /Volumes, the volume itself must be MOUNTED, checked by device, not
     // just present: writing under an unplugged drive's leftover folder would
@@ -879,6 +1028,7 @@ fn child(path: String, root: &Folder, adopted: Option<String>, now: i64) -> Fold
         promoted_at: None,
         each_subfolder: false,
         parent: Some(root.path.clone()),
+        orphaned_at: None,
     }
 }
 
@@ -924,6 +1074,86 @@ pub(crate) fn discover(c: &mut Config) -> (usize, usize) {
         Some(r) => root_paths.contains(r) && (f.op.is_some() || f.dest.is_some() || std::fs::symlink_metadata(&f.path).is_ok()),
     });
     (added, before - c.folders.len())
+}
+
+// ── orphaned cold copies ────────────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Orphan {
+    No,
+    /// The link is gone, first seen now.
+    Seen,
+    /// The path is back (a person restored the link or the folder).
+    Back,
+    /// Gone for `ORPHAN_GRACE_S`: remove the cold copy.
+    Due,
+}
+
+pub(crate) fn orphan_state(f: &Folder, now: i64) -> Orphan {
+    if f.op.is_some() || f.dest.is_none() || f.each_subfolder {
+        return if f.orphaned_at.is_some() { Orphan::Back } else { Orphan::No };
+    }
+    match (location(f) == "missing", f.orphaned_at) {
+        (true, None) => Orphan::Seen,
+        (true, Some(t)) if now - t >= ORPHAN_GRACE_S => Orphan::Due,
+        (false, Some(_)) => Orphan::Back,
+        _ => Orphan::No,
+    }
+}
+
+/// Delete an orphaned cold copy, only strictly inside `cold_root`. Ok(false)
+/// when it was already gone.
+pub(crate) fn remove_orphan(cold_root: &Path, dest: &Path) -> Result<bool, String> {
+    let inside = dest.is_absolute()
+        && dest.starts_with(cold_root)
+        && dest.components().count() > cold_root.components().count() + 1
+        && !dest.components().any(|c| matches!(c, std::path::Component::ParentDir));
+    if !inside {
+        return Err(format!("{} is not inside the cold folder {}", dest.display(), cold_root.display()));
+    }
+    match std::fs::symlink_metadata(dest) {
+        Err(_) => Ok(false),
+        Ok(_) => std::fs::remove_dir_all(dest).map(|_| true).map_err(|e| format!("remove {}: {e}", dest.display())),
+    }
+}
+
+async fn reap_orphans(cfg: &Config, cold_root: &Path, rep: &mut TickReport) {
+    let now = now_secs();
+    for f in &cfg.folders {
+        let path = f.path.clone();
+        match orphan_state(f, now) {
+            Orphan::No => {}
+            Orphan::Seen => {
+                tracing::info!(path = %path, dest = ?f.dest, grace_days = ORPHAN_GRACE_S / 86_400, verdict = "tier_orphan_seen", "tiering: the link to a cold folder was deleted; its copy is removed after the grace period");
+                update_folder(&path, |x| x.orphaned_at = Some(now));
+            }
+            Orphan::Back => {
+                tracing::info!(path = %path, verdict = "tier_orphan_back", "tiering: an orphaned folder's path is back");
+                update_folder(&path, |x| x.orphaned_at = None);
+            }
+            Orphan::Due => {
+                let dest = PathBuf::from(f.dest.clone().unwrap_or_default());
+                let bytes = f.stats.as_ref().map(|s| s.bytes).unwrap_or(0);
+                let root = cold_root.to_path_buf();
+                let d = dest.clone();
+                let r = tokio::task::spawn_blocking(move || remove_orphan(&root, &d)).await.unwrap_or_else(|e| Err(e.to_string()));
+                match r {
+                    Ok(existed) => {
+                        tracing::info!(path = %path, dest = %dest.display(), bytes, existed, verdict = "tier_orphan_removed", "tiering: removed a cold copy whose link was deleted");
+                        rep.notes.push(format!("{path}: removed its cold copy {} ({}), link deleted over {} days ago", dest.display(), gb(bytes), ORPHAN_GRACE_S / 86_400));
+                        if let Err(e) = update(|c| c.folders.retain(|x| x.path != path)) {
+                            tracing::warn!(path = %path, error = %e, verdict = "tier_state_write_failed", "tiering: removed an orphan's copy but could not drop its entry");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path, error = %e, verdict = "tier_orphan_remove_failed", "tiering: could not remove an orphaned cold copy");
+                        let n = note("orphan_remove_failed", e);
+                        update_folder(&path, |x| x.last_error = Some(n));
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── the tick ────────────────────────────────────────────────────────────────
@@ -1001,6 +1231,12 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
     let cold_root = PathBuf::from(&cfg.cold_root);
     let owners = reclaim_owner::Owners::probe().await;
     let mut rep = TickReport { at: now_secs(), trigger: trigger.into(), ..Default::default() };
+    if let Some(why) = cold_root_blocked(&cold_root).await {
+        tracing::warn!(cold_root = %cold_root.display(), why = %why, verdict = "tier_cold_root_blocked", "tiering: cannot read the cold drive, so nothing moves this tick");
+        rep.notes.push(format!("cannot read {}: {why}. In System Settings, Privacy & Security, give amux-server-rs Full Disk Access", cold_root.display()));
+        return Some(rep);
+    }
+    reap_orphans(&cfg, &cold_root, &mut rep).await;
     // Capacity watermarks: low on space, move the coldest out sooner, until the
     // target is free again. `freed` is what this tick has moved off so far.
     let (mac_free, mac_total) = df_bytes(&home_dir()).unwrap_or((0, 0));
@@ -1097,7 +1333,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
             Kind::ToHdd => dest_for(&cold_root, Path::new(&path)).to_string_lossy().to_string(),
             Kind::ToMac => f.dest.clone().unwrap_or_default(),
         };
-        let op = Op { kind, phase: Phase::Copy, dest, manual, requested_by: by, started_at: now_secs(), attempts: 0 };
+        let op = Op { kind, phase: Phase::Copy, dest, manual, requested_by: by, started_at: now_secs(), attempts: 0, rsync_pid: None };
         let saved = op.clone();
         update_folder(&path, |x| {
             x.op = Some(saved);
@@ -1106,7 +1342,7 @@ async fn tick_inner(trigger: &'static str) -> Option<TickReport> {
         let moved_before = rep.moved;
         run_and_record(&path, op, &mut rep).await;
         if kind == Kind::ToHdd && rep.moved > moved_before {
-            freed += f.stats.as_ref().map(|s| s.bytes).unwrap_or(0);
+            freed += f.stats.as_ref().map(|s| s.bytes - s.shared_bytes).unwrap_or(0);
             if pressure && pct(mac_free + freed) >= u64::from(cfg.target_free_pct) {
                 pressure = false;
             }
@@ -1191,7 +1427,20 @@ async fn run_and_record(path: &str, op: Op, rep: &mut TickReport) {
                 }
             })
         };
-        run_op(&p, &job, &save_phase).map(|_| {
+        stop_op_orphan(&p, &job)?;
+        let watched = p.clone();
+        RSYNC_WATCH.with(|w| {
+            *w.borrow_mut() = Some(Box::new(move |pid| {
+                update_folder(&watched, |x| {
+                    if let Some(o) = x.op.as_mut() {
+                        o.rsync_pid = pid;
+                    }
+                })
+            }))
+        });
+        let ran = run_op(&p, &job, &save_phase);
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = None);
+        ran.map(|_| {
             let st = measure(Path::new(&p), MEASURE_BUDGET);
             (st, job)
         })
@@ -1531,6 +1780,7 @@ async fn add_folder(headers: HeaderMap, Json(body): Json<AddReq>) -> Response {
             promoted_at: None,
             each_subfolder: body.each_subfolder.unwrap_or(false) && adopted.is_none(),
             parent: None,
+            orphaned_at: None,
         });
         Ok(())
     });
@@ -1665,7 +1915,7 @@ async fn request_move(headers: HeaderMap, Json(body): Json<MoveReq>) -> Response
             (Kind::ToMac, "mac") => return Err((StatusCode::CONFLICT, "already on this Mac".to_string())),
             (_, other) => return Err((StatusCode::CONFLICT, format!("cannot move it from where it is ({other})"))),
         }
-        f.op = Some(Op { kind, phase: Phase::Queued, dest: String::new(), manual: true, requested_by: by.clone(), started_at: now_secs(), attempts: 0 });
+        f.op = Some(Op { kind, phase: Phase::Queued, dest: String::new(), manual: true, requested_by: by.clone(), started_at: now_secs(), attempts: 0, rsync_pid: None });
         Ok(())
     });
     match r {
@@ -1724,7 +1974,7 @@ mod tests {
     }
 
     fn op(kind: Kind, phase: Phase, dest: &Path) -> Op {
-        Op { kind, phase, dest: dest.to_string_lossy().to_string(), manual: true, requested_by: "test".into(), started_at: 0, attempts: 0 }
+        Op { kind, phase, dest: dest.to_string_lossy().to_string(), manual: true, requested_by: "test".into(), started_at: 0, attempts: 0, rsync_pid: None }
     }
 
     fn folder(src: &Path, dest: Option<&Path>) -> Folder {
@@ -1745,6 +1995,7 @@ mod tests {
             promoted_at: None,
             each_subfolder: false,
             parent: None,
+            orphaned_at: None,
         }
     }
 
@@ -1753,7 +2004,7 @@ mod tests {
     }
 
     fn stats(now: i64, last_used: i64, newest_write: i64) -> Stats {
-        Stats { bytes: 1, files: 10, last_used, measured_at: now, complete: true, newest_write, touched: 0 }
+        Stats { bytes: 1, files: 10, last_used, measured_at: now, complete: true, newest_write, touched: 0, shared_bytes: 0 }
     }
 
     #[test]
@@ -2037,6 +2288,190 @@ mod tests {
         let _ = fs::read_dir(d.path().join("a")).unwrap().count();
         let again = measure(d.path(), Duration::from_secs(10));
         assert_eq!(before.last_used, again.last_used, "listing a folder is not a use");
+    }
+
+    #[test]
+    fn git_reading_its_own_index_is_not_a_use_but_a_commit_is() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("repo");
+        for p in [".git/objects/ab", "src"] {
+            fs::create_dir_all(r.join(p)).unwrap();
+        }
+        for p in [".git/index", ".git/HEAD", "src/a.rs"] {
+            fs::write(r.join(p), "x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - Duration::from_secs(10 * 86_400);
+        let set = |p: &Path, t: std::time::SystemTime| {
+            fs::File::open(p).unwrap().set_times(fs::FileTimes::new().set_accessed(t).set_modified(t)).unwrap();
+        };
+        let age_all = || {
+            for p in [".git/index", ".git/HEAD", "src/a.rs", ".git/objects/ab", ".git/objects", ".git", "src", ""] {
+                set(&r.join(p), old);
+            }
+        };
+        age_all();
+        let base = measure(&r, Duration::from_secs(10));
+        assert!(now_secs() - base.last_used > 9 * 86_400, "everything is ten days old");
+        // What `git status` does: read the index and refresh it.
+        set(&r.join(".git/index"), std::time::SystemTime::now());
+        assert_eq!(measure(&r, Duration::from_secs(10)).last_used, base.last_used, "an index refresh is not a use");
+        // A commit writes an object: that is work.
+        age_all();
+        fs::write(r.join(".git/objects/ab/cdef"), "obj").unwrap();
+        assert!(now_secs() - measure(&r, Duration::from_secs(10)).last_used < 60, "a commit is a use");
+        // A sibling clone's commit freshens an object hard-linked into this
+        // clone: the shared inode moves, and this checkout was not used.
+        fs::remove_file(r.join(".git/objects/ab/cdef")).unwrap();
+        fs::write(r.join(".git/objects/ab/linked"), "obj").unwrap();
+        fs::hard_link(r.join(".git/objects/ab/linked"), d.path().join("sibling-object")).unwrap();
+        age_all();
+        set(&d.path().join("sibling-object"), std::time::SystemTime::now());
+        let shared = measure(&r, Duration::from_secs(10));
+        assert_eq!(shared.last_used, base.last_used, "a sibling's write to a shared object is not a use");
+        assert!(shared.shared_bytes > 0 && shared.shared_bytes < shared.bytes, "shared bytes are counted apart");
+        fs::remove_file(d.path().join("sibling-object")).unwrap();
+        set(&r.join(".git/objects/ab/linked"), std::time::SystemTime::now());
+        assert!(now_secs() - measure(&r, Duration::from_secs(10)).last_used < 60, "an unlinked object is this clone's own");
+        // Reading a real file still counts.
+        fs::remove_file(r.join(".git/objects/ab/linked")).unwrap();
+        age_all();
+        let t = std::time::SystemTime::now();
+        fs::File::open(r.join("src/a.rs")).unwrap().set_times(fs::FileTimes::new().set_accessed(t)).unwrap();
+        let st = measure_since(&r, Duration::from_secs(10), base.measured_at - 1);
+        assert!(now_secs() - st.last_used < 60, "reading a source file is a use");
+        assert_eq!(st.touched, 1, "and only that file was touched");
+    }
+
+    /// A real rsync that stays running: its remote shell just sleeps.
+    fn hung_rsync(d: &Path, dest: &Path) -> std::process::Child {
+        let sh = d.join("slow-shell");
+        fs::write(&sh, "#!/bin/sh\nexec sleep 20\n").unwrap();
+        fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let child = Command::new(rsync_bin().unwrap())
+            .args(["-a", "-e", sh.to_str().unwrap(), "h:/from/", &format!("{}/", dest.display())])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !is_rsync_for(child.id(), dest.to_str().unwrap()).unwrap() {
+            assert!(start.elapsed() < Duration::from_secs(5), "the rsync never showed up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
+    }
+
+    #[test]
+    fn a_resumed_copy_stops_the_rsync_a_restart_left_running() {
+        let d = tempfile::tempdir().unwrap();
+        let dest = d.path().join("run1");
+        let mut held = hung_rsync(d.path(), &dest);
+        let pid = held.id();
+        let ds = dest.to_str().unwrap();
+        // Not this op's copy: left alone.
+        let sibling = format!("{ds}b");
+        assert_eq!(stop_orphan_rsync(pid, &sibling), Ok(false), "a folder whose name starts the same");
+        assert_eq!(stop_orphan_rsync(pid, "/somewhere/else"), Ok(false), "another destination");
+        assert!(is_rsync_for(pid, ds).unwrap(), "so it is still running");
+        let mut sleeper = Command::new("/bin/sh").args(["-c", "exec sleep 20", ds]).spawn().unwrap();
+        assert_eq!(stop_orphan_rsync(sleeper.id(), ds), Ok(false), "a reused pid that is not rsync, even naming the path");
+        assert!(sleeper.try_wait().unwrap().is_none(), "and that process lives");
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        // This op's copy: stopped, and only then does the resume go on.
+        let mut o = op(Kind::ToHdd, Phase::Copy, &dest);
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()), "no recorded pid, nothing to do");
+        assert!(is_rsync_for(pid, ds).unwrap());
+        o.rsync_pid = Some(pid);
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()));
+        assert!(!is_rsync_for(pid, ds).unwrap(), "the leftover rsync is gone");
+        assert_eq!(stop_op_orphan("/x", &o), Ok(()), "a pid already gone is fine");
+        drop(held.try_wait());
+    }
+
+    #[test]
+    fn a_cold_read_that_never_returns_is_named_and_does_not_pile_up() {
+        static PENDING: AtomicBool = AtomicBool::new(false);
+        let limit = Duration::from_millis(50);
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Ok(())), None);
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Err(std::io::ErrorKind::NotFound.into())), None, "a missing folder is the mount check's to report");
+        assert!(cold_read_blocked(limit, &PENDING, || Err(std::io::ErrorKind::PermissionDenied.into())).is_some());
+        std::thread::sleep(limit);
+
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let why = cold_read_blocked(limit, &PENDING, move || {
+            held.recv().ok();
+            Ok(())
+        });
+        assert!(why.is_some_and(|w| w.contains("did not return")));
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let r2 = ran.clone();
+        let why = cold_read_blocked(limit, &PENDING, move || {
+            r2.store(true, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(why.is_some_and(|w| w.contains("earlier read")));
+        assert!(!ran.load(Ordering::SeqCst), "no second thread while one waits");
+
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while PENDING.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(cold_read_blocked(limit, &PENDING, || Ok(())), None, "a granted permission recovers with no restart");
+    }
+
+    #[test]
+    fn each_rsync_reports_its_pid_while_it_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let (src, dest) = (d.path().join("src"), d.path().join("dest"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("f"), "x").unwrap();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let s2 = seen.clone();
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = Some(Box::new(move |p| s2.borrow_mut().push(p))));
+        mirror(&src, &dest).unwrap();
+        RSYNC_WATCH.with(|w| *w.borrow_mut() = None);
+        let seen = seen.borrow();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen[0].is_some(), "the pid at the start");
+        assert_eq!(seen[1], None, "cleared at the end, so a stale pid is not left in the op");
+        assert!(dest.join("f").exists());
+    }
+
+    #[test]
+    fn a_cold_copy_whose_link_was_deleted_is_removed_after_the_grace_period() {
+        let d = tempfile::tempdir().unwrap();
+        let cold = d.path().join("cold");
+        let src = d.path().join("mac/run1");
+        let dest = dest_for(&cold, &src);
+        fs::create_dir_all(dest.join("sub")).unwrap();
+        fs::write(dest.join("sub/f"), "x").unwrap();
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&dest, &src).unwrap();
+        let mut f = folder(&src, Some(&dest));
+        let now = now_secs();
+        assert_eq!(orphan_state(&f, now), Orphan::No, "a live link is not an orphan");
+        fs::remove_file(&src).unwrap();
+        assert_eq!(orphan_state(&f, now), Orphan::Seen, "a deleted link starts the clock");
+        f.orphaned_at = Some(now);
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S - 1), Orphan::No, "inside the grace period nothing is removed");
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Due);
+        f.op = Some(Op { kind: Kind::ToMac, phase: Phase::Copy, dest: String::new(), manual: true, requested_by: String::new(), started_at: now, attempts: 0, rsync_pid: None });
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Back, "a folder mid-move is never an orphan");
+        f.op = None;
+        std::os::unix::fs::symlink(&dest, &src).unwrap();
+        assert_eq!(orphan_state(&f, now + ORPHAN_GRACE_S), Orphan::Back, "a restored link clears it");
+        // Removal stays strictly inside the cold folder.
+        assert!(remove_orphan(&cold, &cold).is_err(), "never the cold folder itself");
+        fs::create_dir_all(cold.join("Users")).unwrap();
+        assert!(remove_orphan(&cold, &cold.join("Users")).is_err(), "nor a top folder that holds every user's copies");
+        assert!(remove_orphan(&cold, &d.path().join("mac")).is_err(), "never outside it");
+        assert!(remove_orphan(&cold, &cold.join("x/../..")).is_err(), "no climbing out");
+        assert_eq!(remove_orphan(&cold, &dest), Ok(true));
+        assert!(!dest.exists() && cold.exists());
+        assert_eq!(remove_orphan(&cold, &dest), Ok(false), "already gone is fine");
     }
 
     #[test]

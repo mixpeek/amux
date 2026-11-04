@@ -209,7 +209,7 @@ test('PDF final page remains reachable; cached Markdown still reaches the last l
     await page.evaluate(()=>(window as any).closeFilePreview());
     await page.route('**/api/file?**',r=>r.abort('internetdisconnected'));
     await page.evaluate(p=>(window as any).openFilePreview(p),cached);
-    await expect(page.locator('#file-title')).toContainText('cached');
+    await expect(page.locator('#file-fresh')).toContainText('Offline');
     await fits(page); await finalLine(page);
     await page.screenshot({path:info.outputPath('cached-markdown-final-line.png')});
   } finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }

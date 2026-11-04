@@ -58,6 +58,20 @@ pub(crate) fn force_adherence(session: &str) -> bool {
 }
 pub(crate) const DECOMPOSE_KEY: &str = POLICY_KEY;
 
+/// THE BOARD RECORDS; IT DOES NOT ACT ON THE WORKER (Ethan, 2026-11-03: "board
+/// tasks even if enabled shouldnt intervene"; 11-02: "the board is just
+/// getting in the models way"). With the Board switch on, cards are still filed
+/// and kept, and nothing is typed into the worker: no To Do pickup, no keep
+/// going, no backlog refill, no reminder, no staged owner command. Measured
+/// 11-03: 7 workers had the board on and 4 of them were being steered, while
+/// goal-driven lanes showed two drivers (board nudges and the goal keeper)
+/// competing for one worker. `AMUX_BOARD_STEERS=1` at a scope (worker, group or
+/// amux.env) lets the board steer that worker again; process env wins.
+pub(crate) const STEERS_KEY: &str = "AMUX_BOARD_STEERS";
+pub(crate) fn board_steers(session: &str) -> bool {
+    setting(session, STEERS_KEY).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
 /// BOARD OFF (Ethan, 2026-10-17: "make sure that if all these are off, the
 /// board is not used - that means putting shit on the board, standing messages
 /// about the board, etc."). A worker whose own settings leave all four Board
@@ -82,6 +96,15 @@ pub(crate) fn lane_has_board(session: &str) -> bool {
     !isolated && !board_unused(session)
 }
 
+/// The Board tab switches. Any of them on at the worker or group layer gives
+/// that worker a board (`board_unused_in`).
+/// Not the legacy CC_AUTO_CONTINUE: the Board switch never writes it alone, and
+/// 93 workers carried only that key on 2026-11-02, so the new default missed them.
+const BOARD_SWITCH_KEYS: [&str; 4] = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", session_verbs::BOARD_CONTINUE_KEY,
+    crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY];
+/// `on` restores the pre-2026-11-02 default: a worker nobody configured has a board.
+pub(crate) const BOARD_DEFAULT_KEY: &str = "AMUX_BOARD_DEFAULT";
+
 /// `drain_process_value` is the process env's backlog-drain value, which wins
 /// over every scope (the same precedence `dispatch_backlog_when_idle` uses).
 pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_process_value: Option<&str>) -> bool {
@@ -90,12 +113,45 @@ pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_proce
     if session.is_empty() || !home.join("sessions").join(format!("{session}.env")).exists() {
         return false;
     }
+    // THE BOARD SWITCH IS THE ANSWER (Ethan, 2026-10-31: "make sure
+    // enable/disable board also makes it so board is not used if its disabled.
+    // this is critical"). The worker page's one switch reads Off exactly when
+    // steering is off, so an explicit Off at any scope means no board, whatever
+    // an older key says. Before this, seven switched-off workers kept their
+    // board through a legacy CC_AUTO_CONTINUE=1 or CC_STANDING_ORDERS=1 the
+    // switch never wrote, and the background planner kept filing their cards.
+    let steering = scoped_setting_in(home, session, FORCE_ADHERENCE_KEY).or_else(|| std::env::var(FORCE_ADHERENCE_KEY).ok());
+    if steering.as_deref().is_some_and(|v| !auto_continue_on(Some(v))) {
+        return true;
+    }
+    // THE BOARD IS OPT-IN (Ethan, 2026-11-02: "i feel like the board is just
+    // getting in the models way", then "do that"). A worker uses the board
+    // only when its own scope or its group turns a board switch on. A global
+    // switch (amux.env's backlog refill, the process env) applies to workers
+    // that have a board and gives none to a worker nobody chose it for: before
+    // this, 118 of 182 non-isolated workers had a board only because nothing
+    // said otherwise, and every prompt they got was filed as a card.
+    // AMUX_BOARD_DEFAULT=on, at any scope, brings back the older default.
+    // The process env's backlog refill still wins over every scope.
+    let drain_forced_off = drain_process_value.is_some_and(|v| !auto_continue_on(Some(v)));
+    let chosen = BOARD_SWITCH_KEYS
+        .iter()
+        .filter(|k| !(drain_forced_off && **k == crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY))
+        .any(|k| session_verbs::lane_setting_in(home, session, k).is_some_and(|v| auto_continue_on(Some(&v))));
+    if chosen {
+        return false;
+    }
+    let default_on = scoped_setting_in(home, session, BOARD_DEFAULT_KEY)
+        .or_else(|| std::env::var(BOARD_DEFAULT_KEY).ok())
+        .is_some_and(|v| auto_continue_on(Some(&v)));
+    if !default_on {
+        return true;
+    }
     let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| std::env::var(k).ok()).as_deref());
     let cont = scoped_setting_in(home, session, BOARD_CONTINUE_KEY)
         .or_else(|| scoped_setting_in(home, session, "CC_AUTO_CONTINUE"));
-    // Someone has to have turned the board off. A worker nobody configured
-    // (a fresh install, an API-created lane) keeps its board: unset is the
-    // default, and the default must not silently take the board away.
+    // Under AMUX_BOARD_DEFAULT=on, someone has to have turned the board off:
+    // a worker nobody configured keeps its board.
     let switched_off = [FORCE_ADHERENCE_KEY, "CC_AUTO_PICKUP", BOARD_CONTINUE_KEY, "CC_AUTO_CONTINUE",
         crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY]
         .iter()
@@ -124,6 +180,7 @@ pub(crate) fn stage_owner_command(session: &str, text: &str) -> bool {
     setting(session, STAGE_OWNER_COMMANDS_KEY).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         && enabled(session)
         && force_adherence(session)
+        && board_steers(session)
         && board_intake::model_client().is_some()
         && !session_verbs::session_is_isolated(session)
         && amux_core::board::title_from_prompt(text).is_some()
@@ -683,7 +740,11 @@ fn apply(
         bs::save_patched(conn, &mut row)?;
         events.push(event(&row, created));
         if task.action == "verify" && bs::is_terminal_status(&row.status) {
+            // Reopening a terminal card for a new verify request is a
+            // deliberate exit from a terminal status: an attributed force
+            // (implicit state machines inventory #6).
             let opts = crate::db::advance::AdvanceOpts {
+                force: true,
                 expected_from: Some(row.status.clone()),
                 reason: Some("new request requires current-output verification".into()),
                 skip_continuation: true,
@@ -1444,20 +1505,28 @@ mod tests {
     /// default must not withhold an owner's words; only an explicit override
     /// at the worker layer turns withholding on.
     #[test]
-    fn board_is_unused_only_when_every_board_switch_is_off() {
+    fn board_is_used_only_when_a_worker_or_group_switch_turns_it_on() {
         let dir = tempfile::tempdir().unwrap();
         let _home = crate::api::settings::test_env::set_home(dir.path());
         let s = dir.path().join("sessions");
         std::fs::create_dir_all(&s).unwrap();
         for (name, env, unused) in [
             ("off", "CC_DIR=/tmp\nCC_AUTO_PICKUP=0\nAMUX_BOARD_FORCE_ADHERENCE=0\n", true),
-            ("unset", "CC_DIR=/tmp\n", false),
+            // The switch's Off wins over keys it never wrote (2026-10-31).
+            ("off-legacy-continue", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_AUTO_CONTINUE=1\n", true),
+            ("off-standing", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_STANDING_ORDERS=1\nAMUX_COMMAND_LIFECYCLE=1\n", true),
+            ("off-pickup", "AMUX_BOARD_FORCE_ADHERENCE=0\nCC_AUTO_PICKUP=1\n", true),
+            ("unset", "CC_DIR=/tmp\n", true),
             ("steer", "AMUX_BOARD_FORCE_ADHERENCE=1\n", false),
             ("pickup", "CC_AUTO_PICKUP=1\n", false),
             ("cont", "CC_BOARD_CONTINUE=1\n", false),
-            ("legacy", "CC_AUTO_CONTINUE=1\n", false),
+            ("legacy", "CC_AUTO_CONTINUE=1\n", true),
+            ("legacy-default-on", "CC_AUTO_CONTINUE=1\nAMUX_BOARD_DEFAULT=on\n", false),
             ("drain", "AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1\n", false),
-            ("stale-project", "CC_PROJECT=p1\n", false),
+            ("stale-project", "CC_PROJECT=p1\n", true),
+            ("default-on", "AMUX_BOARD_DEFAULT=on\n", false),
+            ("default-on-off", "AMUX_BOARD_DEFAULT=on\nCC_AUTO_PICKUP=0\n", true),
+            ("decompose-only", "AMUX_COMMAND_LIFECYCLE=1\n", true),
             ("iso", "CC_ISOLATED=1\nCC_AUTO_PICKUP=0\n", true),
         ] {
             std::fs::write(s.join(format!("{name}.env")), env).unwrap();
@@ -1465,8 +1534,20 @@ mod tests {
         }
         // The process env wins over every scope for the drain switch.
         assert!(board_unused_in(dir.path(), "drain", Some("0")));
+        // A global switch gives no worker a board; a group switch does.
+        std::fs::write(dir.path().join("amux.env"), "AMUX_DISPATCH_BACKLOG_WHEN_IDLE=1\n").unwrap();
+        assert!(board_unused_in(dir.path(), "unset", None), "global backlog refill alone is no board");
+        std::fs::create_dir_all(dir.path().join("env")).unwrap();
+        std::fs::write(dir.path().join("env").join("ops.env"), "CC_AUTO_PICKUP=1\n").unwrap();
+        std::fs::write(s.join("grouped.env"), "CC_TAGS=ops\n").unwrap();
+        assert!(!board_unused_in(dir.path(), "grouped", None), "a group switch gives its workers a board");
+        // The global default switch brings the old default back for everyone.
+        std::fs::write(dir.path().join("amux.env"), "AMUX_BOARD_DEFAULT=1\n").unwrap();
+        assert!(!board_unused_in(dir.path(), "unset", None), "AMUX_BOARD_DEFAULT=1 globally restores the board");
+        std::fs::remove_file(dir.path().join("amux.env")).unwrap();
         assert!(no_board("off") && no_board("iso") && !no_board("steer"));
         assert!(!enabled("off"), "no decomposition onto a board that is off");
+        assert!(!enabled("off-standing"), "an explicit Off stops decomposition even with the planner key on");
         // Board automation is refused; other automation is not.
         use crate::api::session_verbs::board_off_refusal;
         for g in ["board-drive", "board-progress", "promise-nudge", "owner-ask", "accountability"] {
@@ -2407,5 +2488,30 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod board_steers_tests {
+    use super::*;
+
+    /// The board steers a worker only when AMUX_BOARD_STEERS says so, at any
+    /// scope; the Board switch's own keys alone only record.
+    #[test]
+    fn the_board_steers_only_where_amux_board_steers_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::env::remove_var(STEERS_KEY);
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::create_dir_all(dir.path().join("env")).unwrap();
+        std::fs::write(dir.path().join("sessions/on.env"),
+            "AMUX_BOARD_FORCE_ADHERENCE=1\nCC_AUTO_PICKUP=1\nCC_BOARD_CONTINUE=1\n").unwrap();
+        std::fs::write(dir.path().join("sessions/steered.env"),
+            "AMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_BOARD_STEERS=1\n").unwrap();
+        assert!(force_adherence("on"));
+        assert!(!board_steers("on"), "a Board switch that is on only records");
+        assert!(board_steers("steered"));
+        assert!(!crate::runtime_jobs::board_drive::board_reminders_wanted("on"));
+        assert!(crate::runtime_jobs::board_drive::board_reminders_wanted("steered"));
     }
 }

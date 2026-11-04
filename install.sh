@@ -776,7 +776,7 @@ if [[ "${AMUX_NO_BUILDER:-}" != "1" ]]; then
     <key>AMUX_AUTHORITY_REPO</key><string>$SCRIPT_DIR</string>
     <key>AMUX_RS_ACTIVATION_REF</key><string>origin/main</string>
   </dict>
-  <key>StartInterval</key><integer>60</integer>
+  <key>StartInterval</key><integer>5</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$AMUX_HOME/logs/rust-auto-build.log</string>
   <key>StandardErrorPath</key><string>$AMUX_HOME/logs/rust-auto-build.log</string>

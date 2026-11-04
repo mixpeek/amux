@@ -20,11 +20,16 @@ test('a window on the polling fallback returns to the live stream and stops poll
   expect(recovered.length, 'the recovery is logged').toBeGreaterThan(0);
   // And it stays gone. The reconnect itself refetches once (its catch-up, and a
   // poll tick that fired just before the stream came back), so count from a
-  // second later: a 5 s poll would show twice in the next 12 s.
+  // second later: a 5 s poll would show twice in the next 12 s. One fetch is
+  // allowed: a board change from another spec on the shared server reaches
+  // _cdcBoardUpdate, which refetches the board once when it has no change
+  // sequence yet (rust runs 41651037709 and 41652044825 failed on that one
+  // fetch, at 5.9 s and 7.1 s).
   await page.waitForTimeout(1000);
   const polls: number[] = [];
   const t0 = Date.now();
   page.on('request', r => { if (r.url().includes('/api/board?archived=0&slim=1&quota=1')) polls.push(Date.now() - t0); });
   await page.waitForTimeout(12_000);
-  expect(polls.length, 'no 5 s board poll after the stream came back (ms: ' + polls.join(', ') + ')').toBe(0);
+  expect(polls.length, 'no 5 s board poll after the stream came back (ms: ' + polls.join(', ') + ')').toBeLessThan(2);
+  expect(await page.evaluate(() => (0, eval)('_liveSSE && _pollTimer == null && !_sseFallback')), 'still on the stream').toBe(true);
 });

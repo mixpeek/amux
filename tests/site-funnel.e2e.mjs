@@ -30,10 +30,8 @@ ok(c.some(x => x[0] === 'register_for_session' && x[1].session_source === 'ai'),
 await p.click('.site-header a[href="https://github.com/mixpeek/amux"]');
 await p.click('.hero a[href="https://github.com/mixpeek/amux"]');
 await p.click('.hero a[href^="/start/"]');
-await p.click('#hero-watch');
 await p.click('#hero-ios');
 await p.click('#hero-mac');
-await p.click('.site-header a[href="#get"]');
 await p.click('a[href="/start/?plan=team"]');
 await p.click('.hero .copy-btn').catch(() => {});
 let cta = await evs(p, 'cta_click');
@@ -41,8 +39,10 @@ const has = (g, s) => cta.some(e => e.goal === g && e.spot === s);
 ok(has('github', 'header'), 'header star click -> goal github, spot header');
 ok(has('github', 'hero'), 'hero star click -> goal github, spot hero');
 ok(has('cloud', 'hero'), 'hero cloud click -> goal cloud, spot hero');
-ok(has('walkthrough', 'hero'), 'hero walkthrough -> goal walkthrough');
-ok(has('pricing', 'header'), 'Get started -> goal pricing, spot header');
+ok(cta.find(e => e.goal === 'cloud' && e.spot === 'hero')?.href === '/start/?source=home', 'hero cloud link carries source=home');
+ok(await p.evaluate(() => /\/home\/demo-desktop\.mp4$/.test(document.getElementById('demo-desk').currentSrc)), 'desktop hero loads the dashboard demo clip');
+ok(await p.evaluate(() => new Promise(r => { const v = document.getElementById('demo-desk'); const t0 = v.currentTime; setTimeout(() => r(v.currentTime > t0), 1500); })), 'the demo clip is playing');
+ok(await p.locator('.site-header a.nav-cta-primary').count() === 0, 'homepage header has no Get started: the hero holds the four calls to action');
 ok(has('ios', 'hero'), 'hero iPhone app -> goal ios');
 ok(has('mac', 'hero'), 'hero Mac app -> goal mac, not github');
 ok(cta.some(e => e.goal === 'cloud' && e.spot === 'get' && e.plan === 'team'), 'plan link -> goal cloud, spot get, plan team');
@@ -61,6 +61,9 @@ ok(c.find(x => x[0] === 'register_once')?.[1].first_source === 'search', 'google
 await p.click('.site-header a[href*="github.com/mixpeek/amux"]');
 cta = await evs(p, 'cta_click');
 ok(cta.length === 1 && cta[0].goal === 'github' && cta[0].spot === 'header', 'mobile guide header star -> github/header');
+await p.click('.site-header a[href="/#get"]');
+cta = await evs(p, 'cta_click');
+ok(cta.some(e => e.goal === 'pricing' && e.spot === 'header'), 'guide header Get started -> goal pricing, spot header');
 ok(p.errs.length === 0, 'no JS errors on guide');
 
 // Internal navigation does not overwrite first touch
@@ -96,6 +99,13 @@ const er = await evs(p, 'signup_error');
 ok(er.length === 1, 'failed checkout API -> signup_error ' + JSON.stringify(er));
 ok(checkoutBody && 'ph' in checkoutBody && 'ab' in checkoutBody && checkoutBody.plan === 'solo', 'checkout body carries ph and ab for server-side attribution ' + JSON.stringify(checkoutBody && { ph: checkoutBody.ph, ab: checkoutBody.ab }));
 ok(p.errs.length === 0, 'no JS errors on /start/ ' + p.errs.join('|'));
+// EXP-157: no exit above the form, and the IP-lock hint does not toggle the box.
+ok(await p.locator('.site-header a[href="/#get"]').count() === 0, '/start/ header has no Get started link away from the form');
+ok(await p.evaluate(() => { const f = document.getElementById('f'), n = document.querySelector('.free-note[data-cta-loc="start-selfhost"]'); return !!n && !!(f.compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING); }), 'self-host note sits below the form');
+await p.click('.field.lock .hint');
+ok(!(await p.isChecked('#iplock')), 'clicking the IP-lock hint leaves the box unchecked');
+await p.click('label[for="iplock"]');
+ok(await p.isChecked('#iplock'), 'clicking the IP-lock label checks the box');
 
 // Welcome page: paid once per order
 p = await page();

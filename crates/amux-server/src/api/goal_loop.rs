@@ -525,6 +525,37 @@ async fn deliver_goal_command(state: &AppState, name: &str, cmd: &str, want: imp
     Err(format!("sent ({msg}) but no {cmd} command record in the transcript within 15s"))
 }
 
+/// `/goal <condition>`: a send that sets a goal, as opposed to `/goal clear`.
+pub(crate) fn sets_goal(text: &str) -> bool {
+    let mut parts = text.trim_start().splitn(2, char::is_whitespace);
+    parts.next() == Some("/goal") && parts.next().is_some_and(|a| !a.trim().is_empty() && !a.trim().eq_ignore_ascii_case("clear"))
+}
+
+/// A `/goal` that went in as plain text is delivered, confirmed and inert, so
+/// the send cannot prove it. Watch the transcript for the command record and
+/// say so loudly if it never comes. A lane mid-turn or holding a queued send
+/// registers it at its next boundary, hence the long wait.
+pub(crate) fn watch_goal_registration(state: AppState, name: String, sent_at: f64) {
+    let wait_s = std::env::var("AMUX_GOAL_REGISTER_WAIT_S").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(1800.0);
+    tokio::spawn(async move {
+        while crate::config::now_f64() < sent_at + wait_s {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let Some(path) = sv::session_jsonl_path(&name) else { continue };
+            let records = tokio::task::spawn_blocking(move || sv::iter_jsonl_tail(&path, 2_000_000)).await.unwrap_or_default();
+            if goal_command_since(&records, sent_at, |a| !a.is_empty()) {
+                tracing::info!(session = %name, verdict = "goal_command_registered", measured = true, n_considered = 1,
+                    "the /goal sent to this worker registered as a command");
+                return;
+            }
+        }
+        tracing::warn!(session = %name, verdict = "goal_command_not_registered", measured = true, n_considered = 1,
+            "a /goal was delivered but no command record reached the transcript; the worker has no goal");
+        crate::push::send_all(&state, &format!("{name}: /goal did not register"),
+            "It arrived as plain text, so nothing keeps this worker on it. Send it again.",
+            &name, &format!("goal-unregistered:{name}"), &format!("/#peek={name}")).await;
+    });
+}
+
 /// Periodic (goal keeper tick): release status stamps whose card was answered,
 /// and restore a parked goal once its card leaves needsyou/decision.
 pub(crate) async fn restore_tick(state: &AppState, names: &[String]) {
@@ -587,6 +618,15 @@ pub(crate) fn stamped(meta: &serde_json::Map<String, Value>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_goal_with_a_condition_is_watched() {
+        assert!(super::sets_goal("/goal ship it"));
+        assert!(super::sets_goal("  /goal ship\nit"));
+        assert!(!super::sets_goal("/goal clear"));
+        assert!(!super::sets_goal("/goal"));
+        assert!(!super::sets_goal("/goals ship it"));
+    }
+
     use super::*;
 
     const TP37: &str = "The results still don't match production. The only thing left is TP-37: sign in once at https://semantic-search-tawny.vercel.app in the `ethan-tubescience` Chrome profile.";

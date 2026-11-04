@@ -64,6 +64,35 @@ ids=[r.get("schedule_id","?") for r in rows if isinstance(r,dict) and r.get("sta
 print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 }
 
+# Wait for the server to report $1 live, for $2 seconds; sets $waited and
+# returns 0 once it does. The server holds adoption of a new binary while a
+# shell schedule run is in flight, for up to AMUX_ADOPT_SHELL_DEFER_MAX_S
+# (lib.rs SELF_ADOPT, default 900). Rolling back at $2 during that hold threw
+# away good builds: 6 rollbacks from 2026-10-30 to 11-02, c71df3ef9 among
+# them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
+# in flight, up to $2 plus the hold, and says so once.
+wait_live_identity() {
+  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs=""
+  case "$hold" in ''|*[!0-9]*) hold=900 ;; esac
+  waited=0
+  while :; do
+    if measure_live_identity && [ -n "$live" ]; then
+      case "$sha" in "$live"*) return 0 ;; esac
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      [ "$waited" -lt $((limit + hold)) ] || return 1
+      # Re-read the scheduler every 15s, not every second.
+      if [ $(( (waited - limit) % 15 )) = 0 ]; then runs=$(shell_runs_in_flight $((limit + hold))); fi
+      [ -n "$runs" ] || return 1
+      if [ "$said" = 0 ]; then
+        said=1
+        echo "== ACTIVATION WAIT EXTENDED sha=$sha: not live after ${limit}s while shell run(s) $runs hold adoption; waiting up to $((limit + hold))s verdict=activation_wait_shell_hold"
+      fi
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+}
+
 # THE BASH CLI SHIPS WITH THE SERVER IT TALKS TO. This builder installs only
 # amux-server; the bash `amux` in ~/.local/bin and /usr/local/bin was copied
 # once by install.sh and then went stale. Measured 2026-09-27: the server
@@ -167,6 +196,42 @@ sync_observed_edits_hooks() {
       echo "== WORKER HELPER SYNC FAILED sha=$sha half=$half verdict=${verdict}_sync_failed" >> "$LOG"
     fi
     rm -f "$tmp"
+  done
+}
+
+# The repo's own git hooks follow the activated commit too (AF-1129). A landed
+# change to scripts/git-hooks/ reached nothing until someone reran
+# install-hooks.sh: .git/hooks/pre-push sat at its Oct 29 bytes while main moved
+# on, so the pre-push script-tests leg ran only in fixtures. Only hooks already
+# installed are replaced, and a tracked core.hooksPath dir is the repo owner's.
+# ~/.amux/hooks stays with install-hooks.sh.
+sync_repo_git_hooks() {
+  local sha="$1" common dir name dest tmp
+  [ -z "$(git -C "$REPO" config core.hooksPath 2>/dev/null || true)" ] || return 0
+  common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  dir="$common/hooks"
+  for name in pre-commit pre-push post-commit prepare-commit-msg amux-staged-guard append-only-push-guard; do
+    dest="$dir/$name"
+    [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$dir" ] || continue
+    tmp="$(mktemp "$dir/.repo-hook.XXXXXX")" || continue
+    if ! git -C "$REPO" show "${sha}:scripts/git-hooks/${name}" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; continue
+    fi
+    if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; continue; fi
+    if head -1 "$tmp" | grep -q python; then
+      python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null
+    else
+      bash -n "$tmp" 2>/dev/null
+    fi || {
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_source_invalid" >> "$LOG"
+      rm -f "$tmp"; continue
+    }
+    if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+      echo "== REPO HOOK SYNCED sha=$sha hook=$name verdict=repo_hook_synced" >> "$LOG"
+    else
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_sync_failed" >> "$LOG"
+      rm -f "$tmp"
+    fi
   done
 }
 
@@ -290,6 +355,19 @@ fi
 mkdir -p "$(dirname "$LOCK")"
 if ! mkdir "$LOCK" 2>/dev/null; then
   owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  # An EMPTY pid file is a holder between its mkdir and its pid write (the
+  # prebuild writes the pid one step after mkdir), not a dead one: breaking
+  # it there ran two builds and let the disk guard's rm race a live build
+  # (implicit state machines inventory 2026-10-31, #22). Empty counts as
+  # stale only once the lock is over a minute old.
+  # GNU form first (AF-1125): on Linux `stat -f` is filesystem mode, prints a
+  # "File: ..." block into lock_mtime, and the arithmetic below then aborts on
+  # `File: unbound variable`. BSD `stat -c` fails with nothing on stdout.
+  lock_mtime=$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)
+  if [ -z "$owner" ] && [ $(( $(date +%s) - lock_mtime )) -lt 60 ]; then
+    echo "== $(date '+%F %T') SKIP $built_sha — lock just taken, its pid not written yet verdict=build_lock_young" >> "$LOG"
+    exit 0
+  fi
   if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
     # Log the contention rather than exiting silently: a skip that leaves no
     # trace is indistinguishable from a cycle that found nothing to do, and
@@ -320,6 +398,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
   sync_bash_cli "$built_sha"
   sync_authority_launcher "$built_sha"
   sync_observed_edits_hooks "$built_sha"
+  sync_repo_git_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of
   # "Worker updates unavailable" on every client). With 28 lanes committing
@@ -998,14 +1077,9 @@ PYIDENTITY
     if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
       limit="${AMUX_ACTIVATION_HEALTH_S:-300}"; waited=0; healthy=0
       case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
-      while [ "$waited" -lt "$limit" ]; do
-        if measure_live_identity && [ -n "$live" ]; then
-          case "$built_sha" in "$live"*) healthy=1; break ;; esac
-        fi
-        sleep 5; waited=$((waited + 5))
-      done
+      if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
-        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s verdict=activation_healthy"
+        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) verdict=activation_healthy"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.
@@ -1013,7 +1087,7 @@ PYIDENTITY
         mv -f "${INSTALL}.rollback" "$INSTALL"
         if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
         printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
-        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${limit}s" \
+        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${waited}s" \
              "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
       fi
     fi

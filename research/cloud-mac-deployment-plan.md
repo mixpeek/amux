@@ -325,7 +325,7 @@ with its log signal (a verdict field or WARN line), per the amux two-fix rule.
   server broadcasts `presence` with everyone's current view and drops anyone
   silent for 30 seconds.
 - Include presence in the polling fallback too, per the SSE rules in
-  `.claude/rules/sse-realtime.md`.
+  `crates/amux-dashboard/CLAUDE.md (Realtime)`.
 - Done when: two browsers on one worker each show the other's avatar within two
   seconds, and it clears within 30 seconds of one closing.
 

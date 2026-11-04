@@ -62,7 +62,7 @@ function harness(queue,replies,transport=null){
  const evaluated=section('function _validateMessageAcknowledgement(', 'function _localMessageRequest(')+helpers+run+section('function _scheduleSyncRetry()', 'function runSyncBanner(');
  installMissingStubs(evaluated,ctx);
  vm.runInContext(evaluated,ctx);
- return {queue,requests,patches,signals,timers,beacons,peekNudges,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
+ return {queue,requests,patches,signals,timers,beacons,peekNudges,banner:element,drain:()=>vm.runInContext('_runSyncBanner(true)',ctx),run:code=>vm.runInContext(code,ctx),schedule:()=>vm.runInContext('_scheduleSyncRetry()',ctx)};
 }
 function pending(extra={}) {return {id:'q1',url:'/api/sessions/test-worker/send',options:{method:'POST',headers:{},body:JSON.stringify({text:'continue',msg_id:'same-identity'})},timestamp:Date.now(),...extra};}
 const waiting={status:202,body:{accepted:false,msg_id:'same-identity'}};
@@ -256,4 +256,32 @@ test('an offline failure retains every send in order and only acknowledges them 
  await restored.drain();assert.equal(restored.queue.length,0);
  assert.deepEqual(restored.requests.map(r=>JSON.parse(r.opts.body).msg_id),['same-identity','second-id']);
  assert.equal(restored.signals.filter(s=>s.kind==='message_delivery_acknowledged').length,2);
+});
+
+test('a send the server never answered is delivered, not shown as refused (2026-10-30)',async()=>{
+ // Stored by an earlier client as "Not sent - the worker did not accept it"
+ // while its only error was WebKit's "Fetch is aborted": the server never saw it.
+ const stuck=pending({state:'blocked',needs_decision:'refused',error:'Fetch is aborted',attempts:2,attempted_at:Date.now()-480000});
+ const h=harness([stuck],[{status:200,body:{ok:true,submitted:true,id:'sent-1'}}]);
+ assert.equal(h.run('_outboxSettleDecisions(offlineQueue)'),1);
+ assert.equal(h.queue[0].needs_decision,'');assert.equal(h.queue[0].state,'pending');
+ assert(h.signals.some(s=>s.kind==='outbox_unanswered_send_rearmed'&&s.why==='mislabelled_refused'));
+ await h.drain();
+ assert.equal(h.queue.length,0,JSON.stringify(h.queue[0]));
+ assert.deepEqual(h.requests.map(r=>r.opts.method),['POST']);
+ assert.equal(JSON.parse(h.requests[0].opts.body).msg_id,'same-identity','same identity, so send_dedup never pastes it twice');
+});
+test('a blocked send with no server answer is retried, then says it never reached the server',async()=>{
+ const h=harness([pending({state:'blocked',error:'Fetch is aborted',attempts:1})],[]);
+ h.run('_outboxSettleDecisions(offlineQueue)');
+ assert.equal(h.queue[0].state,'pending');assert.equal(h.queue[0].needs_decision,'');
+ const capped=harness([pending({state:'blocked',error:'Fetch is aborted',attempts:5})],[]);
+ capped.run('_outboxSettleDecisions(offlineQueue)');
+ assert.equal(capped.queue[0].needs_decision,'unreached');assert.match(capped.queue[0].error,/Never reached the server: Fetch is aborted/);
+});
+test('a send the server refused is still refused, with its status recorded',async()=>{
+ const h=harness([pending()],[{status:403,body:{error:'worker is isolated'}}]);
+ await h.drain();
+ assert.equal(h.queue[0].needs_decision,'refused');assert.equal(h.queue[0].refused_status,403);
+ assert.equal(h.run('_outboxSettleDecisions(offlineQueue)'),0,'a real refusal is not re-armed');
 });

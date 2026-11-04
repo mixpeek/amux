@@ -134,14 +134,29 @@ pub(crate) async fn refusal(p: &Path, o: &Owners) -> Option<Refusal> {
     if let Some(r) = scratch_rule(&p, o) {
         return Some(r);
     }
-    repo_refusal(&p, o).await
+    repo_refusal(&p, o, Purpose::Delete).await
+}
+
+/// What the caller will do to the path. Disk Cleanup deletes, so a primary
+/// clone (whose tracked files exist nowhere else on the disk) is refused
+/// outright, and a worktree needs no uncommitted change and no unpushed
+/// commit. Tiering moves: rsync, verify, then a link at the same path, so
+/// nothing is lost, uncommitted work included, and only a running worker's
+/// worktree is refused. Ethan, 2026-11-02, "do all": 120 idle gs12 clones
+/// with one stray change or a local commit held about 300 GB on the Mac.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Delete,
+    Move,
 }
 
 /// `refusal` for storage tiering, which moves a folder but leaves a link at its
 /// path, so the owner keeps reaching it. One rule differs: a SUBFOLDER of a
 /// running worker's scratch may move (the caller still requires it to be idle
-/// and closed). The worker's own folder, and every repo rule, still refuse.
-/// Ethan, 2026-10-29: "Yes, idle subfolders". Disk Cleanup keeps `refusal`.
+/// and closed). The worker's own folder still refuses. A whole checkout may
+/// move, uncommitted and unpushed work included (`Purpose::Move`); a running
+/// worker's worktree and tracked files inside a repo still refuse. Ethan, 2026-10-29: "Yes, idle subfolders"; 2026-10-30:
+/// "we need more shit offloaded". Disk Cleanup keeps `refusal`.
 pub(crate) async fn refusal_for_tiering(p: &Path, o: &Owners) -> (Option<Refusal>, bool) {
     let p = resolved(p);
     let mut live_sub = false;
@@ -153,14 +168,14 @@ pub(crate) async fn refusal_for_tiering(p: &Path, o: &Owners) -> (Option<Refusal
             return (Some(r), false);
         }
     }
-    (repo_refusal(&p, o).await, live_sub)
+    (repo_refusal(&p, o, Purpose::Move).await, live_sub)
 }
 
-async fn repo_refusal(p: &Path, o: &Owners) -> Option<Refusal> {
+async fn repo_refusal(p: &Path, o: &Owners, why: Purpose) -> Option<Refusal> {
     let p = p.to_path_buf();
     match enclosing_repo(&p) {
         Some(root) if root == p => {
-            if let Some(r) = repo_root_rule(&root, o).await {
+            if let Some(r) = repo_root_rule(&root, o, why).await {
                 return Some(r);
             }
         }
@@ -177,7 +192,7 @@ async fn repo_refusal(p: &Path, o: &Owners) -> Option<Refusal> {
         Err(why) => Some(Refusal::unmeasured(why)),
         Ok(repos) => {
             for repo in repos {
-                if let Some(r) = repo_root_rule(&repo, o).await {
+                if let Some(r) = repo_root_rule(&repo, o, why).await {
                     return Some(Refusal::new(
                         r.class,
                         format!("contains {}: {}", repo.display(), r.reason),
@@ -228,8 +243,9 @@ fn is_linked_worktree(root: &Path) -> bool {
 }
 
 /// Rules for a path that IS a repository or worktree root.
-async fn repo_root_rule(root: &Path, o: &Owners) -> Option<Refusal> {
-    if !is_linked_worktree(root) {
+async fn repo_root_rule(root: &Path, o: &Owners, why: Purpose) -> Option<Refusal> {
+    let linked = is_linked_worktree(root);
+    if !linked && why == Purpose::Delete {
         // A primary clone. Its tracked files exist nowhere else on this disk.
         return tracked_rule(root, root).await;
     }
@@ -238,6 +254,7 @@ async fn repo_root_rule(root: &Path, o: &Owners) -> Option<Refusal> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     match &o.live {
+        _ if !linked => {}
         Err(why) => {
             return Some(Refusal::unmeasured(format!(
                 "cannot tell whether worker {name} is running ({why})"
@@ -251,6 +268,9 @@ async fn repo_root_rule(root: &Path, o: &Owners) -> Option<Refusal> {
         }
         Ok(_) => {}
     }
+    if why == Purpose::Move {
+        return None;
+    }
     let status = match git(
         root,
         &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
@@ -260,11 +280,12 @@ async fn repo_root_rule(root: &Path, o: &Owners) -> Option<Refusal> {
         Ok(s) => s,
         Err(why) => return Some(Refusal::unmeasured(format!("git status: {why}"))),
     };
+    let kind = if linked { "git worktree" } else { "git clone" };
     let dirty = status.split('\0').filter(|l| !l.is_empty()).count();
     if dirty > 0 {
         return Some(Refusal::new(
             CLASS_WT_DIRTY,
-            format!("git worktree with {dirty} uncommitted change(s)"),
+            format!("{kind} with {dirty} uncommitted change(s)"),
         ));
     }
     let ahead = match git(root, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await {
@@ -275,9 +296,9 @@ async fn repo_root_rule(root: &Path, o: &Owners) -> Option<Refusal> {
         return Some(Refusal::new(
             CLASS_WT_UNPUSHED,
             if ahead == u64::MAX {
-                "git worktree whose unpushed commit count could not be read".to_string()
+                format!("{kind} whose unpushed commit count could not be read")
             } else {
-                format!("git worktree with {ahead} commit(s) on no remote")
+                format!("{kind} with {ahead} commit(s) on no remote")
             },
         ));
     }
@@ -399,6 +420,28 @@ mod tests {
         let (r, _) = refusal_for_tiering(&tmp, &o).await;
         assert_eq!(r.map(|r| r.class), Some(CLASS_TMP_ROOT));
     }
+    #[tokio::test]
+    async fn tiering_moves_a_clean_pushed_clone_that_disk_cleanup_would_never_delete() {
+        let t = tmpdir();
+        let r = repo(t.path());
+        std::fs::remove_dir_all(r.join("scratch-untracked")).unwrap();
+        let o = owners(&t.path().join("tmp"), &[]);
+        assert_eq!(refusal(&r, &o).await.map(|x| x.class), Some(CLASS_GIT_TRACKED), "deleting a clone stays refused");
+        assert_eq!(refusal_for_tiering(&r, &o).await.0, None, "moving a clean, pushed clone loses nothing");
+        assert_eq!(refusal_for_tiering(t.path(), &o).await.0, None, "nor does moving the folder that holds it");
+        // Tracked files INSIDE a repo still refuse: the link would replace them.
+        assert_eq!(refusal_for_tiering(&r.join("customers"), &o).await.0.map(|x| x.class), Some(CLASS_GIT_TRACKED));
+        // A move copies uncommitted work along, so it moves too; deleting
+        // stays refused.
+        std::fs::write(r.join("wip.txt"), "x").unwrap();
+        assert_eq!(refusal_for_tiering(&r, &o).await.0, None, "uncommitted work moves with the clone");
+        assert_eq!(refusal_for_tiering(t.path(), &o).await.0, None, "and with the folder holding it");
+        sh(&r, &["add", "wip.txt"]);
+        sh(&r, &["commit", "-qm", "local only"]);
+        assert_eq!(refusal_for_tiering(&r, &o).await.0, None, "so does a commit on no remote");
+        assert!(refusal(&r, &o).await.is_some(), "deleting it is still refused");
+    }
+
     use super::*;
 
     fn sh(dir: &Path, args: &[&str]) {

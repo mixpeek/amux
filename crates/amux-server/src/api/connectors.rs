@@ -2874,6 +2874,32 @@ async fn mint_connector_token(
         }
         None => None,
     };
+    // A STORED GRANT ANSWERS ONLY FOR THE SCOPES IT HOLDS (amux-gtm, 2026-11-02).
+    // hello@amux.io's mailbox grant won every google-youtube mint, so the scopes
+    // delegated to the service account were never asked for and every YouTube
+    // read was a 403. When the grant lacks a requested scope and the service
+    // account can mint them all, the service account answers. If it cannot, the
+    // grant still does, and the log says what is missing.
+    let user_account = match user_account {
+        Some(a) if p.category == "Google" && super::google_sa::sa_usable_in(&ctx.home) => {
+            let missing = oauth_store::family_path(&ctx.home, family, &a)
+                .ok()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|grant| grant_missing_scopes(&grant, &scope))
+                .unwrap_or_default();
+            if missing.is_empty() {
+                Some(a)
+            } else {
+                let minted = super::google_sa::mint_token_as(&scope, &a).await;
+                tracing::warn!(connector = %p.id, account = %a, missing = ?missing, sa_minted = minted.is_ok(),
+                    sa_error = minted.as_ref().err().map(String::as_str).unwrap_or(""),
+                    measured = true, n_considered = 1, verdict = "connector_grant_lacks_scope",
+                    "connector_token: the stored grant lacks requested scopes");
+                if minted.is_ok() { None } else { Some(a) }
+            }
+        }
+        other => other,
+    };
     if user_account.is_none()
         && !(p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some())
     {
@@ -3220,6 +3246,47 @@ const ROLLUP_TTL_S: u64 = 300;
 /// invalidation and cache the stale list for the full TTL (the flaky
 /// `declared_oauth_connector_lifecycle_survives_sigkill`, 1 account of 2).
 static ROLLUP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Is `id` one of the builtin Google connectors (they share one grant)?
+pub(super) fn is_google_connector(id: &str) -> bool {
+    provider(id).is_some_and(|p| family_of(p) == "google")
+}
+
+/// Disconnect a Google account: revoke its token at Google, then delete the
+/// grant and its Gmail copy. Before this, the Connections tab's Disconnect
+/// answered every Google account with "use the provider's existing disconnect
+/// flow for builtins", and no such flow existed (sandbox, 2026-10-30: a
+/// mailbox connected by mistake could not be removed from the dashboard).
+/// The files are deleted even when Google's revoke fails, so amux stops using
+/// the grant either way; `provider_revoked` says which happened. Logs
+/// verdict=google_grant_disconnected.
+pub(super) async fn disconnect_google(ctx: &ConnectorsCtx, account: &str) -> Response {
+    if !crate::integrations::oauth_store::valid_account(account) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid account"}))).into_response();
+    }
+    let grant = ctx.home.join("connectors").join("google").join(format!("{account}.json"));
+    let mirror = ctx.home.join("gmail-tokens").join(format!("{account}.json"));
+    let token = [&grant, &mirror].iter().find_map(|p| {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+        ["refresh_token", "token", "access_token"].iter()
+            .find_map(|k| v[*k].as_str().filter(|t| !t.is_empty()).map(str::to_string))
+    });
+    let held = grant.exists() || mirror.exists();
+    if !held {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": format!("no Google grant for {account}")}))).into_response();
+    }
+    let revoked = match &token {
+        Some(t) => matches!(ctx.http.post_form("https://oauth2.googleapis.com/revoke", &[("token".to_string(), t.clone())]).await,
+            Ok((s, _)) if s < 300 || s == 400),
+        None => false,
+    };
+    let removed: Vec<&str> = [("grant", &grant), ("gmail", &mirror)].iter()
+        .filter(|(_, p)| std::fs::remove_file(p).is_ok()).map(|(k, _)| *k).collect();
+    invalidate_rollup(&ctx.home);
+    tracing::info!(account, provider_revoked = revoked, removed = ?removed, measured = true, n_considered = 1,
+        verdict = "google_grant_disconnected", "a Google account was disconnected; amux no longer holds its grant");
+    Json(json!({"ok": true, "account": account, "disconnected": true, "provider_revoked": revoked, "removed": removed})).into_response()
+}
 
 /// Drop the cached rollup for `home` and stop any rollup already in flight
 /// from caching what it computed before this change.
@@ -3671,13 +3738,53 @@ pub fn routes() -> Router<AppState> {
 /// spend the token and never return it (`api/social.rs`). `headers` carries the
 /// calling worker, so the same entitlement check applies; empty headers are the
 /// server itself. The error is the mint's JSON with any bearer removed.
+/// The requested scopes a stored grant (its JSON text) does not hold. A grant
+/// that names no scopes cannot be judged, so nothing reads as missing.
+fn grant_missing_scopes(grant: &str, requested: &str) -> Vec<String> {
+    let parsed: Value = serde_json::from_str(grant).unwrap_or_default();
+    let Some(held) = parsed["scopes"].as_str().filter(|h| !h.trim().is_empty()) else {
+        return Vec::new();
+    };
+    let held: std::collections::HashSet<&str> = held.split_whitespace().collect();
+    requested.split_whitespace().filter(|s| !held.contains(s)).map(str::to_string).collect()
+}
+
+#[cfg(test)]
+mod grant_scope_tests {
+    use super::grant_missing_scopes as m;
+    #[test]
+    fn a_mailbox_grant_does_not_answer_for_youtube() {
+        let grant = r#"{"scopes":"openid https://x/gmail.send https://x/drive"}"#;
+        assert_eq!(m(grant, "https://x/youtube.readonly https://x/drive"), vec!["https://x/youtube.readonly"]);
+        assert!(m(grant, "https://x/drive openid").is_empty(), "a grant holding every scope still answers");
+        assert!(m(r#"{"token":"t"}"#, "https://x/drive").is_empty(), "no recorded scopes cannot be judged");
+        assert!(m("not json", "https://x/drive").is_empty());
+    }
+}
+
 pub(crate) async fn bearer_for(
     state: AppState,
     headers: HeaderMap,
     id: &str,
     account: &str,
 ) -> Result<String, Value> {
-    let q = std::collections::HashMap::from([("account".to_string(), account.to_string())]);
+    bearer_for_scopes(state, headers, id, account, None).await
+}
+
+/// `bearer_for`, asking only for `scopes` (space-separated) instead of all the
+/// connector's scopes. One scope the domain has not delegated fails a service
+/// account's whole request, so a caller that only reads should say so.
+pub(crate) async fn bearer_for_scopes(
+    state: AppState,
+    headers: HeaderMap,
+    id: &str,
+    account: &str,
+    scopes: Option<&str>,
+) -> Result<String, Value> {
+    let mut q = std::collections::HashMap::from([("account".to_string(), account.to_string())]);
+    if let Some(scopes) = scopes {
+        q.insert("scopes".to_string(), scopes.to_string());
+    }
     let resp = mint_connector_token(
         State(state),
         Extension(default_ctx()),
@@ -4732,6 +4839,33 @@ mod tests {
                 .join(format!("{ACCT}.json"))
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_google_account_revokes_it_and_removes_both_copies() {
+        // Sandbox, 2026-10-30: a mailbox connected by mistake could not be
+        // removed; Disconnect answered every builtin "use the provider's flow".
+        let home = tempfile::tempdir().unwrap();
+        let fam_dir = home.path().join("connectors").join("google");
+        let mirror_dir = home.path().join("gmail-tokens");
+        std::fs::create_dir_all(&fam_dir).unwrap();
+        std::fs::create_dir_all(&mirror_dir).unwrap();
+        let grant = json!({"token": "PLACEHOLDER_AT", "refresh_token": "PLACEHOLDER_RT", "scopes": "https://www.googleapis.com/auth/gmail.modify"});
+        std::fs::write(fam_dir.join("info@x.io.json"), grant.to_string()).unwrap();
+        std::fs::write(mirror_dir.join("info@x.io.json"), grant.to_string()).unwrap();
+        std::fs::write(fam_dir.join(format!("{ACCT}.json")), grant.to_string()).unwrap();
+        let http = MockHttp::new(vec![("FORM", "/revoke", 200, json!({}))]);
+        let (app, _d) = app_with(http.clone(), home.path());
+        let (st, v) = send_json(&app, "DELETE", "/api/connectors/google-gmail/accounts/info%40x.io").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["provider_revoked"], json!(true), "{v}");
+        assert!(!fam_dir.join("info@x.io.json").exists() && !mirror_dir.join("info@x.io.json").exists(), "both copies removed");
+        assert!(fam_dir.join(format!("{ACCT}.json")).exists(), "another account is untouched");
+        let revoke = http.calls().into_iter().find(|c| c.1.contains("/revoke")).expect("revoked at Google");
+        assert_eq!(revoke.3.unwrap()["token"], json!("PLACEHOLDER_RT"), "the refresh token is the one revoked");
+        // Gone now, and an unknown account is a 404, not a fake success.
+        let (st, _) = send_json(&app, "DELETE", "/api/connectors/google-gmail/accounts/info%40x.io").await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

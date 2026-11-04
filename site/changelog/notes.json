@@ -1,5 +1,232 @@
 [
   {
+    "hash": "0b0fea23efe5a67a6cca3c4638744d9f0c074a14",
+    "short": "0b0fea23",
+    "title": "Freeze a workspace in the Mac app",
+    "date": "2026-11-03",
+    "type": "feat",
+    "tags": [
+      "desktop",
+      "workspaces"
+    ],
+    "description": "Window > Workspaces > Freeze Workspace (Option-Command-F) locks the tabs, names and workers in the open workspace so nothing gets closed, renamed or moved by accident. You can still resize windows, dividers and zoom. A frozen window says so under its title."
+  },
+  {
+    "hash": "a39e5a64ba8990f96afe05433e7d5c2b55788ec1",
+    "short": "a39e5a64",
+    "title": "See what a worker answered from the Messages menu",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "mobile"
+    ],
+    "description": "A message's row menu now has Show answer, which reads the worker's reply from its transcript. You can check what a worker said on your phone without opening a terminal, and a missing answer says why."
+  },
+  {
+    "hash": "b9d44b290c70187f6aaaa0b304eeb133076c44c4",
+    "short": "b9d44b29",
+    "title": "Every worker has Chat by default",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "chat",
+      "workers"
+    ],
+    "description": "Chat is now on for every worker unless you switch it off, including workers that already existed. Nothing runs until you send the first chat message, and workers that had it on are unchanged."
+  },
+  {
+    "hash": "539ab95a8949b0ea58e0a5baec323c88a5f03515",
+    "short": "539ab95a",
+    "title": "The board is opt-in per worker",
+    "date": "2026-11-02",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "A worker uses the shared board only when its own settings or its group turn a Board switch on. Workers without it no longer get every prompt filed as a card or receive board nudges."
+  },
+  {
+    "hash": "58e71c7ea2b341879b7c63f78d640373cf5556a0",
+    "short": "58e71c7e",
+    "title": "The Messages row menu stays open while the list updates",
+    "date": "2026-11-03",
+    "type": "fix",
+    "tags": [
+      "messages",
+      "dashboard"
+    ],
+    "description": "Live updates used to redraw the Messages list even when nothing changed, which closed an open row menu and could make Pin, Copy or Show answer miss. The list now redraws only on a real change and keeps the menu open."
+  },
+  {
+    "hash": "c71df3ef96b3f5ad70970c7820b7b44ac6e0ebf3",
+    "short": "c71df3ef",
+    "title": "Codex workers use the model in your Codex config",
+    "date": "2026-11-02",
+    "type": "fix",
+    "tags": [
+      "codex",
+      "workers"
+    ],
+    "description": "A Codex worker created with no model now uses the model set in your Codex config file. Before, amux passed its own default, which could fail on a ChatGPT login that codex handled fine when run directly."
+  },
+  {
+    "hash": "eedc4195ae4d84f3a30a8ad4ddfc40cd8ddf954f",
+    "short": "eedc4195",
+    "title": "A chip press runs the chip you see",
+    "date": "2026-11-02",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "composer"
+    ],
+    "description": "Chips sync between devices, so the saved list could change after the bar rendered, and a press would run whatever chip now sat in that position. A press now runs the chip the bar shows."
+  },
+  {
+    "hash": "df12c587194780bb5d6a0261a474cb30034ca95a",
+    "short": "df12c587",
+    "title": "Pin a message from a worker's Messages tab",
+    "date": "2026-11-01",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "workers"
+    ],
+    "description": "A row's menu now pins or unpins a message, and a pin count opens the list of pinned messages. Choosing one puts its text in the composer, and each item has its own Unpin. Pins live on the server, so they follow the worker across your devices."
+  },
+  {
+    "hash": "508443bc19489b9e1ac1364290b62677b89e0674",
+    "short": "508443bc",
+    "title": "Your priorities outrank a card's age on the board",
+    "date": "2026-11-01",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "A P0 or P1 card now beats any older card when a worker picks its next task, so a two-day-old card no longer jumps ahead of an urgent one. A pin still leads, and age orders cards within a tier."
+  },
+  {
+    "hash": "f882cddef58d5913e17b76d9efa6fc77f12b8233",
+    "short": "f882cdde",
+    "title": "A board move the server refuses snaps back",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "board",
+      "dashboard"
+    ],
+    "description": "Dragging a card used to leave it in the new column until a reload even when the server refused the move. The card now returns to its column and the toast says why. Offline and queued moves stay where you put them."
+  },
+  {
+    "hash": "ca2e0dd5650ff72ed2b6913f2eb54da0874bbff2",
+    "short": "ca2e0dd5",
+    "title": "Schedules behave through the daylight saving change",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "scheduler"
+    ],
+    "description": "When clocks fall back, the repeated hour no longer makes a schedule fire again and again. A daily or interval schedule set inside that hour now runs once and moves on to its next time."
+  },
+  {
+    "hash": "9d417bf6ec3628958a6d38028c005ff2255e161d",
+    "short": "9d417bf6",
+    "title": "A worker card shows when it last made progress",
+    "date": "2026-11-01",
+    "type": "fix",
+    "tags": [
+      "dashboard",
+      "workers"
+    ],
+    "description": "A worker on a long autonomous run used to read \"WORKING 12h ago\" because the card showed its last message. The card now shows the newer of the last message and the last progress."
+  },
+  {
+    "hash": "79d136bf2c5485e5649fd080b40c0b7cb08e2dfb",
+    "short": "79d136bf",
+    "title": "A worker's status reaches its card at once",
+    "date": "2026-11-01",
+    "type": "perf",
+    "tags": [
+      "dashboard",
+      "workers"
+    ],
+    "description": "A change a worker reported took 6 to 12 seconds to show on its card, because the dashboard waited for the next full fleet update. Reports now appear right away."
+  },
+  {
+    "hash": "1e0d1dca68c8ce20f11e59037adeb4f28450e4b2",
+    "short": "1e0d1dca",
+    "title": "The markdown editor keeps up with your typing on a phone",
+    "date": "2026-10-31",
+    "type": "perf",
+    "tags": [
+      "files",
+      "mobile",
+      "editor"
+    ],
+    "description": "On a long note, each keystroke now takes about 17 ms on an iPhone instead of 178, switching to Edit is four times faster, and the note opens sooner. The editor redraws only the lines you changed, so typing and scrolling stay smooth on a phone."
+  },
+  {
+    "hash": "d27f005934f47cdef9a62f86e3b093f20a531661",
+    "short": "d27f0059",
+    "title": "Triage: captured tasks wait on the board until you accept them",
+    "date": "2026-10-31",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "Ask a worker to capture a task and it lands in Triage instead of being picked up on its own. A Triage chip leads the board's filter row, and amux board accept moves a card into the normal flow when you are ready, recording who accepted it and why."
+  },
+  {
+    "hash": "5454d4ddec9c7707ccac8dae1cdda6c0f2f43bfb",
+    "short": "5454d4dd",
+    "title": "Pin messages in a channel or DM",
+    "date": "2026-10-31",
+    "type": "feat",
+    "tags": [
+      "messages"
+    ],
+    "description": "You or a worker can pin any post in a channel or DM you can read. Pins are listed per conversation, so the decision or link everyone needs stays at hand instead of scrolling away."
+  },
+  {
+    "hash": "75d4adedece1681ca2c4b44409ae80d8f4597a77",
+    "short": "75d4aded",
+    "title": "Usage & Optimization: see where your agent spend goes",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "usage",
+      "metrics"
+    ],
+    "description": "A new Usage tab shows spend, cards finished and attempted, success rate and cost per success, broken down by group, plus a ranked list of changes that would save money, each with its evidence and an estimated monthly saving."
+  },
+  {
+    "hash": "427fe4419bbdac4bd5f16111b431792db730567a",
+    "short": "427fe441",
+    "title": "Cmd-K finds the files you open most",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "palette",
+      "files"
+    ],
+    "description": "The command palette now searches files as well, ranked by how often and how recently you opened them, so the notes and docs you live in come up after a few letters."
+  },
+  {
+    "hash": "acd16b1e4db18031f9a18b806b4f3d5f260a510c",
+    "short": "acd16b1e",
+    "title": "Pause, resume or delete a worker's schedules together",
+    "date": "2026-10-30",
+    "type": "feat",
+    "tags": [
+      "schedules",
+      "workers"
+    ],
+    "description": "A worker's Schedules tab now has checkboxes and a bulk bar, so you can pause, resume or delete several of its schedules at once without touching other workers' schedules."
+  },
+  {
     "hash": "a4038b386cfa02fd03aff52f4f25b5f8d65ea612",
     "short": "a4038b38",
     "title": "An HTML folder opens as a website, and app links stay in the viewer",

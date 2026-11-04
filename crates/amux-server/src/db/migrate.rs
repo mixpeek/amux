@@ -774,6 +774,66 @@ const MIGRATIONS: &[Migration] = &[
         name: "0142_issues_source_ref_index",
         sql: include_str!("../../migrations/0142_issues_source_ref_index.sql"),
     },
+    Migration {
+        version: 143,
+        name: "0143_schedule_runs_running_index",
+        sql: include_str!("../../migrations/0143_schedule_runs_running_index.sql"),
+    },
+    Migration {
+        version: 144,
+        name: "0144_conversation_pins",
+        sql: include_str!("../../migrations/0144_conversation_pins.sql"),
+    },
+    Migration {
+        version: 145,
+        name: "0145_lease_generations",
+        sql: include_str!("../../migrations/0145_lease_generations.sql"),
+    },
+    Migration {
+        version: 146,
+        name: "0146_one_live_session",
+        sql: include_str!("../../migrations/0146_one_live_session.sql"),
+    },
+    Migration {
+        version: 147,
+        name: "0147_invariant_episode_occurrences",
+        sql: include_str!("../../migrations/0147_invariant_episode_occurrences.sql"),
+    },
+    Migration {
+        version: 148,
+        name: "0148_board_light_rows_covering",
+        sql: include_str!("../../migrations/0148_board_light_rows_covering.sql"),
+    },
+    Migration {
+        version: 149,
+        name: "0149_message_pins",
+        sql: include_str!("../../migrations/0149_message_pins.sql"),
+    },
+    Migration {
+        version: 150,
+        name: "0150_land_queue_composed_evidence",
+        sql: include_str!("../../migrations/0150_land_queue_composed_evidence.sql"),
+    },
+    Migration {
+        version: 151,
+        name: "0151_board_planning_covering",
+        sql: include_str!("../../migrations/0151_board_planning_covering.sql"),
+    },
+    Migration {
+        version: 152,
+        name: "0152_decision_digest",
+        sql: include_str!("../../migrations/0152_decision_digest.sql"),
+    },
+    Migration {
+        version: 153,
+        name: "0153_land_red",
+        sql: include_str!("../../migrations/0153_land_red.sql"),
+    },
+    Migration {
+        version: 154,
+        name: "0154_issues_session_status",
+        sql: include_str!("../../migrations/0154_issues_session_status.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

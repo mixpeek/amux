@@ -1035,7 +1035,7 @@
        distance back without adding a gap under the buttons. */
     margin: var(--space-5) calc(-1 * var(--modal-pad)) calc(-1 * var(--modal-pad));
     padding: var(--space-2-5) var(--modal-pad);
-    /* iPhone PWA: clear the home indicator (.claude/rules/css-mobile.md) */
+    /* iPhone PWA: clear the home indicator (crates/amux-dashboard/CLAUDE.md) */
     padding-bottom: max(var(--modal-pad), env(safe-area-inset-bottom));
   }
   /* .amux-modal-foot is a bare marker class on app.js-built dialogs, so it
@@ -1255,6 +1255,12 @@
      rationale for opening files directly depends on this being findable.
      44px min-height is the mobile touch target; the rest of the row is short
      text, so without it this is an ~11px tap on a phone. */
+  /* The folder, then how fresh the shown copy is (app.js _fileFresh). */
+  .file-meta-row { display: flex; align-items: center; gap: var(--space-1-5); min-width: 0; }
+  .file-meta-row .file-subpath { flex: 0 1 auto; min-width: 0; }
+  .file-fresh { flex-shrink: 0; font-size: var(--fs-2xs); color: var(--dim); white-space: nowrap; }
+  .file-fresh[hidden] { display: none; }
+  .file-fresh.offline { color: var(--orange); }
   .file-subpath.clickable { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
   .file-subpath.clickable:hover { color: var(--accent); }
   @media (max-width: 600px) { .file-subpath.clickable { min-height: 44px; display: flex; align-items: center; } }
@@ -1262,6 +1268,12 @@
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-md);
     padding: var(--space-1-5); z-index: 60; min-width: 170px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
   .file-actions.open { display: flex; }
+  /* Open in worker (app.js _fileOpenInWorker), inside the shared form dialog. */
+  .fow-to { display: flex; gap: var(--space-4); margin-bottom: var(--space-3); }
+  .fow-to label { display: inline-flex; align-items: center; gap: var(--space-1-5); min-height: 44px; cursor: pointer; }
+  .fow-chips { display: flex; gap: var(--space-1-5); flex-wrap: wrap; justify-content: center; margin: var(--space-2) 0; }
+  .fow-chips .btn { flex-shrink: 0; }
+  .fow-file code { word-break: break-all; }
   .file-actions .file-view-tab { width: 100%; justify-content: flex-start; text-align: left; border-radius: var(--radius-lg); font-size: var(--fs-md); padding: var(--space-1-5) var(--space-3-5); flex-shrink: 0; }
   .file-menu-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--fs-3xl); line-height: 1; padding: var(--space-1) var(--space-2); flex-shrink: 0; }
   .file-overlay-body {
@@ -1431,6 +1443,10 @@
     .file-overlay-header .btn { min-width: 40px; min-height: 40px; font-size: var(--fs-2xl); padding: var(--space-1-5) var(--space-2-5); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .file-menu-btn { min-width: 40px; min-height: 40px; font-size: var(--fs-4xl); }
     .file-actions .file-view-tab { min-height: 44px; font-size: var(--fs-xl); padding: var(--space-2) var(--space-3-5); }
+    /* A phone: the menu is a sheet from the bottom edge, in thumb reach (owner, 2026-10-31). */
+    .file-actions { position: fixed; top: auto; left: 0; right: 0; bottom: 0; max-width: none; min-width: 0; max-height: 70vh;
+      border-radius: var(--radius-2xl) var(--radius-2xl) 0 0; padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom));
+      box-shadow: var(--shadow-md); z-index: 400; }
     #md-search-row { padding: var(--space-2) var(--space-1); }
     #md-search-input { font-size: var(--fs-2xl); min-height: 40px; }
     #md-search-row .btn { min-width: 40px; min-height: 40px; }
@@ -1584,7 +1600,8 @@
      Refresh / Set dir) is collapsed into the ⋯ More menu on EVERY width (Ethan
      2026-08-19: "these take up too much space make it an ellipse dropdown"). The
      More menu already carries every one of these actions, so nothing is lost —
-     the toolbar is just Back / Up / breadcrumb / ⋯ now. */
+     the toolbar is just Back / breadcrumb / ⋯ now (Up went 2026-10-30; the
+     ⋯ carries no "More" text since 2026-10-31, only its aria-label). */
   .fe-tb-actions { display: none; }
   /* The More (ellipsis) menu is always available, on desktop and mobile. */
   .fe-tb-overflow { position: relative; flex-shrink: 0; display: flex; }
@@ -1604,11 +1621,25 @@
   .fe-tb-oitem.active { background: color-mix(in srgb, var(--accent) 20%, transparent); }
   .fe-tb-oitem-session { color: var(--accent); font-weight: 600; }
   .fe-tb-odivider { height: 1px; background: var(--border); margin: var(--space-0-5) 0; }
-  @media (max-width: 600px) {
-    /* .fe-tb-actions is already display:none at every width (above); on a phone
-       we also drop the "More" text so only the ⋯ icon remains, to fit 375px. */
-    .fe-more-lbl { display: none; }
+  /* The shortcuts row's filter (All / Pinned / Recent / Modified / Shared):
+     sized to its text and held at the row's left edge while the chips scroll
+     under it. Drawn like the chips beside it (.files-bm-chip: card fill, one
+     border, the same radius, height and text size) rather than as the native
+     grey select (owner, 2026-10-31: "resemble the row"); the arrow is the
+     Messages filters' one. */
+  #files-row-filter {
+    width: auto; flex-shrink: 0; position: sticky; left: 0; z-index: 1;
+    -webkit-appearance: none; appearance: none; box-shadow: none;
+    background-color: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    font-size: var(--fs-xs); line-height: 1.2; height: auto; min-height: 0;
+    padding: var(--space-0-5) var(--space-5) var(--space-0-5) var(--space-2);
+    align-self: stretch; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238b949e'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right var(--space-2) center;
   }
+  #files-row-filter:hover { border-color: var(--dim); }
+  @media (max-width: 600px) { #files-row-filter { min-height: 44px; } }
   .fe-breadcrumb {
     flex: 1 1 180px; font-size: var(--fs-md); font-family: var(--font-mono);
     overflow-x: auto; white-space: nowrap; padding: var(--space-0-5) var(--space-1-5);
@@ -2921,7 +2952,7 @@
   .peek-more-menu button.peek-more-danger { color: var(--red); margin-top: var(--space-1);
     padding-top: var(--space-2-5); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-md) var(--radius-md); }
   .peek-more-menu button.peek-more-danger:hover { background: color-mix(in srgb, color-mix(in srgb, var(--red) 88%, var(--card)) 12%, transparent); }
-  /* 44px touch targets on the phone (.claude/rules/css-mobile.md). The desktop
+  /* 44px touch targets on the phone (crates/amux-dashboard/CLAUDE.md). The desktop
      padding gives ~34px, which is under the minimum on exactly the surface this
      menu is mostly used from. */
   @media (max-width: 600px) {
@@ -4074,7 +4105,7 @@
      button's box is 16.5 x 35. The MENU was never the bug — it opens correctly,
      position:fixed, z-index 4000, 15 rows, unclipped, on screen. The TARGET is.
      16.5px wide is a third of the 44x44 this repo already requires on mobile
-     (.claude/rules/css-mobile.md), and it sits inside a horizontally scrolling tab
+     (crates/amux-dashboard/CLAUDE.md), and it sits inside a horizontally scrolling tab
      strip, where iOS readily interprets a near-miss on a narrow child as a pan of
      the scroller instead of a tap on the child.
      Why every test passed anyway, including the ones I wrote to catch this: a
@@ -5226,7 +5257,7 @@
   .board-filter-chip.active-session { background: color-mix(in srgb, var(--dim) 15%, transparent); color: var(--text); border-color: var(--dim); }
   /* Board toolbar + view toggle */
   /* AT-A-GLANCE PROGRESS (AMUX-2506) + COLUMN PURPOSE (AMUX-2507).
-     Mobile-first per .claude/rules/css-mobile.md: this is a horizontally
+     Mobile-first per crates/amux-dashboard/CLAUDE.md: this is a horizontally
      scrollable rail, NOT a grid, so at 375px it stays one readable line instead
      of wrapping into a wall. Touch targets are not interactive here (read-only
      figures) so the 44px rule does not bind, but the rail keeps 44px height so it
@@ -6419,7 +6450,7 @@
     .reclaim-legend { gap: var(--space-1-5); }
     /* 44px on EVERY control in this tab, not just the ones in the action bar.
        Measured at 390px: Rescan came out 40px and the treemap "up" button 32px,
-       both under the touch-target floor in .claude/rules/css-mobile.md. The
+       both under the touch-target floor in crates/amux-dashboard/CLAUDE.md. The
        inline padding these carry wins over a class rule, so the floor is set
        here on the container rather than per-button. */
     #reclaim-content button, .reclaim-minibtn, .reclaim-upbtn { min-height: 44px; }
@@ -6455,7 +6486,7 @@
   #graph-view.sidebar-collapsed .graph-controls { left: 46px; }
   .graph-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
   /* Graph source switch (Notes / Fleet). 44px min height keeps it a legal
-     touch target on the phone, per .claude/rules/css-mobile.md. */
+     touch target on the phone, per crates/amux-dashboard/CLAUDE.md. */
   .graph-switch-btn { flex:1; min-height:32px; padding:var(--space-1-5) var(--space-2-5); font-size:var(--fs-sm); font-family:inherit;
     background:var(--bg); color:var(--dim); border:1px solid var(--border); border-radius:var(--radius-md); cursor:pointer; }
   .graph-switch-btn.active { background:var(--accent); color:var(--on-solid); border-color:transparent; }
@@ -7929,6 +7960,9 @@ select.input { height:var(--control-height); }
 .recorder-elapsed { font-size:var(--fs-6xl); font-weight:600; font-variant-numeric:tabular-nums; color:var(--text); line-height:1.1; }
 .recorder-level { height:8px; border-radius:var(--radius-sm); background:var(--bg); border:1px solid var(--border); overflow:hidden; }
 .recorder-level-fill { height:100%; width:100%; background:var(--green); transform:scaleX(0.02); transform-origin:left center; }
+/* The live waveform (app.js _recWave*): the last few seconds of sound as bars, so a glance says it hears you. */
+.recorder-wave { display:block; width:100%; height:36px; color:var(--green); }
+.recorder-wave.quiet { color:var(--dim); }
 .recorder-status { color:var(--dim); font-size:var(--fs-lg); line-height:1.4; overflow-wrap:anywhere; }
 .recorder-sync-row { display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap; justify-content:space-between; }
 .recorder-sync-summary { color:var(--dim); font-size:var(--fs-lg); min-width:0; }
@@ -8099,7 +8133,7 @@ select.input { height:var(--control-height); }
 .msg-ctx-close { margin-top:var(--space-3); width:100%; }
 
 @media (max-width: 600px) {
-  /* Touch target, per .claude/rules/css-mobile.md. The chip itself stays small
+  /* Touch target, per crates/amux-dashboard/CLAUDE.md. The chip itself stays small
      because the row is a list item and a 44px chip would set the row height;
      the padding here buys the target without changing the visual size. */
   .msg-ctx-chip { padding:var(--space-1-5); margin:calc(var(--space-1) * -1) var(--space-1-5) calc(var(--space-1) * -1) 0; max-width:9ch; }
@@ -9010,6 +9044,8 @@ button.cv-sec:hover { color:var(--text); }
 .cv-post-tag { font-size:var(--fs-3xs); padding:1px var(--space-1-5); border-radius:var(--radius-xl); border:1px solid var(--border); color:var(--dim); }
 .msg-sender { font-size:var(--fs-xs); font-weight:600; color:var(--text); margin-right:var(--space-1); overflow-wrap:anywhere; }
 .msg-sender-arrow { font-size:var(--fs-xs); color:var(--dim); margin-right:var(--space-1); }
+.msg-answer-note { color:var(--dim); margin-bottom:var(--space-2); text-align:left; }
+.msg-answer-text { white-space:pre-wrap; text-align:left; }
 .msg-sess-link { background:none; border:none; padding:0; margin-right:var(--space-1-5); font:inherit; font-size:var(--fs-xs); color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
 .cv-head { display:flex; align-items:center; gap:var(--space-2-5); padding:var(--space-2-5) var(--space-4);
   border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -9060,7 +9096,9 @@ button.cv-sec:hover { color:var(--text); }
 .cv-deliv span.ok { color:var(--green); border-color:color-mix(in srgb, var(--green) 45%, transparent); }
 .cv-deliv span.bad { color:var(--red); border-color:color-mix(in srgb, color-mix(in srgb, var(--red) 93%, var(--card)) 45%, transparent); }
 .cv-typing { min-height:18px; padding:0 var(--space-4); font-size:var(--fs-sm); color:var(--dim); }
-.cv-compose { position:relative; display:flex; gap:var(--space-2); align-items:flex-end; padding:var(--space-1-5) var(--space-4) var(--space-1); flex-shrink:0; }
+/* No hint row under the box (Ethan, 2026-10-30: "get rid of this row at the
+   bottom"); the placeholder already says what @ does. */
+.cv-compose { position:relative; display:flex; gap:var(--space-2); align-items:flex-end; padding:var(--space-1-5) var(--space-4) calc(var(--space-2) + env(safe-area-inset-bottom)); flex-shrink:0; }
 /* The worker input's box, menu and Send (index.html #cv-compose); only the row layout is Messages'. */
 .cv-compose .peek-composer-input { flex:1; min-width:0; position:relative; }
 .cv-compose .send-input { display:block; width:100%; box-sizing:border-box; }
@@ -9070,8 +9108,6 @@ button.cv-sec:hover { color:var(--text); }
 .cv-compose > .peek-more-wrap { align-self:flex-end; }
 .cv-compose .peek-attach-btn { width:44px; height:44px; justify-content:center; }
 .cv-compose .cv-send-split .send-split-main { border-radius:var(--radius-lg); padding-right:var(--space-3); min-height:44px; }
-.cv-hint { display:flex; gap:var(--space-4); padding:0 var(--space-4) calc(var(--space-2) + env(safe-area-inset-bottom));
-  font-size:var(--fs-2xs); color:var(--dim); flex-wrap:wrap; }
 .cv-ac { display:none; position:absolute; left:16px; bottom:100%; z-index:50; min-width:220px; max-width:calc(100% - 32px);
   max-height:240px; overflow-y:auto; background:var(--card); border:1px solid var(--border);
   border-radius:var(--radius-lg); box-shadow:var(--shadow-md); padding:var(--space-1); }
@@ -9094,7 +9130,6 @@ button.cv-sec:hover { color:var(--text); }
   .cv-head { padding:var(--space-1-5) var(--space-2-5); }
   .cv-posts { padding:var(--space-2) var(--space-2-5); }
   .cv-compose { padding:var(--space-1-5) var(--space-2-5) var(--space-1); }
-  .cv-hint { display:none; }
   .cv-head-people { display:none; }
   /* An admin's channel settings stay in the one header row; the avatars do not. */
   .cv-head-people:has(.cv-chan-gear) { display:flex; }
@@ -9262,6 +9297,7 @@ button.cv-sec:hover { color:var(--text); }
 .sx-bulk { display:flex; align-items:center; gap:var(--space-2); margin:0 var(--space-4) var(--space-2-5); padding:var(--space-2) var(--space-3); border:1px solid var(--accent);
   border-radius:var(--radius-control); background:color-mix(in srgb, var(--accent) 8%, var(--card)); flex-wrap:wrap; }
 .sx-bulk[hidden] { display:none; }
+#peek-sched-bulk { margin:var(--space-2) var(--space-3) 0; }
 .sx-bulk > span { font-weight:600; margin-right:auto; }
 .sx-list { display:flex; flex-direction:column; gap:var(--space-3-5); padding:var(--space-0-5) var(--space-4) var(--space-3-5); }
 #peek-schedules-list.sx-list, #peek-schedules-list { gap:var(--space-3); }
@@ -9289,7 +9325,7 @@ button.cv-sec:hover { color:var(--text); }
 .sx-table { container-type:inline-size; container-name:sxt; }
 .sx-row { display:grid; align-items:center; column-gap:var(--space-2-5); padding:var(--space-2) var(--space-2-5) var(--space-2) var(--space-1-5); border-bottom:1px solid var(--border);
   grid-template-columns:36px minmax(170px,2.4fr) minmax(120px,1.3fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; font-size:var(--fs-lg); }
-.sx-scoped .sx-row { grid-template-columns:minmax(150px,2.4fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; padding-left:var(--space-3); }
+.sx-scoped .sx-row { grid-template-columns:36px minmax(150px,2.4fr) minmax(110px,1.1fr) 84px 92px 64px 92px 84px; }
 .sx-table > .sx-row:last-child { border-bottom:none; }
 .sx-row.sched-item { cursor:pointer; overflow:hidden; }
 .sx-row.sched-item:hover { background:color-mix(in srgb, var(--text) 4%, transparent); }
@@ -9447,6 +9483,7 @@ button.cv-sec:hover { color:var(--text); }
   .sx-filter { max-width:none; width:100% !important; }
   .sx-list { padding:var(--space-0-5) var(--space-3) var(--space-3-5); }
   .sx-bulk { margin:0 var(--space-3) var(--space-2-5); }
+  #peek-sched-bulk { flex-wrap:nowrap; overflow-x:auto; }
   .sx-group-head { padding:var(--space-2-5) var(--space-3); }
   .sx-viewall, .sx-showmore, .sx-linkbtn { min-height:44px; }
   .sx-detail { width:100%; border-left:none; box-shadow:none; padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right); }
@@ -9572,6 +9609,9 @@ button.cv-sec:hover { color:var(--text); }
   .sx-row .sx-nextc { order:6; margin-left:0; padding-right:0; }
   .sx-row .sx-stat { order:7; margin-left:auto; padding-right:var(--space-1-5); }
   .sx-scoped .sx-row .sx-freq { padding-left:var(--space-8); }
+  /* Selecting stays possible on a narrow list and a phone, so a worker's
+     schedules can be deleted in bulk (2026-10-30). */
+  .sx-row .sx-sel { display:flex; order:0; align-items:center; justify-content:center; min-width:44px; min-height:44px; margin:calc(-1 * var(--space-2)) 0; }
 }
 @media (max-width: 600px) {
   #sched-overlay.board-edit-overlay { padding:0 0 var(--sw-fail-h, 0px) 0; }
@@ -10680,6 +10720,17 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-thread-line .cv-av { width:18px; height:18px; flex-basis:18px; font-size:var(--fs-3xs); }
 .cv-thread-last { color:var(--dim); font-weight:400; }
 .cv-edited { font-size:var(--fs-3xs); color:var(--dim); }
+/* Pinned messages: the tag on a pinned post, the header count, the list. */
+.cv-post-pinned { font-size:var(--fs-3xs); color:var(--dim); }
+.cv-pins-btn { flex:none; white-space:nowrap; min-height:44px; }
+.pm-pin-row { display:flex; gap:var(--space-2); align-items:center; }
+.pm-pin-row .cv-pin-item { flex:1; min-width:0; }
+.pm-pin-unpin { flex:none; min-height:44px; }
+.cv-pins-list { display:flex; flex-direction:column; gap:var(--space-1-5); max-height:60vh; overflow-y:auto; }
+.cv-pin-item { display:flex; flex-direction:column; align-items:flex-start; gap:var(--space-1); text-align:left; width:100%; white-space:normal; min-height:44px; }
+.cv-pin-who { font-weight:600; }
+.cv-pin-when { font-weight:400; color:var(--dim); font-size:var(--fs-3xs); }
+.cv-pin-body { color:var(--text); overflow-wrap:anywhere; }
 .cv-deleted { color:var(--dim); font-style:italic; font-size:var(--fs-lg); }
 .cv-edit { width:100%; min-height:60px; font:inherit; box-sizing:border-box; }
 .cv-edit-acts { display:flex; gap:var(--space-1-5); justify-content:flex-end; margin-top:var(--space-1); }
@@ -10699,6 +10750,8 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-mic { min-width:44px; min-height:44px; }
 .cv-mic.recording { color:var(--red); border-color:currentColor; }
 .cv-voice-bar { display:flex; align-items:center; gap:var(--space-2); padding:0 var(--space-4) var(--space-1); font-size:var(--fs-sm); color:var(--dim); }
+/* display:flex beat the hidden attribute, so an idle bar kept its 4px of padding under the box. */
+.cv-voice-bar[hidden] { display:none; }
 .cv-rec-dot { width:9px; height:9px; border-radius:var(--radius-round); background:var(--red); animation:cvpulse 1s infinite; }
 @keyframes cvpulse { 50% { opacity:0.3; } }
 .cv-av-img { object-fit:cover; padding:0; }
@@ -10762,6 +10815,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-seg button { border: 0; background: none; color: var(--dim); font: inherit; font-size: var(--fs-md); padding: var(--space-1) var(--space-2-5);
   border-radius: var(--radius-sm); cursor: pointer; min-height: 30px; }
 .mdx-seg button.active { background: var(--bg); color: var(--accent); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+/* Split is a way of showing Edit, not a fifth place: an icon toggle at the end of the switch. */
+.mdx-seg .mdx-split { margin-left: var(--space-1); padding: var(--space-1) var(--space-2); }
+.mdx-preview-acts { display: inline-flex; align-items: center; gap: var(--space-1-5); flex-shrink: 0; }
+.mdx-preview-acts[hidden] { display: none; }
 .mdx-tools { display: inline-flex; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
 .mdx-tools button, .mdx-icon { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); min-width: 30px; min-height: 30px;
   border-radius: var(--radius-sm); cursor: pointer; padding: 0 var(--space-1); }
@@ -10785,8 +10842,10 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-editor .file-edit-ta::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: transparent; }
 .mdx-editor.mdx-plain .file-edit-ta { color: var(--text); }
 .mdx-editor.mdx-plain #mdx-hl { color: transparent; }
-#mdx-hl .ln { display: block; position: relative; }
-#mdx-hl .ln::before { content: attr(data-n); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
+/* Line numbers are a counter: a line inserted renumbers nothing (app.js _mdxHighlight). */
+#mdx-hl { counter-reset: ln; }
+#mdx-hl .ln { display: block; position: relative; counter-increment: ln; }
+#mdx-hl .ln::before { content: counter(ln); position: absolute; left: -46px; width: 34px; text-align: right; color: var(--dim); opacity: 0.7; }
 #mdx-hl .mdx-h { color: var(--accent); font-weight: 700; }
 #mdx-hl .mdx-li, #mdx-hl .mdx-task { color: var(--accent); }
 #mdx-hl .mdx-tg { color: var(--purple); }
@@ -10816,6 +10875,9 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-out #file-body { flex: 1; border: 0; border-radius: 0; background: var(--bg); color: var(--text); white-space: normal;
   font-family: var(--font-ui); padding: var(--space-4) var(--space-6); }
 body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); color: var(--text); }
+/* A readable line on a wide screen (owner's spec, P2): the text keeps to about 80 characters,
+   centred, while the scroll area stays the full pane so the scrollbar sits at its edge. */
+@media (min-width: 701px) { .mdx-out #file-body.mdx-preview { padding-inline: max(var(--space-6), calc((100% - 80ch) / 2)); } }
 .mdx-preview h2 { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .mdx-preview h2:first-child { border-top: 0; padding-top: 0; }
 .mdx-anchor { margin-left: var(--space-2); font-size: 0.7em; text-decoration: none; opacity: 0.35; vertical-align: middle; }
@@ -10843,9 +10905,13 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .mdx-row-del { background: color-mix(in srgb, var(--red) 14%, transparent); }
 .mdx-gap td { color: var(--dim); text-align: center; }
 .mdx-commit { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
-.mdx-commit-main { flex: 1; min-width: 0; }
-.mdx-commit-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mdx-commit-meta { font-size: var(--fs-sm); color: var(--dim); }
+.mdx-commit-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto 1fr; column-gap: var(--space-2); align-items: baseline;
+  text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: var(--space-1) var(--space-1-5); border-radius: var(--radius-md); cursor: pointer; min-height: 44px; }
+.mdx-commit-main:hover { background: var(--bg-inset); }
+.mdx-commit-when { font-weight: 600; white-space: nowrap; }
+.mdx-commit-subj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mdx-commit-meta { grid-column: 2; font-size: var(--fs-sm); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdx-commit-restore { flex-shrink: 0; font-size: var(--fs-sm); color: var(--dim); }
 
 /* Full screen: the editor alone, the viewer's header out of the way. */
 #file-overlay.mdx-full .file-overlay-header { display: none; }
@@ -10853,11 +10919,26 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 
 @media (max-width: 700px) {
   .mdx [data-m="split"] { display: none; }
+  /* One row that fits a 375px phone: the four views and Copy. The viewer is already full screen
+     there, and Copy copies markdown. */
+  #mdx-copy-as, #mdx-full { display: none; }
   .mdx-bar { padding: var(--space-0-5) var(--space-1-5); }
   /* A phone: the note runs edge to edge, as the viewer's did. */
   .mdx-pane { border-radius: 0; border-left: 0; border-right: 0; }
   .mdx-out #file-body { padding: var(--space-3); }
   .mdx-editor #mdx-hl, .mdx-editor .file-edit-ta { padding-left: calc(var(--space-10) + var(--space-1)); padding-right: var(--space-2); }
   #mdx-hl .ln::before { left: -40px; width: 30px; }
+  /* A phone edits in the plain textarea (app.js _mdxPhone): one layer, text at 16px, which is
+     also the size below which iOS zooms the page on focus. */
+  .mdx-editor.mdx-phone #mdx-hl { display: none; }
+  .mdx-editor.mdx-phone .file-edit-ta { color: var(--text); font-family: var(--font-ui); font-size: var(--fs-2xl);
+    line-height: 1.55; padding: var(--space-3) var(--space-3) var(--space-12); }
   .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
 }
+
+/* Ask: the closest matches under an answer, one tappable row each. */
+.ask-best { margin-top: var(--space-2-5); }
+.ask-best-label { font-size: var(--fs-xs); color: var(--dim); margin-bottom: var(--space-1); }
+.ask-best-row { display: block; width: 100%; text-align: left; white-space: normal; font-size: var(--fs-xs);
+  padding: var(--space-1-5) var(--space-2); margin-bottom: var(--space-1); min-height: 44px; }
+.ask-best-snippet { color: var(--dim); }

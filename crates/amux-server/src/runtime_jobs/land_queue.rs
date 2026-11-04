@@ -10,6 +10,7 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
         let state = state.clone();
         async move {
             crate::api::land_queue::tick(&state).await;
+            crate::api::land_red::maybe_tick(&state);
         }
     })
 }

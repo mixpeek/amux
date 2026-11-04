@@ -45,7 +45,7 @@ const beacons=[];
 const proxy=http.createServer(async(req,res)=>{
   try {
     if(req.url==='/sw.js'){res.writeHead(404);res.end('Service worker disabled so the test reads the candidate assets');return;}
-    if(['/app.js','/app.css','/state/kernel.js'].includes(req.url)) {res.setHeader('cache-control','no-store');res.setHeader('content-type',req.url.endsWith('.css')?'text/css':'text/javascript');res.end(await fs.readFile(new URL(req.url.slice(1),staticRoot)));return;}
+    if(['/app.js','/app.css','/state/kernel.js'].includes(req.url.split('?')[0])) {res.setHeader('cache-control','no-store');res.setHeader('content-type',req.url.split('?')[0].endsWith('.css')?'text/css':'text/javascript');res.end(await fs.readFile(new URL(req.url.split('?')[0].slice(1),staticRoot)));return;}
     const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=Buffer.concat(chunks);
     if(req.url==='/api/client-debug'){try{beacons.push(JSON.parse(body))}catch{}}
     const upstream=https.request(new URL(req.url,base),{method:req.method,rejectUnauthorized:false,headers:{...req.headers,host:base.host,'accept-encoding':'identity'}},up=>{

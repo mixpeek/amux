@@ -43,7 +43,16 @@ test('a hidden tab reads no board changes until it is shown, then catches up', a
     const w = window as any; const orig = w.fetchSessions; w.__sessReads = 0;
     w.fetchSessions = (...a: any[]) => { w.__sessReads++; return orig(...a); };
   });
-  await page.evaluate(() => { (window as any).__hidden = true; document.dispatchEvent(new Event('visibilitychange')); });
+  // A change that arrives just before the tab hides arms the 400 ms read. It must
+  // wait with the rest (nightly 41283498168, ios-safari).
+  await page.evaluate(() => {
+    const g = globalThis as any;
+    g.eval('_sse').onmessage({ data: JSON.stringify({ type: 'invalidate', keys: ['board'] }) });
+    (window as any).__hidden = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  // Past the 400 ms, or the writes below cancel that timer before it can fire.
+  await page.waitForTimeout(700);
   for (let i = 0; i < 3; i++) {
     const r = await request.patch(`/api/board/${id}`, { headers, data: { title: `hidden tab renamed ${i}` } });
     expect(r.ok()).toBeTruthy();

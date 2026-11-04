@@ -75,6 +75,12 @@ macro_rules! cached_re {
 
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A live=1 peek's capture budget. The dashboard aborts a live poll at 3s
+/// (`refreshPeek`), so a capture still running past that answers nobody and,
+/// while the tmux server is stalled, stacks one more `capture-pane` child per
+/// open view on it. Measured 2026-11-02 (AF-1165): live peeks of 10-13s, each
+/// finishing beside a saved tmux-stall evidence file at load 45-70 on 28 cores.
+const LIVE_CAPTURE_TIMEOUT: Duration = Duration::from_millis(2500);
 /// `git worktree add` checks out the WHOLE tree into a new directory --
 /// tens of thousands of files on this repo (Ethan, 2026-09-18: "the ephemeral
 /// worker was expired again"). OP_TIMEOUT (5s) is sized for a quick metadata
@@ -1018,6 +1024,17 @@ pub(crate) fn scoped_gate_on_in(
 }
 
 pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
+    lane_setting_in(home, lane, key).or_else(|| {
+        EnvFile::load(&home.join("amux.env"))
+            .get(key)
+            .and_then(|v| { let t = v.trim(); (!t.is_empty()).then(|| t.to_string()) })
+    })
+}
+
+/// The worker and group layers of `scoped_setting_in`, without the global one.
+/// For a switch that only means something when somebody chose it for this
+/// worker or its group, such as whether the worker uses the board at all.
+pub(crate) fn lane_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
     fn nonempty(v: &str) -> Option<String> {
         let t = v.trim();
         (!t.is_empty()).then(|| t.to_string())
@@ -1043,9 +1060,7 @@ pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -
             return Some(v);
         }
     }
-    EnvFile::load(&home.join("amux.env"))
-        .get(key)
-        .and_then(nonempty)
+    None
 }
 
 /// The effective cross-group sender policy and the explanation shown beside it.
@@ -1402,16 +1417,17 @@ pub(crate) async fn running_workers() -> std::collections::BTreeSet<String> {
 }
 
 async fn tmux_sessions_set() -> std::collections::BTreeSet<String> {
-    let Some(out) = tmux(&["list-sessions", "-F", "#{session_name}"]).await else {
-        return Default::default();
-    };
+    tmux_sessions_measured().await.unwrap_or_default()
+}
+
+/// `None` means tmux never answered (a stall or timeout), so nothing was
+/// measured. A non-zero exit is an answer: no server means no sessions.
+async fn tmux_sessions_measured() -> Option<std::collections::BTreeSet<String>> {
+    let out = tmux(&["list-sessions", "-F", "#{session_name}"]).await?;
     if !out.status.success() {
-        return Default::default();
+        return Some(Default::default());
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .collect()
+    Some(String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).collect())
 }
 
 /// The pane process ids of a worker's tmux session, for reading what its
@@ -1433,8 +1449,15 @@ pub(crate) async fn worker_pane_pids(name: &str) -> Vec<u32> {
 
 /// tmux capture-pane -e; lines<=0 → visible screen only (py:4406).
 pub(crate) async fn tmux_capture(name: &str, lines: i64) -> String {
+    tmux_capture_within(name, lines, CAPTURE_TIMEOUT).await.unwrap_or_default()
+}
+
+/// [`tmux_capture`] with its own budget, and `None` when tmux did not answer
+/// within it, so a caller can tell a stalled server from an empty pane. A
+/// capture tmux answered with an error (no such pane) is still `Some("")`.
+async fn tmux_capture_within(name: &str, lines: i64, budget: Duration) -> Option<String> {
     if session_backend(name) == "herdr" {
-        return herdr_capture(name, lines.max(1)).await;
+        return Some(herdr_capture(name, lines.max(1)).await);
     }
     let pt = pt(name);
     let start;
@@ -1444,11 +1467,12 @@ pub(crate) async fn tmux_capture(name: &str, lines: i64) -> String {
         args.push("-S");
         args.push(&start);
     }
-    match run_cmd("tmux", &args, CAPTURE_TIMEOUT).await {
+    match run_cmd("tmux", &args, budget).await {
         Some(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
         }
-        _ => String::new(),
+        Some(_) => Some(String::new()),
+        None => None,
     }
 }
 
@@ -1519,6 +1543,17 @@ pub(crate) fn jsonl_records_since(recs: &[Value], since: f64) -> bool {
     recs.iter().any(|r| r["timestamp"].as_str().and_then(parse_iso8601).is_some_and(|ts| ts >= since))
 }
 
+/// Whether `session_jsonl_path` names the worker's own conversation, not the
+/// folder's newest guess.
+pub(crate) fn transcript_is_bound(name: &str) -> bool {
+    let conv = meta_str(&load_meta(name), "cc_conversation_id");
+    session_jsonl_path(name).is_some_and(|p| transcript_file_is(&conv, &p))
+}
+
+fn transcript_file_is(conv_id: &str, path: &Path) -> bool {
+    !conv_id.is_empty() && path.file_stem().and_then(|s| s.to_str()) == Some(conv_id)
+}
+
 /// What the held-message watcher does when the composer is empty after its
 /// grace: `Lost` when the transcript is live and does not have the message.
 /// An empty composer alone is not a delivery (MSG-92727, 2026-10-22: the
@@ -1536,11 +1571,22 @@ pub(crate) enum EmptyComposer {
     LeftUnverified,
 }
 
+/// How long an empty, unverified composer is still watched for the message to
+/// come back (AF-1089). Claude Code returns a message queued mid-turn to the
+/// input box when the turn ends: 2026-10-31 on mixpeek-frustrations, the watch
+/// ended "left composer" at 07:18:56, the text was back in the box by 07:19:10,
+/// and with nothing watching it steering preserved it as a human draft for an
+/// hour while four queued messages waited behind it.
+pub(crate) const RESTORE_WINDOW_S: f64 = 300.0;
+/// How far before the send the last look ahead of a resend reaches.
+pub(crate) const RESEND_LOOKBACK_S: f64 = 300.0;
+
 pub(crate) fn empty_composer_verdict(now: f64, grace_until: f64, redelivered_at: Option<f64>, transcript_live: bool) -> EmptyComposer {
     if now < grace_until {
         return EmptyComposer::Wait;
     }
     match (transcript_live, redelivered_at) {
+        (false, _) if now < grace_until + RESTORE_WINDOW_S => EmptyComposer::Wait,
         (false, _) => EmptyComposer::LeftUnverified,
         (true, None) => EmptyComposer::Redeliver,
         (true, Some(at)) if now < at + 30.0 => EmptyComposer::Wait,
@@ -2002,10 +2048,18 @@ fn is_prompt_line(s: &str) -> bool {
 /// never became ready" on a lane that runs no Claude. Renamed so the next provider added to
 /// amux is a grep away from this function instead of a silent timeout.
 fn agent_ui_visible(clean_output: &str) -> bool {
-    let lines: Vec<&str> = clean_output
+    let mut lines: Vec<&str> = clean_output
         .lines()
         .filter(|l| !l.trim().is_empty())
         .collect();
+    // Claude Code draws its agent list under the footer while subagents run
+    // ("● main", "◯ general-purpose ..."). Read the footer above it: with those
+    // rows in the 3-line window the footer was missed, the status line read as a
+    // shell prompt, and every send to a working mxp-gs12 queued as a boot prompt
+    // for 30 minutes (mixpeek-dev, 2026-11-02).
+    while lines.last().is_some_and(|l| agent_list_row(l)) {
+        lines.pop();
+    }
     let shell_prompt = cached_re!(r"^.*[$%]\s");
     let n = lines.len();
     for l in &lines[n.saturating_sub(3)..] {
@@ -2120,15 +2174,23 @@ fn at_resume_picker(clean_output: &str) -> bool {
 }
 
 /// py:8307 _at_shell_prompt.
+/// A row of Claude Code's agent list, drawn below its footer.
+fn agent_list_row(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('\u{25cf}') || t.starts_with('\u{25ef}')
+}
+
 fn at_shell_prompt(clean_output: &str) -> bool {
     if agent_ui_visible(clean_output) {
         return false;
     }
     let lines: Vec<&str> = clean_output
         .lines()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !agent_list_row(l))
         .collect();
-    let ends = cached_re!(r"[$%]\s*$");
+    // A percentage ("wk 47%", a usage meter) is not a prompt: a prompt's `%`
+    // never follows a digit.
+    let ends = cached_re!(r"(^|[^0-9])[$%]\s*$");
     let leaks = cached_re!(r"^\S+[$%]\s");
     for l in &lines[lines.len().saturating_sub(5)..] {
         let ls = l.trim();
@@ -3449,6 +3511,108 @@ fn claude_session_flag(name: &str, conv_id: &str, resumable: bool) -> String {
     }
 }
 
+/// Shell lines that take the owner's git and GitHub credentials away from a
+/// worker of a server that is not the primary (a demo or private server, whose
+/// AMUX_HOME is not ~/.amux). `None` for the primary server, or when the server
+/// sets AMUX_WORKER_GIT_CREDENTIALS=1.
+///
+/// 2026-11-02: a demo worker found ~/Dev/amux and pushed a branch to the public
+/// repo with the owner's gh login and ssh-agent. This stops accidents only: the
+/// keychain and any key file stay readable to the same macOS user.
+fn private_server_git_rc(amux_home: &Path, user_claude_home: &Path) -> Option<String> {
+    if std::env::var("AMUX_WORKER_GIT_CREDENTIALS").as_deref() == Ok("1") {
+        return None;
+    }
+    let primary = user_claude_home.parent()?.join(".amux");
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(amux_home) == canon(&primary) {
+        return None;
+    }
+    let dir = amux_home.join("worker-git");
+    let config = dir.join("gitconfig");
+    let gh = dir.join("gh");
+    std::fs::create_dir_all(&gh).ok()?;
+    // An empty credential.helper resets every helper a lower config named.
+    std::fs::write(
+        &config,
+        "[user]\n\tname = amux demo worker\n\temail = demo-worker@amux.invalid\n[credential]\n\thelper =\n",
+    )
+    .ok()?;
+    let q = |p: &Path| sh_quote(&p.to_string_lossy());
+    Some(format!(
+        "export GIT_CONFIG_GLOBAL={} GIT_CONFIG_NOSYSTEM=1 GH_CONFIG_DIR={} GIT_TERMINAL_PROMPT=0 \
+         GIT_SSH_COMMAND='ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes'; \
+         unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN SSH_AUTH_SOCK GIT_ASKPASS SSH_ASKPASS; ",
+        q(&config),
+        q(&gh)
+    ))
+}
+
+#[cfg(test)]
+mod private_server_git_tests {
+    use super::private_server_git_rc;
+
+    #[test]
+    fn only_a_non_primary_server_scrubs_its_workers_git_credentials() {
+        let user = tempfile::tempdir().unwrap();
+        let primary = user.path().join(".amux");
+        std::fs::create_dir_all(&primary).unwrap();
+        let claude = user.path().join(".claude");
+        assert_eq!(private_server_git_rc(&primary, &claude), None);
+
+        let demo = tempfile::tempdir().unwrap();
+        let rc = private_server_git_rc(demo.path(), &claude).expect("a demo server scrubs");
+        for needle in ["GIT_CONFIG_GLOBAL=", "GIT_CONFIG_NOSYSTEM=1", "GH_CONFIG_DIR=",
+            "GIT_TERMINAL_PROMPT=0", "IdentityFile=/dev/null", "unset GH_TOKEN GITHUB_TOKEN",
+            "SSH_AUTH_SOCK"] {
+            assert!(rc.contains(needle), "{needle} missing from {rc}");
+        }
+        let cfg = std::fs::read_to_string(demo.path().join("worker-git/gitconfig")).unwrap();
+        assert!(cfg.contains("helper =\n"), "{cfg}");
+        assert!(!cfg.contains("osxkeychain") && !cfg.contains("gh auth"), "{cfg}");
+    }
+}
+
+/// Why a worker that has run before is about to start with no conversation to
+/// resume. `None` for a first start, or when it will resume.
+fn conversation_lost_reason(conv_id: &str, resumable: bool, start_count: i64) -> Option<&'static str> {
+    if resumable {
+        None
+    } else if !conv_id.is_empty() {
+        Some("transcript_missing")
+    } else if start_count > 0 {
+        Some("no_conversation_id")
+    } else {
+        None
+    }
+}
+
+/// Records the reason a sender is told, and the line a log sweep counts. Resume
+/// failure used to swap a worker's conversation with no trace at all.
+fn note_conversation_lost(name: &str, meta: &mut Map<String, Value>, reason: Option<&str>) {
+    let Some(reason) = reason else {
+        meta.remove("start_conversation_lost");
+        return;
+    };
+    tracing::warn!(session = name, reason, measured = true, n_considered = 1,
+        verdict = "worker_started_new_conversation",
+        "a worker that had run before started a new conversation; its earlier context is gone");
+    meta.insert("start_conversation_lost".into(), json!(reason));
+}
+
+#[cfg(test)]
+mod conversation_lost_tests {
+    use super::conversation_lost_reason as reason;
+
+    #[test]
+    fn only_a_worker_that_ran_before_and_cannot_resume_has_lost_a_conversation() {
+        assert_eq!(reason("id", true, 3), None);
+        assert_eq!(reason("", false, 0), None, "a first start has nothing to lose");
+        assert_eq!(reason("id", false, 3), Some("transcript_missing"));
+        assert_eq!(reason("", false, 3), Some("no_conversation_id"));
+    }
+}
+
 /// The one marker that means "the conversation was compacted here".
 ///
 /// A single compaction writes SEVERAL records: a `system` row with
@@ -3674,6 +3838,7 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("steering_history", RenameDisposition::Migrate),
     ("share_tokens", RenameDisposition::Migrate),
     ("cmd_history", RenameDisposition::Migrate),
+    ("message_pins", RenameDisposition::Migrate),
     ("token_ledger", RenameDisposition::Migrate),
     // Skill invocations are counted per lane on the Skills page; they follow it.
     ("skill_usage", RenameDisposition::Migrate),
@@ -4026,7 +4191,35 @@ pub async fn debug_context_health() -> Response {
 /// fallback when the cap contains no name record (a short or long-silent
 /// transcript), so this is never more expensive than the scan it replaces by
 /// more than one tail read.
+/// The title of a transcript, remembered until the file changes (AF-1146). A
+/// lane with no recorded conversation matches its name against every transcript
+/// in its project, and each read parses a 256 KB tail, so the fleet build spent
+/// 405 of 829 samples here on files that had not moved.
 fn transcript_display_name(jf: &Path) -> Option<String> {
+    type Names = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, Option<String>)>;
+    const MAX_REMEMBERED: usize = 20_000;
+    static NAMES: std::sync::OnceLock<std::sync::Mutex<Names>> = std::sync::OnceLock::new();
+    let names = NAMES.get_or_init(Default::default);
+    let meta = std::fs::metadata(jf).ok()?;
+    let (len, mtime) = (meta.len(), meta.modified().ok()?);
+    if let Ok(names) = names.lock() {
+        if let Some((l, m, name)) = names.get(jf) {
+            if *l == len && *m == mtime {
+                return name.clone();
+            }
+        }
+    }
+    let name = read_transcript_display_name(jf);
+    if let Ok(mut names) = names.lock() {
+        if names.len() >= MAX_REMEMBERED {
+            names.clear();
+        }
+        names.insert(jf.to_path_buf(), (len, mtime, name.clone()));
+    }
+    name
+}
+
+fn read_transcript_display_name(jf: &Path) -> Option<String> {
     const NAME_TAIL_BYTES: u64 = 256 * 1024;
     let pick = |rec: &Value| -> Option<String> {
         for k in ["customTitle", "sessionName"] {
@@ -4355,15 +4548,122 @@ pub(crate) fn transcript_evidence(name: &str) -> (Option<String>, Option<u64>) {
 /// Newest JSONL for a session (py:5590 _session_jsonl_path_uncached): meta
 /// conv-id first, then title match, then the single unclaimed candidate.
 /// `<projects>/<any project>/<conv_id>.jsonl`, if one exists.
+///
+/// A find is remembered and re-checked with one stat. Uncached, every
+/// sessions-list build re-walked every project dir for each lane found this
+/// way: 8,262 dirs on 2026-10-31, and the walk's stats were a fifth of the
+/// server's CPU while the Mac sat at load 29 on 28 cores (RCA
+/// 20261031-164721). A scan slower than 250 ms logs
+/// `transcript_conversation_scan_slow`.
 pub(crate) fn find_conversation_jsonl(projects: &Path, conv_id: &str) -> Option<PathBuf> {
+    static HITS: std::sync::OnceLock<std::sync::Mutex<ConversationHits>> = std::sync::OnceLock::new();
+    find_conversation_jsonl_in(projects, conv_id, HITS.get_or_init(Default::default)).0
+}
+
+type ConversationHits = std::collections::HashMap<(PathBuf, String), PathBuf>;
+
+/// The path, and whether finding it walked the project dirs.
+fn find_conversation_jsonl_in(
+    projects: &Path,
+    conv_id: &str,
+    hits: &std::sync::Mutex<ConversationHits>,
+) -> (Option<PathBuf>, bool) {
     if conv_id.is_empty() || conv_id.contains('/') || conv_id.contains("..") {
-        return None;
+        return (None, false);
     }
-    std::fs::read_dir(projects)
-        .ok()?
+    let key = (projects.to_path_buf(), conv_id.to_string());
+    if let Some(p) = hits.lock().ok().and_then(|h| h.get(&key).cloned()) {
+        if p.is_file() {
+            return (Some(p), false);
+        }
+    }
+    let started = std::time::Instant::now();
+    let mut dirs = 0usize;
+    let Ok(rd) = std::fs::read_dir(projects) else {
+        return (None, true);
+    };
+    let found = rd
         .flatten()
-        .map(|e| e.path().join(format!("{conv_id}.jsonl")))
-        .find(|p| p.is_file())
+        .map(|e| {
+            dirs += 1;
+            e.path().join(format!("{conv_id}.jsonl"))
+        })
+        .find(|p| p.is_file());
+    let ms = started.elapsed().as_millis() as u64;
+    if ms > 250 {
+        tracing::warn!(conv_id = %conv_id, ms, dirs, found = found.is_some(), measured = true, n_considered = dirs,
+            verdict = "transcript_conversation_scan_slow",
+            "finding a conversation's transcript walked every project dir slowly");
+    }
+    if let (Some(p), Ok(mut h)) = (&found, hits.lock()) {
+        if h.len() > 4096 {
+            h.clear();
+        }
+        h.insert(key, p.clone());
+    }
+    (found, true)
+}
+
+/// How long a conversation with no transcript waits before the next walk.
+fn next_miss_wait(previous: Option<std::time::Duration>) -> std::time::Duration {
+    const FIRST: std::time::Duration = std::time::Duration::from_secs(600);
+    const MOST: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+    previous.map_or(FIRST, |wait| (wait * 2).min(MOST))
+}
+
+/// conv id -> (epoch seconds of the last walk, seconds to wait). On disk because
+/// the server restarts on every deploy, 58 times on 2026-11-01, and each restart
+/// otherwise walks once more for every dead conversation (AF-1146).
+type ConversationMisses = std::collections::HashMap<String, (i64, u64)>;
+
+fn conversation_misses() -> &'static std::sync::Mutex<ConversationMisses> {
+    static MISSES: std::sync::OnceLock<std::sync::Mutex<ConversationMisses>> =
+        std::sync::OnceLock::new();
+    MISSES.get_or_init(|| {
+        let path = crate::api::settings::amux_home().join("transcript-misses.json");
+        let saved = std::fs::read(path).ok();
+        std::sync::Mutex::new(
+            saved
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+fn conversation_miss_is_cached(conv_id: &str) -> bool {
+    conversation_misses().lock().is_ok_and(|misses| {
+        misses
+            .get(conv_id)
+            .is_some_and(|(at, wait)| now_i64().saturating_sub(*at) < *wait as i64)
+    })
+}
+
+/// Records a miss and saves the map. True the first time this id is missed.
+fn remember_conversation_miss(conv_id: &str) -> bool {
+    let Ok(mut misses) = conversation_misses().lock() else {
+        return false;
+    };
+    let previous = misses
+        .get(conv_id)
+        .map(|(_, wait)| std::time::Duration::from_secs(*wait));
+    let wait = next_miss_wait(previous).as_secs();
+    let first = misses
+        .insert(conv_id.to_string(), (now_i64(), wait))
+        .is_none();
+    let (path, tmp) = (
+        crate::api::settings::amux_home().join("transcript-misses.json"),
+        crate::api::settings::amux_home().join("transcript-misses.json.tmp"),
+    );
+    let saved = serde_json::to_vec(&*misses)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| std::fs::write(&tmp, bytes))
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(error) = saved {
+        tracing::warn!(%error, measured = true, n_considered = 1,
+            verdict = "transcript_misses_not_saved",
+            "the conversation miss map could not be saved; the next restart walks again");
+    }
+    first
 }
 
 pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
@@ -4407,25 +4707,19 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
         // mid-delivery could not tell whether a signal wake had landed: it was
         // filed "interrupted" and never shown. The id is a UUID, so any
         // project holding <id>.jsonl is this conversation.
-        // A miss is remembered for 10 minutes and logged once per
-        // conversation. Uncached, every status sweep re-scanned every project
-        // dir for each stopped lane whose transcript is gone and logged it:
-        // 4,061 WARN lines in 45 minutes from 26 lanes (2026-10-01).
-        static MISSES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-            std::sync::OnceLock::new();
-        let misses = MISSES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        let cached_miss = misses
-            .lock()
-            .map(|m| m.get(&conv_id).is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600)))
-            .unwrap_or(false);
-        if !cached_miss {
-            if let Some(p) = find_conversation_jsonl(&claude_home().join("projects"), &conv_id) {
+        // A miss is remembered, and logged once per conversation. Uncached,
+        // every status sweep re-scanned every project dir for each stopped lane
+        // whose transcript is gone and logged it: 4,061 WARN lines in 45 minutes
+        // from 26 lanes (2026-10-01). The wait doubles per miss: at a flat 10
+        // minutes, dead conversations came due together and cost 463 scans and
+        // 1,431 s in 10 hours, up to 29 in a minute, inside the fleet build
+        // whose overrun answers /api/sessions with 503 (AF-1146).
+        let projects_dir = claude_home().join("projects");
+        if !conversation_miss_is_cached(&conv_id) {
+            if let Some(p) = find_conversation_jsonl(&projects_dir, &conv_id) {
                 return Some(p);
             }
-            let first = misses
-                .lock()
-                .map(|mut m| m.insert(conv_id.clone(), std::time::Instant::now()).is_none())
-                .unwrap_or(false);
+            let first = remember_conversation_miss(&conv_id);
             if first {
                 tracing::warn!(session = %name, conv_id = %conv_id, measured = true, n_considered = 1,
                     verdict = "transcript_conversation_not_found",
@@ -6231,7 +6525,11 @@ fn is_yolo_enabled(flags: &str, cfg: &EnvFile) -> bool {
 
 pub(crate) fn default_model_for_provider(provider: &str) -> String {
     match provider {
-        "codex" => "gpt-5.5".into(),
+        // The owner's own Codex config decides first (long-form-videos,
+        // 2026-11-02): a pinned gpt-5.5 overrode `model = ...` in
+        // ~/.codex/config.toml, and a ChatGPT login refuses gpt-5.5, so a
+        // worker created with no model failed its first prompt.
+        "codex" => codex_config_model().unwrap_or_else(|| "gpt-5.5".into()),
         "gemini" => "auto".into(),
         // Ollama runs via `codex --oss --local-provider ollama --model <model>`.
         "ollama" => crate::provider::static_providers::ollama_default_model(),
@@ -6246,6 +6544,43 @@ pub(crate) fn default_model_for_provider(provider: &str) -> String {
         // fleet-wide (`AMUX_OPENCODE_MODEL`).
         "opencode" => crate::opencode::default_model(),
         _ => get_default_model(),
+    }
+}
+
+/// The top-level `model` in Codex's own config (`$CODEX_HOME/config.toml`,
+/// else `~/.codex/config.toml`), which `codex` itself uses when no `--model`
+/// is given. A profile's or a provider table's `model` is not the default.
+pub(crate) fn codex_config_model() -> Option<String> {
+    let dir = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")))?;
+    codex_config_model_in(&std::fs::read_to_string(dir.join("config.toml")).ok()?)
+}
+
+pub(crate) fn codex_config_model_in(text: &str) -> Option<String> {
+    let model = match text.parse::<toml::Table>() {
+        Ok(t) => t.get("model").and_then(|v| v.as_str()).map(str::trim).filter(|m| !m.is_empty()).map(str::to_string),
+        Err(e) => {
+            tracing::warn!(verdict = "codex_config_unparsed", measured = false, error = %e,
+                "codex config.toml did not parse; Codex workers fall back to amux's default model");
+            None
+        }
+    };
+    tracing::debug!(verdict = "codex_default_model", from_config = model.is_some(), measured = true, n_considered = 1,
+        "resolved a Codex worker's default model");
+    model
+}
+
+#[cfg(test)]
+mod codex_config_model_tests {
+    #[test]
+    fn the_owners_codex_config_model_is_the_default() {
+        use super::codex_config_model_in as m;
+        assert_eq!(m("model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"xhigh\"\n").as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(m("[profiles.fast]\nmodel = \"o9\"\n"), None, "a profile's model is not the default");
+        assert_eq!(m("model_reasoning_effort = \"xhigh\"\n"), None);
+        assert_eq!(m("model = \"\"\n"), None);
+        assert_eq!(m("model = [broken"), None);
     }
 }
 
@@ -10037,6 +10372,15 @@ async fn steer_enqueue_precond_with_id(
     })
 }
 
+/// A reservation with no receipt is `pending` only while a request can still
+/// finish it. One made before this process booted died with the old process, so
+/// no receipt can ever come (AF-1147: a restart at 13:13:26 left one, and a
+/// sender retried "still pending" 34 times until the 120 s line).
+fn acceptance_is_uncertain(now: i64, reserved_at: i64, boot_at: Option<f64>) -> bool {
+    now.saturating_sub(reserved_at) > 120
+        || boot_at.is_some_and(|boot| (reserved_at as f64) < boot.floor())
+}
+
 /// Reserve one transport identity before acting, then acknowledge it only once
 /// the terminal accepted it or the server queue durably stored it. A concurrent
 /// retry must never turn the first request's reservation into "already sent".
@@ -10072,7 +10416,11 @@ async fn send_dedup_gate(state: &AppState, name: &str, msg_id: &str) -> Option<R
                     "message":"duplicate retry ignored (previous acceptance confirmed)"})))
                 }
                 Ok((None, ts)) => {
-                    let uncertain = now_i64().saturating_sub(ts) > 120;
+                    let uncertain = acceptance_is_uncertain(
+                        now_i64(),
+                        ts,
+                        crate::runtime_jobs::heartbeat::boot_at(),
+                    );
                     tracing::warn!(target:"amux::message_acceptance",session=name,uncertain,
                         measured=true,n_considered=1,"duplicate message has no acceptance receipt");
                     return Some(jresp(
@@ -10798,34 +11146,42 @@ async fn pane_has_live_child(name: &str) -> Option<bool> {
 }
 
 pub(crate) async fn is_running(name: &str) -> bool {
+    running_measured(name).await.unwrap_or(false)
+}
+
+/// [`is_running`] that can say it does not know. `None` is a tmux stall: the
+/// worker may be mid-turn. A start or a wake must act only on `Some(false)`,
+/// because starting a live worker kills it (2026-11-02, a stall under host
+/// pressure read `mem` as stopped, and the send that followed killed it).
+async fn running_measured(name: &str) -> Option<bool> {
     if let crate::api::worker_exec::Dispatch::Handled(r) =
         crate::api::worker_exec::adapter_for_session(name).running(name)
     {
-        return r;
+        return Some(r);
     }
     let cfg = parse_env(name);
     if !iterm2_id(&cfg).is_empty() {
-        return false;
+        return Some(false);
     }
     if backend_of_cfg(&cfg) == "herdr" {
-        return herdr_agent_running(name).await;
+        return Some(herdr_agent_running(name).await);
     }
     let tmux_sess = tmux_name(name);
-    if !tmux_sessions_set().await.contains(&tmux_sess) {
-        return false;
+    if !tmux_sessions_measured().await?.contains(&tmux_sess) {
+        return Some(false);
     }
     let output = tmux_capture(name, 10).await;
     if output.is_empty() {
-        return true;
+        return Some(true);
     }
     if at_shell_prompt(&output) {
-        return false;
+        return Some(false);
     }
     // Shell alive but childless == claude gone even without a visible prompt.
     if pane_has_live_child(name).await == Some(false) {
-        return false;
+        return Some(false);
     }
-    true
+    Some(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -12041,11 +12397,24 @@ fn verb_resp(ok: bool, msg: String) -> Response {
 /// Submission may be accepted into Claude's native queue before a user turn
 /// exists. Require the provider's exact enqueue content and timestamp, never
 /// infer acceptance from a busy badge or from old identical text.
+/// How much of a transcript's tail can prove a send landed. 256 KB was too
+/// little: Claude Code now writes attachment records of 90-130 KB beside the
+/// prompt, so seconds into a turn the prompt was out of the window, the check
+/// read "never got the message" and sent it again (long-form-videos, 2026-11-01:
+/// prompt at byte 703 of a 542,708-byte transcript, same_text=0).
+const SUBMISSION_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+/// The last look before a second copy, which costs a turn: run once, so it can read more.
+const RESEND_TAIL_BYTES: u64 = 32 * 1024 * 1024;
+
 fn jsonl_submission_since(name: &str, text: &str, since: f64) -> bool {
+    jsonl_submission_in_tail(name, text, since, SUBMISSION_TAIL_BYTES)
+}
+
+fn jsonl_submission_in_tail(name: &str, text: &str, since: f64, tail_bytes: u64) -> bool {
     let Some(path) = session_jsonl_path(name) else {
         return false;
     };
-    let records = iter_jsonl_tail(&path, 262_144);
+    let records = iter_jsonl_tail(&path, tail_bytes);
     // AMUX-5018's regression check. One send that lands TWICE is invisible to
     // every existing signal: `submission_records_have` answers "did it land",
     // which is `true` for one copy and `true` for three, and the sender's
@@ -12112,16 +12481,36 @@ fn submission_records_have(records: &[Value], text: &str, since: f64) -> bool {
     jsonl_records_have(records, text, since)
         || (!text.trim().is_empty()
             && records.iter().any(|record| {
-                record["type"].as_str() == Some("queue-operation")
-                    && record["operation"].as_str() == Some("enqueue")
-                    && record["content"]
-                        .as_str()
-                        .is_some_and(|content| content.trim() == text.trim())
+                // A message sent to a busy worker has no `user` record yet: it
+                // sits as an enqueue and a queued_command attachment, wrapped
+                // (<pasted_content ...>). Reading
+                // only an exact enqueue called it lost and sent it again 90 s
+                // later, to a card already closed (AF, 2026-11-01: shipit
+                // MSG-1; this lane's own 15:49 message, twice).
+                let queued = match record["type"].as_str() {
+                    Some("queue-operation") if record["operation"].as_str() == Some("enqueue") => record["content"].as_str(),
+                    Some("attachment") if record["attachment"]["type"].as_str() == Some("queued_command") => {
+                        record["attachment"]["prompt"].as_str()
+                    }
+                    _ => None,
+                };
+                queued.is_some_and(|content| unwrapped_prompt(content) == text.trim())
                     && record["timestamp"]
                         .as_str()
                         .and_then(parse_iso8601)
                         .is_some_and(|ts| ts >= since)
             }))
+}
+
+/// A queued prompt without the `<pasted_content ...>` wrapper Claude Code puts
+/// around a paste. The receipt stays an exact match: a substring, or an earlier
+/// identical send, is not this delivery.
+fn unwrapped_prompt(content: &str) -> &str {
+    let t = content.trim();
+    t.strip_prefix("<pasted_content")
+        .and_then(|r| r.split_once('>'))
+        .and_then(|(_, r)| r.rsplit_once("</pasted_content"))
+        .map_or(t, |(body, _)| body.trim())
 }
 
 /// Muse's durable proof that a message was submitted — the analogue of
@@ -13857,12 +14246,30 @@ async fn send_text_inner_bound_body(
         }
     }
     let mut needs_wake = false;
+    let mut tmux_unanswered = false;
     if !out_st.is_empty() && at_shell_prompt(&strip_ansi(&out_st)) {
         needs_wake = true; // terminal visible but Claude has exited
-    } else if !is_running(name).await {
-        needs_wake = true;
+    } else {
+        match running_measured(name).await {
+            Some(true) => {}
+            Some(false) => needs_wake = true,
+            None => tmux_unanswered = true,
+        }
     }
-    if needs_wake {
+    if tmux_unanswered && !from_steering {
+        // The worker may be alive, so it is not started. The durable row reaches
+        // it at its next boundary, once tmux answers.
+        tracing::warn!(session = name, measured = false, n_considered = 1,
+            verdict = "send_held_tmux_unanswered",
+            "tmux did not answer, so the send queued instead of starting the worker");
+        let (ok, msg) = queue_boot_prompt(state, name, text, origin).await;
+        return if ok && !text.trim().is_empty() {
+            (true, "queued (steering) — tmux did not answer, worker left as it is".into())
+        } else {
+            (ok, msg)
+        };
+    }
+    if needs_wake || tmux_unanswered {
         if from_steering {
             return (
                 false,
@@ -13880,6 +14287,13 @@ async fn send_text_inner_bound_body(
         let (ok, error) = start_session_as("send-boot", state, name, "", false).await;
         if !ok {
             tracing::warn!(session=name,%error,measured=true,n_considered=1,verdict="boot_delivery_start_failed","start failed; accepted prompt remains queued for explicit recovery");
+        }
+        let lost = meta_str(&load_meta(name), "start_conversation_lost");
+        if ok && !lost.is_empty() {
+            return (
+                queued.0,
+                format!("{}; the worker was stopped and started a NEW conversation ({lost}), so it has lost its earlier context", queued.1),
+            );
         }
         return queued;
     }
@@ -14909,6 +15323,22 @@ async fn retry_held_idle_draft(name: &str, text: &str, sent_at: f64) -> (Submiss
     (Submission::Stuck, presses, "still_held")
 }
 
+/// What the check actually saw when it called a message lost, so a false resend
+/// names its own cause. The demo server doubled every first prompt with the text
+/// in the bound transcript, and no reading of the code explains it.
+fn resend_evidence(name: &str, text: &str, sent_at: f64) {
+    let path = session_jsonl_path(name);
+    let size = path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+    let records = path.as_ref().map(|p| iter_jsonl_tail(p, RESEND_TAIL_BYTES)).unwrap_or_default();
+    let users: Vec<&Value> = records.iter().filter(|r| r["type"].as_str() == Some("user")).collect();
+    let needle = text.trim();
+    let same_text = users.iter().filter(|r| r["message"]["content"].as_str().is_some_and(|c| c.trim() == needle)).count();
+    tracing::warn!(session = %name, path = ?path, size = ?size, records = records.len(), users = users.len(), same_text,
+        needle_len = needle.len(), sent_at, now = now_f64(), bound = transcript_is_bound(name),
+        conv = %meta_str(&load_meta(name), "cc_conversation_id"), measured = true, n_considered = records.len(),
+        verdict = "direct_draft_resend_evidence", "what the transcript check saw before sending a message again");
+}
+
 fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s: f64) {
     if is_slash_command(text) {
         // Never press Enter on a slash command later: its panel or picker may be
@@ -14950,7 +15380,12 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                     }
                 }
                 ComposerState::Empty | ComposerState::Placeholder(_) => {
-                    let live = sent_at > 0.0 && jsonl_live_since(&name, sent_at);
+                    // Only this worker's own transcript can say a message is
+                    // missing. With no bound conversation the path is a guess
+                    // from the project folder, and in a shared folder that is
+                    // a peer's live transcript: api and web each got every
+                    // prompt twice, 92 s apart (VID-030, 2026-11-01).
+                    let live = sent_at > 0.0 && transcript_is_bound(&name) && jsonl_live_since(&name, sent_at);
                     match empty_composer_verdict(now_f64(), started + grace_s, redelivered_at, live) {
                         EmptyComposer::Wait => continue,
                         EmptyComposer::LeftUnverified => break "direct_draft_left_composer",
@@ -14959,7 +15394,22 @@ fn spawn_direct_draft_idle_submit(name: &str, text: &str, sent_at: f64, grace_s:
                             if detect_claude_status(&raw) == "active" || pane_bar_says_generating(&raw) {
                                 continue; // send it at the next idle look
                             }
+                            // Last look before a second copy, over a wider window
+                            // than the send's own: resending costs a turn and can
+                            // act on a closed card, holding back costs nothing
+                            // when the text is already there. Both doubled on a
+                            // bound transcript with the text in it, and the narrow
+                            // check missed it for a reason this line must show
+                            // (VID-030 repro on 1bb4c086a).
+                            if jsonl_submission_in_tail(&name, &text, sent_at - RESEND_LOOKBACK_S, RESEND_TAIL_BYTES) {
+                                tracing::warn!(session = %name, sent_at, now = now_f64(), bound = transcript_is_bound(&name),
+                                    path = ?session_jsonl_path(&name), measured = true, n_considered = 1,
+                                    verdict = "direct_draft_resend_averted",
+                                    "the message is in the transcript outside the send's window; not sending it again");
+                                break "direct_draft_confirmed_by_transcript";
+                            }
                             redelivered_at = Some(now_f64());
+                            resend_evidence(&name, &text, sent_at);
                             tracing::warn!(session = %name, preview = %chars_truncate(&text, 80), measured = true, n_considered = 1,
                                 verdict = "direct_draft_lost_redelivering",
                                 "the composer is empty but the live transcript never got the message; sending it again, once");
@@ -15353,6 +15803,8 @@ async fn startup_shell_command(
     );
     result
 }
+
+const TMUX_UNANSWERED_START: &str = "tmux did not answer; worker left as it is, try again shortly";
 
 fn shell_start_failed(name: &str, error: &str) -> (bool, String) {
     update_meta(
@@ -16059,8 +16511,15 @@ pub(crate) async fn start_session(
         );
     }
     note_project_env_ignored(name, &cfg);
-    if is_running(name).await {
-        return (true, "already running".into());
+    match running_measured(name).await {
+        Some(true) => return (true, "already running".into()),
+        Some(false) => {}
+        None => {
+            tracing::warn!(session = name, caller, measured = false, n_considered = 1,
+                verdict = "start_held_tmux_unanswered",
+                "tmux did not answer, so the start left the worker as it is");
+            return (false, TMUX_UNANSWERED_START.into());
+        }
     }
     if cfg.get("CC_ARCHIVED") == Some("1") {
         return (false, "session is archived; wake it first".into());
@@ -16497,6 +16956,8 @@ pub(crate) async fn start_session(
             }
         }
         session_flag = claude_session_flag(name, &conv_id, resumable);
+        let lost = conversation_lost_reason(&conv_id, resumable, meta_i64(&meta, "start_count"));
+        note_conversation_lost(name, &mut meta, lost);
     }
     let defaults = EnvFile::load(&home().join("defaults.env"));
     let default_flags = defaults.get_or("CC_DEFAULT_FLAGS", "").to_string();
@@ -16943,6 +17404,12 @@ pub(crate) async fn start_session(
     for (key, value) in &harness_env {
         shell_rc.push_str(&format!("export {key}={}; ", sh_quote(value)));
     }
+    if let Some(rc) = private_server_git_rc(&home(), &claude_home()) {
+        shell_rc.push_str(&rc);
+        tracing::info!(session = name, home = %home().display(), measured = true, n_considered = 1,
+            verdict = "worker_git_credentials_scrubbed",
+            "a worker of a non-primary server launched without the owner's git or GitHub credentials");
+    }
     if !isolated {
         shell_rc.push_str(WORKER_SYSTEM_PATH_RC);
         if !std::env::var("PATH").unwrap_or_default().split(':').any(|d| d == "/usr/sbin") {
@@ -17092,7 +17559,13 @@ pub(crate) async fn start_session(
     };
 
     let tmux_sess = tmux_name(name);
-    let tmux_exists = tmux_sessions_set().await.contains(&tmux_sess);
+    let Some(tmux_sessions) = tmux_sessions_measured().await else {
+        tracing::warn!(session = name, caller, measured = false, n_considered = 1,
+            verdict = "start_held_tmux_unanswered",
+            "tmux stopped answering during the start, so the worker was left as it is");
+        return shell_start_failed(name, TMUX_UNANSWERED_START);
+    };
+    let tmux_exists = tmux_sessions.contains(&tmux_sess);
     if tmux_exists {
         // A stopped worker keeps its tmux session and shell. Updating
         // server.env and pressing Start must not reuse the credentials that
@@ -17222,6 +17695,17 @@ pub(crate) async fn start_session(
     if tmux_exists {
         // Reuse the surviving tmux session (py:24589).
         let output = tmux_capture(name, 10).await;
+        // Everything below interrupts or kills the pane. The is_running check at
+        // the top said this worker was gone, so a visible agent with a live
+        // process is a disagreement, and the process table wins.
+        if agent_ui_visible(&strip_ansi(&output)) && pane_has_live_child(name).await == Some(true)
+        {
+            tracing::warn!(session = name, caller, measured = true, n_considered = 1,
+                verdict = "start_found_live_worker",
+                "start found the agent alive in its pane; left it running");
+            update_meta(name, &[("boot_readiness_pending", json!(false))]);
+            return (true, "already running".into());
+        }
         if at_shell_prompt(&strip_ansi(&output)) {
             send_key(name, "C-c").await;
             sleep_ms(100).await;
@@ -17532,6 +18016,7 @@ pub(crate) async fn start_session(
             // --resume failed: fresh start with --name (py:24762).
             meta.remove("cc_session_name");
             meta.remove("cc_conversation_id");
+            note_conversation_lost(name, &mut meta, Some("resume_failed"));
             save_meta(name, &meta);
             send_key(name, "C-c").await;
             sleep_ms(100).await;
@@ -18794,6 +19279,26 @@ pub(crate) async fn dispose_verified_worker_terminal(name: &str) {
 
 /// py:25055 archive_session — scrollback→log, stop, kill tmux, CC_ARCHIVED=1,
 /// card cascade.
+/// A lane with a `_amux_workers` row keeps its `lifecycle` in step with the
+/// env file's CC_ARCHIVED, so the two records of "archived" cannot disagree
+/// (implicit state machines inventory 2026-10-31, #4). Guarded on the prior
+/// lifecycle: a paused or deleted row is left as it is.
+async fn sync_worker_row_archived(state: &AppState, name: &str, archived: bool) {
+    let n = name.to_string();
+    let (from, to) = if archived { ("active", "archived") } else { ("archived", "active") };
+    let r = state.store.write_async(move |conn| {
+        let k = conn.execute("UPDATE _amux_workers SET lifecycle = ?2 WHERE display_name = ?1 AND lifecycle = ?3",
+            rusqlite::params![n, to, from])?;
+        Ok(crate::db::WriteOutcome { applied: k > 0, events: vec![] })
+    }).await;
+    if let Ok(o) = r {
+        if o.applied {
+            tracing::info!(session = name, to, verdict = "worker_row_lifecycle_synced", measured = true, n_considered = 1,
+                "the worker row's lifecycle followed the lane's archive flag");
+        }
+    }
+}
+
 async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     let f = env_path(name);
     if !f.exists() {
@@ -18853,6 +19358,7 @@ async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     if cfg.write(&f).is_err() {
         return (false, "could not write session env".into());
     }
+    sync_worker_row_archived(state, name, true).await;
     archive_session_issues(state, name, 1).await;
     let paused = pause_retired_worker_schedules(state, name, "archived").await;
     (true, format!("archived; {}", crate::runtime_jobs::schedule_lifecycle::retired_sentence(&paused)))
@@ -19258,6 +19764,7 @@ async fn wake_session(state: &AppState, name: &str) -> (bool, String) {
     if cfg.write(&f).is_err() {
         return (false, "could not write session env".into());
     }
+    sync_worker_row_archived(state, name, false).await;
     archive_session_issues(state, name, 0).await;
     // WAKE BRINGS A WORKER BACK, INCLUDING FROM A PAUSE. Archiving usually
     // happens to a paused worker, so CC_PAUSED rides along into the archive,
@@ -20296,51 +20803,50 @@ fn peek_render(mut resp: Value, path: &str, steps: &[&str]) -> Value {
     resp
 }
 
-async fn peek_response_at(
-    name: &str,
-    lines: i64,
-    live_only: bool,
-    no_trim: bool,
-    table_cols: usize,
-) -> Value {
+/// The live=1 frame: the pane's screen only, no history. `None` when tmux did
+/// not answer within [`LIVE_CAPTURE_TIMEOUT`]; the caller says so rather than
+/// sending "(no output)", which reads as a pane that is really empty.
+async fn peek_live_response(name: &str, lines: i64, no_trim: bool) -> Option<Value> {
     let provider = provider_of(&parse_env(name));
-    if live_only {
-        let output = strip_scroll_pill(&tmux_capture(name, lines).await);
-        let live = if output.is_empty() {
-            String::new()
-        } else {
-            strip_launch_noise(output.trim())
-        };
-        // The live=1 trim needs the transcript the CLIENT is displaying; the
-        // rust origin re-renders it (bounded) instead of a process cache.
-        let mut trimmed = false;
-        let live = if !live.is_empty() && !no_trim && provider == "claude" {
-            let tr = render_session_transcript(name, 120_000);
-            if tr.is_empty() {
-                live
-            } else {
-                trimmed = true;
-                trim_live_overlap(&tr, &live)
-            }
-        } else {
+    let output = strip_scroll_pill(&tmux_capture_within(name, lines, LIVE_CAPTURE_TIMEOUT).await?);
+    let live = if output.is_empty() {
+        String::new()
+    } else {
+        strip_launch_noise(output.trim())
+    };
+    // The live=1 trim needs the transcript the CLIENT is displaying; the
+    // rust origin re-renders it (bounded) instead of a process cache.
+    let mut trimmed = false;
+    let live = if !live.is_empty() && !no_trim && provider == "claude" {
+        let tr = render_session_transcript(name, 120_000);
+        if tr.is_empty() {
             live
-        };
-        let lv = if live.is_empty() {
-            "(no output)".to_string()
         } else {
-            collapse_blank_runs(&live)
-        };
-        let mut steps = vec!["tmux-capture", "strip-scroll-pill", "strip-launch-noise"];
-        if trimmed {
-            steps.push("trim-live-overlap");
+            trimmed = true;
+            trim_live_overlap(&tr, &live)
         }
-        steps.push("collapse-blank-runs");
-        return peek_render(
-            json!({"name": name, "live_only": true, "live": lv, "output": lv}),
-            "tmux-live",
-            &steps,
-        );
+    } else {
+        live
+    };
+    let lv = if live.is_empty() {
+        "(no output)".to_string()
+    } else {
+        collapse_blank_runs(&live)
+    };
+    let mut steps = vec!["tmux-capture", "strip-scroll-pill", "strip-launch-noise"];
+    if trimmed {
+        steps.push("trim-live-overlap");
     }
+    steps.push("collapse-blank-runs");
+    Some(peek_render(
+        json!({"name": name, "live_only": true, "live": lv, "output": lv}),
+        "tmux-live",
+        &steps,
+    ))
+}
+
+async fn peek_response_at(name: &str, lines: i64, table_cols: usize) -> Value {
+    let provider = provider_of(&parse_env(name));
     let mut output = strip_scroll_pill(&tmux_capture(name, lines).await);
     if provider == "gemini" {
         output = clean_gemini_frame(&tmux_capture(name, 0).await);
@@ -20667,15 +21173,20 @@ const MEM_TOPIC_FILE: &str = "amux-api.md";
 /// this string is written into every worker's MEMORY.md: the two prose lines
 /// shipped indented by nine spaces, and so did the table HEADER, which in
 /// markdown is an indented code block and breaks the table it heads (AMUX-3810).
-const FLEET_ROSTER_HEADER: &str = "\n## Fleet — who else is running (auto-generated, do not edit)\n\n\
-     Every live worker, INCLUDING YOU ($AMUX_SESSION). Message a peer with `amux send <name> --stdin`; \
-     wait on a peer's event with `amux signal wait <CARD> <name>` (the peer clears it with `amux signal raise <name>`). Models and workspaces: `amux ls`.\n\n\
+const FLEET_ROSTER_HEADER: &str = "\n## Workers you can reach (auto-generated, do not edit)\n\n\
+     You, and every worker you may message: those sharing a group with you, members of groups open \
+     to every worker, and peers the owner paired with you. Workers outside these are not listed, \
+     because you cannot message them; work for them goes through the owner. Message one with \
+     `amux send <name> --stdin`; wait on a peer's event with `amux signal wait <CARD> <name>` (the \
+     peer clears it with `amux signal raise <name>`).\n\n\
      | worker | groups | description |\n|---|---|---|\n";
 
 /// The fleet roster every worker gets, regenerated on each write.
 ///
 /// Ethan: "make sure all workers are always aware of each others: name, groups,
-/// and descriptions so they can auto discover".
+/// and descriptions so they can auto discover". Narrowed 2026-10-31 ("workers
+/// shouldnt even be aware of workers outside their group/peer right?"): each
+/// worker now sees the workers it can reach (reachable_roster).
 ///
 /// It goes into MEMORY.md — the file the session already reads by default —
 /// rather than behind an endpoint, because a roster you have to know to fetch
@@ -20773,7 +21284,8 @@ fn credential_preflight_from(n: usize, gaps: &[(&'static str, Vec<&'static str>)
     out
 }
 
-fn fleet_roster() -> String {
+/// Every worker's name and env map, the input to the roster.
+fn roster_lanes() -> Vec<(String, std::collections::HashMap<String, String>)> {
     let mut lanes: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(sessions_dir()) {
         let mut names: Vec<String> = rd
@@ -20784,23 +21296,44 @@ fn fleet_roster() -> String {
             .collect();
         names.sort();
         for other in names {
-            // NO SELF-EXCLUSION (AMUX-2831). MEMORY.md is keyed on the PROJECT
-            // DIRECTORY, not the lane, so a shared checkout has ONE file for
-            // every lane in it — 17 lanes share ~/Dev/mixpeek. A roster that
-            // omitted "me" was therefore correct for exactly one reader (the
-            // lane that wrote last) and wrong for the other sixteen, who read a
-            // list including themselves and omitting the writer. Last-writer-wins,
-            // which is this card's subject, and my own feature was an instance.
-            //
-            // Listing everyone is the only shape true for every reader of a
-            // shared file. A lane identifies itself by $AMUX_SESSION, which it
-            // always has; the file cannot know who is reading it.
             let env = crate::config::parse_env_file(&sessions_dir().join(format!("{other}.env")));
             lanes.push((other, env.into_iter().collect()));
         }
     }
+    lanes
+}
+
+/// The roster `me` sees: itself and the workers it may message.
+///
+/// PER READER, IN THE WORKER'S OWN CONTEXT (owner, 2026-10-31). The roster
+/// used to list every live worker in MEMORY.md, which Claude Code keys on the
+/// project directory: 17 lanes in ~/Dev/mixpeek read one file, so a per-reader
+/// list was impossible there (AMUX-2831). mxp-gs12 read mixpeek-vision in that
+/// table, messaged it, and was refused at the group boundary. The scoped
+/// context file (compose_worker_context) is per worker, so the list can be
+/// exactly the reach the send check allows.
+fn reachable_roster(me: &str) -> String {
+    let lanes = roster_lanes();
     let open = super::worker_messaging::all_open_inbound_groups(&crate::config::amux_home());
-    render_fleet_roster(&lanes, &open)
+    let mine = reachable_lanes(me, &lanes);
+    tracing::debug!(session = %me, listed = mine.len(), n_considered = lanes.len(), measured = true,
+        verdict = "roster_composed", "a worker's roster lists the workers it can reach");
+    render_fleet_roster(&mine, &open)
+}
+
+/// The lanes `me` may message, plus `me`, by the send check itself
+/// (peer_input_refusal: receive policy, owner grants, CC_PEERS pairs, shared and
+/// open groups, and the admin group's owner reach), so the roster cannot list a
+/// worker the send would refuse. A parser of its own here split CC_TAGS on
+/// spaces where the send check splits on commas, and listed every worker for
+/// `CC_TAGS="admin ops"`, which the send check does not read as admin (land review F1).
+fn reachable_lanes(
+    me: &str,
+    lanes: &[(String, std::collections::HashMap<String, String>)],
+) -> Vec<(String, std::collections::HashMap<String, String>)> {
+    super::worker_messaging::without_refusal_logs(|| {
+        lanes.iter().filter(|(n, _)| n == me || peer_input_refusal(me, n).is_none()).cloned().collect()
+    })
 }
 
 /// The longest description the roster prints. Descriptions are meant to be one
@@ -20924,7 +21457,7 @@ fn roster_footer(n: usize) -> String {
             workers they share a group with.", open.join(", "))
     };
     format!(
-        "\n{n} discoverable peer worker(s). {WORKER_MESSAGING_POLICY}{open_line} Members of the \
+        "\n{n} worker(s) listed, you included. {WORKER_MESSAGING_POLICY}{open_line} Members of the \
          `{ADMIN_GROUP}` group act with the owner's reach and may message any worker, isolated ones \
          included. To reach a worker outside \
          your groups, ask the owner (the owner can put you in a shared group); a \
@@ -20963,10 +21496,18 @@ pub(crate) fn refresh_fleet_rosters() -> usize {
         if parse_env(name).get("CC_ARCHIVED") == Some("1") {
             continue;
         }
+        // The roster lives in each worker's scoped context: rewrite it, so the
+        // worker's next start sees its reach as it is now. An isolated worker
+        // gets no roster.
+        if !session_is_isolated(name) && !write_worker_context_file(name, &compose_worker_context(name, false)) {
+            tracing::warn!(session = %name, measured = true, n_considered = 1, verdict = "roster_context_not_written",
+                "a worker's scoped context (with its roster) could not be rewritten");
+        }
         let wd = session_work_dir(name);
         if wd.is_empty() {
             continue; // no project dir means no MEMORY.md to compose into
         }
+        // Still rewritten: that also drops the old fleet-wide roster from it.
         write_claude_memory(name, &wd);
         n += 1;
     }
@@ -21306,13 +21847,15 @@ fn write_claude_memory(name: &str, work_dir: &str) {
     // the two (AF-372). Standing approvals now travel with each lane's launch
     // (`compose_lane_context`), so each lane sees its own rather than the last
     // writer's (AMUX-5270's purpose, without the shared-file defect).
+    // No roster here any more: this file is shared by every lane in the
+    // directory, and each lane may see only the workers it can reach. The
+    // roster rides in the worker's own scoped context (reachable_roster).
     let creds = credential_preflight();
-    let roster = fleet_roster();
-    let composed = composed + &preserved + &creds + &roster;
+    let composed = composed + &preserved + &creds;
     let bytes = composed.len();
     if bytes > MEMORY_BUDGET_BYTES {
         tracing::warn!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES,
-            pointers = preserved.len(), credentials = creds.len(), roster = roster.len(), measured = true,
+            pointers = preserved.len(), credentials = creds.len(), measured = true,
             n_considered = 1, verdict = "memory_over_budget", "shared MEMORY.md is over its byte budget (contract rule 13)");
     } else {
         tracing::debug!(dir = %claude_mem_dir.display(), bytes, budget = MEMORY_BUDGET_BYTES, measured = true,
@@ -25074,7 +25617,7 @@ fn settle_interrupted_receipts(conn: &rusqlite::Connection) -> rusqlite::Result<
                 conn.execute(
                     "UPDATE cmd_history SET delivery='queued', submit_verdict='confirmed', \
                      delivered_at=CAST((SELECT delivered_at FROM steering_history WHERE id=?1) * 1000 AS INTEGER) \
-                     WHERE queue_id=?1",
+                     WHERE queue_id=?1 AND delivery='uncertain'",
                     [&id],
                 )?;
                 tracing::info!(steer_id = %id, session = %session, verdict = "interrupted_receipt_confirmed",
@@ -30080,7 +30623,13 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     // and an isolated lane receives the owner's text untouched. The note goes
     // on the DELIVERED text; the history row keeps the original words and
     // records the link in `repeat_of`.
-    let repeat = if matches!(send_origin, SendOrigin::Owner) && !isolated {
+    //
+    // NOTHING GOES IN FRONT OF A SLASH COMMAND. On mixpeek-dev (2026-10-31
+    // 19:44-19:52Z) re-sending the same `/goal` text put this note first, so
+    // the message no longer started with the command, went in as one paste
+    // and never registered. The worker's goal-guard stopgap typed it by hand.
+    let plain_message = !is_slash_command(&orig_text);
+    let repeat = if matches!(send_origin, SendOrigin::Owner) && !isolated && plain_message {
         super::repeat_ask::lookup(state, name, &orig_text).await
     } else {
         None
@@ -30100,7 +30649,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     let elsewhere_json = elsewhere.as_ref().map(|(id, lane, ts)| {
         json!({"id": format!("MSG-{id}"), "session": lane, "age_s": (now_i64() * 1000 - ts).max(0) / 1000})
     });
-    if let (Some((id, lane, ts)), false) = (elsewhere.as_ref(), isolated) {
+    if let (Some((id, lane, ts)), false) = (elsewhere.as_ref(), isolated || !plain_message) {
         text = format!("{}{text}", super::repeat_ask::note_elsewhere(*id, lane, *ts, now_i64() * 1000));
     }
     // OWNER @-MENTION GRANTS (api/mention_grants.rs). Only the owner's own
@@ -30116,7 +30665,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             valid_session_name(w) && env_path(w).exists()
         });
         let made = super::mention_grants::record(&crate::config::amux_home(), name, &mentioned, now_f64() as i64);
-        if !made.is_empty() && !isolated {
+        if !made.is_empty() && !isolated && plain_message {
             text.push_str(&super::mention_grants::delivery_note(&made));
         }
     }
@@ -30178,6 +30727,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
         );
     }
     let mut queue_id = None;
+    let goal_sent_at = now_f64();
     let (ok, msg) = if let Some(h) = hold.as_ref() {
         // EMPTY guard, the sender recorded: this is a verified peer's own
         // words, not an automated producer, so the AMUX-4574 refusal of
@@ -30480,6 +31030,10 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     let mut resp = json!({"ok": ok, "message": msg, "id": send_id});
     if let Some(e) = elsewhere_json {
         resp["same_request_elsewhere"] = e;
+    }
+    if ok && super::goal_loop::sets_goal(&orig_text) {
+        resp["goal_registration"] = json!("watching");
+        super::goal_loop::watch_goal_registration(state.clone(), name.to_string(), goal_sent_at);
     }
     if let (true, Some(h)) = (ok, hold.as_ref()) {
         // AMUX-5237: the fields a sender (and `amux send`) reads to know the
@@ -31895,6 +32449,8 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
     let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}");
+    let roster = reachable_roster(name);
+    let block = if roster.is_empty() { block } else { format!("{block}\n{roster}") };
     let velocity = crate::api::velocity::context_section(name);
     let block = if velocity.is_empty() { block } else { format!("{block}\n\n{velocity}") };
     let file = worker_rules_file(name);
@@ -32186,7 +32742,29 @@ pub(crate) async fn peek_verb(state: &AppState, name: &str, qs: &[(String, Strin
     // that function has six return points (live_only, alt-screen, normal,
     // short-output, empty…) and a key added to one of them is a key the
     // reader cannot rely on. One injection site covers every shape.
-    let mut resp = peek_response_at(name, lines, live_only, no_trim, table_cols).await;
+    let mut resp = if live_only {
+        let started = std::time::Instant::now();
+        match peek_live_response(name, lines, no_trim).await {
+            Some(v) => v,
+            None => {
+                // The dashboard keeps its last frame on a non-2xx, and the
+                // request log records a failure at its real duration rather
+                // than a 200 whose length is the timeout (AMUX-3709).
+                tracing::warn!(session = name, budget_ms = LIVE_CAPTURE_TIMEOUT.as_millis() as u64,
+                    elapsed_ms = started.elapsed().as_millis() as u64, measured = true, n_considered = 1,
+                    verdict = "live_capture_timeout",
+                    "live peek: tmux did not answer capture-pane within its budget; no frame sent (AF-1165)");
+                return jresp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error": "tmux did not answer within the live peek budget",
+                           "verdict": "live_capture_timeout", "name": name,
+                           "budget_ms": LIVE_CAPTURE_TIMEOUT.as_millis() as u64}),
+                );
+            }
+        }
+    } else {
+        peek_response_at(name, lines, table_cols).await
+    };
     if let (Some((cols, rows)), Some(obj)) = (tmux_pane_geometry(name).await, resp.as_object_mut())
     {
         obj.insert("pane_cols".into(), json!(cols));
@@ -33124,6 +33702,24 @@ pub(crate) fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> 
     Some(hit)
 }
 
+/// At most one walk of `projects` per conversation a minute. The walk is one
+/// stat per project directory (8,262 on 2026-11-01) and a worker whose report
+/// names a transcript that is not on disk repeated it on every fleet build:
+/// these stats were 83% of `build_array`, which held every signal that does not
+/// come from a hook 6-12 s behind.
+fn transcript_walk_due(id: &str, now: std::time::Instant) -> bool {
+    static WALKED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+    let mut walked = WALKED.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if walked.get(id).is_some_and(|at| now.duration_since(*at) < EVERY) {
+        return false;
+    }
+    walked.retain(|_, at| now.duration_since(*at) < EVERY);
+    walked.insert(id.to_string(), now);
+    true
+}
+
 /// Known launch directories first, then the id itself: it is a UUID, so a
 /// match anywhere under `projects` is this conversation. The bool says the
 /// fallback was needed.
@@ -33134,6 +33730,9 @@ fn find_transcript(projects: &std::path::Path, bases: &[String], id: &str) -> Op
         if path.exists() {
             return Some((path, false));
         }
+    }
+    if !transcript_walk_due(id, std::time::Instant::now()) {
+        return None;
     }
     std::fs::read_dir(projects).ok()?.flatten().map(|e| e.path().join(&file)).find(|p| p.exists()).map(|p| (p, true))
 }
@@ -33880,6 +34479,7 @@ pub(crate) async fn report_post(
             // builder catches up; runtime status may be stale during that
             // revalidation, but membership/isolation never is.
             crate::api::sessions_legacy::invalidate_sessions_runtime_cache();
+            crate::api::sessions_legacy::note_status_report(&name_s, &st2, now_f64());
             // SNAPPY STATUS (Ethan, 2026-08-16). A self-report is the fast, durable
             // signal for active/idle/needs-input (the D1 exit), but this write used
             // events:vec![], so a hook state change pushed NO SSE and the dashboard
@@ -36044,13 +36644,16 @@ async fn config_patch_with_liveness(
     // one env write: steering, planning, pickup, continue, their master and
     // backlog refill. `null` removes all six worker overrides. The response's
     // `board_enabled` is the RESOLVED steering switch, because with steering
-    // off the board only keeps records whatever the others say.
+    // off the board is not used at all, whatever the others say (board_unused_in).
     if let Some(v) = body.get("board_enabled") {
         let keys = [
             super::board_lifecycle::FORCE_ADHERENCE_KEY,
             super::board_lifecycle::DECOMPOSE_KEY,
             "CC_AUTO_PICKUP",
             BOARD_CONTINUE_KEY,
+            // The legacy spelling of Keep going: left at 1, it kept a
+            // switched-off worker's board in use (2026-10-31).
+            "CC_AUTO_CONTINUE",
             "CC_STANDING_ORDERS",
             crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY,
         ];
@@ -36704,6 +37307,30 @@ fn getrandom_fill(buf: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
+    /// The frame on mixpeek-dev, 2026-11-02: a working lane with subagents.
+    #[test]
+    fn a_working_lane_with_an_agent_list_is_not_at_a_shell_prompt() {
+        let frame = "\u{273b} Flowing\u{2026} (3m 50s \u{b7} 6.6k tokens)\n\
+\u{2500}\u{2500}\u{2500}\u{2500}\n\u{276f} \n\u{2500}\u{2500}\u{2500}\u{2500}\n  amux \u{b7} wk 47%\n\
+  \u{23f5}\u{23f5} bypass permissions on \u{b7} 2 shells\n\n  \u{25cf} main\n\
+  \u{25ef} general-purpose  Correcting Vision trailer\n  \u{25ef} general-purpose  Reading evaluator.py";
+        assert!(agent_ui_visible(frame), "the footer above the agent list is visible");
+        assert!(!at_shell_prompt(frame));
+        assert!(!at_shell_prompt("  amux \u{b7} wk 47%"), "a usage meter is not a prompt");
+        assert!(at_shell_prompt("ethan@mixpeek-dev ~ %"), "a real zsh prompt still reads as one");
+        assert!(at_shell_prompt("amux$ "), "and a bash one");
+    }
+
+    #[test]
+    fn a_missing_transcript_walks_the_projects_once_a_minute() {
+        let t = std::time::Instant::now();
+        let id = "walk-test-conversation";
+        assert!(transcript_walk_due(id, t));
+        assert!(!transcript_walk_due(id, t + std::time::Duration::from_secs(59)));
+        assert!(transcript_walk_due("walk-test-other", t), "per conversation");
+        assert!(transcript_walk_due(id, t + std::time::Duration::from_secs(60)));
+    }
+
     #[test]
     fn codex_latest_message_reads_real_rollout_text_and_skips_later_tools() {
         let records = vec![
@@ -40214,6 +40841,16 @@ mod tests {
             },
             dir,
         )
+    }
+
+    #[test]
+    fn a_reservation_from_before_this_boot_is_uncertain_at_once() {
+        let boot = Some(1_000.5);
+        assert!(acceptance_is_uncertain(1_001, 999, boot), "its request died with the old process");
+        assert!(!acceptance_is_uncertain(1_001, 1_000, boot), "made this boot, still in flight");
+        assert!(!acceptance_is_uncertain(1_100, 1_000, boot));
+        assert!(acceptance_is_uncertain(1_121, 1_000, boot), "the 120 s line still holds");
+        assert!(!acceptance_is_uncertain(1_001, 999, None), "no boot time, no claim");
     }
 
     #[tokio::test]
@@ -45015,6 +45652,23 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     }
 
     #[test]
+    fn a_transcript_title_is_read_again_only_when_the_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let jf = dir.path().join("t.jsonl");
+        std::fs::write(&jf, "{\"customTitle\":\"aaa\"}\n").unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("aaa"));
+        // Same size and mtime with other bytes: only a remembered name says aaa.
+        let mtime = std::fs::metadata(&jf).unwrap().modified().unwrap();
+        std::fs::write(&jf, "{\"customTitle\":\"bbb\"}\n").unwrap();
+        let f = std::fs::File::options().write(true).open(&jf).unwrap();
+        f.set_modified(mtime).unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("aaa"));
+        // Any change to the file reads it again.
+        f.set_modified(mtime + std::time::Duration::from_secs(1)).unwrap();
+        assert_eq!(transcript_display_name(&jf).as_deref(), Some("bbb"));
+    }
+
+    #[test]
     fn transcript_display_name_takes_the_latest_record_not_the_first() {
         // A claude transcript is append-only: `--name` writes a NEW record and
         // line 0 keeps the birth name for the life of the file. Reading line 0
@@ -47033,7 +47687,10 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         };
         let response = post_dispatch(&state, &name, "stop", &HeaderMap::new(), &json!({})).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // A clean Stop takes about 4 s here, so 5 s failed under any contention
+        // (three land gates, 2026-11-01). The fixture's child lives 120 s, so
+        // 15 s still tells a Stop that waited on the composer from one that didn't.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let stopped = state.store.read().unwrap().query_row(
                 "SELECT count(*) FROM session_events WHERE session=?1 AND type='session.stopped'", [&name], |r|r.get::<_,i64>(0)).unwrap_or(0);
@@ -47063,7 +47720,7 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         .unwrap();
         // No provider process/alternate screen. A fresh or stopped worker is
         // still the same conversation surface, with measured empty history.
-        let body = peek_response_at(&name, 300, false, false, 100).await;
+        let body = peek_response_at(&name, 300, 100).await;
         assert_eq!(body["name"], name);
         assert_eq!(body["history"], "");
         assert_eq!(body["history_lines"], 0);
@@ -50956,7 +51613,11 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert_eq!(empty_composer_verdict(210.0, 190.0, Some(200.0), true), Wait);
         assert_eq!(empty_composer_verdict(231.0, 190.0, Some(200.0), true), Lost);
         // No live transcript: nothing proves it lost, and nothing is resent.
-        assert_eq!(empty_composer_verdict(200.0, 190.0, None, false), LeftUnverified);
+        // AF-1089: no live transcript keeps watching through the restore window,
+        // so a message Claude Code puts back in the box is still submitted.
+        assert_eq!(empty_composer_verdict(200.0, 190.0, None, false), Wait);
+        assert_eq!(empty_composer_verdict(190.0 + RESTORE_WINDOW_S - 1.0, 190.0, None, false), Wait);
+        assert_eq!(empty_composer_verdict(190.0 + RESTORE_WINDOW_S, 190.0, None, false), LeftUnverified);
     }
 
     #[test]
@@ -50981,6 +51642,60 @@ with open(sys.argv[3],'ab',buffering=0) as log:
         assert!(body.contains(r#"break "direct_draft_lost""#), "and named lost if it still does not arrive");
         let resolved = &body[body.find("held direct message resolved").unwrap().saturating_sub(400)..];
         assert!(!resolved[..400].contains("direct_draft_lost"), "lost is never logged as resolved");
+    }
+
+    #[test]
+    fn a_prompt_behind_large_attachments_is_still_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let text = "Add a footer";
+        let prompt = json!({"type": "user", "timestamp": "2026-11-01T20:44:08.038Z", "message": {"role": "user", "content": text}});
+        let big = json!({"type": "attachment", "timestamp": "2026-11-01T20:44:09.000Z", "attachment": {"type": "skill_listing", "body": "x".repeat(130_000)}});
+        let mut body = prompt.to_string() + "\n";
+        for _ in 0..5 {
+            body.push_str(&big.to_string());
+            body.push('\n');
+        }
+        std::fs::write(&path, body).unwrap();
+        let at = parse_iso8601("2026-11-01T20:44:08.000Z").unwrap();
+        assert!(!submission_records_have(&iter_jsonl_tail(&path, 262_144), text, at), "the old window could not see it");
+        assert!(submission_records_have(&iter_jsonl_tail(&path, SUBMISSION_TAIL_BYTES), text, at));
+    }
+
+    #[test]
+    fn a_resend_first_looks_for_the_text_before_the_sends_window() {
+        let src = include_str!("session_verbs.rs");
+        let body = &src[src.find("fn spawn_direct_draft_idle_submit(").unwrap()..];
+        let look = body.find("sent_at - RESEND_LOOKBACK_S").unwrap();
+        let send = body.find("paste_into_composer(&name, &close_trailing_mention(&text))").unwrap();
+        assert!(look < send, "the last look comes before the second copy");
+        let text = "Add a footer";
+        let rec = json!({"type": "user", "timestamp": "2026-11-01T20:44:08.038Z", "message": {"role": "user", "content": text}});
+        let at = parse_iso8601("2026-11-01T20:45:00.000Z").unwrap();
+        assert!(!submission_records_have(std::slice::from_ref(&rec), text, at), "outside the send's window");
+        assert!(submission_records_have(std::slice::from_ref(&rec), text, at - RESEND_LOOKBACK_S), "inside the last look");
+    }
+
+    #[test]
+    fn only_the_workers_own_conversation_can_say_a_message_is_missing() {
+        let own = Path::new("/p/abc-123.jsonl");
+        assert!(transcript_file_is("abc-123", own));
+        assert!(!transcript_file_is("", own), "no bound conversation: a guess");
+        assert!(!transcript_file_is("other", own), "a peer's transcript");
+    }
+
+    #[test]
+    fn a_message_queued_to_a_busy_worker_counts_as_delivered() {
+        let text = "[amux] Idle with AMUX-1 in 'doing'";
+        let wrapped = format!("<pasted_content id=\"7008\">\n{text}\n</pasted_content id=\"7008\">");
+        let since = parse_iso8601("2026-11-01T15:49:51.000Z").unwrap();
+        let enqueue = json!({"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-01T15:49:56.002Z", "content": wrapped});
+        let attachment = json!({"type": "attachment", "timestamp": "2026-11-01T15:49:51.812Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
+        assert!(submission_records_have(std::slice::from_ref(&enqueue), text, since), "a wrapped enqueue");
+        assert!(submission_records_have(&[attachment], text, since), "the attachment");
+        assert!(!submission_records_have(&[enqueue], "another message entirely", since));
+        let old = json!({"type": "attachment", "timestamp": "2026-11-01T15:40:00.000Z", "attachment": {"type": "queued_command", "prompt": wrapped}});
+        assert!(!submission_records_have(&[old], text, since), "an earlier copy of the same nudge is not this delivery");
     }
 
     #[test]
@@ -52154,6 +52869,31 @@ mod steer_freeze_tests {
     }
 
     #[test]
+    fn a_conversation_miss_survives_in_the_file_a_restart_reads() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let id = format!("gone-{}", ulid::Ulid::new());
+        assert!(!conversation_miss_is_cached(&id));
+        assert!(remember_conversation_miss(&id), "the first miss logs");
+        assert!(conversation_miss_is_cached(&id));
+        assert!(!remember_conversation_miss(&id), "a repeat stays quiet");
+        let saved: ConversationMisses = serde_json::from_slice(
+            &std::fs::read(home.path().join("transcript-misses.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved[&id].1, 1200, "the file holds the doubled wait");
+    }
+
+    #[test]
+    fn a_missing_conversation_waits_longer_each_time_up_to_six_hours() {
+        let minutes = |m: u64| std::time::Duration::from_secs(m * 60);
+        assert_eq!(next_miss_wait(None), minutes(10));
+        assert_eq!(next_miss_wait(Some(minutes(10))), minutes(20));
+        assert_eq!(next_miss_wait(Some(minutes(200))), minutes(360));
+        assert_eq!(next_miss_wait(Some(minutes(360))), minutes(360));
+    }
+
+    #[test]
     fn a_conversation_is_found_under_whichever_project_holds_it() {
         let d = tempfile::tempdir().unwrap();
         let projects = d.path();
@@ -52166,6 +52906,28 @@ mod steer_freeze_tests {
             "a lane whose cc_cwd is a subdirectory still resolves to its own transcript");
         assert_eq!(find_conversation_jsonl(projects, "missing"), None);
         assert_eq!(find_conversation_jsonl(projects, "../x"), None);
+    }
+
+    /// RCA 20261031-164721: the walk ran again on every sessions-list build.
+    /// A find is remembered; a moved transcript is found again.
+    #[test]
+    fn a_found_conversation_is_not_searched_for_again() {
+        let d = tempfile::tempdir().unwrap();
+        let projects = d.path();
+        for i in 0..50 {
+            std::fs::create_dir_all(projects.join(format!("-p{i}"))).unwrap();
+        }
+        let want = projects.join("-p37").join("cafe1234.jsonl");
+        std::fs::write(&want, "{}").unwrap();
+        let hits = std::sync::Mutex::new(ConversationHits::new());
+        assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(want.clone()), true), "the first find walks");
+        for _ in 0..5 {
+            assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(want.clone()), false), "later finds do not");
+        }
+        let moved = projects.join("-p3").join("cafe1234.jsonl");
+        std::fs::rename(&want, &moved).unwrap();
+        assert_eq!(find_conversation_jsonl_in(projects, "cafe1234", &hits), (Some(moved), true), "a moved transcript is found again");
+        assert_eq!(find_conversation_jsonl_in(projects, "nope", &hits), (None, true));
     }
 
     #[test]
@@ -54553,7 +55315,7 @@ mod roster_tests {
         assert!(broken.lines().any(|l| l.contains("   ")));
         // And the header still says the things it exists to say.
         assert!(FLEET_ROSTER_HEADER.contains("| worker | groups | description |"));
-        assert!(FLEET_ROSTER_HEADER.contains("INCLUDING YOU"));
+        assert!(FLEET_ROSTER_HEADER.contains("Workers outside these are not listed"));
         // AMUX-5237: every worker learns the signal verbs without opting in.
         assert!(FLEET_ROSTER_HEADER.contains("amux signal wait <CARD> <name>"));
         assert!(FLEET_ROSTER_HEADER.contains("amux signal raise <name>"));
@@ -54574,32 +55336,51 @@ mod roster_tests {
         assert!(f.contains("ask the owner"), "a refused lane needs a truthful next step: {f}");
     }
 
+    /// Owner, 2026-10-31: a worker sees only the workers it can reach. The roster
+    /// and the send check agree for every pair, including tags written with
+    /// spaces, which the send check does not split (land review F1).
     #[test]
-    fn the_roster_lists_every_live_worker_because_the_file_is_shared() {
-        let r = super::fleet_roster();
-        if r.is_empty() {
-            return; // no live workers on this machine; nothing to assert
+    fn a_worker_sees_only_the_workers_it_can_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for (name, env) in [
+            ("boss", "CC_TAGS=\"admin, ops\"\nCC_DESC=the admin\n"),
+            ("spaced", "CC_TAGS=\"admin ops\"\nCC_DESC=tags with a space\n"),
+            ("gs12", "CC_TAGS=gs12\nCC_PEERS=parity\nCC_DESC=me\n"),
+            ("gs12-rows", "CC_TAGS=\"gs12, ops\"\nCC_DESC=same group\n"),
+            ("one-sided", "CC_TAGS=gtm\nCC_PEERS=gs12\nCC_DESC=names me only\n"),
+            ("parity", "CC_TAGS=customers\nCC_PEERS=gs12\nCC_DESC=paired\n"),
+            ("seo", "CC_TAGS=gtm\nCC_DESC=outside too\n"),
+        ] {
+            std::fs::write(sessions.join(format!("{name}.env")), env).unwrap();
         }
-        // It must say so, or a reader seeing its own name concludes the roster
-        // is buggy — which is what a correct shared roster looks like.
-        assert!(
-            r.contains("INCLUDING YOU"),
-            "a shared roster must tell the reader it lists them too: {r}"
-        );
-        assert!(
-            r.contains("$AMUX_SESSION"),
-            "and how to identify themselves in it: {r}"
-        );
+        let lanes = super::roster_lanes();
+        let names = |me: &str| {
+            super::reachable_lanes(me, &lanes)
+                .into_iter().map(|(n, _)| n).collect::<Vec<_>>()
+        };
+        for (me, _) in &lanes {
+            let listed = names(me);
+            for (n, _) in &lanes {
+                let reach = n == me || super::peer_input_refusal(me, n).is_none();
+                assert_eq!(listed.contains(n), reach, "{me} lists {n} only if the send check allows it: {listed:?}");
+            }
+        }
+        let gs = names("gs12");
+        assert!(gs.contains(&"gs12".to_string()), "the reader is listed: {gs:?}");
+        assert!(gs.contains(&"gs12-rows".to_string()), "a shared group: {gs:?}");
+        assert!(gs.contains(&"parity".to_string()), "a bilateral peer: {gs:?}");
+        assert!(!gs.contains(&"one-sided".to_string()), "a one-sided CC_PEERS opens nothing: {gs:?}");
+        assert!(!gs.contains(&"seo".to_string()), "outside lanes stay out: {gs:?}");
+        assert_eq!(names("boss").len(), lanes.len(), "an admin reaches, so sees, every worker");
+        assert!(names("spaced").len() < lanes.len(), "\"admin ops\" is one tag to the send check, so no admin reach");
+        let r = super::render_fleet_roster(&super::reachable_lanes("gs12", &lanes), &[]);
+        assert!(r.contains("| `gs12-rows`") && !r.contains("outside too"), "the rendered table follows the filter: {r}");
+        assert!(r.contains("Workers outside these are not listed"), "and says why others are missing: {r}");
     }
 
-    /// AMUX-4715: archiving a lane makes its live cards terminal, and
-    /// unarchiving gives them back.
-    ///
-    /// The invariant `board.archived_cards_are_terminal` fails on 969 cards
-    /// across 59 lanes because this used to flip `archived` with no status
-    /// filter. The cheap fix discards on archive and quietly makes a reversible
-    /// operation lossy; the round trip below is the property that distinguishes
-    /// the two, and it is why the column exists.
     #[test]
     fn archiving_a_lane_is_lossless_for_its_live_cards() {
         let conn = crate::db::migrate::test_memdb();
@@ -54813,20 +55594,6 @@ mod roster_tests {
         assert_ne!(some, unmeasured);
     }
 
-    /// It rides ABOVE the roster in the composed file, because a read ceiling
-    /// drops the tail and the roster is the re-derivable half.
-    #[test]
-    fn the_preflight_sits_above_the_roster() {
-        let composed = String::new() + &super::credential_preflight() + &super::fleet_roster();
-        let pre = composed.find("## Credentials").expect("preflight present");
-        if let Some(roster) = composed.find("## Fleet") {
-            assert!(
-                pre < roster,
-                "credentials must precede the roster: {pre} vs {roster}"
-            );
-        }
-    }
-
     /// Ethan, 2026-10-23: "make sure groups, names, descriptions and any other
     /// distinguishing characteristics are easily discoverable so that agents
     /// understand everyone's place". Each assertion names one rule.
@@ -54865,7 +55632,7 @@ mod roster_tests {
     /// with no rows under it, which reads as "the fleet is broken".
     #[test]
     fn a_roster_with_no_peers_is_the_empty_string() {
-        let r = super::fleet_roster();
+        let r = super::reachable_roster("no-such-worker-zz");
         assert!(
             r.is_empty() || r.contains("| `"),
             "header without rows: {r}"
@@ -57528,5 +58295,63 @@ mod refresh_fleet_shims_tests {
         assert!(refresh_fleet_shims(&dir).unwrap());
         assert_eq!(std::fs::read_to_string(dir.join("pgrep")).unwrap(), PKILL_GUARD_SHIM, "the stale pgrep shim was kept");
         assert_eq!(std::fs::read_to_string(dir.join("tmux")).unwrap(), TMUX_FLEET_SHIM);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod live_peek_budget_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const MODE: &str = "AMUX_LIVE_PEEK_BUDGET_TEST_MODE";
+
+    /// AF-1165: a stalled tmux server must cost a live peek its budget, not
+    /// CAPTURE_TIMEOUT, and must read as no frame rather than "(no output)".
+    /// Runs in a child whose PATH holds only a fake `tmux`, so it never reaches
+    /// the fleet's server. The answering case is the positive control: the same
+    /// fixture path produces a frame when tmux replies.
+    #[test]
+    fn a_stalled_tmux_ends_the_live_peek_inside_the_clients_deadline() {
+        let Ok(mode) = std::env::var(MODE) else {
+            for mode in ["stalled", "answering"] {
+                let t = tempfile::tempdir().unwrap();
+                let fake = t.path().join("tmux");
+                let script = if mode == "stalled" {
+                    "#!/bin/sh\nexec sleep 30\n"
+                } else {
+                    "#!/bin/sh\nprintf 'frame from the fake pane\\n'\n"
+                };
+                std::fs::write(&fake, script).unwrap();
+                std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+                let out = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "api::session_verbs::live_peek_budget_tests::a_stalled_tmux_ends_the_live_peek_inside_the_clients_deadline", "--nocapture"])
+                    .env(MODE, mode)
+                    .env("PATH", format!("{}:/bin:/usr/bin", t.path().display()))
+                    .env("AMUX_HOME", t.path())
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{mode}: {}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            return;
+        };
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let started = std::time::Instant::now();
+            let resp = peek_live_response("af1165-fixture", 300, true).await;
+            let elapsed = started.elapsed();
+            if mode == "stalled" {
+                assert!(resp.is_none(), "a stalled tmux must not produce a frame: {resp:?}");
+                assert!(elapsed >= LIVE_CAPTURE_TIMEOUT, "gave up early: {elapsed:?}");
+                assert!(elapsed < Duration::from_secs(3), "outlived the dashboard's 3s deadline: {elapsed:?}");
+            } else {
+                let v = resp.expect("an answering tmux produces a frame");
+                assert_eq!(v["live"], "frame from the fake pane", "{v}");
+            }
+        });
     }
 }

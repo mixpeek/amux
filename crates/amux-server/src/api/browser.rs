@@ -2436,6 +2436,29 @@ async fn stop(
             }),
         );
     }
+    // AN ATTRIBUTED STOP OF ANOTHER LANE'S BROWSER NEEDS `force` TOO
+    // (2026-11-03). amux joined mixpeek-homepage-claude's `ethan` browser in a
+    // tab of its own; a deploy restarted the server, the in-memory join
+    // registry was empty after it, and amux's stop of "its tab" fell through
+    // to here and closed the owner's whole browser. A lane that means to clean
+    // up a wedged browser it does not own says so with force.
+    if !owner_of_target.is_empty() && attrib.is_some() && attrib.as_deref() != Some(owner_of_target.as_str()) && !forced {
+        tracing::warn!(
+            stopped_by = %actor, owner = %owner_of_target, profile = %profile, pid = target_pid,
+            verdict = "browser_stop_not_owner_refused", measured = true, n_considered = 1,
+            "browser: refused a stop of another lane's browser without force"
+        );
+        return err(
+            StatusCode::CONFLICT,
+            json!({
+                "ok": false,
+                "code": "browser_stop_not_owner",
+                "error": format!("this browser belongs to {owner_of_target}, and {actor} has no joined tab in it (a joined tab is forgotten when the server restarts); stopping would close {owner_of_target}'s browser"),
+                "stopped": false,
+                "how_to_fix": "leave it running, or add \"force\": true to stop another lane's browser on purpose",
+            }),
+        );
+    }
     let owner = Some(owner_of_target);
     if let Some(o) = owner.as_deref() {
         if attrib.as_deref() != Some(o) {
@@ -3927,17 +3950,27 @@ pub(crate) fn actions_help(asked: &str) -> Value {
 /// same handlers the HTTP routes run, so ownership, scope and audit apply
 /// unchanged. Returns the reply body, or its error text for a non-2xx reply.
 pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Value) -> Result<Value, String> {
+    drive_status(state, session, verb, body).await.map_err(|(_, e)| e)
+}
+
+/// [`drive`] with the reply's status kept beside the error, so a caller can
+/// pass a refusal on as one (a 409 for a profile another session holds)
+/// instead of reporting it as amux failing (AF-1065). A failure before any
+/// reply carries 502.
+pub(crate) async fn drive_status(state: &AppState, session: &str, verb: &str, body: Value)
+    -> Result<Value, (StatusCode, String)> {
+    let bad = |e: String| (StatusCode::BAD_GATEWAY, e);
     let mut headers = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(session) {
         headers.insert("x-amux-session", v);
     }
     let resp = match verb {
         "start" => {
-            let b: StartBody = serde_json::from_value(body).map_err(|e| format!("start body: {e}"))?;
+            let b: StartBody = serde_json::from_value(body).map_err(|e| bad(format!("start body: {e}")))?;
             start(State(state.clone()), headers, Some(Json(b))).await
         }
         "navigate" => {
-            let b: NavigateBody = serde_json::from_value(body).map_err(|e| format!("navigate body: {e}"))?;
+            let b: NavigateBody = serde_json::from_value(body).map_err(|e| bad(format!("navigate body: {e}")))?;
             navigate(State(state.clone()), headers, Some(Json(b))).await
         }
         "stop" => stop(State(state.clone()), headers, Some(Json(body))).await,
@@ -3948,12 +3981,12 @@ pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Val
         }
     };
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| with_cause(&e))?;
+    let bytes = axum::body::to_bytes(resp.into_body(), 4 << 20).await.map_err(|e| bad(with_cause(&e)))?;
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({"text": String::from_utf8_lossy(&bytes)}));
     if status.is_success() {
         Ok(v)
     } else {
-        Err(format!("browser {verb}: HTTP {status}: {}", v["error"].as_str().map(String::from).unwrap_or_else(|| v.to_string())))
+        Err((status, format!("browser {verb}: HTTP {status}: {}", v["error"].as_str().map(String::from).unwrap_or_else(|| v.to_string()))))
     }
 }
 
@@ -5240,8 +5273,24 @@ mod tests {
         assert_ne!(v["error"], "url required", "{status} {v}");
     }
 
-    /// An unattributed stop may not close a browser another lane owns; with a
-    /// session it proceeds as before (cross-session stays possible, attributed).
+    /// A lane that is not the owner (here: a joiner whose join a restart
+    /// forgot) may not close another lane's browser unless it forces it.
+    #[tokio::test]
+    async fn another_lanes_stop_without_force_leaves_the_browser_running() {
+        let _reg = crate::integrations::browser::TEST_REGISTRY.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        chrome::test_clear_running();
+        chrome::test_seed_running("p-owned", "lane-a", 4_000_002);
+        let app = app();
+        let (status, v, _) = send(&app, "POST", "/api/browser/stop", Some(r#"{"profile":"p-owned","session":"lane-b"}"#)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(v["code"], "browser_stop_not_owner", "{v}");
+        assert!(chrome::running_snapshot_for("p-owned").is_some(), "nothing was stopped");
+        chrome::test_clear_running();
+    }
+
+    /// An unattributed stop may not close a browser another lane owns.
     #[tokio::test]
     async fn an_unattributed_stop_of_a_lanes_browser_is_refused() {
         let _reg = crate::integrations::browser::TEST_REGISTRY.lock().await;

@@ -145,10 +145,8 @@
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/guides/" class="hide-mobile">guides</a>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
         <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
@@ -174,7 +172,7 @@
       <strong>Quick answer:</strong> amux provides three fleet operation primitives — the <strong>bulk-actions modal</strong> for fleet-wide commands (including "Continue all idle sessions"), the <strong>peek panel</strong> for per-agent deep inspection including subagent transcripts and historical scrollback, and the <strong>session list</strong> for at-a-glance health via color-coded status dots. You can wake up, inspect, or redirect a fleet of 10–50 agents from a single dashboard tab or your phone — without touching a terminal.
     </div>
 
-    <p>amux is an open-source control plane for AI agent teams — it runs dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. Once you're <a href="/guides/running-10-plus-agents/">running 10+ agents</a>, the individual-session mental model breaks down. You need fleet-level operations: bulk actions that apply to all agents simultaneously, fast triage to identify which sessions need attention, and deep inspection capabilities for when something goes wrong.</p>
+    <p>amux is a self-hosted control plane for AI agent teams — it runs dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. Once you're <a href="/guides/running-10-plus-agents/">running 10+ agents</a>, the individual-session mental model breaks down. You need fleet-level operations: bulk actions that apply to all agents simultaneously, fast triage to identify which sessions need attention, and deep inspection capabilities for when something goes wrong.</p>
 
     <p>This guide covers the moment-to-moment work of fleet operations — reading the health view, taking bulk actions, inspecting individual agents, monitoring subagents, loading historical output, and doing all of it from your phone.</p>
 
@@ -425,7 +423,7 @@ done
 
     <div class="cta-box">
       <h3>Run an AI engineering team from one dashboard</h3>
-      <p>amux is an open-source control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
+      <p>amux is a self-hosted control plane for AI agent teams — run dozens of parallel Claude Code, Codex, or Gemini CLI sessions from your phone or browser with usage-limit resume, kanban, CRM, and email built in. MIT + Commons Clause, single Rust binary, zero external dependencies.</p>
       <pre><code>git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
@@ -455,7 +453,7 @@ amux serve  # → https://localhost:8824</code></pre>
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

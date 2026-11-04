@@ -46,6 +46,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -93,8 +94,11 @@ SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
 MIN_SWITCH_GAP_S = int(os.environ.get("CLAUDE_ROTATE_MIN_GAP_S", "900"))
 CHROME_PROFILE = os.environ.get("CLAUDE_ROTATE_CHROME_PROFILE", "Profile 16")
 CLAUDE = os.environ.get("CLAUDE_ROTATE_CLAUDE", "claude")
-# The probe CLI starts here; it must be a folder the owner already trusts.
-PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, "Dev"))
+# The probe CLI starts here; it must be a folder the owner already trusts. The installer
+# creates this empty folder and trusts it, so the probe never opens in a folder of real files.
+# 2026-10-31: on a new Linux host ~/Dev was untrusted, every probe stopped at the trust
+# prompt, and every switch was rolled back as unproven.
+PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, ".amux", "claude-rotate", "probe"))
 SWITCH_TIMEOUT_S = int(os.environ.get("CLAUDE_ROTATE_SWITCH_TIMEOUT_S", "240"))
 
 
@@ -472,7 +476,17 @@ def window(w, at):
 def rank(at=None):
     at = at or now()
     rows = []
-    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+    accounts = dict(load(ACCOUNTS, {"accounts": {}})["accounts"])
+    # A signed-in config folder is an account too, before any reading of it exists. 2026-10-31:
+    # a new host with eight folders held "no_usable_account" on every tick, because readings
+    # only come from the logged-in account and nothing ever switched to the other seven.
+    folders = account_folders()
+    for email in folders:
+        if email not in accounts:
+            side = folder_login(email, folders)
+            if side and not _expired(side["claudeAiOauth"]):
+                accounts[email] = {}
+    for email, a in accounts.items():
         if a.get("disabled"):
             continue
         u5, r5 = window(a.get("five_hour"), at)
@@ -584,10 +598,19 @@ def forgive_recovered_mailboxes(state, dead, at_s=None):
     return cleared
 
 
+def unproven(state, at_s=None):
+    """Accounts whose saved login failed its trial (trial_login) inside
+    FAIL_BACKOFF_S. Unlike a backoff, nothing relaxes this: the login is known
+    not to work, so trying it again only spends the tick. A later trial that
+    passes, or a fresh capture of that login, clears it."""
+    at_s = at_s or time.time()
+    return {e for e, t in (state.get("unproven") or {}).items() if at_s - float(t) < FAIL_BACKOFF_S}
+
+
 def decide(current, rows, state, at=None, unreachable=()):
     """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    dead = {e.lower() for e in unreachable} - {current}
+    dead = ({e.lower() for e in unreachable} | unproven(state)) - {current}
     skip = (backed_off(state) | dead) - {current}
     marked = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
     # A backoff saves sign-in time; it must never leave the fleet with no
@@ -607,6 +630,20 @@ def decide(current, rows, state, at=None, unreachable=()):
     # joinmixpeek was picked for its early reset and hit 99% three minutes later).
     best = next(iter(under), None) or max((r for r in rows if r["usable"]), key=lambda r: r["headroom"], default=None)
     cur = next((r for r in rows if r["email"] == current), None)
+    if best is None and cur is not None and not cur["usable"]:
+        # THE LAST FEW PERCENT (mixpeek-dev, 2026-11-04 06:13Z). Every account
+        # was at 96% or more, so none was "usable" (MIN_HEADROOM), and the
+        # current one at 100% stopped every worker on the weekly limit while
+        # joinmixpeek and mixpeek each had 4% left. Switching at 4% remaining
+        # is the rule for leaving a working account; once the current one is
+        # spent, an account with anything left beats one with nothing.
+        spare = [r for r in rows if r["email"] != current and r["email"] not in dead
+                 and r["email"] not in backed_off(state)
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < SWITCH_AT
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < max(cur["five_hour"] or 0, cur["weekly"] or 0)]
+        last = min(spare, key=lambda r: max(r["five_hour"] or 0, r["weekly"] or 0), default=None)
+        if last is not None:
+            return last["email"], "current_exhausted_last_headroom"
     if best is None:
         return None, "no_usable_account"
     # Preempt first: the account nearest its limit is often also the one whose
@@ -696,15 +733,25 @@ def tmux(*args):
     return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=20)
 
 
-def probe():
+# 2026-11-03 23:59: a trial of a working login read this on /usage, and the
+# trial called the login dead. The CLI only reaches it with a login that answers.
+USAGE_RATE_LIMITED = "Usage endpoint is rate limited"
+
+
+def probe(config_dir=None):
     """Read the logged-in account's usage from /usage in a temporary CLI
     session. It sends no prompt, so it spends no quota, and it works whether
-    or not any worker is active."""
-    email = current_email()
+    or not any worker is active. With `config_dir` the CLI runs on that config
+    folder's login instead of the one every session shares (trial_login)."""
+    if config_dir:
+        email = ((load(os.path.join(config_dir, ".claude.json"), {}) or {}).get("oauthAccount") or {}).get("emailAddress")
+    else:
+        email = current_email()
     name = "claude-rotate-probe-%d" % os.getpid()
     cwd = PROBE_CWD
     started = time.time()
-    tmux("new-session", "-d", "-s", name, "-x", "160", "-y", "60", "-c", cwd, CLAUDE)
+    env = ["-e", "CLAUDE_CONFIG_DIR=" + config_dir] if config_dir else []
+    tmux("new-session", "-d", "-s", name, "-x", "160", "-y", "60", "-c", cwd, *env, CLAUDE)
     try:
         sent, screen = False, ""
         while time.time() - started < 60:
@@ -721,15 +768,21 @@ def probe():
             if sent and "Current week (all models)" in screen and re.search(
                     r"Current week \(all models\)[\s\S]*?\d+% used", screen):
                 break
+            if config_dir and (USAGE_RATE_LIMITED in screen or AUTH_LOST.search(screen)):
+                break
         windows = parse_usage(screen)
     finally:
         tmux("kill-session", "-t", name)
     elapsed = round(time.time() - started, 1)
+    if config_dir and USAGE_RATE_LIMITED in screen and not AUTH_LOST.search(screen):
+        log("claude_rotate_trial_usage_rate_limited", measured=True, n_considered=1, current=email, elapsed_s=elapsed,
+            note="the login answered; its usage numbers are not available yet")
+        return {"rate_limited": True}
     if not email or "seven_day" not in windows:
         log("claude_rotate_probe_failed", measured=False, why_unmeasured="no /usage screen parsed",
             current=email, elapsed_s=elapsed, screen_tail=re.sub(r"\s+", " ", screen)[-200:])
         return None
-    if current_email() != email:  # the login changed mid-probe; the reading is ambiguous
+    if not config_dir and current_email() != email:  # the login changed mid-probe; the reading is ambiguous
         log("claude_rotate_probe_failed", measured=False, why_unmeasured="login changed during probe")
         return None
     five, week = windows.get("five_hour") or {}, windows["seven_day"]
@@ -844,12 +897,12 @@ def cmd_tick():
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason, backed_off=skipped))
     rc = switch(target, reason)
-    if rc == 0 or reason != "current_exhausted" or cli_email() != current:
+    if rc == 0 or not reason.startswith("current_exhausted") or cli_email() != current:
         return rc
     # The current account is spent and that target failed: try the next one now
     # rather than leaving the fleet stopped until the next tick.
     rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
-    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=dead)
+    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=set(dead) | {target})
     if not target2 or target2 == target:
         return rc
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
@@ -945,7 +998,9 @@ def resume_stranded(force=False):
 # run /login": something read the login while it was being replaced. That write
 # is Claude Code's, so the gap is measured here and the workers it hits are
 # resumed, the same way limit-parked workers are.
-AUTH_LOST = re.compile(r"Not logged in.{0,40}/login")
+# 2026-11-03: "Login expired · Please run /login" did not match this, and
+# mixpeek-meta-worker stayed stopped through two later switches.
+AUTH_LOST = re.compile(r"(Not logged in|Login expired).{0,40}/login")
 
 
 class LoginGapProbe:
@@ -996,7 +1051,7 @@ def gap_stats(samples):
 def auth_lost(screen):
     """True when Claude's not-logged-in error is among the last lines on screen,
     which is where a turn that died on it leaves it."""
-    lines = [l for l in (screen or "").splitlines() if l.strip()][-8:]
+    lines = [l for l in (screen or "").splitlines() if l.strip()][-10:]
     return any(AUTH_LOST.search(l) for l in lines)
 
 
@@ -1229,13 +1284,60 @@ CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", 
 STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
 
 
+# LINUX HAS NO KEYCHAIN (mixpeek-dev.amux.io, 2026-10-31: "make sure it does the
+# claude account rotation thing too like i have here"). Claude Code on Linux
+# keeps its login in <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json, so the
+# CLI's own item maps to that file and every other item (the rotator's
+# snapshots) to a 0600 file under DIR/keyring. macOS keeps the Keychain.
+USE_KEYCHAIN = sys.platform == "darwin" and os.environ.get("CLAUDE_ROTATE_KEYSTORE") != "file"
+KEYRING = os.path.join(DIR, "keyring")
+
+
+def _cli_cred_file(config_dir=None):
+    base = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return os.path.join(base, ".credentials.json")
+
+
+def _file_for(service, account):
+    if service == "Claude Code-credentials" and account == CRED_ACCT:
+        return _cli_cred_file()
+    safe = lambda v: re.sub(r"[^A-Za-z0-9@._+-]", "_", v) or "_"
+    return os.path.join(KEYRING, safe(service), safe(account) + ".json")
+
+
+def _file_read(path):
+    try:
+        with open(path) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
+def _file_write(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".new.")
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _kc_read(service, account):
+    if not USE_KEYCHAIN:
+        return _file_read(_file_for(service, account))
     p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
                        capture_output=True, text=True)
     return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
 
 
 def _kc_write(service, account, value):
+    if not USE_KEYCHAIN:
+        return _file_write(_file_for(service, account), value)
     # -X takes hex, so quotes in the JSON cannot break the command line, and
     # `security -i` reads it from stdin, so the value is never an argv element.
     cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
@@ -1286,7 +1388,8 @@ def folder_login(email, folders=None):
     if not folder:
         return None
     try:
-        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+        raw = _kc_read(_folder_service(folder), CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
     except ValueError:
         oauth = None
     if not oauth or not oauth.get("refreshToken"):
@@ -1367,9 +1470,63 @@ def capture_login():
         return email
     if _kc_write(STORE_SVC, email, blob):
         log("claude_rotate_captured", measured=True, account=email, new=prev is None)
+        st = load(STATE, {})
+        if (st.get("unproven") or {}).pop(email, None) is not None:
+            save(STATE, st)
         return email
     log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="keychain write failed")
     return None
+
+
+def trial_login(target, saved):
+    """Prove a saved login in a scratch config folder before it goes near the
+    credential every running session reads. Returns the login as the trial
+    left it (the CLI may have refreshed its token), or None when it cannot
+    read /usage.
+
+    2026-11-03 23:38-23:49: the rotator retried a switch to ethan@getmixpeek.com
+    whose saved login was dead. Each try wrote it into the shared credential,
+    probed for about 60 s and wrote the old one back, and mixpeek-meta-worker,
+    reading the credential inside that window, was left on the dead login
+    ("Login expired · Please run /login", footer getmixpeek)."""
+    oauth = saved.get("claudeAiOauth") or {}
+    folder = tempfile.mkdtemp(prefix="trial-", dir=DIR)
+    svc = _folder_service(folder)
+    try:
+        cfg = dict(load(CLAUDE_JSON, {}) or {})
+        cfg["oauthAccount"] = saved.get("oauthAccount") or {}
+        save(os.path.join(folder, ".claude.json"), cfg)
+        cred = json.dumps({"claudeAiOauth": oauth})
+        if not (_kc_write(svc, CRED_ACCT, cred) if USE_KEYCHAIN else _file_write(_cli_cred_file(folder), cred)):
+            log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
+            return None
+        windows = probe(config_dir=folder)
+        # The CLI may have refreshed the token in the folder, which ends the saved
+        # one. Keep the newest whatever the probe said, before the folder goes.
+        raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        try:
+            fresh = json.loads(raw or "{}").get("claudeAiOauth") or oauth
+        except ValueError:
+            fresh = oauth
+        if fresh != oauth:
+            _kc_write(STORE_SVC, target, json.dumps(dict(saved, claudeAiOauth=fresh, captured=time.time())))
+            log("claude_rotate_trial_token_kept", measured=True, n_considered=1, target=target)
+        state = load(STATE, {})
+        marks = state.setdefault("unproven", {})
+        if windows is None:
+            marks[target] = time.time()
+            save(STATE, state)
+            log("claude_rotate_stored_login_unproven", measured=True, n_considered=1, target=target,
+                note="it did not read /usage in a scratch folder; the shared credential was not touched; "
+                     "skipped as a target until a trial passes or its login is captured again")
+            return None
+        if marks.pop(target, None) is not None:
+            save(STATE, state)
+        return fresh
+    finally:
+        if USE_KEYCHAIN:
+            subprocess.run(["security", "delete-generic-password", "-s", svc, "-a", CRED_ACCT], capture_output=True)
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def stored_switch(target, before, reason, started):
@@ -1386,6 +1543,14 @@ def stored_switch(target, before, reason, started):
         if _expired(oauth):
             log("claude_rotate_stored_login_expired", target=target, via=via)
             continue
+        # Proven in isolation first; only a login that reads /usage reaches
+        # the shared credential.
+        fresh = trial_login(target, saved)
+        if fresh is None:
+            log("claude_rotate_stored_switch_failed", target=target, via=via, still=current_email(),
+                probed=False, restored=False, shared_untouched=True)
+            continue
+        oauth = fresh
         prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
         prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
         try:
@@ -1397,9 +1562,10 @@ def stored_switch(target, before, reason, started):
             log("claude_rotate_stored_switch_failed", target=target, via=via, why="keychain write failed")
             return None
         _write_oauth_account(saved.get("oauthAccount") or {})
+        # The trial proved the login, so a second /usage is not asked to prove it
+        # again: the endpoint rate limits, and that would roll back a good switch.
         after = cli_email()
-        windows = probe() if after == target else None
-        if after == target and windows is not None:
+        if after == target:
             elapsed = round(time.time() - started, 1)
             state = load(STATE, {})
             state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
@@ -1417,7 +1583,7 @@ def stored_switch(target, before, reason, started):
         if prev_acct:
             _write_oauth_account(prev_acct)
         log("claude_rotate_stored_switch_failed", target=target, via=via, still=cli_email(), cli_said=after,
-            probed=windows is not None, restored=bool(prev_raw))
+            restored=bool(prev_raw))
     return None
 
 

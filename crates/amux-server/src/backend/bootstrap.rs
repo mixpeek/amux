@@ -125,7 +125,18 @@ impl Bootstrap {
         self.store
             .write_async(move |conn| {
                 let now = chrono::Utc::now().to_rfc3339();
-                let n = queries::update_worker_state(conn, &wid, &state, &now)?;
+                // An Error is always recorded; a move to Idle applies only
+                // from the state the caller read (#3).
+                let n = if matches!(state, WorkerState::Idle { .. }) {
+                    let n = queries::update_worker_state_from(conn, &wid, &from, &state, &now)?;
+                    if n == 0 {
+                        tracing::warn!(worker = %wid, from = %from, verdict = "worker_state_moved_on", measured = true, n_considered = 1,
+                            "a worker left the state this update expected; the newer state is kept");
+                    }
+                    n
+                } else {
+                    queries::update_worker_state(conn, &wid, &state, &now)?
+                };
                 let payload = if n > 0 {
                     queries::get_worker(conn, &wid)?.map(|r| r.snapshot())
                 } else {

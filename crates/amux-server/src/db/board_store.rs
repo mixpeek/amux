@@ -2915,6 +2915,14 @@ pub struct PlanningRow {
     pub session: Option<String>,
 }
 
+/// The read [`planning_tasks`] runs, answered by idx_issues_planning (AF-1006).
+fn planning_sql() -> String {
+    format!(
+        "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
+         WHERE i.deleted IS NULL GROUP BY i.id"
+    )
+}
+
 /// Every board row as a planning `Task`, without the heavy text columns.
 ///
 /// Ordering, filtering and the `to_task` mapping match [`list_issues`] exactly;
@@ -2926,10 +2934,7 @@ pub fn planning_tasks(
     conn: &Connection,
     archived: ArchivedFilter,
 ) -> rusqlite::Result<Vec<PlanningRow>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {PLANNING_COLS} FROM issues i LEFT JOIN issue_tags t ON t.issue_id = i.id \
-         WHERE i.deleted IS NULL GROUP BY i.id"
-    ))?;
+    let mut stmt = conn.prepare(&planning_sql())?;
     let mut rows: Vec<(i64, f64, i64, PlanningRow)> = Vec::new();
     let mapped = stmt.query_map([], |r| {
         let archived_flag: i64 = r.get(8)?;
@@ -3192,6 +3197,20 @@ pub fn list_issues_capped(
     ))
 }
 
+/// How many rows [`list_issues_capped`] would return, from the same selection
+/// and cap, without hydrating any of them.
+pub fn count_issues_capped(
+    conn: &Connection,
+    status_filter: &[String],
+    session_filter: &[String],
+    archived: ArchivedFilter,
+    done_limit: i64,
+) -> rusqlite::Result<usize> {
+    let light = light_rows(conn, status_filter, session_filter, archived)?;
+    let (kept, _, _) = cap_terminal_by(light, done_limit, |r| &r.status, |r| r.updated);
+    Ok(kept.len())
+}
+
 /// [`list_issues_capped`]'s sibling with [`sse_terminal_quota`] semantics
 /// instead of the lumped cap (AMUX-3503): verified keeps its own 300-floor
 /// quota so a bulk-verify stays visible, done/discarded share `done_limit`.
@@ -3230,6 +3249,21 @@ pub fn list_issues_by_ids(
     hydrate_light(conn, &light, prose)
 }
 
+/// The selection `light_rows` runs. Unfiltered, it is answered entirely by
+/// idx_issues_planning (AF-1144).
+fn light_rows_sql(lanes: usize) -> String {
+    format!(
+        "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
+                COALESCE(i.pos,0), i.updated \
+         FROM issues i WHERE i.deleted IS NULL{} ORDER BY i.id",
+        if lanes > 0 {
+            format!(" AND i.session IN ({})", vec!["?"; lanes].join(","))
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// Pass 1 shared by the capped and quota lists: filter + sort over the
 /// no-prose columns. ONE loader on purpose — two spellings of the filter
 /// canon or the sort would drift exactly the way the predicate rule warns.
@@ -3248,13 +3282,15 @@ fn light_rows(
     // ORDER BY i.id matches the practical row order of the joined GROUP BY
     // query in list_issues, so ties in board_order break identically on both
     // paths (sort_by is stable; the input order is the tiebreaker).
-    let mut stmt = conn.prepare(
-        "SELECT i.id, i.status, i.session, COALESCE(i.archived,0), COALESCE(i.pinned,0), \
-                COALESCE(i.pos,0), i.updated \
-         FROM issues i WHERE i.deleted IS NULL ORDER BY i.id",
-    )?;
+    // A lane's read goes through idx_issues_session (2026-10-31: GET
+    // /api/board?session=mxp-gs12 took 5-72 s for 243 cards, because this
+    // scanned all ~30k rows of a 14.7 GB database, whose rows carry desc and
+    // log inline, and dropped other lanes in Rust; pread was the profile).
+    let started = std::time::Instant::now();
+    let by_lane = !session_filter.is_empty();
+    let mut stmt = conn.prepare(&light_rows_sql(session_filter.len()))?;
     let mut light: Vec<LightRow> = Vec::new();
-    for row in stmt.query_map([], |r| {
+    for row in stmt.query_map(rusqlite::params_from_iter(session_filter.iter()), |r| {
         Ok(LightRow {
             id: r.get(0)?,
             status: r.get(1)?,
@@ -3282,6 +3318,11 @@ fn light_rows(
         light.push(row);
     }
     light.sort_by(|a, b| board_order(a.pinned, a.pos, a.updated, b.pinned, b.pos, b.updated));
+    let ms = started.elapsed().as_millis();
+    if ms > 2000 {
+        tracing::warn!(target: "amux::board", ms, rows = light.len(), by_lane, measured = true, n_considered = light.len(),
+            verdict = "board_light_rows_slow", "the board's row selection took over 2 s");
+    }
     Ok(light)
 }
 
@@ -4940,6 +4981,72 @@ pub fn dependency_path(
 
 #[cfg(test)]
 mod tests {
+    /// AF-1151: a count is the length of the list it stands in for.
+    #[test]
+    fn a_count_equals_the_length_of_the_list_under_every_filter() {
+        use super::{
+            count_issues_capped, list_issues_capped, ArchivedFilter, Connection, Prose,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let _store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        let conn = Connection::open(home.path().join("db")).unwrap();
+        for (i, (status, session, archived, deleted)) in [
+            ("todo", "a", 0, None),
+            ("done", "a", 0, None),
+            ("done", "b", 0, None),
+            ("done", "b", 1, None),
+            ("verified", "a", 1, None),
+            ("todo", "b", 0, Some(1)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO issues (id,title,status,session,archived,deleted,created,updated) \
+                 VALUES (?1,'t',?2,?3,?4,?5,?6,?6)",
+                rusqlite::params![format!("T-{i}"), status, session, archived, deleted, i as i64],
+            )
+            .unwrap();
+        }
+        let none: &[String] = &[];
+        let done = ["done".to_string()];
+        let lane = ["b".to_string()];
+        for (st, se) in [(none, none), (&done[..], none), (none, &lane[..])] {
+            for archived in [
+                ArchivedFilter::All,
+                ArchivedFilter::ActiveOnly,
+                ArchivedFilter::ArchivedOnly,
+            ] {
+                for limit in [0, 1, 100] {
+                    let list =
+                        list_issues_capped(&conn, st, se, archived, limit, Prose::Full).unwrap();
+                    let count = count_issues_capped(&conn, st, se, archived, limit).unwrap();
+                    assert_eq!(count, list.0.len(), "{st:?} {se:?} {archived:?} {limit}");
+                }
+            }
+        }
+    }
+
+    /// AF-1144, AF-1006: both reads must come from the covering index. On the
+    /// table they walk every card's desc to reach `status`.
+    #[test]
+    fn the_tick_and_the_board_selection_never_touch_the_table() {
+        let home = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&home.path().join("db")).unwrap();
+        let conn = store.read().unwrap();
+        for sql in [super::light_rows_sql(0), super::planning_sql()] {
+            let plan = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(plan.contains("COVERING INDEX idx_issues_planning"), "{plan}");
+        }
+    }
+
     /// AMUX-4801: the live-work list is DERIVED and SQL-safe.
     ///
     /// The literal it replaced, `NOT IN ('done','verified','discarded')`, was

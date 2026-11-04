@@ -2650,7 +2650,9 @@ async fn purge_quarantine(
         .store
         .write_async(move |c| {
             c.execute(
-                "UPDATE reclaim_quarantine_items SET status='purged' WHERE batch_id=?1",
+                // Only items still staged: a restored item is back in place
+                // and was not purged (implicit state machines inventory, tier 5).
+                "UPDATE reclaim_quarantine_items SET status='purged' WHERE batch_id=?1 AND status='staged'",
                 [&bid],
             )?;
             c.execute(

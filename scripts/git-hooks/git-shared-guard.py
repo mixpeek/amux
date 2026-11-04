@@ -2175,7 +2175,9 @@ def _land_queue_push_verdict(scrubbed):
 
     Matches `git push ...` naming main (main, HEAD:main, :refs/heads/main) and
     scripts/graft-push.sh. Asks GET /api/land/policy?lane=<AMUX_SESSION>&push=1,
-    which logs worker_push_refused when it answers queue=true. Fail-OPEN: no
+    which logs worker_push_refused when it answers queue=true. The checkout goes
+    with it (tree=), because a repository's own queue declaration covers every
+    lane in it. Fail-OPEN: no
     session, no server or no answer allows the push, because a wrong refusal
     here would wedge every lane on a server restart. Not covered: a push run
     outside a Claude Bash call (a script started some other way, a terminal)."""
@@ -2191,7 +2193,7 @@ def _land_queue_push_verdict(scrubbed):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        url = amux_base_url() + "/api/land/policy?" + urllib.parse.urlencode({"lane": lane, "push": "1"})
+        url = amux_base_url() + "/api/land/policy?" + urllib.parse.urlencode({"lane": lane, "push": "1", "tree": os.getcwd()})
         res = json.load(urllib.request.urlopen(url, timeout=3, context=ctx))
     except Exception:
         return None

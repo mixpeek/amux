@@ -188,6 +188,16 @@ pub fn run() {
         .build()
         .expect("maintenance runtime");
     runtime_jobs::executor::install(maintenance.handle().clone());
+    // AF-1006: board-drive and orchestrator-runtime hold a thread for seconds
+    // per tick; two threads of their own keep that off the shared pool.
+    let heavy = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("amux-heavy-jobs")
+        .worker_threads(2)
+        .thread_stack_size(stack)
+        .enable_all()
+        .build()
+        .expect("heavy-job runtime");
+    runtime_jobs::executor::install_heavy(heavy.handle().clone());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .thread_stack_size(stack)
         .enable_all()
@@ -665,6 +675,8 @@ async fn async_main() {
     drop(runtime_jobs::capture_reconcile::spawn(state.clone()));
     // AMUX-5240: one daily owner digest of pending outbound-email approvals.
     drop(runtime_jobs::email_approval_digest::spawn(state.clone()));
+    // Z15: daily digest of needsyou cards, dry run until the owner opts in.
+    drop(runtime_jobs::decision_digest::spawn(state.clone()));
     // AMUX-5301: approve new needs-input items the owner's policy covers.
     drop(runtime_jobs::needs_input_auto::spawn(state.clone()));
     // AMUX-5239: a lane that pushed and said "live in ~40 min" was never told
@@ -683,6 +695,7 @@ async fn async_main() {
     drop(runtime_jobs::disk_watch::spawn(state.clone()));
     // Storage tiers: watched folders between the internal disk and a cold drive.
     drop(crate::api::tiering::spawn(state.clone()));
+    crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());

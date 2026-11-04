@@ -52,6 +52,20 @@ async fn release(state: &AppState) {
         tracing::warn!(error = %e, verdict = "social_browser_stop_failed", "the social publisher could not close its browser");
     }
 }
+/// A browser start the browser REFUSED (a 4xx: the profile is held by another
+/// session, or the request was not allowed) is a refusal with that status; only
+/// a failure to get an answer is a 502 to retry. Every start error used to be
+/// a 502 (AF-1065: POST /api/social/posts answered 502 for a 409 "a browser is
+/// already running under session 'social-linkedin'"), which the 5xx detector
+/// rightly filed as amux failing.
+fn start_failure((status, error): (StatusCode, String)) -> Failure {
+    if status.is_client_error() {
+        Failure::refused(status, error)
+    } else {
+        Failure::retry(error)
+    }
+}
+
 const FEED: &str = "https://www.linkedin.com/feed/";
 /// LinkedIn's limit for a post's text.
 const MAX_CHARS: usize = 3000;
@@ -82,6 +96,9 @@ struct Target {
     /// JavaScript returning true when the open composer posts as this account.
     identity_js: &'static str,
     media_label: &'static str,
+    /// The list the account's new posts appear on, read again after Post when
+    /// no "View post" link shows; "" to skip that lookup.
+    list_url: &'static str,
 }
 
 const PERSONAL: Target = Target {
@@ -93,6 +110,8 @@ const PERSONAL: Target = Target {
     editor: "div[role=textbox].ProseMirror, div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "true",
     media_label: "Media",
+    // The feed is full of other people's posts: a new one there is not ours.
+    list_url: "",
 };
 
 const PAGE: Target = Target {
@@ -107,6 +126,7 @@ const PAGE: Target = Target {
     editor: "[role=dialog] div.ql-editor[role=textbox][aria-placeholder^='What do you want'], [role=dialog] div.tiptap.ProseMirror[contenteditable=true]",
     identity_js: "(()=>{const d=[...document.querySelectorAll('[role=dialog]')].find(d=>/create post modal/i.test(d.innerText||''));return !!d&&[...d.querySelectorAll('button')].some(b=>/^\\s*amux\\b/i.test(b.innerText||''))})()",
     media_label: "Add media",
+    list_url: "https://www.linkedin.com/company/146906104/admin/page-posts/published/",
 };
 
 fn target(account: &str) -> Option<&'static Target> {
@@ -139,18 +159,41 @@ async fn until_in(state: &AppState, session: &str, script: &str, secs: u64) -> R
     Ok(false)
 }
 
-const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].find(b=>/^\\s*post\\s*$/i.test(b.innerText||''));return b&&!b.disabled?b:null})()";
+/// The Post button of the composer in view: the LAST VISIBLE one, for the same
+/// reason as `visible_editor_js`. This took the first match, so after baf01fdb2
+/// the caption went into the visible composer and the click went to the hidden,
+/// empty copy, which LinkedIn published (amux-gtm, 2026-11-02:
+/// urn:li:ugcPost:7523066574971412480). e2e/social-linkedin-post-button.spec.ts
+/// runs this string in a browser.
+const POST_BUTTON_JS: &str = "(()=>{const b=[...document.querySelectorAll('button')].filter(b=>/^\\s*post\\s*$/i.test(b.innerText||'')&&b.getClientRects().length&&getComputedStyle(b).visibility!=='hidden').pop();return b&&!b.disabled?b:null})()";
 
-/// Whether the composer's text box holds the whole caption (whitespace
-/// collapsed). Read back after typing and again right before Post.
+/// JS for the editor Post submits: the LAST VISIBLE match. The media step
+/// leaves an earlier, hidden copy of the composer in the page, and
+/// `querySelector` returned that one: the caption was typed into it and read
+/// back from it, and the visible composer posted empty (the amux page's video
+/// post of 2026-10-31 12:00, urn:li:ugcPost:7522326873993891840).
+fn visible_editor_js(editor: &str) -> String {
+    format!(
+        "[...document.querySelectorAll({})].filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden').pop()",
+        json!(editor)
+    )
+}
+
+/// Whether the visible composer's text box holds the whole caption
+/// (whitespace collapsed). Read back after typing and again right before Post.
 async fn caption_in_editor(state: &AppState, editor: &str, caption: &str) -> Result<bool, String> {
+    // The editor's own model where it has one (Quill keeps it on its
+    // container), else what the box shows.
     let js = format!(
-        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e=document.querySelector({});return !!e&&n(e.innerText).includes(n({}))}})()",
-        json!(editor),
+        "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim();const e={};if(!e)return false;const c=e.closest('.ql-container');const q=c&&c.__quill;const t=q&&typeof q.getText==='function'?q.getText():e.innerText;return n(t).includes(n({}))}})()",
+        visible_editor_js(editor),
         json!(caption)
     );
     Ok(eval(state, &js).await? == json!(true))
 }
+
+/// Seconds between typing the caption and the read-back before Post.
+const CAPTION_SETTLE_S: u64 = 3;
 
 /// Close the composer without posting, discarding what was typed.
 async fn discard(state: &AppState) {
@@ -162,7 +205,8 @@ async fn discard(state: &AppState) {
 /// Open `t`'s composer with the caption (and file) in it. Nothing is sent.
 async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": t.url, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": t.url, "session": SESSION, "join": true}))
+        .await.map_err(start_failure)?;
     drive("navigate", json!({"url": t.url})).await.map_err(Failure::retry)?;
     if !until(state, t.ready_js, 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(
@@ -213,8 +257,23 @@ async fn compose(state: &AppState, t: &Target, d: &Draft) -> Result<(), Failure>
             return Err(Failure::retry("the LinkedIn composer had no text box after the media step"));
         }
     }
-    drive("click", json!({"selector": editor})).await.map_err(Failure::retry)?;
+    // Focus the visible editor (see visible_editor_js), not the first match.
+    let focused = eval(state, &format!("(()=>{{const e={};if(!e)return false;e.scrollIntoView({{block:'center'}});e.click();e.focus();return document.activeElement===e||e.contains(document.activeElement)}})()", visible_editor_js(editor)))
+        .await
+        .map_err(Failure::retry)?;
+    if focused != json!(true) {
+        discard(state).await;
+        return Err(Failure::retry("could not focus LinkedIn's visible text box"));
+    }
     drive("type", json!({"text": d.caption})).await.map_err(Failure::retry)?;
+    // LET THE COMPOSER TAKE THE TEXT IN BEFORE POST. Every video post typed
+    // its caption and clicked Post within a second (audit: files, then type
+    // 6 s later, then Post), and three of them published with no caption
+    // while the box showed it (amux-gtm, 2026-11-03: AMX-D3ACA3,
+    // urn:li:ugcPost:7523429064787959808). A composed draft shows the text in
+    // the editor's own model a second after typing; the post reads LinkedIn's
+    // state, which follows the editor, so it gets time to catch up.
+    tokio::time::sleep(Duration::from_secs(CAPTION_SETTLE_S)).await;
     if !caption_in_editor(state, editor, &d.caption).await.map_err(Failure::retry)? {
         discard(state).await;
         return Err(Failure::retry("the caption did not land in the LinkedIn composer"));
@@ -268,10 +327,48 @@ impl Publisher for LinkedIn {
         })
     }
 
-    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, _state: &'a AppState, _headers: HeaderMap, _post: &'a Value)
+    fn metrics<'a>(&'a self, _ctx: &'a SocialCtx, state: &'a AppState, _headers: HeaderMap, post: &'a Value)
         -> BoxFut<'a, Result<Value, String>> {
-        Box::pin(async move { Err("LinkedIn metrics are not built for the browser publisher".to_string()) })
+        Box::pin(async move {
+            let urn = post["post_id"].as_str().unwrap_or("").to_string();
+            let _one = PUBLISHING.lock().await;
+            let out = linkedin_metrics(state, &urn).await;
+            release(state).await;
+            out
+        })
     }
+}
+
+/// The page's Content engagement table: one row per post, its cells by header.
+/// A row names its post by URN only in its Boost link.
+const PAGE_ANALYTICS: &str = "https://www.linkedin.com/company/146906104/admin/analytics/updates/";
+const PAGE_ANALYTICS_JS: &str = "(()=>{const t=[...document.querySelectorAll('table')].find(t=>/Impressions/.test(t.innerText));if(!t)return null;const h=[...t.querySelectorAll('th')].map(c=>c.innerText.trim());return [...t.querySelectorAll('tbody tr')].map(r=>{const c=[...r.querySelectorAll('td')].map(d=>d.innerText.trim());const a=r.querySelector('a[href*=\"content=\"]');return {urn:a?decodeURIComponent((a.href.match(/content=([^&]+)/)||[])[1]||''):'',cells:Object.fromEntries(h.map((n,i)=>[n,c[i]]))}})})()";
+
+async fn linkedin_metrics(state: &AppState, urn: &str) -> Result<Value, String> {
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": PAGE_ANALYTICS, "session": SESSION, "join": true}))
+        .await.map_err(|(_, e)| e)?;
+    super::browser::drive(state, SESSION, "navigate", json!({"url": PAGE_ANALYTICS})).await?;
+    if !until(state, "[...document.querySelectorAll('table')].some(t=>/Impressions/.test(t.innerText))", 30).await? {
+        return Err("LinkedIn's page analytics table did not load".to_string());
+    }
+    page_metrics(&eval(state, PAGE_ANALYTICS_JS).await?, urn)
+}
+
+/// One post's numbers from the table. LinkedIn prints "-" until it has them,
+/// and a row with none is not a measured zero: it stays unmeasured and retries.
+fn page_metrics(rows: &Value, urn: &str) -> Result<Value, String> {
+    let row = rows.as_array().and_then(|r| r.iter().find(|x| x["urn"] == urn))
+        .ok_or_else(|| format!("{urn} is not in the amux page's analytics table (a personal post, or older than its 14 days)"))?;
+    let n = |k: &str| row["cells"][k].as_str().and_then(|v| v.replace(',', "").parse::<i64>().ok());
+    let (impressions, views, clicks, reactions, comments, shares) =
+        (n("Impressions"), n("Views"), n("Clicks"), n("Reactions"), n("Comments"), n("Reposts"));
+    if impressions.is_none() && views.is_none() && reactions.is_none() {
+        return Err("LinkedIn shows no numbers for this post yet".to_string());
+    }
+    let engagement = [reactions, comments, shares].iter().flatten().sum::<i64>();
+    Ok(json!({"impressions": impressions, "views": views, "clicks": clicks, "likes": reactions,
+        "reactions": reactions, "comments": comments, "shares": shares, "engagement": engagement,
+        "sources": {"page_analytics": {"measured": true}}}))
 }
 
 async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Failure> {
@@ -294,6 +391,12 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                     .with(json!({"draft": true, "composed": true})));
             }
             // From here the platform may receive it: every failure is uncertain.
+            // What the page already lists, so a post with no caption can still
+            // be found: it is the one that was not there before the click.
+            if let Err(e) = eval(state, "(()=>{window.__amuxSeenUrns=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].map(e=>e.getAttribute('data-urn'));return true})()").await {
+                tracing::warn!(platform = "linkedin", account = t.account, error = %e, verdict = "social_browser_post_list_unread", measured = false,
+                    "could not note the page's posts before Post; a post without its caption cannot be found by being new");
+            }
             let clicked = eval(state, &format!("(()=>{{const b={POST_BUTTON_JS};if(!b)return false;b.click();return true}})()"))
                 .await
                 .map_err(|e| Failure::uncertain(format!("clicking Post: {e}")))?;
@@ -305,7 +408,7 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
             // list) the newest post carrying this caption.
             let head: String = d.caption.trim().chars().take(40).collect();
             let link_js = format!(
-                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>(e.innerText||'').includes({}));return p?'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/':''}})()",
+                "(()=>{{const a=[...document.querySelectorAll('a[href*=\"/feed/update/urn:li:\"]')].find(a=>/view post/i.test(a.innerText||'')||a.closest('[role=alert],[aria-live]'));if(a)return a.href;const p=[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>(e.innerText||'').includes({}));if(p)return 'https://www.linkedin.com/feed/update/'+p.getAttribute('data-urn')+'/';const seen=window.__amuxSeenUrns;const n=seen&&[...document.querySelectorAll('[data-urn^=\"urn:li:\"]')].find(e=>!seen.includes(e.getAttribute('data-urn')));return n?'https://www.linkedin.com/feed/update/'+n.getAttribute('data-urn')+'/':''}})()",
                 json!(head)
             );
             let mut url = String::new();
@@ -318,9 +421,59 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
+            // A video post shows no "View post" link and does not reach the
+            // open list while it processes (amux-gtm, 2026-11-03: no link, and
+            // the post was on the list later). Reload the list and take the
+            // post with this caption, or the one that was not there before.
+            if url.is_empty() && !t.list_url.is_empty() {
+                let seen = match eval(state, "JSON.stringify(window.__amuxSeenUrns||null)").await {
+                    Ok(Value::String(s)) => s,
+                    _ => "null".to_string(),
+                };
+                // The reload clears the page's note of what was there before Post: put it back.
+                let listed = format!("(()=>{{window.__amuxSeenUrns={seen};return document.querySelectorAll('[data-urn^=\"urn:li:\"]').length>0}})()");
+                for _ in 0..8 {
+                    if let Err(e) = super::browser::drive(state, SESSION, "navigate", json!({"url": t.list_url})).await {
+                        tracing::warn!(platform = "linkedin", account = t.account, error = %e, verdict = "social_browser_list_reload_failed",
+                            "could not reload the post list while looking for the post");
+                        continue;
+                    }
+                    if !until(state, &listed, 15).await.unwrap_or(false) {
+                        continue;
+                    }
+                    if let Ok(Value::String(h)) = eval(state, &link_js).await {
+                        if !h.is_empty() {
+                            tracing::info!(platform = "linkedin", account = t.account, verdict = "social_browser_post_found_on_list", measured = true, n_considered = 1,
+                                "no View post link after Post; found the post on the account's post list");
+                            url = h;
+                            break;
+                        }
+                    }
+                }
+            }
             let Some(urn) = url.split("/feed/update/").nth(1).map(|s| s.trim_end_matches('/').split('?').next().unwrap_or("").to_string()).filter(|s| s.starts_with("urn:li:")) else {
-                return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link within 30 s: check the feed before resending"));
+                tracing::warn!(platform = "linkedin", account = t.account, verdict = "social_browser_no_post_link", measured = true, n_considered = 1,
+                    "clicked Post and found no View post link and no new post on the page");
+                return Err(Failure::uncertain("clicked Post, but LinkedIn showed no \"View post\" link and the post list showed no new post within about 2 minutes: check the page's posts before resending")
+                    .with(json!({"verdict": "social_browser_no_post_link"})));
             };
+            // READ THE PUBLISHED POST BACK (amux-gtm, 2026-10-31): the composer
+            // read-back passed while the post went out with no caption. Open
+            // the post and look for the caption's start; a post without it is
+            // reported, with its link, so it is edited rather than resent.
+            let _ = super::browser::drive(state, SESSION, "navigate", json!({"url": url})).await;
+            let shown_js = format!(
+                "(()=>{{const n=s=>(s||'').replace(/\\s+/g,' ').trim().toLowerCase();return n(document.body.innerText).includes(n({}))}})()",
+                json!(head)
+            );
+            if !until(state, &shown_js, 20).await.unwrap_or(false) {
+                tracing::warn!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted_without_caption",
+                    "LinkedIn published the post, but its page does not show the caption");
+                return Err(Failure::uncertain(format!(
+                    "posted, but the published post does not show the caption: add it with Edit post at {url}; do not resend"
+                ))
+                .with(json!({"post_id": urn, "url": url, "caption_on_post": false, "verdict": "social_browser_posted_without_caption"})));
+            }
             tracing::info!(platform = "linkedin", account = t.account, post_id = %urn, verdict = "social_browser_posted", "LinkedIn post published through the browser");
             Ok(Published {
                 post_id: urn,
@@ -336,6 +489,34 @@ async fn linkedin_publish(state: &AppState, d: &Draft) -> Result<Published, Fail
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_analytics_read_a_post_and_never_turn_a_dash_into_zero() {
+        let rows = json!([
+            {"urn": "urn:li:ugcPost:1", "cells": {"Impressions": "1,204", "Views": "96", "Clicks": "7", "Reactions": "12", "Comments": "3", "Reposts": "1"}},
+            {"urn": "urn:li:ugcPost:2", "cells": {"Impressions": "-", "Views": "-", "Reactions": "-"}},
+        ]);
+        let m = page_metrics(&rows, "urn:li:ugcPost:1").unwrap();
+        assert_eq!((m["impressions"].as_i64(), m["views"].as_i64(), m["shares"].as_i64(), m["engagement"].as_i64()),
+            (Some(1204), Some(96), Some(1), Some(16)));
+        assert!(page_metrics(&rows, "urn:li:ugcPost:2").unwrap_err().contains("no numbers"));
+        assert!(page_metrics(&rows, "urn:li:ugcPost:3").unwrap_err().contains("not in"));
+    }
+
+    /// AF-1065: a refused browser start passes on its own status; only a
+    /// failure without an answer is a 502 to retry.
+    #[test]
+    fn a_refused_browser_start_is_a_refusal_not_a_bad_gateway() {
+        use super::super::social_publish::FailKind;
+        let held = start_failure((StatusCode::CONFLICT, "browser start: HTTP 409 Conflict: a browser is already running".into()));
+        assert_eq!(held.status, StatusCode::CONFLICT);
+        assert!(matches!(held.kind, FailKind::Refused));
+        let down = start_failure((StatusCode::BAD_GATEWAY, "browser start: no answer".into()));
+        assert_eq!(down.status, StatusCode::BAD_GATEWAY);
+        assert!(matches!(down.kind, FailKind::Retry));
+        let broke = start_failure((StatusCode::INTERNAL_SERVER_ERROR, "browser start: HTTP 500".into()));
+        assert!(matches!(broke.kind, FailKind::Retry), "a server error stays retryable");
+    }
 
     fn ctx(pairs: &'static [(&'static str, &'static str)]) -> SocialCtx {
         SocialCtx {
@@ -398,7 +579,8 @@ async fn x_discard(state: &AppState) {
 
 async fn x_compose(state: &AppState, d: &Draft) -> Result<(), Failure> {
     let drive = |verb: &'static str, body: Value| super::browser::drive(state, SESSION, verb, body);
-    drive("start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION, "join": true})).await.map_err(Failure::retry)?;
+    super::browser::drive_status(state, SESSION, "start", json!({"profile": PROFILE, "url": X_COMPOSE, "session": SESSION, "join": true}))
+        .await.map_err(start_failure)?;
     drive("navigate", json!({"url": X_COMPOSE})).await.map_err(Failure::retry)?;
     if !until_in(state, SESSION, &format!("!!document.querySelector({})", json!(X_EDITOR)), 30).await.map_err(Failure::retry)? {
         return Err(Failure::refused(

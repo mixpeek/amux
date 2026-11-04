@@ -8,6 +8,7 @@ REAL_RUN, REAL_POPEN = _sp.run, _sp.Popen
 
 TMP = tempfile.mkdtemp()
 os.environ.update(CLAUDE_ROTATE_DIR=TMP, CLAUDE_ROTATE_USAGE_LOG="off", CLAUDE_ROTATE_LOG=os.path.join(TMP, "log"),
+                  CLAUDE_ROTATE_ACCOUNTS_DIR=os.path.join(TMP, "no-account-folders"),
                   CLAUDE_ROTATE_CLAUDE_JSON=os.path.join(TMP, "claude.json"))
 spec = importlib.util.spec_from_file_location("cr", os.path.join(os.path.dirname(__file__), "..", "claude-rotate.py"))
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
@@ -233,7 +234,12 @@ class Logins(unittest.TestCase):
     def setUp(self):
         self.kc = {}
         self.saved = {k: getattr(cr, k) for k in ("_kc_read", "_kc_write", "cli_email", "probe", "resume_stranded",
-                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream")}
+                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream", "USE_KEYCHAIN")}
+        # These tests fake the Keychain (_kc_read/_kc_write), so they run in
+        # Keychain mode on every platform. Off macOS USE_KEYCHAIN is false and
+        # a folder's login is read from its .credentials.json, which folder()
+        # does not write: on the Linux runner the switch fell to the browser.
+        cr.USE_KEYCHAIN = True
         self.real_run, self.real_popen = cr.subprocess.run, cr.subprocess.Popen
         cr._kc_read = lambda svc, acct: self.kc.get((svc, acct))
         cr._kc_write = lambda svc, acct, v: self.kc.__setitem__((svc, acct), v) or True
@@ -256,6 +262,16 @@ class Logins(unittest.TestCase):
         os.makedirs(d)
         json.dump({"oauthAccount": {"emailAddress": email}}, open(os.path.join(d, ".claude.json"), "w"))
         self.kc[(cr._folder_service(d), cr.CRED_ACCT)] = json.dumps({"claudeAiOauth": {"refreshToken": rt}})
+
+    def test_signed_in_folder_without_a_reading_is_ranked(self):
+        # 2026-10-31: a new host's eight folders were never candidates, so it held forever.
+        cr.save(cr.ACCOUNTS, {"accounts": {"spent@x.com": acct(100, h(3), 100, h(90))}})
+        self.folder("fresh", "fresh@x.com")
+        self.folder("gone", "gone@x.com")
+        self.kc.pop((cr._folder_service(os.path.join(cr.ACCOUNTS_DIR, "gone")), cr.CRED_ACCT))
+        rows = cr.rank(NOW)
+        self.assertEqual([r["email"] for r in rows], ["fresh@x.com", "spent@x.com"])
+        self.assertEqual(cr.decide("spent@x.com", rows, {}, NOW)[0], "fresh@x.com")
 
     def test_folder_service_matches_the_cli(self):
         # Observed on this Mac: CLAUDE_CONFIG_DIR=~/.amux/claude-accounts/amux
@@ -388,6 +404,51 @@ class UsageLog(unittest.TestCase):
         self.assertIsNone(cr.usage_log_sync())
         self.assertEqual(self.verdicts()[-1]["verdict"], "claude_rotate_usage_log_unreachable")
 
+
+
+class FileKeystore(unittest.TestCase):
+    """Linux has no Keychain (mixpeek-dev.amux.io, 2026-10-31): the CLI's login is
+    <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json and snapshots are 0600 files."""
+    def setUp(self):
+        self.saved = {k: getattr(cr, k) for k in ("USE_KEYCHAIN", "HOME", "KEYRING")}
+        self.home = tempfile.mkdtemp()
+        cr.USE_KEYCHAIN, cr.HOME, cr.KEYRING = False, self.home, os.path.join(self.home, "keyring")
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(cr, k, v)
+
+    def test_the_cli_login_is_its_credentials_file(self):
+        login = json.dumps({"claudeAiOauth": {"refreshToken": "PLACEHOLDER_RT"}, "mcpOAuth": {"x": 1}})
+        self.assertTrue(cr._kc_write("Claude Code-credentials", cr.CRED_ACCT, login))
+        path = os.path.join(self.home, ".claude", ".credentials.json")
+        self.assertEqual(open(path).read(), login, "written where Claude Code on Linux reads it")
+        self.assertEqual(cr._kc_read("Claude Code-credentials", cr.CRED_ACCT), login)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_a_snapshot_is_a_private_file_per_account(self):
+        self.assertIsNone(cr._kc_read(cr.STORE_SVC, "a@x.io"))
+        self.assertTrue(cr._kc_write(cr.STORE_SVC, "a@x.io", '{"claudeAiOauth": {}}'))
+        self.assertEqual(cr._kc_read(cr.STORE_SVC, "a@x.io"), '{"claudeAiOauth": {}}')
+        f = os.path.join(cr.KEYRING, cr.STORE_SVC, "a@x.io.json")
+        self.assertEqual(os.stat(f).st_mode & 0o777, 0o600)
+        self.assertIsNone(cr._kc_read(cr.STORE_SVC, "b@x.io"), "another account is its own file")
+
+    def test_an_account_folder_login_is_read_from_its_own_credentials_file(self):
+        acc = os.path.join(self.home, "accounts")
+        folder = os.path.join(acc, "use")
+        os.makedirs(folder)
+        json.dump({"oauthAccount": {"emailAddress": "Use@X.io"}}, open(os.path.join(folder, ".claude.json"), "w"))
+        json.dump({"claudeAiOauth": {"refreshToken": "PLACEHOLDER_FOLDER_RT"}}, open(os.path.join(folder, ".credentials.json"), "w"))
+        saved_dir = cr.ACCOUNTS_DIR
+        cr.ACCOUNTS_DIR = acc
+        try:
+            got = cr.folder_login("use@x.io")
+        finally:
+            cr.ACCOUNTS_DIR = saved_dir
+        self.assertEqual(got["claudeAiOauth"]["refreshToken"], "PLACEHOLDER_FOLDER_RT")
+        self.assertEqual(got["folder"], folder)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

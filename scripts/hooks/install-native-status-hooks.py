@@ -5,6 +5,12 @@ import json
 from pathlib import Path
 import shlex
 
+# 10 s, not 3 (AF-1054): under load the hook's runs reached 2,955 ms and the
+# provider killed the ones past 3 s, losing their edge (a lost Stop read the
+# lane as mid-turn for hours). The send is already detached, so a normal run
+# takes a few ms; the room is for an overloaded host.
+HOOK_TIMEOUT_S = 10
+
 COMMON = ('SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse',
           'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'Stop')
 
@@ -23,7 +29,7 @@ def merge(data, provider, script):
     events = COMMON + (('Interrupt',) if provider == 'codex' else ('Notification', 'PostToolUseFailure', 'StopFailure'))
     command = 'python3 ' + shlex.quote(str(script)) + ' ' + provider
     for event in events:
-        group = {'hooks': [{'type': 'command', 'command': command, 'timeout': 3}]}
+        group = {'hooks': [{'type': 'command', 'command': command, 'timeout': HOOK_TIMEOUT_S}]}
         if event in ('PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure'):
             group['matcher'] = '.*'
         hooks.setdefault(event, []).append(group)

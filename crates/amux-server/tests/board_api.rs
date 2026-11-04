@@ -1957,6 +1957,64 @@ async fn worker_cannot_create_locally_then_reassign_to_a_peer_or_unassigned_boar
     assert_eq!(after["session"], owner);
 }
 
+/// AF-1069: a card whose owner is no longer registered may be moved to a
+/// live, non-isolated lane by any worker (discarding it already could). A card
+/// a registered worker owns, an unregistered target and an isolated target are
+/// still refused.
+#[tokio::test]
+async fn an_orphaned_card_may_move_to_a_live_lane_and_a_live_owners_card_may_not() {
+    let (app, _dir) = app();
+    let sessions = std::path::PathBuf::from(std::env::var("AMUX_HOME").unwrap()).join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(sessions.join("af1069-live.env"), "CC_DESC=live\n").unwrap();
+    std::fs::write(sessions.join("af1069-owner.env"), "CC_DESC=owner\n").unwrap();
+    std::fs::write(sessions.join("af1069-iso.env"), "CC_ISOLATED=1\n").unwrap();
+    let card = |owner: &'static str| {
+        let app = app.clone();
+        async move { create(&app, json!({"title": format!("owned by {owner}"), "session": owner})).await["id"].as_str().unwrap().to_string() }
+    };
+    let patch = |id: String, to: &'static str| {
+        let app = app.clone();
+        async move {
+            send_with(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"session": to})),
+                &[("X-Amux-Worker", "af1069-caller")]).await
+        }
+    };
+
+    let orphan = card("af1069-gone").await;
+    for to in ["af1069-nowhere", "af1069-iso"] {
+        let (st, _, v) = patch(orphan.clone(), to).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{to}: {v}");
+        assert_eq!(v["code"], "cross_board_reassignment_forbidden");
+    }
+    let (st, _, v) = patch(orphan.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::OK, "an orphaned card moves to a live lane: {v}");
+    let (_, _, after) = send(&app, "GET", &format!("/api/board/{orphan}"), None).await;
+    assert_eq!(after["session"], "af1069-live");
+
+    // The owner's board is unregistered too, and holds the asks waiting on
+    // the owner: it is never orphaned.
+    let owner = std::env::var("AMUX_OWNER_NAME").ok().filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var("AMUX_OWNER_EMAIL").ok().and_then(|e| e.split('@').next().map(str::to_string)))
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "ethan".into())
+        .to_uppercase();
+    let ask = create(&app, json!({"title": "an ask on the owner's board", "session": owner})).await["id"]
+        .as_str().unwrap().to_string();
+    let (st, _, v) = patch(ask.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the owner's board is not orphaned: {v}");
+    let human = card("af1069-gone-human").await;
+    send(&app, "PATCH", &format!("/api/board/{human}"), Some(json!({"owner_type": "human"}))).await;
+    let (st, _, v) = patch(human.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a human's card is not orphaned: {v}");
+
+    let owned = card("af1069-owner").await;
+    let (st, _, v) = patch(owned.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a registered owner's card stays theirs: {v}");
+    let (_, _, after) = send(&app, "GET", &format!("/api/board/{owned}"), None).await;
+    assert_eq!(after["session"], "af1069-owner");
+}
+
 #[tokio::test]
 async fn circular_depends_on_is_rejected_with_the_cycle_path() {
     let (app, _dir) = app();

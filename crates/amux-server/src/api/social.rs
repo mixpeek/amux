@@ -61,7 +61,7 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
     ("instagram", "not_built", "Graph API content publishing: @amux_io as a Business account linked to a Facebook Page, and a Meta app with publishing approved."),
     ("tiktok", "not_built", "Content Posting API: posts are visible only to the account until TikTok audits the app."),
     ("x", "built", "browser publisher on the `ethan` profile, posting as @ethansteininger only with account \"ethan\" (his sign-off per post); needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). No amux X account is signed in; metrics are not built."),
-    ("linkedin", "built", "browser publisher on the `ethan` profile: account \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). Metrics are not built."),
+    ("linkedin", "built", "browser publisher on the `ethan` profile: account \"amux\" posts as the amux company page, \"ethan\" on Ethan Steininger's own profile; needs AMUX_SOCIAL_PUBLIC=1 (privacy draft composes and discards). Metrics come from the amux page's analytics table (page posts only, last 14 days)."),
 ];
 
 /// Every platform call names amux. dev.to answers 403 to a request with no
@@ -70,6 +70,11 @@ const PLATFORMS: &[(&str, &str, &str)] = &[
 pub const USER_AGENT: &str = concat!("amux/", env!("CARGO_PKG_VERSION"));
 
 type TokenFuture = Pin<Box<dyn Future<Output = Result<String, Value>> + Send>>;
+/// Reading a post's numbers needs no upload right (amux-gtm, 2026-11-02: the
+/// domain delegates these two and not youtube.upload, and asking for all three
+/// failed the whole mint).
+const YOUTUBE_READ_SCOPES: &str = "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly";
+
 type TokenSource = Arc<dyn Fn(AppState, HeaderMap, String) -> TokenFuture + Send + Sync>;
 type EnvSource = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -82,6 +87,8 @@ pub struct SocialCtx {
     pub youtube_upload: String,
     pub youtube_analytics: String,
     pub token: TokenSource,
+    /// The token for reading a post's numbers, with no upload scope.
+    pub read_token: TokenSource,
     /// Owner settings (`AMUX_SOCIAL_*`): server.env, then the process env.
     pub env: EnvSource,
     pub http: reqwest::Client,
@@ -99,6 +106,11 @@ impl SocialCtx {
                     super::connectors::bearer_for(state, headers, "google-youtube", &account).await
                 })
             }),
+            read_token: Arc::new(|state, headers, account| {
+                Box::pin(async move {
+                    super::connectors::bearer_for_scopes(state, headers, "google-youtube", &account, Some(YOUTUBE_READ_SCOPES)).await
+                })
+            }),
             http: reqwest::Client::builder()
                 .user_agent(USER_AGENT)
                 .timeout(std::time::Duration::from_secs(600))
@@ -114,6 +126,7 @@ impl SocialCtx {
     /// For tests: every platform URL under one fake origin, and a fixed bearer.
     pub fn fake(origin: &str, bearer: &str, env: &[(&str, &str)]) -> Self {
         let bearer = bearer.to_string();
+        let read_bearer = bearer.clone();
         let env: std::collections::HashMap<String, String> =
             env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         SocialCtx {
@@ -123,6 +136,10 @@ impl SocialCtx {
             youtube_analytics: format!("{origin}/v2"),
             token: Arc::new(move |_, _, _| {
                 let b = bearer.clone();
+                Box::pin(async move { Ok(b) })
+            }),
+            read_token: Arc::new(move |_, _, _| {
+                let b = read_bearer.clone();
                 Box::pin(async move { Ok(b) })
             }),
             env: Arc::new(move |key| env.get(key).cloned()),
@@ -424,7 +441,7 @@ impl Publisher for YouTube {
             let account = post["account"].as_str().filter(|a| !a.is_empty()).map(String::from)
                 .or_else(|| account_for(ctx, "youtube", None))
                 .ok_or("the post has no account and AMUX_SOCIAL_YOUTUBE_ACCOUNT is unset")?;
-            let token = (ctx.token)(state.clone(), headers, account)
+            let token = (ctx.read_token)(state.clone(), headers, account)
                 .await
                 .map_err(|e| format!("no YouTube token: {e}"))?;
             youtube_metrics(ctx, &token, post["post_id"].as_str().unwrap_or(""), post["posted_at"].as_i64().unwrap_or(0)).await
@@ -672,7 +689,20 @@ async fn live_metrics(
     };
     match fetch_metrics(&ctx, &state, headers, &post).await {
         Ok(m) => Json(json!({"ok": true, "measured": true, "post": id, "metrics": m})).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"ok": false, "measured": false, "post": id, "error": e}))).into_response(),
+        Err(e) => (metrics_failure_status(&e), Json(json!({"ok": false, "measured": false, "post": id, "error": e}))).into_response(),
+    }
+}
+
+/// A platform declining is not a platform failing (AF-1152). A token it refuses
+/// is amux's credential to fix, and a post with no numbers yet is an answer
+/// (`measured: false` says so); only the rest is a bad gateway.
+fn metrics_failure_status(error: &str) -> StatusCode {
+    if error.contains("shows no numbers") {
+        StatusCode::OK
+    } else if error.starts_with("HTTP 401") || error.starts_with("HTTP 403") {
+        StatusCode::FORBIDDEN
+    } else {
+        StatusCode::BAD_GATEWAY
     }
 }
 
@@ -756,16 +786,18 @@ pub fn due_windows(conn: &rusqlite::Connection, at: i64, max_attempts: i64) -> r
             if at < posted_at + secs {
                 continue;
             }
-            let prior: Option<(i64, i64)> = conn
+            let prior: Option<(i64, i64, i64)> = conn
                 .query_row(
-                    "SELECT measured, attempts FROM social_post_metrics WHERE post_row = ?1 AND win = ?2",
+                    "SELECT measured, attempts, fetched_at FROM social_post_metrics WHERE post_row = ?1 AND win = ?2",
                     rusqlite::params![id, w],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .ok();
             match prior {
-                Some((1, _)) => {}
-                Some((_, n)) if n >= max_attempts => {}
+                Some((1, _, _)) => {}
+                // Spent, then once a day: a missing token scope burned all 12
+                // attempts in a day, and granting it later fixed nothing.
+                Some((_, n, fetched)) if n >= max_attempts && at - fetched < 86_400 => {}
                 _ => out.push((id, *w)),
             }
         }
@@ -820,11 +852,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reading_numbers_asks_for_no_upload_scope() {
+        assert!(!super::YOUTUBE_READ_SCOPES.contains("upload"));
+        assert!(super::YOUTUBE_READ_SCOPES.contains("youtube.readonly"));
+        assert!(super::YOUTUBE_READ_SCOPES.contains("yt-analytics.readonly"));
+    }
+
+    #[test]
     fn a_title_comes_from_the_caption_and_fits_youtube() {
         assert_eq!(youtube_title(None, "Eight agents, one board\nmore text"), "Eight agents, one board");
         assert_eq!(youtube_title(Some("  "), "cap"), "cap");
         assert_eq!(youtube_title(Some("a <b> c"), ""), "a b c");
         assert_eq!(youtube_title(Some(&"x".repeat(150)), "").chars().count(), 100);
+    }
+
+    #[test]
+    fn linkedin_page_posts_are_measured() {
+        // e39611d5c built LinkedIn's metrics read, but the windows job never
+        // polled it: five page posts had no snapshot (amux-gtm, 2026-11-03).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0134_social_posts.sql")).unwrap();
+        conn.execute("INSERT INTO social_posts (platform, account, post_id, posted_at) VALUES ('linkedin', 'amux', 'urn:li:ugcPost:1', 1000)", []).unwrap();
+        assert_eq!(due_windows(&conn, 1000 + 86_400, 3).unwrap(), vec![(1, "24h")]);
     }
 
     #[test]
@@ -838,7 +887,24 @@ mod tests {
         assert_eq!(due_windows(&conn, 1000 + 700_000, 3).unwrap().len(), 3);
         conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '24h', 1, '{}', 1, 1)", []).unwrap();
         conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '72h', 1, 'null', 0, 1)", []).unwrap();
-        conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '7d', 1, 'null', 0, 3)", []).unwrap();
+        conn.execute("INSERT INTO social_post_metrics (post_row, win, fetched_at, metrics, measured, attempts) VALUES (1, '7d', 650000, 'null', 0, 3)", []).unwrap();
         assert_eq!(due_windows(&conn, 1000 + 700_000, 3).unwrap(), vec![(1, "72h")], "measured and exhausted windows are skipped, a failed one retried");
+        assert_eq!(due_windows(&conn, 650_000 + 86_400, 3).unwrap(), vec![(1, "72h"), (1, "7d")], "a spent window is tried again a day on");
+    }
+}
+
+#[cfg(test)]
+mod metrics_status_tests {
+    use super::*;
+
+    #[test]
+    fn a_platform_declining_is_not_a_bad_gateway() {
+        let scopes = "HTTP 403 Forbidden: Request had insufficient authentication scopes.";
+        assert_eq!(metrics_failure_status(scopes), StatusCode::FORBIDDEN);
+        assert_eq!(metrics_failure_status("HTTP 401 Unauthorized: x"), StatusCode::FORBIDDEN);
+        let none_yet = "LinkedIn shows no numbers for this post yet";
+        assert_eq!(metrics_failure_status(none_yet), StatusCode::OK);
+        assert_eq!(metrics_failure_status("HTTP 500 Internal: x"), StatusCode::BAD_GATEWAY);
+        assert_eq!(metrics_failure_status("connection reset"), StatusCode::BAD_GATEWAY);
     }
 }

@@ -17,9 +17,11 @@ pub mod contract;
 pub mod deep_links;
 pub mod scratchpad;
 pub(crate) mod send_profile;
+pub(crate) mod board_groom;
 pub mod prompt_block;
 pub mod land_approvals;
 pub mod land_queue;
+pub mod land_red;
 pub mod worker_identity;
 pub mod contract_fresh;
 pub mod prod_change;
@@ -61,6 +63,7 @@ pub mod env_config;
 pub mod file_viewer;
 pub mod media_hls;
 pub mod files;
+pub mod file_visits;
 pub mod fs;
 pub mod git_guard;
 pub mod gmail;
@@ -78,6 +81,7 @@ pub mod harness;
 pub mod health;
 pub mod history;
 pub mod history_ask;
+pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
 pub mod invariants_api;
@@ -96,6 +100,7 @@ pub mod map_store;
 pub mod mcp;
 pub mod mdai;
 pub mod measured;
+pub mod decision_digest;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
@@ -228,6 +233,7 @@ pub fn router_with_connector_transport(
         .route("/api/sync", axum::routing::get(sync::delta_sync))
         .route("/api/events", axum::routing::get(sse::events))
         .nest("/api/board", board::routes())
+        .nest("/api/board-groom", board_groom::routes())
         // Dead-letter routes merge into the workers nest (RR-0068): same
         // /api/workers prefix, second nest at one path is an axum conflict.
         .nest(
@@ -409,6 +415,7 @@ pub fn router_with_connector_transport(
         // AMUX-5286: the owner's one-at-a-time triage queue.
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
+        .merge(decision_digest::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
         .merge(bridge::routes())
@@ -993,7 +1000,7 @@ pub(crate) fn py_truthy(v: &serde_json::Value) -> bool {
 /// it a table (D1: "in-memory state is fiction").
 /// GET /api/debug/sse — is the realtime backbone actually carrying the fleet?
 ///
-/// AF-262. `.claude/rules/sse-realtime.md` states the failure mode plainly:
+/// AF-262. `crates/amux-dashboard/CLAUDE.md (Realtime)` states the failure mode plainly:
 /// clients declare SSE stale after 18s of silence and FALL BACK TO POLLING,
 /// and the fallback fetches both sessions and board. So an SSE degradation
 /// shows up as a rise in ordinary poll traffic, which is indistinguishable

@@ -130,8 +130,15 @@ test('categories: any group within a category, every category at once', async ({
   await makeTag('Ramen', 'Cuisine');
   await makeTag('KBBQ', 'Cuisine');
   await makeTag('Date', 'Vibe');
-  await expect.poll(async () => ((await (await request.get('/api/map')).json()).tagGroups || []).filter((c: any) => c.name.startsWith(RUN)).length).toBe(2);
-  const meta = await (await request.get('/api/map')).json();
+  // Wait for all three groups as well as both categories: the last Save can
+  // still be in flight when the second category exists, and then tid('Date')
+  // finds nothing (CI run 41401079873).
+  let meta: any;
+  await expect.poll(async () => {
+    meta = await (await request.get('/api/map')).json();
+    const mine = (xs: any[] | undefined) => (xs || []).filter((x: any) => x.name.startsWith(RUN)).length;
+    return [mine(meta.tagGroups), mine(meta.tags)];
+  }).toEqual([2, 3]);
   const tid = (n: string) => meta.tags.find((t: any) => t.name === `${RUN} ${n}`).id;
   await addPin(request, 'Ippudo', 0.001, { tags: [tid('Ramen')] });
   await addPin(request, 'Cote', 0.002, { tags: [tid('KBBQ'), tid('Date')] });

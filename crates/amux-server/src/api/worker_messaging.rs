@@ -45,6 +45,25 @@ pub(crate) fn all_open_inbound_groups(home: &std::path::Path) -> Vec<String> {
     out
 }
 
+thread_local! {
+    static QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with the group check's log lines off. A roster asks the send check
+/// about every worker to decide whom to list, and logging each "no" as a
+/// refused message wrote 4,027 WARN lines in one boot's first minute, for
+/// messages nobody sent (AF-1161).
+pub(crate) fn without_refusal_logs<T>(f: impl FnOnce() -> T) -> T {
+    let was = QUIET.with(|q| q.replace(true));
+    let out = f();
+    QUIET.with(|q| q.set(was));
+    out
+}
+
+fn logging() -> bool {
+    !QUIET.with(|q| q.get())
+}
+
 pub(crate) fn worker_group_refusal(
     origin: &str, target: &str,
     origin_groups: &std::collections::BTreeSet<String>,
@@ -53,19 +72,21 @@ pub(crate) fn worker_group_refusal(
 ) -> Option<PeerInputRefusal> {
     if origin.is_empty() || origin == target || !origin_groups.is_disjoint(target_groups) { return None; }
     if !target_open_groups.is_empty() {
-        tracing::info!(origin, target, ?target_open_groups, verdict = "open_group_inbound",
+        if logging() { tracing::info!(origin, target, ?target_open_groups, verdict = "open_group_inbound",
             measured = true, n_considered = 1,
-            "worker input allowed: the target is in a group open to every worker");
+            "worker input allowed: the target is in a group open to every worker"); }
         return None;
     }
     if super::chat_worker::companion_parent(origin) == Some(target) {
-        tracing::info!(origin, target, verdict = "chat_tab_self_input", measured = true, n_considered = 1,
-            "a worker's own Chat tab sent to it: self input, not a cross-group message");
+        if logging() { tracing::info!(origin, target, verdict = "chat_tab_self_input", measured = true, n_considered = 1,
+            "a worker's own Chat tab sent to it: self input, not a cross-group message"); }
         return None;
     }
-    tracing::warn!(origin, target, ?origin_groups, ?target_groups,
-        verdict = "worker_group_boundary", measured = true, n_considered = 1,
-        "worker input refused outside a shared group");
+    if logging() {
+        tracing::warn!(origin, target, ?origin_groups, ?target_groups,
+            verdict = "worker_group_boundary", measured = true, n_considered = 1,
+            "worker input refused outside a shared group");
+    }
     Some(PeerInputRefusal { code: "worker_group_boundary", reason: format!(
         "worker group boundary refused: {origin} [{origin_groups:?}] -> {target} [{target_groups:?}]. \
          Worker messages must stay within a shared group. Do not retry or reroute to another \
@@ -76,6 +97,20 @@ pub(crate) fn worker_group_refusal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_quiet_check_gives_the_same_answer_and_restores_logging() {
+        let own = ["a".to_string()].into_iter().collect();
+        let other = ["b".to_string()].into_iter().collect();
+        let shut = Default::default();
+        let loud = worker_group_refusal("x", "y", &own, &other, &shut).map(|r| r.code);
+        let quiet = without_refusal_logs(|| {
+            assert!(!logging());
+            worker_group_refusal("x", "y", &own, &other, &shut).map(|r| r.code)
+        });
+        assert_eq!(loud, quiet, "silencing the log must not change the verdict");
+        assert!(logging(), "logging is back on after the quiet call");
+    }
+
     #[test]
     fn shared_membership_is_required_and_multi_group_hubs_remain_reachable() {
         let own = ["gs12-platform".to_string()].into_iter().collect();

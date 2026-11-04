@@ -40,6 +40,7 @@
 //! `schedule_bound_deferred_start`, `schedule_paused_worker_retired`,
 //! `schedule_owner_lock_set`, `schedule_owner_lock_refused`,
 //! `schedule_disable_notified`, `schedule_disable_notice_skipped`,
+//! `schedule_disable_notice_owner_quiet`,
 //! `schedule_run_interrupted`, `schedule_run_credential_expired`.
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime, Timelike};
@@ -470,6 +471,19 @@ pub async fn notify_disabled(
     use super::schedule_failure::{resolve_route, LiveProbe, Route, SENDER};
     let worker = sched.str_field("session").trim().to_string();
     let id = sched.id().to_string();
+    // THE OWNER'S DISABLE IS NOT TOLD (owner, 2026-10-31: "this is wasting
+    // shit"). A bulk pause from the dashboard typed one notice per schedule
+    // into the worker: 26 into mxp-gs12 mid-/goal, 7 into amux, each a read
+    // and a turn. The schedule is LOCKED, and a worker that tries to re-enable
+    // or Run it is refused with the owner's reason, which is the one moment the
+    // worker needs to know. A disable by another worker is still told, since
+    // that one the owning worker may re-enable.
+    if owner {
+        tracing::info!(schedule = %id, worker = %worker, by, verdict = "schedule_disable_notice_owner_quiet",
+            measured = true, n_considered = 1,
+            "owner disabled a schedule; no notice typed into the worker, the lock refusal carries the reason");
+        return serde_json::json!({"route": "none", "worker": worker, "cause": "owner_disable_locked"});
+    }
     let route = resolve_route(store, &worker, &LiveProbe).await;
     if let Route::Owner { cause } = &route {
         // A stopped or paused worker still reads its queue on its next turn.

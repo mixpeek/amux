@@ -189,6 +189,7 @@ extension AppDelegate {
                                       w: Int(max(f.width, 200)), h: Int(max(f.height, 150)), opacity: p.opacity)
             overlays.append(o)
         }
+        applyFreeze()
         NSLog("amux-desktop: verdict=layout_opened name=%@ windows=%d pins=%d", name, l.windows.count, l.pins?.count ?? 0)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -424,6 +425,12 @@ extension AppDelegate {
         save.keyEquivalentModifierMask = [.command, .option]
         save.target = self
         layoutsMenu.addItem(save)
+        let freeze = NSMenuItem(title: "Freeze Workspace", action: #selector(toggleFreeze(_:)), keyEquivalent: "f")
+        freeze.keyEquivalentModifierMask = [.command, .option]
+        freeze.target = self
+        freeze.state = isFrozen ? .on : .off
+        freeze.toolTip = "Lock this workspace's tabs, names and workers. Windows, panes and zoom still resize."
+        layoutsMenu.addItem(freeze)
         let layouts = loadConfig().layouts ?? []
         if !layouts.isEmpty { layoutsMenu.addItem(.separator()) }
         let active = loadConfig().activeWorkspace

@@ -39,7 +39,7 @@ use std::time::Duration;
 ///
 /// That cost a real wrong conclusion on 2026-08-27. A day's `/api/sessions`
 /// volume rose 63% with 90% of it unattributed — exactly the shape a fleet-wide
-/// SSE degradation produces per `.claude/rules/sse-realtime.md` — and there was
+/// SSE degradation produces per `crates/amux-dashboard/CLAUDE.md (Realtime)` — and there was
 /// no way to tell that from "more browser tabs are open". The latency half of
 /// that finding turned out to be wrong for an unrelated reason; the blindness
 /// was real either way and survives the correction.

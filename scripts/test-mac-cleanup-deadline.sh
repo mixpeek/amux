@@ -59,9 +59,9 @@ check "no arm is skipped"                             none "$skipped"
 check "it keeps a working budget (its runs took 3-13s)" yes "$([ "$wt" -ge 8 ] && echo yes || echo no)"
 check "the first arm keeps its measured 54-95s"     yes "$([ "$cargo" -ge 70 ] && echo yes || echo no)"
 check "claude tmp is not squeezed below the arms after it" yes "$([ "$ct" -ge 45 ] && echo yes || echo no)"
-check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 330 ] && echo yes || echo no)"
+check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 360 ] && echo yes || echo no)"
 out=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; SECONDS=25; TARGET_SCAN_S=90; tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S')
-check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 305s left.*verdict=tick_arm_share')"
+check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 335s left.*verdict=tick_arm_share')"
 
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
@@ -70,7 +70,7 @@ got=$(TICK_PATH="$TICK" bash -c '
 IFS='|' read -r budget warn <<<"$got"
 check "the default deadline is under the warning"      yes "$([ "$budget" -lt "$warn" ] && echo yes || echo no)"
 got=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; echo "$TICK_BUDGET_S"')
-check "a deadline at or over the warning is clamped"   450 "$got"
+check "a deadline at or over the warning is clamped"   510 "$got"
 out=$(TICK_PATH="$TICK" AMUX_CLEANUP_TICK_BUDGET_S=540 bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"' | head -1)
 check "and the clamp says so"                         yes "$(has "$out" 'verdict=tick_budget_clamped')"
 got=$(TICK_PATH="$TICK" bash -c '
@@ -107,6 +107,26 @@ if [ "$(uname)" = Darwin ]; then
 else
   echo "  skip macOS-only cell (the tick's other probes are macOS commands): not run on $(uname)"
 fi
+
+echo "the reserve leaves the arms room and the verdicts their worst case (RCA self 20261101-164758)"
+vals=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $(( TICK_BUDGET_S - TICK_RESERVE_S )) $TICK_RESERVE_S' "$TICK" 2>/dev/null | tail -1)
+arms=${vals% *}; reserve=${vals#* }
+check "arms get past the 335 s that skipped them" yes "$([ "$arms" -gt 350 ] && echo yes || echo no)"
+check "the worst verdicts (145 s) finish before the 600 s kill" yes "$([ $(( arms + 145 )) -lt 600 ] && echo yes || echo no)"
+warn=$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0"; echo $TICK_WARN_S' "$TICK" 2>/dev/null | tail -1)
+check "the warning sits above the designed worst case and below the kill" yes "$([ $(( arms + 145 )) -lt "$warn" ] && [ "$warn" -lt 600 ] && echo yes || echo no)"
+# Purge between the two readings must not talk the idle-VM arm out of running.
+vmfn=$(awk '/^vm_arm_pressure\(\) \{/,/^}$/' "$TICK")
+vmp() { bash -c "$vmfn"'
+vm_arm_pressure "$1" "$2"' _ "$1" "$2" 2>/dev/null; }
+vmlog() { bash -c "$vmfn"'
+vm_arm_pressure "$1" "$2"' _ "$1" "$2" 2>&1 >/dev/null; }
+check "pressure 2 before purge still reaches the VM arm" 2 "$(vmp 2 1)"
+check "and it says so, with its verdict"                 yes "$(has "$(vmlog 2 1)" 'verdict=vm_arm_start_pressure')"
+check "a later, worse reading wins"                      1 "$(vmp 0 1)"
+check "an unreadable first reading uses the later one"   1 "$(vmp x 1)"
+check "the VM arm reads through it"                      yes "$(grep -qE 'vm_level=.\(vm_arm_pressure ' "$TICK" && echo yes || echo no)"
+check "the reserve is not smaller than the usual verdicts" yes "$([ "$reserve" -ge 60 ] && echo yes || echo no)"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-deadline — all checks passed"; exit 0; fi

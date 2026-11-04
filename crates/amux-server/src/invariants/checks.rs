@@ -214,6 +214,36 @@ fn optional_dependency_for(method: &str, shape: &str) -> Option<&'static str> {
         .map(|(_, _, daemon)| *daemon)
 }
 
+/// Routes whose CORRECT answer is often a refusal, with what refuses (AF-1072).
+///
+/// For these a 4xx counts as answering. `POST /api/browser/complete-order` is
+/// the vault's form fill: it refuses a page with no fillable payment field
+/// (422) and an order above the owner's approved limit (403), and every call
+/// that reached a fillable form answered 200. It read 2/20 answered (2 2xx, 12
+/// 4xx, 6 5xx) and was filed twice (AMUX-6252, AF-1072) with no handler change
+/// that could clear it: ethos rule 3, so the instrument moves.
+///
+/// A LIST, for the reason `OPTIONAL_DEPENDENCY_ROUTES` is one: most 4xx-heavy
+/// shapes are callers getting a request wrong, and a blanket rule would retire
+/// that half of the check. Only the 4xx are forgiven; a declared route's 5xx
+/// still fail it.
+const REFUSAL_ROUTES: &[(&str, &str, &str)] = &[
+    (
+        "POST",
+        "/api/browser/complete-order",
+        "the vault refuses an unfillable page (422) and an order above the approved limit (403)",
+    ),
+    // AF-1140: an external send waits for the owner (403 approval_required). All
+    // 48 logged 4xx on these two are that hold, and reply read 2/23 answered.
+    ("POST", "/api/email/reply", "an external reply is held for the owner's approval (403)"),
+    ("POST", "/api/email/send", "an external send is held for the owner's approval (403)"),
+];
+
+/// Is this shape one whose 4xx are answers?
+fn refuses_by_design(r: &RouteOutcomeRow) -> bool {
+    REFUSAL_ROUTES.iter().any(|(m, s, _)| *m == r.method && *s == r.shape)
+}
+
 /// Minimum calls before a shape is judged at all. Named rather than inlined so
 /// blind spot 1 and the code cannot drift apart.
 const MOUNTED_ANSWERS_MIN_N: i64 = 10;
@@ -233,7 +263,7 @@ const MOUNTED_ANSWERS_MAX_OK_PCT: i64 = 10;
 /// the tests), and three spellings of one predicate is how the census and the
 /// verdict come to disagree about the same row.
 fn answered(r: &RouteOutcomeRow) -> i64 {
-    r.ok + r.redirect
+    r.ok + r.redirect + if refuses_by_design(r) { r.client_err } else { 0 }
 }
 
 /// Below the answering threshold, on the same definition everywhere.
@@ -305,6 +335,8 @@ pub fn mounted_routes_answer(
             "max_ok_pct": MOUNTED_ANSWERS_MAX_OK_PCT,
             "blind_spots": MOUNTED_ANSWERS_BLIND_SPOTS,
             "dependency_down": dependency_down,
+            // Published so the forgiven 4xx are visible on a pass too.
+            "refusal_routes": REFUSAL_ROUTES.iter().map(|(m, s, why)| serde_json::json!({"route": format!("{m} {s}"), "why": why})).collect::<Vec<_>>(),
             "detail": extra,
         })
     };
@@ -786,6 +818,20 @@ pub struct DeployLag {
     /// while the install is fresh ([`RESTART_PENDING_S`]), so a restart that
     /// never comes still fails.
     pub restart_pending: Option<String>,
+    /// The gate's green target IS the served commit (AF-1099): nothing newer
+    /// has passed CI, so the server already runs the newest green commit and
+    /// any lag is CI's, not the builder's. `target_wait_s` is None both here
+    /// and when the gate names no target, which is why this is its own field:
+    /// 2026-10-31 12:16Z failed at 1811 s while a49570af4's CI was still
+    /// running and e5d51cd68, the served commit, was the green target.
+    pub target_is_served: bool,
+    /// The activation gate's own verdict and target, as read, for the
+    /// evidence (AF-1121): a failure at 22:35Z on 2026-10-31 recorded only
+    /// gate_hold=null and target_wait_s=null, which cannot tell a missing
+    /// target from a green one the builder held under SHELL-RUN DEFER (the
+    /// builder log showed the latter). None when the gate file is unreadable.
+    pub gate_verdict: Option<String>,
+    pub gate_target: Option<String>,
 }
 
 /// How long an installed-but-not-yet-served build is treated as a restart in
@@ -944,13 +990,16 @@ pub fn served_commit_is_current(
         "age_source": lag.age_source,
         "gate_hold": lag.gate_hold,
         "restart_pending": lag.restart_pending,
+        "target_is_served": lag.target_is_served,
+        "gate_verdict": lag.gate_verdict,
+        "gate_target": lag.gate_target,
         "target_wait_s": lag.target_wait_s,
     });
     // The builder's own clock (AF-1055): with a green target named, judge it by
     // how long THAT has waited, not by how long main has been ahead.
     let builder_late = match lag.target_wait_s {
         Some(w) => w > threshold_s,
-        None => true,
+        None => !lag.target_is_served,
     };
     if lag.oldest_unserved_age_s <= threshold_s || lag.restart_pending.is_some() || !builder_late {
         // Behind, but not yet longer than a build plausibly takes.
@@ -1163,9 +1212,15 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // api/history.rs (pin_message) writes epoch milliseconds.
+    ("message_pins", "pinned_at", true),
+    // 0152: api/decision_digest.rs writes now_f64() epoch seconds.
+    ("decision_digest_recommendations", "set_at", false),
+    ("decision_digest_ledger", "updated_at", false),
     // Messages (0137): api/conversations.rs writes epoch milliseconds.
     ("conversation_posts", "edited_at", true),
     ("conversation_posts", "deleted_at", true),
+    ("conversation_pins", "pinned_at", true), // 0144: conversations.rs pin_post writes now_ms()
     ("profiles", "updated_at", true),
     // Channel settings (0139): conversations.rs writes the channel columns
     // with Utc::now().timestamp() and membership rows with now_ms().
@@ -1196,6 +1251,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_result", "ts", false),
     ("card_contracts", "deploy_at", false),
     ("land_queue", "done_at", false), // land_queue.rs: now_f64(); live 1791295108.5
+    ("land_red", "opened_at", false), // land_red.rs: now_f64()
+    ("land_red", "told_at", false),
+    ("land_red", "updated_at", false),
     ("land_queue", "queued_at", false),
     ("schedules", "locked_at", false), // api/schedules.rs: Utc::now().timestamp()
     ("schedules", "pass_next_at", false), // runtime_jobs/schedule_check.rs: Utc::now().timestamp()
@@ -2641,6 +2699,14 @@ pub fn registered_lanes_are_running(lanes: &[LaneRunState]) -> Vec<InvariantResu
     for l in lanes {
         if l.is_running {
             out.push(InvariantResult::pass(ID).entity(&l.name));
+        } else if l.registered_age_s.is_some_and(|a| a < NEW_LANE_START_GRACE_S)
+            && l.held.is_some_and(|h| h.open == 0)
+        {
+            out.push(InvariantResult::pass(ID).entity(&l.name).evidence(json!({
+                "session": l.name, "not_running": true, "registered_age_s": l.registered_age_s,
+                "within_new_lane_grace_s": NEW_LANE_START_GRACE_S,
+                "note": "registered moments ago and holding no cards: a lane is registered before it is started",
+            })));
         } else {
             out.push(
                 InvariantResult::fail(
@@ -2728,7 +2794,16 @@ pub struct LaneRunState {
     /// read: a 0 there would read as "holds nothing" for a query that never
     /// ran, which is the distinction the verdict exists to make.
     pub held: Option<HeldWork>,
+    /// Seconds since the lane's env file was created, when the filesystem
+    /// says. A lane is registered before it is started, so a new one reads
+    /// "not running" until its start runs (AF-1105).
+    pub registered_age_s: Option<i64>,
 }
+
+/// How long a just-registered lane holding no cards may be not running before
+/// it is a finding (AF-1105: mixpeek-design-review was registered at 12:34Z,
+/// started at 12:41Z, and filed as a dead lane in between).
+pub const NEW_LANE_START_GRACE_S: i64 = 900;
 
 // ---------------------------------------------------------------------------
 // 5d. A pane's whole systemd scope got OOM-killed — the session, not the build.
@@ -2995,6 +3070,69 @@ pub const BOUNDARY_GUARD: InstalledScript = InstalledScript {
     noun: "boundary guard",
 };
 
+/// The push gate every land goes through (AF-1129). A landed change to it
+/// reached no real push until a manual install, so the script-tests leg ran only
+/// in fixtures. The builder syncs it now; this says when that stops working.
+pub const PRE_PUSH_HOOK: InstalledScript = InstalledScript {
+    id: "hooks.pre_push_matches_committed",
+    runtime_path: ".git/hooks/pre-push",
+    committed_path: "scripts/git-hooks/pre-push",
+    noun: "pre-push hook",
+};
+
+/// `git.shared_config_is_not_bare` (AF-1116): the shared checkout's own
+/// .git/config carries no `core.bare=true` and no `core.worktree`. Either one
+/// makes every lane's git in the main checkout read the wrong tree. On
+/// 2026-10-31 core.bare=true appeared at 20:17Z with no writer in any log and
+/// was noticed only when a land refused a minute later; this says so on the
+/// next evaluation instead. `config` is the file's text; None when unread.
+pub fn shared_config_is_not_bare(path: &str, config: Option<&str>) -> InvariantResult {
+    const ID: &str = "git.shared_config_is_not_bare";
+    let Some(text) = config else {
+        return InvariantResult::unknown(ID, format!("could not read {path}"));
+    };
+    let mut in_core = false;
+    let (mut bare, mut worktree) = (None::<String>, None::<String>);
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_core = t.trim_start_matches('[').trim_end_matches(']').trim().eq_ignore_ascii_case("core");
+            continue;
+        }
+        if !in_core {
+            continue;
+        }
+        if let Some((k, v)) = t.split_once('=') {
+            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().trim_matches('"').to_string());
+            if k == "bare" { bare = Some(v.to_ascii_lowercase()); }
+            if k == "worktree" { worktree = Some(v); }
+        }
+    }
+    let is_bare = bare.as_deref() == Some("true");
+    if !is_bare && worktree.is_none() {
+        return InvariantResult::pass(ID).evidence(json!({"config": path, "core_bare": bare, "measured": true, "n_considered": 1}));
+    }
+    let mut fix = Vec::new();
+    if worktree.is_some() { fix.push(format!("git config --file {path} --unset core.worktree")); }
+    if is_bare { fix.push(format!("git config --file {path} core.bare false")); }
+    InvariantResult::fail(
+        ID,
+        "the shared checkout's .git/config sets neither core.bare=true nor core.worktree",
+        format!("{path} sets {}{}: every lane's git in the main checkout reads that as its tree. Fix: {}",
+            if is_bare { "core.bare=true " } else { "" },
+            worktree.as_deref().map(|w| format!("core.worktree={w}")).unwrap_or_default(),
+            fix.join(" && ")),
+    )
+    .evidence(json!({"config": path, "core_bare": bare, "core_worktree": worktree, "fix": fix, "measured": true, "n_considered": 1}))
+}
+
+/// The worktree copy, only when it is an edit: different from the checkout's
+/// own HEAD. `None` when it equals HEAD, so a clean but lagging checkout reads
+/// as a stale install rather than as an uncommitted edit (AF-1160).
+pub fn uncommitted_edit(on_disk: String, local_head: Option<&str>) -> Option<String> {
+    (local_head != Some(on_disk.as_str())).then_some(on_disk)
+}
+
 /// AF-132: the committed side must be read at CHECK time, not baked at build
 /// time. These scripts are not compiled into the binary's deploy unit — the
 /// builder rebuilds only on crates//Cargo.* commits — so a script-only commit
@@ -3049,7 +3187,7 @@ pub fn installed_script_matches_committed(
         let observed = if wt_matches {
             format!(
                 "runtime {} matches an UNCOMMITTED edit of {} (runtime == worktree, sha {}, \
-                 HEAD has {}) — commit the tracked source; the installed copy already \
+                 the committed copy (origin/main, else HEAD) has {}) — commit the tracked source; the installed copy already \
                  carries the edit.",
                 spec.noun,
                 spec.committed_path,
@@ -3058,7 +3196,7 @@ pub fn installed_script_matches_committed(
             )
         } else {
             format!(
-                "runtime {} sha {} DRIFTED from {} at HEAD ({}) and matches the worktree \
+                "runtime {} sha {} DRIFTED from {} as committed (origin/main, else HEAD: {}) and matches the worktree \
                  copy of neither: an older install that missed later fixes, or an unreviewed \
                  hand-edit. Reinstall from source (./install.sh, or scripts/install-hooks.sh \
                  for the hooks alone) or fold the edit back into the committed copy.",
@@ -3077,7 +3215,7 @@ pub fn installed_script_matches_committed(
             "committed_sha": head_sha,
             "runtime_sha": runtime_sha,
             "runtime_matches_worktree": wt_matches,
-            "committed_source": "HEAD (read at check time)",
+            "committed_source": "origin/main, else HEAD (read at check time)",
             "runtime_path": spec.runtime_path,
             "committed_path": spec.committed_path,
         }))];
@@ -3247,8 +3385,14 @@ pub fn argv_command_head(command: &str) -> String {
 /// local argv; the remote shell expands it, so no secret is here. Split on
 /// whitespace, such a value starts with `$` or a backtick. It flagged 104 of
 /// the 171 failures on 2026-10-29 as two "credentials" of length 5 and 6.
+///
+/// Or CODE (2026-10-31): the land gate's review runs `claude -p <prompt>`, and
+/// a prompt carrying a diff with `DOOR_SECRET=os.path.join(etc, "secret")` put
+/// `DOOR_SECRET=os.path.join(etc,` (len 17) in argv, three processes at once.
+/// A credential is base64, hex or a dashed token; it never holds a bracket, a
+/// comma or a quote, and source text nearly always does.
 pub fn argv_value_is_expansion(value: &str) -> bool {
-    value.starts_with('$') || value.starts_with('`')
+    value.starts_with('$') || value.starts_with('`') || value.contains(['(', ')', ',', '"', '\''])
 }
 
 /// Does this argv key have the SHAPE of an environment variable? (AMUX-4964)
@@ -8030,12 +8174,12 @@ mod negative_controls {
     #[test]
     fn a_refusing_gate_and_a_dead_route_are_told_apart_in_the_evidence() {
         let mounted: Vec<(&str, &[&str])> =
-            vec![("/api/email/reply", &["POST"]), ("/api/sql/run", &["GET"])];
+            vec![("/api/land", &["POST"]), ("/api/sql/run", &["GET"])];
         let rows = vec![
             // A GATE doing its job: answered every time, refused every time.
             RouteOutcomeRow {
                 method: "POST".into(),
-                shape: "/api/email/reply".into(),
+                shape: "/api/land".into(),
                 n: 12,
                 ok: 0,
                 client_err: 12,
@@ -8068,7 +8212,7 @@ mod negative_controls {
 
         let gate = fails
             .iter()
-            .find(|r| r.entity_key == "POST /api/email/reply")
+            .find(|r| r.entity_key == "POST /api/land")
             .expect("the gate is reported");
         let dead = fails
             .iter()
@@ -8095,6 +8239,51 @@ mod negative_controls {
             dead.evidence["detail"]["refusal_shaped"],
             serde_json::json!(false)
         );
+    }
+
+    /// A DECLARED REFUSAL ROUTE'S 4xx ARE ANSWERS, ITS 5xx ARE NOT (AF-1072).
+    /// Three cells: the live specimen passes, the same route failing with 5xx
+    /// still fails, and an undeclared route with the same split still fails.
+    #[test]
+    fn a_declared_refusal_routes_4xx_answer_and_its_5xx_still_fail() {
+        let mounted: Vec<(&str, &[&str])> =
+            vec![("/api/browser/complete-order", &["POST"]), ("/api/browser/navigate", &["POST"])];
+        let row = |shape: &str, ok, client_err, server_err| RouteOutcomeRow {
+            method: "POST".into(),
+            shape: shape.into(),
+            n: ok + client_err + server_err,
+            ok,
+            client_err,
+            server_err,
+            ..Default::default()
+        };
+        let fails = |r: RouteOutcomeRow| {
+            mounted_routes_answer(&[r], &mounted).into_iter().filter(|x| x.status == Status::Fail).count()
+        };
+        assert_eq!(fails(row("/api/browser/complete-order", 2, 12, 6)), 0, "the live 2/12/6 split answers");
+        assert_eq!(fails(row("/api/browser/complete-order", 2, 0, 18)), 1, "5xx on a declared route still fail");
+        assert_eq!(fails(row("/api/browser/navigate", 2, 12, 6)), 1, "an undeclared route's 4xx are not forgiven");
+    }
+
+    /// AF-1140: the approval hold on outbound mail is an answer; a 5xx is not.
+    #[test]
+    fn an_email_held_for_approval_is_an_answer() {
+        let mounted: Vec<(&str, &[&str])> = vec![("/api/email/reply", &["POST"]), ("/api/email/send", &["POST"])];
+        let row = |shape: &str, ok, client_err, server_err| RouteOutcomeRow {
+            method: "POST".into(),
+            shape: shape.into(),
+            n: ok + client_err + server_err,
+            ok,
+            client_err,
+            server_err,
+            ..Default::default()
+        };
+        let fails = |r: RouteOutcomeRow| {
+            mounted_routes_answer(&[r], &mounted).into_iter().filter(|x| x.status == Status::Fail).count()
+        };
+        assert_eq!(fails(row("/api/email/reply", 2, 21, 0)), 0, "the live 2/21/0 split is the owner's hold");
+        assert_eq!(fails(row("/api/email/send", 2, 21, 0)), 0, "send has the same hold");
+        assert_eq!(fails(row("/api/email/reply", 2, 0, 18)), 1, "5xx still fail");
     }
 
     /// A 503 FROM A DECLARED OPTIONAL DAEMON IS AN ANSWER (AMUX-4545).
@@ -8513,6 +8702,12 @@ mod negative_controls {
         // DIFFERENT claim from a hand-edit — the remedy is committing the
         // tracked source, not reinstalling.
         let uncommitted = committed.to_string() + "# staged but not committed\n";
+        // AF-1160: a clean file at a lagging HEAD is not an edit, so it reaches
+        // the check as no worktree copy and reads as a stale install.
+        let lagging = "old bytes".to_string();
+        assert_eq!(uncommitted_edit(lagging.clone(), Some("old bytes")), None);
+        assert_eq!(uncommitted_edit(lagging.clone(), Some("other")), Some(lagging.clone()));
+        assert_eq!(uncommitted_edit(lagging.clone(), None), Some(lagging));
         let wt = installed_script_matches_committed(
             &GIT_SHARED_GUARD,
             committed,
@@ -8608,6 +8803,16 @@ mod negative_controls {
         );
         assert_eq!(boundary[0].invariant_id, "hooks.boundary_guard_matches_committed");
         assert_ne!(boundary[0].status, Status::Pass, "an older installed boundary guard is not a pass");
+        // AF-1129: an installed push hook that missed a landed change.
+        let push = installed_script_matches_committed(
+            &PRE_PUSH_HOOK,
+            committed,
+            Some(committed),
+            Some(committed),
+            Ok("# an older hook\n".into()),
+        );
+        assert_eq!(push[0].invariant_id, "hooks.pre_push_matches_committed");
+        assert_ne!(push[0].status, Status::Pass, "an older installed pre-push hook is not a pass");
         // ...and the prose must follow the spec, not stay hardcoded to the guard.
         let rep_drift = installed_script_matches_committed(
             &REPORT_HOOK,
@@ -11178,7 +11383,22 @@ mod served_commit_tests {
             gate_hold: None,
             target_wait_s: None,
             restart_pending: None,
+            target_is_served: false,
+            gate_verdict: None,
+            gate_target: None,
         }
+    }
+
+    /// AF-1099: behind past the threshold, but the gate's green target is the
+    /// served commit, so the newer commits are still in CI. Not a builder stall;
+    /// with no target named at all, the age rule still fails.
+    #[test]
+    fn lag_while_the_served_commit_is_the_green_target_is_ci_not_a_stall() {
+        let mut ci = lag(1, 1811);
+        ci.target_is_served = true;
+        assert_eq!(served_commit_is_current(Some(&ci), "", 1800)[0].status, Status::Pass);
+        assert_eq!(served_commit_is_current(Some(&lag(1, 1811)), "", 1800)[0].status, Status::Fail,
+            "no target named: the age rule still applies");
     }
 
     /// AF-1055: 1849 s behind at 07:45 on 2026-10-30, but the green target had
@@ -11218,9 +11438,14 @@ mod served_commit_tests {
         let mut l = lag(4, 1_814);
         assert_eq!(served_commit_is_current(Some(&l), "", 1_800)[0].status, Status::Fail);
         l.restart_pending = Some("build 262909fcc installed 46s ago".into());
+        l.gate_verdict = Some("ci_gate_held_back".into());
+        l.gate_target = Some("262909fcc".into());
         let r = served_commit_is_current(Some(&l), "", 1_800);
         assert_eq!(r[0].status, Status::Pass, "{:?}", r[0]);
         assert_eq!(r[0].evidence["restart_pending"], "build 262909fcc installed 46s ago");
+        // AF-1121: the gate's own state rides in the evidence.
+        assert_eq!((r[0].evidence["gate_verdict"].as_str(), r[0].evidence["gate_target"].as_str()),
+            (Some("ci_gate_held_back"), Some("262909fcc")));
     }
 
     /// 2026-10-24: 27 hours failing, 73 behind, and the text pointed at the
@@ -11363,7 +11588,27 @@ mod registered_lane_running_tests {
             name: name.into(),
             is_running: running,
             held,
+            registered_age_s: None,
         }
+    }
+
+    /// AF-1105: a lane registered moments ago and holding nothing is starting,
+    /// not dead. Each half of the grace is pinned: an old lane, or a new one
+    /// holding a card, still fails.
+    #[test]
+    fn a_just_registered_empty_lane_is_not_called_dead() {
+        let empty = Some(HeldWork { open: 0, doing: 0 });
+        let mut new = lane("new", false, empty);
+        new.registered_age_s = Some(120);
+        let mut old = lane("old", false, empty);
+        old.registered_age_s = Some(NEW_LANE_START_GRACE_S + 1);
+        let mut busy = lane("busy", false, Some(HeldWork { open: 1, doing: 0 }));
+        busy.registered_age_s = Some(120);
+        let out = registered_lanes_are_running(&[new, old, busy]);
+        let st = |n: &str| out.iter().find(|r| r.entity_key == n).map(|r| r.status).unwrap();
+        assert_eq!(st("new"), Status::Pass, "registered 2 min ago, holds nothing");
+        assert_eq!(st("old"), Status::Fail, "past the grace");
+        assert_eq!(st("busy"), Status::Fail, "holds a card");
     }
 
     /// This check shipped with NO tests at all, both arms unpinned.
@@ -11473,10 +11718,10 @@ mod argv_secret_invariant_tests {
     /// AMUX-6586: a shell expansion in argv is not a credential.
     #[test]
     fn a_shell_expansion_is_not_a_credential_value() {
-        for v in ["$(cat", "$PLANE_TOKEN", "${KEY}", "`cat"] {
+        for v in ["$(cat", "$PLANE_TOKEN", "${KEY}", "`cat", "os.path.join(etc,", "\"x\"", "f(x)"] {
             assert!(argv_value_is_expansion(v), "{v}");
         }
-        for v in ["sk-abc123", "x$y", "0123456789abcdef"] {
+        for v in ["sk-abc123", "x$y", "0123456789abcdef", "ghp_AbC.dEf-123_xyz", "eyJhbGciOiJIUzI1NiJ9.e30.sig"] {
             assert!(!argv_value_is_expansion(v), "{v}");
         }
     }
@@ -11936,5 +12181,23 @@ mod builder_tick_tests {
             Status::Unknown,
             "a zero interval cannot produce a budget, so it is unmeasured"
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_config_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_or_worktree_shared_config_fails_and_names_its_fix() {
+        let ok = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tbare = false\n[remote \"origin\"]\n\tbare = true\n"));
+        assert_eq!(ok.status, Status::Pass, "core.bare=false passes; a bare key outside [core] is ignored");
+        let bare = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tbare = true\n"));
+        assert_eq!(bare.status, Status::Fail);
+        assert!(bare.observed.contains("git config --file /r/.git/config core.bare false"), "{}", bare.observed);
+        let wt = shared_config_is_not_bare("/r/.git/config", Some("[core]\n\tworktree = /tmp/x\n"));
+        assert_eq!(wt.status, Status::Fail);
+        assert!(wt.observed.contains("--unset core.worktree") && !wt.observed.contains("core.bare false"), "{}", wt.observed);
+        assert_eq!(shared_config_is_not_bare("/r/.git/config", None).status, Status::Unknown);
     }
 }
