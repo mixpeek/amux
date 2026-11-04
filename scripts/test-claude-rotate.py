@@ -137,7 +137,14 @@ expect(stored == 13, f"the probe's 13% stands, got {stored}")
 # failed swap puts the previous login back.
 kc = {(rot.CRED_SVC, rot.CRED_ACCT): '{"claudeAiOauth": {"refreshToken": "old"}, "mcpOAuth": {"m": 1}}'}
 rot._kc_read = lambda s, a: kc.get((s, a))
-rot._kc_write = lambda s, a, v: kc.__setitem__((s, a), v) or True
+shared_writes = []
+def _w(s, a, v):
+    if s == rot.CRED_SVC:
+        shared_writes.append(v)
+    kc[(s, a)] = v
+    return True
+rot._kc_write = _w
+rot.USE_KEYCHAIN = False  # the scratch login of a trial goes to a file, never the real Keychain
 rot.capture_login = lambda: None
 rot.resume_stranded = lambda force=False: None
 rot.resume_auth_lost = lambda: None
@@ -146,18 +153,33 @@ rot.save(rot.CLAUDE_JSON, {"oauthAccount": {"emailAddress": "a@x"}})
 expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) is None, "no stored login: browser fallback")
 kc[(rot.STORE_SVC, "b@x")] = '{"claudeAiOauth": {"refreshToken": "new"}, "oauthAccount": {"emailAddress": "b@x"}}'
 rot.cli_email = lambda: rot.load(rot.CLAUDE_JSON, {})["oauthAccount"]["emailAddress"]
-rot.probe = lambda: {"seven_day": {}}
+rot.probe = lambda config_dir=None: {"seven_day": {}}
 expect(rot.stored_switch("b@x", "a@x", "preempt_limit", _t.time()) == 0, "stored login switches by CLI")
 import json as _j
 cred = _j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])
 expect(cred["claudeAiOauth"]["refreshToken"] == "new" and cred["mcpOAuth"] == {"m": 1},
        "the swap replaces only claudeAiOauth and keeps MCP logins")
-rot.probe = lambda: None
+rot.probe = lambda config_dir=None: None
 kc[(rot.STORE_SVC, "a@x")] = '{"claudeAiOauth": {"refreshToken": "a"}, "oauthAccount": {"emailAddress": "a@x"}}'
 before = kc[(rot.CRED_SVC, rot.CRED_ACCT)]
+shared_writes.clear()
 expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) is None, "an unproven swap falls back")
 expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b@x",
        "and the previous login is restored")
+# 2026-11-03: a dead saved login is tried in a scratch folder and never written
+# to the credential every running session reads (mixpeek-meta-worker was left
+# on the dead login by a swap-and-restore).
+expect(shared_writes == [], f"a dead saved login never touches the shared credential: {len(shared_writes)} write(s)")
+# A login that proves itself in the trial is installed as the trial left it
+# (the CLI may have refreshed its token there).
+def _probe_refreshing(config_dir=None):
+    if config_dir:
+        rot._file_write(rot._cli_cred_file(config_dir), '{"claudeAiOauth": {"refreshToken": "a2"}}')
+    return {"seven_day": {}}
+rot.probe = _probe_refreshing
+expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) == 0, "a proven login switches")
+expect(_j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])["claudeAiOauth"]["refreshToken"] == "a2",
+       "with the refreshed token from the trial, not the stale saved one")
 
 
 # Nothing under the preempt line: the roomiest account wins over the
