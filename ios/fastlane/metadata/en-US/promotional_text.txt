@@ -1,1 +1,1 @@
-Monitor your AI coding agents from anywhere. See Claude Code, Codex, and Gemini sessions live. Approve actions, steer work, and track progress on the go.
+amux by Mixpeek: run Claude Code, Codex and Gemini CLI agents from your iPhone or iPad. Watch sessions live, approve actions and steer work from anywhere.
