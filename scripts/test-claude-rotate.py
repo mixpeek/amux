@@ -181,6 +181,25 @@ expect(rot.stored_switch("a@x", "b@x", "preempt_limit", _t.time()) == 0, "a prov
 expect(_j.loads(kc[(rot.CRED_SVC, rot.CRED_ACCT)])["claudeAiOauth"]["refreshToken"] == "a2",
        "with the refreshed token from the trial, not the stale saved one")
 
+# A login whose /usage is rate limited still answered, so the trial passes it.
+# The probe itself runs on tmux: drive the shipped function with a fake pane.
+_fresh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(_fresh)
+_panes = []
+def _fake_tmux(*args):
+    class R: stdout = _panes[0] if args[0] == "capture-pane" else ""
+    return R()
+_fresh.tmux = _fake_tmux
+_sleep = _fresh.time.sleep
+_fresh.time.sleep = lambda _s: None
+_cfg = tempfile.mkdtemp()
+_fresh.save(os.path.join(_cfg, ".claude.json"), {"oauthAccount": {"emailAddress": "t@x"}})
+_panes[:] = ["\u276f\nError: Usage endpoint is rate limited until 1am.\n"]
+expect(_fresh.probe(config_dir=_cfg) == {"rate_limited": True}, "a rate-limited /usage proves the login answered")
+_panes[:] = ["\u23fa Login expired \u00b7 Please run /login\n\u276f\n"]
+expect(_fresh.probe(config_dir=_cfg) is None, "an expired login fails the trial")
+_fresh.time.sleep = _sleep
+
 # The expired-login wording strands a worker the same way as "Not logged in",
 # with the footer lines below it (mixpeek-meta-worker, 2026-11-03).
 _expired_pane = """\u23fa Login expired \u00b7 Please run /login

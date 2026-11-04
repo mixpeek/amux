@@ -710,6 +710,11 @@ def tmux(*args):
     return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=20)
 
 
+# 2026-11-03 23:59: a trial of a working login read this on /usage, and the
+# trial called the login dead. The CLI only reaches it with a login that answers.
+USAGE_RATE_LIMITED = "Usage endpoint is rate limited"
+
+
 def probe(config_dir=None):
     """Read the logged-in account's usage from /usage in a temporary CLI
     session. It sends no prompt, so it spends no quota, and it works whether
@@ -740,10 +745,16 @@ def probe(config_dir=None):
             if sent and "Current week (all models)" in screen and re.search(
                     r"Current week \(all models\)[\s\S]*?\d+% used", screen):
                 break
+            if config_dir and (USAGE_RATE_LIMITED in screen or AUTH_LOST.search(screen)):
+                break
         windows = parse_usage(screen)
     finally:
         tmux("kill-session", "-t", name)
     elapsed = round(time.time() - started, 1)
+    if config_dir and USAGE_RATE_LIMITED in screen and not AUTH_LOST.search(screen):
+        log("claude_rotate_trial_usage_rate_limited", measured=True, n_considered=1, current=email, elapsed_s=elapsed,
+            note="the login answered; its usage numbers are not available yet")
+        return {"rate_limited": True}
     if not email or "seven_day" not in windows:
         log("claude_rotate_probe_failed", measured=False, why_unmeasured="no /usage screen parsed",
             current=email, elapsed_s=elapsed, screen_tail=re.sub(r"\s+", " ", screen)[-200:])
@@ -1464,8 +1475,8 @@ def trial_login(target, saved):
             log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
             return None
         if probe(config_dir=folder) is None:
-            log("claude_rotate_stored_login_dead", measured=True, n_considered=1, target=target,
-                note="the shared credential was not touched")
+            log("claude_rotate_stored_login_unproven", measured=True, n_considered=1, target=target,
+                note="it did not read /usage in a scratch folder; the shared credential was not touched")
             return None
         raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
         try:
@@ -1513,9 +1524,10 @@ def stored_switch(target, before, reason, started):
             log("claude_rotate_stored_switch_failed", target=target, via=via, why="keychain write failed")
             return None
         _write_oauth_account(saved.get("oauthAccount") or {})
+        # The trial proved the login, so a second /usage is not asked to prove it
+        # again: the endpoint rate limits, and that would roll back a good switch.
         after = cli_email()
-        windows = probe() if after == target else None
-        if after == target and windows is not None:
+        if after == target:
             elapsed = round(time.time() - started, 1)
             state = load(STATE, {})
             state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
@@ -1533,7 +1545,7 @@ def stored_switch(target, before, reason, started):
         if prev_acct:
             _write_oauth_account(prev_acct)
         log("claude_rotate_stored_switch_failed", target=target, via=via, still=cli_email(), cli_said=after,
-            probed=windows is not None, restored=bool(prev_raw))
+            restored=bool(prev_raw))
     return None
 
 
