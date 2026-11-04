@@ -170,6 +170,7 @@ expect(kc[(rot.CRED_SVC, rot.CRED_ACCT)] == before and rot.current_email() == "b
 # to the credential every running session reads (mixpeek-meta-worker was left
 # on the dead login by a swap-and-restore).
 expect(shared_writes == [], f"a dead saved login never touches the shared credential: {len(shared_writes)} write(s)")
+expect("a@x" in (rot.load(rot.STATE, {}).get("unproven") or {}), "and is marked unproven for the next pick")
 # A trial that fails after the CLI refreshed the token keeps the newest token:
 # the old one no longer works, and the folder holding the new one is deleted.
 def _probe_refresh_then_fail(config_dir=None):
@@ -226,6 +227,21 @@ _expired_pane = """\u23fa Login expired \u00b7 Please run /login
 expect(rot.auth_lost(_expired_pane), "an expired login on screen counts as a lost login")
 expect(not rot.auth_lost("we discussed logins\n\u276f\n"), "a pane with no login error does not")
 
+
+# mixpeek-dev, 2026-11-04 06:13Z: the current account at 100%, every other at
+# 96% or more (so none "usable"), and the one with room left had an unproven
+# login. The fleet stopped on the weekly limit. Now an account with anything
+# left beats one with nothing, and an unproven login is never a target.
+spent_rows = [row("vectors", 0, 100), row("join", 0, 96), row("mixpeek", 0, 97), row("try", 0, 85)]
+st = {"switched_at": 0, "unproven": {"try": _t.time()}}
+t3, why3 = rot.decide("vectors", spent_rows, st)
+expect((t3, why3) == ("join", "current_exhausted_last_headroom"), f"spent current takes the last headroom, got {(t3, why3)}")
+t4, why4 = rot.decide("vectors", [row("vectors", 0, 100), row("try", 0, 20)], {"switched_at": 0, "unproven": {"try": _t.time()}})
+expect(t4 is None, f"an unproven login is not a target even with room, got {(t4, why4)}")
+t5, _ = rot.decide("vectors", [row("vectors", 0, 100), row("try", 0, 20)], {"switched_at": 0, "unproven": {"try": _t.time() - rot.FAIL_BACKOFF_S - 5}})
+expect(t5 == "try", "an old unproven mark expires")
+t6, _ = rot.decide("join", [row("join", 0, 50), row("mixpeek", 0, 97)], {"switched_at": 0})
+expect(t6 is None, "a working account is not left for one at 97%")
 
 # Nothing under the preempt line: the roomiest account wins over the
 # soonest-resetting nearly full one.

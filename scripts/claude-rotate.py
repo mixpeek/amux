@@ -598,10 +598,19 @@ def forgive_recovered_mailboxes(state, dead, at_s=None):
     return cleared
 
 
+def unproven(state, at_s=None):
+    """Accounts whose saved login failed its trial (trial_login) inside
+    FAIL_BACKOFF_S. Unlike a backoff, nothing relaxes this: the login is known
+    not to work, so trying it again only spends the tick. A later trial that
+    passes, or a fresh capture of that login, clears it."""
+    at_s = at_s or time.time()
+    return {e for e, t in (state.get("unproven") or {}).items() if at_s - float(t) < FAIL_BACKOFF_S}
+
+
 def decide(current, rows, state, at=None, unreachable=()):
     """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    dead = {e.lower() for e in unreachable} - {current}
+    dead = ({e.lower() for e in unreachable} | unproven(state)) - {current}
     skip = (backed_off(state) | dead) - {current}
     marked = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
     # A backoff saves sign-in time; it must never leave the fleet with no
@@ -621,6 +630,20 @@ def decide(current, rows, state, at=None, unreachable=()):
     # joinmixpeek was picked for its early reset and hit 99% three minutes later).
     best = next(iter(under), None) or max((r for r in rows if r["usable"]), key=lambda r: r["headroom"], default=None)
     cur = next((r for r in rows if r["email"] == current), None)
+    if best is None and cur is not None and not cur["usable"]:
+        # THE LAST FEW PERCENT (mixpeek-dev, 2026-11-04 06:13Z). Every account
+        # was at 96% or more, so none was "usable" (MIN_HEADROOM), and the
+        # current one at 100% stopped every worker on the weekly limit while
+        # joinmixpeek and mixpeek each had 4% left. Switching at 4% remaining
+        # is the rule for leaving a working account; once the current one is
+        # spent, an account with anything left beats one with nothing.
+        spare = [r for r in rows if r["email"] != current and r["email"] not in dead
+                 and r["email"] not in backed_off(state)
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < SWITCH_AT
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < max(cur["five_hour"] or 0, cur["weekly"] or 0)]
+        last = min(spare, key=lambda r: max(r["five_hour"] or 0, r["weekly"] or 0), default=None)
+        if last is not None:
+            return last["email"], "current_exhausted_last_headroom"
     if best is None:
         return None, "no_usable_account"
     # Preempt first: the account nearest its limit is often also the one whose
@@ -874,12 +897,12 @@ def cmd_tick():
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason, backed_off=skipped))
     rc = switch(target, reason)
-    if rc == 0 or reason != "current_exhausted" or cli_email() != current:
+    if rc == 0 or not reason.startswith("current_exhausted") or cli_email() != current:
         return rc
     # The current account is spent and that target failed: try the next one now
     # rather than leaving the fleet stopped until the next tick.
     rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
-    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=dead)
+    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=set(dead) | {target})
     if not target2 or target2 == target:
         return rc
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
@@ -1447,6 +1470,9 @@ def capture_login():
         return email
     if _kc_write(STORE_SVC, email, blob):
         log("claude_rotate_captured", measured=True, account=email, new=prev is None)
+        st = load(STATE, {})
+        if (st.get("unproven") or {}).pop(email, None) is not None:
+            save(STATE, st)
         return email
     log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="keychain write failed")
     return None
@@ -1485,10 +1511,17 @@ def trial_login(target, saved):
         if fresh != oauth:
             _kc_write(STORE_SVC, target, json.dumps(dict(saved, claudeAiOauth=fresh, captured=time.time())))
             log("claude_rotate_trial_token_kept", measured=True, n_considered=1, target=target)
+        state = load(STATE, {})
+        marks = state.setdefault("unproven", {})
         if windows is None:
+            marks[target] = time.time()
+            save(STATE, state)
             log("claude_rotate_stored_login_unproven", measured=True, n_considered=1, target=target,
-                note="it did not read /usage in a scratch folder; the shared credential was not touched")
+                note="it did not read /usage in a scratch folder; the shared credential was not touched; "
+                     "skipped as a target until a trial passes or its login is captured again")
             return None
+        if marks.pop(target, None) is not None:
+            save(STATE, state)
         return fresh
     finally:
         if USE_KEYCHAIN:
