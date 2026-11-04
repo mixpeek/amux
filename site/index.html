@@ -172,6 +172,8 @@
     .hero { padding-top: 48px; }
     .hero-cta .btn { flex: 1 1 100%; max-width: 360px; }
     .hero-sub .install-line { width: 100%; max-width: 360px; font-size: 12.5px; padding-left: 12px; }
+    .install-line { align-items: center; }
+    .install-line span { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-align: left; font-size: 13px; line-height: 1.5; }
     .apps a { display: inline-block; padding: 12px 6px; margin: -12px 0; }
     .stage { margin-top: 40px; }
     .stage .browser { display: none; }
@@ -204,7 +206,6 @@
           <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
         </div>
       </div>
-      <a href="#get" class="nav-cta nav-cta-primary">Get started</a>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="nav-stars">★ <span class="gh-stars">539</span></span></a>
     </nav>
   </header>
@@ -232,7 +233,7 @@
     <div class="stage">
       <div class="browser">
         <div class="browser-bar" aria-hidden="true"><i></i><i></i><i></i><span class="url">yourname.amux.io</span></div>
-        <video id="demo-desk" muted loop playsinline preload="none" poster="/home/demo-desktop.jpg" data-src="/home/demo-desktop.mp4"
+        <video id="demo-desk" muted loop playsinline preload="none" data-poster="/home/demo-desktop.jpg" data-src="/home/demo-desktop.mp4"
           title="amux dashboard: start workers, watch them work, answer what needs you, and let the board drain"></video>
       </div>
       <div class="phone">
@@ -316,12 +317,14 @@
     document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
   }
 
-  /* Hero demo: load only the clips this screen shows (phone only below 700px).
+  /* Hero demo: load only the clips this screen shows (phone only below 700px),
+     posters included, so a phone never downloads the hidden desktop poster.
      Reduced motion gets the poster and the controls instead of autoplay. */
   var wide = window.matchMedia('(min-width: 701px)').matches;
   var desk = document.getElementById('demo-desk'), phone = document.getElementById('demo-phone');
   [wide ? desk : null, phone].forEach(function (v) {
     if (!v) return;
+    if (v.dataset.poster) v.poster = v.dataset.poster;
     v.src = v.getAttribute('data-src');
     if (reduced) { v.controls = true; v.preload = 'metadata'; return; }
     var p = v.play(); if (p && p.catch) p.catch(function () { v.controls = true; });

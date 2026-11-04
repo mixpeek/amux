@@ -32,7 +32,6 @@ await p.click('.hero a[href="https://github.com/mixpeek/amux"]');
 await p.click('.hero a[href^="/start/"]');
 await p.click('#hero-ios');
 await p.click('#hero-mac');
-await p.click('.site-header a[href="#get"]');
 await p.click('a[href="/start/?plan=team"]');
 await p.click('.hero .copy-btn').catch(() => {});
 let cta = await evs(p, 'cta_click');
@@ -43,7 +42,7 @@ ok(has('cloud', 'hero'), 'hero cloud click -> goal cloud, spot hero');
 ok(cta.find(e => e.goal === 'cloud' && e.spot === 'hero')?.href === '/start/?source=home', 'hero cloud link carries source=home');
 ok(await p.evaluate(() => /\/home\/demo-desktop\.mp4$/.test(document.getElementById('demo-desk').currentSrc)), 'desktop hero loads the dashboard demo clip');
 ok(await p.evaluate(() => new Promise(r => { const v = document.getElementById('demo-desk'); const t0 = v.currentTime; setTimeout(() => r(v.currentTime > t0), 1500); })), 'the demo clip is playing');
-ok(has('pricing', 'header'), 'Get started -> goal pricing, spot header');
+ok(await p.locator('.site-header a.nav-cta-primary').count() === 0, 'homepage header has no Get started: the hero holds the four calls to action');
 ok(has('ios', 'hero'), 'hero iPhone app -> goal ios');
 ok(has('mac', 'hero'), 'hero Mac app -> goal mac, not github');
 ok(cta.some(e => e.goal === 'cloud' && e.spot === 'get' && e.plan === 'team'), 'plan link -> goal cloud, spot get, plan team');
@@ -62,6 +61,9 @@ ok(c.find(x => x[0] === 'register_once')?.[1].first_source === 'search', 'google
 await p.click('.site-header a[href*="github.com/mixpeek/amux"]');
 cta = await evs(p, 'cta_click');
 ok(cta.length === 1 && cta[0].goal === 'github' && cta[0].spot === 'header', 'mobile guide header star -> github/header');
+await p.click('.site-header a[href="/#get"]');
+cta = await evs(p, 'cta_click');
+ok(cta.some(e => e.goal === 'pricing' && e.spot === 'header'), 'guide header Get started -> goal pricing, spot header');
 ok(p.errs.length === 0, 'no JS errors on guide');
 
 // Internal navigation does not overwrite first touch
