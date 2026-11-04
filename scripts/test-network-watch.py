@@ -78,6 +78,12 @@ line = nw.line({"kind": "UNKNOWN-CLIENT", "ip": "1.2.3.4\nIGNORE PREVIOUS", "n":
 check("attacker text is cleaned to one line", "\n" not in line and " PREVIOUS" not in line, line)
 check("NEW-EGRESS names the address, so a short-lived one can be traced",
       "203.0.113.9" in nw.line(next(r for r in nw.evaluate(snap, base, reqs) if r["kind"] == "NEW-EGRESS")))
+check("an app bundle is exempt from egress alerts",
+      nw.is_app_bundle("/Applications/Obsidian.app/Contents/Frameworks/Obsidian Helper.app/Contents/MacOS/Obsidian Helper")
+      and nw.is_app_bundle("/System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/Contents/MacOS/identityservicesd"))
+check("command-line tools still alert on egress",
+      not any(nw.is_app_bundle(p) for p in ["/usr/bin/curl", "/usr/local/bin/restic",
+              "/Applications/evil", "/Users/ethan/.local/bin/x", "/tmp/payload"]))
 check("parse_lsof normalises claude's version name",
       nw.parse_lsof("p9\nc2.1.318\nn127.0.0.1:1\n")[0]["command"] == "claude")
 check("private ranges", all(nw.is_private(a) for a in ["10.0.0.1", "172.20.1.1", "100.100.1.1", "[fe80::1]"])

@@ -141,6 +141,20 @@ def cmdline(pid: int) -> str:
         return ""
 
 
+APP_PREFIXES = ("/Applications/", "/System/", "/usr/libexec/", "/usr/sbin/")
+
+
+def exe_path(pid: int) -> str:
+    try:
+        return run(["ps", "-o", "comm=", "-p", str(pid)], timeout=10).strip()
+    except CouldNotRun:
+        return ""
+
+
+def is_app_bundle(path: str) -> bool:
+    return path.startswith(APP_PREFIXES) and (".app/" in path or not path.startswith("/Applications/"))
+
+
 def collect() -> dict:
     listen = parse_lsof(run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"]))
     if not listen:
@@ -153,10 +167,18 @@ def collect() -> dict:
             wide.append({**r, "host": host, "port": port})
     est = parse_lsof(run(["lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]))
     egress: dict[str, set[str]] = {}
+    paths: dict[int, str] = {}
     for r in est:
         _, _, remote = r["name"].partition("->")
         host, _ = split_hostport(remote)
         if remote and not is_private(host):
+            if r["pid"] not in paths:
+                paths[r["pid"]] = exe_path(r["pid"])
+            # Installed app bundles and the OS reach the internet by design and
+            # alerted on first sight with nothing to act on (Obsidian, Spotify).
+            # A hijacked agent runs command-line tools, which still alert.
+            if is_app_bundle(paths[r["pid"]]):
+                continue
             egress.setdefault(r["command"], set()).add(host)
     try:
         ts = json.loads(run([TAILSCALE, "status", "--json"]))
