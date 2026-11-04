@@ -207,5 +207,7 @@ of the log. After that, oldest first.
 ## Schedules
 
 - Advisory watch: shell, `19 */6 * * *`, runs origin/main's script.
+- Network watch: shell, `*/10 * * * *`, runs origin/main's script with `--fix`. See
+  [NETWORK-WATCH.md](NETWORK-WATCH.md).
 - Red-team run: tmux, `30 4 * * 1,4`, Monday and Thursday. Mixpeek's run is Tuesday and
   Friday at 06:00, and the restic backup is daily at 03:00.
