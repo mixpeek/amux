@@ -1356,6 +1356,12 @@ def _kc_write(service, account, value):
     return p.returncode == 0 and "error" not in (p.stderr or "").lower()
 
 
+def _kc_delete(service, account):
+    if not USE_KEYCHAIN:
+        return
+    subprocess.run(["security", "delete-generic-password", "-s", service, "-a", account], capture_output=True)
+
+
 # Per-account config folders, each signed in on its own with CLAUDE_CONFIG_DIR
 # set. The CLI keeps such a login in the keychain under CRED_SVC plus "-" and
 # the first 8 hex digits of sha256(folder path). 2026-10-20: all seven of
@@ -1536,7 +1542,7 @@ def trial_login(target, saved):
         return fresh
     finally:
         if USE_KEYCHAIN:
-            subprocess.run(["security", "delete-generic-password", "-s", svc, "-a", CRED_ACCT], capture_output=True)
+            _kc_delete(svc, CRED_ACCT)
         shutil.rmtree(folder, ignore_errors=True)
 
 

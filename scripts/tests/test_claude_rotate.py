@@ -121,7 +121,7 @@ class Policy(unittest.TestCase):
         cr.save(cr.STATE, {})
         calls, real = [], (cr.switch, cr.probe)
         cr.switch = lambda t, r: calls.append(t) or 0
-        cr.probe = lambda: None
+        cr.probe = lambda **kw: None
         try:
             with redirect_stdout(io.StringIO()):
                 cr.main(["x", "off"])
@@ -145,7 +145,7 @@ class Policy(unittest.TestCase):
         calls, real = [], (cr.switch, cr.cli_email, cr.probe, cr.rank)
         cr.switch = lambda t, r: calls.append(t) or (1 if t == "vec" else 0)
         cr.cli_email = lambda: "join"
-        cr.probe = lambda: None
+        cr.probe = lambda **kw: None
         cr.rank = lambda at=None: real[3](NOW)
         try:
             with redirect_stdout(io.StringIO()):
@@ -234,7 +234,8 @@ class Logins(unittest.TestCase):
     def setUp(self):
         self.kc = {}
         self.saved = {k: getattr(cr, k) for k in ("_kc_read", "_kc_write", "cli_email", "probe", "resume_stranded",
-                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream", "USE_KEYCHAIN")}
+                                                   "resume_auth_lost", "ACCOUNTS_DIR", "relay_upstream", "USE_KEYCHAIN",
+                                                   "_kc_delete")}
         # These tests fake the Keychain (_kc_read/_kc_write), so they run in
         # Keychain mode on every platform. Off macOS USE_KEYCHAIN is false and
         # a folder's login is read from its .credentials.json, which folder()
@@ -243,8 +244,9 @@ class Logins(unittest.TestCase):
         self.real_run, self.real_popen = cr.subprocess.run, cr.subprocess.Popen
         cr._kc_read = lambda svc, acct: self.kc.get((svc, acct))
         cr._kc_write = lambda svc, acct, v: self.kc.__setitem__((svc, acct), v) or True
+        cr._kc_delete = lambda svc, acct: self.kc.pop((svc, acct), None)
         cr.cli_email = lambda: (cr.load(cr.CLAUDE_JSON, {}).get("oauthAccount") or {}).get("emailAddress")
-        cr.probe = lambda: {"five_hour": 0}
+        cr.probe = lambda **kw: {"five_hour": 0}
         cr.resume_stranded = lambda force=False: []
         cr.resume_auth_lost = lambda: []
         cr.ACCOUNTS_DIR = tempfile.mkdtemp()
@@ -290,9 +292,14 @@ class Logins(unittest.TestCase):
         self.folder("usemixpeek", "fresh@x.com")
         self.assertEqual(cr.login_coverage(["fresh@x.com", "none@x.com"]),
                          {"fresh@x.com": "account_folder", "none@x.com": "browser"})
+        before = set(self.kc)
         with redirect_stdout(io.StringIO()):
             rc = cr.stored_switch("fresh@x.com", "spent@x.com", "current_exhausted", time.time())
         self.assertEqual(rc, 0)
+        # The trial's scratch-folder login is deleted after the proof, through
+        # _kc_delete (the Linux runner has no `security` binary to shell out to).
+        left = [k for k in set(self.kc) - before if k[0].startswith(cr.CRED_SVC + "-")]
+        self.assertEqual(left, [])
         self.assertEqual(cr.cli_email(), "fresh@x.com")
         cred = json.loads(self.kc[(cr.CRED_SVC, cr.CRED_ACCT)])
         self.assertEqual(cred["claudeAiOauth"]["refreshToken"], "fresh-rt")
@@ -301,7 +308,7 @@ class Logins(unittest.TestCase):
 
     def test_failed_folder_login_restores_the_previous_one(self):
         self.folder("dead", "dead@x.com")
-        cr.probe = lambda: None
+        cr.probe = lambda **kw: None
         with redirect_stdout(io.StringIO()):
             self.assertIsNone(cr.stored_switch("dead@x.com", "spent@x.com", "current_exhausted", time.time()))
         self.assertEqual(cr.cli_email(), "spent@x.com")
