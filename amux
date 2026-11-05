@@ -7112,6 +7112,10 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
 
+This is the default host for anything you publish. Do not deploy to Netlify,
+Vercel, Cloudflare Pages, GitHub Pages or another outside host unless the owner
+names it; build a password or feedback form into the app instead.
+
 The Apps tab holds apps with a backend and files shared outside amux, used only
 when the owner asks for one. A file for the owner is not an App: name it by its
 absolute path, which amux shows as a link to its file viewer. Give the web link
