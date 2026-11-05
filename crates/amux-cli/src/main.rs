@@ -14,7 +14,8 @@ use serde_json::{json, Value};
 #[derive(Parser)]
 #[command(
     name = "amux-rs",
-    version,
+    // The source this was built from (build.rs), not the workspace placeholder.
+    version = env!("AMUX_CLI_VERSION"),
     about = "amux command-line interface (Rust server)"
 )]
 struct Cli {
