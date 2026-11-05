@@ -116,6 +116,7 @@ printf '#!/bin/sh\nprintf old-build\n\n' > "$INSTALL"; chmod 0755 "$INSTALL"
 run
 grep -q "verdict=activation_rolled_back" "$TMP/build.log" && ok "an unadopted same-inputs build is still rolled back" || bad "no rollback for the same-inputs build"
 grep -q "verdict=activation_unadopted_same_inputs" "$TMP/build.log" && ok "it is named as same-inputs" || bad "no same-inputs verdict"
+! grep -q "held until a newer one" "$TMP/build.log" && ok "and the rollback line does not claim a hold" || bad "the rollback line claims a hold that was not written"
 [ ! -e "$TMP/stamp.rolled_back" ] && ok "a same-inputs rollback writes no hold" || bad "same-inputs rollback was held: $(cat "$TMP/stamp.rolled_back")"
 [ -s "$TMP/stamp.failed" ] && ok "it waits out the bounded build backoff instead" || bad "no backoff recorded"
 

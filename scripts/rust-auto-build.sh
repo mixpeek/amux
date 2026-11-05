@@ -1109,7 +1109,9 @@ PYIDENTITY
         if [ -f "${INSTALL}.identity.json.rollback" ]; then mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"; else rm -f "${INSTALL}.identity.json"; fi
         mv -f "${INSTALL}.rollback" "$INSTALL"
         if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
+        rb_next="this commit is held until a newer one"
         if [ "$last" = "$head" ]; then
+          rb_next="this commit is retried after the ${retry_s}s build backoff, not held"
           # Same build inputs as the binary just restored: the code is not what
           # failed, so do not hold it until crates/ changes (see
           # activation_rollback_hold_same_inputs). Retry on the bounded build
@@ -1121,7 +1123,7 @@ PYIDENTITY
           printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
         fi
         echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${waited}s" \
-             "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
+             "(live: ${live:-unmeasured}); the previous binary is back and $rb_next verdict=activation_rolled_back"
       fi
     fi
   else
