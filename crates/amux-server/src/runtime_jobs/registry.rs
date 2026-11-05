@@ -125,6 +125,7 @@ pub mod ids {
     pub const TELEGRAM_RELAY: &str = "telegram-relay";
     pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
     pub const BRIDGE_DISCORD: &str = "bridge-discord";
+    pub const BRIDGE_WHATSAPP_APP: &str = "bridge-whatsapp-app";
     pub const MESSAGE_CAPTURE: &str = "message-capture";
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
@@ -188,6 +189,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::TELEGRAM_RELAY,
     ids::BRIDGE_OUTBOUND,
     ids::BRIDGE_DISCORD,
+    ids::BRIDGE_WHATSAPP_APP,
     ids::MESSAGE_CAPTURE,
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
@@ -668,6 +670,18 @@ pub const CATALOG: &[Doc] = &[
             var: "DISCORD_BOT_TOKEN",
             effect: "unset = idles, checking every 30 s; set = reads every 4 s",
             off: None,
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_WHATSAPP_APP,
+        name: "WhatsApp self chat",
+        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker messages through the chat bridge; answers go back through the app.",
+        env: &[EnvControl {
+            var: "AMUX_WHATSAPP_APP",
+            effect: "unset = on when AMUX_OWNER_PHONE is set and WhatsApp's database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
         }],
         pref: None,
         detail: Some("/api/bridge"),

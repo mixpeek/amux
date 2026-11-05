@@ -59,6 +59,27 @@ what did I say earlier?" works.
 Then, from the chat: `/link <worker or group>`. Or from amux:
 `POST /api/bridge/links {"platform","conversation","is_group","target"}`.
 
+### WhatsApp from your own app (no setup)
+
+Your "message yourself" chat in WhatsApp is a direct line to amux, through the
+WhatsApp app on this Mac (`bridge/whatsapp_app.rs`):
+
+- Write `@worker what you want` in that chat, from your phone or anywhere. Within
+  a few seconds it is posted in #general and delivered to that worker.
+- The worker's answer comes back into the same chat as `worker: answer`. Only
+  answers in threads the chat started come back, never other #general posts.
+- Anything that does not start with `@` stays a note to yourself. `/link
+  <worker or group>` points the chat somewhere other than #general.
+- Answers are typed into the WhatsApp app, so the Mac must be unlocked and idle
+  for about five seconds. While it is locked the answer waits
+  (`bridge_outbound_waiting`) and goes out when it is free. WhatsApp takes the
+  screen for about three seconds per answer.
+- Needs `AMUX_OWNER_PHONE` and the Accessibility grant for `WhatsApp Send`
+  (see `/whatsapp`). Off with `AMUX_WHATSAPP_APP=0`. amux opens WhatsApp in the
+  background when it is not running, because its database is current only then.
+- Verdicts: `bridge_whatsapp_app_filed`, `bridge_whatsapp_app_linked`,
+  `bridge_whatsapp_app_read_failed`, `bridge_whatsapp_app_launched`.
+
 ### WhatsApp
 
 1. **A Meta app with the WhatsApp product** (developers.facebook.com, free).
