@@ -69158,7 +69158,7 @@ function _cvSelect(sel, auto) {
   { const pb = document.getElementById('cv-pins-btn'); if (pb) pb.hidden = true; }
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
-  if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
+  if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   _cv.restoreScroll = true; _cv.unreadFrom = null;
   _cvRenderPinsBtn();
@@ -69173,7 +69173,16 @@ function _cvSelect(sel, auto) {
   // fallback for a stream that is down (and for invited members, who get the
   // wake-up but not the event).
   _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel && (!_liveSSE || Date.now() - (_cv.liveAt || 0) > 15000)) _cvPoll(false); }, 2500);
-  if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(inp);
+}
+// The message box takes focus when a conversation opens, unless you already
+// went somewhere to type (the search box): it used to take the focus back
+// 50 ms later, and what you typed went into the message box.
+function _cvFocusSoon(el) {
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (el && (!a || a === document.body || a === el || !a.matches('input, textarea, select, [contenteditable="true"]'))) el.focus();
+  }, 50);
 }
 function _cvFit() {
   const view = document.getElementById('messages-view'); if (!view) return;
@@ -69184,7 +69193,222 @@ function _cvFit() {
   });
 }
 window.addEventListener('resize', () => { if (_cvViewOn()) _cvFit(); });
-function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+function _cvSearch(q) { q = (q || '').trim(); if (!q) return; _cvSqRemember(q); _cvSqClose(); _cvSelect('@search:' + q); }
+
+// ── SEARCH AND DISCOVERY (owner, 2026-11-05: "improve the chat ux, we need
+// better search/discovery") ──
+// The sidebar box searches as you type. Its panel offers filters as chips
+// (From, In, Time, Has), which write the same operators the server reads
+// (conversations.rs SearchFilters: from:, in:, after:, has:), so a typed
+// query and a clicked one are the same thing. Results come grouped:
+// conversations whose name matches, then messages with the words marked.
+// Empty, it shows your recent searches. ↑ ↓ Enter Esc work; "/" focuses it.
+const _cvSq = { seq: 0, t: 0, sel: -1, items: [], menu: null, res: null, q: '' };
+const _CV_SQ_TIME = [['24h', 'Past 24 hours'], ['7d', 'Past week'], ['30d', 'Past 30 days'], ['365d', 'Past year']];
+const _CV_SQ_HAS = [['file', 'A file'], ['link', 'A link'], ['thread', 'A thread']];
+function _cvSqInput() { return document.getElementById('cv-search'); }
+function _cvSqPanel() { return document.getElementById('cv-sq'); }
+// The words of a query that are not operators.
+function _cvSqText(q) { return String(q || '').split(/\s+/).filter(w => w && !/^[a-z]+:/.test(w)).join(' '); }
+function _cvSqTok(q, op) { const m = String(q || '').match(new RegExp('(?:^|\\s)' + op + ':(\\S+)')); return m ? m[1] : ''; }
+function _cvSqSetTok(op, v) {
+  const inp = _cvSqInput();
+  let q = inp.value.replace(new RegExp('(^|\\s)' + op + ':\\S+', 'g'), ' ').replace(/\s+/g, ' ').trim();
+  if (v) q = (q ? q + ' ' : '') + op + ':' + v;
+  inp.value = q + (q ? ' ' : '');
+  _cvSq.menu = null;
+  inp.focus();
+  _cvSqRun();
+}
+function _cvSqRecent() { try { return JSON.parse(localStorage.getItem('amux_cv_recent_search') || '[]'); } catch (e) { return []; } }
+function _cvSqRemember(q) {
+  const list = [q].concat(_cvSqRecent().filter(x => x !== q)).slice(0, 8);
+  try { localStorage.setItem('amux_cv_recent_search', JSON.stringify(list)); } catch (e) { console.warn('recent searches not saved', e); }
+}
+function _cvSqOpen() {
+  const pan = _cvSqPanel(), inp = _cvSqInput(); if (!pan || !inp) return;
+  const r = inp.getBoundingClientRect();
+  const w = Math.min(560, window.innerWidth - Math.max(8, r.left) - 8);
+  pan.style.left = Math.max(8, r.left) + 'px';
+  pan.style.top = (r.bottom + 4) + 'px';
+  pan.style.width = Math.max(r.width, w) + 'px';
+  pan.style.maxHeight = Math.max(200, window.innerHeight - r.bottom - 16) + 'px';
+  pan.hidden = false;
+  inp.setAttribute('aria-expanded', 'true');
+  _cvSqRun(true);
+}
+function _cvSqClose() {
+  const pan = _cvSqPanel(); if (pan) pan.hidden = true;
+  const inp = _cvSqInput(); if (inp) inp.setAttribute('aria-expanded', 'false');
+  _cvSq.menu = null; _cvSq.sel = -1;
+}
+// Debounced: each keystroke restarts the wait, and an answer to an older
+// query is dropped (seq), so the list never shows results for text you deleted.
+function _cvSqRun(now) {
+  clearTimeout(_cvSq.t);
+  const q = _cvSqInput().value.trim();
+  _cvSq.q = q;
+  if (!q) { _cvSq.res = null; _cvSqRender(); return; }
+  _cvSqRender();
+  const seq = ++_cvSq.seq;
+  _cvSq.t = setTimeout(async () => {
+    try {
+      const r = await fetch(API + '/api/conversations/search?limit=8&q=' + encodeURIComponent(q));
+      const d = await r.json();
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = r.ok ? d : { error: d.error || ('HTTP ' + r.status) };
+    } catch (e) {
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = { error: String((e && e.message) || e) };
+    }
+    _cvSqRender();
+  }, now ? 0 : 180);
+}
+function _cvSqConvs() {
+  const L = _cv.list || {};
+  return [].concat(
+    (L.channels || []).map(c => ({ conv: c.conv, name: '#' + (c.title || c.name), kind: 'Channel', key: c.name, ico: '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>' })),
+    (L.people || []).filter(p => !p.me).map(p => ({ conv: p.conv, name: p.name, kind: 'Person', key: String(p.email || p.name).split('@')[0], ico: _cvAvatar(p.name, false, p.email) })),
+    (L.workers || []).map(w => ({ conv: w.conv, name: w.name, kind: 'Worker', key: w.name, ico: _cvAvatar(w.name, true) })));
+}
+function _cvSqWhen(ts) {
+  const d = new Date(ts);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+function _cvSqChip(op, label, shown) {
+  const v = _cvSqTok(_cvSq.q, op);
+  const on = !!v;
+  return '<button type="button" class="cv-sq-chip' + (on ? ' on' : '') + (_cvSq.menu === op ? ' open' : '') + '" data-op="' + op + '" onmousedown="event.preventDefault()" onclick="'
+    + (on ? '_cvSqSetTok(this.dataset.op, \'\')' : '_cvSq.menu = _cvSq.menu === this.dataset.op ? null : this.dataset.op; _cvSqRender()')
+    + '" aria-pressed="' + on + '">' + esc(on ? label + ': ' + (shown ? shown(v) : v) + ' ×' : label + ' ▾') + '</button>';
+}
+function _cvSqRender() {
+  const pan = _cvSqPanel(); if (!pan || pan.hidden) return;
+  const q = _cvSq.q, text = _cvSqText(q).toLowerCase();
+  const items = [];   // what ↑ ↓ Enter move through: {run, html}
+  const add = (html, run) => { items.push(run); return html.replace('<button ', '<button data-i="' + (items.length - 1) + '" '); };
+  const convs = _cvSqConvs();
+  const convName = v => { const c = convs.find(x => x.conv === v || x.conv === 'g:' + v.replace(/^#/, '')); return c ? c.name : v; };
+  const timeName = v => (_CV_SQ_TIME.find(t => t[0] === v) || [v, v])[1];
+  let h = '<div class="cv-sq-chips" role="toolbar" aria-label="Filters">' + _cvSqChip('from', 'From') + _cvSqChip('in', 'In', convName)
+    + _cvSqChip('after', 'Time', timeName) + _cvSqChip('has', 'Has') + '</div>';
+  const opt = (label, ico, run) => add('<button type="button" class="cv-sq-row" role="option" onmousedown="event.preventDefault()">' + (ico || '') + '<span class="cv-sq-main">' + label + '</span></button>', run);
+  if (_cvSq.menu) {
+    const m = _cvSq.menu;
+    const list = m === 'from' ? convs.filter(c => c.kind !== 'Channel').map(c => [c.key, c.name, c.ico, c.kind])
+      : m === 'in' ? convs.map(c => [c.conv.indexOf('g:') === 0 ? '#' + c.conv.slice(2) : c.conv, c.name, c.ico, c.kind])
+      : (m === 'after' ? _CV_SQ_TIME : _CV_SQ_HAS).map(t => [t[0], t[1], '', '']);
+    h += '<div class="cv-sq-sec">' + esc({ from: 'Messages from', in: 'Messages in', after: 'Messages sent in the', has: 'Messages that have' }[m]) + '</div>'
+      + list.map(([v, name, ico, kind]) => opt(esc(name) + (kind ? '<small>' + esc(kind) + '</small>' : ''), ico, () => _cvSqSetTok(m, v))).join('');
+  } else if (!q) {
+    const recent = _cvSqRecent();
+    if (recent.length) h += '<div class="cv-sq-sec">Recent searches</div>' + recent.map(r => opt(esc(r), '<span class="cv-ico">&#x1F552;</span>', () => { _cvSqInput().value = r; _cvSearch(r); })).join('');
+    h += '<div class="cv-sq-tip">Type to search every conversation you can read. Filters: <code>from:doron</code> <code>in:#amux</code> <code>after:7d</code> <code>has:file</code></div>';
+  } else {
+    const hitConvs = text ? convs.filter(c => c.name.toLowerCase().replace(/^#/, '').includes(text.replace(/^#/, ''))).slice(0, 5) : [];
+    if (hitConvs.length) h += '<div class="cv-sq-sec">Conversations</div>' + hitConvs.map(c => opt(esc(c.name) + '<small>' + esc(c.kind) + '</small>', c.ico, () => { _cvSqClose(); _cvSqInput().blur(); _cvSelect(c.conv); })).join('');
+    const d = _cvSq.res;
+    h += '<div class="cv-sq-sec">Messages' + (d && d.total ? ' <span class="cv-sq-n">' + d.total + '</span>' : '') + '</div>';
+    if (!d) h += '<div class="cv-sq-tip">Searching…</div>';
+    else if (d.error) h += '<div class="cv-sq-tip">Search failed: ' + esc(d.error) + '</div>';
+    else {
+      const bad = ((d.filters || {}).unknown || []);
+      if (bad.length) h += '<div class="cv-sq-tip cv-sq-warn">Not a filter, ignored: ' + bad.map(esc).join(', ') + '</div>';
+      if (!(d.posts || []).length) h += '<div class="cv-sq-tip">No messages match.</div>';
+      h += (d.posts || []).map(p => {
+        const snip = p.snippet ? esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') : esc(String(p.body || '').slice(0, 160));
+        return add('<button type="button" class="cv-sq-row cv-sq-hit" role="option" onmousedown="event.preventDefault()">' + _cvAvatar(p.author_name, p.author_key.indexOf('worker:') === 0, p.author_key)
+          + '<span class="cv-sq-main"><span class="cv-sq-head"><b>' + esc(p.author_name) + '</b><span>' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' · thread' : '') + '</span><span class="cv-sq-ts">' + esc(_cvSqWhen(p.ts)) + '</span></span>'
+          + '<span class="cv-sq-snip">' + snip + '</span></span></button>',
+          () => { _cvSqRemember(q); _cvSqClose(); _cvSqInput().blur(); _cvOpenThreadOrScroll(p.conv, p.parent_id || p.id); });
+      }).join('');
+      if ((d.posts || []).length) h += add('<button type="button" class="cv-sq-row cv-sq-all" role="option" onmousedown="event.preventDefault()"><span class="cv-sq-main">See all ' + (d.total || '') + ' results for “' + esc(q) + '” <small>Enter</small></span></button>', () => _cvSearch(q));
+    }
+  }
+  pan.innerHTML = h;
+  _cvSq.items = items;
+  if (_cvSq.sel >= items.length) _cvSq.sel = -1;
+  pan.querySelectorAll('[data-i]').forEach(b => {
+    b.classList.toggle('sel', +b.dataset.i === _cvSq.sel);
+    b.onclick = () => (_cvSq.items[+b.dataset.i] || (() => {}))();
+  });
+}
+function _cvSqKey(e) {
+  const pan = _cvSqPanel();
+  if (e.key === 'Escape') { if (_cvSq.menu) { _cvSq.menu = null; _cvSqRender(); } else { _cvSqClose(); e.target.blur(); } e.preventDefault(); return; }
+  if (pan && pan.hidden && e.key !== 'Enter') _cvSqOpen();
+  const n = _cvSq.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!n) return;
+    _cvSq.sel = e.key === 'ArrowDown' ? (_cvSq.sel + 1) % n : (_cvSq.sel <= 0 ? n - 1 : _cvSq.sel - 1);
+    pan.querySelectorAll('[data-i]').forEach(b => b.classList.toggle('sel', +b.dataset.i === _cvSq.sel));
+    pan.querySelector('[data-i="' + _cvSq.sel + '"]')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_cvSq.sel >= 0 && _cvSq.items[_cvSq.sel]) _cvSq.items[_cvSq.sel]();
+    else _cvSearch(e.target.value);
+  }
+}
+document.addEventListener('mousedown', e => {
+  const pan = _cvSqPanel();
+  if (pan && !pan.hidden && !pan.contains(e.target) && e.target !== _cvSqInput()) _cvSqClose();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || !_cvViewOn()) return;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+  const inp = _cvSqInput(); if (!inp || !inp.offsetParent) return;
+  e.preventDefault(); inp.focus(); _cvSqOpen();
+});
+// THE RESULTS PAGE: every match, how many in each conversation (click one to
+// narrow to it), and which filters the server understood.
+async function _cvSearchPage(q) {
+  const inp = _cvSqInput(); if (inp && inp.value.trim() !== q) inp.value = q;
+  document.getElementById('cv-title').textContent = 'Search: ' + q;
+  document.getElementById('cv-meta').textContent = 'Searching…';
+  const box = document.getElementById('cv-posts'); box.innerHTML = '<div class="cv-empty">Loading…</div>';
+  let d;
+  try {
+    const r = await fetch(API + '/api/conversations/search?limit=200&q=' + encodeURIComponent(q));
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) { box.innerHTML = '<div class="cv-empty">Could not search: ' + esc(e.message) + '</div>'; document.getElementById('cv-meta').textContent = ''; return; }
+  if (_cv.sel !== '@search:' + q) return;
+  const posts = d.posts || [], by = Object.entries(d.by_conv || {}).sort((a, b) => b[1] - a[1]);
+  document.getElementById('cv-meta').textContent = (d.total || 0) + (d.total === 1 ? ' result' : ' results') + ' in ' + by.length + (by.length === 1 ? ' conversation' : ' conversations')
+    + (posts.length < (d.total || 0) ? ' (newest ' + posts.length + ' shown by best match)' : '');
+  const scoped = _cvSqTok(q, 'in');
+  const bar = '<div class="cv-sr-bar" role="toolbar" aria-label="Narrow to a conversation">'
+    + (scoped ? '<button type="button" class="cv-sq-chip on" onclick="_cvSearch(' + esc(JSON.stringify(q.replace(/(^|\s)in:\S+/, ' ').trim())) + ')">In: ' + esc(_cvFindName(scoped.indexOf(':') > 0 ? scoped : 'g:' + scoped.replace(/^#/, ''))) + ' ×</button>'
+      : by.slice(0, 10).map(([c, n]) => '<button type="button" class="cv-sq-chip" data-cv="' + esc(c) + '" onclick="_cvSearch(' + esc(JSON.stringify(q)) + ' + \' in:\' + (this.dataset.cv.indexOf(\'g:\') === 0 ? \'#\' + this.dataset.cv.slice(2) : this.dataset.cv))">' + esc(_cvFindName(c)) + ' <span class="cv-sq-n">' + n + '</span></button>').join(''))
+    + (((d.filters || {}).unknown || []).length ? '<span class="cv-sq-warn">Not a filter, ignored: ' + d.filters.unknown.map(esc).join(', ') + '</span>' : '')
+    + '</div>';
+  // The words are marked in the message itself, not in a snippet repeated under it.
+  box.innerHTML = bar + (posts.length ? posts.map(p => _cvPostHtml(Object.assign({}, p, { snippet: '' }), true)).join('') : '<div class="cv-empty">No messages match. Try fewer words, or remove a filter.</div>');
+  _cvMarkTerms(box, d.terms);
+}
+// Wraps each word that starts with a searched term (the server matches
+// prefixes: "clio" finds "Clio's") in <mark>, in text only, never in a tag.
+function _cvMarkTerms(box, fts) {
+  const words = String(fts || '').match(/"([^"]+)"/g);
+  if (!words) return;
+  const re = new RegExp('(^|[^\\p{L}\\p{N}])((?:' + words.map(w => w.slice(1, -1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')[\\p{L}\\p{N}_-]*)', 'giu');
+  box.querySelectorAll('.cv-post-body').forEach(body => {
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes = []; while (walk.nextNode()) nodes.push(walk.currentNode);
+    for (const n of nodes) {
+      if (!re.test(n.nodeValue)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      const span = document.createElement('span');
+      span.innerHTML = esc(n.nodeValue).replace(re, '$1<mark class="cv-hl">$2</mark>');
+      n.replaceWith(...span.childNodes);
+    }
+  });
+}
 // One poll at a time. Posts arriving together each asked for an incremental
 // poll; overlapping ones answered out of order, a stale page moved lastId
 // backwards, and a post was fetched but never drawn (CI, 2026-10-27). A poll
@@ -69605,7 +69829,7 @@ function _cvOpenThread(root) {
   document.getElementById('messages-view').classList.add('cv-thread-open');
   document.getElementById('cv-thread-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
   _cvLoadThread();
-  if (!_cvMobile()) setTimeout(() => document.getElementById('cv-thread-input').focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(document.getElementById('cv-thread-input'));
 }
 function _cvCloseThread() {
   _cv.thread = null;

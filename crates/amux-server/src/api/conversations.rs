@@ -1013,43 +1013,132 @@ async fn search(State(state): State<AppState>, headers: HeaderMap, RawQuery(raw)
     let Ok(conn) = state.store.read() else {
         return err(StatusCode::SERVICE_UNAVAILABLE, "store unavailable");
     };
-    // `in:<conv or #group>` and `from:<name>` narrow it, as in Slack.
-    let mut in_conv: Option<String> = None;
-    let mut from: Option<String> = None;
-    for w in q.split_whitespace() {
-        if let Some(v) = w.strip_prefix("in:") {
-            let v = v.trim_start_matches('#');
-            in_conv = Some(if v.contains(':') { v.to_string() } else { format!("g:{}", v.to_lowercase()) });
-        } else if let Some(v) = w.strip_prefix("from:") {
-            from = Some(v.trim_start_matches('@').to_lowercase());
+    let f = SearchFilters::parse(&q, now_ms());
+    let terms = fts_query(&q);
+    // The filters that SQL can apply are applied there, so an old match is not
+    // lost behind 500 newer posts that a later filter throws away.
+    let mut wh = vec!["p.deleted_at IS NULL".to_string()];
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+    if !terms.is_empty() {
+        args.push(terms.clone().into());
+        wh.push(format!("conversation_posts_fts MATCH ?{}", args.len()));
+    }
+    if let Some(c) = &f.in_conv {
+        args.push(c.clone().into());
+        wh.push(format!("p.conv = ?{}", args.len()));
+    }
+    if let Some(t) = f.after {
+        args.push(t.into());
+        wh.push(format!("p.ts >= ?{}", args.len()));
+    }
+    if let Some(t) = f.before {
+        args.push(t.into());
+        wh.push(format!("p.ts < ?{}", args.len()));
+    }
+    for h in &f.has {
+        match h.as_str() {
+            "file" => wh.push("p.attachments NOT IN ('', '[]')".into()),
+            "link" => wh.push("(p.body LIKE '%http://%' OR p.body LIKE '%https://%')".into()),
+            "thread" => wh.push("(p.parent_id IS NOT NULL OR EXISTS (SELECT 1 FROM conversation_posts r WHERE r.parent_id = p.id))".into()),
+            _ => {}
         }
     }
-    let terms = fts_query(&q);
-    let sql = format!(
-        "SELECT {cols}, snippet(conversation_posts_fts, 0, '[[', ']]', '…', 16) FROM conversation_posts_fts f
-         JOIN conversation_posts p ON p.id = f.rowid
-         WHERE conversation_posts_fts MATCH ?1 AND p.deleted_at IS NULL ORDER BY rank LIMIT 500",
-        cols = POST_COLS.split(", ").map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", "));
-    let rows: Vec<Value> = if terms.is_empty() {
-        // Only filters: newest matching posts.
-        conn.prepare(&format!("SELECT {POST_COLS}, '' FROM conversation_posts WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 500"))
-            .and_then(|mut s| s.query_map([], |r| { let mut v = post_row(r)?; v["snippet"] = json!(""); Ok(v) })?.collect())
-            .unwrap_or_default()
+    let cols = POST_COLS.split(", ").map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
+    let sql = if terms.is_empty() {
+        format!("SELECT {cols}, '' FROM conversation_posts p WHERE {} ORDER BY p.id DESC LIMIT 2000", wh.join(" AND "))
     } else {
-        conn.prepare(&sql)
-            .and_then(|mut s| s.query_map([terms.clone()], |r| { let mut v = post_row(r)?; v["snippet"] = json!(r.get::<_, String>(13)?); Ok(v) })?.collect())
-            .unwrap_or_default()
+        format!("SELECT {cols}, snippet(conversation_posts_fts, 0, '[[', ']]', '…', 16) FROM conversation_posts_fts f
+         JOIN conversation_posts p ON p.id = f.rowid WHERE {} ORDER BY rank LIMIT 2000", wh.join(" AND "))
     };
+    let rows: Vec<Value> = conn
+        .prepare(&sql)
+        .and_then(|mut s| s.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            let mut v = post_row(r)?;
+            v["snippet"] = json!(r.get::<_, String>(13)?);
+            Ok(v)
+        })?.collect())
+        .unwrap_or_default();
     let considered = rows.len();
-    let rows: Vec<Value> = rows
+    let matched: Vec<Value> = rows
         .into_iter()
         .filter(|p| p["conv"].as_str().and_then(Conv::parse).is_some_and(|c| may_read(&me, &c, &lanes)))
-        .filter(|p| in_conv.as_deref().is_none_or(|c| p["conv"] == c))
-        .filter(|p| from.as_deref().is_none_or(|f| p["author_name"].as_str().unwrap_or("").to_lowercase().contains(f)
-            || p["author_key"].as_str().unwrap_or("").to_lowercase().ends_with(f)))
-        .take(100)
+        .filter(|p| f.from.as_deref().is_none_or(|w| author_matches(p, w)))
         .collect();
-    Json(json!({"posts": rows, "measured": true, "n_considered": considered})).into_response()
+    let total = matched.len();
+    // How many matches each conversation holds, for the results page's "In" row.
+    let mut by_conv: BTreeMap<String, usize> = BTreeMap::new();
+    for p in &matched {
+        *by_conv.entry(p["conv"].as_str().unwrap_or("").to_string()).or_default() += 1;
+    }
+    let limit: usize = qs(&raw).get("limit").and_then(|v| v.parse().ok()).unwrap_or(100).clamp(1, 200);
+    let rows: Vec<Value> = matched.into_iter().take(limit).collect();
+    // `filters` says what was understood, so a typo in an operator shows up
+    // as a filter that is absent rather than as "no results".
+    Json(json!({"posts": rows, "total": total, "by_conv": by_conv, "filters": f.to_json(), "terms": terms,
+        "measured": true, "n_considered": considered})).into_response()
+}
+
+/// The operators of a Messages search, as in Slack: `in:#amux`, `in:<conv key>`,
+/// `from:doron`, `after:7d` / `after:2026-11-01`, `before:...`, `has:file`,
+/// `has:link`, `has:thread`. Words without a colon are the text searched for.
+#[derive(Debug, Default, PartialEq)]
+struct SearchFilters {
+    in_conv: Option<String>,
+    from: Option<String>,
+    after: Option<i64>,
+    before: Option<i64>,
+    has: Vec<String>,
+    unknown: Vec<String>,
+}
+
+impl SearchFilters {
+    fn parse(q: &str, now: i64) -> Self {
+        let mut f = SearchFilters::default();
+        for w in q.split_whitespace() {
+            let Some((op, v)) = w.split_once(':') else { continue };
+            match op {
+                "in" => {
+                    let v = v.trim_start_matches('#');
+                    f.in_conv = Some(if v.contains(':') { v.to_string() } else { format!("g:{}", v.to_lowercase()) });
+                }
+                "from" => f.from = Some(v.trim_start_matches('@').to_lowercase()),
+                "after" | "before" => match search_time(v, now) {
+                    Some(t) if op == "after" => f.after = Some(t),
+                    Some(t) => f.before = Some(t),
+                    None => f.unknown.push(w.to_string()),
+                },
+                "has" if matches!(v, "file" | "link" | "thread") => f.has.push(v.to_string()),
+                _ => f.unknown.push(w.to_string()),
+            }
+        }
+        f
+    }
+
+    fn to_json(&self) -> Value {
+        json!({"in": self.in_conv, "from": self.from, "after": self.after, "before": self.before,
+            "has": self.has, "unknown": self.unknown})
+    }
+}
+
+/// `24h`, `7d`, `2w` back from now, or a `YYYY-MM-DD` day (UTC midnight), in ms.
+fn search_time(v: &str, now: i64) -> Option<i64> {
+    let unit = |c: char| match c { 'h' => Some(3_600_000i64), 'd' => Some(86_400_000), 'w' => Some(7 * 86_400_000), _ => None };
+    if let Some(c) = v.chars().last().filter(|c| c.is_ascii_alphabetic()) {
+        let n: i64 = v[..v.len() - 1].parse().ok()?;
+        return Some(now - n * unit(c)?);
+    }
+    let d = chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").ok()?;
+    Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis())
+}
+
+/// `from:` matches a display name containing it, or an author key whose name
+/// part (the email's local part, or the worker's name) is it.
+fn author_matches(p: &Value, who: &str) -> bool {
+    let key = p["author_key"].as_str().unwrap_or("").to_lowercase();
+    let bare = key.split_once(':').map(|(_, k)| k).unwrap_or(&key);
+    p["author_name"].as_str().unwrap_or("").to_lowercase().contains(who)
+        || bare == who
+        || bare.split('@').next() == Some(who)
 }
 
 // ---- writing -------------------------------------------------------------
@@ -2442,6 +2531,30 @@ async fn remove_member(State(state): State<AppState>, Path((name, email)): Path<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_operators_are_understood_and_a_bad_one_is_named() {
+        let now = 10 * 86_400_000;
+        let f = SearchFilters::parse("clio in:#Amux from:@Doron after:7d has:file has:nope before:2026-11-01 blockers", now);
+        assert_eq!(f.in_conv.as_deref(), Some("g:amux"));
+        assert_eq!(f.from.as_deref(), Some("doron"));
+        assert_eq!(f.after, Some(3 * 86_400_000));
+        assert_eq!(f.before, Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis()));
+        assert_eq!(f.has, vec!["file".to_string()]);
+        assert_eq!(f.unknown, vec!["has:nope".to_string()]);
+        assert_eq!(SearchFilters::parse("in:p:a@x.com|b@y.com", now).in_conv.as_deref(), Some("p:a@x.com|b@y.com"));
+        assert_eq!(SearchFilters::parse("after:soon", now).unknown, vec!["after:soon".to_string()]);
+        assert_eq!(fts_query("clio in:#amux after:7d"), "\"clio\"*");
+    }
+
+    #[test]
+    fn from_matches_a_name_an_email_local_part_or_a_worker() {
+        let p = json!({"author_key": "person:doron@mixpeek.com", "author_name": "Doron Greenspan"});
+        assert!(author_matches(&p, "doron") && author_matches(&p, "greenspan") && author_matches(&p, "doron@mixpeek.com"));
+        assert!(!author_matches(&p, "ethan"));
+        let w = json!({"author_key": "worker:amux-app", "author_name": "amux-app"});
+        assert!(author_matches(&w, "amux-app") && !author_matches(&w, "amux-helper"));
+    }
 
     #[test]
     fn a_preview_never_reaches_a_private_address_however_it_is_spelled() {

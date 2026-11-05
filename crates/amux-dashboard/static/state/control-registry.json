@@ -1260,6 +1260,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvSqKey": {
+      "kind": "command._cvSqKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqOpen": {
+      "kind": "command._cvSqOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRender": {
+      "kind": "command._cvSqRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRun": {
+      "kind": "command._cvSqRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqSetTok": {
+      "kind": "command._cvSqSetTok",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvUploadVoice": {
       "kind": "command._cvUploadVoice",
       "feedback_required": true,
