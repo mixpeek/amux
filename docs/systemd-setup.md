@@ -302,6 +302,6 @@ sudo -u userb systemctl --user status amux-server  # Shows User B's service
 
 ## See Also
 
-- [amux-remote guide](../amux-remote-guide.md) — manage remote deployments
-- [Install guide](../install-guide.md) — general setup
+- [amux-remote guide](amux-remote-guide.md) — manage remote deployments
+- [Install](../README.md#install) — general setup
 - systemd docs: `man systemd.service`
