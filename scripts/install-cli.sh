@@ -69,7 +69,23 @@ for ((i=0; i<${#source_files[@]}; i++)); do
   mkdir -p "$bin_dir"
   candidate="$(mktemp "$bin_dir/.amux.install.XXXXXX")"
   candidates+=("$candidate")
-  cat "$source_cli" > "$candidate"
+  # The main client gets its version stamped from the checkout it came from
+  # (`amux --version`); the installed copy lives outside any checkout, so this
+  # is the only point where the source is known. One read of the source, so
+  # the snapshot property holds. No release tag reachable (or no git) leaves
+  # the placeholder, which the client reports as an unknown version.
+  version=""
+  if [[ $i -eq 0 && "$(basename "$source_cli")" == amux ]] &&
+     [[ "$(git -C "$source_dir" rev-parse --show-toplevel 2>/dev/null)" == "$(cd "$source_dir" && pwd -P)" ]]; then
+    version="$(git -C "$source_dir" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null)" || version=""
+  fi
+  if [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    sed "s/^CC_VERSION=\"__AMUX_CLI_VERSION__\"\$/CC_VERSION=\"$version\"/" "$source_cli" > "$candidate"
+    log "INFO cli_install_version_stamped version=$version"
+  else
+    cat "$source_cli" > "$candidate"
+    [[ $i -ne 0 ]] || log "WARN cli_install_version_unstamped reason=no_git_describe"
+  fi
   # Validate the private snapshot, not a source that can change between checking
   # and copying. Explicit markers also catch otherwise valid quoted/heredoc text.
   stage=validation

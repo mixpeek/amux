@@ -176,7 +176,12 @@ class InstallCLI(unittest.TestCase):
         result = subprocess.run(["make", "-C", str(ROOT), "install-cli", f"BIN_DIR={self.bin}"],
                                 env=self.env, text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.dest.read_bytes(), (ROOT / "amux").read_bytes())
+        described = subprocess.run(
+            ["git", "-C", str(ROOT), "describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty"],
+            text=True, capture_output=True, check=True).stdout.strip()
+        stamped = (ROOT / "amux").read_bytes().replace(
+            VERSION_PLACEHOLDER + b"\n", f'CC_VERSION="{described}"\n'.encode(), 1)
+        self.assertEqual(self.dest.read_bytes(), stamped)
         self.assertFalse(self.dest.is_symlink())
         helper = self.bin / "scripts/amux-grid.sh"
         self.assertEqual(helper.read_bytes(), (ROOT / "scripts/amux-grid.sh").read_bytes())
@@ -244,6 +249,86 @@ class InstallCLI(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("reason=bash_syntax", result.stderr)
         self.assertEqual(self.dest.read_bytes(), OLD)
+
+
+VERSION_PLACEHOLDER = b'CC_VERSION="__AMUX_CLI_VERSION__"'
+
+
+class CLIVersion(unittest.TestCase):
+    """`amux --version` names the source it came from, never a stale literal."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="amux-cli-version-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.bin = self.root / "bin"
+        self.env = {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                    "HOME": str(self.root), "AMUX_HOME": str(self.root / "data"),
+                    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(self, repo, *args):
+        return subprocess.run(["git", "-C", str(repo), *args], env=self.env, check=True,
+                              text=True, capture_output=True).stdout.strip()
+
+    def checkout(self, tag="v1.2.3", commits_after_tag=0):
+        """A git checkout holding the real CLI, tagged like a release."""
+        repo = self.root / "checkout"
+        (repo / "scripts").mkdir(parents=True)
+        (repo / "amux").write_bytes((ROOT / "amux").read_bytes())
+        (repo / "amux").chmod(0o755)
+        (repo / "scripts/amux-grid.sh").write_bytes((ROOT / "scripts/amux-grid.sh").read_bytes())
+        self.git(self.root, "init", "-q", str(repo))
+        ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        self.git(repo, "add", ".")
+        self.git(repo, *ident, "commit", "-qm", "release")
+        self.git(repo, "tag", tag)
+        # A non-release tag on a later commit must not be chosen over the release.
+        for n in range(commits_after_tag):
+            self.git(repo, *ident, "commit", "-q", "--allow-empty", "-m", f"after {n}")
+        self.git(repo, "tag", "ios-build-1")
+        return repo
+
+    def version(self, cli):
+        result = subprocess.run([str(cli), "--version"], cwd=self.root, env=self.env,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_shipped_cli_carries_the_placeholder_not_a_literal_version(self):
+        self.assertIn(VERSION_PLACEHOLDER + b"\n", (ROOT / "amux").read_bytes())
+
+    def test_install_stamps_the_release_tag(self):
+        repo = self.checkout()
+        result = subprocess.run(["/bin/bash", str(INSTALLER), str(self.bin), str(repo / "amux")],
+                                env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b'CC_VERSION="v1.2.3"\n', (self.bin / "amux").read_bytes())
+        self.assertEqual(self.version(self.bin / "amux"), "amux v1.2.3")
+
+    def test_install_stamps_commits_since_the_release(self):
+        repo = self.checkout(commits_after_tag=2)
+        sha = self.git(repo, "rev-parse", "--short", "HEAD")
+        subprocess.run(["/bin/bash", str(INSTALLER), str(self.bin), str(repo / "amux")],
+                       env=self.env, check=True, capture_output=True, timeout=15)
+        self.assertEqual(self.version(self.bin / "amux"), f"amux v1.2.3-2-g{sha}")
+
+    def test_checkout_run_directly_resolves_from_git(self):
+        repo = self.checkout(commits_after_tag=1)
+        sha = self.git(repo, "rev-parse", "--short", "HEAD")
+        self.assertEqual(self.version(repo / "amux"), f"amux v1.2.3-1-g{sha}")
+
+    def test_copy_outside_its_checkout_does_not_borrow_another_repos_version(self):
+        # e.g. a Homebrew libexec, or a ~/.local/bin that is itself a dotfiles repo
+        other = self.root / "dotfiles"
+        self.git(self.root, "init", "-q", str(other))
+        self.git(other, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                 "commit", "-q", "--allow-empty", "-m", "dotfiles")
+        self.git(other, "tag", "v9.9.9")
+        (other / "bin").mkdir()
+        cli = other / "bin/amux"
+        cli.write_bytes((ROOT / "amux").read_bytes())
+        cli.chmod(0o755)
+        self.assertEqual(self.version(cli), "amux (version unknown)")
 
 
 if __name__ == "__main__":
