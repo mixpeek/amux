@@ -10,6 +10,11 @@ struct WebView: UIViewRepresentable {
     @Binding var canGoBack: Bool
     @Binding var canGoForward: Bool
     @Binding var loadError: String?
+    /// True while the page shown is not the dashboard (DashboardPage), so
+    /// ContentView can offer the way back.
+    @Binding var offDashboard: Bool
+    /// Hands ContentView the web view, for its back button.
+    var onWebView: (WKWebView) -> Void = { _ in }
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
     var onLongPress: () -> Void = {}
 
@@ -58,6 +63,7 @@ struct WebView: UIViewRepresentable {
         webView.scrollView.addSubview(refresh)
         context.coordinator.refreshControl = refresh
         context.coordinator.webView = webView
+        DispatchQueue.main.async { onWebView(webView) }
 
         // Capture JS console.log/error/warn into os_log
         let script = WKUserScript(source: """
@@ -344,6 +350,15 @@ struct WebView: UIViewRepresentable {
             parent.loadError = nil
             armWatchdog(host: webView.url?.host ?? parent.url.host)
             logger.debug("Navigation started: \(webView.url?.absoluteString ?? "nil")")
+        }
+
+        // Every main-frame page change, including a back swipe, commits here.
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            let off = !DashboardPage.isDashboard(webView.url, server: parent.url)
+            if off != parent.offDashboard {
+                logger.info("Page is \(off ? "off" : "back on") the dashboard: \(webView.url?.absoluteString ?? "nil")")
+            }
+            parent.offDashboard = off
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
