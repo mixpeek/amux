@@ -116,6 +116,7 @@ dependencies = [
  "cbc",
  "chrono",
  "cron",
+ "fancy-regex",
  "flate2",
  "futures",
  "getrandom 0.4.3",

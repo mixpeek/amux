@@ -291,6 +291,10 @@ carries `tool`, `title`, `kind`, **`locations`** (paths) and the offered
 | `content_any` (written text) | **no** |
 | `tools` alone | **yes** — the tool is the whole rule |
 
+*(Superseded by M9's measurement below: a `shell`/`edit` ask does carry the
+command and the diff, and a `tools`-alone rule matches nothing — the guard
+requires a predicate. The kind table in M9 is the current rule.)*
+
 The design follows from that, and the two failure modes it refuses are both
 loud: a policy that denied anything naming the tool would brick every `Bash`
 call, and one that allowed silently would be theatre. So a path rule that
@@ -373,9 +377,28 @@ never `deny`, because a refusal must be logged with its reason and opencode's
 `verdict=boundary_ruleset_empty`, since "asks nothing" is exactly how this gap
 looked before.
 
-The obsolete "path-decidable tool list" is gone with it: a `path` predicate is
-decided from `locations` whatever the tool, which is precisely the case the
-list used to skip (the vault rule names `Bash`, and `Bash` was never in it).
+**The rules are evaluated by KIND, exactly as `boundary-guard.py::rule_applies`
+does** (review, 2026-11-05 — the first version applied `path` to every kind,
+which refuses a `shell` ask whose COMMAND merely names a guarded path; five of
+the registry's own allow examples died that way):
+
+| ask kind | decided by |
+|---|---|
+| `shell` | `match_all` then `match_none`; `path`/`content_any` are not consulted |
+| file tools | `path` over `locations`, then `content_any` (a list; any match) |
+| `external_directory` | `path` — the one kind the hook never sees |
+| anything else | no rule applies |
+
+Two shapes the corpus pinned down: `Grep`/`Glob` paths are directories (the
+location is also tested with a trailing slash), and a rule stating no predicate
+refuses nothing. The evaluator compiles rules with **`fancy-regex`**, not
+`regex`, because the registry is Python `re`: three rules use lookbehind or
+lookahead, and with `regex` they compiled to nothing and were silently inert —
+`fleet-tmux`'s `tmux kill-server` boundary among them. **One rule is not
+decidable from an ask**: `requires_receipt` (`tenant-workload-gate`) is decided
+by the guard from a gate receipt, per command segment. The policy reports
+`boundary_not_decidable` for it rather than duplicating a receipt-shaped
+tokenizer — refusing every match would refuse the registry's own allow examples.
 
 ### M10 — the model switch gets its door
 

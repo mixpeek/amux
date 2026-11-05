@@ -141,7 +141,8 @@ pub struct Decision {
     /// tell "refused correctly" from "refused the wrong file".
     pub matched_path: Option<String>,
     /// Rules that name this tool but whose predicate needs information an ask
-    /// does not carry. Reported once each (see [`note_undecidable`]).
+    /// does not carry — the command, the written text, or a gate receipt.
+    /// Reported once each (see [`note_undecidable`]).
     pub undecidable: Vec<String>,
 }
 
@@ -231,102 +232,105 @@ impl BoundaryPolicy {
                     continue;
                 }
                 let reason = rule.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                // Predicates are evaluated in the order that matches what the
-                // registry MEANS, and a refused call names the first one that
-                // fires. Each predicate is decisive where it applies; only a
-                // predicate whose INPUT is absent makes the rule undecidable.
-                let path_rule = rule.get("path").and_then(|v| v.as_str());
-                let content_rule = rule.get("content_any").and_then(|v| v.as_str());
-                let needs_command =
-                    rule.contains_key("match_all") || rule.contains_key("match_none");
+                // ONE meaning for the registry: evaluate by the ask's KIND,
+                // exactly as `scripts/hooks/boundary-guard.py::rule_applies`
+                // does. Getting this wrong is not a near miss — it refuses the
+                // registry's own allow_examples (review, 2026-11-05: an `ls` of
+                // the token directory and a `cat` of an approval file, five in
+                // all), because a `shell` ask carries its COMMAND in
+                // `locations`, and a path regex matches a command that merely
+                // names a guarded path.
+                //
+                //   shell  → match_all (all must match) and match_none (none
+                //            may); `path` is NOT consulted.
+                //   file   → `path` must match a location, then `content_any`
+                //            when the rule has one; match_all/match_none are not
+                //            consulted.
+                //   other  → no rule applies (the hook returns False too).
+                //
+                // `external_directory` is the one kind the hook never sees (it
+                // is opencode-specific): a read outside the workspace carries
+                // the path pattern, so it is decided by `path` like a file tool.
+                // Without it the vault is unreachable from the serve transport.
+                let is_external = ask.tool.eq_ignore_ascii_case("external_directory");
+                let file_kind = matches!(
+                    tool.as_str(),
+                    "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "Read" | "Grep" | "Glob"
+                        | "List" | "Ls"
+                );
+                let shell_kind = tool == "Bash";
 
-                // (a) A path match is decisive ON ITS OWN. The registry's path
-                // predicates are written for tools that carry paths, and an ask
-                // that names the path has already answered the question — which
-                // is why the vault rule refuses a write to `…/vault/x` without
-                // needing a shell command to inspect.
-                if let Some(p) = path_rule {
-                    match compile(p) {
-                        Some(re) => {
-                            if ask.locations.iter().any(|loc| re.is_match(loc)) {
-                                return Decision {
-                                    approval: Approval::Reject,
-                                    refused_by: Some((id.to_string(), reason.to_string())),
-                                    matched_path: ask.locations.first().cloned(),
-                                    undecidable: decision.undecidable,
-                                };
-                            }
-                        }
-                        None => {
-                            warn_bad_regex(id, p);
-                            decision.undecidable.push(id.to_string());
-                            continue;
-                        }
-                    }
+                if !shell_kind && !file_kind && !is_external {
+                    continue; // not a kind this registry describes
                 }
 
-                // (b) content_any — the text about to be written, from the
-                // `edit` patch. Decidable only when the ask carries it.
-                if let Some(p) = content_rule {
-                    match ask.input.as_deref() {
-                        Some(text) => {
-                            if compile(p).is_some_and(|re| re.is_match(text)) {
-                                return Decision {
-                                    approval: Approval::Reject,
-                                    refused_by: Some((id.to_string(), reason.to_string())),
-                                    matched_path: None,
-                                    undecidable: decision.undecidable,
-                                };
-                            }
-                        }
-                        None => {
-                            decision.undecidable.push(id.to_string());
-                            continue;
-                        }
-                    }
-                }
+                let matches = |pattern: &str, text: &str| -> Option<bool> {
+                    // `fancy_regex::is_match` is `Result` (a backtrack limit is
+                    // a runtime error, not a match): an unevaluable answer is
+                    // `None`, which no caller treats as a match.
+                    compile(pattern).and_then(|re| re.is_match(text).ok())
+                };
 
-                // (c) match_all / match_none — the shell command, which a
-                // `shell` ask carries verbatim in `resources[0]`.
-                if needs_command {
-                    match ask.input.as_deref() {
-                        None => {
-                            decision.undecidable.push(id.to_string());
-                            continue;
-                        }
-                        Some(text) => {
-                            let all_ok = rule
-                                .get("match_all")
-                                .and_then(|v| v.as_array())
-                                .map(|pats| {
-                                    pats.iter().filter_map(|v| v.as_str()).all(|p| {
-                                        compile(p).is_some_and(|re| re.is_match(text))
-                                    })
-                                })
-                                .unwrap_or(true);
-                            let none_hit = rule
-                                .get("match_none")
-                                .and_then(|v| v.as_array())
-                                .map(|pats| {
-                                    pats.iter()
-                                        .filter_map(|v| v.as_str())
-                                        .any(|p| compile(p).is_some_and(|re| re.is_match(text)))
-                                })
-                                .unwrap_or(false);
-                            if all_ok && !none_hit {
-                                return Decision {
-                                    approval: Approval::Reject,
-                                    refused_by: Some((id.to_string(), reason.to_string())),
-                                    matched_path: None,
-                                    undecidable: decision.undecidable,
-                                };
+                if shell_kind {
+                    // A Bash rule with no `match_all` never applies (the hook
+                    // requires one), and `path`/`content_any` are ignored.
+                    let Some(patterns) = rule.get("match_all").and_then(|v| v.as_array()) else {
+                        continue;
+                    };
+                    let Some(command) = ask.input.as_deref() else {
+                        // The command is what decides this rule; without it the
+                        // answer is "unknown", never "allow".
+                        decision.undecidable.push(id.to_string());
+                        continue;
+                    };
+                    let mut all_ok = true;
+                    for pat in patterns.iter().filter_map(|v| v.as_str()) {
+                        match matches(pat, command) {
+                            Some(true) => {}
+                            Some(false) => {
+                                all_ok = false;
+                                break;
+                            }
+                            None => {
+                                warn_bad_regex(id, pat);
+                                all_ok = false;
+                                break;
                             }
                         }
                     }
-                }
-
-                // (d) `tools` alone: the rule refuses the tool outright.
-                if path_rule.is_none() && content_rule.is_none() && !needs_command {
+                    if !all_ok {
+                        continue;
+                    }
+                    if rule.contains_key("requires_receipt") {
+                        // A receipt-gated rule (tenant-workload-gate) refuses
+                        // only the command segments whose target has no FRESH
+                        // receipt — state the guard writes and validates after
+                        // a read-only gate run, segment by segment. An ask
+                        // carries the command and nothing else, so this
+                        // evaluator cannot decide it, and pretending would be
+                        // wrong in one direction or the other: refusing every
+                        // matching command would refuse the registry's own
+                        // allow examples (`kubectl -n kube-system rollout
+                        // restart`, `kubectl -n monitoring scale`, a commit
+                        // message quoting a scale), because match_all matches
+                        // them too. Reported once per (boundary, tool), never
+                        // silently passed. Follow-up: hand these rules to the
+                        // guard, which is the only thing that can see receipts.
+                        decision.undecidable.push(id.to_string());
+                        continue;
+                    }
+                    let excluded = rule
+                        .get("match_none")
+                        .and_then(|v| v.as_array())
+                        .map(|pats| {
+                            pats.iter().filter_map(|v| v.as_str()).any(|p| {
+                                matches(p, command).unwrap_or(false)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if excluded {
+                        continue;
+                    }
                     return Decision {
                         approval: Approval::Reject,
                         refused_by: Some((id.to_string(), reason.to_string())),
@@ -334,6 +338,67 @@ impl BoundaryPolicy {
                         undecidable: decision.undecidable,
                     };
                 }
+
+                // File and external-path asks: `path` is required, then
+                // `content_any` where the rule has one.
+                let Some(path_pattern) = rule.get("path").and_then(|v| v.as_str()) else {
+                    continue; // a path rule is the only kind that applies here
+                };
+                // The guard reads a Grep/Glob argument as a DIRECTORY: it tests
+                // the path with a trailing slash as well as the joined glob, so
+                // `Grep ~/.amux/vault` hits a `\.amux/(vault|ts-secrets)/` rule
+                // that the bare path would miss (`boundary-guard.py`, the
+                // Grep/Glob branch). Same here, or the corpus disagrees on that
+                // exact example.
+                let directory_kind = matches!(tool.as_str(), "Grep" | "Glob");
+                let hit = ask.locations.iter().find(|loc| {
+                    matches(path_pattern, loc).unwrap_or(false)
+                        || (directory_kind
+                            && matches(path_pattern, &format!("{}/", loc.trim_end_matches('/')))
+                                .unwrap_or(false))
+                });
+                let Some(hit) = hit else {
+                    continue; // the path does not match: the rule does not apply
+                };
+                // `content_any` is a LIST of regexes in the registry (any one
+                // matching applies the rule); a bare string is accepted as one
+                // pattern. Reading only the string form is how the review's
+                // `Edit ~/.claude/settings.json :: {"permissions": {}}` allow
+                // example got refused: the rule stated `content_any` as a list,
+                // the check was skipped, and the path alone decided.
+                let content_patterns: Vec<&str> = match rule.get("content_any") {
+                    Some(toml::Value::String(s)) => vec![s.as_str()],
+                    Some(toml::Value::Array(items)) => {
+                        items.iter().filter_map(|v| v.as_str()).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                if !content_patterns.is_empty() {
+                    let Some(text) = ask.input.as_deref() else {
+                        decision.undecidable.push(id.to_string());
+                        continue;
+                    };
+                    let mut applied = false;
+                    for pat in &content_patterns {
+                        match matches(pat, text) {
+                            Some(true) => {
+                                applied = true;
+                                break;
+                            }
+                            Some(false) => {}
+                            None => warn_bad_regex(id, pat),
+                        }
+                    }
+                    if !applied {
+                        continue;
+                    }
+                }
+                return Decision {
+                    approval: Approval::Reject,
+                    refused_by: Some((id.to_string(), reason.to_string())),
+                    matched_path: Some(hit.clone()),
+                    undecidable: decision.undecidable,
+                };
             }
         }
         decision
@@ -341,10 +406,20 @@ impl BoundaryPolicy {
 }
 
 /// Compile a rule regex the way `boundaries.toml` documents it: Python `re`,
-/// case-insensitive. `None` means the pattern is broken — which is reported by
-/// [`warn_bad_regex`] and treated as unevaluable, never as a match.
-fn compile(pattern: &str) -> Option<regex::Regex> {
-    regex::RegexBuilder::new(pattern)
+/// case-insensitive.
+///
+/// **`fancy-regex`, not `regex`** — the registry is written for Python's `re`,
+/// and three of its rules use lookbehind or lookahead
+/// (`email`'s `(?<![\w.*-])`, `fleet-tmux`'s `(?!…)` and
+/// `tenant-workload-gate`'s `(?=\s|$)`). `regex` cannot compile those, so those
+/// rules were silently INERT here — including the one that refuses
+/// `tmux kill-server`. `fancy-regex` is already in the dependency graph
+/// (`syntect`'s `regex-fancy`), so this costs no extra build.
+///
+/// `None` means the pattern cannot be evaluated — reported by [`warn_bad_regex`]
+/// and treated as unevaluable, never as a match.
+fn compile(pattern: &str) -> Option<fancy_regex::Regex> {
+    fancy_regex::RegexBuilder::new(pattern)
         .case_insensitive(true)
         .build()
         .ok()
@@ -567,15 +642,19 @@ reason = "The vault holds card and secret data."
         assert!(d.undecidable.is_empty(), "{d:?}");
     }
 
-    /// A rule with no predicate beyond `tools` refuses that tool outright.
+    /// A rule with no predicate beyond `tools` applies to NOTHING — the same
+    /// answer the guard gives (`rule_applies`: a Bash rule needs a non-empty
+    /// `match_all`, a file rule needs `path`). This used to refuse the tool
+    /// outright, which is the mirror image of the review's bug: the registry
+    /// states what to refuse; a rule that states no predicate states nothing.
     #[test]
-    fn a_tools_only_rule_refuses_the_tool() {
+    fn a_rule_with_no_predicate_refuses_nothing_like_the_guard() {
         let text = r#"
 [[boundary]]
-id = "no-shell"
+id = "no-predicate"
 [[boundary.deny]]
-tools = ["Bash"]
-reason = "shell is not allowed here"
+tools = ["Bash", "Write"]
+reason = "this rule states no predicate at all"
 "#;
         let t: toml::Table = toml::from_str(text).unwrap();
         let reg: Vec<toml::Table> = t
@@ -583,9 +662,12 @@ reason = "shell is not allowed here"
             .and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect())
             .unwrap();
-        let d = BoundaryPolicy::from_registry(reg).decide_detailed(&ask("bash", &[]));
-        assert_eq!(d.approval, Approval::Reject, "{d:?}");
-        assert_eq!(d.refused_by.unwrap().0, "no-shell");
+        let policy = BoundaryPolicy::from_registry(reg);
+        for a in [ask("bash", &[]), ask("write", &["/home/pv/.amux/vault/x"])] {
+            let d = policy.decide_detailed(&a);
+            assert_eq!(d.approval, Approval::AllowOnce, "{a:?}: {d:?}");
+            assert_eq!(d.refused_by, None, "{a:?}: {d:?}");
+        }
     }
 
     /// The parity corpus: the registry's own `block_examples`/`allow_examples`
@@ -619,7 +701,10 @@ reason = "shell is not allowed here"
     }
 
     /// `content_any` becomes decidable from an `edit` ask's patch — the text
-    /// about to be written, measured as a unified diff.
+    /// about to be written, measured as a unified diff. It is a LIST in the
+    /// registry, and the rule also states `path`, exactly like the real
+    /// `boundaries-self` rule: a content predicate narrows a path, it never
+    /// replaces one.
     #[test]
     fn an_edit_ask_is_refused_by_a_content_rule_when_the_patch_carries_it() {
         let text = r#"
@@ -627,20 +712,31 @@ reason = "shell is not allowed here"
 id = "secrets"
 [[boundary.deny]]
 tools = ["Write", "Edit"]
-content_any = 'sk_live_[A-Za-z0-9]+'
+path = '(^|/)\.claude/settings(\.local)?\.json$'
+content_any = ['"hooks"|boundary-guard|disableAllHooks']
 reason = "a live secret must never be written to a file"
 "#;
         let parsed: toml::Table = toml::from_str(text).unwrap();
         let reg: Vec<toml::Table> = parsed.get("boundary").and_then(|v| v.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect()).unwrap();
         let policy = BoundaryPolicy::from_registry(reg);
-        let patch = "Index: k.txt\n@@ -0,0 +1,1 @@\n+sk_live_ABC123\n";
-        let d = policy.decide_detailed(&ask_with_input("edit", &["k.txt"], patch));
-        assert_eq!(d.approval, Approval::Reject, "the written secret must be refused: {d:?}");
+        let settings = "/Users/ethan/.claude/settings.json";
+        let patch = "Index: settings.json\n@@ -0,0 +1,1 @@\n+{\"hooks\": {}}\n";
+        let d = policy.decide_detailed(&ask_with_input("edit", &[settings], patch));
+        assert_eq!(d.approval, Approval::Reject, "the written text must be refused: {d:?}");
 
-        // Writing something harmless on the same rule is allowed.
-        let ok = policy.decide_detailed(&ask_with_input("edit", &["k.txt"], "+hello\n"));
+        // The registry's own allow example: same path, text the rule does not
+        // name. The path alone is NOT enough to refuse — that was the review.
+        let ok = policy.decide_detailed(&ask_with_input("edit", &[settings], "{\"permissions\": {}}"));
         assert_eq!(ok.approval, Approval::AllowOnce, "{ok:?}");
+
+        // And the same text on a path the rule does not name is untouched.
+        let elsewhere = policy.decide_detailed(&ask_with_input(
+            "edit",
+            &["/Users/ethan/Dev/amux/docs/settings.md"],
+            patch,
+        ));
+        assert_eq!(elsewhere.approval, Approval::AllowOnce, "{elsewhere:?}");
     }
 
     /// An ask with NO input still cannot decide a command rule — the fallback
@@ -680,59 +776,168 @@ reason = "a live secret must never be written to a file"
         }
     }
 
+    /// Replay one registry example the way the guard would see it: a
+    /// `Tool /path[ :: content]` example is a FILE ask, everything else is a
+    /// `shell` ask carrying its command (measured, 2.2.4: the command is in
+    /// `resources[0]`, which an ask carries as its location and input).
+    fn replay_example(ex: &str) -> PermissionAsk {
+        for tool in ["Write", "Edit", "MultiEdit", "Read", "Grep", "Glob"] {
+            let Some(rest) = ex.strip_prefix(&format!("{tool} ")) else {
+                continue;
+            };
+            let (path, content) = match rest.split_once(" :: ") {
+                Some((p, c)) => (p.trim(), Some(c.to_string())),
+                None => (rest.trim(), None),
+            };
+            return PermissionAsk {
+                tool: tool.to_ascii_lowercase(),
+                title: Some(path.to_string()),
+                kind: Some("tool".into()),
+                locations: vec![path.to_string()],
+                input: content,
+                option_ids: vec!["once".into(), "always".into(), "reject".into()],
+            };
+        }
+        ask_with_input("shell", &[ex], ex)
+    }
+
+    /// The parity corpus, BOTH directions: every `block_examples` entry must be
+    /// refused and every `allow_examples` entry must survive, replayed against
+    /// the WHOLE registry (as the guard does — an allow example must not be
+    /// refused by any boundary).
+    ///
+    /// This is the test the review asked for in the other direction: the
+    /// evaluator used to refuse an allow example as soon as a rule's `path`
+    /// matched a location, which a `shell` ask's command always does when it
+    /// merely NAMES a guarded path. One rule is excluded, named below, because
+    /// what decides it is a gate receipt and not anything an ask carries.
     #[test]
-    fn the_registry_path_examples_agree_with_this_evaluator() {
+    fn the_registry_examples_agree_with_this_evaluator_in_both_directions() {
         let (registry, _src, errors) = boundaries::load();
         assert!(errors.is_empty(), "registry must parse: {errors:?}");
-        let mut checked = 0;
+        let policy = BoundaryPolicy::from_registry(registry.clone());
+        let (mut refused, mut allowed) = (0, 0);
+        let mut receipt_gated = std::collections::BTreeSet::new();
         for boundary in registry.iter() {
             let id = boundary.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let Some(rules) = boundary.get("deny").and_then(|v| v.as_array()) else {
                 continue;
             };
             for rule in rules.iter().filter_map(|r| r.as_table()) {
-                let Some(path_re) = rule.get("path").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                // Examples are written for the Bash/file mix; only the ones
-                // that ARE a bare path can be replayed as an ask's location.
-                for ex in rule
-                    .get("block_examples")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|v| v.as_str())
+                // A receipt-gated rule is decided by the guard's receipt store,
+                // per command segment; an ask carries no receipt. It must never
+                // REFUSE from here (that is what broke the allow examples).
+                let gated = rule.contains_key("requires_receipt");
+                for (key, want_refusal) in
+                    [("block_examples", true), ("allow_examples", false)]
                 {
-                    let Some(p) = ex.split_whitespace().last() else {
-                        continue;
-                    };
-                    if !p.starts_with('/') || p.contains(char::is_whitespace) {
-                        continue;
+                    for ex in rule
+                        .get(key)
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str())
+                    {
+                        let d = policy.decide_detailed(&replay_example(ex));
+                        if gated {
+                            receipt_gated.insert(id.to_string());
+                            assert_eq!(
+                                d.approval,
+                                Approval::AllowOnce,
+                                "boundary {id}: a receipt-gated rule must never refuse an ask \
+                                 it cannot see a receipt for; {key} example {ex}"
+                            );
+                            continue;
+                        }
+                        if want_refusal {
+                            assert_eq!(
+                                d.approval,
+                                Approval::Reject,
+                                "boundary {id}: its own block_example {ex} must be refused by \
+                                 this evaluator (path/tool: {d:?})"
+                            );
+                            refused += 1;
+                        } else {
+                            assert_eq!(
+                                d.approval,
+                                Approval::AllowOnce,
+                                "boundary {id}: its own allow_example {ex} must NOT be refused, \
+                                 but {:?} refused it",
+                                d.refused_by
+                            );
+                            allowed += 1;
+                        }
                     }
-                    // Only examples the rule's own path regex claims.
-                    let Ok(re) = regex::RegexBuilder::new(path_re)
-                        .case_insensitive(true)
-                        .build()
-                    else {
-                        continue;
-                    };
-                    if !re.is_match(p) {
-                        continue;
-                    }
-                    let policy = BoundaryPolicy::from_registry(registry.clone());
-                    let d = policy.decide_detailed(&ask("write", &[p]));
-                    assert_eq!(
-                        d.approval,
-                        Approval::Reject,
-                        "boundary {id}: its own block_example {p} must be refused by this evaluator"
-                    );
-                    checked += 1;
                 }
             }
         }
         assert!(
-            checked >= 1,
-            "the parity corpus must actually contain checkable examples, not zero"
+            refused >= 20 && allowed >= 20,
+            "the corpus must actually be replayed, not skipped: {refused} blocks, {allowed} allows"
         );
+        assert_eq!(
+            receipt_gated.into_iter().collect::<Vec<_>>(),
+            vec!["tenant-workload-gate".to_string()],
+            "exactly one boundary's rules need state an ask does not carry; if this set \
+             changes, the reason recorded in `decide_detailed` no longer holds"
+        );
+    }
+
+    /// The review's five false refusals, replayed against the REAL registry:
+    /// read-only commands that merely name a guarded path were refused because
+    /// a shell ask's command sits in `locations`. They are the registry's own
+    /// allow examples, so they are allowed here too.
+    #[test]
+    fn a_read_only_command_that_names_a_guarded_path_is_allowed() {
+        let (registry, _src, errors) = boundaries::load();
+        assert!(errors.is_empty(), "registry must parse: {errors:?}");
+        let policy = BoundaryPolicy::from_registry(registry);
+        for cmd in [
+            "ls ~/.amux/gmail-tokens",
+            "cat ~/.amux/email-approvals/apr_1.approved.json",
+            "cat ~/.claude/settings.json",
+            "grep boundary-guard ~/.claude/settings.json",
+            "ls ~/.amux/vault",
+        ] {
+            let d = policy.decide_detailed(&ask_with_input("shell", &[cmd], cmd));
+            assert_eq!(
+                d.approval,
+                Approval::AllowOnce,
+                "{cmd} is read-only and names a guarded path; refused by {:?}",
+                d.refused_by
+            );
+        }
+        // The same shape, actually guarded, still refuses.
+        let d = policy.decide_detailed(&ask_with_input(
+            "shell",
+            &["cat ~/.amux/vault/items.json"],
+            "cat ~/.amux/vault/items.json",
+        ));
+        assert_eq!(
+            d.approval,
+            Approval::Reject,
+            "a read of the vault ITEM is still refused: {d:?}"
+        );
+    }
+
+    /// A receipt-gated rule (tenant-workload-gate) is reported, never decided:
+    /// the guard's receipt is what makes it refuse, and an ask carries none.
+    #[test]
+    fn a_receipt_gated_rule_is_reported_not_decided() {
+        let (registry, _src, errors) = boundaries::load();
+        assert!(errors.is_empty(), "registry must parse: {errors:?}");
+        let policy = BoundaryPolicy::from_registry(registry);
+        for cmd in [
+            "kubectl -n mixpeek-tenant-a scale deploy/api --replicas=0",
+            "kubectl -n kube-system rollout restart deploy/coredns",
+        ] {
+            let d = policy.decide_detailed(&ask_with_input("shell", &[cmd], cmd));
+            assert_eq!(d.approval, Approval::AllowOnce, "{cmd}: {d:?}");
+            assert_eq!(
+                d.undecidable,
+                vec!["tenant-workload-gate".to_string()],
+                "{cmd}: the gap must be named, not silently passed"
+            );
+        }
     }
 }
