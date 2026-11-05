@@ -72,8 +72,10 @@ print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 # them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
 # in flight, up to $2 plus the hold, and says so once.
 wait_live_identity() {
-  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs=""
+  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs="" released=0
+  local grace="${AMUX_ADOPT_POST_HOLD_GRACE_S:-120}"
   case "$hold" in ''|*[!0-9]*) hold=900 ;; esac
+  case "$grace" in ''|*[!0-9]*) grace=120 ;; esac
   waited=0
   while :; do
     if measure_live_identity && [ -n "$live" ]; then
@@ -81,9 +83,20 @@ wait_live_identity() {
     fi
     if [ "$waited" -ge "$limit" ]; then
       [ "$waited" -lt $((limit + hold)) ] || return 1
-      # Re-read the scheduler every 15s, not every second.
-      if [ $(( (waited - limit) % 15 )) = 0 ]; then runs=$(shell_runs_in_flight $((limit + hold))); fi
-      [ -n "$runs" ] || return 1
+      if [ "$released" = 0 ]; then
+        # Re-read the scheduler every 15s, not every second.
+        if [ $(( (waited - limit) % 15 )) = 0 ]; then runs=$(shell_runs_in_flight $((limit + hold))); fi
+        if [ -z "$runs" ]; then
+          [ "$said" = 1 ] || return 1
+          # THE RUN THAT HELD ADOPTION HAS JUST ENDED. The server adopts on its
+          # next tick, so judging health in the same second called a good build
+          # unhealthy: e5cc110cb on 2026-11-04 was rolled back at 405s, the
+          # moment SCHED-706 finished, and the hold that followed pinned deploys
+          # for 31 hours. Give the adoption its tick, then judge.
+          released=1; limit=$waited; hold=$grace
+          echo "== ACTIVATION HOLD RELEASED sha=$sha: no shell run in flight after ${waited}s; allowing ${grace}s for adoption verdict=activation_wait_post_hold"
+        fi
+      fi
       if [ "$said" = 0 ]; then
         said=1
         echo "== ACTIVATION WAIT EXTENDED sha=$sha: not live after ${limit}s while shell run(s) $runs hold adoption; waiting up to $((limit + hold))s verdict=activation_wait_shell_hold"
@@ -622,6 +635,16 @@ fi
   # down again every 15 minutes, so it is held until the build inputs move.
   rolled_head=''
   [ -r "${STAMP}.rolled_back" ] && read -r rolled_head _ < "${STAMP}.rolled_back" || true
+  # A hold whose commit has the SAME build inputs as the binary that was put
+  # back (the stamp names the inputs of what is installed) protects nothing:
+  # the restored binary is that code. Such a hold only clears when crates/ next
+  # changes, which held deploys from 2026-11-04 05:53Z for 31 hours while every
+  # newer main commit touched only scripts and docs. Clear it, and say so.
+  if [ -n "$rolled_head" ] && [ "$rolled_head" = "$head" ] && [ "$last" = "$head" ]; then
+    rm -f "${STAMP}.rolled_back"
+    echo "== WARN activation_rollback_hold_cleared trigger=$head: the restored binary was built from the same inputs, so holding this commit protects nothing verdict=activation_rollback_hold_same_inputs"
+    rolled_head=''
+  fi
   if [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] && [ -n "$rolled_head" ] && [ "$rolled_head" = "$head" ]; then
     echo "== activation_rollback_hold trigger=$head: rolled back as unhealthy; waiting for a newer commit verdict=activation_rollback_hold"
     exit 0
@@ -1086,7 +1109,17 @@ PYIDENTITY
         if [ -f "${INSTALL}.identity.json.rollback" ]; then mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"; else rm -f "${INSTALL}.identity.json"; fi
         mv -f "${INSTALL}.rollback" "$INSTALL"
         if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
-        printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
+        if [ "$last" = "$head" ]; then
+          # Same build inputs as the binary just restored: the code is not what
+          # failed, so do not hold it until crates/ changes (see
+          # activation_rollback_hold_same_inputs). Retry on the bounded build
+          # backoff instead, so a server that never adopts is not rebuilt
+          # every tick.
+          printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.failed"
+          echo "== WARN activation_unadopted_same_inputs sha=$built_sha trigger=$head: not held; retried after the ${retry_s}s backoff, since the restored binary is the same code verdict=activation_unadopted_same_inputs"
+        else
+          printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
+        fi
         echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${waited}s" \
              "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
       fi
