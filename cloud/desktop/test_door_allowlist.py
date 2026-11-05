@@ -50,11 +50,20 @@ class DoorAllowlist(unittest.TestCase):
                        DOOR_UPDATE_STATUS=os.path.join(etc, "status.json"), DOOR_ALLOWLIST=cls.allow,
                        DOOR_FAIL_LIMIT="50")
         alerts = cls.alerts = []
+        cards, patches = cls.cards, cls.patches = [], []
         class FakeAmux(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                out = b"{}"
                 if self.path == "/api/alert/owner":
                     alerts.append((self.headers.get("Content-Type"), json.loads(body)))
+                if self.path == "/api/board":
+                    cards.append(json.loads(body))
+                    out = json.dumps({"id": "T-%d" % len(cards)}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+            def do_PATCH(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                patches.append((self.path, json.loads(body)))
                 self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
             def log_message(self, *a):
                 pass
@@ -188,6 +197,77 @@ class DoorAllowlist(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(len(self.alerts_for(ip)), 1, "the second refusal in the hour stays quiet")
         self.assertEqual(self.alerts_for(guess), [], "a wrong password pages nobody")
+
+    def wait_for(self, fn, what):
+        for _ in range(50):
+            got = fn()
+            if got:
+                return got
+            time.sleep(0.1)
+        self.fail("never saw " + what)
+
+    def cards_for(self, ip):
+        return [c for c in self.cards if ip in c["title"]]
+
+    def test_a_valid_sign_in_refused_becomes_one_needs_you_card_and_a_guess_files_none(self):
+        # Ethan, 2026-11-05: "add alerts here so i receive it. should be a needs you".
+        self.on((HOME, OWNER))
+        ip, guess = "203.0.113.90", "203.0.113.91"
+        self.login(ip)
+        card = self.wait_for(lambda: self.cards_for(ip), "the card")[0]
+        self.assertEqual(card["status"], "needsyou")
+        self.assertEqual(card["ask_type"], "access")
+        self.assertNotIn(card["ask_actor"].strip().lower(), ("human", "user", "owner", "someone", "you", "me"))
+        self.assertIn("owner", card["ask_actor"], "the needs-you queue lists asks addressed to the owner")
+        self.assertTrue(card["ask_question"].endswith("?"))
+        self.assertIn(OWNER, card["ask_question"])
+        self.assertIn("(/_door/allowlist)", card["desc"], "a relative link: no Host header builds it")
+        self.assertNotIn(OWNER_PW, json.dumps(card))
+        self.wait_for(lambda: any(r.get("card") for r in self.get_list().get("requests", [])), "the card id stored")
+        self.login(ip)
+        self.login(guess, pw="not-it-1234")
+        time.sleep(0.5)
+        self.assertEqual(len(self.cards_for(ip)), 1, "one card per account and address")
+        self.assertEqual(self.cards_for(guess), [], "a wrong password files nothing")
+        req = [r for r in self.get_list()["requests"] if r["ip"] == ip]
+        self.assertEqual([(r["user"], r["count"]) for r in req], [(OWNER, 2)])
+        self.assertEqual([r for r in self.get_list()["requests"] if r["ip"] == guess], [])
+
+    def test_the_owner_allows_a_waiting_request_with_one_press_and_its_card_closes(self):
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        new = "203.0.113.92"
+        self.assertEqual(self.login(new, MATE, MATE_PW)[0], 401)
+        self.wait_for(lambda: any(r.get("card") for r in self.get_list().get("requests", []) if r["ip"] == new), "the card")
+        cookie = self.cookie(HOME)
+        page = self.req("/_door/allowlist", HOME, headers={"Cookie": cookie})[1]
+        self.assertIn("Waiting for you", page)
+        self.assertIn(new, page)
+        status, body, _ = self.admin_post(HOME, cookie, action="allow_request", ip=new, user=MATE)
+        self.assertEqual(status, 200, body)
+        self.assertIn("They can sign in now", body)
+        self.assertEqual(self.login(new, MATE, MATE_PW)[0], 303)
+        self.assertNotIn(new, [r["ip"] for r in self.get_list().get("requests", [])])
+        entry = [e for e in self.get_list()["entries"] if e["ip"] == new][0]
+        self.assertEqual((entry["user"], entry["how"]), (MATE, "owner_approved"))
+        card = [c for c in self.cards if new in c["title"]]
+        path, patch = self.wait_for(lambda: [p for p in self.patches if p[0] == "/api/board/T-%d" % (self.cards.index(card[0]) + 1)], "the close")[0]
+        self.assertEqual(patch["status"], "done")
+        self.assertTrue(patch["evidence"].startswith("none: "))
+        self.assertEqual(self.admin_post(HOME, cookie, action="allow_request", ip=new, user=MATE)[0], 400, "answered once")
+
+    def test_a_dismissed_request_stays_out_and_a_forged_allow_is_refused(self):
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        new = "203.0.113.93"
+        self.login(new, MATE, MATE_PW)
+        self.wait_for(lambda: [r for r in self.get_list().get("requests", []) if r["ip"] == new], "the request")
+        cookie = self.cookie(HOME)
+        data = urllib.parse.urlencode({"csrf": "0" * 64, "action": "allow_request", "ip": new, "user": MATE}).encode()
+        self.assertEqual(self.req("/_door/allowlist", HOME, data=data, headers={"Cookie": cookie})[0], 403)
+        mate = self.cookie(MATE_IP, MATE, MATE_PW)
+        self.assertEqual(self.req("/_door/allowlist", MATE_IP, headers={"Cookie": mate})[0], 403, "only the owner answers")
+        self.assertEqual(self.admin_post(HOME, cookie, action="dismiss_request", ip=new, user=MATE)[0], 200)
+        self.assertEqual(self.login(new, MATE, MATE_PW)[0], 401)
+        self.assertNotIn(new, [e["ip"] for e in self.get_list()["entries"]])
 
     def test_simultaneous_additions_all_survive(self):
         import importlib.util, threading

@@ -577,6 +577,7 @@ def first_signin_add(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_first_signin")
         return True
     log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_signin_refused")
+    request_access(user, ip)
     alert_refused_signin(user, ip)
     return False
 
@@ -613,7 +614,7 @@ def alert_refused_signin(user, ip, now=None):
 def _send_refused_alert(user, ip):
     body = {"session": "amux-door", "reason": "a valid sign-in was refused by the address allowlist",
             "message": "%s signed in correctly from %s, which is not on this server's allowlist, so they were "
-                       "refused. If that is them, add the address in Settings > Address allowlist, or over SSH: "
+                       "refused. It is waiting in Needs you: if that is them, tap Allow at /_door/allowlist, or over SSH: "
                        "sudo python3 /opt/amux-door/door.py allowlist add %s. If it is not them, their password "
                        "is known to someone else." % (user, ip, ip)}
     try:
@@ -621,6 +622,91 @@ def _send_refused_alert(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_sent")
     except Exception as e:
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_failed", reason=str(e)[:120])
+
+
+# ── A refused sign-in is a request the owner answers (Ethan, 2026-11-05, after Doron was locked out
+# by a new address and the alert above reached no channel: "add alerts here so i receive it. should
+# be a needs you"; "it just needs to be more flexible ... but still secure"). Only code past the
+# credential check gets here, so a guess files nothing. The request is kept in the allowlist file
+# and filed once per (account, address) as a needs-you card on this server's board, where the owner
+# already looks. Allowing it still takes the owner, signed in from a listed address, pressing Allow
+# on /_door/allowlist (CSRF-checked POST); the card's link is relative, so no Host header builds it.
+MAX_REQUESTS = 20
+
+
+def request_access(user, ip, now=None):
+    """Record (user, ip) as waiting for the owner, and file its card the first time. Returns the request."""
+    now = int(now or time.time())
+
+    def add(data):
+        reqs = data.setdefault("requests", [])
+        for r in reqs:
+            if r.get("ip") == ip and r.get("user") == user:
+                r["last"], r["count"] = now, r.get("count", 1) + 1
+                return dict(r, new=False)
+        r = {"ip": ip, "user": user, "first": now, "last": now, "count": 1}
+        reqs.append(r)
+        del reqs[:-MAX_REQUESTS]    # the oldest falls off; a sign-in files it again
+        return dict(r, new=True)
+    req = update_allowlist(add)
+    log(event="allowlist", user=user, ip=ip, verdict="door_access_requested" if req["new"] else "door_access_rerequested")
+    if req["new"]:
+        threading.Thread(target=_file_access_card, args=(user, ip), daemon=True).start()
+    return req
+
+
+def access_card_body(user, ip):
+    return {"title": "Let %s sign in from %s?" % (user, ip), "status": "needsyou", "tags": ["door-access"],
+            "ask_type": "access", "ask_actor": "server owner",
+            "ask_question": "Let %s sign in to this server from the new address %s?" % (user, ip),
+            "ask_unblocks": "Allowing it adds %s to the address allowlist, and %s can sign in from it." % (ip, user),
+            "desc": "%s signed in with the right password from %s, which is not on this server's address "
+                    "allowlist, so the door refused them.\n\nIf that is them, open [the address allowlist]"
+                    "(/_door/allowlist) and press Allow beside %s. Over SSH: `sudo python3 /opt/amux-door/door.py "
+                    "allowlist add %s`.\n\nIf it is not them, press Dismiss there and change their password: "
+                    "someone else knows it." % (user, ip, ip, ip)}
+
+
+def _file_access_card(user, ip):
+    try:
+        _, out = _amux("POST", "/api/board", data=json.dumps(access_card_body(user, ip)).encode(), timeout=10,
+                       content_type="application/json")
+        resp = json.loads(out or b"{}")
+        if not resp.get("id"):     # a refusal comes back as JSON with error/code: read it, never assume
+            raise ValueError(str(resp.get("code") or resp.get("error") or "no card id")[:80])
+        update_allowlist(lambda d: [r.update(card=resp["id"]) for r in d.get("requests", [])
+                                    if r.get("ip") == ip and r.get("user") == user] and None)
+        log(event="allowlist", user=user, ip=ip, card=resp["id"], verdict="door_access_card_filed")
+    except Exception as e:
+        log(event="allowlist", user=user, ip=ip, verdict="door_access_card_failed", reason=str(e)[:120])
+
+
+def close_access_card(card, how):
+    if not card:
+        return
+    try:
+        _, out = _amux("PATCH", "/api/board/" + urllib.parse.quote(card, safe=""), timeout=10,
+                       content_type="application/json",
+                       data=json.dumps({"status": "done", "evidence": "none: %s at /_door/allowlist; an allowlist "
+                                                                      "change leaves no artifact" % how}).encode())
+        resp = json.loads(out or b"{}")
+        if resp.get("ok") is False or resp.get("error"):
+            raise ValueError(str(resp.get("code") or resp.get("error"))[:80])
+        log(event="allowlist", card=card, verdict="door_access_card_closed")
+    except Exception as e:
+        log(event="allowlist", card=card, verdict="door_access_card_close_failed", reason=str(e)[:120])
+
+
+def take_request(ip, user):
+    """Remove the waiting request for (ip, user) and return it, or None."""
+    def take(data):
+        reqs = data.get("requests", [])
+        hit = next((r for r in reqs if r.get("ip") == ip and r.get("user") == user), None)
+        if hit is None:
+            return False
+        reqs.remove(hit)
+        return hit
+    return update_allowlist(take) or None
 
 
 def note_blocked(ip, uri, now=None):
@@ -822,7 +908,7 @@ a{color:#58a6ff}
 <p>Your address: <code>%(you)s</code> (%(you_listed)s).</p>
 <div>%(toggle)s</div>
 <p>%(first_state)s</p><div>%(first)s</div>
-<div class="wrap"><table>%(rows)s</table></div>
+%(requests)s<div class="wrap"><table>%(rows)s</table></div>
 <div>%(add)s</div>
 <p>Public links and the server's status page stay reachable from anywhere. Locked out? On the server:
 <code>sudo python3 /opt/amux-door/door.py allowlist add &lt;address&gt;</code></p>
@@ -957,7 +1043,7 @@ class Door(BaseHTTPRequestHandler):
             except PermissionError:
                 body = ("<!doctype html><meta charset=utf-8><title>Address not allowed</title><p>Your address, %s, "
                         "is not on this server's allowlist. Sign in from an address on the list and add it at "
-                        "/_door/allowlist. The owner is told about a valid sign-in from a new address.</p>"
+                        "/_door/allowlist. If your password was right, the owner has been asked to let this address in; sign in again once they have.</p>"
                         % html.escape(ip)).encode()
                 return self.send(403, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             except Exception as e:
@@ -1064,7 +1150,8 @@ class Door(BaseHTTPRequestHandler):
                 log(event="signin", user=user, ip=ip, verdict="door_signin_allowlist_refused")
                 note_signin(False)
                 return self.page(nxt, user, "This address (%s) is not on this server's allowlist. "
-                                            "The owner is told about a valid sign-in from a new address." % ip)
+                                            "If your password was right, the owner has been asked to let this address in; "
+                                            "sign in again once they have." % ip)
         elif (form.get("lock") or [""])[0] == "1" and not os.path.exists(ALLOW_FILE) and check_password(user, pw):
             if user in admins({}):
                 update_allowlist(lambda d: d.update(enabled=True, first_signin=True, admins=[user]))
@@ -1120,7 +1207,20 @@ class Door(BaseHTTPRequestHandler):
                 html.escape(e.get("how", "")), time.strftime("%Y-%m-%d", time.gmtime(e.get("added", 0))),
                 form("remove", "Remove", '<input type="hidden" name="ip" value="%s">' % html.escape(e.get("ip", "")), "sec"))
             for e in al.get("entries", []))
+        def req_row(r):
+            hidden = ('<input type="hidden" name="ip" value="%s"><input type="hidden" name="user" value="%s">'
+                      % (html.escape(r.get("ip", "")), html.escape(r.get("user", ""))))
+            return "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s %s</td></tr>" % (
+                html.escape(r.get("ip", "")), html.escape(r.get("user", "")),
+                "%s UTC, %d sign-in%s" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(r.get("last", 0))),
+                                          r.get("count", 1), "" if r.get("count", 1) == 1 else "s"),
+                form("allow_request", "Allow", hidden), form("dismiss_request", "Dismiss", hidden, "sec"))
+        reqs = al.get("requests", [])
+        requests = ('<h2>Waiting for you</h2><p>These signed in with the right password from an address that is not '
+                    'on the list. Allow one only if you know it is them; if not, dismiss it and change that '
+                    'password.</p><div class="wrap"><table>%s</table></div>' % "".join(map(req_row, reqs))) if reqs else ""
         body = ALLOW_PAGE % {
+            "requests": requests,
             "host": html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""),
             "state": "On: only the addresses below reach this server." if on else
                      "Off: any address can reach the sign-in.",
@@ -1160,6 +1260,20 @@ class Door(BaseHTTPRequestHandler):
                 return self.allowlist_page(err="That range is too wide to be an allowlist entry.")
             added = allow_add(target, user, "owner", (form.get("note") or [""])[0])
             return self.allowlist_page(ok=("Added %s." % target) if added else "%s was already on the list." % target)
+        if action in ("allow_request", "dismiss_request"):
+            who_for = (form.get("user") or [""])[0].strip()
+            req = take_request(target, who_for)
+            if not req:
+                return self.allowlist_page(err="That request is no longer waiting.")
+            if action == "allow_request":
+                allow_add(target, who_for, "owner_approved", "approved by %s" % user)
+                how = "%s allowed %s for %s" % (user, target, who_for)
+            else:
+                how = "%s dismissed the request from %s for %s" % (user, target, who_for)
+            log(event="allowlist", user=who_for, ip=target, by=user, verdict="door_access_" + action.split("_")[0] + "ed")
+            threading.Thread(target=close_access_card, args=(req.get("card"), how), daemon=True).start()
+            return self.allowlist_page(ok=("Allowed %s for %s. They can sign in now." % (target, who_for))
+                                       if action == "allow_request" else "Dismissed %s." % target)
         if action == "remove":
             def remove(data):
                 rest = [e for e in data["entries"] if e.get("ip") != target]
