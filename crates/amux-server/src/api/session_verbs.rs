@@ -11246,6 +11246,33 @@ pub(crate) fn owner_text_parks_at_dialog(text: &str, pane: &str) -> bool {
     !answers_visible_picker(text, pane)
 }
 
+/// AskUserQuestion's free-text row ("❯ 4. Type something.") is highlighted.
+/// In that state keystrokes type into the row and Enter submits them as the
+/// answer, while Enter on the EMPTY row declines the whole question ("User
+/// declined to answer questions", reproduced on Claude Code 2.1.318). Parking
+/// the owner's text there left them only the empty Enter, so the one answer
+/// they could give from the dashboard was the decline.
+pub(crate) fn free_text_answer_slot_highlighted(pane: &str) -> bool {
+    strip_ansi(pane).lines().any(|line| {
+        let Some(rest) = line.trim().strip_prefix('\u{276f}') else {
+            return false;
+        };
+        let Some((num, label)) = rest.trim().split_once(". ") else {
+            return false;
+        };
+        (1..=2).contains(&num.len())
+            && num.chars().all(|c| c.is_ascii_digit())
+            && label.trim().trim_end_matches('.').eq_ignore_ascii_case("type something")
+    })
+}
+
+/// A free-text answer is typed as keystrokes, so it must be one line: a
+/// newline would submit early and a Tab switches to the next question.
+pub(crate) fn fits_free_text_answer(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && !t.contains(['\n', '\r', '\t'])
+}
+
 pub(crate) fn answers_visible_picker(text: &str, pane: &str) -> bool {
     let t = text.trim().to_lowercase();
     if t.is_empty() || t.chars().count() > 120 {
@@ -14642,6 +14669,25 @@ async fn send_text_inner_bound_body(
     // say so; steering delivers it once the dialog resolves.
     if waiting && !defer_if_busy && !from_steering {
         let pane = tmux_capture(name, 30).await;
+        // The owner highlighted AskUserQuestion's "Type something." row and
+        // sent their answer: type it INTO the row, then Enter. Same pane lock
+        // as the normal path so no other Enter lands mid-answer.
+        if fits_free_text_answer(&text) && free_text_answer_slot_highlighted(&pane) {
+            let send_lock = session_send_lock(name);
+            let _send_guard = send_lock.lock().await;
+            if let Err(why) = send_literal(name, text.trim()).await {
+                tracing::warn!(session = %name, error = %why, measured = true, n_considered = 1,
+                    verdict = "free_text_answer_type_failed",
+                    "could not type the owner's answer into the question's free-text row");
+                return (false, format!("could not type the answer into the question: {why}"));
+            }
+            sleep_ms(150).await;
+            send_key(name, "Enter").await;
+            tracing::info!(session = %name, chars = text.trim().chars().count(), measured = true,
+                n_considered = 1, verdict = "free_text_answer_typed",
+                "typed the owner's answer into the question's free-text row and pressed Enter; effect unverified");
+            return (true, "typed into the question's free-text answer and pressed Enter".into());
+        }
         if owner_text_parks_at_dialog(&text, &pane) {
             tracing::warn!(
                 session = %name,
@@ -45120,6 +45166,36 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let src = include_str!("session_verbs.rs");
         let site = src.find("if owner_text_parks_at_dialog(&text, &pane) {").expect("call site");
         assert!(src[site..site + 900].contains("steer_enqueue("), "a parked owner send must be queued");
+        assert!(!free_text_answer_slot_highlighted(pane), "a permission dialog has no free-text row");
+    }
+
+    #[test]
+    fn an_owner_answer_at_a_highlighted_free_text_row_is_typed_not_queued() {
+        // Live AskUserQuestion pane, Claude Code 2.1.318, after Down x3.
+        let highlighted = " \u{2610} Fruit\nPick a fruit\n  1. Mango\n     Mango\n  2. Banana\n     Banana\n  \
+                           3. Cherry\n     Cherry\n\u{276f} 4. Type something.\n\u{2500}\u{2500}\u{2500}\n  \
+                           5. Chat about this\nEnter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel";
+        assert!(free_text_answer_slot_highlighted(highlighted));
+        // The same picker with Mango highlighted: free text is not an answer.
+        let on_mango = highlighted
+            .replace("  1. Mango", "\u{276f} 1. Mango")
+            .replace("\u{276f} 4. Type something.", "  4. Type something.");
+        assert!(!free_text_answer_slot_highlighted(&on_mango));
+        assert!(owner_text_parks_at_dialog("kiwi please", &on_mango));
+        // A transcript line that merely mentions the label is not the row.
+        assert!(!free_text_answer_slot_highlighted("\u{276f} pick 4. Type something. for me"));
+        assert!(fits_free_text_answer("  kiwi  "));
+        for bad in ["", "   ", "two\nlines", "tab\there", "cr\rhere"] {
+            assert!(!fits_free_text_answer(bad), "{bad:?} must not be typed into the row");
+        }
+        // The typed branch runs BEFORE the park, under the pane lock, as keystrokes.
+        let src = include_str!("session_verbs.rs");
+        let typed = src.find("if fits_free_text_answer(&text) && free_text_answer_slot_highlighted(&pane) {").expect("typed branch");
+        let park = src.find("if owner_text_parks_at_dialog(&text, &pane) {").expect("park");
+        assert!(typed < park, "the free-text answer must be typed before the park decision");
+        let branch = &src[typed..park];
+        assert!(branch.contains("session_send_lock(name)") && branch.contains("send_literal(name, text.trim())"));
+        assert!(branch.contains("verdict = \"free_text_answer_typed\""));
     }
 
     /// AMUX-3054: an empty send is the user pressing "Enter" at a picker. The
