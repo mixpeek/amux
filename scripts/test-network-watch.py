@@ -84,6 +84,14 @@ check("an app bundle is exempt from egress alerts",
 check("command-line tools still alert on egress",
       not any(nw.is_app_bundle(p) for p in ["/usr/bin/curl", "/usr/local/bin/restic",
               "/Applications/evil", "/Users/ethan/.local/bin/x", "/tmp/payload"]))
+shell_snap = {**snap, "egress": {"bash": {"140.82.114.4", "203.0.113.5", "198.51.100.2"}}}
+shell_rows = [r for r in nw.evaluate(shell_snap, {**base, "egress": ["claude", "bash"]}, reqs)
+              if r["kind"] == "NEW-EGRESS"]
+check("a shell alerts once per non-GitHub destination even when accepted by name",
+      sorted(r["key"] for r in shell_rows) == ["egress:bash:198.51.100.2", "egress:bash:203.0.113.5"],
+      str([r["key"] for r in shell_rows]))
+check("GitHub's range only", nw.is_github("140.82.114.4") and not nw.is_github("140.82.128.1")
+      and not nw.is_github("140.82.11.4"))
 check("parse_lsof normalises claude's version name",
       nw.parse_lsof("p9\nc2.1.318\nn127.0.0.1:1\n")[0]["command"] == "claude")
 check("private ranges", all(nw.is_private(a) for a in ["10.0.0.1", "172.20.1.1", "100.100.1.1", "[fe80::1]"])

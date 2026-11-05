@@ -17,7 +17,11 @@ Each run takes one snapshot and compares it with a baseline the first run record
   firewall   the macOS application firewall state. A change is an anomaly.
   egress     processes holding connections to public addresses. A process name
              not seen before is an anomaly. This is a point-in-time sample: it
-             misses short-lived connections and sees no DNS.
+             misses short-lived connections and sees no DNS. A shell or raw
+             socket tool (bash, nc, socat, ...) is never accepted by name: each
+             new destination is its own anomaly, since that is what a reverse
+             shell looks like. GitHub's range is exempt for them because git's
+             helpers hand their socket to the calling shell.
 
 Auto-fix (--fix, which the schedule passes) is limited to one class that is
 always wrong on this host and never load-bearing: an ad-hoc static file server
@@ -106,6 +110,18 @@ def is_private(addr: str) -> bool:
         x, y = int(m.group(1)), int(m.group(2))
         return (x == 172 and 16 <= y <= 31) or (x == 100 and 64 <= y <= 127)
     return False
+
+
+# A reverse shell holds its socket in one of these. They are judged per
+# destination and never accepted by name.
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
+          "telnet", "perl", "ruby", "php"}
+
+
+def is_github(addr: str) -> bool:
+    # 140.82.112.0/20, GitHub's git and API front ends (api.github.com/meta).
+    m = re.match(r"140\.82\.(\d+)\.\d+$", addr.strip("[]"))
+    return bool(m) and 112 <= int(m.group(1)) <= 127
 
 
 def split_hostport(s: str) -> tuple[str, str]:
@@ -251,6 +267,12 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         out.append({"key": f"firewall:{snap['firewall']}", "kind": "FIREWALL", "state": snap["firewall"]})
     known_egress = set(base.get("egress", []))
     for cmd in sorted(snap["egress"]):
+        if cmd in SHELLS:
+            for addr in sorted(snap["egress"][cmd]):
+                if not is_github(addr):
+                    out.append({"key": f"egress:{cmd}:{addr}", "kind": "NEW-EGRESS",
+                                "cmd": cmd, "n": 1, "to": [addr]})
+            continue
         if cmd not in known_egress:
             out.append({"key": f"egress:{cmd}", "kind": "NEW-EGRESS", "cmd": cmd,
                         "n": len(snap["egress"][cmd]), "to": sorted(snap["egress"][cmd])[:3]})
