@@ -6693,6 +6693,11 @@ ${BOLD}Worker management:${RESET}
                                  ${DIM}compaction backlog. See /api/debug/context-health${RESET}
   amux start-all                 Start all registered workers
   amux stop-all                  Stop all running workers
+  amux pause <name>              Pause a worker: no automation is queued for,
+                                 typed into, or wakes it until resumed
+  amux resume <name>             Resume a paused worker
+  amux pause-all                 Pause every worker
+  amux resume-all                Resume every worker
 
 ${BOLD}Interaction:${RESET}
   amux attach <name>             Attach to a running worker (detach: Ctrl-b d)
@@ -6717,6 +6722,15 @@ ${BOLD}Coordination:${RESET}
   amux explain <path>... [--since 14d] [--save]   An explainer of that slice of the code and what changed in it lately
   amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
   amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
+  amux contribute [--title T] [--then-pull] [--check]
+                                 Send this checkout's local amux work upstream as a PR
+                                 (--then-pull: match remote main once the PR is open)
+  amux github login|status       Connect this machine's GitHub account for contribute
+  amux ci wait <run-id> [--repo O/R] [--timeout S]
+                                 Wait for a GitHub Actions run; exit 0 success, 1 other,
+                                 2 timeout, 3 unmeasured. One poller per run, fleet-wide
+  amux receipts [--keep] [<worker>]
+                                 Read (and consume) outcomes held back so they would not wake you
   amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
@@ -6742,19 +6756,30 @@ ${BOLD}Info:${RESET}
   amux whoami                    Live worker identity vs inherited env (mismatch warns)
   amux url [--verify]            Print the canonical API base (use \$(amux url), not
                                  \$AMUX_URL — self-heals a stale port; --verify probes)
+  amux velocity [WORKER] [--card ID] [--days N] | --fleet
+                                 Where a worker's time goes; --card estimates a card
+  amux version                   This CLI's version (also --version, -v)
 
 ${BOLD}Delegation:${RESET}
   amux delegate read --question <text> -- <files...>
                                  Compress large reads with the configured fast helper;
                                  returns path:line evidence and a measured receipt
+  amux delegate-job run [--worker W] (--stdin | --prompt TEXT)
+                                 A read-only background job on a worker's own agent;
+                                 never touches the live worker. status <id> | ls [W]
+  amux get <api path>            Read-only GET against the API (e.g. api/email/inbox?count=5)
 
 ${BOLD}Dashboard:${RESET}
   amux                           Interactive dashboard (optimized for phone)
+  amux pin <file> [--opacity 0.85] [--x X] [--y Y] [--width W] [--height H]
+                                 Float a file as an always-on-top macOS overlay window
 
 ${BOLD}Web Dashboard:${RESET}
   amux serve [port]              Start the Rust server (normally launchd's job;
                                  installed service 8824, bare default 8823;
                                  8822 is retired — the compat bind is gone)
+  amux server start|stop|restart|status
+                                 Control the installed server service
 
 ${BOLD}Move (local and amux Cloud):${RESET}
   amux export [file]             Write this server's move bundle: config plus cards,
@@ -6762,6 +6787,8 @@ ${BOLD}Move (local and amux Cloud):${RESET}
   amux import <file> [--to <url>] [--user <email>] [--yes]
                                  Dry run, then add the rows (never overwrites).
                                  ${DIM}amux import amux-*.amuxmove.json --to https://<you>.amux.io${RESET}
+  amux iac export | apply <file.yaml>
+                                 This instance as declarative YAML (- reads stdin)
 
 ${BOLD}CRM:${RESET}
   amux crm list [query]          List contacts (search name/company/role)
