@@ -999,6 +999,7 @@ jobs:
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh
           python3 scripts/test-claude-rotate.py
+          ./scripts/test-claude-rotate-refresh.sh
           # Policy unit tests, including opt-in (default off). `|| exit 1`: this
           # step has no -e, so a middle line's failure would otherwise not count.
           python3 scripts/tests/test_claude_rotate.py || exit 1
