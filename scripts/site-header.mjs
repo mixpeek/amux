@@ -6,8 +6,9 @@
 //   node scripts/site-header.mjs          report pages that drift (exit 1 if any)
 //   node scripts/site-header.mjs --fix    rewrite them from the source
 //
-// The homepage is the one allowed variant: its Get started link is the
-// in-page #get, and it renders the star count inside .nav-stars.
+// The homepage is the one allowed variant: it renders the star count inside
+// .nav-stars. Pages in NO_GET_STARTED drop the Get started link and keep the
+// rest of the header.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,10 +19,17 @@ export const CANONICAL = fs.readFileSync(path.join(ROOT, 'scripts/site-header.ht
 const HEADER_RE = /<header class="site-header">[\s\S]*?<\/header>|<header class="site">[\s\S]*?<\/header>/;
 const FONT = '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">';
 
+// Pages whose header has no Get started link, each for a reason of its own.
+export const NO_GET_STARTED = new Map([
+  ['index.html', "the hero's own buttons cover it (homepage redesign, 2026-11-03)"],
+  ['start/index.html', 'no exits above the signup form (EXP-157)'],
+]);
+const GET_STARTED = /\n\s*<a href="\/#get" class="nav-cta nav-cta-primary">Get started<\/a>/;
+
 export function expectedHeader(rel) {
-  if (rel !== 'index.html') return CANONICAL;
-  return CANONICAL
-    .replace('href="/#get"', 'href="#get"')
+  const base = NO_GET_STARTED.has(rel) ? CANONICAL.replace(GET_STARTED, '') : CANONICAL;
+  if (rel !== 'index.html') return base;
+  return base
     .replace('<span class="gh-stars" id="gh-stars">★</span>', '<span class="nav-stars">★ <span class="gh-stars">539</span></span>');
 }
 
