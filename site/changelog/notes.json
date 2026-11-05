@@ -1,5 +1,65 @@
 [
   {
+    "hash": "1a7d1fc5e33577de4efb66a3fc7bc7df8488ab92",
+    "short": "1a7d1fc5",
+    "title": "Double-tap the globe key to dictate in the Mac app",
+    "date": "2026-11-03",
+    "type": "fix",
+    "tags": [
+      "desktop",
+      "dictation"
+    ],
+    "description": "Tapping the globe key twice now starts dictation in the Mac app, and tapping it twice again stops it. The mic also starts listening right away instead of sitting on \"Starting mic\" while the app's storage catches up. If macOS is set to use the globe key for its own dictation, the app tells you once how to hand the key to amux."
+  },
+  {
+    "hash": "bb963fd81289032e662e88ed9c4758f2424d4fde",
+    "short": "bb963fd8",
+    "title": "Ask shows its closest matches under every answer",
+    "date": "2026-11-03",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "search"
+    ],
+    "description": "When you Ask a question about your message history, the three closest matching messages now appear under the answer with a short snippet each, as rows you can tap to open. You can check the source yourself even when the written answer is unsure."
+  },
+  {
+    "hash": "ea1c95f154e5da85cb5288826a894c2e7147c41b",
+    "short": "ea1c95f1",
+    "title": "The board records work and leaves your workers alone",
+    "date": "2026-11-03",
+    "type": "feat",
+    "tags": [
+      "board",
+      "workers"
+    ],
+    "description": "Turning on a worker's Board switch now files and keeps its cards without typing reminders into the worker or starting tasks for it. Workers driven by a goal no longer get two drivers competing for their attention. Teams that want the board to hand out work can turn on AMUX_BOARD_STEERS for a worker, a group or everyone."
+  },
+  {
+    "hash": "8f4be67d52d07677bd7e1dbbd859612418d6c162",
+    "short": "8f4be67d",
+    "title": "New /big-goal skill runs a large goal without you",
+    "date": "2026-11-03",
+    "type": "feat",
+    "tags": [
+      "skills",
+      "goals"
+    ],
+    "description": "Every install now ships /big-goal, which sets up a multi-day or multi-worker goal: a plan file with one owner per row, a checker per owner, a checked /goal on each worker and an hourly coordinator that reports one line. Use it when a goal is too big for a single /goal."
+  },
+  {
+    "hash": "fda2899c4b4255178ad9e5ec5613e2269d19439a",
+    "short": "fda2899c",
+    "title": "One worker can no longer close another worker's browser",
+    "date": "2026-11-03",
+    "type": "fix",
+    "tags": [
+      "browser",
+      "workers"
+    ],
+    "description": "If a worker joined another worker's browser in its own tab and the server restarted, its stop could close the whole shared browser. A worker's stop now only closes a browser it started, unless the request explicitly forces it."
+  },
+  {
     "hash": "0b0fea23efe5a67a6cca3c4638744d9f0c074a14",
     "short": "0b0fea23",
     "title": "Freeze a workspace in the Mac app",
