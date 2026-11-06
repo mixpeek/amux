@@ -17,7 +17,9 @@ echo b > f; git commit -qm "lane change" -- f
 AMUX_LAND_NOTIFY=0 AMUX_WORKER=lpr-holder bash "$AM" land --no-batch > "$T/holder.out" 2>&1 &
 key=""; for _ in $(seq 1 40); do
   for d in "$HOME"/.amux/locks/land-*; do [ "$(cat "$d/who" 2>/dev/null)" = lpr-holder ] && key="$d"; done
-  [ -n "$key" ] && [ -n "$(pgrep -P "$(cat "$key/pid" 2>/dev/null || echo 1)" 2>/dev/null)" ] && break; sleep 0.5
+  # The push itself, by its pid file: a child process alone is no sign, the
+  # remote-lease heartbeat is a child from before the gate (2026-11-06).
+  [ -n "$key" ] && [ -s "$key/push.pid" ] && kill -0 "$(cat "$key/push.pid")" 2>/dev/null && break; sleep 0.5
 done
 fail=0
 [ -n "$key" ] || { echo "FAIL setup: the holder never took the lock"; rm -rf -- "${T:?}"; exit 1; }

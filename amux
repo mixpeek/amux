@@ -10792,6 +10792,132 @@ p.communicate(msg.encode())
   # for whatever process now has a dead holder's pid, and the queue then waited
   # out --max-hold behind nobody (implicit state machines inventory #23). The
   # holder's start time is written with the lock and must still match.
+  # THE LOCK ABOVE IS ONE MACHINE'S. Two amux servers landing on one repo's
+  # main raced each other: the mixpeek-dev VM's green batch lost its push twice
+  # in an hour (2026-11-06 16:2xZ, 17:00Z, "cannot lock ref") to this Mac's
+  # queue, and every retry re-ran its gate, which the Mac's 10-15 minute lands
+  # kept overtaking. So land also holds a LEASE on the remote,
+  # refs/amux/land-lock/<branch>: a tiny commit naming holder, lane and
+  # expires_at, taken and released by compare-and-swap pushes (--no-verify:
+  # the lease is not a change to gate). Held from before the gate to after the
+  # push, so neither machine's push lands inside the other's gate. An expired
+  # lease is taken over; a remote that refuses the ref falls back to the local
+  # lock and says so. AMUX_LAND_REMOTE_LEASE=off disables it.
+  # Lease state lives in files under the local lock dir, because a heartbeat
+  # subprocess renews it while this process gates and pushes (mixpeek-cicd's
+  # review, 2026-11-06: a merge-queue hold ran 15:48Z to past 18:00Z, past any
+  # fixed TTL). rl-sha is the lease commit we hold now, rl-lost says a renewal
+  # lost its compare-and-swap, rl-hb.pid is the heartbeat, push.pid the push.
+  _land_rl_ref() { printf 'refs/amux/land-lock/%s' "$1"; }
+  _land_rl_field() { git log -1 --format=%B "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -1; }
+  _land_rl_commit() { # <expires_at> -> a lease commit sha (holder, start, lane, head, expiry)
+    local _t; _t="$(git mktree </dev/null)" || return 1
+    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\n' \
+      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" \
+      | GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost git commit-tree "$_t"
+  }
+  _land_rl_push() { # <remote> <ref> <expected sha or empty> <new sha or empty to delete>
+    git push --no-verify --porcelain "$1" "--force-with-lease=$2:$3" "${4}:$2" >/dev/null 2>&1
+  }
+  _land_rl_say() { # <message>: works from the EXIT trap and the heartbeat, where land's locals are gone
+    printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$_LAND_RL_ME" "$1" "$_LAND_RL_KEY" >> "$_LAND_RL_LOG" 2>/dev/null || true
+    echo "amux land: $1" >&2
+  }
+  _land_rl_dead_here() { # <lease sha>: a lease written on THIS machine by a process that is gone
+    local _h _p _st; _h="$(_land_rl_field "$1" holder)"; _p="${_h##*:}"
+    [ "${_h%:*}" = "${_LAND_RL_ID%:*}" ] || return 1
+    case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$_p" 2>/dev/null || return 0
+    _st="$(ps -o lstart= -p "$_p" 2>/dev/null | tr -s ' ')"
+    [ -n "$(_land_rl_field "$1" holder_start)" ] && [ "$_st" != "$(_land_rl_field "$1" holder_start)" ]
+  }
+  _land_rl_take() { # <remote> <branch> <lock dir>: 0 holding (or off), 7 not held: nothing may be pushed
+    [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+    local _r="$1" _ref _ttl _cap _skew _w=0 _cur _exp _age _who _new _said="" _now
+    _ref="$(_land_rl_ref "$2")"; _LAND_RL_DIR="$3"
+    _ttl="${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200}"; _cap="${AMUX_LAND_REMOTE_LEASE_WAIT_S:-14400}"
+    _skew="${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120}"
+    _LAND_RL_ID="$(hostname -s 2>/dev/null || hostname):$$"
+    _LAND_RL_START="$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ')"
+    _LAND_RL_ME="$me"; _LAND_RL_LOG="$log"; _LAND_RL_KEY="$key"
+    _LAND_RL_HEAD="$(git rev-parse --short HEAD 2>/dev/null)"
+    while :; do
+      _now="$(date +%s)"
+      if ! _cur="$(git ls-remote "$_r" "$_ref" 2>/dev/null | awk '{print $1}')"; then
+        _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not read $_ref on $_r; nothing pushed (AMUX_LAND_REMOTE_LEASE=off lands under the local lock alone)"
+        return 7
+      fi
+      if [ -n "$_cur" ]; then
+        git fetch -q --no-tags "$_r" "+$_ref:refs/amux/land-lock-seen/$2" 2>/dev/null || true
+        _exp="$(_land_rl_field "$_cur" expires_at)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
+        _age="$(_land_rl_field "$_cur" taken_at)"; case "$_age" in ''|*[!0-9]*) _age=? ;; *) _age="$(( _now - _age ))s" ;; esac
+        _who="$(_land_rl_field "$_cur" holder) ($(_land_rl_field "$_cur" lane), head $(_land_rl_field "$_cur" head))"
+        # Expired only past the skew margin: another machine's clock may run behind.
+        if [ "$_now" -le $(( _exp + _skew )) ] && ! _land_rl_dead_here "$_cur"; then
+          if [ "$_w" -ge "$_cap" ]; then
+            _land_rl_say "ERROR verdict=land_remote_lease_timeout: $_ref still held by $_who, lease age $_age, after ${_w}s; nothing pushed"
+            return 7
+          fi
+          [ "$_said" = "$_cur" ] || _land_rl_say "verdict=land_remote_lease_wait: $2 is being landed elsewhere by $_who, lease age $_age, expires $(( _exp - _now ))s from now; waiting"
+          _said="$_cur"; sleep "${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}"; _w=$(( _w + ${AMUX_LAND_REMOTE_LEASE_POLL_S:-20} )); continue
+        fi
+        _land_rl_say "verdict=land_remote_lease_takeover: $_ref held by $_who, lease age $_age, $( _land_rl_dead_here "$_cur" && echo "whose process on this machine is gone" || echo "expired $(( _now - _exp ))s ago" ); taking it over"
+      fi
+      _LAND_RL_TAKEN="$_now"
+      _new="$(_land_rl_commit $(( _now + _ttl )))" || { _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not write a lease commit; nothing pushed"; return 7; }
+      if _land_rl_push "$_r" "$_ref" "$_cur" "$_new"; then
+        echo "$_new" > "$_LAND_RL_DIR/rl-sha"; rm -f -- "$_LAND_RL_DIR/rl-lost"
+        _land_rl_say "verdict=land_remote_lease_taken: $_ref for ${_ttl}s, renewed every ${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}s while held"
+        _land_rl_heartbeat "$_r" "$_ref" &
+        echo $! > "$_LAND_RL_DIR/rl-hb.pid"
+        return 0
+      fi
+      # Lost the compare-and-swap, or the remote refuses the ref: re-read to tell.
+      if [ "$(git ls-remote "$_r" "$_ref" 2>/dev/null | awk '{print $1}')" = "$_cur" ]; then
+        _land_rl_say "ERROR verdict=land_remote_lease_unavailable: $_r refused $_ref; nothing pushed (AMUX_LAND_REMOTE_LEASE=off lands under the local lock alone)"
+        return 7
+      fi
+    done
+  }
+  _land_rl_heartbeat() { # <remote> <ref>: renew by CAS while the land lives; a lost CAS stops its push
+    local _parent=$$ _cur _new
+    while sleep "${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}"; do
+      kill -0 "$_parent" 2>/dev/null || exit 0
+      _cur="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"; [ -n "$_cur" ] || exit 0
+      _new="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" || continue
+      if _land_rl_push "$1" "$2" "$_cur" "$_new"; then echo "$_new" > "$_LAND_RL_DIR/rl-sha"; continue; fi
+      # A failed push that left the ref ours is the network: retry next beat.
+      [ "$(git ls-remote "$1" "$2" 2>/dev/null | awk '{print $1}')" = "$_cur" ] && continue
+      : > "$_LAND_RL_DIR/rl-lost"
+      _land_rl_say "ERROR verdict=land_remote_lease_lost: $2 is no longer ours (another machine took it); stopping this land's push"
+      local _pp; _pp="$(cat "$_LAND_RL_DIR/push.pid" 2>/dev/null)"
+      [ -n "$_pp" ] && kill -TERM "$_pp" 2>/dev/null
+      exit 0
+    done
+  }
+  _land_rl_check() { # before the push: is the lease still ours?
+    [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+    [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    if [ -e "$_LAND_RL_DIR/rl-lost" ]; then
+      _land_rl_say "ERROR verdict=land_remote_lease_lost: the lease was lost while holding; nothing pushed"; return 7
+    fi
+  }
+  _land_rl_release() { # <remote> <branch>: stop the heartbeat, then delete the ref by CAS
+    [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null)"
+    # `|| true`: the CLI runs under set -e, and wait reports the killed
+    # heartbeat as 143, which ended the EXIT trap before the release.
+    if [ -n "$_hb" ]; then kill "$_hb" 2>/dev/null || true; wait "$_hb" 2>/dev/null || true; fi
+    _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
+    rm -f -- "$_LAND_RL_DIR/rl-sha" "$_LAND_RL_DIR/rl-hb.pid"
+    [ -n "$_sha" ] && [ ! -e "$_LAND_RL_DIR/rl-lost" ] || { _LAND_RL_DIR=""; return 0; }
+    if _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" ""; then
+      _land_rl_say "verdict=land_remote_lease_released: $(_land_rl_ref "$2")"
+    else
+      _land_rl_say "WARN verdict=land_remote_lease_release_failed: $(_land_rl_ref "$2") stays until it expires"
+    fi
+    _LAND_RL_DIR=""
+  }
   _land_holder_alive() {
     local pid="$1" lockdir="$2" want got
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
@@ -11283,8 +11409,11 @@ p.communicate(msg.encode())
   # A hold cancelled by another lane (--cancel-for) names who and why in the
   # holder's OWN output: gs12-compute's detached log ended at "batching ..."
   # with neither, and it read as a crash (2026-10-02 20:31Z).
-  trap "[ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
+  trap "_land_rl_release '$remote' '$branch'; [ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
   [ "$waited" -gt 0 ] && _land_log "acquired $branch after waiting ${waited}s"
+  # The other machine's land holds the remote lease: wait for it here, before
+  # the gate, so this gate is not overtaken by its push.
+  _land_rl_take "$remote" "$branch" "$lock" || return 7
 
   # LANDING WINDOW (Ethan, 2026-10-04 15:31 ET, harness efficiency): with
   # `git config amux.landMinIntervalS N`, a holder whose branch was pushed less
@@ -11841,8 +11970,11 @@ $f"
     local _ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}"
     [ -n "$_ssh" ] || [ -z "${GIT_SSH:-}" ] || _ssh="$(printf %q "$GIT_SSH")"
     [ -n "$_ssh" ] || _ssh="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"
+    _land_rl_check || return 7
     while :; do
-    rc=0; out="$(set -o pipefail; env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" GIT_SSH_COMMAND="$_ssh" git push "$remote" "$stack_tip:$branch" 2>&1 \
+    # The push runs in the background with its pid on file, so a heartbeat
+    # that loses the lease can stop it before it updates the branch.
+    rc=0; out="$(set -o pipefail; { env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" GIT_SSH_COMMAND="$_ssh" git push "$remote" "$stack_tip:$branch" 2>&1 & echo $! > "$lock/push.pid"; wait $!; } \
       | AMUX_TL="$_tl" perl -MTime::HiRes=time -ne 'BEGIN{$|=1; $t0=time; open($o,">>",$ENV{AMUX_TL}) or die} printf $o "%8.1fs %s", time-$t0, $_; print')" || rc=$?
     _land_leg_summary "$_tl" "$(( $(date +%s) - _t0p ))"
     _land_heal_core_worktree "the push and its hook (rc $rc)"
@@ -11867,6 +11999,13 @@ $f"
     find "${full%/*}" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     printf '%s\n' "$out" > "$full"
     if [ $rc -eq 0 ]; then
+      # Read the branch back before the lease goes (mixpeek-cicd's review): the
+      # release must follow a push the remote shows, not one git reported.
+      if [ -n "${_LAND_RL_DIR:-}" ]; then
+        local _rb; _rb="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk '{print $1}')"
+        [ "$_rb" = "$(git rev-parse "$stack_tip")" ] || _land_log "WARN verdict=land_push_not_read_back: $remote $branch reads ${_rb:-nothing}, not $(git rev-parse --short "$stack_tip")"
+        [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_log "ERROR verdict=land_pushed_after_lease_lost: the lease was lost while this push ran and it still landed; check $branch for a second machine's push"
+      fi
       [ "$_mq" = off ] || _land_mq_ledger phase=landed mode="$_mq" batch="$_mq_id" base="$_mq_base" sha="$stack_tip" lanes="$me${lanes:+, $lanes}"
       if [ -n "$lanes" ]; then
         _land_tell "landed $(git rev-parse --short "$stack_tip") on $branch, batched by $me"
