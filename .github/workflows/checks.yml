@@ -812,6 +812,12 @@ jobs:
         run: |
           set -uo pipefail
           python3 scripts/test-native-status.py
+      # Hermetic: parses the shipped dispatch table and runs `amux help` with a
+      # temp HOME, no server. A verb added without a help line fails here.
+      - name: amux help names every dispatched verb
+        run: |
+          set -uo pipefail
+          python3 -m unittest tests/cli_help.py
       - name: the multiplayer browser contract's shape holds
         run: |
           set -uo pipefail
