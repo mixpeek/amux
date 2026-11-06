@@ -577,6 +577,7 @@ def first_signin_add(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_first_signin")
         return True
     log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_signin_refused")
+    request_access(user, ip)
     alert_refused_signin(user, ip)
     return False
 
@@ -613,7 +614,7 @@ def alert_refused_signin(user, ip, now=None):
 def _send_refused_alert(user, ip):
     body = {"session": "amux-door", "reason": "a valid sign-in was refused by the address allowlist",
             "message": "%s signed in correctly from %s, which is not on this server's allowlist, so they were "
-                       "refused. If that is them, add the address in Settings > Address allowlist, or over SSH: "
+                       "refused. It is waiting in Needs you: if that is them, tap Allow at /_door/allowlist, or over SSH: "
                        "sudo python3 /opt/amux-door/door.py allowlist add %s. If it is not them, their password "
                        "is known to someone else." % (user, ip, ip)}
     try:
@@ -621,6 +622,91 @@ def _send_refused_alert(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_sent")
     except Exception as e:
         log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_alert_failed", reason=str(e)[:120])
+
+
+# ── A refused sign-in is a request the owner answers (Ethan, 2026-11-05, after Doron was locked out
+# by a new address and the alert above reached no channel: "add alerts here so i receive it. should
+# be a needs you"; "it just needs to be more flexible ... but still secure"). Only code past the
+# credential check gets here, so a guess files nothing. The request is kept in the allowlist file
+# and filed once per (account, address) as a needs-you card on this server's board, where the owner
+# already looks. Allowing it still takes the owner, signed in from a listed address, pressing Allow
+# on /_door/allowlist (CSRF-checked POST); the card's link is relative, so no Host header builds it.
+MAX_REQUESTS = 20
+
+
+def request_access(user, ip, now=None):
+    """Record (user, ip) as waiting for the owner, and file its card the first time. Returns the request."""
+    now = int(now or time.time())
+
+    def add(data):
+        reqs = data.setdefault("requests", [])
+        for r in reqs:
+            if r.get("ip") == ip and r.get("user") == user:
+                r["last"], r["count"] = now, r.get("count", 1) + 1
+                return dict(r, new=False)
+        r = {"ip": ip, "user": user, "first": now, "last": now, "count": 1}
+        reqs.append(r)
+        del reqs[:-MAX_REQUESTS]    # the oldest falls off; a sign-in files it again
+        return dict(r, new=True)
+    req = update_allowlist(add)
+    log(event="allowlist", user=user, ip=ip, verdict="door_access_requested" if req["new"] else "door_access_rerequested")
+    if req["new"]:
+        threading.Thread(target=_file_access_card, args=(user, ip), daemon=True).start()
+    return req
+
+
+def access_card_body(user, ip):
+    return {"title": "Let %s sign in from %s?" % (user, ip), "status": "needsyou", "tags": ["door-access"],
+            "ask_type": "access", "ask_actor": "server owner",
+            "ask_question": "Let %s sign in to this server from the new address %s?" % (user, ip),
+            "ask_unblocks": "Allowing it adds %s to the address allowlist, and %s can sign in from it." % (ip, user),
+            "desc": "%s signed in with the right password from %s, which is not on this server's address "
+                    "allowlist, so the door refused them.\n\nIf that is them, open [the address allowlist]"
+                    "(/_door/allowlist) and press Allow beside %s. Over SSH: `sudo python3 /opt/amux-door/door.py "
+                    "allowlist add %s`.\n\nIf it is not them, press Dismiss there and change their password: "
+                    "someone else knows it." % (user, ip, ip, ip)}
+
+
+def _file_access_card(user, ip):
+    try:
+        _, out = _amux("POST", "/api/board", data=json.dumps(access_card_body(user, ip)).encode(), timeout=10,
+                       content_type="application/json")
+        resp = json.loads(out or b"{}")
+        if not resp.get("id"):     # a refusal comes back as JSON with error/code: read it, never assume
+            raise ValueError(str(resp.get("code") or resp.get("error") or "no card id")[:80])
+        update_allowlist(lambda d: [r.update(card=resp["id"]) for r in d.get("requests", [])
+                                    if r.get("ip") == ip and r.get("user") == user] and None)
+        log(event="allowlist", user=user, ip=ip, card=resp["id"], verdict="door_access_card_filed")
+    except Exception as e:
+        log(event="allowlist", user=user, ip=ip, verdict="door_access_card_failed", reason=str(e)[:120])
+
+
+def close_access_card(card, how):
+    if not card:
+        return
+    try:
+        _, out = _amux("PATCH", "/api/board/" + urllib.parse.quote(card, safe=""), timeout=10,
+                       content_type="application/json",
+                       data=json.dumps({"status": "done", "evidence": "none: %s at /_door/allowlist; an allowlist "
+                                                                      "change leaves no artifact" % how}).encode())
+        resp = json.loads(out or b"{}")
+        if resp.get("ok") is False or resp.get("error"):
+            raise ValueError(str(resp.get("code") or resp.get("error"))[:80])
+        log(event="allowlist", card=card, verdict="door_access_card_closed")
+    except Exception as e:
+        log(event="allowlist", card=card, verdict="door_access_card_close_failed", reason=str(e)[:120])
+
+
+def take_request(ip, user):
+    """Remove the waiting request for (ip, user) and return it, or None."""
+    def take(data):
+        reqs = data.get("requests", [])
+        hit = next((r for r in reqs if r.get("ip") == ip and r.get("user") == user), None)
+        if hit is None:
+            return False
+        reqs.remove(hit)
+        return hit
+    return update_allowlist(take) or None
 
 
 def note_blocked(ip, uri, now=None):
@@ -729,9 +815,62 @@ def basic_user(header, ip=None):
     return None
 
 
-def session_cookies(user, max_age=MAX_AGE):
+# ── Trusted devices (Ethan, 2026-11-06: "doron is stuck again, maybe we need a better approach?").
+# Doron was refused three more times overnight, each from a new cellular IPv6 address
+# (2605:59ca:..., 2600:382:...): a phone's address changes with the network, so a list of addresses
+# cannot hold it. A browser or app that signed in where the allowlist let it (a listed address, a
+# first sign-in, an address the owner allowed) gets DEVICE_COOKIE, signed and kept for a year, and
+# from then on that device passes the allowlist from any address. It is not a session: the person
+# still signs in, and signing out keeps it. A stolen password on a new device is still refused and
+# asks the owner, which is what the allowlist is for. The owner forgets an account's devices on
+# /_door/allowlist (device_epoch), and changing the server secret forgets every device.
+DEVICE_COOKIE = "amux_door_device"
+DEVICE_MAX_AGE = 365 * 86400
+
+
+def device_epoch(user, data=None):
+    data = allowlist() if data is None else data
+    return int((data.get("device_epoch") or {}).get(user, 0))
+
+
+def device_cookie(user):
+    v = make_cookie("device:%s:%d" % (user, device_epoch(user)), DEVICE_MAX_AGE)
+    return ("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (DEVICE_COOKIE, v, DEVICE_MAX_AGE))
+
+
+def device_user(header):
+    """The account whose sign-in made this a trusted device, or None (missing, forged, expired,
+    forgotten by the owner, or an account that is gone)."""
+    for part in (header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k != DEVICE_COOKIE or not v:
+            continue
+        try:
+            name, exp, mac = v.rsplit(".", 2)
+            exp = int(exp)
+            tag, rest = name.split(":", 1)
+            user, epoch = rest.rsplit(":", 1)
+            epoch = int(epoch)
+        except ValueError:
+            return None
+        if tag == "device" and exp > time.time() and hmac.compare_digest(sign(name, exp), mac) \
+                and epoch == device_epoch(user) and (user in users() or user in members()):
+            return user
+        return None
+    return None
+
+
+def reachable(ip, cookies, data=None):
+    """May this request pass the allowlist: off, a listed address, or a trusted device."""
+    data = allowlist() if data is None else data
+    return ip_allowed(ip, data) or bool(device_user(cookies))
+
+
+def session_cookies(user, max_age=MAX_AGE, device=True):
+    """Every caller but /_door/refresh issues these only after the allowlist let the sign-in through,
+    so the device is trusted from then on (device=False where that is not known)."""
     v = make_cookie(user, max_age)
-    return [("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (COOKIE, v, max_age)),
+    return ([device_cookie(user)] if device else []) + [("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (COOKIE, v, max_age)),
             ("Set-Cookie", "%s=%s; Path=%s; Max-Age=%d; HttpOnly; Secure; SameSite=None" % (VIEW_COOKIE, v, VIEW_PATH, max_age)),
             ("Set-Cookie", "%s=1; Path=/; Max-Age=%d; HttpOnly; Secure; SameSite=Lax" % (VIEW_MARK, max_age))]
 
@@ -822,8 +961,12 @@ a{color:#58a6ff}
 <p>Your address: <code>%(you)s</code> (%(you_listed)s).</p>
 <div>%(toggle)s</div>
 <p>%(first_state)s</p><div>%(first)s</div>
-<div class="wrap"><table>%(rows)s</table></div>
+%(requests)s<div class="wrap"><table>%(rows)s</table></div>
 <div>%(add)s</div>
+<h2>Trusted devices</h2><p>A phone, app or browser that signed in where this list let it keeps working from any
+address, so a phone that changes network is not locked out. A new device still needs a listed address,
+or your Allow above. Lost a device, or think a password leaked? Forget that account's devices: each one
+then needs a listed address or your Allow again.</p><div>%(forget)s</div>
 <p>Public links and the server's status page stay reachable from anywhere. Locked out? On the server:
 <code>sudo python3 /opt/amux-door/door.py allowlist add &lt;address&gt;</code></p>
 <p><a href="/">Back to amux</a></p>
@@ -886,7 +1029,7 @@ class Door(BaseHTTPRequestHandler):
                 return self.send(403, b'{"error":"cross-site request refused"}', [("Content-Type", "application/json")])
             cookies = self.headers.get("Cookie")
             ip = client_ip(self.headers, self.client_address[0])
-            blocked = not ip_allowed(ip)
+            blocked = not reachable(ip, cookies)
             if blocked:
                 note_blocked(ip, uri)
                 if not (method == "GET" and "text/html" in self.headers.get("Accept", "")):
@@ -909,7 +1052,8 @@ class Door(BaseHTTPRequestHandler):
             if user:
                 # Signed in before the view cookie existed: one hop to add it.
                 if (method == "GET" and "text/html" in self.headers.get("Accept", "")
-                        and not has_cookie(cookies, VIEW_MARK) and not uri.startswith(("/_door/", VIEW_PATH))):
+                        and not (has_cookie(cookies, VIEW_MARK) and has_cookie(cookies, DEVICE_COOKIE))
+                        and not uri.startswith(("/_door/", VIEW_PATH))):
                     loc = "/_door/refresh?next=" + urllib.parse.quote(safe_next(uri), safe="")
                     return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
                 note_seen()
@@ -940,7 +1084,7 @@ class Door(BaseHTTPRequestHandler):
             try:
                 claims = verify_entry_token(q.get("t", [""])[0])
                 email = claims["sub"].lower()
-                if not first_signin_add(email, ip):
+                if device_user(self.headers.get("Cookie")) != email and not first_signin_add(email, ip):
                     raise PermissionError("address not on the allowlist")
                 if email in users():       # the server's owner (a standalone server's paying customer)
                     log(event="enter", user=email, ip=ip, role="owner", via=claims.get("via"), verdict="door_enter_ok")
@@ -957,7 +1101,7 @@ class Door(BaseHTTPRequestHandler):
             except PermissionError:
                 body = ("<!doctype html><meta charset=utf-8><title>Address not allowed</title><p>Your address, %s, "
                         "is not on this server's allowlist. Sign in from an address on the list and add it at "
-                        "/_door/allowlist. The owner is told about a valid sign-in from a new address.</p>"
+                        "/_door/allowlist. If your password was right, the owner has been asked to let this address in; sign in again once they have.</p>"
                         % html.escape(ip)).encode()
                 return self.send(403, body, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")])
             except Exception as e:
@@ -974,7 +1118,7 @@ class Door(BaseHTTPRequestHandler):
         if path.path == "/_door/ipcheck":
             # forward_auth for the apps origin (:8443), which has no sign-in of its own.
             ip = client_ip(self.headers, self.client_address[0])
-            if ip_allowed(ip):
+            if reachable(ip, self.headers.get("Cookie")):
                 return self.send(200)
             note_blocked(ip, self.headers.get("X-Forwarded-Uri", "/"))
             return self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
@@ -1025,7 +1169,10 @@ class Door(BaseHTTPRequestHandler):
             user = cookie_user(self.headers.get("Cookie"))
             if not user:
                 return self.send(302, headers=[("Location", "/_door/login?next=" + urllib.parse.quote(nxt, safe=""))])
-            return self.send(302, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user))
+            # /_door/* is reachable from anywhere: a session cookie carried to an unlisted address must
+            # not turn that device into a trusted one here.
+            trust = reachable(client_ip(self.headers, self.client_address[0]), self.headers.get("Cookie"))
+            return self.send(302, headers=[("Location", nxt), ("Cache-Control", "no-store")] + session_cookies(user, device=trust))
         if path.path == "/_door/logout":
             # To "/", so the check decides: an amux Cloud server goes to cloud.amux.io sign-in,
             # a password host to its login form (the dashboard's Sign out, 2026-10-17).
@@ -1054,7 +1201,12 @@ class Door(BaseHTTPRequestHandler):
             log(event="signin", user=user, ip=ip, verdict="door_signin_throttled_refused")
             return self.page(nxt, user, "Too many wrong passwords from this address. Try again in %d minutes." % (wait // 60 + 1))
         al = allowlist()
-        if al.get("enabled") and not ip_listed(ip, al):
+        # A device is trusted for the account that signed in on it, not for every account: another
+        # account's password on it is a new sign-in from a new address, refused as one.
+        device = device_user(self.headers.get("Cookie"))
+        if device and device != user and al.get("enabled") and not ip_listed(ip, al):
+            log(event="signin", user=user, ip=ip, device=device, verdict="door_signin_device_other_account")
+        if al.get("enabled") and not ip_listed(ip, al) and device != user:
             ok = check_password(user, pw)
             if not (ok and first_signin_add(user, ip)):
                 # Same cost whatever the password: a right one must not come back faster, and it
@@ -1064,7 +1216,8 @@ class Door(BaseHTTPRequestHandler):
                 log(event="signin", user=user, ip=ip, verdict="door_signin_allowlist_refused")
                 note_signin(False)
                 return self.page(nxt, user, "This address (%s) is not on this server's allowlist. "
-                                            "The owner is told about a valid sign-in from a new address." % ip)
+                                            "If your password was right, the owner has been asked to let this address in; "
+                                            "sign in again once they have." % ip)
         elif (form.get("lock") or [""])[0] == "1" and not os.path.exists(ALLOW_FILE) and check_password(user, pw):
             if user in admins({}):
                 update_allowlist(lambda d: d.update(enabled=True, first_signin=True, admins=[user]))
@@ -1087,7 +1240,7 @@ class Door(BaseHTTPRequestHandler):
     def allowlist_admin(self):
         """(user, ip) for a signed-in admin on an allowed address, else None after answering."""
         ip = client_ip(self.headers, self.client_address[0])
-        if not ip_allowed(ip):
+        if not reachable(ip, self.headers.get("Cookie")):
             note_blocked(ip, "/_door/allowlist")
             self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
             return None
@@ -1098,6 +1251,11 @@ class Door(BaseHTTPRequestHandler):
         if user not in admins():
             log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_not_admin")
             self.send(403, b"Only the server's owner can change the address allowlist.\n", [("Content-Type", "text/plain")])
+            return None
+        if not ip_allowed(ip) and device_user(self.headers.get("Cookie")) != user:
+            # Reached on another account's trusted device: the admin's own device or a listed address only.
+            log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_device_other_account")
+            self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
             return None
         return user, ip
 
@@ -1120,7 +1278,24 @@ class Door(BaseHTTPRequestHandler):
                 html.escape(e.get("how", "")), time.strftime("%Y-%m-%d", time.gmtime(e.get("added", 0))),
                 form("remove", "Remove", '<input type="hidden" name="ip" value="%s">' % html.escape(e.get("ip", "")), "sec"))
             for e in al.get("entries", []))
+        def req_row(r):
+            hidden = ('<input type="hidden" name="ip" value="%s"><input type="hidden" name="user" value="%s">'
+                      % (html.escape(r.get("ip", "")), html.escape(r.get("user", ""))))
+            return "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s %s</td></tr>" % (
+                html.escape(r.get("ip", "")), html.escape(r.get("user", "")),
+                "%s UTC, %d sign-in%s" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(r.get("last", 0))),
+                                          r.get("count", 1), "" if r.get("count", 1) == 1 else "s"),
+                form("allow_request", "Allow", hidden), form("dismiss_request", "Dismiss", hidden, "sec"))
+        reqs = al.get("requests", [])
+        requests = ('<h2>Waiting for you</h2><p>These signed in with the right password from an address that is not '
+                    'on the list. Allow one only if you know it is them; if not, dismiss it and change that '
+                    'password.</p><div class="wrap"><table>%s</table></div>' % "".join(map(req_row, reqs))) if reqs else ""
+        accounts = sorted({e.get("user") for e in al.get("entries", []) + reqs if e.get("user")} | set(users()) | set(joined()))
+        forget = "".join(form("forget_devices", "Forget %s's devices" % a,
+                              '<input type="hidden" name="user" value="%s">' % html.escape(a), "sec") for a in accounts)
         body = ALLOW_PAGE % {
+            "forget": forget or "<p>No accounts yet.</p>",
+            "requests": requests,
             "host": html.escape(self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""),
             "state": "On: only the addresses below reach this server." if on else
                      "Off: any address can reach the sign-in.",
@@ -1160,6 +1335,27 @@ class Door(BaseHTTPRequestHandler):
                 return self.allowlist_page(err="That range is too wide to be an allowlist entry.")
             added = allow_add(target, user, "owner", (form.get("note") or [""])[0])
             return self.allowlist_page(ok=("Added %s." % target) if added else "%s was already on the list." % target)
+        if action == "forget_devices":
+            who_for = (form.get("user") or [""])[0].strip()
+            if not who_for:
+                return self.allowlist_page(err="Name the account.")
+            update_allowlist(lambda d: d.setdefault("device_epoch", {}).update({who_for: device_epoch(who_for, d) + 1}))
+            log(event="allowlist", user=who_for, by=user, verdict="door_devices_forgotten")
+            return self.allowlist_page(ok="Forgot every trusted device for %s." % who_for)
+        if action in ("allow_request", "dismiss_request"):
+            who_for = (form.get("user") or [""])[0].strip()
+            req = take_request(target, who_for)
+            if not req:
+                return self.allowlist_page(err="That request is no longer waiting.")
+            if action == "allow_request":
+                allow_add(target, who_for, "owner_approved", "approved by %s" % user)
+                how = "%s allowed %s for %s" % (user, target, who_for)
+            else:
+                how = "%s dismissed the request from %s for %s" % (user, target, who_for)
+            log(event="allowlist", user=who_for, ip=target, by=user, verdict="door_access_" + action.split("_")[0] + "ed")
+            threading.Thread(target=close_access_card, args=(req.get("card"), how), daemon=True).start()
+            return self.allowlist_page(ok=("Allowed %s for %s. They can sign in now." % (target, who_for))
+                                       if action == "allow_request" else "Dismissed %s." % target)
         if action == "remove":
             def remove(data):
                 rest = [e for e in data["entries"] if e.get("ip") != target]
