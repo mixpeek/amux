@@ -534,6 +534,20 @@ mod tests {
         }
     }
 
+    /// The registry THIS COMMIT ships, not the one installed on the machine.
+    ///
+    /// `boundaries::load()` prefers `~/.amux/hooks/boundaries.toml` and merges
+    /// `~/.amux/boundaries.toml` over it. That is right for ENFORCEMENT and
+    /// wrong for a parity corpus: a machine whose install predates a boundary
+    /// (a Mac that has no `tenant-workload-gate`) then fails these tests while
+    /// CI — which has no installed file — passes, and the bytes under review are
+    /// neither. `tests/env_config.rs` states the same rule for the integration
+    /// suite (`this_suite_cannot_reach_the_live_amux_home`).
+    fn repo_registry() -> Vec<toml::Table> {
+        boundaries::layer(boundaries::DEFAULT_REGISTRY)
+            .expect("the committed boundaries.toml parses")
+    }
+
     /// An ask carrying the call's INPUT, in the shapes MEASURED on 2.2.4
     /// (2026-11-03): `shell` puts the command in `resources[0]`, `edit` puts the
     /// diff in `metadata.files[].patch`.
@@ -813,8 +827,7 @@ reason = "a live secret must never be written to a file"
     /// what decides it is a gate receipt and not anything an ask carries.
     #[test]
     fn the_registry_examples_agree_with_this_evaluator_in_both_directions() {
-        let (registry, _src, errors) = boundaries::load();
-        assert!(errors.is_empty(), "registry must parse: {errors:?}");
+        let registry = repo_registry();
         let policy = BoundaryPolicy::from_registry(registry.clone());
         let (mut refused, mut allowed) = (0, 0);
         let mut receipt_gated = std::collections::BTreeSet::new();
@@ -889,8 +902,7 @@ reason = "a live secret must never be written to a file"
     /// allow examples, so they are allowed here too.
     #[test]
     fn a_read_only_command_that_names_a_guarded_path_is_allowed() {
-        let (registry, _src, errors) = boundaries::load();
-        assert!(errors.is_empty(), "registry must parse: {errors:?}");
+        let registry = repo_registry();
         let policy = BoundaryPolicy::from_registry(registry);
         for cmd in [
             "ls ~/.amux/gmail-tokens",
@@ -924,8 +936,7 @@ reason = "a live secret must never be written to a file"
     /// the guard's receipt is what makes it refuse, and an ask carries none.
     #[test]
     fn a_receipt_gated_rule_is_reported_not_decided() {
-        let (registry, _src, errors) = boundaries::load();
-        assert!(errors.is_empty(), "registry must parse: {errors:?}");
+        let registry = repo_registry();
         let policy = BoundaryPolicy::from_registry(registry);
         for cmd in [
             "kubectl -n mixpeek-tenant-a scale deploy/api --replicas=0",
