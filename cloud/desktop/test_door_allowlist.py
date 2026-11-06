@@ -163,6 +163,19 @@ class DoorAllowlist(unittest.TestCase):
         other = real.replace(MATE, OWNER, 1)
         self.assertEqual(self.req("/_door/ipcheck", AWAY, headers={"Cookie": other})[0], 403, "the account is signed")
 
+    def test_a_device_is_trusted_for_its_own_account_only(self):
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        device = self.device_only(self.cookie(MATE_IP, MATE, MATE_PW))
+        data = urllib.parse.urlencode({"username": OWNER, "password": OWNER_PW, "next": "/"}).encode()
+        self.assertNotEqual(self.req("/_door/login", AWAY, data=data, headers={"Cookie": device})[0], 303,
+                            "the owner's password on the mate's device is a new sign-in from a new address")
+        self.assertNotIn(AWAY, [e["ip"] for e in self.get_list()["entries"]])
+        owner = self.cookie(HOME)
+        on_mates = self.without_device(owner) + "; " + device
+        self.assertEqual(self.req("/_door/allowlist", AWAY, headers={"Cookie": on_mates})[0], 403,
+                         "the allowlist page needs a listed address or the admin's own device")
+        self.assertEqual(self.req("/_door/allowlist", AWAY, headers={"Cookie": owner})[0], 200)
+
     def test_refresh_on_an_unlisted_address_does_not_trust_the_device(self):
         self.on((HOME, OWNER))
         session = self.without_device(self.cookie(HOME))

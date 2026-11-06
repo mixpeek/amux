@@ -1084,7 +1084,7 @@ class Door(BaseHTTPRequestHandler):
             try:
                 claims = verify_entry_token(q.get("t", [""])[0])
                 email = claims["sub"].lower()
-                if not device_user(self.headers.get("Cookie")) and not first_signin_add(email, ip):
+                if device_user(self.headers.get("Cookie")) != email and not first_signin_add(email, ip):
                     raise PermissionError("address not on the allowlist")
                 if email in users():       # the server's owner (a standalone server's paying customer)
                     log(event="enter", user=email, ip=ip, role="owner", via=claims.get("via"), verdict="door_enter_ok")
@@ -1201,7 +1201,12 @@ class Door(BaseHTTPRequestHandler):
             log(event="signin", user=user, ip=ip, verdict="door_signin_throttled_refused")
             return self.page(nxt, user, "Too many wrong passwords from this address. Try again in %d minutes." % (wait // 60 + 1))
         al = allowlist()
-        if al.get("enabled") and not ip_listed(ip, al) and not device_user(self.headers.get("Cookie")):
+        # A device is trusted for the account that signed in on it, not for every account: another
+        # account's password on it is a new sign-in from a new address, refused as one.
+        device = device_user(self.headers.get("Cookie"))
+        if device and device != user and al.get("enabled") and not ip_listed(ip, al):
+            log(event="signin", user=user, ip=ip, device=device, verdict="door_signin_device_other_account")
+        if al.get("enabled") and not ip_listed(ip, al) and device != user:
             ok = check_password(user, pw)
             if not (ok and first_signin_add(user, ip)):
                 # Same cost whatever the password: a right one must not come back faster, and it
@@ -1246,6 +1251,11 @@ class Door(BaseHTTPRequestHandler):
         if user not in admins():
             log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_not_admin")
             self.send(403, b"Only the server's owner can change the address allowlist.\n", [("Content-Type", "text/plain")])
+            return None
+        if not ip_allowed(ip) and device_user(self.headers.get("Cookie")) != user:
+            # Reached on another account's trusted device: the admin's own device or a listed address only.
+            log(event="allowlist", user=user, ip=ip, verdict="door_allowlist_device_other_account")
+            self.send(403, b"This address is not on the server's allowlist.\n", [("Content-Type", "text/plain")])
             return None
         return user, ip
 
