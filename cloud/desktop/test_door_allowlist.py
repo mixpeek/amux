@@ -126,6 +126,64 @@ class DoorAllowlist(unittest.TestCase):
         self.assertEqual(status, 303)
         return "; ".join(c.split(";")[0] for c in headers.get_all("Set-Cookie"))
 
+    @staticmethod
+    def without_device(cookie):
+        return "; ".join(c for c in cookie.split("; ") if not c.startswith("amux_door_device="))
+
+    @staticmethod
+    def device_only(cookie):
+        return "; ".join(c for c in cookie.split("; ") if c.startswith("amux_door_device="))
+
+    def test_a_device_that_signed_in_on_a_listed_address_works_from_any_address(self):
+        # Ethan, 2026-11-06: "doron is stuck again, maybe we need a better approach?" Doron's phone
+        # was refused from three new cellular IPv6 addresses overnight.
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        cookie = self.cookie(MATE_IP, MATE, MATE_PW)
+        self.assertTrue(self.device_only(cookie), "a sign-in on a listed address trusts the device")
+        for ip in (AWAY, "2600:382:5989:84cf:4521:d152:2bae:1b0e", "2605:59ca:8010:8da8:f132:3da3:c755:69bf"):
+            self.assertEqual(self.check(ip, cookie=cookie)[0], 200, ip)
+            self.assertEqual(self.req("/_door/ipcheck", ip, headers={"Cookie": cookie})[0], 200, ip)
+        # Signed out, the device still signs in from a new address, and files no request.
+        n = len(self.cards)
+        data = urllib.parse.urlencode({"username": MATE, "password": MATE_PW, "next": "/"}).encode()
+        status = self.req("/_door/login", "203.0.113.120", data=data, headers={"Cookie": self.device_only(cookie)})[0]
+        self.assertEqual(status, 303)
+        self.assertEqual(self.check("203.0.113.120", cookie=self.without_device(cookie))[0], 403,
+                         "the session alone is not the device")
+        time.sleep(0.3)
+        self.assertEqual(len(self.cards), n)
+        self.assertNotIn("203.0.113.120", [e["ip"] for e in self.get_list()["entries"]], "the device is trusted, not the address")
+
+    def test_a_new_device_with_the_right_password_is_still_refused_and_a_forged_device_is_nobody(self):
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        self.assertEqual(self.login("203.0.113.121", MATE, MATE_PW)[0], 401)
+        forged = "amux_door_device=device:%s:0.%d.%s" % (MATE, int(time.time()) + 999, "0" * 64)
+        self.assertEqual(self.check(AWAY, user=None, cookie=forged)[0], 403)
+        real = self.device_only(self.cookie(MATE_IP, MATE, MATE_PW))
+        other = real.replace(MATE, OWNER, 1)
+        self.assertEqual(self.req("/_door/ipcheck", AWAY, headers={"Cookie": other})[0], 403, "the account is signed")
+
+    def test_refresh_on_an_unlisted_address_does_not_trust_the_device(self):
+        self.on((HOME, OWNER))
+        session = self.without_device(self.cookie(HOME))
+        status, _, headers = self.req("/_door/refresh?next=/", AWAY, headers={"Cookie": session})
+        self.assertEqual(status, 302)
+        self.assertFalse([c for c in headers.get_all("Set-Cookie") or [] if c.startswith("amux_door_device=")])
+        status, _, headers = self.req("/_door/refresh?next=/", HOME, headers={"Cookie": session})
+        self.assertTrue([c for c in headers.get_all("Set-Cookie") or [] if c.startswith("amux_door_device=")],
+                        "a session from before devices existed picks one up on a listed address")
+
+    def test_the_owner_forgets_an_accounts_devices(self):
+        self.on((HOME, OWNER), (MATE_IP, MATE))
+        device = self.device_only(self.cookie(MATE_IP, MATE, MATE_PW))
+        self.assertEqual(self.req("/_door/ipcheck", AWAY, headers={"Cookie": device})[0], 200)
+        owner = self.cookie(HOME)
+        self.assertIn("Trusted devices", self.req("/_door/allowlist", HOME, headers={"Cookie": owner})[1])
+        self.assertEqual(self.admin_post(HOME, owner, action="forget_devices", user=MATE)[0], 200)
+        self.assertEqual(self.req("/_door/ipcheck", AWAY, headers={"Cookie": device})[0], 403)
+        again = self.device_only(self.cookie(MATE_IP, MATE, MATE_PW))
+        self.assertEqual(self.req("/_door/ipcheck", AWAY, headers={"Cookie": again})[0], 200, "signing in on a listed address trusts it again")
+
     def on(self, *entries, first=True):
         self.set_list({"enabled": True, "first_signin": first, "admins": [OWNER],
                        "entries": [{"ip": ip, "user": u, "how": "test", "added": 0} for ip, u in entries]})
@@ -139,11 +197,11 @@ class DoorAllowlist(unittest.TestCase):
     def test_on_blocks_an_unlisted_address_even_with_the_right_password_or_a_cookie(self):
         self.on((HOME, OWNER))
         self.assertEqual(self.check(HOME)[0], 200)
-        cookie = self.cookie(HOME)
+        cookie = self.without_device(self.cookie(HOME))
         status, body, _ = self.check(AWAY)
         self.assertEqual(status, 403)
         self.assertIn("allowlist", body)
-        self.assertEqual(self.check(AWAY, cookie=cookie)[0], 403)        # a cookie carried to a new address
+        self.assertEqual(self.check(AWAY, cookie=cookie)[0], 403)        # a session cookie carried to a new address
         self.assertEqual(self.check(HOME, cookie=cookie)[0], 200)
         status, _, headers = self.check(AWAY, user=None, html=True)     # a browser is sent to the sign-in
         self.assertEqual(status, 302)
@@ -345,7 +403,7 @@ class DoorAllowlist(unittest.TestCase):
         self.assertEqual(self.req("/_door/allowlist", HOME, data=data, headers={"Cookie": cookie})[0], 403)
         mate = self.cookie(MATE_IP, MATE, MATE_PW)
         self.assertEqual(self.req("/_door/allowlist", MATE_IP, headers={"Cookie": mate})[0], 403)
-        self.assertEqual(self.req("/_door/allowlist", AWAY, headers={"Cookie": cookie})[0], 403)
+        self.assertEqual(self.req("/_door/allowlist", AWAY, headers={"Cookie": self.without_device(cookie)})[0], 403)
         self.assertTrue(self.get_list()["enabled"])
 
     def test_seed_lists_only_addresses_that_signed_in(self):
