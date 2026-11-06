@@ -10968,7 +10968,9 @@ p.communicate(msg.encode())
     local _i _ok=""
     for _i in 1 2 3; do
       _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "" && { _ok=1; break; }
-      [ -z "$(_land_rl_ls "$1" "$(_land_rl_ref "$2")" 2>/dev/null)" ] && { _ok=1; break; }
+      # Gone only on a read that ANSWERS with nothing: a failed read is empty
+      # too, and counted as released it logged a false verdict (gate review).
+      local _left; if _left="$(_land_rl_ls "$1" "$(_land_rl_ref "$2")" 2>/dev/null)" && [ -z "$_left" ]; then _ok=1; break; fi
       [ "$_i" = 3 ] || sleep $(( ${AMUX_LAND_REMOTE_LEASE_RETRY_S:-10} * _i ))
     done
     if [ -n "$_ok" ]; then

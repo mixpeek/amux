@@ -116,7 +116,9 @@ for _ in $(seq 1 80); do [ -s "$H/lease-during-gate" ] && break; sleep 0.25; don
 other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
 wait "$p6"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" != 0 ] && [ "$(main_has f)" = e ] && ok "a renewal that loses its CAS stops its own push" || bad "6: rc=$rc f=$(main_has f)"
-grep -q 'verdict=land_remote_lease_lost' "$L" && ok "the lost lease is logged" || bad "6: no lost line"
+# Whichever guard saw it first, the heartbeat (lost) or the read before the
+# push (not_ours), the refusal names the lease.
+grep -qE 'verdict=land_remote_lease_(lost|not_ours)' "$H/six.out" && ok "the lost lease is logged" || bad "6: no lost line: $(grep -m2 lease_ "$H/six.out")"
 
 # 8
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null   # case 6 left the other machine's lease
