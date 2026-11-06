@@ -177,9 +177,20 @@ async fn ensure_running() {
 
 pub async fn run(state: crate::api::AppState) {
     let mut last_err = String::new();
+    let mut last_off = String::new();
     loop {
         let on = enabled();
+        if !on {
+            // Said once per distinct reason, so a sweep can tell "off on purpose" from "never ran".
+            let why = why_off().unwrap_or_default();
+            if why != last_off {
+                tracing::info!(reason = %why, measured = true, n_considered = 1, verdict = "bridge_whatsapp_app_off",
+                    "bridge: the WhatsApp self chat is not being read");
+                last_off = why;
+            }
+        }
         if on {
+            last_off.clear();
             ensure_running().await;
             match poll_once(&state).await {
                 Ok(_) => last_err.clear(),
