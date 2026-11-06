@@ -5742,9 +5742,13 @@ async fn reopening_terminal_card_retires_stale_summary_without_erasing_history()
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
+        // A worker leaves a terminal status only with force and a reason
+        // (2026-11-06, implicit state machines #39).
         Some(json!({
             "status": "todo",
             "last_result": current_result,
+            "force": true,
+            "reason": "reopened for the current reconciliation run",
         })),
         &[("X-Amux-Worker", lane)],
     )
