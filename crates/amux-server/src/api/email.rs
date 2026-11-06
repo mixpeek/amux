@@ -1307,7 +1307,10 @@ pub async fn approve(
     let include_sig = payload.get("signature") != Some(&Value::Bool(false));
     let attachments = match parse_attachments(&payload) {
         Ok(a) => a,
-        Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        Err(e) => {
+            crate::api::email_approval::reopen_after_failed_send(&home, &id, &e);
+            return err(StatusCode::BAD_REQUEST, json!({ "error": e, "approval_id": id }));
+        }
     };
     let res = match endpoint.as_str() {
         "send" => {
@@ -1343,10 +1346,9 @@ pub async fn approve(
                 .await
         }
         other => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": format!("frozen approval has unknown endpoint {other:?}") }),
-            )
+            let e = format!("frozen approval has unknown endpoint {other:?}");
+            crate::api::email_approval::reopen_after_failed_send(&home, &id, &e);
+            return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e }));
         }
     };
     report_outcome(
@@ -1357,7 +1359,26 @@ pub async fn approve(
         // Same classification as every other path (AMUX-3809): a revoked token is
         // a refusal here too. `approval_id` is merged in so the caller keeps the
         // handle it needs to retry.
-        Err(e) => email_err_with(&e, json!({ "approval_id": id })),
+        Err(e) => {
+            // The handle in the error is only worth retrying if the approval is
+            // pending again; `reopened` says whether it is.
+            // Only an answer from Gmail proves nothing left. A transport error
+            // (timeout, dropped connection) may have sent it, so that approval
+            // stays released rather than risk a second copy to the recipient.
+            let lower = e.to_ascii_lowercase();
+            let maybe_sent = ["timed out", "timeout", "error sending request", "connection", "broken pipe", "reset by peer"]
+                .iter()
+                .any(|m| lower.contains(m));
+            let reopened = if maybe_sent {
+                tracing::warn!(approval = %id, measured = true, n_considered = 1,
+                    verdict = "email_approval_send_outcome_unknown",
+                    "[email] the release failed in transit; it may have sent, so it stays released: {e}");
+                false
+            } else {
+                crate::api::email_approval::reopen_after_failed_send(&home, &id, &e)
+            };
+            email_err_with(&e, json!({ "approval_id": id, "reopened": reopened }))
+        }
         Ok(res) => {
             // The audit answers "who approved this", not only "which worker
             // sent it" (autodesk's point 5). The approver is the dashboard
