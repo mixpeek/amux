@@ -514,6 +514,11 @@ CPU_IDLE_MAX_PCT=${AMUX_CLEANUP_CPU_IDLE_MAX_PCT:-25}   # high load only counts 
 # the niced share sampled now.
 NICED_PS_CMD=${AMUX_CLEANUP_NICED_PS_CMD:-ps -axo nice=,%cpu=}
 NICED_MIN=${AMUX_CLEANUP_NICED_MIN:-10}
+# The same holds for one process: a hog at nice >= NICED_MIN yields the CPU to
+# every worker, so it is reported, not escalated (hog RCAs 20261101-184920 and
+# 20261106-135859: a research lane's build_runs.py and backend's clf_screen.py,
+# both already at nice 10, each escalated for using idle cores).
+HOG_NICE_CMD=${AMUX_CLEANUP_HOG_NICE_CMD:-ps -o nice= -p}
 STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # ONE deadline for the whole tick. The scheduler kills a shell schedule at 600s and
 # the per-arm budgets alone add up past that, so under load every arm spent its full
@@ -1280,7 +1285,13 @@ check_cpu_hogs() { # <dry:0|1>
     else
       echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks, reported, not touched ($(owner_label_for_pid "$pid"))"
       if awk -v c="$pcpu" -v t="$CPU_HOG_ESCALATE_PCT" 'BEGIN{exit !(c+0 >= t+0)}'; then
-        local guest=""
+        local guest="" pnice
+        pnice=$($HOG_NICE_CMD "$pid" 2>/dev/null | tr -d ' ' || true)
+        case "$pnice" in ''|*[!0-9-]*) pnice="" ;; esac
+        if [ -n "$pnice" ] && [ "$pnice" -ge "$NICED_MIN" ]; then
+          echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% runs at nice $pnice, so it yields to every worker: reported, not escalated (verdict=hog_niced_yields)"
+          continue
+        fi
         if in_list "$name" "$VM_PROC_NAMES"; then
           [ -n "$VM_BUDGET" ] || VM_BUDGET=$(vm_cpu_budget)
           guest=" (guest: $VM_BUDGET)"
