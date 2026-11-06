@@ -311,6 +311,12 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          Anything you add stays pending until the owner approves it in the Apps tab; tell them it is waiting \
          there. Never try to approve it yourself.\n\
          `amux publish --list` lists them and `amux publish --revoke <id>` turns one off.\n\n\
+         amux is the default host for anything you publish: an app, a page, a site, a demo or a form. \
+         Do not deploy to an outside host (Netlify, Vercel, Cloudflare Pages, GitHub Pages, Surge, \
+         Render, Fly, ngrok or similar), through its CLI or a connector, unless the owner names that \
+         host. A connector or CLI being installed is not a reason to use it. A password or a feedback \
+         form goes into the app itself, served with `amux publish`. If amux cannot do what the owner \
+         asked, say what is missing and ask before using an outside host.\n\n\
          Build demos and documents as files in your workspace and link them as above. Never \
          publish to claude.ai (the Artifact tool): that lives outside this amux, where the owner cannot \
          list, serve or turn it off, and amux denies the tool."
@@ -804,6 +810,22 @@ mod tests {
         assert!(g.contains("only when the owner asks for a link"), "{g}");
         assert!(!g.contains("never a bare path"), "the old rule told workers to link every file: {g}");
         assert!(g.contains("https://desk.example:8824/f/<absolute path>"), "the link, when asked, is still built on the real address: {g}");
+    }
+
+    /// SNF-demos (2026-11-05) built a password-protected demo with a feedback
+    /// form for Netlify because the Netlify connector was installed; nothing
+    /// told it amux publishes apps. The guide names amux as the default host.
+    #[test]
+    fn workers_publish_with_amux_unless_the_owner_names_another_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        let g = worker_links_guide(dir.path());
+        assert!(g.contains("amux is the default host for anything you publish"), "{g}");
+        for host in ["Netlify", "Vercel", "Cloudflare Pages", "GitHub Pages"] {
+            assert!(g.contains(host), "{host} is not named as an outside host: {g}");
+        }
+        assert!(g.contains("unless the owner names that host"), "{g}");
+        assert!(g.contains("goes into the app itself"), "password and feedback live in the app: {g}");
     }
 
     #[test]
