@@ -618,6 +618,36 @@ block_examples = ["echo '{}' > ~/.amux/state/delete-previews/me/0123.json", "Wri
 allow_examples = ["ls ~/.amux/state/delete-previews/me", "cat ~/.amux/state/delete-previews/me/0123.json"]
 
 [[boundary]]
+id = "scheduling"
+title = "Schedules go through amux"
+kind = "redirect"
+rule = """
+A wakeup, a reminder or a recurring task is an amux schedule: `amux wake`. It
+survives a restart, shows in the owner's Schedules tab and can be paused or
+run from there. Claude Code's own ScheduleWakeup, CronCreate, CronList and
+CronDelete live only inside one Claude process, die with it, and are invisible
+to the owner, so they are refused for every amux worker, isolated ones too.
+`amux wake help` has the full table.
+"""
+enforced_by = [
+  "hook: boundary-guard (ScheduleWakeup, CronCreate, CronList and CronDelete refused for amux workers, with the amux command to use)",
+]
+
+[boundary.redirect]
+# 2026-11-06: Ethan found ~/use-cases/construction/.claude/scheduled_tasks.lock.
+# The isolated construction worker had called ScheduleWakeup twice to wait on its
+# own demo-building agents. Isolated workers get no launch rules (A9), so nothing
+# had told it about `amux wake`. The guard's settings matcher must name every
+# tool here (scripts/hooks/install-claude-status-hooks.py; the test checks it).
+tools = ["ScheduleWakeup", "CronCreate", "CronList", "CronDelete"]
+verdict = "claude_scheduler_refused"
+[boundary.redirect.instead]
+ScheduleWakeup = "amux wake <delay> --stdin   (e.g. amux wake 20m --stdin <<< 'check the demo agents'); a /loop: amux wake --every 5m --stdin; wait for a condition: amux wake --when '<shell check>' --stdin"
+CronCreate = "amux wake --every '<cron or 5m or daily at 09:00>' --stdin   (or amux wake <when> --stdin for a one-off)"
+CronList = "amux wake --list"
+CronDelete = "amux wake --cancel <ID>   (the ID from amux wake --list)"
+
+[[boundary]]
 id = "boundaries-self"
 title = "Boundaries are the owner's to change"
 rule = """
