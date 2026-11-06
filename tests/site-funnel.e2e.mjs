@@ -107,6 +107,29 @@ ok(!(await p.isChecked('#iplock')), 'clicking the IP-lock hint leaves the box un
 await p.click('label[for="iplock"]');
 ok(await p.isChecked('#iplock'), 'clicking the IP-lock label checks the box');
 
+// Concierge links: /start/ (outside the form, so no form start), /pricing/ and a solutions page
+p = await page({ mobile: true });
+await p.goto(B + '/start/');
+await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
+await p.click('[data-cta-loc="start-concierge"] a');
+cta = await evs(p, 'cta_click');
+ok(cta.length === 1 && cta[0].goal === 'concierge_page' && cta[0].spot === 'start-concierge' && cta[0].href === '/concierge/?source=start', '/start/ Concierge line -> goal concierge_page, spot start-concierge ' + JSON.stringify(cta));
+ok((await evs(p, 'signup_form_start')).length === 0, 'clicking the Concierge line sends no signup_form_start');
+ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '/start/ has no sideways overflow at 390');
+p = await page();
+await p.goto(B + '/pricing/');
+await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
+await p.click('[data-cta-loc="pricing-concierge"] a.pricing-cta');
+cta = await evs(p, 'cta_click');
+ok(cta.length === 1 && cta[0].goal === 'concierge_page' && cta[0].spot === 'pricing-concierge', 'pricing Concierge card -> goal concierge_page ' + JSON.stringify(cta));
+p = await page();
+await p.goto(B + '/solutions/skilled-nursing-facilities/');
+await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
+await p.click('[data-cta-loc="sol-top"] a');
+cta = await evs(p, 'cta_click');
+ok(cta.length === 1 && cta[0].goal === 'concierge_page' && cta[0].spot === 'sol-top' && cta[0].href === '/concierge/?source=solutions-skilled-nursing-facilities', 'solutions top button -> goal concierge_page ' + JSON.stringify(cta));
+ok(p.errs.length === 0, 'no JS errors on a solutions page ' + p.errs.join('|'));
+
 // Welcome page: paid once per order
 p = await page();
 await p.goto(B + '/start/welcome/?session_id=cs_test_funnel');
