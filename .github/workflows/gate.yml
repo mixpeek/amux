@@ -1,8 +1,9 @@
 name: gate
 # The deploy gate: under a minute, so a good commit can be live within two
 # (Ethan, 2026-11-01: "iterate until full amux cicd is sub 2 min"). checks and
-# rust still run the whole suite on every push, and a red one still opens a
-# card through SCHED-713. The builder's own compile and boot health check gate
+# rust still run the whole suite on every push, and the autofix runtime job
+# files a "CI red" card for a red one (SCHED-713 is paused since 2026-10-31).
+# The builder's own compile and boot health check gate
 # the Rust side.
 on:
   push:

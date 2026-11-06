@@ -22,7 +22,8 @@ and a way to turn it off.
 newest `origin/main` commit whose required workflows passed and hands it to
 `rust-auto-build.sh`, which builds it in `~/.amux/deploy-build-src`, installs it, and puts the
 previous binary back if the new one does not report healthy. `rust-prebuild.sh` compiles the
-tip while its CI runs. Deploy settings (`AMUX_CI_REQUIRED_WORKFLOWS`, default `checks`;
+tip while its CI runs. Deploy settings (`AMUX_CI_REQUIRED_WORKFLOWS`, default `checks`, set to
+`gate` on this Mac in both the builder plist and server.env;
 `AMUX_DEPLOY_CI_GATE`, `AMUX_DEPLOY_PREBUILD`, `AMUX_ACTIVATION_ROLLBACK`,
 `AMUX_ACTIVATION_HEALTH_S`) are read from `~/.amux/server.env`. Log:
 `~/.amux/logs/rust-auto-build.log`.

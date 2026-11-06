@@ -60,12 +60,15 @@ This file says how to work here. Each folder's `CLAUDE.md` says what is true of 
 - **Before pushing,** `scripts/push-consent.sh` names whose commits you would carry and who
   cannot be asked; ask the others. Run gates on a detached worktree: the shared checkout holds
   other lanes' uncommitted files. Why, with the incidents: `docs/ops/pushing.md`.
-- **Only main deploys.** The builder activates the newest `origin/main` commit whose `checks`
-  passed (`scripts/CLAUDE.md`). A local commit, branch, fork or hand-built binary deploys
+- **Only main deploys.** The builder activates the newest `origin/main` commit whose required
+  workflows passed. On this Mac that is `gate` alone (`AMUX_CI_REQUIRED_WORKFLOWS=gate`, the
+  under-a-minute `gate.yml`), so a red `rust` or `checks` does not hold a deploy
+  (`scripts/CLAUDE.md`). A local commit, branch, fork or hand-built binary deploys
   nothing; never copy a build over `~/.local/bin/amux-server-rs`. A fix is live when `/health`'s
   `commit` matches; Settings and `GET /api/pull` show what the server runs against main.
-- **A red main is the first thing to fix.** SCHED-713 (`scripts/main-ci-watch.sh`) reruns a
-  first attempt that failed only in e2e, then keeps one card on the amux lane per red stretch.
+- **A red main is the first thing to fix.** The autofix runtime job files a `CI red: <workflow>`
+  card for a red run on main. SCHED-713 (`scripts/main-ci-watch.sh`, rerun an e2e-only failure,
+  one card per red stretch) is paused from the dashboard since 2026-10-31.
 - **No auto-pull of the shared checkout.** `amux sync-checkout` (`--check` to only report)
   fast-forwards when nothing can be lost and otherwise names the blockers.
 - **Shared checkout habits:** a pre-fix specimen is `<your-sha>^`, never `HEAD~1`; bracket
