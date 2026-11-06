@@ -15,6 +15,8 @@
 #   5. a lease left by a killed land on this machine is taken over at once
 #   6. a renewal that loses its compare-and-swap stops its own push
 #   7. AMUX_LAND_REMOTE_LEASE=off lands without touching the ref
+#   8. a remote unreadable for a few beats mid-gate is the network, not a lost
+#      lease: the land keeps its lease and lands (land gate review)
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
@@ -106,6 +108,15 @@ sleep 0.5; other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
 wait "$p6"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" != 0 ] && [ "$(main_has f)" = e ] && ok "a renewal that loses its CAS stops its own push" || bad "6: rc=$rc f=$(main_has f)"
 grep -q 'verdict=land_remote_lease_lost' "$L" && ok "the lost lease is logged" || bad "6: no lost line"
+
+# 8
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null   # case 6 left the other machine's lease
+commit a f outage; echo 5 > "$H/gate-s"; rm -f "$H/lease-during-gate"
+land a eight AMUX_LAND_REMOTE_LEASE_RENEW_S=1 & p8=$!
+for _ in $(seq 1 80); do [ -s "$H/lease-during-gate" ] && break; sleep 0.25; done   # inside the gate
+mv "$H/origin.git" "$H/origin.away"; sleep 2.5; mv "$H/origin.away" "$H/origin.git"
+wait "$p8"; rc=$?; echo 0 > "$H/gate-s"
+[ "$rc" = 0 ] && [ "$(main_has f)" = outage ] && ! grep -q 'land_remote_lease_lost' "$H/eight.out" && ok "an unreadable remote for a few beats is not a lost lease" || bad "8: rc=$rc f=$(main_has f): $(grep -m1 lease_lost "$H/eight.out")"
 
 # 7
 commit a f off

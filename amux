@@ -10886,8 +10886,12 @@ p.communicate(msg.encode())
       _cur="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"; [ -n "$_cur" ] || exit 0
       _new="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" || continue
       if _land_rl_push "$1" "$2" "$_cur" "$_new"; then echo "$_new" > "$_LAND_RL_DIR/rl-sha"; continue; fi
-      # A failed push that left the ref ours is the network: retry next beat.
-      [ "$(git ls-remote "$1" "$2" 2>/dev/null | awk '{print $1}')" = "$_cur" ] && continue
+      # Lost only on a READ that answers with another value. An unreadable
+      # remote is the network, and the next beat retries: an empty read used
+      # to count as "someone else took it" during an outage.
+      local _seen
+      _seen="$(git ls-remote "$1" "$2" 2>/dev/null)" || continue
+      [ "$(printf '%s\n' "$_seen" | awk '{print $1}')" = "$_cur" ] && continue
       : > "$_LAND_RL_DIR/rl-lost"
       _land_rl_say "ERROR verdict=land_remote_lease_lost: $2 is no longer ours (another machine took it); stopping this land's push"
       local _pp; _pp="$(cat "$_LAND_RL_DIR/push.pid" 2>/dev/null)"
@@ -11970,8 +11974,10 @@ $f"
     local _ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}"
     [ -n "$_ssh" ] || [ -z "${GIT_SSH:-}" ] || _ssh="$(printf %q "$GIT_SSH")"
     [ -n "$_ssh" ] || _ssh="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"
-    _land_rl_check || return 7
     while :; do
+    # Inside the retry loop: a network retry must not push on a lease the
+    # heartbeat declared lost while this loop slept (land gate review, F1/F2).
+    _land_rl_check || return 7
     # The push runs in the background with its pid on file, so a heartbeat
     # that loses the lease can stop it before it updates the branch.
     rc=0; out="$(set -o pipefail; { env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" GIT_SSH_COMMAND="$_ssh" git push "$remote" "$stack_tip:$branch" 2>&1 & echo $! > "$lock/push.pid"; wait $!; } \
