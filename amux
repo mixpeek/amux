@@ -9933,10 +9933,24 @@ _ci_wait() {
     # "completed" can be the previous attempt (2026-10-29, run 40872577418).
     if [ "$role" = reader ] && ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("status") == "completed" and d.get("polled_at", 0) >= float(sys.argv[2]) else 1)' "$state" "$start" 2>/dev/null; then
       if mkdir "$lock" 2>/dev/null; then
+        ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' > "$lock/start"
         echo $$ > "$lock/pid"; role=poller
       else
-        local hp; hp="$(cat "$lock/pid" 2>/dev/null || true)"
-        if [ -n "$hp" ] && ! kill -0 "$hp" 2>/dev/null; then rm -rf -- "${lock:?}"; continue; fi
+        # A dead holder, a reused pid (start time differs) or a lock left with
+        # no pid by a wait killed between mkdir and the pid write. That last one
+        # was never broken, so every reader stayed `pending` (2026-11-06).
+        local hp hs age; hp="$(cat "$lock/pid" 2>/dev/null || true)"
+        hs="$(cat "$lock/start" 2>/dev/null || true)"
+        if [ -z "$hp" ]; then
+          age="$(python3 -c 'import os,sys,time; print(int(time.time()-os.stat(sys.argv[1]).st_mtime))' "$lock" 2>/dev/null || echo 0)"
+          if [ "${age:-0}" -gt 30 ]; then
+            echo "amux ci wait: breaking a poller lock with no pid, ${age}s old (verdict=ci_wait_lock_empty_broken)" >&2
+            rm -rf -- "${lock:?}"; continue
+          fi
+        elif ! kill -0 "$hp" 2>/dev/null \
+             || { [ -n "$hs" ] && [ "$(ps -o lstart= -p "$hp" 2>/dev/null | tr -s ' ')" != "$hs" ]; }; then
+          rm -rf -- "${lock:?}"; continue
+        fi
       fi
     fi
     if [ "$role" = poller ]; then
