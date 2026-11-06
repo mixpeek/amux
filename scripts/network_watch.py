@@ -355,11 +355,27 @@ def baseline_of(snap: dict) -> dict:
     }
 
 
+# An alerted key stays quiet this long after it was last present, so a dev
+# server restarted every few minutes on the same wide port alerts once a day
+# instead of on every return. Keys that carry a pid (file servers) still alert
+# for each new process.
+SEEN_TTL = int(os.environ.get("NETWORK_WATCH_SEEN_TTL", str(24 * 3600)))
+
+
+def remember(seen, keys, now: float) -> dict:
+    """Seen keys still inside the TTL, with the present ones stamped now."""
+    if isinstance(seen, list):  # older state: a bare list of keys
+        seen = {k: now for k in seen}
+    kept = {k: t for k, t in seen.items() if now - t < SEEN_TTL}
+    kept.update({k: now for k in keys})
+    return kept
+
+
 def main() -> int:
     dry, do_fix = "--dry-run" in sys.argv, "--fix" in sys.argv
     try:
         base = load("baseline.json", None)
-        seen = set(load("seen.json", []))
+        seen = remember(load("seen.json", {}), [], time.time())
         cursor = load("cursor.json", {}).get("ts", time.time() - 6 * 3600)
         snap = collect()
         for w in snap["wide"]:
@@ -406,7 +422,7 @@ def main() -> int:
     if not dry:
         if first:
             save("baseline.json", base)
-        save("seen.json", sorted({r["key"] for r in rows}))
+        save("seen.json", remember(seen, [r["key"] for r in rows], time.time()))
         save("cursor.json", {"ts": reqs["newest"]})
     return 0
 

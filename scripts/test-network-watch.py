@@ -97,6 +97,11 @@ check("a shell alerts once per non-GitHub destination even when accepted by name
 check("a launcher is judged per destination like a shell",
       not any(r["kind"] == "NEW-EGRESS" for r in nw.evaluate(
           {**snap, "egress": {"env": {"140.82.114.4"}}}, base, reqs)))
+now = 1_000_000.0
+kept = nw.remember({"listener:node:3931": now - 3600, "old": now - 25 * 3600}, ["new"], now)
+check("a key gone for an hour stays quiet, one gone a day alerts again",
+      "listener:node:3931" in kept and "old" not in kept and kept["new"] == now, str(kept))
+check("older list-shaped state still loads", set(nw.remember(["a"], [], now)) == {"a"})
 check("GitHub's range only", nw.is_github("140.82.114.4") and not nw.is_github("140.82.128.1")
       and not nw.is_github("140.82.11.4"))
 check("parse_lsof normalises claude's version name",
@@ -154,11 +159,35 @@ try:
     check("state written", (state / "baseline.json").exists() and (state / "seen.json").exists())
     sent.unlink(missing_ok=True)
     p = watch("--fix")
-    check("second run is quiet", p.returncode == 0 and not sent.exists(),
-          sent.read_text() if sent.exists() else p.stderr)
+    # The host is live: a new connection can appear between runs and is a
+    # genuine anomaly. What must not happen is the first run's rows again.
+    again = sent.read_text() if sent.exists() else ""
+    repeated = [x for x in body.splitlines()[1:-1] if x and x in again]
+    check("second run repeats nothing from the first", p.returncode == 0 and not repeated,
+          str(repeated) or p.stderr)
 finally:
     if srv.poll() is None:
         srv.kill()
+
+# --- an anomaly that persists is reported once -------------------------------
+s2 = socket.socket()
+s2.bind(("0.0.0.0", 0))
+port2 = s2.getsockname()[1]
+s2.close()
+srv2 = subprocess.Popen([sys.executable, "-m", "http.server", str(port2), "--bind", "0.0.0.0"],
+                        cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(1.5)
+try:
+    sent.unlink(missing_ok=True)
+    watch()  # no --fix: the server stays up for the next run
+    first_body = sent.read_text() if sent.exists() else ""
+    sent.unlink(missing_ok=True)
+    watch()
+    again = sent.read_text() if sent.exists() else ""
+    check("a persisting anomaly is reported on first sight", f":{port2}" in first_body, first_body)
+    check("and not again on the next run", f":{port2}" not in again, again)
+finally:
+    srv2.kill()
 
 # --- fail closed ------------------------------------------------------------
 before = (state / "seen.json").read_text()
