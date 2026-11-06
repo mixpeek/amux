@@ -221,7 +221,10 @@ async fn workers_keep_assignments_and_dependencies_on_their_own_board() {
         "PATCH",
         &format!("/api/board/{id}"),
         "owner",
-        json!({"status":"backlog", "depends_on":[local_id]}),
+        // The card is verified, so a worker leaves it only with force and a
+        // reason (implicit state machines #39, 2026-11-06).
+        json!({"status":"backlog", "depends_on":[local_id], "force": true,
+               "reason": "repair a legacy cross-board dependency"}),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
