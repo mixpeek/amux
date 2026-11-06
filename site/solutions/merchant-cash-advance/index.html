@@ -18,8 +18,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <link rel="stylesheet" href="/concierge/kit.css">
+  <script src="/site.js?v=20261106"></script>
   <style>
     .sol main { max-width: 860px; }
     .sol-eyebrow { font-size: .78rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 .75rem; }
@@ -61,7 +62,15 @@
     .sol-card:hover { border-color: var(--accent); }
     .sol-card strong { display: block; color: var(--fg); font-size: 1.08rem; margin-bottom: .35rem; }
     .sol-card span { color: var(--fg-dim); font-size: .95rem; line-height: 1.5; }
+    .sol-flows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; border: 0; }
+    .sol-flows li { grid-template-columns: 1fr; gap: .2rem; padding: .85rem 0; }
+    .sol-flows .o { font-size: .93rem; }
+    .sol-control { display: flex; gap: 14px; align-items: flex-start; margin-top: 2.5rem; padding: 1.1rem 1.25rem; border-radius: 14px; border: 1px solid var(--line); background: color-mix(in oklab, var(--accent) 6%, var(--bg-2)); color: var(--fg-dim); line-height: 1.55; }
+    .sol-control strong { color: var(--fg); }
+    .sol-control .oc-ic { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--accent); }
+    .sol-control .oc-ic svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     @media (max-width: 640px) {
+      .sol-flows { grid-template-columns: 1fr; }
       .sol-outcomes, .sol-price, .sol-cards { grid-template-columns: 1fr; }
       .sol-flows li { grid-template-columns: 1fr; gap: .35rem; }
       .sol-btn { width: 100%; justify-content: center; }
@@ -73,6 +82,19 @@
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
@@ -97,11 +119,11 @@
     <p class="sol-note">We build it, run it and maintain it. You approve what matters from your phone.</p>
 
     <h2>What changes for your business</h2>
-    <div class="sol-outcomes">
-      <div class="sol-outcome"><strong>Every submission triaged in minutes</strong><span>Each broker email becomes a deal file with your credit box checked and existing positions flagged.</span></div>
-      <div class="sol-outcome"><strong>Same-day decisions</strong><span>Approved deals get their terms, contract and commission math assembled for underwriter sign-off.</span></div>
-      <div class="sol-outcome"><strong>Brokers always hear back</strong><span>Clean deals move forward fast, and declines get a clear reply with what to resubmit.</span></div>
-      <div class="sol-outcome"><strong>An audit-ready file for every deal</strong><span>Disclosures, decisions and reasons are recorded as you go.</span></div>
+    <div class="ocards">
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></span><strong>Every submission triaged in minutes</strong><span>Each broker email becomes a deal file with your credit box checked and existing positions flagged.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span><strong>Same-day decisions</strong><span>Approved deals get their terms, contract and commission math assembled for underwriter sign-off.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg></span><strong>Brokers always hear back</strong><span>Clean deals move forward fast, and declines get a clear reply with what to resubmit.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m9 15 2 2 4-4"/></svg></span><strong>An audit-ready file for every deal</strong><span>Disclosures, decisions and reasons are recorded as you go.</span></div>
     </div>
 
     <h2>What we automate, and what you get</h2>
@@ -114,24 +136,24 @@
     </ul>
 
     <h2>Works with the software you already use</h2>
-    <ul class="sol-tools">
-      <li>Your underwriting inbox</li>
-      <li>Bank statement PDFs</li>
-      <li>Your CRM</li>
-      <li>E-signature tools</li>
-      <li>Spreadsheets</li>
+    <ul class="lchips" aria-label="Software we work in">
+      <li><img src="/concierge/logos/salesforce.png" alt="Salesforce" width="20" height="20" loading="lazy"><span aria-hidden="true">Salesforce</span></li>
+      <li><img src="/concierge/logos/docusign.png" alt="DocuSign" width="20" height="20" loading="lazy"><span aria-hidden="true">DocuSign</span></li>
+      <li><img src="/concierge/logos/outlook.png" alt="Outlook" width="20" height="20" loading="lazy"><span aria-hidden="true">Outlook</span></li>
+      <li><img src="/concierge/logos/excel.png" alt="Excel" width="20" height="20" loading="lazy"><span aria-hidden="true">Excel</span></li>
+      <li class="lc-text">Bank statement PDFs</li>
     </ul>
-    <p class="sol-body">amux works under your own logins, the way your staff would. The software vendor does not need to offer an integration.</p>
+    <p class="sol-note">amux works under your own logins, the way your staff would. No vendor integration needed.</p>
 
-    <h2>You stay in charge</h2>
-    <p class="sol-body">Underwriters approve every deal, every set of terms and every message to a broker. amux never overrides a funding decision.</p>
+    <div class="sol-control"><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg></span><div><strong>You stay in charge.</strong> Underwriters approve every deal, every set of terms and every message to a broker. amux never overrides a funding decision.</div></div>
 
     <h2>How Concierge works</h2>
-    <ol class="sol-steps">
-      <li><span><b>One call with the owner.</b> We pick the workflow that costs you the most time or money.</span></li>
-      <li><span><b>We set up amux on a computer you own.</b> It works under your own logins, so your data stays in your office. No spare computer? We buy one and keep it online.</span></li>
-      <li><span><b>We build the first workflow with you.</b> You see it running on your own work within weeks.</span></li>
-      <li><span><b>You run it from your phone.</b> You approve what matters, and we keep it running and keep building.</span></li>
+    <ol class="cflow" aria-label="How Concierge works, step by step">
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span><b>Talk to us</b><small>One call to pick the workflow that costs you most.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span><b>We set it up</b><small>amux on a computer you own, under your logins.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span><b>We build your first workflow</b><small>Running on your real work within weeks.</small></li>
+      <li class="cf-you"><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="m9 12 2 2 4-4"/></svg></span><b>You approve from your phone</b><small>It does the work. You sign off on what matters.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></span><b>We keep it running</b><small>Support, upkeep and new automations, every month.</small></li>
     </ol>
 
     <h2>What it costs</h2>
@@ -140,7 +162,7 @@
       <div><div class="n">$5,000<small>/mo</small></div><div class="l">Support, maintenance and new automations we build with you as you grow.</div></div>
       <div><div class="n">~$200<small>/mo</small></div><div class="l">AI usage, passed through at cost. Most businesses stay near this.</div></div>
     </div>
-    <p class="sol-body">Want proof first? We offer a fixed-price paid pilot: one workflow live within two weeks, with the fee credited toward onboarding if you continue. Measure it against the staff hours it gives back.</p>
+    <p class="sol-note">Want proof first? A fixed-price paid pilot puts one workflow live within two weeks, credited toward onboarding.</p>
 
     <h2>Questions</h2>
     <details><summary>Does it make credit decisions?</summary><p>No. It prepares the analysis and the paperwork. Your underwriters decide.</p></details>
