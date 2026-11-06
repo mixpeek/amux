@@ -75,7 +75,9 @@ test('queue mode trusts only a fresh waiting status', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._waitingNow === 'function');
   const read = (ageMs: number, status: string) => page.evaluate(([ageMs, status]) => {
-    eval('sessions=[' + JSON.stringify({ name: 'one-reading', running: true, status }) + ']; _lastDataTime = Date.now() - ' + ageMs + ';');
+    // Freshness is when the WORKER LIST was read, never when the stream last
+    // spoke: a ping every 10 s kept _lastDataTime fresh over a stale list.
+    eval('sessions=[' + JSON.stringify({ name: 'one-reading', running: true, status }) + ']; _sessionsReadAt = Date.now() - ' + ageMs + '; _lastDataTime = Date.now();');
     return (window as any)._waitingNow('one-reading');
   }, [ageMs, status] as [number, string]);
   expect(await read(1000, 'waiting'), 'fresh waiting: send to answer it').toBe(true);
