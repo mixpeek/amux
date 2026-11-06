@@ -130,7 +130,7 @@ test('search finds words across conversations, highlights them, and opens the po
   await page.locator('#cv-search').fill(word.slice(0, 12));
   await page.locator('#cv-search').press('Enter');
   const hit = page.locator('#cv-posts .cv-post', { hasText: word }).first();
-  await expect(hit.locator('.cv-snippet mark')).toBeVisible();
+  await expect(hit.locator('.cv-post-body mark.cv-hl')).toBeVisible();
   const scoped = await api(request, tok, 'GET', `/api/conversations/search?q=${encodeURIComponent(word + ' in:general')}`);
   expect((scoped.json.posts || []).length).toBe(1);
   const elsewhere = await api(request, tok, 'GET', `/api/conversations/search?q=${encodeURIComponent(word + ' in:nosuch')}`);

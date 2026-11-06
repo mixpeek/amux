@@ -39,15 +39,21 @@ pub fn configured() -> Vec<(&'static str, bool, Vec<&'static str>)> {
         ("telegram", &["TELEGRAM_BOT_TOKEN"]),
         ("discord", &["DISCORD_BOT_TOKEN", "DISCORD_CHANNELS"]),
     ];
-    req.iter().map(|(p, keys)| {
+    let mut out: Vec<(&'static str, bool, Vec<&'static str>)> = req.iter().map(|(p, keys)| {
         let missing: Vec<&'static str> = keys.iter().copied().filter(|k| setting(k).is_none()).collect();
         (*p, missing.is_empty(), missing)
-    }).collect()
+    }).collect();
+    out.push((super::whatsapp_app::PLATFORM, super::whatsapp_app::enabled(),
+        if setting("AMUX_OWNER_PHONE").is_none() { vec!["AMUX_OWNER_PHONE"] } else { vec![] }));
+    out
 }
 
 /// Send `text` into a conversation. Returns the platform's message id.
 pub async fn send(platform: &str, conversation: &str, is_group: bool, text: &str) -> Result<String, String> {
     let text: String = text.chars().take(3800).collect();
+    if platform == super::whatsapp_app::PLATFORM {
+        return super::whatsapp_app::send(&text).await;
+    }
     let c = client();
     let (status, body): (u16, Value) = match platform {
         "whatsapp" => {

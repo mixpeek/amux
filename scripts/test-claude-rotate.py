@@ -334,5 +334,54 @@ expect(st["switch_failures"]["h@x"] == [350.0], f"only failures from while dead 
 expect(st["switch_failures"]["o@x"] == [150.0], "an account that was never dead keeps its failures")
 expect("h@x" not in st["mailbox_dead_seen"], "the dead record is consumed")
 
+# The weekly reset as the CLI prints it now (mixpeek-dev, 2026-11-05): a comma
+# and no "at", in the zone in the parentheses. Before this parsed, every weekly
+# reset was None and a full account was never tried again.
+_at = rot.dt.datetime(2026, 11, 5, 10, 0, tzinfo=rot.dt.timezone(rot.dt.timedelta(hours=-5)))
+_r = rot.parse_reset("Resets Nov 7, 6am (UTC)", _at)
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 11, 7, 6, 0, tzinfo=rot.dt.timezone.utc),
+       f"'Resets Nov 7, 6am (UTC)' is 06:00 UTC on Nov 7, got {_r}")
+_r = rot.parse_reset("Resets Oct 16 at 3am (America/New_York)", rot.dt.datetime(2026, 10, 14, 9, 0, tzinfo=rot.dt.timezone.utc))
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 10, 16, 7, 0, tzinfo=rot.dt.timezone.utc),
+       f"the 'at' form still parses, in its own zone, got {_r}")
+_r = rot.parse_reset("Resets 4:20pm (UTC)", _at)
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 11, 5, 16, 20, tzinfo=rot.dt.timezone.utc),
+       f"a time-only reset is read in its zone, got {_r}")
+_screen = "Current week (all models)\n████ 100% used\nResets Nov 7, 6am (UTC)\n"
+_wk = rot.parse_usage(_screen, _at).get("seven_day") or {}
+expect(_wk.get("used_percentage") == 100 and _wk.get("resets_at"), f"the /usage screen keeps the weekly reset, got {_wk}")
+
+# A stale reading heals itself: a full account with no reset, or one whose
+# week has ended, is re-read through trial_login at most once per HEAL_EVERY_S.
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_saved_state = rot.load(rot.STATE, {})
+_past = (rot.now() - rot.dt.timedelta(hours=1)).isoformat()
+_fut = (rot.now() + rot.dt.timedelta(days=2)).isoformat()
+rot.save(rot.ACCOUNTS, {"accounts": {
+    "full@x": {"seven_day": {"used_percentage": 100, "resets_at": None}},
+    "ended@x": {"seven_day": {"used_percentage": 100, "resets_at": _past}},
+    "fine@x": {"seven_day": {"used_percentage": 100, "resets_at": _fut}},
+    "low@x": {"seven_day": {"used_percentage": 40, "resets_at": None}},
+    "me@x": {"seven_day": {"used_percentage": 100, "resets_at": None}}}})
+rot.save(rot.STATE, {})
+_stale = dict(rot.stale_accounts("me@x", {}))
+expect(_stale == {"full@x": "full_no_reset", "ended@x": "weekly_reset_passed"},
+       f"only a full account with no reset and an ended week are stale, got {_stale}")
+_trials = []
+rot.login_candidates = lambda e: [("stored_login", {"claudeAiOauth": {"refreshToken": e}})]
+rot.trial_login = lambda e, s: _trials.append(e) or {"claudeAiOauth": {}}
+expect(len(rot.heal_stale("me@x")) == 1 and len(_trials) == 1, f"one trial per tick, got {_trials}")
+rot.heal_stale("me@x")
+expect(sorted(_trials) == ["ended@x", "full@x"], f"the next tick takes the other one, got {_trials}")
+rot.heal_stale("me@x")
+expect(len(_trials) == 2, f"neither is tried again inside HEAL_EVERY_S, got {_trials}")
+_old = rot.load(rot.STATE, {})
+_old["heal_tried"] = {e: t - rot.HEAL_EVERY_S - 5 for e, t in _old["heal_tried"].items()}
+rot.save(rot.STATE, _old)
+rot.heal_stale("me@x")
+expect(len(_trials) == 3, f"and is tried again after it, got {_trials}")
+rot.save(rot.ACCOUNTS, _saved_accounts)
+rot.save(rot.STATE, _saved_state)
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

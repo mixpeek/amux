@@ -703,14 +703,28 @@ MONTHS = {m: i for i, m in enumerate(
 
 
 def parse_reset(text, at=None):
-    """'Resets 4:20pm (America/New_York)' or 'Resets Oct 16 at 3am (...)'."""
+    """'Resets 4:20pm (America/New_York)', 'Resets Oct 16 at 3am (...)' or
+    'Resets Nov 7, 6am (UTC)'. The time is read in the zone in parentheses.
+
+    2026-11-05, mixpeek-dev: the CLI moved to the comma form, every weekly
+    reset parsed as None, and six of eight accounts sat at 100% with no reset,
+    so the rotator never tried them again after their week ended."""
     at = at or now()
-    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
+    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})(?:\s*,\s*|\s+at\s+))?"
+                  r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?", text)
     if not m:
         return None
-    mon, day, hour, minute, ampm = m.groups()
+    mon, day, hour, minute, ampm, zone = m.groups()
+    tz = None
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = dt.timezone.utc if zone.strip().upper() in ("UTC", "GMT") else ZoneInfo(zone.strip())
+        except Exception:
+            log("claude_rotate_reset_zone_unknown", zone=zone, note="read in this machine's zone")
+    local = at.astimezone(tz) if tz else at
     hour = int(hour) % 12 + (12 if ampm == "pm" else 0)
-    when = at.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+    when = local.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
     if mon:
         when = when.replace(month=MONTHS[mon], day=int(day))
         if when < at - dt.timedelta(days=1):
@@ -831,6 +845,61 @@ def install_drift():
     return fields
 
 
+# A reading that can no longer heal by itself: readings only come from the
+# logged-in account, so a full account with no reset, or one whose week has
+# ended, keeps its old number until something reads it again. 2026-11-05,
+# mixpeek-dev: six of eight accounts read 100% with no reset for days.
+STALE_AT = float(os.environ.get("CLAUDE_ROTATE_STALE_AT", "90"))
+HEAL_EVERY_S = int(os.environ.get("CLAUDE_ROTATE_HEAL_EVERY_S", str(3 * 3600)))
+
+
+def stale_accounts(current, state, at=None):
+    """Accounts (not the logged-in one) whose saved reading needs a fresh
+    /usage: a window at STALE_AT or more with no known reset, or a weekly
+    reset that has passed. Each is tried at most once per HEAL_EVERY_S.
+    Returns [(email, why)], oldest attempt first."""
+    at = at or now()
+    tried = state.get("heal_tried") or {}
+    out = []
+    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+        if email == current or a.get("disabled") or held(a, at):
+            continue
+        why = None
+        for key in ("seven_day", "five_hour"):
+            w = a.get(key) or {}
+            if w.get("used_percentage") is not None and not _reset(w.get("resets_at")) \
+                    and float(w["used_percentage"]) >= STALE_AT:
+                why = "full_no_reset"
+        week = _reset((a.get("seven_day") or {}).get("resets_at"))
+        if why is None and week is not None and week <= at:
+            why = "weekly_reset_passed"
+        if why and at.timestamp() - float(tried.get(email) or 0) >= HEAL_EVERY_S:
+            out.append((email, why))
+    return sorted(out, key=lambda e: float(tried.get(e[0]) or 0))
+
+
+def heal_stale(current, limit=1):
+    """Re-read up to `limit` stale accounts through trial_login: the /usage
+    screen in a scratch folder, so no quota is spent, the shared credential is
+    untouched and a refreshed token is kept. One per tick keeps the tick short
+    and the usage endpoint under its rate limit."""
+    state = load(STATE, {})
+    healed = []
+    for email, why in stale_accounts(current, state)[:limit]:
+        state = load(STATE, {})
+        state.setdefault("heal_tried", {})[email] = time.time()
+        save(STATE, state)
+        saved = next((s for _via, s in login_candidates(email) if not _expired(s.get("claudeAiOauth") or {})), None)
+        if saved is None:
+            log("claude_rotate_heal_skipped", measured=False, account=email, why=why,
+                why_unmeasured="no saved login that has not expired")
+            continue
+        ok = trial_login(email, saved) is not None
+        log("claude_rotate_heal", measured=ok, n_considered=1, account=email, why=why, read=ok)
+        healed.append(email)
+    return healed
+
+
 ENABLED_FILE = os.path.join(DIR, "enabled")
 
 
@@ -864,6 +933,10 @@ def cmd_tick():
             capture_login()
         except Exception as e:
             log("claude_rotate_capture_failed", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            heal_stale(current_email())
+        except Exception as e:
+            log("claude_rotate_heal", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})

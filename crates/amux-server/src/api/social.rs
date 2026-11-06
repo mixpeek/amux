@@ -574,6 +574,7 @@ async fn track(
         return err(StatusCode::BAD_REQUEST, "post_id is required");
     }
     let account = account_for(&ctx, &b.platform, b.account.as_deref()).unwrap_or_default();
+    let named = b.account.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(|_| account.clone());
     let url = b.url.unwrap_or_else(|| if b.platform == "youtube" { format!("https://www.youtube.com/watch?v={post_id}") } else { String::new() });
     let row = PostRow {
         platform: b.platform.clone(),
@@ -588,11 +589,35 @@ async fn track(
         origin: "tracked".into(),
         posted_at: b.posted_at.unwrap_or_else(now),
     };
-    match insert_post(&state, row).await {
+    let (platform, pid) = (b.platform.clone(), post_id.clone());
+    let inserted = insert_post(&state, row).await;
+    if let (Ok(_), Some(account)) = (&inserted, named) {
+        // Tracking a post again with an account corrects the stored one; the insert
+        // alone keeps the first, so a wrong name failed every metrics window.
+        let fixed = state
+            .store
+            .write_async(move |conn| {
+                let n = retrack_account(conn, &platform, &pid, &account)?;
+                Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+            })
+            .await;
+        if let Err(e) = fixed {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+        }
+    }
+    match inserted {
         Ok(id) => (StatusCode::CREATED, Json(json!({"ok": true, "id": id, "platform": b.platform, "post_id": post_id,
             "measured_by": if social_publish::publisher(&b.platform).is_some() { "social-metrics job at 24h, 72h, 7d" } else { "nothing yet: this platform's connector is not built" }}))).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
+}
+
+/// Sets a tracked post's account; returns the rows changed (0 when it already matched).
+pub(crate) fn retrack_account(conn: &rusqlite::Connection, platform: &str, post_id: &str, account: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE social_posts SET account = ?3 WHERE platform = ?1 AND post_id = ?2 AND account <> ?3",
+        rusqlite::params![platform, post_id, account],
+    )
 }
 
 #[derive(Deserialize, Default)]
@@ -864,6 +889,19 @@ mod tests {
         assert_eq!(youtube_title(Some("  "), "cap"), "cap");
         assert_eq!(youtube_title(Some("a <b> c"), ""), "a b c");
         assert_eq!(youtube_title(Some(&"x".repeat(150)), "").chars().count(), 100);
+    }
+
+    #[test]
+    fn tracking_again_with_an_account_corrects_it() {
+        // amux-gtm tracked a Short as "amux_io" (the channel handle); the token
+        // mint needs the Google account, and every 24h attempt failed (2026-11-06).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0134_social_posts.sql")).unwrap();
+        conn.execute("INSERT INTO social_posts (platform, account, post_id, posted_at) VALUES ('youtube', 'amux_io', 'v1', 1000)", []).unwrap();
+        assert_eq!(retrack_account(&conn, "youtube", "v1", "hello@amux.io").unwrap(), 1);
+        assert_eq!(retrack_account(&conn, "youtube", "v1", "hello@amux.io").unwrap(), 0);
+        let a: String = conn.query_row("SELECT account FROM social_posts WHERE post_id = 'v1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(a, "hello@amux.io");
     }
 
     #[test]

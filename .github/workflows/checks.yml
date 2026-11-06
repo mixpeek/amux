@@ -812,6 +812,12 @@ jobs:
         run: |
           set -uo pipefail
           python3 scripts/test-native-status.py
+      # Hermetic: parses the shipped dispatch table and runs `amux help` with a
+      # temp HOME, no server. A verb added without a help line fails here.
+      - name: amux help names every dispatched verb
+        run: |
+          set -uo pipefail
+          python3 -m unittest tests/cli_help.py
       - name: the multiplayer browser contract's shape holds
         run: |
           set -uo pipefail
@@ -999,6 +1005,7 @@ jobs:
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh
           python3 scripts/test-claude-rotate.py
+          ./scripts/test-claude-rotate-refresh.sh
           # Policy unit tests, including opt-in (default off). `|| exit 1`: this
           # step has no -e, so a middle line's failure would otherwise not count.
           python3 scripts/tests/test_claude_rotate.py || exit 1
