@@ -24,6 +24,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyWorkerRenames": {
+      "kind": "command._applyWorkerRenames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -5318,6 +5324,12 @@
     },
     "_syncUrlHash": {
       "kind": "command._syncUrlHash",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_syncWorkerRenames": {
+      "kind": "command._syncWorkerRenames",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

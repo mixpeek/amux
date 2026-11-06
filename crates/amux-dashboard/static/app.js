@@ -231,6 +231,134 @@ function _amuxClientIdentity() {
   };
 })();
 
+// ── A renamed worker's old name follows to the new one (2026-11-06) ──
+//
+// `workflows` became `wexus`; a phone that still had `workflows` open kept
+// sending to it, and its outbox said "the worker did not accept it" with a
+// Send again that retried the same dead name. The server now serves an old
+// name as the worker it became (and says so in `x-amux-renamed-to`), and
+// GET /api/session-renames lists every retired name. This rewrites the names
+// this app stored (the open worker, queued sends, the split panes, the grid
+// order) so the app stops asking for a worker that is gone. Runs at load and
+// whenever an answer says a name was renamed or not found.
+function _workerRenameRewrite(value, map) {
+  const urlRe = /(\/api\/(?:sessions|workers)\/)([^/?#]+)/g;
+  let changed = false;
+  const walk = v => {
+    if (typeof v === 'string') {
+      if (Object.prototype.hasOwnProperty.call(map, v)) { changed = true; return map[v]; }
+      if (v.indexOf('/api/') < 0 && v.indexOf('#peek=') < 0) return v;
+      const out = v.replace(urlRe, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      }).replace(/(#peek=)([^&]+)/, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      });
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o = {};
+      for (const [k, x] of Object.entries(v)) {
+        const key = Object.prototype.hasOwnProperty.call(map, k) ? (changed = true, map[k]) : k;
+        o[key] = walk(x);
+      }
+      return o;
+    }
+    return v;
+  };
+  const out = walk(value);
+  return {value: out, changed};
+}
+// Stored values that hold worker names. Board, history and pins live on the
+// server, which the rename already carried.
+const _WORKER_NAME_KEYS = ['amux_offline_queue', 'amux_peek_state', 'amux_peek_split_panes', 'amux_card_order'];
+async function _applyWorkerRenames(map) {
+  if (!map || typeof map !== 'object' || !Object.keys(map).length) return 0;
+  let rewritten = 0;
+  for (const [store, keys] of [[localStorage, _WORKER_NAME_KEYS], [sessionStorage, ['peekState']]]) {
+    for (const key of keys) {
+      if (key === 'amux_offline_queue') continue;
+      try {
+        const raw = store.getItem(key);
+        if (raw === null) continue;
+        const r = _workerRenameRewrite(JSON.parse(raw), map);
+        if (r.changed) { store.setItem(key, JSON.stringify(r.value)); rewritten++; }
+      } catch (_) {}
+    }
+  }
+  // The outbox goes through its own lock, so a delivery in flight is not raced.
+  try {
+    if (typeof _mutateQueue === 'function') {
+      await _mutateQueue(current => {
+        let n = 0;
+        for (let i = 0; i < current.length; i++) {
+          const r = _workerRenameRewrite(current[i], map);
+          if (r.changed) {
+            // A send refused only because its name was gone is sendable again.
+            const q = r.value;
+            if (q.state === 'blocked' || q.needs_decision) Object.assign(q, {state: 'pending', needs_decision: '', error: '', attempts: 0});
+            current[i] = q; n++;
+          }
+        }
+        if (n) rewritten++;
+      });
+    }
+  } catch (_) {}
+  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (_) {}
+  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (_) {}
+  let reopened = '';
+  try {
+    if (typeof peekSession !== 'undefined' && peekSession && map[peekSession] && typeof openPeek === 'function') {
+      reopened = map[peekSession];
+      openPeek(reopened, typeof _peekTab === 'string' && _peekTab ? {tab: _peekTab} : undefined);
+    } else {
+      const h = _workerRenameRewrite(location.hash, map);
+      if (h.changed) history.replaceState(history.state, '', location.pathname + location.search + h.value);
+    }
+  } catch (_) {}
+  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (_) {}
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
+  return rewritten;
+}
+let _workerRenamesInFlight = null;
+function _syncWorkerRenames() {
+  if (_workerRenamesInFlight) return _workerRenamesInFlight;
+  _workerRenamesInFlight = (async () => {
+    try {
+      const r = await fetch('/api/session-renames', {cache: 'no-store'});
+      if (!r.ok) return 0;
+      const d = await r.json();
+      return await _applyWorkerRenames(d && d.renames);
+    } catch (_) { return 0; } finally { setTimeout(() => { _workerRenamesInFlight = null; }, 2000); }
+  })();
+  return _workerRenamesInFlight;
+}
+window._workerRenameRewrite = _workerRenameRewrite;
+window._applyWorkerRenames = _applyWorkerRenames;
+window._syncWorkerRenames = _syncWorkerRenames;
+(function installRenamedWorkerWatch() {
+  const _origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const p = _origFetch.call(this, input, init);
+    try {
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input || ''));
+      if (!/\/api\/(sessions|workers)\/[^/?]+/.test(url)) return p;
+      p.then(r => {
+        if (r && (r.headers.get('x-amux-renamed-to') || r.status === 404)) _syncWorkerRenames();
+      }, () => {});
+    } catch (_) {}
+    return p;
+  };
+  const start = () => setTimeout(() => _syncWorkerRenames(), 1500);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+
 // ── A 200 is not proof the edit was applied (AMUX-2673, after AC-323) ──
 //
 // The API names unapplied request fields in `ignored_fields` (AC-263). Nothing

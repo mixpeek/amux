@@ -227,6 +227,19 @@ enum AmuxClient {
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
+    /// Retired worker names and the worker each became (GET /api/session-renames).
+    /// An older server has no such route; that reads as no renames.
+    static func renames(server: URL) async -> [String: String] {
+        guard let data = try? await authedData({
+            var req = URLRequest(url: server.appendingPathComponent("api/session-renames"), timeoutInterval: 10)
+            req.httpMethod = "GET"
+            return req
+        }, server: server),
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let map = obj["renames"] as? [String: String] else { return [:] }
+        return map
+    }
+
     /// Workers a human would plausibly share to, newest activity first.
     static func workers(server: URL) async throws -> [Worker] {
         let data = try await authedData({

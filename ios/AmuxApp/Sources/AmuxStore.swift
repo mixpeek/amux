@@ -85,6 +85,40 @@ enum AmuxStore {
     static var shareLastAt: [String: Double] {
         (defaults.dictionary(forKey: shareLastKey) as? [String: Double]) ?? [:]
     }
+    /// Rewrite the worker names stored here after workers were renamed
+    /// (2026-11-06: `workflows` became `wexus`, and a phone kept addressing
+    /// the old name). `map` is GET /api/session-renames: old name -> current.
+    /// The last-shared worker follows; share counts and times move to the new
+    /// name and merge with any it already had. Returns how many names moved.
+    @discardableResult
+    static func applyRenames(_ map: [String: String], in store: UserDefaults? = nil) -> Int {
+        let d = store ?? defaults
+        var moved = 0
+        if let last = d.string(forKey: lastWorkerKey), let now = map[last], now != last {
+            d.set(now, forKey: lastWorkerKey)
+            moved += 1
+        }
+        var counts = (d.dictionary(forKey: shareCountsKey) as? [String: Int]) ?? [:]
+        var lastAt = (d.dictionary(forKey: shareLastKey) as? [String: Double]) ?? [:]
+        var changed = false
+        for (old, now) in map where old != now {
+            if let n = counts.removeValue(forKey: old) {
+                counts[now, default: 0] += n
+                changed = true
+                moved += 1
+            }
+            if let t = lastAt.removeValue(forKey: old) {
+                lastAt[now] = max(lastAt[now] ?? 0, t)
+                changed = true
+            }
+        }
+        if changed {
+            d.set(counts, forKey: shareCountsKey)
+            d.set(lastAt, forKey: shareLastKey)
+        }
+        return moved
+    }
+
     static func recordShare(_ worker: String) {
         var counts = shareCounts
         counts[worker, default: 0] += 1
