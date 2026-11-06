@@ -149,14 +149,11 @@ grep -q 'remote land lease' "$H/alert.log" 2>/dev/null && ok "a remote lease tim
 
 # 10
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
-commit a f ten
-git -C "$H/a" config amux.landMinIntervalS 6   # the landing window holds the land between taking the lease and pushing
-land a ten-pre >/dev/null 2>&1                    # a push just now, so the window applies to the next land
 commit a f ten2
-land a ten AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 & p10=$!
-for _ in $(seq 1 40); do grep -q 'landing window' "$H/ten.out" 2>/dev/null && break; sleep 0.25; done
-other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
-wait "$p10"; rc=$?; git -C "$H/a" config --unset amux.landMinIntervalS
+land a ten AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 AMUX_LAND_TEST_PRE_PUSH_PAUSE_S=5 & p10=$!
+for _ in $(seq 1 60); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+sleep 1; other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
+wait "$p10"; rc=$?
 [ "$rc" != 0 ] && [ "$(main_has f)" != ten2 ] && grep -q 'verdict=land_remote_lease_not_ours' "$H/ten.out" \
   && ok "a lease taken over on the remote while the heartbeat stalls refuses the push" || bad "10: rc=$rc f=$(main_has f): $(grep -m1 'lease_' "$H/ten.out")"
 
