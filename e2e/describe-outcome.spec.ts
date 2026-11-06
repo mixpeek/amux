@@ -3,13 +3,18 @@
 // below there are settings or constraints ... an accordion ... not expanded by
 // default ... it spins up the worker ... flags to the user when it's finished
 // and it should keep going until it's finished, maybe via a /goal."
+// Ethan, 2026-10-29: it named a CRM worker `need-worker-behave-crm`, started it
+// in /home/amux, and "it shouldn't create a goal". The server now plans the
+// name, directory and groups from the text and attachments; no /goal.
 import { test, expect } from './fixtures';
 
-test('Describe what you want starts a worker on a /goal from one box, with remembered defaults', async ({ page }) => {
+test('Describe what you want starts a planned worker from one box, with remembered defaults and no /goal', async ({ page }) => {
   test.setTimeout(90_000);
   const creates: any[] = [];
   const prefs: any[] = [];
   let reply: 'refuse' | 'ok' | 'down' = 'refuse';
+  const plans: any[] = [];
+  let planReply: any = { name: 'dark-mode-toggle', dir: '/srv/app', groups: ['ui'], desc: 'Ships a dark mode toggle in settings.', attachments: [] };
   await page.addInitScript(() => {
     localStorage.setItem('amux_walkthrough_done', '1');
     localStorage.removeItem('amux_outcome_draft');
@@ -23,6 +28,11 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
     // A 5xx is queued by the outbox for replay, so it answers the page with a local 202.
     if (reply === 'down') return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"down"}' });
     return route.fulfill({ status: 201, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route('**/api/outcome/plan', async route => {
+    plans.push(route.request().postDataJSON());
+    if (!planReply) return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"no helper"}' });
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ measured: true, n_considered: 3, ...planReply }) });
   });
   await page.route('**/api/prefs**', async route => {
     if (route.request().method() === 'POST') {
@@ -50,7 +60,8 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
   await page.locator('.outcome-settings > summary').click();
   await expect(page.locator('#outcome-constraints')).toBeVisible();
   await expect(page.locator('#outcome-constraints')).toHaveValue(/Do not spend money/);
-  await expect(page.locator('#outcome-goal')).toBeChecked();
+  await expect(page.locator('#outcome-goal')).toHaveCount(0);
+  await expect(page.locator('#outcome-dir')).toHaveValue('');
   await page.locator('#outcome-group').fill('ui-work');
   await page.locator('#outcome-dir').fill('/tmp/outcome-e2e');
 
@@ -76,12 +87,15 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
   await expect.poll(() => creates.length).toBe(2);
 
   const body = creates[1];
-  expect(body.name).toBe('add-dark-mode-toggle');
-  expect(body.desc).toBe('Add a dark mode toggle to settings and ship it');
+  // The plan names it; a directory and group typed in the dialog win over the plan's.
+  expect(plans[plans.length - 1].text).toBe('Add a dark mode toggle to settings and ship it');
+  expect(body.name).toBe('dark-mode-toggle');
+  expect(body.desc).toBe('Ships a dark mode toggle in settings.');
   expect(body.dir).toBe('/tmp/outcome-e2e');
   expect(body.tags).toEqual(['ui-work']);
   expect(body.isolated).toBe(true);
-  expect(body.prompt.startsWith('/goal Add a dark mode toggle to settings and ship it Constraints: Do not spend money')).toBe(true);
+  expect(body.prompt.startsWith('Add a dark mode toggle to settings and ship it Constraints: Do not spend money')).toBe(true);
+  expect(body.prompt).not.toContain('/goal');
   expect(body.prompt).not.toContain('\n');
   expect(prefs.length).toBeGreaterThanOrEqual(1);
   expect(JSON.parse(prefs[prefs.length - 1].value).group).toBe('ui-work');
@@ -102,6 +116,40 @@ test('Describe what you want starts a worker on a /goal from one box, with remem
     return seen;
   });
   expect(fired).toEqual(['add-dark-mode-toggle finished its goal']);
+
+  // An attached recording reaches the plan by its uploaded path, the plan's
+  // directory and groups are used when the dialog leaves them empty, and
+  // the worker is told to read the recording's transcript.
+  reply = 'ok';
+  planReply = { name: 'gtm-crm', dir: '/home/u/amux-GTM/gtm', groups: ['gtm'], desc: 'Tracks outreach toward the pilot goal.',
+    attachments: [{ path: '/up/memo.m4a', kind: 'audio', transcript: '/up/memo.m4a.transcript.txt', words: 1544 }] };
+  await page.evaluate(() => localStorage.setItem('amux_outcome_defaults', JSON.stringify({ group: '', dir: '', isolated: true })));
+  await page.route('**/api/prefs**', route => route.request().url().includes('key=outcome_defaults')
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":""}' }) : route.fallback());
+  await open();
+  await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach and progress towards goal');
+  await page.locator('#outcome-file').setInputFiles({ name: 'memo.m4a', mimeType: 'audio/mp4', buffer: Buffer.from('not really audio') });
+  await expect(page.locator('#outcome-file-list')).toContainText('memo.m4a');
+  await expect(page.locator('#outcome-file-list')).not.toContainText('uploading');
+  await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
+  await expect.poll(() => creates.length).toBe(3);
+  const planned = plans[plans.length - 1];
+  expect(planned.files).toHaveLength(1);
+  expect(planned.files[0]).toMatch(/memo\.m4a$/);
+  const gtm = creates[2];
+  expect(gtm.name).toBe('gtm-crm');
+  expect(gtm.dir).toBe('/home/u/amux-GTM/gtm');
+  expect(gtm.tags).toEqual(['gtm']);
+  expect(gtm.prompt).toContain('/up/memo.m4a.transcript.txt');
+  expect(gtm.prompt).not.toContain('/goal');
+
+  // No plan (helper down): the computed name drops the request's scaffolding.
+  planReply = null;
+  await open();
+  await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach');
+  await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
+  await expect.poll(() => creates.length).toBe(4);
+  expect(creates[3].name).toBe('crm-tracks-outreach');
 
   // Server down: the create is queued for replay, so the draft goes rather
   // than inviting a second press that would start a duplicate worker.

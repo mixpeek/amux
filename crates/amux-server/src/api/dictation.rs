@@ -268,6 +268,10 @@ pub async fn dictate(
             .unwrap_or(0);
     }
 
+    // THE AUDIO IS KEPT (Ethan, 2026-10-29: a worker made from dictation
+    // could not be retested against what was said, because the clip was gone
+    // once transcribed). Saved under dictation-audio/<history id>.<ext> below.
+    let keep_audio: Option<Vec<u8>> = raw_audio.clone().or_else(|| b64_decode_lenient(&b64).ok());
     let t0 = std::time::Instant::now();
     let mut text = String::new();
     let mut werr = String::new();
@@ -452,10 +456,103 @@ pub async fn dictate(
         Ok(_) => slot.lock().expect("slot").take().unwrap_or(0),
         Err(e) => return internal(e),
     };
+    let audio = keep_audio.and_then(|bytes| save_audio(id, &mime, &bytes));
     let secs = (t0.elapsed().as_secs_f64() * 100.0).round() / 100.0;
     tracing::info!("[dictation] {words}w in {secs:.1}s via {engine}");
-    Json(json!({ "id": id, "text": text, "words": words, "engine": engine, "secs": secs }))
+    Json(json!({ "id": id, "text": text, "words": words, "engine": engine, "secs": secs, "audio": audio }))
         .into_response()
+}
+
+fn audio_dir() -> PathBuf {
+    // Tests share the real AMUX_HOME with the running server, so their clips go elsewhere.
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("amux-dictation-audio-test-{}", std::process::id()));
+    }
+    amux_home().join("dictation-audio")
+}
+
+fn audio_ext(mime: &str) -> &'static str {
+    match mime {
+        "audio/webm" | "video/webm" => "webm",
+        "audio/ogg" => "ogg",
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" | "video/mp4" | "audio/aac" => "m4a",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        _ => "bin",
+    }
+}
+
+/// Keep one dictation clip beside its history row. A failure is a WARN, not
+/// an error for the caller: the transcription it asked for still stands.
+fn save_audio(id: i64, mime: &str, bytes: &[u8]) -> Option<String> {
+    if id <= 0 || bytes.is_empty() {
+        return None;
+    }
+    let dir = audio_dir();
+    let path = dir.join(format!("{id}.{}", audio_ext(mime)));
+    let res = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes));
+    match res {
+        Ok(()) => Some(path.to_string_lossy().into_owned()),
+        Err(e) => {
+            tracing::warn!(id, error = %e, measured = true, n_considered = 1, verdict = "dictation_audio_not_saved",
+                "[dictation] the clip was transcribed but could not be saved; it cannot be replayed");
+            None
+        }
+    }
+}
+
+/// Remove a deleted history row's clip, whatever its extension.
+fn remove_audio(id: i64) {
+    let Ok(rd) = std::fs::read_dir(audio_dir()) else { return };
+    let prefix = format!("{id}.");
+    for e in rd.flatten() {
+        if e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// One recording to text through the configured engines (local first, then
+/// Gemini), for callers other than the dictation box: no history row, and
+/// the same rule that silence is an empty answer, not a reason to escalate.
+pub(crate) async fn transcribe_clip(state: &AppState, raw: &[u8], mime: &str) -> Result<(String, &'static str), String> {
+    let pref = {
+        let store = state.store.clone();
+        tokio::task::spawn_blocking(move || store.read().map(|c| super::transcription::pref(&c)))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or(super::transcription::Pref::Auto)
+    };
+    let mut why = String::new();
+    if pref != super::transcription::Pref::Gemini && whisper_available().await {
+        let (t, e) = whisper_transcribe(raw, mime).await;
+        match read_local_result(&t, &e) {
+            LocalResult::Text(t) => return Ok((t, "whisper")),
+            LocalResult::NoSpeech => return Ok((String::new(), "whisper")),
+            LocalResult::Failed(e) => why = e,
+        }
+    }
+    if pref == super::transcription::Pref::Local {
+        return Err(if why.is_empty() { local_status().await.err().unwrap_or_else(|| "local transcription is unavailable".into()) } else { why });
+    }
+    let store = state.store.clone();
+    let key = tokio::task::spawn_blocking(move || store.read().map(|c| dictation_key(&c).0))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    if key.is_empty() {
+        return Err("no transcription engine: local Whisper is unavailable and no Gemini key is set".into());
+    }
+    let parts = json!([
+        { "text": "Transcribe this recording verbatim. Return only the transcript." },
+        { "inline_data": { "mime_type": mime, "data": base64::engine::general_purpose::STANDARD.encode(raw) } },
+    ]);
+    let (t, e) = gemini_generate(&key, parts, 180).await;
+    if !e.is_empty() {
+        return Err(e);
+    }
+    Ok((t, "gemini"))
 }
 
 // ---- GET /api/dictation/history -------------------------------------------
@@ -556,7 +653,10 @@ pub async fn delete_history(State(state): State<AppState>, Path(id): Path<String
         .await;
     match write {
         // Python answers ok whether or not the row existed.
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Ok(_) => {
+            remove_audio(rid);
+            Json(json!({ "ok": true })).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -2097,6 +2197,16 @@ pub(crate) mod tests {
 
     /// AMUX-4627: the lookup prefers ~/.amux/models/whisper, still finds the
     /// old cache copy, and never counts another model's file.
+    #[test]
+    fn a_dictated_clip_is_kept_by_history_id_and_goes_with_its_row() {
+        let path = save_audio(990_001, "audio/mp4", b"clip").expect("the clip is saved");
+        assert!(path.ends_with("990001.m4a"), "{path}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"clip");
+        assert!(save_audio(0, "audio/webm", b"x").is_none(), "no row, no clip");
+        remove_audio(990_001);
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
     #[test]
     fn whisper_weights_prefer_amux_models_and_fall_back_to_the_cache() {
         let home = tempfile::tempdir().unwrap();
