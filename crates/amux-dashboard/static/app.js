@@ -53776,17 +53776,17 @@ let _storagePersisted = null;      // null = not asked yet
 let _storageEstimate = null;       // {usage, quota} from the browser, not our cap
 _storagePersistEnsure();
 
-let _swReloadWhenShown = false;
-function _swReloadNow() {
-  // The draft in the open worker's composer survives the reload in the draft
-  // store, which the composer reads on open. (peekState.draft had no reader.)
-  try {
-    const inp = document.getElementById('peek-cmd-input');
-    if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
-  } catch (e) {}
-  location.reload();
-}
 if ('serviceWorker' in navigator) {
+  let _swReloadWhenShown = false;
+  const _swReloadNow = () => {
+    // The draft in the open worker's composer survives the reload in the draft
+    // store, which the composer reads on open. (peekState.draft had no reader.)
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
+    } catch (e) { console.warn('[amux] draft not kept across the service worker reload', e); }
+    location.reload();
+  };
   // A first visit has no controller yet: the new worker claiming this page fires
   // controllerchange, and reloading then threw away whatever the visitor had started.
   // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s

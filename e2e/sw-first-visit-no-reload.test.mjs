@@ -10,19 +10,21 @@ const source = fs.readFileSync('crates/amux-dashboard/static/app.js', 'utf8');
 const start = source.lastIndexOf("if ('serviceWorker' in navigator) {", source.indexOf('let _swHadController'));
 const code = source.slice(start, source.indexOf('  // A PWA kept in the foreground never re-checks', start)) + '\n}';
 
-async function load(controller) {
-  const handlers = {}, reloads = [];
+async function load(controller, hidden = false) {
+  const handlers = {}, reloads = [], docHandlers = {};
   const ctx = vm.createContext({
     navigator: { onLine: false, serviceWorker: { controller,
       register: async () => ({ active: null }),
       addEventListener: (ev, fn) => { handlers[ev] = fn; } } },
     location: { reload: () => reloads.push(1) },
-    document: { getElementById: () => null }, sessionStorage: { getItem: () => null, setItem() {} },
+    document: { hidden, getElementById: () => null,
+      addEventListener: (ev, fn) => { docHandlers[ev] = fn; }, removeEventListener: (ev) => { delete docHandlers[ev]; } },
+    sessionStorage: { getItem: () => null, setItem() {} },
     localStorage: { setItem() {} }, console: { info() {}, warn() {} }, fetch: async () => ({ text: async () => '' }),
   });
   vm.runInContext(code, ctx);
   await new Promise(r => setTimeout(r, 0));
-  return { fire: () => handlers.controllerchange(), reloads };
+  return { fire: () => handlers.controllerchange(), reloads, ctx, show: () => { ctx.document.hidden = false; docHandlers.visibilitychange?.(); } };
 }
 
 test('the first worker taking control of a first visit does not reload the page', async () => {
@@ -37,4 +39,15 @@ test('a worker replacing one already in control reloads onto the new code', asyn
   const page = await load({ state: 'activated' });
   page.fire();
   assert.equal(page.reloads.length, 1);
+});
+
+// One tab's update makes the new worker claim every tab. A hidden tab waits
+// until it is shown (implicit state machines #45, 2026-11-06).
+test('a hidden tab reloads onto the new worker only when it is shown', async () => {
+  const page = await load({ state: 'activated' }, true);
+  page.fire();
+  page.fire();
+  assert.equal(page.reloads.length, 0, 'hidden: no reload yet');
+  page.show();
+  assert.equal(page.reloads.length, 1, 'shown: exactly one reload');
 });
