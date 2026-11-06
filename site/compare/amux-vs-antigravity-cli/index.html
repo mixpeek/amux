@@ -28,13 +28,26 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Antigravity CLI (agy) — 2026 Comparison","description":"Antigravity CLI (agy) is Google's AI coding agent for single sessions. amux is the self-hosted control plane that runs and manages fleets of agy, Claude Code, and Codex agents in parallel with usage-limit and reboot recovery, kanban, mobile dashboard, and CRM built in.","datePublished":"2026-07-03","dateModified":"2026-07-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/compare/amux-vs-antigravity-cli/"}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does amux support Antigravity CLI as a runtime?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages any terminal-based AI coding agent, including Antigravity CLI (agy). Set the session command to `agy` and amux handles launch, health monitoring, stall alerts, and task coordination. You get the full amux dashboard — kanban, mobile app, scheduler — on top of your agy sessions."}},{"@type":"Question","name":"Is Antigravity CLI free to use?","acceptedAnswer":{"@type":"Answer","text":"No. Antigravity CLI requires a Google AI Pro subscription (approximately $20/month). Unlike its predecessor Gemini CLI, which offered 1,000 free requests per day under an Apache 2.0 license, Antigravity CLI is closed-source with no free tier."}},{"@type":"Question","name":"What happened to Gemini CLI?","acceptedAnswer":{"@type":"Answer","text":"Google sunsetted the Gemini CLI on June 18, 2026, replacing it with Antigravity CLI. The `gemini` command was retired; the new command is `agy`. If you were using Gemini CLI inside amux, update the session command from `gemini` to `agy` — everything else stays the same."}},{"@type":"Question","name":"Can I run Antigravity CLI and Claude Code sessions in the same amux instance?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is runtime-agnostic — different sessions can use different CLI agents. One session can run Claude Code on a backend refactor while another runs Antigravity CLI on a data pipeline task. The kanban board, notes, and mobile dashboard cover all sessions regardless of runtime."}},{"@type":"Question","name":"Does amux work without Antigravity CLI?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux works with Claude Code, OpenAI Codex CLI, Antigravity CLI, or any headless subprocess. Antigravity CLI is one supported runtime among several — not a dependency."}}]}</script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
