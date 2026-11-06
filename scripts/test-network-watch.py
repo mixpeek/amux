@@ -141,6 +141,8 @@ try:
     check("wide http.server was stopped", stopped)
     body = sent.read_text() if sent.exists() else ""
     check("stop is reported", f":{port} (stopped)" in body, body)
+    check("the stop names the directory it was started in, so its lane can be found",
+          "started in " in body and tmp.name in body, body)
     check("unknown client from the request log is reported", "UNKNOWN-CLIENT 198.51.100.7" in body, body)
     check("state written", (state / "baseline.json").exists() and (state / "seen.json").exists())
     sent.unlink(missing_ok=True)

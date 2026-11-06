@@ -157,6 +157,17 @@ def cmdline(pid: int) -> str:
         return ""
 
 
+def cwd_of(pid: int) -> str:
+    # The working directory names the lane that started a process (its
+    # ~/.amux/tmp/<worker> scratch or its worktree), which is gone once the
+    # process is stopped.
+    try:
+        out = run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], timeout=10)
+    except CouldNotRun:
+        return ""
+    return next((x[1:] for x in out.splitlines() if x.startswith("n")), "")
+
+
 APP_PREFIXES = ("/Applications/", "/System/", "/usr/libexec/", "/usr/sbin/")
 
 
@@ -291,7 +302,8 @@ def line(r: dict) -> str:
     if "w" in r:
         w = r["w"]
         s = f"{k} {clean(w['command'])} pid {w['pid']} on {clean(w['host'])}:{clean(w['port'])}"
-        return s + (" (stopped)" if r.get("stopped") else "")
+        s += " (stopped)" if r.get("stopped") else ""
+        return s + (f" started in {clean(r['cwd'], 120)}" if r.get("cwd") else "")
     if "p" in r:
         return f"{k} {clean(r['p']['host'])} {clean(r['p']['ip'])}"
     if k == "NEW-EGRESS":
@@ -308,6 +320,7 @@ def fix(rows: list[dict]) -> None:
     for r in rows:
         if r["kind"] != "FILE-SERVER":
             continue
+        r["cwd"] = cwd_of(r["w"]["pid"])
         try:
             os.kill(r["w"]["pid"], signal.SIGTERM)
             r["stopped"] = True
