@@ -17,6 +17,14 @@
 #   7. AMUX_LAND_REMOTE_LEASE=off lands without touching the ref
 #   8. a remote unreadable for a few beats mid-gate is the network, not a lost
 #      lease: the land keeps its lease and lands (land gate review)
+# From mixpeek-cicd's review of 9f52808bb..d11c0b645:
+#   9. a holder waiting on a held remote lease past --max-hold keeps its local
+#      lock: the next local land does not take it over (item 1)
+#  10. a lease taken over on the remote while the heartbeat stalls refuses the
+#      push, read before the push (item 2)
+#  11. back-to-back lands on one machine yield to the other machine's waiter,
+#      so the two alternate (item 4)
+#  12. a timeout on the remote lease alerts (item 5)
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
@@ -61,6 +69,7 @@ other_lease() { # <holder> <expires_at>: a lease written by someone else
   git -C "$H/a" push -q --no-verify --force origin "$c:$REF"; echo "$c"
 }
 L="$H/.amux/logs/land.log"
+printf '#!/bin/sh\necho "$*" >> "%s/alert.log"\n' "$H" > "$H/alert"; chmod +x "$H/alert"
 
 # 1
 commit a f b; : > "$H/hook-runs"
@@ -101,10 +110,10 @@ land a five AMUX_LAND_REMOTE_LEASE_WAIT_S=2; rc=$?
 [ "$rc" = 0 ] && [ "$(main_has f)" = e ] && grep -q 'whose process on this machine is gone' "$L" && ok "a killed land's lease on this machine is taken over at once" || bad "5: rc=$rc f=$(main_has f)"
 
 # 6
-commit a f lost; echo 6 > "$H/gate-s"
+commit a f lost; echo 6 > "$H/gate-s"; rm -f "$H/lease-during-gate"
 land a six AMUX_LAND_REMOTE_LEASE_RENEW_S=1 & p6=$!
-for _ in $(seq 1 40); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
-sleep 0.5; other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
+for _ in $(seq 1 80); do [ -s "$H/lease-during-gate" ] && break; sleep 0.25; done   # inside the gate
+other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
 wait "$p6"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" != 0 ] && [ "$(main_has f)" = e ] && ok "a renewal that loses its CAS stops its own push" || bad "6: rc=$rc f=$(main_has f)"
 grep -q 'verdict=land_remote_lease_lost' "$L" && ok "the lost lease is logged" || bad "6: no lost line"
@@ -117,6 +126,57 @@ for _ in $(seq 1 80); do [ -s "$H/lease-during-gate" ] && break; sleep 0.25; don
 mv "$H/origin.git" "$H/origin.away"; sleep 2.5; mv "$H/origin.away" "$H/origin.git"
 wait "$p8"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" = 0 ] && [ "$(main_has f)" = outage ] && ! grep -q 'land_remote_lease_lost' "$H/eight.out" && ok "an unreadable remote for a few beats is not a lost lease" || bad "8: rc=$rc f=$(main_has f): $(grep -m1 lease_lost "$H/eight.out")"
+
+# 9
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f nine
+theirs="$(other_lease vm-host:4242 $(( $(date +%s) + 600 )))"
+(cd "$H/a" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=nine-a AMUX_LAND_REMOTE_LEASE_POLL_S=1 AMUX_LAND_REMOTE_LEASE_WAIT_S=10 \
+  AMUX_LAND_REMOTE_LEASE_ALERT_CMD="$H/alert" bash "$AM" land --tries 1 --no-batch --max-hold 2 >"$H/nine-a.out" 2>&1) & p9=$!
+sleep 4
+(cd "$H/a" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=nine-b AMUX_LAND_REMOTE_LEASE_POLL_S=1 AMUX_LAND_REMOTE_LEASE_WAIT_S=3 \
+  AMUX_LAND_REMOTE_LEASE_ALERT_CMD="$H/alert" bash "$AM" land --tries 1 --no-batch --max-hold 2 >"$H/nine-b.out" 2>&1) & p9b=$!
+sleep 4
+if grep -q 'taking over a lock' "$H/nine-b.out"; then bad "9: the next local land took over a lock whose holder waits on the remote lease"
+else ok "a holder waiting on the remote lease past --max-hold keeps its local lock"; fi
+wait "$p9" "$p9b" 2>/dev/null
+[ "$(lease_now)" = "$theirs" ] && ok "and nobody on this machine took the other machine's lease" || bad "9: lease $(lease_now) theirs $theirs"
+
+# 12 (case 9's holder timed out on the remote lease)
+grep -q 'remote land lease' "$H/alert.log" 2>/dev/null && ok "a remote lease timeout alerts" || bad "12: no alert"
+
+# 10
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f ten
+git -C "$H/a" config amux.landMinIntervalS 6   # the landing window holds the land between taking the lease and pushing
+land a ten-pre >/dev/null 2>&1                    # a push just now, so the window applies to the next land
+commit a f ten2
+land a ten AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 & p10=$!
+for _ in $(seq 1 40); do grep -q 'landing window' "$H/ten.out" 2>/dev/null && break; sleep 0.25; done
+other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
+wait "$p10"; rc=$?; git -C "$H/a" config --unset amux.landMinIntervalS
+[ "$rc" != 0 ] && [ "$(main_has f)" != ten2 ] && grep -q 'verdict=land_remote_lease_not_ours' "$H/ten.out" \
+  && ok "a lease taken over on the remote while the heartbeat stalls refuses the push" || bad "10: rc=$rc f=$(main_has f): $(grep -m1 'lease_' "$H/ten.out")"
+
+# 11
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f m1-first; commit b g m2; echo 3 > "$H/gate-s"
+# An 8 s remote poll (production: 20 s), slower than the 5 s local lock poll,
+# as in production: without the yield m1-second takes the lease before m2 polls.
+land a m1-first AMUX_LAND_REMOTE_LEASE_POLL_S=8 & pa1=$!
+for _ in $(seq 1 40); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+land b m2 AMUX_LAND_REMOTE_LEASE_POLL_S=8 & pb=$!
+sleep 1
+git -C "$H/c" fetch -q origin 2>/dev/null || mk c
+git -C "$H/c" fetch -q origin; git -C "$H/c" reset -q --hard origin/main
+echo m1-second > "$H/c/h"; git -C "$H/c" add h; git -C "$H/c" commit -qm "h=m1-second"
+(cd "$H/c" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=m1-second AMUX_LAND_REMOTE_LEASE_POLL_S=8 bash "$AM" land --tries 3 --no-batch >"$H/m1-second.out" 2>&1) & pa2=$!
+wait "$pa1" "$pb" "$pa2"; echo 0 > "$H/gate-s"
+order="$(git -C "$H/a" log --format=%s origin/main -3 2>/dev/null | tr '\n' ' ')"
+git -C "$H/a" fetch -q origin; order="$(git -C "$H/a" log --format=%s origin/main -3 | tr '\n' ' ')"
+case "$order" in "h=m1-second g=m2 f=m1-first "*) ok "back-to-back lands on one machine yield: the other machine's waiter lands in between" ;;
+  *) bad "11: order on main (newest first): $order" ;; esac
+grep -q 'verdict=land_remote_lease_yield' "$H/m1-second.out" && ok "the yield is logged" || bad "11: no yield line"
 
 # 7
 commit a f off
