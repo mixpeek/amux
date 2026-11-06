@@ -24617,6 +24617,11 @@ const _ACTION_CHIPS = [
     { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s', desc: 'Ctrl+X, release, then Ctrl+S' },
     { id: 'up', label: '\u2191', action: 'keys', value: 'Up', desc: 'Arrow Up' },
     { id: 'down', label: '\u2193', action: 'keys', value: 'Down', desc: 'Arrow Down' },
+    // Left/Right and Shift+Tab move between the questions of a multi-question
+    // prompt (Tab only goes forward). The server already accepts all three keys.
+    { id: 'left', label: '\u2190', action: 'keys', value: 'Left', desc: 'Arrow Left (previous question)' },
+    { id: 'right', label: '\u2192', action: 'keys', value: 'Right', desc: 'Arrow Right (next question)' },
+    { id: 'btab', label: 'Shift+Tab', action: 'keys', value: 'BTab', desc: 'Shift+Tab (previous question)' },
     { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush', desc: 'Git push' },
     { id: 'ctrlc', label: 'Ctrl+C', action: 'keys', value: 'C-c', desc: 'Interrupt', danger: true },
     { id: 'ctrlo', label: 'Ctrl+O', action: 'keys', value: 'C-o', desc: 'Accept & continue' },
