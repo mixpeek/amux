@@ -507,6 +507,13 @@ SWAP_FREE_CRITICAL_PCT=${AMUX_CLEANUP_SWAP_FREE_CRITICAL_PCT:-0.10}
 SWAP_GROW_DISK_GB=${AMUX_CLEANUP_SWAP_GROW_DISK_GB:-20}
 CPU_SHARE=${AMUX_CLEANUP_CPU_SHARE:-0.9}
 CPU_IDLE_MAX_PCT=${AMUX_CLEANUP_CPU_IDLE_MAX_PCT:-25}   # high load only counts as CPU when idle is under this
+# CPU at nice >= NICED_MIN yields to every normal-priority process, so it is no
+# contention: the deploy builder runs at nice 10 on every core, and that alone
+# kept load15 near 28 of 28 and escalated "cpu" (RCA 20261106-090048, where
+# workers used 273% of 2800%). The 15-minute load is compared after removing
+# the niced share sampled now.
+NICED_PS_CMD=${AMUX_CLEANUP_NICED_PS_CMD:-ps -axo nice=,%cpu=}
+NICED_MIN=${AMUX_CLEANUP_NICED_MIN:-10}
 STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # ONE deadline for the whole tick. The scheduler kills a shell schedule at 600s and
 # the per-arm budgets alone add up past that, so under load every arm spent its full
@@ -2645,6 +2652,12 @@ swap_burn_note() { # <burn_gbh> <swap_total_prev_mb> <swap_total_now_mb> <hours_
   }'
 }
 
+niced_cpu_pct() { # -> the CPU percent held at nice >= NICED_MIN right now, or -1 unmeasured
+  $NICED_PS_CMD 2>/dev/null | awk -v m="$NICED_MIN" 'NF>=2 {n++; if ($1+0 >= m) s+=$2} END{ if (n) printf "%.0f", s+0; else print -1 }'
+}
+cpu_over_after_niced() { # <load15> <ncpu> <niced_pct>: true while the load less the niced share is still over CPU_SHARE
+  awk -v l="$1" -v n="$2" -v p="$3" -v cs="$CPU_SHARE" 'BEGIN{ if (p < 0) exit 0; exit !(n > 0 && (l - p/100)/n > cs) }'
+}
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb> [cpu_idle_pct]
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" -v idle="${10:--1}" -v imax="$CPU_IDLE_MAX_PCT" \
       -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" -v famd="${FAMILY_DESC:-}" 'BEGIN{
@@ -3883,6 +3896,14 @@ fi
 # "load was high but the CPU idle" from "load was fine".
 if awk -v l="$load15" -v n="$ncpu" -v cs="$CPU_SHARE" -v i="$cpu_idle" -v m="$CPU_IDLE_MAX_PCT" 'BEGIN{exit !(l>=0 && n>0 && l/n>cs && i>=m)}'; then
   echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but the CPU is ${cpu_idle}% idle: threads blocked on IO, not CPU (verdict=load_not_cpu)"
+fi
+# A load carried by niced work (the deploy builder) is not contention.
+if printf '%s\n' "$verdicts" | grep -q '^cpu '; then
+  niced_pct=$(niced_cpu_pct)
+  if ! cpu_over_after_niced "$load15" "$ncpu" "$niced_pct"; then
+    verdicts=$(printf '%s\n' "$verdicts" | grep -v '^cpu ' || true)
+    echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but ${niced_pct}% of CPU runs at nice ${NICED_MIN} or lower priority, which yields to every worker: not contention (verdict=load_is_niced_work)"
+  fi
 fi
 # Say so when a low swap reading was let through because swap can still grow,
 # so a sweep can tell "judged growable" from "never measured".
