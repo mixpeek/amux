@@ -94,6 +94,9 @@ shell_rows = [r for r in nw.evaluate(shell_snap, {**base, "egress": ["claude", "
 check("a shell alerts once per non-GitHub destination even when accepted by name",
       sorted(r["key"] for r in shell_rows) == ["egress:bash:198.51.100.2", "egress:bash:203.0.113.5"],
       str([r["key"] for r in shell_rows]))
+check("a launcher is judged per destination like a shell",
+      not any(r["kind"] == "NEW-EGRESS" for r in nw.evaluate(
+          {**snap, "egress": {"env": {"140.82.114.4"}}}, base, reqs)))
 check("GitHub's range only", nw.is_github("140.82.114.4") and not nw.is_github("140.82.128.1")
       and not nw.is_github("140.82.11.4"))
 check("parse_lsof normalises claude's version name",

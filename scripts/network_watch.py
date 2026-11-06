@@ -117,7 +117,9 @@ def is_private(addr: str) -> bool:
 # A reverse shell holds its socket in one of these. They are judged per
 # destination and never accepted by name.
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
-          "telnet", "perl", "ruby", "php"}
+          "telnet", "perl", "ruby", "php",
+          # Launchers: `env X=1 git ...` and friends hold the socket the same way.
+          "env", "xargs", "nohup", "timeout", "sudo"}
 
 
 def is_github(addr: str) -> bool:
