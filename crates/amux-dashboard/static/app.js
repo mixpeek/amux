@@ -23758,7 +23758,7 @@ function _composerLockTake(name, original) {
 }
 function _composerLockRelease(name, token) {
   if (_composerPendingSends.get(name) !== token) {
-    try { amuxTrack('composer_stale_release_ignored', { measured: true, n_considered: 1 }); } catch (e) {}
+    console.info('[amux] composer_stale_release_ignored', name);
     return;
   }
   _composerPendingSends.delete(name);
