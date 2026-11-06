@@ -180,6 +180,10 @@ fn worker_stack_bytes() -> usize {
 }
 
 pub fn run() {
+    // Before any thread or child exists: a handed-over listener arrives with
+    // close-on-exec cleared, and every process spawned before adopt_or_bind
+    // (gh, bash, pgrep from boot jobs) would otherwise hold port 8824.
+    listener_handoff::seal_inherited();
     let stack = worker_stack_bytes();
     let maintenance = tokio::runtime::Builder::new_multi_thread()
         .thread_name("amux-maintenance")
