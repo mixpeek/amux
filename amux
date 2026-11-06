@@ -1616,7 +1616,8 @@ USAGE
 cmd_post() {
   local conv="${1:-}"
   [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [--thread <post id>] [text]   (or text on stdin)
-  From a worker, p:<person> posts in your own thread as you, @mentioning them."
+  From a worker, p:<person> posts in your direct message with that person (d:<you>|<their email>),
+  which only the two of you read; their answers there come back to you."
   shift
   [[ "$conv" == \#* ]] && conv="g:${conv#\#}"
   # --thread <id>: reply in that post's thread (a Messages thread, like Slack's).
@@ -1637,7 +1638,9 @@ try: d=json.loads(os.environ["OUT"])
 except Exception: d={}
 to=[m.split(":",1)[1] for m in d.get("mentions",[]) if m.startswith("person:")]
 th=os.environ.get("THREAD")
-print("posted to %s as %s%s%s" % (d.get("conv") or os.environ["CONV"], d.get("author") or d.get("author_name") or "unknown author", (" (thread %s)" % th) if th else "", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
+c=d.get("conv") or os.environ["CONV"]
+where=(" (your direct message with %s)" % c.split("|",1)[1]) if c.startswith("d:") and "|" in c else ""
+print("posted to %s%s as %s%s%s" % (c, where, d.get("author") or d.get("author_name") or "unknown author", (" (thread %s)" % th) if th else "", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
     *)   echo "not posted (HTTP ${code:-none}): $out" >&2; return 1 ;;
   esac
 }
@@ -6704,7 +6707,7 @@ ${BOLD}Interaction:${RESET}
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
-                                 worker: lands in your thread as you, @mentioning them). Prints who it posted as
+                                 worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}

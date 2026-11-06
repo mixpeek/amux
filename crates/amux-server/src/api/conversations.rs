@@ -1,11 +1,16 @@
 //! Conversations: the Messages tab's channels and direct messages.
 //!
-//! Three kinds, all addressed by a `conv` key:
+//! Four kinds, all addressed by a `conv` key:
 //! - `g:<group>`: a channel. Every group (a worker tag) is one, plus `g:general`
 //!   for people with workspace-wide access. Readers are the people whose access
 //!   covers the group and the workers in it.
 //! - `p:<a>|<b>`: a direct message between two people (sorted keys). Private to
-//!   those two.
+//!   those two. `p:<a>|<a>` is a person's notes to themselves, as in Slack
+//!   (Ethan, 2026-11-06: "i should also be able to open my own").
+//! - `d:<worker>|<person>`: a direct message between one worker and one person
+//!   (Ethan, 2026-11-06: "workers can DM people directly it should show up in
+//!   a 1:1 conversation"). Private to those two. The person's posts there
+//!   deliver to the worker the way a post in `w:<worker>` does.
 //! - `w:<worker>`: the shared thread with one worker. Anyone who can reach the
 //!   worker can read it; posting there delivers to the worker.
 //!
@@ -467,6 +472,8 @@ pub(crate) enum Conv {
     Group(String),
     People(String, String),
     Worker(String),
+    /// (worker, person email): a worker's 1:1 with one person.
+    Direct(String, String),
 }
 
 impl Conv {
@@ -482,10 +489,18 @@ impl Conv {
             "p" => {
                 let (a, b) = rest.split_once('|')?;
                 let (a, b) = (a.trim().to_ascii_lowercase(), b.trim().to_ascii_lowercase());
-                if a.is_empty() || b.is_empty() || a == b {
+                if a.is_empty() || b.is_empty() {
                     return None;
                 }
-                Some(if a < b { Conv::People(a, b) } else { Conv::People(b, a) })
+                Some(if a <= b { Conv::People(a, b) } else { Conv::People(b, a) })
+            }
+            "d" => {
+                let (w, p) = rest.split_once('|')?;
+                let (w, p) = (w.trim().to_string(), p.trim().to_ascii_lowercase());
+                if w.is_empty() || p.is_empty() || p.contains('|') {
+                    return None;
+                }
+                Some(Conv::Direct(w, p))
             }
             _ => None,
         }
@@ -495,6 +510,7 @@ impl Conv {
             Conv::Group(g) => format!("g:{g}"),
             Conv::People(a, b) => format!("p:{a}|{b}"),
             Conv::Worker(w) => format!("w:{w}"),
+            Conv::Direct(w, p) => format!("d:{w}|{p}"),
         }
     }
 }
@@ -526,7 +542,7 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
 /// its groups, may read and answer that one thread, and nothing else of the
 /// conversation. `root` is any post id; it is resolved to its thread's root.
 fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &str) -> bool {
-    if matches!(conv, Conv::Worker(_)) {
+    if matches!(conv, Conv::Worker(_) | Conv::Direct(..)) {
         return false;
     }
     conn.query_row(
@@ -560,6 +576,12 @@ fn may_read(who: &Who, conv: &Conv, lanes: &Fleet) -> bool {
             lanes.iter().any(|l| &l.name == w) && person_allows(scope, w, lanes)
         }
         (Who::Person { email, .. }, Conv::People(a, b)) => email == a || email == b,
+        // Only that person, and only while they can still reach the worker:
+        // their posts here deliver to it under their own identity.
+        (Who::Person { email, scope }, Conv::Direct(w, p)) => {
+            email == p && lanes.iter().any(|l| &l.name == w) && person_allows(scope, w, lanes)
+        }
+        (Who::Worker { name, .. }, Conv::Direct(w, _)) => name == w,
         (Who::Worker { .. }, Conv::Group(g)) if g == GENERAL => true,
         (Who::Worker { groups, .. }, Conv::Group(g)) => groups.contains(g),
         (Who::Worker { name, .. }, Conv::Worker(w)) => name == w,
@@ -594,7 +616,7 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
             }
             Who::Worker { .. } => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
         },
-        Conv::Worker(w) => vec![w.clone()],
+        Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
         // A direct message is two people: either may hand a worker a task
         // from it, the same workers they could reach from #general.
         Conv::People(..) => match who {
@@ -617,7 +639,7 @@ fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
             // Any channel, as for other workers: a person brings in a worker
             // they can reach. An isolated one answers in its terminal.
             Conv::Group(_) | Conv::People(..) => person_allows(scope, &l.name, iso),
-            Conv::Worker(_) => false,
+            Conv::Worker(_) | Conv::Direct(..) => false,
         })
         .map(|l| l.name.clone())
         .collect()
@@ -637,7 +659,7 @@ fn workers_in(conv: &Conv, lanes: &[Lane]) -> Vec<String> {
     match conv {
         Conv::Group(g) if g == GENERAL => Vec::new(),
         Conv::Group(g) => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
-        Conv::Worker(w) => vec![w.clone()],
+        Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
         Conv::People(..) => Vec::new(),
     }
 }
@@ -809,7 +831,8 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
             if !shares {
                 continue;
             }
-            let conv = (p.email != *my_email).then(|| dm_key(my_email, &p.email));
+            // Your own entry opens your notes to yourself (`p:<me>|<me>`).
+            let conv = Some(dm_key(my_email, &p.email));
             let (u, m, ts) = conv.as_deref().map(stat).unwrap_or((0, 0, 0));
             tu += u;
             tm += m;
@@ -831,14 +854,50 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
         wks.push(json!({"name": l.name, "conv": conv.key(), "groups": l.groups,
             "unread": u, "mentions": m, "last_ts": ts}));
     }
+    // Workers' direct messages with me: one per worker that has written to me
+    // (or I to it). Listed with people, as Slack lists a DM with an app.
+    let mut direct = Vec::new();
+    if let Who::Person { email: my_email, .. } = &me {
+        for (key, worker) in direct_convs(&conn, my_email) {
+            let conv = Conv::Direct(worker.clone(), my_email.clone());
+            if !may_read(&me, &conv, &lanes) {
+                continue;
+            }
+            let (u, m, ts) = stat(&key);
+            tu += u;
+            tm += m;
+            direct.push(json!({"conv": key, "worker": worker, "unread": u, "mentions": m, "last_ts": ts}));
+        }
+    }
     let mut me_v = me_json(&me, &all);
     // Shown so the Messages tab can offer channel settings; every settings
     // route checks again on its own.
     me_v["can_admin_channels"] = json!(channel_admin(&headers, &lanes).is_ok());
-    Json(json!({"me": me_v, "channels": channels, "people": ppl, "workers": wks,
+    Json(json!({"me": me_v, "channels": channels, "people": ppl, "direct": direct, "workers": wks,
         "totals": {"unread": tu, "mentions": tm},
         "measured": true, "n_considered": lanes.len()}))
     .into_response()
+}
+
+/// (conv key, worker) for every worker direct message with `email` that has a
+/// post, newest first.
+fn direct_convs(conn: &rusqlite::Connection, email: &str) -> Vec<(String, String)> {
+    let suffix = format!("|{email}");
+    let Ok(mut q) = conn.prepare(
+        "SELECT conv FROM conversation_posts WHERE conv LIKE 'd:%' AND substr(conv, -length(?1)) = ?1 \
+         GROUP BY conv ORDER BY MAX(id) DESC",
+    ) else {
+        return Vec::new();
+    };
+    let rows = q.query_map(rusqlite::params![suffix], |r| r.get::<_, String>(0));
+    rows.into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|k| match Conv::parse(&k) {
+            Some(Conv::Direct(w, p)) if p == email => Some((k, w)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn post_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
@@ -1214,6 +1273,7 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
         // asked, where both people read it (Ethan, 2026-10-28: "@ workers to
         // get them to do work ... and it does the thread shit inline").
         Conv::People(..) => (format!("{author} mentioned you in a direct message (amux Messages):"), "that message's thread".to_string()),
+        Conv::Direct(..) => (format!("{author} wrote to you in your direct message with them (amux Messages):"), "that direct message".to_string()),
     };
     // WHO SENT THIS, said outright. Twice on 2026-10-28 a worker read a
     // delivery as "text you pasted with nothing from you asking me to act" and
@@ -1244,12 +1304,15 @@ fn delivery_for(conv: &Conv, author: &str, body: &str, isolated: bool) -> (Strin
     (delivery_text(conv, author, body), "here")
 }
 
-/// A worker's `p:<person>` (one person, no `|`) is its own thread plus that
-/// person; anything else is unchanged.
+/// A worker's `p:<person>` (one person, no `|`) names the person it is writing
+/// to: the post goes in that worker's direct message with them
+/// (`d:<worker>|<email>`, resolved in create_post once people are loaded).
+/// Anything else is unchanged.
 fn route_worker_dm(me: &Who, conv: String) -> (String, Option<String>) {
     match (me, conv.strip_prefix("p:")) {
         (Who::Worker { name, .. }, Some(rest)) if !rest.contains('|') && !rest.trim().is_empty() => {
-            (format!("w:{name}"), Some(rest.trim().trim_start_matches('@').to_ascii_lowercase()))
+            let to = rest.trim().trim_start_matches('@').to_ascii_lowercase();
+            (format!("d:{name}|{to}"), Some(to))
         }
         _ => (conv, None),
     }
@@ -1273,11 +1336,27 @@ async fn create_post(
         Err(m) => return err(StatusCode::FORBIDDEN, m),
     };
     // A worker writes to one person as `p:<email or handle>`. The post goes in
-    // the worker's own thread, as the worker, @mentioning that person: they see
-    // who wrote and can answer there, and whoever asked the worker to send it
-    // can read it too. A worker never writes into two people's private DM.
-    let (conv, dm_to) = route_worker_dm(&me, conv);
-    let Some(conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
+    // the worker's direct message with that person, as the worker, @mentioning
+    // them, and shows in their Messages as a 1:1 with the worker (Ethan,
+    // 2026-11-06). It used to land in the worker's shared thread `w:<worker>`,
+    // which anyone who can reach the worker reads. A worker never writes into
+    // two people's private DM.
+    let (conv, mut dm_to) = route_worker_dm(&me, conv);
+    let Some(mut conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
+    // `d:<self>|<handle>` written directly names the person the same way.
+    if let (Who::Worker { name, .. }, Conv::Direct(w, to), None) = (&me, &conv, &dm_to) {
+        if w == name {
+            dm_to = Some(to.clone());
+        }
+    }
+    if let (Conv::Direct(w, _), Some(to)) = (&conv, &dm_to) {
+        let found = state.store.read().ok().and_then(|c| find_person(&people(&c, true), to).map(|p| p.email.clone()));
+        let Some(email) = found else {
+            return err(StatusCode::BAD_REQUEST, format!("no person '{to}' in this workspace"));
+        };
+        conv = Conv::Direct(w.clone(), email.clone());
+        dm_to = Some(email);
+    }
     let thread_hint = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.get("parent_id").and_then(Value::as_i64))
         .or_else(|| headers.get("x-amux-thread").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()));
     let invited = match (&me, thread_hint) {
@@ -1287,7 +1366,7 @@ async fn create_post(
     if !may_read(&me, &conv, &lanes) && !invited {
         if let (Who::Worker { .. }, Conv::People(..)) = (&me, &conv) {
             return err(StatusCode::FORBIDDEN, "a worker posts in two people's direct message only in a thread where a person \
-                @mentioned it (amux post 'p:a|b' --thread <id>); to write to one person use p:<email>, which goes in your thread");
+                @mentioned it (amux post 'p:a|b' --thread <id>); to write to one person use p:<email>, which goes in your direct message with them");
         }
         return err(StatusCode::FORBIDDEN, "not a conversation you can post in");
     }
@@ -1319,10 +1398,15 @@ async fn create_post(
         };
         (all, name)
     };
-    // A direct message must name two real people.
+    // A direct message must name two real people, or a worker and one.
     if let Conv::People(a, b) = &conv {
         if ![a, b].iter().all(|k| all.iter().any(|p| &&p.email == k)) {
             return err(StatusCode::BAD_REQUEST, "a direct message needs two known people");
+        }
+    }
+    if let Conv::Direct(_, p) = &conv {
+        if !all.iter().any(|x| &x.email == p) {
+            return err(StatusCode::BAD_REQUEST, "a direct message with a worker needs a known person");
         }
     }
     let hdrs = send_headers(&me, &headers);
@@ -1353,7 +1437,8 @@ pub(crate) async fn post_inner(
     note: Option<String>,
     parent: Option<i64>,
     attachments: Value,
-    // A worker's `p:<person>`: that person, @mentioned in the worker's thread.
+    // A worker's `p:<person>`: that person, @mentioned in the worker's direct
+    // message with them.
     dm_to: Option<String>,
     // Written in the same transaction as the post (the chat bridge records
     // which chat a post came from, so the post is never echoed back to it).
@@ -1398,10 +1483,10 @@ pub(crate) async fn post_inner(
         };
         if !thread_readers.iter().any(|r| r.email == p.email) {
             tracing::warn!(conv = %conv.key(), to = %p.email, verdict = "conversation_worker_dm_unreadable",
-                "a worker's message to a person was refused: they cannot read the worker's thread");
+                "a worker's message to a person was refused: their access does not reach this worker");
             return Err(Box::new(err(StatusCode::FORBIDDEN, format!(
-                "{} cannot read {}'s thread, so the message would not reach them; the owner can widen their access",
-                p.email, conv.key()))));
+                "{} cannot read {}, so the message would not reach them: their access does not cover this worker; \
+                 the owner can widen it", p.email, conv.key()))));
         }
         let k = format!("person:{}", p.email);
         if !mentions.contains(&k) {
@@ -1412,7 +1497,7 @@ pub(crate) async fn post_inner(
         .iter()
         .filter_map(|k| k.strip_prefix("worker:").map(str::to_string))
         .collect();
-    if let Conv::Worker(w) = &conv {
+    if let Conv::Worker(w) | Conv::Direct(w, _) = &conv {
         if !targets.contains(w) {
             targets.push(w.clone());
             mentions.push(format!("worker:{w}"));
@@ -1726,7 +1811,7 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
 pub(crate) fn resolve_link_target(target: &str) -> Option<(String, String)> {
     let t = target.trim().trim_start_matches('@').trim_start_matches('#');
     if let Some(c) = Conv::parse(t) {
-        if !matches!(c, Conv::People(..)) {
+        if !matches!(c, Conv::People(..) | Conv::Direct(..)) {
             return Some((c.key(), c.key()));
         }
     }
@@ -1849,6 +1934,7 @@ fn notifies_owner(conn: &rusqlite::Connection, conv: &Conv, author_key: &str, me
     match conv {
         Conv::Worker(_) => return true,
         Conv::People(a, b) if a == "owner" || b == "owner" => return true,
+        Conv::Direct(_, p) if p == "owner" => return true,
         _ => {}
     }
     parent.is_some_and(|root| conn.query_row(
@@ -1869,6 +1955,7 @@ async fn notify_owner(state: &AppState, conv: &Conv, author_key: &str, author_na
         Conv::Group(g) => format!("#{g}"),
         Conv::Worker(w) => w.clone(),
         Conv::People(..) => "a direct message".into(),
+        Conv::Direct(w, _) => format!("a direct message from {w}"),
     };
     let title = if parent.is_some() { format!("{author_name} replied in {place}") } else { format!("{author_name} in {place}") };
     let snippet: String = body.chars().take(180).collect();
@@ -2597,7 +2684,13 @@ mod tests {
     fn conv_keys_parse_and_normalize() {
         assert_eq!(Conv::parse("g:Wexus"), Some(Conv::Group("wexus".into())));
         assert_eq!(Conv::parse("p:b@x.com|A@x.com"), Some(Conv::People("a@x.com".into(), "b@x.com".into())));
-        assert_eq!(Conv::parse("p:a@x.com|a@x.com"), None);
+        // A person's notes to themselves (Ethan, 2026-11-06).
+        assert_eq!(Conv::parse("p:A@x.com|a@x.com"), Some(Conv::People("a@x.com".into(), "a@x.com".into())));
+        assert_eq!(dm_key("a@x.com", "A@x.com"), "p:a@x.com|a@x.com");
+        assert_eq!(Conv::parse("d:mtp|Doron@X.io"), Some(Conv::Direct("mtp".into(), "doron@x.io".into())));
+        assert_eq!(Conv::parse("d:mtp|doron@x.io").unwrap().key(), "d:mtp|doron@x.io");
+        assert_eq!(Conv::parse("d:mtp"), None);
+        assert_eq!(Conv::parse("d:|doron@x.io"), None);
         assert_eq!(Conv::parse("w:ed-summary"), Some(Conv::Worker("ed-summary".into())));
         assert_eq!(Conv::parse("x:nope"), None);
         assert_eq!(Conv::parse("g:"), None);
@@ -2853,11 +2946,11 @@ mod tests {
     }
 
     #[test]
-    fn a_worker_writes_to_one_person_from_its_own_thread() {
+    fn a_worker_writes_to_one_person_in_their_direct_message() {
         let w = Who::Worker { name: "mtp-demo".into(), groups: BTreeSet::new() };
         let owner = Who::Person { email: "owner".into(), scope: MemberScope::Global };
-        assert_eq!(route_worker_dm(&w, "p:Doron@x.io".into()), ("w:mtp-demo".into(), Some("doron@x.io".into())));
-        assert_eq!(route_worker_dm(&w, "p:@doron".into()), ("w:mtp-demo".into(), Some("doron".into())));
+        assert_eq!(route_worker_dm(&w, "p:Doron@x.io".into()), ("d:mtp-demo|doron@x.io".into(), Some("doron@x.io".into())));
+        assert_eq!(route_worker_dm(&w, "p:@doron".into()), ("d:mtp-demo|doron".into(), Some("doron".into())));
         assert_eq!(route_worker_dm(&w, "p:a@x.io|owner".into()), ("p:a@x.io|owner".into(), None), "a two-person DM is not rerouted");
         assert_eq!(route_worker_dm(&owner, "p:a@x.io".into()), ("p:a@x.io".into(), None), "only workers are rerouted");
         let dm = Conv::parse("p:a@x.io|owner").unwrap();
@@ -2869,6 +2962,34 @@ mod tests {
         assert_eq!(find_person(&people, "doron").map(|p| p.email.as_str()), Some("doron@x.io"));
         assert_eq!(find_person(&people, "ethan").map(|p| p.email.as_str()), Some("ethan@x.io"));
         assert!(find_person(&people, "nobody").is_none());
+    }
+
+    #[test]
+    fn a_workers_direct_message_is_private_to_it_and_that_person() {
+        let lanes = Fleet::of(vec![lane("ed", &["wexus"]), lane("other", &["mtp"])]);
+        let dm = Conv::Direct("ed".into(), "doron@x.io".into());
+        let doron = person("doron@x.io", MemberScope::Global);
+        assert!(may_read(&doron, &dm, &lanes), "the person");
+        assert!(may_read(&Who::Worker { name: "ed".into(), groups: BTreeSet::new() }, &dm, &lanes), "the worker");
+        assert!(!may_read(&person("owner", MemberScope::Global), &dm, &lanes), "not the owner: it is not theirs");
+        assert!(!may_read(&person("mate@x.io", MemberScope::Global), &dm, &lanes), "not another person");
+        assert!(!may_read(&Who::Worker { name: "other".into(), groups: BTreeSet::new() }, &dm, &lanes), "not another worker");
+        assert!(!may_read(&person("doron@x.io", MemberScope::Group("mtp".into())), &dm, &lanes),
+            "not once their access no longer reaches the worker: their posts there deliver to it");
+        assert!(!may_read(&doron, &Conv::Direct("gone".into(), "doron@x.io".into()), &lanes), "not a worker that is gone");
+        assert_eq!(mentionable_workers(&doron, &dm, &lanes), vec!["ed".to_string()], "a post there goes to the worker");
+        assert_eq!(workers_in(&dm, &lanes), vec!["ed".to_string()]);
+        let me = person("doron@x.io", MemberScope::Global);
+        assert!(may_read(&me, &Conv::parse("p:doron@x.io|doron@x.io").unwrap(), &lanes), "your own notes");
+        assert!(!may_read(&person("mate@x.io", MemberScope::Global), &Conv::parse("p:doron@x.io|doron@x.io").unwrap(), &lanes));
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE conversation_posts (id INTEGER PRIMARY KEY, conv TEXT);").unwrap();
+        for (id, k) in [(1, "d:ed|doron@x.io"), (2, "d:other|mate@x.io"), (3, "d:ed|xdoron@x.io"), (4, "w:ed"), (5, "d:other|doron@x.io")] {
+            c.execute("INSERT INTO conversation_posts VALUES (?1,?2)", rusqlite::params![id, k]).unwrap();
+        }
+        assert_eq!(direct_convs(&c, "doron@x.io"),
+            vec![("d:other|doron@x.io".to_string(), "other".to_string()), ("d:ed|doron@x.io".to_string(), "ed".to_string())],
+            "only that person's, newest first; a longer address ending the same is someone else");
     }
 
     #[test]
