@@ -72,7 +72,9 @@ AMUX = os.environ.get("NETWORK_WATCH_AMUX", "amux")
 # makes thousands.
 AUTH_FAIL_BURST = int(os.environ.get("NETWORK_WATCH_AUTH_BURST", "60"))
 # Listener command names whose ports are chosen at random per run (e2e servers).
-DYNAMIC_PORT_COMMANDS = {"amux-serv", "rapportd", "Spotify", "ControlCe", "identitys"}
+# Matched as prefixes: lsof prints the full name here (amux-server,
+# ControlCenter) and the old exact match on 9-character names never fired.
+DYNAMIC_PORT_COMMANDS = ("amux-serv", "rapportd", "Spotify", "ControlCe", "identitys")
 FILE_SERVER = re.compile(
     r"(-m\s+(http\.server|SimpleHTTPServer)\b|\bhttp-server\b|\bnpx\s+serve\b|\bserve\s+-[ls]\b)"
 )
@@ -258,7 +260,7 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
     for w in snap["wide"]:
         port = w["port"]
         known = (w["command"], port) in allowed or (
-            w["command"] in DYNAMIC_PORT_COMMANDS and w["command"] in allowed_cmds
+            w["command"].startswith(DYNAMIC_PORT_COMMANDS) and w["command"] in allowed_cmds
         )
         if FILE_SERVER.search(w.get("cmdline", "")):
             out.append({"key": f"fileserver:{w['pid']}:{port}", "kind": "FILE-SERVER", "w": w})

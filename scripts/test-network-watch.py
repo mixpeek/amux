@@ -65,6 +65,10 @@ check("known listener 8824 is quiet", not any(r.get("w", {}).get("port") == "882
                                              for r in nw.evaluate(snap, base, reqs)))
 check("dynamic e2e amux-server port is quiet",
       not any(r.get("w", {}).get("port") == "19693" for r in nw.evaluate(snap, base, reqs)))
+full = {**snap, "wide": [{"pid": 5, "command": "amux-server", "name": "*:19404", "host": "*",
+                         "port": "19404", "cmdline": "amux-server"}]}
+check("a full-length e2e amux-server name on a random port is quiet",
+      not any(r["kind"] == "LISTENER" for r in nw.evaluate(full, {**base, "listeners": [["amux-server", "8824"]]}, reqs)))
 check("loopback burst is an AUTH-BURST, not an UNKNOWN-CLIENT",
       not any(r["kind"] == "UNKNOWN-CLIENT" and r["ip"] == "127.0.0.1" for r in nw.evaluate(snap, base, reqs)))
 check("known peer below the burst threshold is quiet",
