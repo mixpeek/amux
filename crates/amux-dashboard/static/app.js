@@ -12999,7 +12999,9 @@ async function doKeys(name, keys) {
 
 const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
-  // A hand-sized box keeps its height; its text scrolls (see _composerSetHeight).
+  // A hand-sized box keeps its height while its draft lasts; its text scrolls
+  // (see _composerSetHeight). An empty box sizes to its content again.
+  if (el.classList.contains('user-sized') && !el.value) _composerSetHeight(el, 0);
   if (_fieldSizingSupported || el.classList.contains('user-sized')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
@@ -13011,8 +13013,11 @@ function autoGrow(el) {
 // the box's height. Since 2026-11-06 that height holds in both directions
 // ("i should be able to drag this down even if the text is full"): longer text
 // scrolls inside it instead of holding the box open. Up to 70% of the screen.
-// The height is kept per device; a double-click on the grip goes back to
-// sizing by content.
+// The hand-set height lasts for the draft (Ethan, 2026-11-07: "the input box
+// should expand vertically as i type but i can also collapse it if i drag").
+// Kept per device, it held every later draft at one size and the box stopped
+// growing. Emptying the box (a send, or deleting the text) or a double-click
+// on the grip goes back to sizing by content.
 const _COMPOSER_H_KEY = 'amux_peek_composer_h';
 function _composerSetHeight(ta, h) {
   if (!ta) return;
@@ -13028,20 +13033,18 @@ function _composerGripInit(gripId, taId, key) {
   const grip = document.getElementById(gripId), ta = document.getElementById(taId);
   if (!grip || !ta || grip._wired) return;
   grip._wired = true;
-  const saved = parseInt(localStorage.getItem(key) || '', 10);
-  if (saved > 0) _composerSetHeight(ta, saved);
-  let startY = 0, startH = 0, last = 0;
-  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  try { localStorage.removeItem(key); } catch (e) {}   // a height saved before 2026-11-07
+  let startY = 0, startH = 0;
+  const move = e => { _composerSetHeight(ta, startH + (startY - e.clientY)); e.preventDefault(); };
   const up = () => {
     grip.classList.remove('dragging');
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
-    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
   };
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
-    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    startY = e.clientY; startH = ta.getBoundingClientRect().height;
     grip.classList.add('dragging');
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -13049,7 +13052,6 @@ function _composerGripInit(gripId, taId, key) {
   });
   grip.addEventListener('dblclick', () => {
     _composerSetHeight(ta, 0);
-    try { localStorage.removeItem(key); } catch (e) {}
     autoGrow(ta);
   });
 }
@@ -13330,7 +13332,12 @@ function _draftInputChanged(input) {
   if (id === 'peek-cmd-input' || id === 'peek-input-fs-ta') _draftSave(_peekComposerTarget(), input.value);
   else if (id.startsWith('input-')) _draftSave(id.slice(6), input.value);
 }
-document.addEventListener('input', event => _draftInputChanged(event.target));
+document.addEventListener('input', event => {
+  _draftInputChanged(event.target);
+  // Deleting a hand-sized draft down to nothing sizes the box by content again.
+  const t = event.target;
+  if (t && t.classList && t.classList.contains('user-sized') && !t.value) _composerSetHeight(t, 0);
+});
 window.addEventListener('storage', event => {
   if (event.storageArea !== localStorage || !event.key || !event.key.startsWith(_DRAFT_PREFIX)) return;
   const session = event.key.slice(_DRAFT_PREFIX.length);
