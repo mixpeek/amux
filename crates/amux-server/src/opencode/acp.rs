@@ -81,6 +81,20 @@ pub struct PermissionAsk {
     pub kind: Option<String>,
     /// Paths the call touches.
     pub locations: Vec<String>,
+    /// The call's INPUT text, when the transport carries it (M9).
+    ///
+    /// This is the difference between a policy that can enforce
+    /// `match_all`/`match_none`/`content_any` and one that can only look at
+    /// paths. MEASURED on 2.2.4 (2026-11-03), from real asks:
+    ///
+    /// - opencode `action:"shell"` puts the **command** in `resources[0]`
+    ///   (`"curl -s https://api.stripe.com/v1/charges -u k:"`);
+    /// - `action:"edit"` puts a unified diff in `metadata.files[].patch`,
+    ///   including the written content;
+    /// - ACP's `toolCall.rawInput` is the same thing in JSON form.
+    ///
+    /// `None` means the ask carried no input, which stays undecidable.
+    pub input: Option<String>,
     /// The option ids the AGENT offered. A reply may only name one of these —
     /// inventing an option is a protocol violation, so an unknown set is
     /// answered `cancelled` rather than guessed.
@@ -115,6 +129,16 @@ impl PermissionAsk {
                     .collect()
             })
             .unwrap_or_default();
+        // Best effort: ACP carries the call input as `rawInput`. Serialized
+        // rather than flattened so a policy regex sees the same text a nested
+        // value would produce, and cannot match on a field that is not there.
+        let input = tool_call
+            .and_then(|t| t.get("rawInput"))
+            .filter(|v| !v.is_null())
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            });
         let option_ids = params
             .get("options")
             .and_then(Value::as_array)
@@ -130,6 +154,7 @@ impl PermissionAsk {
             title,
             kind,
             locations,
+            input,
             option_ids,
         }
     }

@@ -27,6 +27,11 @@ ulid.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 regex.workspace = true
+# boundaries.toml is written for Python's `re`: three rules use lookbehind or
+# lookahead, which `regex` cannot compile — so those rules were silently inert
+# (including the one that refuses `tmux kill-server`). `fancy-regex` is already
+# in the graph via syntect's `regex-fancy`, so this adds no build.
+fancy-regex = "0.16"
 # Peek syntax highlighting (diffs and fenced code) rendered server-side to
 # ANSI: zero client JS, and cached with the transcript. Pure-Rust regex engine,
 # no C dependency.
