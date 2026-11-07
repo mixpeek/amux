@@ -295,12 +295,14 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
     format!(
         "{address}\n\n\
          A file for the owner (a workbook, a report, a deck, an HTML page) is not an App. Name each file \
-         by its absolute path, one per file, never a folder: amux shows the path as a link that opens in \
-         its file viewer, signed in, with nothing to approve. Give the web link, {base}/f/<absolute path>, \
-         only when the owner asks for a link (to copy, send or open outside amux). Never start a web \
-         server (such as `python3 -m http.server`) to show files.\n\n\
+         by its absolute path, one per file, never a folder, and do so when the owner asks for \"a link\" \
+         to a file too: amux shows the path as a link that opens in its file viewer, signed in, with \
+         nothing to approve. Give the web link, {base}/f/<absolute path>, only when the owner asks for one \
+         to copy, send or open OUTSIDE amux. Never start a web server (such as `python3 -m http.server`) \
+         to show files.\n\n\
          The Apps tab holds apps with a backend (a server, inside amux or outside it) and files shared \
-         outside amux. Use it only when the owner asks for one of those:\n\
+         outside amux. Create one only when the owner explicitly asks for an app or a public link; a \
+         request for a file, a doc or \"a link\" is a path, never an app:\n\
          - An app for the owner, inside amux: `amux publish --internal <port> [title]`. Its link is \
          {base}/#view=apps&open=<id>, with the id `amux publish` prints. Never hand the owner localhost \
          or a port. An HTML app whose backend is a worker is {base}/pages/<name>.\n\
@@ -807,7 +809,12 @@ mod tests {
         std::fs::write(dir.path().join(LEARNED_URL_FILE), r#"{"url":"https://desk.example:8824"}"#).unwrap();
         let g = worker_links_guide(dir.path());
         assert!(g.contains("Name each file by its absolute path"), "{g}");
-        assert!(g.contains("only when the owner asks for a link"), "{g}");
+        assert!(g.contains("only when the owner asks for one"), "{g}");
+        // 2026-11-06: asked for "a link to the plan", mixpeek-research gave
+        // /f/ web links. Asking for a link to a file still means its path.
+        assert!(g.contains("when the owner asks for \"a link\" to a file too"), "{g}");
+        assert!(g.contains("OUTSIDE amux"), "{g}");
+        assert!(g.contains("only when the owner explicitly asks for an app"), "{g}");
         assert!(!g.contains("never a bare path"), "the old rule told workers to link every file: {g}");
         assert!(g.contains("https://desk.example:8824/f/<absolute path>"), "the link, when asked, is still built on the real address: {g}");
     }

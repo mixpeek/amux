@@ -19518,8 +19518,11 @@ function _detectTextLinks(plain) {
 }
 function _linkWrap(L, htmlText) {
   const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (L.type === 'url')
-    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  if (L.type === 'url') {
+    const fp = typeof _ownFilePath === 'function' ? _ownFilePath(L.value) : '';
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer"' + (fp ? ' class="own-file-link" title="' + ea(L.value) + '"' : '') + '>'
+      + (fp ? ea(fp) : htmlText) + '</a>';
+  }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
   return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
@@ -27203,9 +27206,11 @@ function _linkifyUrls(safeHtml) {
     return String(safeHtml).replace(/(https?:\/\/[^\s<>"'`]+)(?![^<]*>)/g, (m) => {
       const url = m.replace(/[.,;:!?)]+$/, '');   // trailing punctuation is prose, not URL
       const tail = m.slice(url.length);
+      const fp = _ownFilePath(url.replace(/&amp;/g, '&'));   // a file on this amux reads as its path
       return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
-        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();">'
-        + url + '</a>' + tail;
+        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();"'
+        + (fp ? ' title="' + url + '"' : '') + '>'
+        + (fp ? esc(fp) : url) + '</a>' + tail;
     });
   } catch (e) { return safeHtml; }
 }
@@ -38496,6 +38501,16 @@ function _ownLinkHash(href) {
   if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
   return null;
 }
+// The absolute path behind a link to a file on THIS amux (/f/<path>), or ''.
+// Such a link is shown as its path, the way amux shows every file: a worker
+// asked for "a link to the plan" wrote https://<this amux>/f/Users/... and the
+// owner read a server URL where a clickable path belonged (Ethan, 2026-11-06).
+// The href stays, so a plain click opens the file here (_openOwnLink).
+function _ownFilePath(href) {
+  const h = _ownLinkHash(href);
+  if (!h || h.indexOf('#path=') !== 0) return '';
+  try { return decodeURIComponent(h.slice(6)); } catch (_) { return ''; }
+}
 function _openOwnLink(href, how) {
   const hash = _ownLinkHash(href);
   if (!hash) return false;
@@ -46439,6 +46454,13 @@ function _renderMarkdownInner(raw, basePath) {
           const isDir = (href || '').split('#')[0].split('?')[0].endsWith('/');
           return '<a href="#" class="md-file-link" data-file="' + esc(target) + '"' +
                  (isDir ? ' data-dir="1"' : '') + ' title="' + esc(target) + '">' + text + '</a>';
+        }
+        // A link to a file on THIS amux (/f/<path>) is that file: it opens in
+        // the viewer, and a bare URL reads as its path (Ethan, 2026-11-06).
+        const own = typeof _ownFilePath === 'function' ? _ownFilePath(href || '') : '';
+        if (own) {
+          const bare = text.replace(/<[^>]*>/g, '') === (href || '') || text === esc(href || '');
+          return '<a href="#" class="md-file-link" data-file="' + esc(own) + '" title="' + esc(own) + '">' + (bare ? esc(own) : text) + '</a>';
         }
         const isAnchor = (href || '').startsWith('#');
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
