@@ -289,7 +289,7 @@ async function _applyWorkerRenames(map) {
         if (raw === null) continue;
         const r = _workerRenameRewrite(JSON.parse(raw), map);
         if (r.changed) { store.setItem(key, JSON.stringify(r.value)); rewritten++; }
-      } catch (_) {}
+      } catch (e) { console.warn('[rename] could not rewrite a stored name', e); }
     }
   }
   // The outbox goes through its own lock, so a delivery in flight is not raced.
@@ -309,9 +309,9 @@ async function _applyWorkerRenames(map) {
         if (n) rewritten++;
       });
     }
-  } catch (_) {}
-  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (_) {}
-  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (_) {}
+  } catch (e) { console.warn('[rename] could not rewrite the outbox', e); }
+  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the card order', e); }
+  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the split panes', e); }
   let reopened = '';
   try {
     if (typeof peekSession !== 'undefined' && peekSession && map[peekSession] && typeof openPeek === 'function') {
@@ -321,9 +321,9 @@ async function _applyWorkerRenames(map) {
       const h = _workerRenameRewrite(location.hash, map);
       if (h.changed) history.replaceState(history.state, '', location.pathname + location.search + h.value);
     }
-  } catch (_) {}
-  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (_) {}
-  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (_) {}
+  } catch (e) { console.warn('[rename] could not reopen the renamed worker', e); }
+  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (e) { console.warn('[rename] rename beacon failed', e); }
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (e) { console.warn('[rename] could not redraw messages after a rename', e); }
   return rewritten;
 }
 let _workerRenamesInFlight = null;
@@ -352,7 +352,7 @@ window._syncWorkerRenames = _syncWorkerRenames;
       p.then(r => {
         if (r && (r.headers.get('x-amux-renamed-to') || r.status === 404)) _syncWorkerRenames();
       }, () => {});
-    } catch (_) {}
+    } catch (e) { console.warn('[rename] rename watch could not read a fetch URL', e); }
     return p;
   };
   const start = () => setTimeout(() => _syncWorkerRenames(), 1500);
