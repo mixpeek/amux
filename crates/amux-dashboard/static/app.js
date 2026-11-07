@@ -69080,6 +69080,8 @@ function _cvFindName(conv) {
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  // A worker's direct message with you (`d:<worker>|<you>`): the worker.
+  if (conv && conv.indexOf('d:') === 0) return conv.slice(2).split('|')[0];
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
@@ -69125,7 +69127,8 @@ function _cvNewCandidates() {
   const L = _cv.list || {};
   return [
     ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
-    ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.people || []).filter(p => p.conv).map(p => ({ conv: p.conv, label: p.me ? p.name + ' (you)' : p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.direct || []).map(d => ({ conv: d.conv, label: d.worker, kind: 'direct message', ico: _cvAvatar(d.worker, true) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
 }
@@ -69172,11 +69175,15 @@ function _cvRenderSide() {
     // Owners and admins manage channels from here (AA-52). The server refuses
     // everyone else, so this only hides a button nobody else could use.
     + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
-  const ppl = (L.people || []);
-  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
-  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+  const ppl = (L.people || []), dms = (L.direct || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length ? '' : 'none';
+  // Your own entry opens your notes to yourself, as in Slack (Ethan,
+  // 2026-11-06: "i should also be able to open my own"). A worker that wrote
+  // to you directly is listed here too, as its 1:1 with you.
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me && !p.conv
     ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
-    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.me ? p.name + ' (you)' : p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.me || p.online ? ' on' : '') + '" title="' + (p.me || p.online ? 'online' : 'away') + '"></span>')).join('')
+    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -69490,6 +69497,7 @@ function _cvSqConvs() {
   return [].concat(
     (L.channels || []).map(c => ({ conv: c.conv, name: '#' + (c.title || c.name), kind: 'Channel', key: c.name, ico: '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>' })),
     (L.people || []).filter(p => !p.me).map(p => ({ conv: p.conv, name: p.name, kind: 'Person', key: String(p.email || p.name).split('@')[0], ico: _cvAvatar(p.name, false, p.email) })),
+    (L.direct || []).map(d => ({ conv: d.conv, name: d.worker, kind: 'Direct message', key: d.worker, ico: _cvAvatar(d.worker, true) })),
     (L.workers || []).map(w => ({ conv: w.conv, name: w.name, kind: 'Worker', key: w.name, ico: _cvAvatar(w.name, true) })));
 }
 function _cvSqWhen(ts) {
@@ -69730,8 +69738,12 @@ function _cvRenderHead(sel, d) {
         + 'data-key="' + esc(wkey) + '" onchange="_cvSetAvatar(this.dataset.key, this.files[0]); this.value=\'\'"></label>';
       return;
     }
+  } else if (sel.indexOf('d:') === 0) {
+    const w = sel.slice(2).split('|')[0];
+    meta.textContent = 'Direct message with ' + w + '. Only you and ' + w + ' can read this; messages here go to it.';
   } else {
-    meta.textContent = 'Direct message';
+    const ends = sel.slice(2).split('|');
+    meta.textContent = ends.length === 2 && ends[0] === ends[1] ? 'Your notes to yourself. Only you can read this.' : 'Direct message';
   }
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('');
@@ -69756,17 +69768,55 @@ function _cvBodyHtml(p) {
     const k = names[tok.replace(/\.$/, '').toLowerCase()];
     return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
   });
-  const imgs = [];
-  body.replace(/(?:^|[\s(\[>"'`,;=@])((?:~\/|\/)[^\s'"`<>()]+\.(?:png|jpe?g|gif|webp))(?=$|[\s,;:)\].])/gim, (m, path) => {
-    if (!imgs.includes(path) && imgs.length < 4) imgs.push(path);
-    return m;
-  });
+  const imgs = _cvImageRefs(body);
   if (imgs.length) {
-    h += '<div class="cv-thumbs">' + imgs.map(path => '<img class="cv-thumb" loading="lazy" alt="' + esc(path.split('/').pop())
-      + '" title="Open ' + esc(path) + '" data-path="' + esc(path) + '" src="'
-      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
+    h += '<div class="cv-thumbs">' + imgs.map(r => r.path
+      ? '<img class="cv-thumb" loading="lazy" alt="' + esc(r.name) + '" title="Open ' + esc(r.path) + '" data-path="' + esc(r.path) + '" src="'
+        + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(r.path))) + '" onclick="openFilePreview(this.dataset.path)" onerror="_cvThumbFailed(this)">'
+      : '<img class="cv-thumb" loading="lazy" referrerpolicy="no-referrer" alt="' + esc(r.name) + '" title="Open ' + esc(r.url) + '" data-url="' + esc(r.url)
+        + '" src="' + esc(r.url) + '" onclick="window.open(this.dataset.url,\'_blank\',\'noopener\')" onerror="_cvThumbFailed(this)">').join('') + '</div>';
   }
   return h;
+}
+// INLINE IMAGE PREVIEWS, like Slack (Ethan, 2026-11-06: "make sure any image
+// links have an inline preview", screenshot of an `@.../IMG_5708.tiff` post
+// shown as a bare link). A local image path (absolute or ~/, with or without
+// the @ an attachment rides on) previews through /api/file/raw; a web link to
+// an image previews from its URL, this server's /f/ links included. The list
+// used to stop at png/jpg/gif/webp, so a phone's .tiff or .heic never showed.
+const _CV_IMG_EXT = 'png|jpe?g|gif|webp|svg|bmp|avif|heic|heif|tiff?';
+function _cvImageRefs(body) {
+  const out = [], seen = new Set();
+  const add = r => { const k = r.path || r.url; if (!seen.has(k) && out.length < 4) { seen.add(k); out.push(r); } };
+  String(body || '').replace(new RegExp('(?:^|[\\s(\\[>"\'`,;=@])((?:~\\/|\\/)[^\\s\'"`<>()]+\\.(?:' + _CV_IMG_EXT + '))(?=$|[\\s,;:)\\].])', 'gim'), (m, path) => {
+    // A copied file link (`/f/<path>`, api/deep_links.rs) names the file on
+    // disk; the link itself redirects to the dashboard, so preview the file.
+    if (path.indexOf('/f/') === 0) path = path.slice(2);
+    add({ path, name: path.split('/').pop() }); return m;
+  });
+  String(body || '').replace(new RegExp('https?:\\/\\/[^\\s<>()"\']+\\.(?:' + _CV_IMG_EXT + ')(?:\\?[^\\s<>()"\']*[^\\s<>()"\'.,;:!?])?(?=$|[\\s,;:!?)\\].])', 'gim'), url => {
+    const name = url.split('?')[0].split('/').pop();
+    try {
+      const u = new URL(url);
+      if (typeof location !== 'undefined' && u.host === location.host && u.pathname.indexOf('/f/') === 0) {
+        add({ path: decodeURIComponent(u.pathname.slice(2)), name }); return url;
+      }
+    } catch (e) {}
+    add({ url, name }); return url;
+  });
+  return out;
+}
+// A browser that cannot draw the format (Chrome and Firefox have no TIFF or
+// HEIC; Safari and the amux apps do) gets a file chip that opens it instead of
+// a broken image.
+function _cvThumbFailed(img) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'cv-thumb-chip';
+  chip.textContent = '\u{1F5BC} ' + (img.alt || 'image') + ' (no preview in this browser; open)';
+  const path = img.dataset.path, url = img.dataset.url;
+  chip.onclick = () => path ? openFilePreview(path) : window.open(url, '_blank', 'noopener');
+  img.replaceWith(chip);
 }
 // PATHS IN A POST ARE LINKS (AA-51, Ethan 2026-10-28). _linkifyPaths needs a
 // file extension, so a folder such as /home/amux/wexus/runs/x/for-elliot was
@@ -70254,7 +70304,7 @@ function _cvRenderPosts(scroll) {
     _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
-      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+      : sel.indexOf('p:') === 0 || sel.indexOf('d:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
@@ -70319,7 +70369,7 @@ function _cvRenderUnread() {
   document.getElementById('cv-title').textContent = 'Unread';
   document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
   const L = _cv.list || {};
-  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.direct || []).map(d => [d, d.worker]), ...(L.workers || []).map(w => [w, w.name])]
     .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
   document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
     : '<div class="cv-empty">You are all caught up.</div>';
@@ -70474,7 +70524,7 @@ async function _cvMaybeNotify(ev) {
   } catch (e) { return; }
   if (!p || p.author_key === _cvMeKey()) return;
   const me = _cvMeKey();
-  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || !!ev.parent_id;
+  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || ev.conv.indexOf('d:') === 0 || !!ev.parent_id;
   if (!addressed) return;
   _cvNotified.add(ev.id);
   const title = (p.author_name || 'Someone') + (ev.parent_id ? ' replied in ' : ' in ') + _cvFindName(ev.conv);
