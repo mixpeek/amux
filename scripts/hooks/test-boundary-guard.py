@@ -382,9 +382,10 @@ def modal_cases(home: str, boundaries: list[dict]) -> None:
     import re as _re
     matcher = inst.canonical_boundary_guard("/x/boundary-guard.py")[0]["matcher"]
     sub = next((x for x in boundaries if x.get("kind") == "subagents"), {}).get("subagents") or {}
-    wanted = list(cfg.get("tools") or []) + list(sub.get("tools") or [])
+    red = [(x.get("redirect") or {}) for x in boundaries if x.get("kind") == "redirect"]
+    wanted = list(cfg.get("tools") or []) + list(sub.get("tools") or []) + [t for r in red for t in r.get("tools") or []]
     missing = [t for t in wanted if not _re.search(matcher, t)]
-    expect("the installed guard matcher names every modal and subagent tool", not missing, f"missing {missing} from {matcher}")
+    expect("the installed guard matcher names every modal, subagent and redirect tool", not missing, f"missing {missing} from {matcher}")
     expect("the guard matcher stays anchored (no AskUserQuestionX)", not _re.search(matcher, "AskUserQuestionX"), matcher)
 
     def modal(ev: list[dict]) -> list[dict]:
@@ -425,6 +426,33 @@ def modal_cases(home: str, boundaries: list[dict]) -> None:
     expect("orchestrator-modal: test fixture emptied the orchestrators list", "orchestrators = []" in open(bare).read())
     code, ev = run_payload(ASK, home, {"AMUX_SESSION": listed}, registry=bare)
     expect("orchestrator-modal: with nothing configured AskUserQuestion is allowed", code == 0 and not modal(ev), f"exit {code} {ev}")
+
+
+def scheduling_cases(home: str, boundaries: list[dict]) -> None:
+    """scheduling (2026-11-06): Claude's own scheduler tools are refused for every amux worker,
+    isolated ones too, and the refusal names the amux command for that tool."""
+    b = next((x for x in boundaries if x.get("id") == "scheduling"), None)
+    expect("the registry carries the scheduling boundary", b is not None and b.get("kind") == "redirect")
+    if b is None:
+        return
+    cfg = b["redirect"]
+    expect("scheduling: it covers ScheduleWakeup and the three Cron tools",
+           set(cfg.get("tools") or []) == {"ScheduleWakeup", "CronCreate", "CronList", "CronDelete"}, str(cfg.get("tools")))
+    want = {"ScheduleWakeup": "amux wake 20m", "CronCreate": "amux wake --every", "CronList": "amux wake --list",
+            "CronDelete": "amux wake --cancel"}
+    for tool, cmd in want.items():
+        pl = {"tool_name": tool, "tool_input": {"delaySeconds": 1200, "prompt": "check", "reason": "x"}}
+        code, ev = run_payload(pl, home, {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": "construction"})
+        hit = [e for e in ev if e.get("verdict") == "claude_scheduler_refused" and e.get("tool") == tool]
+        expect(f"scheduling: {tool} is refused for an isolated worker (as launched)", code == 2 and bool(hit), f"exit {code} {ev}")
+        expect(f"scheduling: the {tool} refusal names `{cmd}`", cmd in last_stderr, last_stderr)
+    code, ev = run_payload({"tool_name": "ScheduleWakeup", "tool_input": {}}, home, {"AMUX_SESSION": "wexus"})
+    expect("scheduling: ScheduleWakeup is refused for a non-isolated worker", code == 2, f"exit {code} {ev}")
+    code, ev = run_payload({"tool_name": "ScheduleWakeup", "tool_input": {}}, home,
+                           {"AMUX_SESSION": None, "AMUX_ISOLATED_WORKER": None})
+    expect("scheduling: a Claude session that is not an amux worker keeps ScheduleWakeup", code == 0, f"exit {code} {ev}")
+    code, ev = run_payload({"tool_name": "Monitor", "tool_input": {}}, home, {"AMUX_SESSION": "wexus"})
+    expect("scheduling: other tools (Monitor) are untouched", code == 0, f"exit {code} {ev}")
 
 
 def push_gate_cases(home: str, boundaries: list[dict]) -> None:
@@ -1056,6 +1084,7 @@ def main() -> int:
             expect("subagents: apply_to_isolated = false still caps a non-isolated worker", code == 2, f"exit {code} {ev}")
 
         modal_cases(home, boundaries)
+        scheduling_cases(home, boundaries)
         tenant_gate_cases(home, boundaries)
         push_gate_cases(home, boundaries)
         delete_gate_cases(home, boundaries)

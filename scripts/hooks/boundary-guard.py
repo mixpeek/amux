@@ -8,7 +8,9 @@ boundaries.toml (repo root; installed beside this file as
 registry, refuses the tool calls a `deny` rule describes, refuses heavy
 commands while the machine is critical (the `resources` boundary), and refuses
 a new Agent/Task call past the running-subagent cap or under the account's
-usage headroom floor (the `subagents` boundary), and refuses modal prompt tools
+usage headroom floor (the `subagents` boundary), refuses a tool amux replaces
+with its own command and names that command (kind `redirect`: the `scheduling`
+boundary sends Claude's ScheduleWakeup and Cron tools to `amux wake`), and refuses modal prompt tools
 (AskUserQuestion, plan mode) for orchestrator lanes (the `modal` boundary),
 and refuses hook-less pushes to a protected branch (the `push-gates` boundary),
 and refuses a cluster or cloud delete that this worker has not previewed (the
@@ -1716,6 +1718,22 @@ def check_modal(b: dict, tool: str, ti: dict) -> tuple[int, str]:
     )
 
 
+def check_redirect(b: dict, tool: str) -> tuple[int, str]:
+    """A tool amux replaces with its own command (the `scheduling` boundary): refuse it and name
+    the amux command, so the honest path is one step away (ethos rule 3)."""
+    cfg = b.get("redirect") or {}
+    if tool not in (cfg.get("tools") or []):
+        return 0, ""
+    instead = str((cfg.get("instead") or {}).get(tool) or "").strip()
+    log({"level": "WARN", "verdict": cfg.get("verdict") or "tool_redirected", "boundary": b.get("id"),
+         "tool": tool, "isolated": WORKER_ISOLATED, "measured": True, "n_considered": 1})
+    return 2, (
+        f"BLOCKED by amux boundary '{b.get('id')}' ({b.get('title', '')}): {tool} is replaced by amux here.\n"
+        + (f"Use instead: {instead}\n" if instead else "")
+        + f"\n{b.get('rule', '').strip()}\n(boundary-guard; the registry is boundaries.toml)\n"
+    )
+
+
 def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--measure-disk":
         # The detached measurement disk_usage() starts. Bounded so a wedged
@@ -1823,6 +1841,11 @@ def main() -> None:
                      "error": str(e)[:300], "measured": False, "n_considered": 1})
                 code, msg = 2, (f"BLOCKED by amux boundary '{b.get('id')}': the delete gate check failed ({e}), and "
                                 "this check fails closed.\n" + b.get("rule", "").strip() + "\n(boundary-guard)\n")
+            if code:
+                sys.stderr.write(msg)
+                sys.exit(code)
+        if b.get("kind") == "redirect":
+            code, msg = check_redirect(b, tool)
             if code:
                 sys.stderr.write(msg)
                 sys.exit(code)
