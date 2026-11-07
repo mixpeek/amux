@@ -19,17 +19,20 @@ const TIFF = '/home/amux/.amux/uploads/2c8a20109408-IMG_5708.tiff';
 const WEB = 'https://images.example.com/shot.jpg';
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
-async function setup(page: Page, body: string, conv = 'g:amux') {
+async function setup(page: Page, body: string, conv = 'g:amux', images = false) {
   await page.route(/\/api\/conversations(\?.*)?$/, r => r.fulfill({ json: LIST }));
   await page.route(/\/api\/conversations\/[^/]+\/posts(\?.*)?$/, r => r.fulfill({ json: {
     measured: true, n_considered: 1, people: [ME], workers: [], mentionable_workers: [], typing: [],
     posts: [{ id: 1, conv, author_key: 'worker:mtp', author_name: 'mtp', body, mentions: ['person:owner'], deliveries: [], ts: Date.now() }] } }));
   await page.route(/\/api\/conversations\/[^/]+\/(read|typing)$/, r => r.fulfill({ json: { ok: true } }));
-  // A .tiff the browser cannot draw: served as bytes that are not an image.
-  await page.route(/\/api\/file\/raw\?/, r => r.request().url().includes('.tiff')
-    ? r.fulfill({ contentType: 'image/tiff', body: Buffer.from('II*\0not-a-real-tiff') })
-    : r.fulfill({ contentType: 'image/png', body: PNG }));
-  await page.route(WEB, r => r.fulfill({ contentType: 'image/png', body: PNG }));
+  // Only a post with image links fetches images; a stub nothing requests fails the run (AF-47).
+  if (images) {
+    // A .tiff the browser cannot draw: served as bytes that are not an image.
+    await page.route(/\/api\/file\/raw\?/, r => r.request().url().includes('.tiff')
+      ? r.fulfill({ contentType: 'image/tiff', body: Buffer.from('II*\0not-a-real-tiff') })
+      : r.fulfill({ contentType: 'image/png', body: PNG }));
+    await page.route(WEB, r => r.fulfill({ contentType: 'image/png', body: PNG }));
+  }
   await page.addInitScript(() => { localStorage.setItem('amux_walkthrough_done', '1'); localStorage.removeItem('amux_cv_sel'); });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._cvSelect === 'function');
@@ -50,7 +53,7 @@ test('a worker DM and your own conversation are in the people list and open', as
 });
 
 test('an image link of any format previews inline, and one the browser cannot draw is a chip', async ({ page }) => {
-  await setup(page, '@' + TIFF + '\nand ' + WEB);
+  await setup(page, '@' + TIFF + '\nand ' + WEB, 'g:amux', true);
   const body = page.locator('.cv-post-body').first();
   await expect(body).toBeVisible();
   const web = body.locator('img.cv-thumb[data-url="' + WEB + '"]');

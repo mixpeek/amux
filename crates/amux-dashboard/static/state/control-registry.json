@@ -1296,6 +1296,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvThumbFailed": {
+      "kind": "command._cvThumbFailed",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvUploadVoice": {
       "kind": "command._cvUploadVoice",
       "feedback_required": true,
