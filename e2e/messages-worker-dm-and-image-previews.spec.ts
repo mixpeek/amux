@@ -17,6 +17,7 @@ const LIST = { measured: true, n_considered: 1, me: ME,
   totals: { unread: 1, mentions: 1 } };
 const TIFF = '/home/amux/.amux/uploads/2c8a20109408-IMG_5708.tiff';
 const WEB = 'https://images.example.com/shot.jpg';
+const phone = (page: Page) => (page.viewportSize()?.width || 1000) <= 600;
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
 async function setup(page: Page, body: string, conv = 'g:amux', images = false) {
@@ -48,6 +49,8 @@ test('a worker DM and your own conversation are in the people list and open', as
   await expect(page.locator('#cv-meta')).toContainText('Direct message with mtp');
   const mine = page.locator('#cv-people .cv-item[data-cv="p:owner|owner"]');
   await expect(mine, 'your own entry is a button, not dead text').toHaveCount(1);
+  // On a phone the open conversation covers the list; go back to it first.
+  if (phone(page)) await page.evaluate(() => (window as any)._cvBack());
   await mine.click();
   await expect(page.locator('#cv-meta')).toContainText('Your notes to yourself');
 });

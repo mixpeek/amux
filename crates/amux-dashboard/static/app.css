@@ -9122,8 +9122,8 @@ button.cv-sec:hover { color:var(--text); }
 .cv-thumbs { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-top:var(--space-1-5); }
 .cv-md img.cv-thumb { max-width:220px; max-height:160px; object-fit:cover; border:1px solid var(--border); cursor:pointer; }
 @media (max-width: 600px) { .cv-md img.cv-thumb { max-width:46vw; } }
-.cv-thumb-chip { display:inline-flex; align-items:center; min-height:44px; padding:0 var(--space-2); border:1px solid var(--border); border-radius:6px; background:var(--bg2, transparent); color:inherit; font:inherit; cursor:pointer; }
-.cv-dm-tag { margin-left:auto; font-size:10px; color:var(--dim); border:1px solid var(--border); border-radius:4px; padding:0 4px; }
+.cv-thumb-chip { display:inline-flex; align-items:center; min-height:44px; padding:0 var(--space-2); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg2, transparent); color:inherit; font:inherit; cursor:pointer; }
+.cv-dm-tag { margin-left:auto; font-size:var(--fs-2xs); color:var(--dim); border:1px solid var(--border); border-radius:var(--radius-sm); padding:0 var(--space-1); }
 .cv-deliv { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-top:var(--space-0-5); }
 .cv-deliv span { font-size:var(--fs-2xs); padding:1px var(--space-1-5); border-radius:var(--radius-xl); border:1px solid var(--border); color:var(--dim); }
 .cv-deliv span.ok { color:var(--green); border-color:color-mix(in srgb, var(--green) 45%, transparent); }
