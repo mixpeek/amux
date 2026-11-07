@@ -450,6 +450,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             cfg.websiteDataStore = .default()
             cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
             cfg.mediaTypesRequiringUserActionForPlayback = []
+            // The word suggestions macOS shows as you type (Ethan, 2026-11-07:
+            // "add spellcheck/autocorrect/ suggestions into the inputs").
+            if #available(macOS 14.0, *) { cfg.allowsInlinePredictions = true }
         }
         // A configuration handed over by window.open already carries the
         // script from the window that opened it.
@@ -1066,6 +1069,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         routeStderrToLogFile()
+        registerTextCheckingDefaults()
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenuBar(self)
         NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
@@ -2033,6 +2037,30 @@ extension Config {
 }
 
 // ── Standard menu bar ──
+/// Spelling in every text box (Ethan, 2026-11-07: "add spellcheck/autocorrect/
+/// suggestions into the inputs"). The page asks for it (spellcheck="true",
+/// autocorrect="on"), but in a WKWebView the app decides: WebKit reads these
+/// keys from the app's defaults, and none were set, so nothing was checked or
+/// corrected. Registered defaults lose to a choice made in Edit > Spelling and
+/// Grammar or Edit > Substitutions, which WebKit saves under the same keys.
+/// Smart quotes and dashes stay off: a curly quote breaks a command sent to a
+/// worker.
+func registerTextCheckingDefaults() {
+    UserDefaults.standard.register(defaults: [
+        "WebContinuousSpellCheckingEnabled": true,
+        "WebAutomaticSpellingCorrectionEnabled": true,
+        "WebAutomaticTextReplacementEnabled": true,
+        "WebGrammarCheckingEnabled": false,
+        "WebAutomaticQuoteSubstitutionEnabled": false,
+        "WebAutomaticDashSubstitutionEnabled": false,
+    ])
+    let d = UserDefaults.standard
+    NSLog("amux-desktop: verdict=text_checking_defaults spelling=%d autocorrect=%d replacement=%d",
+          d.bool(forKey: "WebContinuousSpellCheckingEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticSpellingCorrectionEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticTextReplacementEnabled") ? 1 : 0)
+}
+
 func buildMenuBar(_ d: AppDelegate) {
     let mainMenu = NSMenu()
     func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String,
@@ -2082,6 +2110,22 @@ func buildMenuBar(_ d: AppDelegate) {
     add(edit, "Copy", #selector(NSText.copy(_:)), "c")
     add(edit, "Paste", #selector(NSText.paste(_:)), "v")
     add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+    edit.addItem(.separator())
+    // The standard spelling menus. The focused WKWebView answers each action
+    // and shows its checkmark.
+    let spelling = NSMenu(title: "Spelling and Grammar")
+    add(spelling, "Show Spelling and Grammar", #selector(NSText.showGuessPanel(_:)), ":")
+    add(spelling, "Check Document Now", #selector(NSText.checkSpelling(_:)), ";")
+    spelling.addItem(.separator())
+    add(spelling, "Check Spelling While Typing", #selector(NSTextView.toggleContinuousSpellChecking(_:)), "", [])
+    add(spelling, "Check Grammar With Spelling", #selector(NSTextView.toggleGrammarChecking(_:)), "", [])
+    add(spelling, "Correct Spelling Automatically", #selector(NSTextView.toggleAutomaticSpellingCorrection(_:)), "", [])
+    edit.addItem(withTitle: "Spelling and Grammar", action: nil, keyEquivalent: "").submenu = spelling
+    let subs = NSMenu(title: "Substitutions")
+    add(subs, "Smart Quotes", #selector(NSTextView.toggleAutomaticQuoteSubstitution(_:)), "", [])
+    add(subs, "Smart Dashes", #selector(NSTextView.toggleAutomaticDashSubstitution(_:)), "", [])
+    add(subs, "Text Replacement", #selector(NSTextView.toggleAutomaticTextReplacement(_:)), "", [])
+    edit.addItem(withTitle: "Substitutions", action: nil, keyEquivalent: "").submenu = subs
     editItem.submenu = edit
     mainMenu.addItem(editItem)
 
