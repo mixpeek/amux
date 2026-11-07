@@ -19474,7 +19474,12 @@ pub(crate) fn apply_archive_status_move(
         // overwrite the original status with `discarded`, which would make the
         // second archive the lossy one.
         conn.execute(
-            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1 \
+            // The lease goes with the status, as `apply_lease_transition` does
+            // on every other door: no non-doing card carries one (2026-11-06,
+            // a lane archive left discarded cards still leased).
+            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1, \
+               lease_generation = lease_generation + (lease_owner IS NOT NULL), \
+               lease_owner = NULL, lease_acquired_at = NULL, lease_heartbeat_at = NULL, lease_expires_at = NULL \
              WHERE session = ?2 AND deleted IS NULL \
                AND status NOT IN ('done','verified','discarded','quarantined','cancelled') \
                AND pre_archive_status IS NULL",
@@ -55422,9 +55427,17 @@ mod roster_tests {
         add("A-TODO", "gone-lane", "todo");
         add("A-DONE", "gone-lane", "done");
         add("B-DOING", "other-lane", "doing");
+        conn.execute("UPDATE issues SET lease_owner='gone-lane', lease_expires_at=999 WHERE id IN ('A-DOING','B-DOING')", [])
+            .expect("lease");
+        let leased = |id: &str| -> Option<String> {
+            conn.query_row("SELECT lease_owner FROM issues WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
 
         // ARCHIVE. Live cards go terminal and remember what they were.
         super::apply_archive_status_move(&conn, "gone-lane", 1, 100).expect("archive");
+        // ...and give up their lease, as every other door does (2026-11-06).
+        assert_eq!(leased("A-DOING"), None, "a discarded card carries no lease");
+        assert_eq!(leased("B-DOING").as_deref(), Some("gone-lane"), "another lane's card keeps its lease");
         assert_eq!(
             status("A-DOING"),
             "discarded",

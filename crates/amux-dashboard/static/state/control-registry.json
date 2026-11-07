@@ -948,6 +948,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_composerLockTake": {
+      "kind": "command._composerLockTake",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_composerLockWatch": {
       "kind": "command._composerLockWatch",
       "feedback_required": true,

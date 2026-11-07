@@ -95,6 +95,17 @@ check "the family line names the family"               "yes" "$(FAMILY_DESC='16.
 check "with no description it still reads as a family" "family a process family is over its share of RAM" "$(FAMILY_DESC= classify_constraints 600 - - 1 2000 10 28 1 20000)"
 check "unmeasured inputs (-1) never trip a class"     ""   "$(classify_constraints -1 - - -1 -1 -1 28 0 -1)"
 
+echo "2a. a load carried by niced work is not contention (cpu RCA 20261106-090048)"
+printf '#!/bin/sh\nprintf "10 1100.0\\n0 270.0\\n0 30.5\\n"\n' > "$FIX/niced-ps"; chmod +x "$FIX/niced-ps"
+NICED_PS_CMD="$FIX/niced-ps"   # a script: the tick runs the command word-split, unquoted
+check "the niced share is summed from nice >= 10 only"  "1100" "$(niced_cpu_pct)"
+check "load 29.4 on 28 less 11 niced cores is not over"  "no"  "$(cpu_over_after_niced 29.4 28 1100 && echo yes || echo no)"
+check "control: the same load with nothing niced is over" "yes" "$(cpu_over_after_niced 29.4 28 0 && echo yes || echo no)"
+check "an unmeasured niced share leaves the verdict"      "yes" "$(cpu_over_after_niced 29.4 28 -1 && echo yes || echo no)"
+NICED_PS_CMD=false
+check "a failed ps reads unmeasured, never zero"          "-1"  "$(niced_cpu_pct)"
+NICED_PS_CMD="ps -axo nice=,%cpu="
+
 echo "2b. swap_total=0 means no swapfile was ever created, not exhaustion (MO-3629/MO-3638, 3 escalations in one day: swap_free=0.00MB, pressure=1/normal, >=90% memory free every time)"
 check "fresh boot, swap free=0 AND total=0: not a constraint"  ""       "$(classify_constraints 600 - - 1 0 10 28 0 0)"
 check "same free=0, a real swapfile (total>0) and no disk to grow it: still trips" "memory" "$(classify_constraints 10 - - 1 0 10 28 0 20000 | grep -o '^memory')"

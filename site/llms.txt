@@ -34,6 +34,7 @@ From source: `git clone https://github.com/mixpeek/amux && cd amux && ./install.
 
 - Self-host: free on your own Mac or Linux machine; no account needed.
 - amux Cloud: your own dedicated, always-on amux server at yourname.amux.io. Solo $39/mo (4 vCPU, 8 GB), Team $69/mo (8 vCPU, 16 GB), Max $129/mo (16 vCPU, 32 GB). Bring your Claude, ChatGPT or Gemini account, or an API key. Start: https://amux.io/start/
+- amux Concierge: done for you. We set amux up on a computer the business owns and build and run its automations: $5,000 onboarding, $5,000/mo, AI usage at cost (about $200/mo). https://amux.io/concierge/ and, by industry, https://amux.io/solutions/
 - Move a local setup to Cloud: `amux export`, then `amux import <file> --to https://<you>.amux.io`.
 - Model costs are paid to your model provider and depend on your provider plan.
 
@@ -63,6 +64,16 @@ MIT + Commons Clause (https://github.com/mixpeek/amux/blob/main/LICENSE). You ma
 ## How amux differs from plain Claude Code
 
 Claude Code runs one agent per terminal. amux runs dozens of agents from several CLIs, with live monitoring, phone and desktop apps, recovery from usage limits and reboots, and a shared task board. amux does not modify or patch the agent CLIs; it runs them as real sessions in tmux.
+
+## Solutions by industry (amux Concierge, done for you)
+
+amux Concierge builds and runs workflow automation for non-technical business owners on a computer they own: $5,000 onboarding, $5,000 a month, AI usage at cost (about $200 a month). Index: https://amux.io/solutions/
+
+- [Accounting firms](https://amux.io/solutions/accounting-firms/): amux Concierge automates reconciliation, client document chasing, engagement letters and pipeline updates for accounting and bookkeeping firms. We build and run it on your own computer; you review and approve.
+- [Skilled nursing facilities](https://amux.io/solutions/skilled-nursing-facilities/): amux Concierge automates Medicare Advantage authorizations, continued-stay reviews, referral intake, MDS deadline tracking and owner reporting for skilled nursing facilities, on your own computer with a BAA.
+- [Healthcare recruiting firms](https://amux.io/solutions/healthcare-recruiting/): amux Concierge helps direct-hire healthcare recruiting firms win new clients, re-place candidates already in the database, submit faster and keep placements through the guarantee period. Done for you, run on your own computer.
+- [Dental practices](https://amux.io/solutions/dental-practices/): amux Concierge automates insurance eligibility checks, predeterminations, denial follow-up and multi-location reporting for dental practices, on your own computer with a BAA.
+- [Merchant cash advance funders](https://amux.io/solutions/merchant-cash-advance/): amux Concierge automates broker submission triage, bank statement review, decision packets and compliance records for merchant cash advance funders. Done for you, with underwriters approving every decision.
 
 ## Documentation
 

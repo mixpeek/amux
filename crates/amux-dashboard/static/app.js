@@ -992,6 +992,7 @@ async function _upgradeCheckout(billing) {
 }
 
 let sessions = [];
+let _sessionsReadAt = 0;   // when the worker list was last read from the server (_waitingNow)
 // A stream update and a poll response are two snapshots of the same runtime
 // truth. A request begun before an SSE update must not finish later and put the
 // old task attribution back on screen.
@@ -7133,6 +7134,7 @@ async function _fetchSessionsOnce() {
     const firstLoad = _initialLoad;
     _initialLoad = false;
     _sessionReadRecovered();
+    _sessionsReadAt = Date.now();
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
@@ -7352,8 +7354,12 @@ async function openNeedsInput() {
   ov.querySelector('.ni-close').focus();
   _niFetch();
 }
+// Closing the overlay ends an Approve all in progress: the owner approved the
+// batch they could see, and some of its items send outside (2026-11-06).
+let _niBatchGen = 0;
 function closeNeedsInput() {
   _niOpen = false;
+  _niBatchGen++;
   const ov = document.getElementById('ni-overlay');
   if (ov) ov.remove();
   document.body.classList.remove('ni-open');
@@ -7734,8 +7740,10 @@ async function _niApproveAllRun() {
   if (_niBusy) return;
   _niAllArmed = false;
   const skip = new Set();
-  let ok = 0, refused = 0;
+  const gen = _niBatchGen;
+  let ok = 0, refused = 0, stopped = false;
   for (let guard = 0; guard < 200; guard++) {
+    if (!_niOpen || gen !== _niBatchGen) { stopped = true; break; }
     const list = _niItems(_niShowOlder);
     const next = list.findIndex(i => !skip.has(i.key) && _niApprovable().some(a => a.key === i.key));
     if (next < 0) break;
@@ -7744,8 +7752,10 @@ async function _niApproveAllRun() {
     await _niAct('approve');
     if (_niItems(_niShowOlder).some(i => i.key === key)) { skip.add(key); refused++; } else ok++;
   }
-  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, refused ? (ok ? 'partial' : 'refused') : 'ok', ok + ' approved, ' + refused + ' refused');
-  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : ''));
+  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, stopped ? 'stopped' : refused ? (ok ? 'partial' : 'refused') : 'ok',
+    ok + ' approved, ' + refused + ' refused' + (stopped ? ', stopped when the overlay closed' : ''));
+  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : '') + (stopped ? '; stopped when you closed it' : ''));
+  if (!_niOpen) return;
   _niIdx = 0; _niRender();
 }
 
@@ -12861,7 +12871,8 @@ async function doKeys(name, keys) {
 
 const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
-  if (_fieldSizingSupported) return;
+  // A hand-sized box keeps its height; its text scrolls (see _composerSetHeight).
+  if (_fieldSizingSupported || el.classList.contains('user-sized')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
@@ -12869,9 +12880,11 @@ function autoGrow(el) {
 // drag this input box by a corner and manually make it bigger"). The box sits
 // on the bottom edge, so the native bottom-right resize handle could only push
 // it off screen; the grip is on its top-left corner and dragging it up raises
-// the box's minimum height. Text still grows the box past that, up to 70% of
-// the screen. The height is kept per device; a double-click on the grip goes
-// back to sizing by content.
+// the box's height. Since 2026-11-06 that height holds in both directions
+// ("i should be able to drag this down even if the text is full"): longer text
+// scrolls inside it instead of holding the box open. Up to 70% of the screen.
+// The height is kept per device; a double-click on the grip goes back to
+// sizing by content.
 const _COMPOSER_H_KEY = 'amux_peek_composer_h';
 function _composerSetHeight(ta, h) {
   if (!ta) return;
@@ -12879,6 +12892,7 @@ function _composerSetHeight(ta, h) {
   const max = Math.round(innerHeight * 0.7);
   h = Math.max(44, Math.min(max, Math.round(h)));
   ta.style.setProperty('--composer-h', h + 'px');
+  ta.style.height = '';   // an inline height from autoGrow would override the hand-set one
   ta.classList.add('user-sized');
   return h;
 }
@@ -13236,8 +13250,7 @@ async function sendFromInput(name) {
   const queued = _sendMode === 'queue' && !_waitingNow(name);
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _composerLockWatch(name, original);
+  const lock = _composerLockTake(name, original);
   _syncComposerPending();
   try {
     const identity = {};
@@ -13272,7 +13285,7 @@ async function sendFromInput(name) {
     _composerUnconfirmed(name, 'exception', _files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(name);
+    _composerLockRelease(name, lock);
     _syncComposerPending();
   }
 }
@@ -15096,7 +15109,7 @@ function _steeringDelayPrompt(msgId) {
   val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
   box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
-  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); bg.remove(); } };   // one Escape closes only the picker, not the worker view under it
   setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
 }
@@ -19505,8 +19518,11 @@ function _detectTextLinks(plain) {
 }
 function _linkWrap(L, htmlText) {
   const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (L.type === 'url')
-    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  if (L.type === 'url') {
+    const fp = typeof _ownFilePath === 'function' ? _ownFilePath(L.value) : '';
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer"' + (fp ? ' class="own-file-link" title="' + ea(L.value) + '"' : '') + '>'
+      + (fp ? ea(fp) : htmlText) + '</a>';
+  }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
   return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
@@ -23684,10 +23700,13 @@ function handleCardPaste(name, e) {
 // reply answers it. Only on a FRESH reading: a snapshot older than 10 s may
 // say waiting for a worker that has moved on, and the message then skipped
 // the queue and landed mid-turn (implicit state machines inventory #36).
+// Fresh means the WORKER LIST was read in the last 10 s. _lastDataTime moves on
+// every SSE message, the 10 s ping included, so it called a minutes-old list
+// fresh and the queued message still landed mid-turn (2026-11-06).
 function _waitingNow(name) {
   const s = (sessions || []).find(x => x.name === name);
   if (!s || s.status !== 'waiting') return false;
-  const fresh = Date.now() - (_lastDataTime || 0) < 10000;
+  const fresh = Date.now() - _sessionsReadAt < 10000;
   if (!fresh) { try { amuxTrack('queue_kept_stale_waiting', { measured: true, n_considered: 1 }); } catch (e) {} }
   return fresh;
 }
@@ -23733,7 +23752,25 @@ function _updateSendSplit() {
 }
 setTimeout(_updateSendSplit, 0);
 
-const _composerPendingSends = new Set();
+// session -> the token of the ONE send holding that composer. A send releases
+// the lock only while it still holds it: after the 20 s watch gives the button
+// back and a second send starts, the first send's late finish must not unlock
+// the composer under the second (inventory #2, 2026-11-06).
+const _composerPendingSends = new Map();
+function _composerLockTake(name, original) {
+  const token = {};
+  _composerPendingSends.set(name, token);
+  _composerLockWatch(name, original, token);
+  return token;
+}
+function _composerLockRelease(name, token) {
+  if (_composerPendingSends.get(name) !== token) {
+    console.info('[amux] composer_stale_release_ignored', name);
+    return;
+  }
+  _composerPendingSends.delete(name);
+  _composerPendingSince.delete(name);
+}
 function _composerUnconfirmed(session, result, attachments) {
   // The local log is available even with analytics disabled. Never send message
   // contents, upload paths or credentials in a failure beacon.
@@ -23748,11 +23785,11 @@ function _composerUnconfirmed(session, result, attachments) {
 // arrived shows in Messages, so the toast says to look there before resending.
 const _COMPOSER_LOCK_MS = 20000;
 const _composerPendingSince = new Map();
-function _composerLockWatch(name, original) {
+function _composerLockWatch(name, original, token) {
   _composerPendingSince.set(name, Date.now());
   setTimeout(() => {
     const t = _composerPendingSince.get(name);
-    if (!t || !_composerPendingSends.has(name) || Date.now() - t < _COMPOSER_LOCK_MS) return;
+    if (!t || _composerPendingSends.get(name) !== token || Date.now() - t < _COMPOSER_LOCK_MS) return;
     _composerPendingSends.delete(name);
     _composerPendingSince.delete(name);
     // The text back where it was typed, as a refused send does.
@@ -23813,8 +23850,7 @@ async function sendPeekCmd() {
   // Persist text and upload references in the local outbox before clearing.
   // A network refusal remains reviewable in Sync and pending Messages.
   const draftRevision = _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _composerLockWatch(session, original);
+  const lock = _composerLockTake(session, original);
   _syncComposerPending();
   let result = 'failed';
   try {
@@ -23854,7 +23890,7 @@ async function sendPeekCmd() {
     _composerUnconfirmed(session, 'exception', files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(session);
+    _composerLockRelease(session, lock);
     _syncComposerPending();
   }
 }
@@ -27170,9 +27206,11 @@ function _linkifyUrls(safeHtml) {
     return String(safeHtml).replace(/(https?:\/\/[^\s<>"'`]+)(?![^<]*>)/g, (m) => {
       const url = m.replace(/[.,;:!?)]+$/, '');   // trailing punctuation is prose, not URL
       const tail = m.slice(url.length);
+      const fp = _ownFilePath(url.replace(/&amp;/g, '&'));   // a file on this amux reads as its path
       return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
-        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();">'
-        + url + '</a>' + tail;
+        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();"'
+        + (fp ? ' title="' + url + '"' : '') + '>'
+        + (fp ? esc(fp) : url) + '</a>' + tail;
     });
   } catch (e) { return safeHtml; }
 }
@@ -33142,6 +33180,10 @@ function closeFilePreview() {
   document.getElementById('file-body').style.display = '';
   _fileData = null;
   _fileViewMode = 'preview';
+  // A load still in flight belongs to a viewer that is gone: without this its
+  // cache read or reply passed the generation check and set _fileData on a
+  // closed overlay (2026-11-06).
+  _filePreviewGen++;
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -38458,6 +38500,16 @@ function _ownLinkHash(href) {
   if ((m = u.pathname.match(/^\/w\/([^/]+)\/?$/))) return '#peek=' + m[1];
   if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
   return null;
+}
+// The absolute path behind a link to a file on THIS amux (/f/<path>), or ''.
+// Such a link is shown as its path, the way amux shows every file: a worker
+// asked for "a link to the plan" wrote https://<this amux>/f/Users/... and the
+// owner read a server URL where a clickable path belonged (Ethan, 2026-11-06).
+// The href stays, so a plain click opens the file here (_openOwnLink).
+function _ownFilePath(href) {
+  const h = _ownLinkHash(href);
+  if (!h || h.indexOf('#path=') !== 0) return '';
+  try { return decodeURIComponent(h.slice(6)); } catch (_) { return ''; }
 }
 function _openOwnLink(href, how) {
   const hash = _ownLinkHash(href);
@@ -46403,6 +46455,13 @@ function _renderMarkdownInner(raw, basePath) {
           return '<a href="#" class="md-file-link" data-file="' + esc(target) + '"' +
                  (isDir ? ' data-dir="1"' : '') + ' title="' + esc(target) + '">' + text + '</a>';
         }
+        // A link to a file on THIS amux (/f/<path>) is that file: it opens in
+        // the viewer, and a bare URL reads as its path (Ethan, 2026-11-06).
+        const own = typeof _ownFilePath === 'function' ? _ownFilePath(href || '') : '';
+        if (own) {
+          const bare = text.replace(/<[^>]*>/g, '') === (href || '') || text === esc(href || '');
+          return '<a href="#" class="md-file-link" data-file="' + esc(own) + '" title="' + esc(own) + '">' + (bare ? esc(own) : text) + '</a>';
+        }
         const isAnchor = (href || '').startsWith('#');
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
         const t = title ? ' title="' + esc(title) + '"' : '';
@@ -53316,6 +53375,7 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = _applyLifecycleAcks(msg.payload);
+          _sessionsReadAt = Date.now();
           _peekChatStateSync();
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
@@ -53743,6 +53803,16 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  let _swReloadWhenShown = false;
+  const _swReloadNow = () => {
+    // The draft in the open worker's composer survives the reload in the draft
+    // store, which the composer reads on open. (peekState.draft had no reader.)
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
+    } catch (e) { console.warn('[amux] draft not kept across the service worker reload', e); }
+    location.reload();
+  };
   // A first visit has no controller yet: the new worker claiming this page fires
   // controllerchange, and reloading then threw away whatever the visitor had started.
   // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
@@ -53767,17 +53837,22 @@ if ('serviceWorker' in navigator) {
       console.info('[amux] service worker installed on first visit; no reload needed');
       return;
     }
-    // Rescue in-progress peek input from the reload
-    try {
-      const inp = document.getElementById('peek-cmd-input');
-      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) {
-        const st = JSON.parse(sessionStorage.getItem('peekState') || '{}');
-        st.session = st.session || peekSession;
-        st.draft = inp.value;
-        sessionStorage.setItem('peekState', JSON.stringify(st));
+    // One tab's update makes the new worker claim EVERY tab. A hidden tab waits
+    // until it is shown, as the version reload does, so a deploy does not reload
+    // every background tab at once (inventory follow-up to #34, 2026-11-06).
+    if (document.hidden) {
+      if (!_swReloadWhenShown) {
+        _swReloadWhenShown = true;
+        document.addEventListener('visibilitychange', function onShown() {
+          if (document.hidden) return;
+          document.removeEventListener('visibilitychange', onShown);
+          console.info('[amux] sw_reload_deferred_until_shown');
+          _swReloadNow();
+        });
       }
-    } catch (e) {}
-    location.reload();
+      return;
+    }
+    _swReloadNow();
   });
   }).catch(err => {
     // NEVER swallow this. A failed registration is the difference between a
@@ -58595,12 +58670,17 @@ const _ASK_MAX_THREAD = 6;
 let _askThread = [];          // [{q, a}] for the global tab
 let _peekAskThread = [];      // [{q, a}] for the worker tab
 let _peekAskThreadFor = '';   // which worker _peekAskThread belongs to
+// One generation per panel. An answer takes up to 300 s; a new question, a new
+// thread or a switch of worker in that time makes it someone else's answer, so
+// it is dropped rather than pushed into the thread on screen.
+const _askGen = { global: 0, peek: 0 };
 function _askThreadFor(peek) {
   if (!peek) return _askThread;
   if (_peekAskThreadFor !== peekSession) { _peekAskThread = []; _peekAskThreadFor = peekSession; }
   return _peekAskThread;
 }
 function _askNewThread(peek) {
+  _askGen[peek ? 'peek' : 'global']++;
   if (peek) { _peekAskThread = []; _peekAskThreadFor = peekSession; } else { _askThread = []; }
   const ansEl = document.getElementById(peek ? 'peek-ask-answer' : 'ask-answer');
   const metaEl = document.getElementById(peek ? 'peek-ask-meta' : 'ask-meta');
@@ -58667,6 +58747,12 @@ async function _askRun(peek) {
   if (!question) { if (qEl) qEl.focus(); return; }
   const days = +(document.getElementById(peek ? 'peek-ask-days' : 'ask-days')?.value || 14);
   const session = peek ? peekSession : null;
+  const genKey = peek ? 'peek' : 'global';
+  const gen = ++_askGen[genKey];
+  const askedThread = _askThreadFor(peek);
+  // Still the question on screen: same panel generation, same worker, same thread.
+  const current = () => gen === _askGen[genKey] && (!peek || peekSession === session) && askedThread === _askThreadFor(peek);
+  const dropStale = (why) => { console.info('[amux] ask_answer_dropped', { session, why }); };
   if (metaEl) metaEl.textContent = 'Asking' + (session ? ' about ' + session : '') + '\u2026';
   if (ansEl) ansEl.innerHTML = '';
   let r, d;
@@ -58683,14 +58769,16 @@ async function _askRun(peek) {
       // The thread goes with the question so a follow-up ("why?", "which of
       // those...") is interpreted against what was already asked.
       body: JSON.stringify({ question, session, days,
-        history: _askThreadFor(peek).slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
+        history: askedThread.slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
       _skipOutbox: true, signal: AbortSignal.timeout(300000),
     });
     d = await r.json();
   } catch (e) {
+    if (!current()) { dropStale('superseded'); return; }
     if (metaEl) metaEl.textContent = 'Could not reach the server: ' + String(e && e.message || e);
     return;
   }
+  if (!current()) { dropStale('superseded'); return; }
   // A locally queued 202 never left the browser, so it is not an answer.
   if (_isLocallyQueued(r)) {
     if (metaEl) metaEl.textContent = 'Not sent: this client queued the request offline. Reconnect and ask again.';
@@ -58723,8 +58811,7 @@ async function _askRun(peek) {
       : '')
     + (d.history_turns ? ' \u00b7 follow-up with ' + d.history_turns + ' earlier exchange' + (d.history_turns === 1 ? '' : 's') : '')
     + secs;
-  const thread = _askThreadFor(peek);
-  thread.push({ q: question, a: d.answer || '' });
+  askedThread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
   // One row of message buttons: what the answer cited, and the closest
   // matches by shared words, so a message the prose missed is still one tap away.
@@ -69151,7 +69238,7 @@ function _cvEnter() {
     _cvSelect(sel, true);
   });
 }
-function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; clearInterval(_cv.pollT); _cv.pollT = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
@@ -69173,6 +69260,7 @@ function _cvSelect(sel, auto) {
   if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
   _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
@@ -69459,7 +69547,12 @@ async function _cvPollOnce(full) {
   // Typing "@" before the member list arrived left the picker empty; offer
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
-  if (full) _cv.posts = d.posts || [];
+  // A full refresh of a conversation already on screen MERGES (below): it used
+  // to replace the list, dropping the older pages scrolled in and the posts
+  // still waiting on the server (2026-11-06).
+  const hadPosts = _cv.posts.length > 0;
+  if (full && !hadPosts) _cv.posts = d.posts || [];
+  if (full && hadMore && _cv.posts.length && _cv.posts[0].id < ((d.posts || [])[0] || {}).id) _cv.info.has_more = hadMore;
   // The first post someone else wrote after your read mark, captured before
   // this load marks the conversation read (_cvMarkRead below).
   if (full && _cv.restoreScroll) {
@@ -69467,7 +69560,7 @@ async function _cvPollOnce(full) {
     const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
     _cv.unreadFrom = first ? first.id : null;
   }
-  else if ((d.posts || []).length) {
+  if ((hadPosts || !full) && (d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
     for (const np of d.posts) byId.set(np.id, np);
@@ -69950,10 +70043,11 @@ async function _cvOnScroll(box) {
   if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
-  const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
+  const sel = _cv.sel, gen = _cv.gen, first = _cv.posts[0].id, h0 = box.scrollHeight;
   try {
     const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?before=' + first + '&limit=100')).json();
-    if (sel !== _cv.sel) return;
+    // The same conversation reopened (A, B, A) is a fresh list: same sel, new gen.
+    if (sel !== _cv.sel || gen !== _cv.gen) return;
     _cv.posts = (d.posts || []).concat(_cv.posts);
     _cv.info.has_more = d.has_more;
     Object.assign(_cvProfiles, d.profiles || {});

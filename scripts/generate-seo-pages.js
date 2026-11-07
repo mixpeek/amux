@@ -59,6 +59,7 @@ function autoSchema(page, category, canonical) {
 
 // The one site header, shared with every hand-written page (tests/site-header.test.mjs).
 const SITE_HEADER = fs.readFileSync(path.join(__dirname, 'site-header.html'), 'utf8').trim();
+const ASSET_V = fs.readFileSync(path.join(__dirname, 'site-asset-version.txt'), 'utf8').trim();
 
 function template({ title, description, keywords, canonical, content, breadcrumb, schema }) {
   const schemas = schema ? (Array.isArray(schema) ? schema : [schema]) : [];
@@ -84,7 +85,7 @@ function template({ title, description, keywords, canonical, content, breadcrumb
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <script src="/site.js"></script>
+  <script src="/site.js?v=${ASSET_V}"></script>
   ${schemaTag}
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -118,7 +119,7 @@ function template({ title, description, keywords, canonical, content, breadcrumb
     footer .sep { opacity:0.3; }
     @media (max-width:600px) { h1 { font-size:1.4rem; } main { padding:1.5rem 1rem 3rem; } }
   </style>
-  <link rel="stylesheet" href="/nav.css">
+  <link rel="stylesheet" href="/nav.css?v=${ASSET_V}">
 </head>
 <body>
   ${SITE_HEADER}

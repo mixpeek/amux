@@ -47,6 +47,23 @@ test('drag the corner grip up to make the message box taller; it sticks, double-
     await openWorker(page, request, name);
     await expect.poll(() => h(page)).toBeGreaterThan(before + 120);
 
+    // A box full of text still drags DOWN (Ethan, 2026-11-06: "i should be able
+    // to drag this down even if the text is full"). The hand-set height used to
+    // be only a floor, so the text held the box open; now the text scrolls.
+    await page.locator('#peek-cmd-input').fill(Array.from({ length: 80 }, (_, i) => 'line ' + i).join('\n'));
+    const full = await h(page);
+    const g = (await page.locator('#peek-composer-grip').boundingBox())!;
+    const gx = g.x + g.width / 2, gy = g.y + g.height / 2;
+    await page.mouse.move(gx, gy);
+    await page.mouse.down();
+    await page.mouse.move(gx, gy + 60, { steps: 5 });
+    await page.mouse.move(gx, gy + 120, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(() => h(page), { message: `full ${full}` }).toBeLessThan(full - 100);
+    const scrolls = await page.locator('#peek-cmd-input').evaluate(el => el.scrollHeight > el.clientHeight + 20);
+    expect(scrolls, 'the text scrolls inside the smaller box').toBe(true);
+    await page.locator('#peek-cmd-input').fill('');
+
     // Double-click resets to sizing by content.
     await page.locator('#peek-composer-grip').dblclick();
     await expect.poll(() => h(page)).toBeLessThan(before + 10);
