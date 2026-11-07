@@ -10309,7 +10309,8 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .cmdk-row { display: flex; align-items: center; gap: var(--space-2-5); padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); cursor: pointer; min-height: 44px; box-sizing: border-box; }
 .cmdk-row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .cmdk-kind { flex: 0 0 76px; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
-.cmdk-text { display: flex; flex-direction: column; min-width: 0; }
+.cmdk-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.cmdk-open { margin-left: auto; white-space: nowrap; }
 .cmdk-title { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-sub { color: var(--dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-empty { color: var(--dim); padding: var(--space-4) var(--space-3); }

@@ -74193,7 +74193,7 @@ function _drawRtAfterDiskReload(text, etag) {
 // the kind of thing, active work, where you are, and what you open often.
 // Archived and discarded things stay out until "Show archived" is on.
 const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
-  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0, open: {}, openToken: '' };
 const _CMDK_SHOW = 8;
 const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
@@ -74447,6 +74447,31 @@ function _cmdkCompute() {
   if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
 }
 
+// Which workers and tabs are already open, by place ("peek=<worker>",
+// "view=<tab>"): 'here' for the one on this page, 'elsewhere' for another tab
+// or pane of the Mac app, which says so when asked (owner, 2026-11-07: "for
+// each worker in the list if its already open it says it"). Choosing one goes
+// to it rather than opening it again (_cmdkRun).
+function _cmdkPlace(r) {
+  return r.kind === 'worker' ? 'peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? 'view=' + _viewHashName(r.id) : '';
+}
+function _cmdkAskOpen() {
+  const open = {};
+  if (peekSession && document.getElementById('peek-overlay')?.classList.contains('active')) open['peek=' + peekSession] = 'here';
+  else if (typeof activeView !== 'undefined' && activeView && activeView !== 'sessions') open['view=' + _viewHashName(activeView)] = 'here';
+  _cmdk.open = open;
+  const h = _nativePaneBridge();
+  if (!h) return;
+  _cmdk.openToken = Math.random().toString(36).slice(2, 10);
+  try { h.postMessage({ op: 'places', token: _cmdk.openToken }); } catch (e) { console.warn('[amux] palette could not ask which places are open', e); }
+}
+function _cmdkPlacesAck(token, places) {
+  if (token !== _cmdk.openToken || !Array.isArray(places)) return;
+  places.forEach(p => { if (typeof p === 'string' && !_cmdk.open[p]) _cmdk.open[p] = 'elsewhere'; });
+  if (typeof amuxTrack === 'function') amuxTrack('palette_open_places', { n: places.length, measured: true, n_considered: places.length });
+  if (document.getElementById('cmdk-overlay')?.classList.contains('active')) _cmdkRender();
+}
+
 function _cmdkRowHtml(r, i, toks, q) {
   const meta = r.kind === 'more' || r.kind === 'hidden';
   const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
@@ -74455,8 +74480,11 @@ function _cmdkRowHtml(r, i, toks, q) {
   const fz = r.match === 'fuzzy' ? q : '';
   const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
     : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  const open = _cmdk.open[_cmdkPlace(r)];
+  const badge = open ? '<span class="status-badge background cmdk-open" title="' + (open === 'here' ? 'Showing on this page' : 'Open in another tab or pane: choosing it goes there') + '">'
+    + (open === 'here' ? 'Open here' : 'Open') + '</span>' : '';
   return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
-    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span>' + badge + '</div>';
 }
 
 function _cmdkRender() {
@@ -74555,6 +74583,7 @@ function openCmdk() {
   const inp = document.getElementById('cmdk-input');
   inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
   _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
+  _cmdkAskOpen();
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
@@ -74596,7 +74625,7 @@ function _cmdkRun(i) {
   // and select something for which a tab is already open it goes to that
   // tab"). The app answers within a moment; with no answer (an older app) or
   // no such tab, it opens here as before.
-  const place = r.kind === 'worker' ? '#peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? '#view=' + _viewHashName(r.id) : '';
+  const place = _cmdkPlace(r) ? '#' + _cmdkPlace(r) : '';
   if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
   _cmdkOpen(r);
 }

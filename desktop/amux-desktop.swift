@@ -546,6 +546,15 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 webView.evaluateJavaScript("typeof _cmdkFocusAck === 'function' && _cmdkFocusAck('\(t)', \(found))", completionHandler: nil)
                 return
             }
+            // ⌘K asks which places the other tabs and panes show, to mark
+            // those rows Open (owner, 2026-11-07).
+            if (d?["op"] as? String) == "places", let token = d?["token"] as? String {
+                let places = app?.openPlaces(except: self) ?? []
+                let t = token.filter { $0.isLetter || $0.isNumber }
+                let json = (try? JSONSerialization.data(withJSONObject: places)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+                webView.evaluateJavaScript("typeof _cmdkPlacesAck === 'function' && _cmdkPlacesAck('\(t)', \(json))", completionHandler: nil)
+                return
+            }
             guard (d?["op"] as? String) == "split" else { return }
             // Only a page on this tab's own server; anything else splits the
             // page this tab is showing.
@@ -1773,6 +1782,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     static func placeKey(_ fragment: String) -> String {
         let f = fragment.hasPrefix("#") ? String(fragment.dropFirst()) : fragment
         return String(f.split(separator: "&").first ?? "")
+    }
+    /// The places ("peek=<worker>", "view=<tab>") every tab and pane other
+    /// than `asker` shows, once each.
+    func openPlaces(except asker: DashboardWindowController) -> [String] {
+        var seen = Set<String>()
+        return controllers.compactMap { c -> String? in
+            guard c !== asker else { return nil }
+            let k = AppDelegate.placeKey(c.webView.url?.fragment ?? "")
+            guard k.hasPrefix("peek=") || k.hasPrefix("view="), seen.insert(k).inserted else { return nil }
+            return k
+        }
     }
     /// Brings forward the tab or pane, other than `asker`, already showing the
     /// place `hash` names, selecting it in its pane and its window in its tab
