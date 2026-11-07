@@ -10937,6 +10937,8 @@ p.communicate(msg.encode())
   _land_rl_check() { # before the push: is the lease still ours?
     [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
     [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    # A test seam: hold here so a test can move the lease before this read.
+    case "${AMUX_LAND_TEST_PRE_PUSH_PAUSE_S:-}" in ''|*[!0-9]*) ;; *) sleep "$AMUX_LAND_TEST_PRE_PUSH_PAUSE_S" ;; esac
     if [ -e "$_LAND_RL_DIR/rl-lost" ]; then
       _land_rl_say "ERROR verdict=land_remote_lease_lost: the lease was lost while holding; nothing pushed"; return 7
     fi
@@ -10957,6 +10959,11 @@ p.communicate(msg.encode())
   }
   _land_rl_release() { # <remote> <branch>: stop the heartbeat, then delete the ref by CAS
     [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    # Finish the release whatever arrives next: `amux land --cancel` signals
+    # the group twice (the recorded pid, then any unrecorded land), and the
+    # second TERM ended this trap mid-release with the lease still held. The
+    # ignore is inherited by the git push below.
+    trap '' TERM INT HUP
     local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null)"
     # `|| true`: the CLI runs under set -e, and wait reports the killed
     # heartbeat as 143, which ended the EXIT trap before the release.
@@ -11474,11 +11481,6 @@ p.communicate(msg.encode())
   # with neither, and it read as a crash (2026-10-02 20:31Z).
   trap "_land_rl_release '$remote' '$branch'; [ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
   [ "$waited" -gt 0 ] && _land_log "acquired $branch after waiting ${waited}s"
-  # The other machine's land holds the remote lease: wait for it here, before
-  # the gate, so this gate is not overtaken by its push.
-  _LAND_RL_REMOTE="$remote"; _LAND_RL_BRANCH="$branch"
-  _land_rl_take "$remote" "$branch" "$lock" || return 7
-
   # LANDING WINDOW (Ethan, 2026-10-04 15:31 ET, harness efficiency): with
   # `git config amux.landMinIntervalS N`, a holder whose branch was pushed less
   # than N seconds ago keeps the lock until N has passed, so waiters that
@@ -11510,6 +11512,14 @@ p.communicate(msg.encode())
       date +%s > "$lock/since"
     fi
   fi
+
+  # The other machine's land holds the remote lease: wait for it here, after
+  # the landing window and before composing, so this gate is not overtaken by
+  # its push. After the window, not before: the fairness yield inside the take
+  # used up the window, and its batching with it (test-land-window.sh on main,
+  # 2026-11-06).
+  _LAND_RL_REMOTE="$remote"; _LAND_RL_BRANCH="$branch"
+  _land_rl_take "$remote" "$branch" "$lock" || return 7
 
   # _land_stack <tip>: replay queued waiters' commits onto <tip>. Sets
   # stack_tip and stack_in ("<ticket> <lane>" lines) in this shell. A waiter it

@@ -543,6 +543,12 @@ struct Keep {
     background_live: bool,
     /// The first-seen time of the permission prompt last reported.
     prompt_reported: f64,
+    /// The goal record of the error clear already told about. A cleared goal
+    /// is told ONCE per clear: the prompt used to repeat every interval, and a
+    /// lane idle on purpose answered each one with a model turn ("still
+    /// paused"; mixpeek-cicd-lag, 49 in 400 lines, 2026-11-06), while a reply
+    /// that ran any tool reset the two-strike stop.
+    cleared_told: f64,
 }
 
 /// Kept on disk, so a server restart does not hand every stuck goal a fresh
@@ -678,6 +684,10 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
     if k.condition != goal.condition {
         *k = Keep { condition: goal.condition.clone(), ..Default::default() };
     }
+    let cleared_by_error = goal.cleared.as_ref().is_some_and(|c| c.by_error);
+    if cleared_by_error && k.cleared_told > 0.0 && k.cleared_told == goal.ts {
+        return Decision::Skip("goal cleared by an error; told once for this clear");
+    }
     match limit {
         // A continue into an unexpired limit fails at once and only spends
         // the no-progress budget the reset will need.
@@ -709,7 +719,8 @@ fn decide_with(k: &mut Keep, goal: &Goal, res: &Resolved, records: &[Value], now
         return Decision::Exhausted;
     }
     let cond = bare_condition(&goal.condition).chars().take(400).collect::<String>();
-    let lead = if goal.cleared.as_ref().is_some_and(|c| c.by_error) {
+    let lead = if cleared_by_error {
+        k.cleared_told = goal.ts;
         format!("Your /goal was cleared by an error, not met (amux keeps it): \"{cond}\". Re-arm it with /goal if you want Claude Code's own check back.")
     } else if goal.met {
         format!("Claude Code's evaluator said your /goal is met, but your goal checker says not: \"{cond}\". The checker decides.")
@@ -1369,12 +1380,21 @@ mod tests {
             let v = goal_view(Some(g.clone()), || None, &no);
             assert_eq!((v["met"].clone(), v["state"].clone(), v["active"].clone()), (json!(false), json!("unknown"), json!(true)), "{v}");
             // The keeper continues it, quoting the goal without the `continue:` prefix.
-            match decide(&mut Keep::default(), &g, &r, &[], 1e9) {
+            let mut k = Keep::default();
+            match decide(&mut k, &g, &r, &[], 1e9) {
                 Decision::Send(t) => {
                     assert!(t.contains("cleared by an error") && t.contains("\"Every section 6"), "{t}");
                 }
                 d => panic!("{d:?}"),
             }
+            // Told ONCE per clear (2026-11-06: mixpeek-cicd-lag, idle on
+            // purpose, was told 49 times and paid a model turn for each).
+            let later = 1e9 + interval_s() * 5.0;
+            assert!(matches!(decide(&mut k, &g, &r, &[], later), Decision::Skip(w) if w.contains("told once")),
+                "the same clear is not told again");
+            // A new clear of the goal is a new event, told again.
+            let again = Goal { ts: g.ts + 3600.0, ..g.clone() };
+            assert!(matches!(decide(&mut k, &again, &r, &[], later + interval_s() * 2.0), Decision::Send(_)), "a new clear is told");
         }
         // `/goal clear`: a sentinel met with no error nearby.
         let g = latest_goal(&[sentinel("2026-10-15T17:06:53Z", true, "execute the plan")]).unwrap();

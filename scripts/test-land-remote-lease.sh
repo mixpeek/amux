@@ -25,6 +25,9 @@
 #  11. back-to-back lands on one machine yield to the other machine's waiter,
 #      so the two alternate (item 4)
 #  12. a timeout on the remote lease alerts (item 5)
+#  13. `amux land --cancel` (TERM to the land's process group, twice) and an
+#      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
+#      23:52:20Z: a cancelled land left it held for the TTL)
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
@@ -149,14 +152,11 @@ grep -q 'remote land lease' "$H/alert.log" 2>/dev/null && ok "a remote lease tim
 
 # 10
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
-commit a f ten
-git -C "$H/a" config amux.landMinIntervalS 6   # the landing window holds the land between taking the lease and pushing
-land a ten-pre >/dev/null 2>&1                    # a push just now, so the window applies to the next land
 commit a f ten2
-land a ten AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 & p10=$!
-for _ in $(seq 1 40); do grep -q 'landing window' "$H/ten.out" 2>/dev/null && break; sleep 0.25; done
-other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
-wait "$p10"; rc=$?; git -C "$H/a" config --unset amux.landMinIntervalS
+land a ten AMUX_LAND_REMOTE_LEASE_RENEW_S=1000 AMUX_LAND_TEST_PRE_PUSH_PAUSE_S=5 & p10=$!
+for _ in $(seq 1 60); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+sleep 1; other_lease vm-host:4242 $(( $(date +%s) + 600 )) >/dev/null
+wait "$p10"; rc=$?
 [ "$rc" != 0 ] && [ "$(main_has f)" != ten2 ] && grep -q 'verdict=land_remote_lease_not_ours' "$H/ten.out" \
   && ok "a lease taken over on the remote while the heartbeat stalls refuses the push" || bad "10: rc=$rc f=$(main_has f): $(grep -m1 'lease_' "$H/ten.out")"
 
@@ -179,6 +179,35 @@ git -C "$H/a" fetch -q origin; order="$(git -C "$H/a" log --format=%s origin/mai
 case "$order" in "h=m1-second g=m2 f=m1-first "*) ok "back-to-back lands on one machine yield: the other machine's waiter lands in between" ;;
   *) bad "11: order on main (newest first): $order" ;; esac
 grep -q 'verdict=land_remote_lease_yield' "$H/m1-second.out" && ok "the yield is logged" || bad "11: no yield line"
+
+# 13
+# cancel: `amux land --cancel` on a detached land. INT: a land started the way a
+# terminal starts one (its own process group, SIGINT at its default, which a
+# background job in a non-interactive shell does not have), then INT to the group.
+for sig in cancel INT; do
+  git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+  commit a f "sig-$sig"; echo 30 > "$H/gate-s"; rm -f "$H/lease-during-gate"
+  if [ "$sig" = cancel ]; then
+    (cd "$H/a" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER="sig-$sig" AMUX_LAND_REMOTE_LEASE_POLL_S=1 bash "$AM" land --detach --no-batch >/dev/null 2>&1)
+  else
+    (cd "$H/a" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER="sig-$sig" AMUX_LAND_REMOTE_LEASE_POLL_S=1 python3 -c '
+import os, signal, subprocess, sys
+def fg(): os.setsid(); signal.signal(signal.SIGINT, signal.SIG_DFL)
+p = subprocess.Popen(["bash", sys.argv[1], "land", "--no-batch"], preexec_fn=fg, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+open(sys.argv[2], "w").write(str(p.pid))' "$AM" "$H/int.pgid" &)
+  fi
+  for _ in $(seq 1 80); do [ -s "$H/lease-during-gate" ] && break; sleep 0.25; done   # inside the gate
+  if [ "$sig" = cancel ]; then
+    (cd "$H/a" && HOME="$H" AMUX_WORKER="sig-$sig" bash "$AM" land --cancel >/dev/null 2>&1)
+  else
+    kill -INT -- "-$(cat "$H/int.pgid")" 2>/dev/null
+  fi
+  for _ in $(seq 1 40); do [ -z "$(lease_now)" ] && break; sleep 0.25; done
+  echo 0 > "$H/gate-s"
+  [ -z "$(lease_now)" ] && grep -q "sig-$sig verdict=land_remote_lease_released" "$L" \
+    && ok "a land stopped by $sig releases the remote lease" || bad "13 $sig: lease $(lease_now): $(grep "sig-$sig" "$L" | tail -2)"
+done
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
 
 # 7
 commit a f off
