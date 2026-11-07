@@ -10959,6 +10959,11 @@ p.communicate(msg.encode())
   }
   _land_rl_release() { # <remote> <branch>: stop the heartbeat, then delete the ref by CAS
     [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    # Finish the release whatever arrives next: `amux land --cancel` signals
+    # the group twice (the recorded pid, then any unrecorded land), and the
+    # second TERM ended this trap mid-release with the lease still held. The
+    # ignore is inherited by the git push below.
+    trap '' TERM INT HUP
     local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null)"
     # `|| true`: the CLI runs under set -e, and wait reports the killed
     # heartbeat as 143, which ended the EXIT trap before the release.
