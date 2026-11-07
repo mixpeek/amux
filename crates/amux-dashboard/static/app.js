@@ -53027,19 +53027,42 @@ const _idb = (() => {
       if (isHidden()) flushCache(true); else flushCache();
     });
   }
+  const resetDb = (reason) => {
+    const had = !!db;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return had;
+  };
+  // A CACHE READ HAS A DEADLINE (Ethan, 2026-11-07: a worker opened to an empty
+  // terminal, "this keeps happening"). A WebKit storage read can hang for hours.
+  // The terminal's failed-fetch path awaited its saved copy, so its request
+  // never settled, and every later poll for that worker reused the stuck
+  // request: no fetch reached the server again until the app was reloaded. A
+  // rebuildable cache key reads as absent after 3s and the connection is reset
+  // (kind=idb-reopened reason=cache_read_timeout). Pending work (drafts,
+  // offline_queue, dictation) keeps waiting: reading it as empty could let a
+  // caller write the empty value back over it.
+  const _CACHE_READ_MS = 3000;
+  const readKv = key => withDb(d => new Promise((resolve) => {
+    const tx = d.transaction('kv', 'readonly');
+    const req = tx.objectStore('kv').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  })).catch(() => null);
+  const readCache = key => {
+    let timer;
+    return Promise.race([readKv(key), new Promise(resolve => {
+      timer = setTimeout(() => { resetDb('cache_read_timeout'); resolve(null); }, _CACHE_READ_MS);
+    })]).finally(() => clearTimeout(timer));
+  };
   return {
     // Drop the connection so the next call opens a fresh one. A connection
     // whose storage process went away can hang every request without an
     // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
     // in a day, every outbox pass after the first one on the same handle).
-    reset: (reason) => {
-      const had = !!db;
-      try { if (db) db.close(); } catch (_) {}
-      db = null;
-      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
-        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
-      return had;
-    },
+    reset: resetDb,
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
       : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
@@ -53083,12 +53106,8 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
-      const tx = d.transaction('kv', 'readonly');
-      const req = tx.objectStore('kv').get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    })).catch(() => null),
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key))
+      : _CACHE_KEY.test(String(key)) ? readCache(key) : readKv(key),
     del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
