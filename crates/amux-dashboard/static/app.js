@@ -19607,7 +19607,23 @@ function _detectTextLinks(plain) {
     // The host after the scheme. `slice(8)` assumed `https://` and cut the
     // first letter off an http host, so http://localhost:3077 was never a
     // link (owner, 2026-10-17: the port proxy links in the peek were dead).
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
+    if (!/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) continue;
+    // A HARD WRAP IS NOT THE END OF A URL (Ethan, 2026-11-07: "this isnt working
+    // this link"). A worker wrapped .../#view=apps&open=<32 hex> after 18 of the
+    // id's characters, the link stopped at the newline, and the Apps tab got an
+    // id it could not match. A URL that runs to the end of a long line takes the
+    // next line's first token when that token reads as URL text (a digit or
+    // / ? = & # % _ in it); a prose word or a "- " bullet ends it as before.
+    let val = v, end = m.index + v.length, open = v === m[0];   // trailing punctuation closed it
+    while (open && plain[end] === '\n' && end - (plain.lastIndexOf('\n', end - 1) + 1) >= 40) {
+      const tail = /^[ \t]*([^\s<>\]\)'"`,;\\$-]+)(?=\s|$)/.exec(plain.slice(end + 1));
+      if (!tail || tail[1].length < 3 || !/[0-9\/?=&#%_]/.test(tail[1])) break;
+      const t2 = trim(tail[1]);
+      val += t2;
+      end += 1 + tail[0].length - tail[1].length + t2.length;
+      open = t2 === tail[1];
+    }
+    add(m.index, end, 'url', val);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
