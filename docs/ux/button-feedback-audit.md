@@ -892,7 +892,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Open | `openMdaiNode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | change | `openMemberScope` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Needs your input: tap to triage | `openNeedsInput` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| index.html | div | `openOutcome` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | div | `openOutcome` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${esc(s.name)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${esc(session)} | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1119,6 +1119,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `` | onclick |
 | app.js | + | `` | onclick |
 | app.js | + (it.editable ? | `` | onclick |
+| app.js | Attach a recording or files | `` | onclick |
 | app.js | Cancel | `` | onclick |
 | app.js | Choose a folder | `` | onclick |
 | app.js | Choose files | `` | onclick |
@@ -1408,6 +1409,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ni-older-toggle | `_niToggleOlder` | onclick |
 | index.html | Clear | `_notifClearAll` | onclick |
 | index.html | Toggle in-app banner pop-ups | `_notifToggleBanners` | onclick |
+| app.js | Remove  | `_outcomeRenderFiles` | onclick |
 | app.js | ${parts.join( · )} | `_ownerReqShow` | onclick |
 | index.html | Ask | `_peekAskToggle` | onclick |
 | index.html | Ask about these messages | `_peekAskToggle` | onclick |

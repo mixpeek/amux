@@ -3642,6 +3642,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomeAttach": {
+      "kind": "command._outcomeAttach",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePlan": {
+      "kind": "command._outcomePlan",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
       "feedback_required": true,
