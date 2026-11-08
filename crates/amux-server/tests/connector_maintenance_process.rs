@@ -55,7 +55,7 @@ async fn connector_maintenance_child() {
             http: ReqwestTransport::new(),
         }),
     });
-    let _job = amux_server::runtime_jobs::connector_maintenance::spawn_with(ctx, 1);
+    let _job = amux_server::runtime_jobs::connector_maintenance::spawn_with(ctx, 1, None);
     std::future::pending::<()>().await;
 }
 #[derive(Default)]

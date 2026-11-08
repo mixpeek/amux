@@ -3288,9 +3288,17 @@ pub(super) async fn disconnect_google(ctx: &ConnectorsCtx, account: &str) -> Res
     Json(json!({"ok": true, "account": account, "disconnected": true, "provider_revoked": revoked, "removed": removed})).into_response()
 }
 
+/// Which grant generation is current. Bumped by every grant change (connect,
+/// reconnect, disconnect, a refresh that rotated a token), so a cache of
+/// grant health from an older generation is stale whatever its age.
+pub(crate) fn grant_epoch() -> u64 {
+    ROLLUP_GEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Drop the cached rollup for `home` and stop any rollup already in flight
-/// from caching what it computed before this change.
-fn invalidate_rollup(home: &std::path::Path) {
+/// from caching what it computed before this change. Also voids every cached
+/// Gmail health verdict, which carries the epoch it was read in.
+pub(crate) fn invalidate_rollup(home: &std::path::Path) {
     ROLLUP_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     ROLLUP_CACHE.lock().expect("rollup cache").remove(home);
 }
@@ -5035,6 +5043,78 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(v["access_token"], json!("PLACEHOLDER_NEW"));
+    }
+
+    /// A grant that cannot refresh reaches the owner (2026-11-08: two Gmail
+    /// grants were dead for three weeks and only a board card said so): once
+    /// with a one-tap reconnect link, again after a day while it stays broken,
+    /// never on a stale report about an account that works, and again at once
+    /// when a healed account breaks a second time.
+    #[tokio::test]
+    async fn a_grant_that_cannot_refresh_alerts_the_owner_with_a_reconnect_link() {
+        use crate::api::alerts::AlertChannels;
+        type Sent = Arc<Mutex<Vec<(String, String, String)>>>;
+        struct Mail(Sent);
+        #[async_trait::async_trait]
+        impl AlertChannels for Mail {
+            async fn push(&self, _: &AppState, _: &str, _: &str) -> Result<(), String> { Err("mock".into()) }
+            async fn sms(&self, _: &str, _: &str) -> (bool, String) { panic!("a reauth alert never pages SMS") }
+            async fn email(&self, to: &str, subject: &str, body: &str) -> (bool, String) {
+                self.0.lock().unwrap().push((to.into(), subject.into(), body.into()));
+                (true, "mock".into())
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("server.env"),
+            "AMUX_OWNER_EMAIL=owner@x.io\nAMUX_PUBLIC_URL=https://mac.example.ts.net:8824\n").unwrap();
+        let gm = home.path().join("gmail-tokens");
+        std::fs::create_dir_all(&gm).unwrap();
+        std::fs::write(gm.join("broken@x.io.json"), json!({ "token": "PLACEHOLDER_DEAD", "refresh_token": "PLACEHOLDER_RT",
+            "token_uri": "https://oauth2.googleapis.com/token", "client_id": "CID", "client_secret": "CSEC" }).to_string()).unwrap();
+        let dead = || vec![("GET", "/profile", 401, json!({ "error": "unauthorized" })),
+            ("FORM", "oauth2.googleapis.com/token", 400, json!({ "error": "invalid_grant" }))];
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState {
+            store: Arc::new(crate::db::Store::open(&dir.path().join("c.db")).unwrap()),
+            started: std::time::Instant::now(), build_hash: "test".into(), auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let mail = Arc::new(Mutex::new(Vec::new()));
+        let channels = Mail(mail.clone());
+        let report = json!({"needs_reauth": [{"account": "broken@x.io",
+            "reconnect": "POST /api/connectors/google/auth?account=broken@x.io → open authorize_url, approve once"}]});
+        let run = |script: Vec<(&'static str, &'static str, u16, Value)>, now: f64| {
+            let ctx = ConnectorsCtx { home: home.path().to_path_buf(), http: MockHttp::new(script) };
+            let (state, channels, report) = (&state, &channels, &report);
+            async move { crate::runtime_jobs::connector_maintenance::reauth_alerts(channels, state, &ctx, report, now).await }
+        };
+        let t0 = now_ts();
+        let sent = |m: &Sent| m.lock().unwrap().len();
+
+        let out = run(dead(), t0).await;
+        assert_eq!(sent(&mail), 1, "{out}");
+        let (to, subject, body) = mail.lock().unwrap()[0].clone();
+        assert_eq!(to, "owner@x.io");
+        assert!(subject.contains("broken@x.io"), "{subject}");
+        assert!(body.contains("https://mac.example.ts.net:8824/#reconnect=google:broken@x.io"), "{body}");
+
+        // Within a day: not again.
+        run(dead(), t0 + 3600.0).await;
+        assert_eq!(sent(&mail), 1);
+        // A day later, still broken: a reminder that says how long.
+        run(dead(), t0 + 90_000.0).await;
+        assert_eq!(sent(&mail), 2);
+        assert!(mail.lock().unwrap()[1].2.contains("broken for 25 hours"), "{:?}", mail.lock().unwrap()[1]);
+
+        // The report still names it, but the account works now (a cached
+        // verdict from before a reconnect): no alert, and the record clears.
+        let out = run(vec![("GET", "/profile", 200, json!({ "emailAddress": "broken@x.io" }))], t0 + 90_100.0).await;
+        assert_eq!(sent(&mail), 2, "{out}");
+        assert_eq!(out["healed"], json!(["broken@x.io"]), "{out}");
+        // Broken again: told at once, not a day later.
+        run(dead(), t0 + 90_200.0).await;
+        assert_eq!(sent(&mail), 3);
+        assert!(!mail.lock().unwrap()[2].2.contains("broken for"), "a new break is not a reminder");
     }
 
     #[tokio::test]

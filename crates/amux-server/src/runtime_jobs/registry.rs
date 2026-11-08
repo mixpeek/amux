@@ -860,8 +860,11 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::CONNECTOR_MAINTENANCE,
         name: "Connector maintenance",
-        purpose: "Refreshes renewable saved grants before expiry and probes configured connections without changing owner definitions, account pins or scopes. Independent of autofix/board policy; provider revocation still requires consent.",
-        env: &[EnvControl { var: "AMUX_CONNECTOR_MAINTENANCE_SECS", effect: "pass interval in seconds (default 300, 0 disables)", off: Some("0") }],
+        purpose: "Refreshes renewable saved grants before expiry and probes configured connections without changing owner definitions, account pins or scopes. Independent of autofix/board policy; provider revocation still requires consent. A grant that can no longer be refreshed (confirmed by an uncached check) alerts the owner on web push and the owner inbox, never SMS, with a reconnect link: once when it breaks, then daily while it stays broken.",
+        env: &[
+            EnvControl { var: "AMUX_CONNECTOR_MAINTENANCE_SECS", effect: "pass interval in seconds (default 300, 0 disables)", off: Some("0") },
+            EnvControl { var: "AMUX_CONNECTOR_REAUTH_ALERT", effect: "0 stops the owner alert for grants that cannot refresh (re-read every pass)", off: None },
+        ],
         pref: None,
         detail: Some("/api/connectors/maintenance"),
     },

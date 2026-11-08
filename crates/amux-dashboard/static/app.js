@@ -36662,7 +36662,10 @@ async function _connReconnect(family, account) {
       return;
     }
     if (d && d.authorize_url) {
-      window.open(d.authorize_url, '_blank');
+      // A popup opened after an await is often blocked (a phone, the Mac
+      // app); then go there in this tab, since the grant returns to amux.
+      const w = window.open(d.authorize_url, '_blank');
+      if (!w) { location.assign(d.authorize_url); return; }
       showToast('Approve in the opened tab — one approval repairs every worker using ' + account);
     } else if (!r.ok || (d && d.queued)) {
       showToast('Could not reach the server (HTTP ' + r.status + '). Try again in a moment.');
@@ -57800,6 +57803,33 @@ async function _handleDeeplink(hash) {
   if ((!hash || hash.indexOf('=') < 0) && location.search) {
     const m = location.search.match(/[?&]view=([^&]+)/);
     if (m) hash = '#view=' + m[1];
+  }
+  // #reconnect=<family>:<account>: the link in a connector alert (Ethan,
+  // 2026-11-08: a grant that cannot refresh reaches the owner with one tap to
+  // re-consent; runtime_jobs/connector_maintenance.rs builds it). It opens
+  // Connectors and asks once, so a stray link never starts a grant unasked.
+  if (hash && hash.startsWith('#reconnect=')) {
+    const raw = hash.slice(11);
+    const at = raw.indexOf(':');
+    let family = '', account = '';
+    try { family = decodeURIComponent(raw.slice(0, at)); account = decodeURIComponent(raw.slice(at + 1)); } catch (_) { family = ''; }
+    if (at <= 0 || !/^[a-z0-9_-]+$/.test(family) || !account) {
+      amuxTrack('deeplink_reconnect', {verdict: 'malformed', measured: true, n_considered: 1});
+      return;
+    }
+    const tryReconnect = async (attempt) => {
+      if (!(document.getElementById('grid-view') && document.getElementById('tab-connectors'))) {
+        if (attempt < 25) setTimeout(() => tryReconnect(attempt + 1), 200);
+        return;
+      }
+      try { switchView('connectors'); } catch (e) { console.warn('reconnect deeplink: switchView', e); }
+      amuxTrack('deeplink_reconnect', {verdict: 'offered', family, measured: true, n_considered: 1});
+      if (await showConfirm('Reconnect ' + account + '? It can no longer be refreshed, so workers using it are failing. Google asks you to approve once.', 'Reconnect')) {
+        _connReconnect(family, account);
+      }
+    };
+    tryReconnect(0);
+    return;
   }
   if (hash && hash.startsWith('#view=')) {
     // The view is up to the first '&': the rest are that view's own parameters

@@ -786,7 +786,7 @@ async fn async_main() {
     // so "was that badge accurate?" is answerable after the screenshot arrives.
     drop(runtime_jobs::status_history::spawn(state.clone()));
     drop(runtime_jobs::browser_login_sync::spawn());
-    drop(runtime_jobs::connector_maintenance::spawn());
+    drop(runtime_jobs::connector_maintenance::spawn(state.clone()));
     drop(runtime_jobs::social_metrics::spawn(state.clone()));
     drop(runtime_jobs::social_publish::spawn(state.clone()));
     drop(runtime_jobs::episodes::spawn(state.clone()));

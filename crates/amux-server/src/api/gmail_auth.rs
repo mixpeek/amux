@@ -157,7 +157,8 @@ const HEALTH_TTL_S: u64 = 300;
 pub struct GmailAuthCtx {
     pub http: Arc<dyn HttpTransport>,
     pub home: PathBuf,
-    health_cache: Mutex<HashMap<String, (Instant, String)>>,
+    /// (when, verdict, grant epoch it was read in): see `account_health`.
+    health_cache: Mutex<HashMap<String, (Instant, String, u64)>>,
 }
 
 impl GmailAuthCtx {
@@ -792,10 +793,13 @@ pub async fn callback(
     // answering needs_reauth for up to HEALTH_TTL_S after a successful
     // reconnect, and claude-rotate skipped the mailbox as dead (2026-10-17).
     let dropped = ctx.health_cache.lock().expect("health cache").remove(&account);
+    // The connectors rollup (and the maintenance receipt built from it) read
+    // the same grant; without this it kept the old verdict for up to 300s.
+    crate::api::connectors::invalidate_rollup(&ctx.home);
     tracing::info!(
         account,
         verdict = "gmail_health_cache_cleared",
-        stale = dropped.as_ref().map(|(_, s)| s.as_str()).unwrap_or("none"),
+        stale = dropped.as_ref().map(|(_, s, _)| s.as_str()).unwrap_or("none"),
         measured = true,
         n_considered = 1,
         "a reconnect replaced the token; the next health read probes it"
@@ -885,9 +889,15 @@ pub async fn accounts(Extension(ctx): Extension<Arc<GmailAuthCtx>>) -> Response 
 /// from a REAL authenticated round trip (getProfile), cached 300s. A token
 /// file that exists but cannot be exercised is exactly the disagreement
 /// this field exists to expose.
+///
+/// A verdict read before the last grant change is stale whatever its age
+/// (2026-11-08: after a re-consent through the Connectors flow this kept
+/// answering needs_reauth for up to 300s, while the inbox already worked,
+/// because only the Gmail flow's own callback cleared this cache).
 async fn account_health(ctx: &GmailAuthCtx, account: &str) -> String {
-    if let Some((at, state)) = ctx.health_cache.lock().expect("health cache").get(account) {
-        if at.elapsed().as_secs() < HEALTH_TTL_S {
+    let epoch = crate::api::connectors::grant_epoch();
+    if let Some((at, state, seen)) = ctx.health_cache.lock().expect("health cache").get(account) {
+        if at.elapsed().as_secs() < HEALTH_TTL_S && *seen == epoch {
             return state.clone();
         }
     }
@@ -895,7 +905,7 @@ async fn account_health(ctx: &GmailAuthCtx, account: &str) -> String {
     ctx.health_cache
         .lock()
         .expect("health cache")
-        .insert(account.to_string(), (Instant::now(), state.clone()));
+        .insert(account.to_string(), (Instant::now(), state.clone(), epoch));
     state
 }
 
@@ -1051,6 +1061,7 @@ pub async fn delete_account(
         .lock()
         .expect("health cache")
         .remove(&account);
+    crate::api::connectors::invalidate_rollup(&ctx.home);
     Json(json!({ "ok": true })).into_response()
 }
 
