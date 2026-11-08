@@ -217,6 +217,25 @@ const stale = await p.evaluate(() => { localStorage.setItem('amux-ab', JSON.stri
 await p.reload();
 ok(await p.evaluate(() => !('oldtest' in JSON.parse(localStorage.getItem('amux-ab')))), 'ended tests are dropped from storage');
 
+// Featured video on /demos/: no YouTube request until the visitor presses play.
+for (const mobile of [false, true]) {
+  p = await page({ mobile });
+  const yt = []; p.on('request', r => { if (/youtube|ytimg/.test(r.url())) yt.push(r.url()); });
+  await p.route(/youtube/, r => r.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' }));
+  await p.goto(B + '/demos/');
+  await p.waitForLoadState('load');
+  ok(yt.length === 0, `demos video makes no YouTube request before play (${mobile ? 'phone' : 'desktop'})`);
+  ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'demos page has no sideways overflow');
+  await p.focus('#yt-facade');
+  await p.keyboard.press('Enter');
+  await p.waitForSelector('#yt-facade iframe');
+  ok(/youtube-nocookie\.com\/embed\/kn7Cw1bMBRQ\?autoplay=1/.test(await p.getAttribute('#yt-facade iframe', 'src')), 'Enter on the poster loads the nocookie player');
+  cta = await evs(p, 'cta_click');
+  ok(cta.filter(e => e.goal === 'video' && e.spot === 'demos-featured-video').length === 1, 'playing the video records one cta_click, goal video');
+  ok(p.errs.length === 0, 'no JS errors on /demos/');
+  await p.context().close();
+}
+
 await b.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

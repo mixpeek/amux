@@ -9,7 +9,7 @@ see which pages and channels convert and which do not.
 
 Events it reads (emitted by site/site.js and site/start/):
   $pageview                         visitors, landing page, referrer
-  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios | mac | concierge | concierge_page | solutions (header menu)
+  cta_click {goal, spot, href}      goal = github | cloud | pricing | walkthrough | ios | mac | concierge | concierge_page | solutions (header menu) | video (featured video play)
   install_copy                      copied the install command
   signup_form_start, signup_submit, checkout_redirect, signup_paid, server_ready
 

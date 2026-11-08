@@ -12,6 +12,19 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261106">
   <script src="/site.js?v=20261106"></script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"amux: a full tour of a setup running up to 24 Claude Code agents","description":"A 23-minute tour from the person who built amux: workers, boards with gates, files, multiplayer, connectors, the amux browser and the phone app.","thumbnailUrl":"https://amux.io/demos/video/founder-setup.jpg","uploadDate":"2026-10-15T05:16:27-07:00","duration":"PT23M37S","embedUrl":"https://www.youtube.com/embed/kn7Cw1bMBRQ","url":"https://amux.io/demos/","publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
+  <style>
+    .yt-feature{margin:0 0 1.75rem}
+    .yt-feature h2{margin:0 0 .3rem;font-size:1.25rem}
+    .yt-feature p{margin:0 0 .85rem;color:var(--text-secondary);font-size:.95rem}
+    .yt-frame{position:relative;display:block;aspect-ratio:16/9;width:100%;overflow:hidden;border:1px solid var(--border);border-radius:10px;background:#000}
+    .yt-frame img,.yt-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block;object-fit:cover}
+    .yt-play{position:absolute;top:50%;left:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;background:rgba(0,0,0,.72);color:#fff;display:flex;align-items:center;justify-content:center;transition:transform .15s,background .15s}
+    .yt-play svg{width:30px;height:30px;margin-left:4px}
+    .yt-frame:hover .yt-play,.yt-frame:focus-visible .yt-play{transform:scale(1.08);background:#c81e1e}
+    .yt-frame:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .yt-link{display:inline-block;margin-top:.55rem;font-size:.85rem}
+  </style>
 </head>
 <body>
 <header class="site-header">
@@ -53,6 +66,15 @@
   <a href="/start/?source=demos" style="display:inline-block;margin:0 0.5rem 0.4rem 0;background:#047857;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">Start amux Cloud</a>
   <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" onclick="typeof posthog!=='undefined'&&posthog.capture('exp038_demos_index_topofpage_cta_click')" style="display:inline-block;background:#047857;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">View amux on GitHub ★</a>
 </div>
+<section class="yt-feature" data-cta-loc="demos-featured-video">
+  <h2>See the whole setup</h2>
+  <p>A 23-minute tour from the person who built amux: workers, boards, files, multiplayer, connectors, the browser and the phone app.</p>
+  <a class="yt-frame" id="yt-facade" href="https://www.youtube.com/watch?v=kn7Cw1bMBRQ" target="_blank" rel="noopener" aria-label="Play the 23-minute amux tour">
+    <img src="/demos/video/founder-setup.jpg" alt="The person who built amux beside a list: workers, board, files, multiplayer, mobile" width="1280" height="720" loading="lazy">
+    <span class="yt-play" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
+  </a>
+  <a class="yt-link" href="https://www.youtube.com/watch?v=kn7Cw1bMBRQ" target="_blank" rel="noopener">Watch on YouTube</a>
+</section>
 <div class="filters">
     <button class="filter-btn active" onclick="filterDemos('All')">All</button>
     <button class="filter-btn" onclick="filterDemos('Sessions')">Sessions</button>
@@ -393,6 +415,22 @@
 <div class="back"><a href="/">← amux home</a></div>
 </div>
 <script>
+document.getElementById('yt-facade').addEventListener('click', function (ev) {
+  if (ev.metaKey || ev.ctrlKey || ev.shiftKey) return;
+  ev.preventDefault();
+  var f = document.createElement('iframe');
+  f.src = 'https://www.youtube-nocookie.com/embed/kn7Cw1bMBRQ?autoplay=1&rel=0';
+  f.title = 'The 23-minute amux tour';
+  f.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+  f.allowFullscreen = true;
+  var d = document.createElement('div');
+  d.className = 'yt-frame';
+  d.id = 'yt-facade';
+  d.appendChild(f);
+  this.replaceWith(d);
+  f.focus();
+  if (window.posthog) posthog.capture('cta_click', { goal: 'video', spot: 'demos-featured-video', href: 'youtube:kn7Cw1bMBRQ', label: 'Play the amux tour', plan: '' });
+});
 function filterDemos(playlist) {
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.textContent === playlist));
   document.querySelectorAll('.demo-card').forEach(c => {
