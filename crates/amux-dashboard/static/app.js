@@ -41834,7 +41834,7 @@ function switchView(view) {
     ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
-    ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'],
+    ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -41878,6 +41878,7 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'connectors') _connectorsTabLoad();
+  if (view === 'photos') _photosEnter(); else if (typeof _photosLeave === 'function') _photosLeave();
   if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
   else if (typeof _connOpenId !== 'undefined' && _connOpenId) _connClose();
   if (view !== 'files') {
@@ -63200,6 +63201,39 @@ function _pagesHostReady() {
     document.head.appendChild(s);
   });
 }
+// The Photos tab (Ethan, 2026-11-08) lives in photos.js and photos.css,
+// loaded the first time the tab opens so the rest of the dashboard does not
+// carry it. window.AmuxPhotos.mount(el) renders it into #photos-view.
+let _photosLoading = null;
+function _photosAssets() {
+  if (window.AmuxPhotos) return Promise.resolve();
+  if (_photosLoading) return _photosLoading;
+  // Both files before the first paint: the grid sizes itself from its
+  // scroll box, and without the stylesheet that box has no height, so every
+  // one of 10,000 rows read as on screen and was drawn.
+  const load = (el, what) => new Promise((resolve, reject) => {
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(what + ' did not load'));
+    document.head.appendChild(el);
+  });
+  const css = document.createElement('link');
+  css.rel = 'stylesheet'; css.href = '/photos.css?v=' + APP_VER;
+  const js = document.createElement('script');
+  js.src = '/photos.js?v=' + APP_VER;
+  _photosLoading = Promise.all([load(css, 'photos.css'), load(js, 'photos.js')])
+    .catch((e) => { _photosLoading = null; throw e; });
+  return _photosLoading;
+}
+async function _photosEnter() {
+  const el = document.getElementById('photos-view');
+  if (!el) return;
+  try { await _photosAssets(); window.AmuxPhotos.mount(el); }
+  catch (e) {
+    el.innerHTML = '<div class="ph-fatal">Photos could not load. <button class="btn" onclick="_photosEnter()">Try again</button></div>';
+    console.warn('photos:', e);
+  }
+}
+function _photosLeave() { if (window.AmuxPhotos) window.AmuxPhotos.leave(); }
 async function _pagesEnter() {
   const h = window._viewParams || location.hash;
   window._viewParams = null;

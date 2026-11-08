@@ -3339,6 +3339,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/photos/mixpeek",
+        methods: &["GET", "POST", "DELETE"],
+    },
+    RouteEntry {
         path: "/api/connectors/{id}/credentials",
         methods: &["POST"],
     },

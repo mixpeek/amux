@@ -26,6 +26,7 @@ pub mod email;
 pub(crate) mod oauth_store;
 pub(crate) mod secure_store;
 pub mod gcal_sync;
+pub mod mixpeek;
 
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;

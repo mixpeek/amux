@@ -1036,6 +1036,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | tab-mdai | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-messages | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-metrics | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | tab-photos | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-record | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-scheduler | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-scratchpad | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1423,6 +1424,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | + | `_peekToggleInherited` | onclick |
 | index.html | peek-plan-hdr | `_peekTogglePlan` | onclick |
 | app.js | + | `_peekToggleTool` | onclick |
+| app.js | Try again | `_photosEnter` | onclick |
 | app.js | ov.querySelector('.present-close') | `_presentClose` | addEventListener |
 | app.js | ov | `_presentGo` | addEventListener |
 | app.js | Delete | `_raDelete` | onclick |

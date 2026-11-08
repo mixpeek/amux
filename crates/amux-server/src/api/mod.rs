@@ -116,6 +116,7 @@ pub mod orchestrations;
 pub mod org;
 pub(crate) mod pane_prompts;
 pub mod pages;
+pub mod photos;
 pub mod palette;
 pub mod pinned;
 pub mod planning;
@@ -327,6 +328,8 @@ pub fn router_with_connector_transport(
         // fleet substrate (env files + tmux + shared DB), api/session_verbs.rs.
         // Was PROXIED_FAMILIES' SessionVerbs row; the rust-worker 501 pointer
         // guard moved into the module's dispatch.
+        // The Photos tab's BYO Mixpeek connection (api/photos.rs).
+        .merge(photos::routes())
         .merge(palette::routes())
         .merge(session_verbs::routes())
         .merge(typing::routes())
