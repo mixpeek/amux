@@ -41,3 +41,24 @@ test('names that merely contain an old name are left alone', () => {
   assert.equal(r.changed, false);
   assert.deepEqual(r.value, { session: 'workflows-2', text: 'see workflows', url: '/api/sessions/workflows-2/send' });
 });
+
+test('a rename learned during a sync is read again, not dropped', async () => {
+  const lists = [{}, { workflows: 'wexus' }];
+  const applied = [];
+  const timers = [];
+  const sync = new Function('fetch', '_applyWorkerRenames', 'setTimeout', 'console',
+    'let _workerRenamesInFlight = null;\nlet _workerRenamesAgain = false;\n' + slice('_syncWorkerRenames') + '\nreturn _syncWorkerRenames;')(
+    async () => ({ ok: true, json: async () => ({ renames: lists.shift() }) }),
+    async (m) => { applied.push(m); return 0; },
+    (fn) => timers.push(fn),
+    { warn() {} });
+  const first = sync();
+  sync();   // the rename is learned while the load-time sync is in flight
+  await first;
+  assert.deepEqual(applied, [{}], 'the first sync read the list from before the rename');
+  timers.shift()();   // the hold ends
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(applied, [{}, { workflows: 'wexus' }], 'a second read picks up the rename');
+  timers.shift()();
+  assert.equal(timers.length, 0, 'and it stops there');
+});

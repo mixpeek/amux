@@ -327,15 +327,25 @@ async function _applyWorkerRenames(map) {
   return rewritten;
 }
 let _workerRenamesInFlight = null;
+let _workerRenamesAgain = false;
 function _syncWorkerRenames() {
-  if (_workerRenamesInFlight) return _workerRenamesInFlight;
+  // A request during a sync (or its 2s hold) may follow a rename that sync's
+  // answer predates: the load-time sync read the list, a rename landed, and
+  // the next "renamed" answer got the stale result, so a queued send kept the
+  // old name. Ask once more after the hold rather than dropping it.
+  if (_workerRenamesInFlight) { _workerRenamesAgain = true; return _workerRenamesInFlight; }
   _workerRenamesInFlight = (async () => {
     try {
       const r = await fetch('/api/session-renames', {cache: 'no-store'});
       if (!r.ok) return 0;
       const d = await r.json();
       return await _applyWorkerRenames(d && d.renames);
-    } catch (_) { return 0; } finally { setTimeout(() => { _workerRenamesInFlight = null; }, 2000); }
+    } catch (e) { console.warn('[rename] could not read the rename list', e); return 0; } finally {
+      setTimeout(() => {
+        _workerRenamesInFlight = null;
+        if (_workerRenamesAgain) { _workerRenamesAgain = false; _syncWorkerRenames(); }
+      }, 2000);
+    }
   })();
   return _workerRenamesInFlight;
 }
