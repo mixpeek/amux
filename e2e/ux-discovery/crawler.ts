@@ -185,6 +185,10 @@ export async function crawl(
         await page.goto(state.url);
         const el = page.locator(action.selector).first();
         if ((await el.count()) === 0) continue;
+        // A control hidden at this viewport cannot be clicked, so its click
+        // only waited out the 2s timeout. On the 375px fixture that was most
+        // of 29s of a 30s test, and CI load pushed it over (2026-11-08).
+        if (!(await el.isVisible())) continue;
         await el.click({ timeout: 2000, noWaitAfter: false });
       } catch {
         continue; // control vanished or not clickable from here — recorded, unreachable
