@@ -63667,12 +63667,13 @@ window.addEventListener('message', (e) => {
 function _appUrlAt(url, at) {
   if (!_appPathOk(at) || at === '/') return url;
   const u = new URL(url);
+  // An app on a port of its own (app_ports.rs) is at `/`; otherwise under /app/<id>.
   const m = /^\/app\/[0-9a-f]{32}/.exec(u.pathname);
-  if (!m) return url;
+  if (!m && u.pathname !== '/') return url;
   const t = new URL(at, 'https://x.invalid');
   const q = new URLSearchParams(t.search);
   for (const [k, v] of u.searchParams) q.set(k, v);
-  u.pathname = m[0] + t.pathname;
+  u.pathname = (m ? m[0] : '') + t.pathname;
   u.search = q.toString();
   u.hash = t.hash;
   return u.toString();

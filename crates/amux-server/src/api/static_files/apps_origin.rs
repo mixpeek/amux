@@ -150,9 +150,16 @@ pub(crate) async fn open(State(state): State<AppState>, headers: HeaderMap, uri:
     let Some(token) = issue_token(&link.id) else {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available");
     };
-    tracing::info!(id = %link.id, port = link.port, measured = true, n_considered = 1, verdict = "app_origin_handoff_issued",
+    // An app that listens on a port gets an origin of its own, at `/`
+    // (app_ports.rs); a file, or an app with no port free, stays under the prefix.
+    let own = if link.path.is_empty() { super::app_ports::port_for(&link.id) } else { None };
+    let url = match own {
+        Some(p) => format!("{}/?amux_t={token}", super::app_ports::on_port(&base, p)),
+        None => format!("{base}/app/{}/?amux_t={token}", link.id),
+    };
+    tracing::info!(id = %link.id, port = link.port, own_port = own, measured = true, n_considered = 1, verdict = "app_origin_handoff_issued",
         "one-time link to an app inside amux issued");
-    Json(json!({ "url": format!("{base}/app/{}/?amux_t={token}", link.id), "expires_in_s": TOKEN_TTL.as_secs() })).into_response()
+    Json(json!({ "url": url, "expires_in_s": TOKEN_TTL.as_secs() })).into_response()
 }
 
 /// The apps listener's whole router: `/app/<id>/...` and nothing else.
@@ -177,9 +184,14 @@ pub(crate) fn parse_app(uri: &Uri) -> Option<(String, String, Option<String>)> {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
+    let (tail, token) = split_token(tail, uri.query());
+    Some((id.to_string(), tail, token))
+}
+
+/// The page and its query with the handoff token taken out, and the token.
+fn split_token(path: &str, query: Option<&str>) -> (String, Option<String>) {
     let mut token = None;
-    let kept: Vec<&str> = uri
-        .query()
+    let kept: Vec<&str> = query
         .unwrap_or("")
         .split('&')
         .filter(|kv| !kv.is_empty())
@@ -191,12 +203,12 @@ pub(crate) fn parse_app(uri: &Uri) -> Option<(String, String, Option<String>)> {
             None => true,
         })
         .collect();
-    let mut tail = tail.to_string();
+    let mut tail = path.to_string();
     if !kept.is_empty() {
         tail.push('?');
         tail.push_str(&kept.join("&"));
     }
-    Some((id.to_string(), tail, token))
+    (tail, token)
 }
 
 async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Response {
@@ -267,7 +279,7 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
             return axum::response::Redirect::permanent(&format!("/app/{id}/")).into_response();
         }
         let r = public_links::serve_link_file(&link, uri.path(), &tail, &method, &headers).await;
-        let r = with_viewer(r, &id, &method).await;
+        let r = with_viewer(r, &id, &prefixed_viewer(&id), &method).await;
         return frameable_by_dashboard(r, &headers, &uri, &id);
     }
     let Some(local) = app_relay::local_listener(link.port).await else {
@@ -276,8 +288,77 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
             "not_running", &id);
     };
     let r = app_relay::relay(local, link.port, &format!("/app/{id}"), &tail, method.clone(), &headers, body).await;
-    let r = with_viewer(r, &id, &method).await;
+    let r = with_viewer(r, &id, &prefixed_viewer(&id), &method).await;
     frameable_by_dashboard(r, &headers, &uri, &id)
+}
+
+/// App `id` on its own port (app_ports.rs), at `/`: the same sign-in as under
+/// `/app/<id>/`, with nothing rewritten because the app sees its own paths.
+pub(crate) async fn serve_at_root(id: &str, req: axum::extract::Request) -> Response {
+    let uri = req.uri().clone();
+    let method = req.method().clone();
+    let headers = req.headers().clone();
+    let (tail, token) = split_token(uri.path(), uri.query());
+    let open_from_pages = "<p>Open this app from the Apps tab in amux. A link to it works only for the \
+        signed-in owner, through the Apps tab.</p>";
+    if uri.path() == VIEWER_PATH {
+        return viewer_js();
+    }
+    let Some(link) = public_links::approved_internal(id).filter(|l| l.path.is_empty()) else {
+        if fetch_dest(&headers) == "iframe" {
+            return reopen_in_viewer(id, &tail, "view_gone");
+        }
+        return refuse(StatusCode::NOT_FOUND, "This app is not in Apps", open_from_pages, "not_approved", id);
+    };
+    if public_links::refused_port(link.port).is_some() {
+        return refuse(StatusCode::FORBIDDEN, "amux does not open this port", open_from_pages, "refused_port", id);
+    }
+    if let Some(t) = token {
+        if !take_token(&t, id) {
+            return refuse(StatusCode::FORBIDDEN, "This link was used already",
+                "<p>An app link from the Apps tab works once, for a minute. Open the app from the Apps tab again.</p>", "token_spent", id);
+        }
+        let Some(session) = new_session(id) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        tracing::info!(id = %id, measured = true, n_considered = 1, verdict = "app_origin_session_started",
+            "an app inside amux was opened from the Apps tab, on its own port");
+        let mut r = (StatusCode::SEE_OTHER, [(header::LOCATION, tail.clone())]).into_response();
+        // Path=/: the whole origin is this app's. The name carries the id, and
+        // only a value this server issued for that id counts.
+        let cookie = format!("amux_app_{id}={session}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=Lax", SESSION_TTL.as_secs());
+        if let Ok(v) = HeaderValue::from_str(&cookie) {
+            r.headers_mut().insert(header::SET_COOKIE, v);
+        }
+        r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return r;
+    }
+    if !has_session(id, &headers) {
+        match (fetch_dest(&headers), &method) {
+            ("iframe", _) => return reopen_in_viewer(id, &tail, "no_session"),
+            ("document", &Method::GET) => {
+                if let Some(to) = dashboard_origins(&headers, &uri).into_iter().next() {
+                    tracing::info!(id = %id, measured = true, n_considered = 1, verdict = "app_origin_sent_to_apps_tab",
+                        "an app page opened without its session was sent to the Apps tab to open there");
+                    return (StatusCode::SEE_OTHER, [(header::LOCATION, format!("{to}/#view=apps&open={id}&at={}", pct(&tail)))]).into_response();
+                }
+            }
+            _ => {}
+        }
+        return refuse(StatusCode::FORBIDDEN, "Open this app from the Apps tab", open_from_pages, "no_session", id);
+    }
+    let Some(local) = app_relay::local_listener(link.port).await else {
+        return refuse(StatusCode::BAD_GATEWAY, "This app is not running",
+            &format!("<p>Nothing is listening on port {} on this machine. Ask the worker that runs it to start it again.</p>", link.port),
+            "not_running", id);
+    };
+    if super::app_ports::is_upgrade(&headers) {
+        return super::app_ports::relay_ws(local, link.port, &tail, req).await;
+    }
+    let body = req.into_body();
+    let r = app_relay::relay(local, link.port, "", &tail, method.clone(), &headers, body).await;
+    let r = with_viewer(r, id, VIEWER_PATH, &method).await;
+    frameable_by_dashboard(r, &headers, &uri, id)
 }
 
 fn fetch_dest(headers: &HeaderMap) -> &str {
@@ -327,8 +408,8 @@ fn reopen_in_viewer(id: &str, tail: &str, why: &'static str) -> Response {
 /// Put the viewer script into an HTML page: after `<head ...>`, else after
 /// `<html ...>`, else after the doctype, never before it (that would switch
 /// the page to quirks mode).
-pub(crate) fn inject_viewer(html: &str, id: &str) -> String {
-    let tag = format!("<script src=\"/app/{id}{VIEWER_PATH}\"></script>");
+pub(crate) fn inject_viewer(html: &str, src: &str) -> String {
+    let tag = format!("<script src=\"{src}\"></script>");
     let lower = html.to_ascii_lowercase();
     let after = |open: &str| -> Option<usize> {
         let mut from = 0;
@@ -350,7 +431,12 @@ pub(crate) fn inject_viewer(html: &str, id: &str) -> String {
     out
 }
 
-async fn with_viewer(r: Response, id: &str, method: &Method) -> Response {
+/// Where the viewer script is for a page under `/app/<id>/`.
+fn prefixed_viewer(id: &str) -> String {
+    format!("/app/{id}{VIEWER_PATH}")
+}
+
+async fn with_viewer(r: Response, id: &str, src: &str, method: &Method) -> Response {
     let h = r.headers();
     let is_html = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|ct| ct.starts_with("text/html"));
     let encoded = h.get(header::CONTENT_ENCODING).is_some_and(|v| v.as_bytes() != b"identity");
@@ -364,7 +450,7 @@ async fn with_viewer(r: Response, id: &str, method: &Method) -> Response {
             "an HTML page on the apps origin could not be read to add the viewer script");
         return app_relay::page(StatusCode::BAD_GATEWAY, "The page stopped mid-response", "<p>Try again.</p>");
     };
-    let html = inject_viewer(&String::from_utf8_lossy(&bytes), id);
+    let html = inject_viewer(&String::from_utf8_lossy(&bytes), src);
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::ETAG);
     Response::from_parts(parts, Body::from(html))
@@ -398,7 +484,7 @@ async fn serve_view(id: &str, root: &str, uri: &Uri, tail: &str, method: &Method
         tracing::info!(id = %id, measured = true, n_considered = 1, verdict = "app_site_view_not_found",
             "a site view asked for a page that is not in its folder");
     }
-    let r = with_viewer(r, id, method).await;
+    let r = with_viewer(r, id, &prefixed_viewer(id), method).await;
     let mut r = frameable_by_dashboard(r, headers, uri, id);
     let h = r.headers_mut();
     h.append(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(SITE_SANDBOX));
@@ -635,13 +721,14 @@ mod tests {
     #[test]
     fn the_viewer_script_goes_in_the_head_and_never_before_the_doctype() {
         let id = "f".repeat(32);
+        let src = prefixed_viewer(&id);
         let tag = format!("<script src=\"/app/{id}/.amux-viewer.js\"></script>");
-        let out = inject_viewer("<!DOCTYPE html><html lang=en><HEAD><title>t</title></HEAD><body><header>h</header></body></html>", &id);
+        let out = inject_viewer("<!DOCTYPE html><html lang=en><HEAD><title>t</title></HEAD><body><header>h</header></body></html>", &src);
         assert!(out.starts_with(&format!("<!DOCTYPE html><html lang=en><HEAD>{tag}<title>")), "{out}");
         // `<header>` is not `<head>`.
-        let out = inject_viewer("<!doctype html><body><header>x</header></body>", &id);
+        let out = inject_viewer("<!doctype html><body><header>x</header></body>", &src);
         assert!(out.starts_with(&format!("<!doctype html>{tag}<body><header>")), "{out}");
-        assert_eq!(inject_viewer("<p>bare</p>", &id), format!("{tag}<p>bare</p>"));
+        assert_eq!(inject_viewer("<p>bare</p>", &src), format!("{tag}<p>bare</p>"));
     }
 
     #[test]

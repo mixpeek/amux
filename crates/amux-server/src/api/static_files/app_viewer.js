@@ -1,5 +1,6 @@
-// Served at /app/<id>/.amux-viewer.js and added to every HTML page on the apps
-// origin (apps_origin.rs). Inside the amux viewer it keeps the app in the
+// Served at /app/<id>/.amux-viewer.js, or /.amux-viewer.js on an app's own
+// port (app_ports.rs), and added to every HTML page on the apps origin
+// (apps_origin.rs). Inside the amux viewer it keeps the app in the
 // viewer: a link, form or window.open aimed at another page of the same app
 // navigates the frame instead of opening a tab, and each page tells the viewer
 // where it is, so the viewer can show the path and go back. Outside a frame it
@@ -7,9 +8,12 @@
 (function () {
   if (window.top === window || window.__amuxViewer) return;
   window.__amuxViewer = 1;
+  // Under /app/<id>/ the app is that prefix; on a port of its own it is the
+  // whole origin, which this script's own address says.
+  var self = document.currentScript && document.currentScript.getAttribute('src');
   var m = location.pathname.match(/^\/app\/[0-9a-f]{32}/);
-  if (!m) return;
-  var prefix = m[0] + '/';
+  if (!m && self !== '/.amux-viewer.js') return;
+  var prefix = m ? m[0] + '/' : '/';
   var parentOrigin = (location.ancestorOrigins && location.ancestorOrigins[0]) || '*';
   function inside(href) {
     try {

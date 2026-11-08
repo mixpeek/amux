@@ -1313,6 +1313,10 @@ async fn async_main() {
     if let Some(apps_port) = api::static_files::apps_origin::apps_port(cfg.port) {
         let apps_addr = std::net::SocketAddr::new(addr.ip(), apps_port);
         let apps_tls = rustls_cfg.clone();
+        // Each app also gets a port of its own, with the app at `/`
+        // (static_files/app_ports.rs); apps that had one are served again now.
+        api::static_files::app_ports::set_tls(addr.ip(), rustls_cfg.clone());
+        api::static_files::app_ports::resume();
         tokio::spawn(async move {
             tracing::info!(%apps_addr, measured = true, n_considered = 1, verdict = "apps_origin_listening",
                 "apps origin listening: /app/<id>/ only");

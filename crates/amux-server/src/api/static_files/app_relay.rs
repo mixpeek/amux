@@ -210,7 +210,7 @@ pub(crate) fn sets_amux_cookie(set_cookie: &str) -> bool {
     name.starts_with("amux_") || name.starts_with("__Host-amux") || name.starts_with("__Secure-amux")
 }
 
-fn strip_amux_cookies(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn strip_amux_cookies(headers: &HeaderMap) -> Option<String> {
     // Every `cookie` field: HTTP/2 browsers send one field per cookie.
     let kept: Vec<&str> = headers
         .get_all(header::COOKIE)

@@ -358,6 +358,10 @@ export default defineConfig({
       // the real billed API; a spec that needs an answer listens there
       // (e2e/transcription-settings.spec.ts). Nothing listening is a failure.
       AMUX_GEMINI_BASE: `http://127.0.0.1:${geminiStubPort(t.port)}`,
+      // An app's own port (static_files/app_ports.rs) comes from the gap
+      // between this target and the next (10 apart). The default, the 32 after
+      // the apps port, runs into the next target's server.
+      AMUX_APP_PORTS: `${t.port + 2}-${t.port + 9}`,
     },
   })),
 });

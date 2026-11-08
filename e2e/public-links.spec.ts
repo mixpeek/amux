@@ -53,10 +53,10 @@ test('Apps provisions an app and a file inside amux, a public app and a public f
     await inside.click();
     await expect(page.locator('#pages-open')).toBeVisible();
     await expect(page.frameLocator('.pub-app-frame').locator('h1')).toHaveText('shared app');
-    // It runs on the apps origin (its own port), never the dashboard's.
+    // It runs on an origin of its own, at `/` (app_ports.rs), never the dashboard's.
     const frameSrc = await page.locator('.pub-app-frame').getAttribute('src');
     const frameUrl = new URL(frameSrc!);
-    expect(frameUrl.pathname).toMatch(/^\/app\/[0-9a-f]{32}\/$/);
+    expect(frameUrl.pathname).toBe('/');
     expect(frameUrl.origin).not.toBe(base());
     // The one-time link was spent opening the frame; it opens nothing again.
     const spent = await anon.get(frameSrc!, { maxRedirects: 0 });

@@ -385,6 +385,7 @@ mod clear_sw_landing_tests {
     }
 }
 
+pub(crate) mod app_ports;
 pub(crate) mod app_relay;
 pub(crate) mod apps_origin;
 pub(crate) mod public_links;
