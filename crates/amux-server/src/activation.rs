@@ -1,5 +1,6 @@
-//! Verify installed bytes before deciding whether an mtime change merits exec.
-use std::path::Path;
+//! Verify installed bytes before deciding whether an mtime change merits exec,
+//! and say which commit this process serves.
+use std::path::{Path, PathBuf};
 
 pub fn file_build_hash(path: &Path) -> std::io::Result<String> {
     use sha2::Digest;
@@ -7,6 +8,63 @@ pub fn file_build_hash(path: &Path) -> std::io::Result<String> {
     let mut hash = sha2::Sha256::new();
     std::io::copy(&mut file, &mut hash)?;
     Ok(hex::encode(&hash.finalize()[..8]))
+}
+
+/// The receipt the builder writes beside the installed binary:
+/// `{"sha": <commit>, "build": <file_build_hash of the binary>}`.
+pub fn receipt_path(exe: &Path) -> PathBuf {
+    exe.with_file_name(format!(
+        "{}.identity.json",
+        exe.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The commit a process serves, and where that answer came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Served {
+    pub full: String,
+    pub short: String,
+    /// "receipt": the builder's receipt names these exact bytes. "compiled":
+    /// the stamp build.rs compiled in.
+    pub source: &'static str,
+}
+
+/// A commit whose compile inputs equal the installed build's needs no compile
+/// (scripts/rust-auto-build.sh re-stamps the receipt instead), so the bytes
+/// can serve a later commit than the one they were compiled at. The receipt
+/// names it, and is believed only when its `build` is this process's own hash:
+/// a receipt for other bytes says nothing about these.
+pub fn served_from(receipt: Option<&[u8]>, running_build: &str, compiled_full: &str, compiled_short: &str) -> Served {
+    let compiled = Served { full: compiled_full.to_owned(), short: compiled_short.to_owned(), source: "compiled" };
+    let Some(bytes) = receipt else { return compiled };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else { return compiled };
+    match (v["sha"].as_str(), v["build"].as_str()) {
+        (Some(sha), Some(build)) if build == running_build && is_full_sha(sha) => Served {
+            full: sha.to_owned(),
+            short: sha[..12].to_owned(),
+            source: "receipt",
+        },
+        _ => compiled,
+    }
+}
+
+/// The commit this process serves: the receipt's when it names these bytes,
+/// else the compiled stamp. Read once; a new commit arrives by exec.
+pub fn served() -> &'static Served {
+    static SERVED: std::sync::OnceLock<Served> = std::sync::OnceLock::new();
+    SERVED.get_or_init(|| {
+        let receipt = std::env::current_exe().ok().and_then(|exe| std::fs::read(receipt_path(&exe)).ok());
+        let served = served_from(receipt.as_deref(), &crate::build_hash(),
+            env!("AMUX_BUILD_COMMIT_FULL"), env!("AMUX_BUILD_COMMIT"));
+        tracing::info!(verdict = "served_commit_measured", commit = %served.full, source = served.source,
+            build_commit = env!("AMUX_BUILD_COMMIT_FULL"), measured = true,
+            "this process serves this commit");
+        served
+    })
 }
 
 #[derive(Debug)]
@@ -18,10 +76,7 @@ pub struct Candidate {
 impl Candidate {
     pub fn read(exe: &Path) -> anyhow::Result<Self> {
         let build = file_build_hash(exe)?;
-        let receipt = exe.with_file_name(format!(
-            "{}.identity.json",
-            exe.file_name().unwrap().to_string_lossy()
-        ));
+        let receipt = receipt_path(exe);
         let commit = match std::fs::read(receipt) {
             Ok(bytes) => {
                 let v: serde_json::Value = serde_json::from_slice(&bytes)?;
@@ -41,10 +96,14 @@ impl Candidate {
 
     pub fn skip_reason(&self, running_commit: &str, running_build: &str) -> Option<&'static str> {
         if self.build == running_build {
-            return Some("same_binary");
+            // The same bytes with a receipt for another commit is a deploy that
+            // needed no compile: exec so the new process serves that commit.
+            return match self.commit.as_deref() {
+                Some(c) if is_full_sha(c) && c != running_commit => None,
+                _ => Some("same_binary"),
+            };
         }
-        let clean =
-            running_commit.len() == 40 && running_commit.bytes().all(|b| b.is_ascii_hexdigit());
+        let clean = is_full_sha(running_commit);
         if clean && self.commit.as_deref() == Some(running_commit) {
             return Some("same_revision");
         }
@@ -94,5 +153,35 @@ mod tests {
             Candidate::read(&exe).unwrap().skip_reason(&sha, &original),
             None
         );
+    }
+
+    #[test]
+    fn a_receipt_for_these_bytes_and_a_new_commit_is_adopted() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join("server");
+        std::fs::write(&exe, b"one build").unwrap();
+        let build = file_build_hash(&exe).unwrap();
+        let (old, new) = ("a".repeat(40), "b".repeat(40));
+        let stamp = |sha: &str| std::fs::write(receipt_path(&exe), serde_json::json!({"sha":sha,"build":build}).to_string()).unwrap();
+        stamp(&old);
+        assert_eq!(Candidate::read(&exe).unwrap().skip_reason(&old, &build), Some("same_binary"));
+        stamp(&new);
+        assert_eq!(Candidate::read(&exe).unwrap().skip_reason(&old, &build), None,
+            "same bytes re-stamped for a later commit must exec");
+        stamp("not-a-sha");
+        assert_eq!(Candidate::read(&exe).unwrap().skip_reason(&old, &build), Some("same_binary"));
+    }
+
+    #[test]
+    fn the_served_commit_comes_from_a_receipt_only_for_these_bytes() {
+        let sha = "c".repeat(40);
+        let receipt = serde_json::json!({"sha":sha,"build":"0123456789abcdef"}).to_string();
+        let served = served_from(Some(receipt.as_bytes()), "0123456789abcdef", "f".repeat(40).as_str(), "ffffffffffff");
+        assert_eq!((served.full.as_str(), served.short.as_str(), served.source), (sha.as_str(), &sha[..12], "receipt"));
+        for (bytes, build) in [(Some(receipt.as_bytes()), "fedcba9876543210"), (None, "0123456789abcdef"),
+                               (Some(b"not json".as_slice()), "0123456789abcdef")] {
+            let s = served_from(bytes, build, "deadbeef", "deadbeef");
+            assert_eq!((s.full.as_str(), s.source), ("deadbeef", "compiled"));
+        }
     }
 }

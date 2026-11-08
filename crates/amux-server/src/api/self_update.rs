@@ -113,7 +113,7 @@ pub(crate) fn deploy_summary(
 }
 
 async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
-    let full = env!("AMUX_BUILD_COMMIT_FULL");
+    let full = crate::activation::served().full.as_str();
     let live = full.trim_end_matches("-dirty");
     let gate = gate_state();
     let mut tip: Option<String> = None;

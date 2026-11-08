@@ -458,7 +458,7 @@ pub fn spawn(state: AppState) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(BOOT_DELAY_S)).await;
         let home = crate::config::amux_home();
-        run_once(&state, &home, env!("AMUX_BUILD_COMMIT_FULL")).await;
+        run_once(&state, &home, crate::activation::served().full.as_str()).await;
     });
 }
 

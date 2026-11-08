@@ -1001,6 +1001,7 @@ jobs:
           python3 scripts/test-cargo-target-guard.py
           python3 scripts/test-cargo-budget.py
           ./scripts/test-build-activation-authority.sh
+          ./scripts/test-build-restamp.sh || exit 1
           ./scripts/test-build-activation-launcher.sh
           ./scripts/test-authority-launcher-sync.sh
           ./scripts/test-build-shell-run-defer.sh

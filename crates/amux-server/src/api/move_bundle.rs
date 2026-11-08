@@ -207,7 +207,7 @@ pub async fn export(State(state): State<AppState>) -> (StatusCode, Json<Value>) 
             "format": FORMAT,
             "version": VERSION,
             "schema_version": schema,
-            "source_commit": env!("AMUX_BUILD_COMMIT"),
+            "source_commit": crate::activation::served().short,
             "created_at": chrono::Utc::now().to_rfc3339(),
             "counts": counts,
             "config": config,

@@ -327,6 +327,94 @@ except Exception:
 ' 2>/dev/null) || { identity_reason="invalid_commit"; return 1; }
 }
 
+# A COMMIT WITH NO COMPILE-INPUT CHANGE NEEDS NO COMPILE (2026-11-08).
+#
+# The server compiles its commit in, so a docs or scripts commit read as
+# "STAMP DRIFT" and rebuilt amux-server at the deploy profile: 80 to 185 s
+# measured, the largest share of push-to-live, for bytes identical to the ones
+# already running. 182 of 269 commits in the week to 2026-11-07 changed no
+# Rust source. The server now takes its commit from the receipt beside the
+# binary when the receipt names its own bytes (activation.rs `served`), and
+# re-executes when the receipt changes. So when nothing the compile reads has
+# changed since the installed bytes were compiled, write the receipt for the
+# new commit and let the server adopt it.
+#
+# "What the compile reads" is crates/, Cargo.*, the toolchain files and every
+# include_str!/include_bytes! target outside crates/ (scripts/ci-rust-key.mjs
+# lists them; the bash CLI and the hooks are among them). Any doubt compiles:
+# no receipt, a receipt for other bytes, a running server that does not read
+# receipts (no `build_commit` in /health) or runs other bytes, an unreadable
+# include list, or an earlier restamp of this commit that was not adopted.
+# AMUX_RS_RESTAMP=0 turns it off.
+restamp_without_compile() {
+  local sha="$1" body compiled extra changed
+  local paths=()
+  [ "${AMUX_RS_RESTAMP:-1}" = 1 ] || { echo "== RESTAMP OFF sha=$sha (AMUX_RS_RESTAMP=0) verdict=restamp_off"; return 1; }
+  if [ -f "${STAMP}.restamp_failed" ] && [ "$(cat "${STAMP}.restamp_failed" 2>/dev/null)" = "$sha" ]; then
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: an earlier restamp of it was not adopted; compiling verdict=restamp_retry_compiles"
+    return 1
+  fi
+  body=$(curl -sk --max-time 4 "${AMUX_RS_HEALTH_URL:-$(server_api_base)/api/health}" 2>/dev/null) || {
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: /health unreadable verdict=restamp_unmeasured"; return 1; }
+  compiled=$(python3 - "$INSTALL" "${INSTALL}.identity.json" "$body" <<'PYRESTAMP' 2>&1
+import hashlib,json,re,sys
+try:
+    d=json.load(open(sys.argv[2]))
+except (OSError,ValueError):
+    raise SystemExit('no readable receipt')
+with open(sys.argv[1],'rb') as f: build=hashlib.sha256(f.read()).hexdigest()[:16]
+if d.get('build')!=build: raise SystemExit('the receipt is not for the installed binary')
+try: h=json.loads(sys.argv[3])
+except ValueError: raise SystemExit('/health is not JSON')
+if 'build_commit' not in h: raise SystemExit('the running server does not read receipts')
+if h.get('build')!=build: raise SystemExit('the running server is not the installed binary')
+c=d.get('compiled_at') or d.get('sha','')
+if not re.fullmatch(r'[0-9a-f]{40}',c): raise SystemExit('the receipt names no compiled commit')
+print(c)
+PYRESTAMP
+) || { echo "== RESTAMP NOT APPLICABLE sha=$sha: $compiled verdict=restamp_not_applicable"; return 1; }
+  extra=$(cd "$REPO" && node scripts/ci-rust-key.mjs --json --rustc none 2>/dev/null | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+if d.get("unresolved"): raise SystemExit(1)
+print("\n".join(sorted({i["path"] for i in d["includes"] if not i["path"].startswith("crates/")})))') || {
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: the include list is unreadable (scripts/ci-rust-key.mjs) verdict=restamp_includes_unmeasured"; return 1; }
+  while IFS= read -r p; do [ -n "$p" ] && paths+=("$p"); done <<EOF
+$extra
+EOF
+  git -C "$REPO" cat-file -e "${compiled}^{commit}" 2>/dev/null || {
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: compiled commit $compiled is not in $REPO verdict=restamp_not_applicable"; return 1; }
+  changed=$(git -C "$REPO" diff --name-only "$compiled" "$sha" -- crates Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo ${paths[@]+"${paths[@]}"} 2>&1) || {
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: diff failed verdict=restamp_not_applicable"; return 1; }
+  if [ -n "$changed" ]; then
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: compile inputs changed since $compiled ($(printf '%s' "$changed" | head -3 | tr '\n' ' ')) verdict=restamp_inputs_changed"
+    return 1
+  fi
+  PROV_JSON=$(python3 - "${INSTALL}.identity.json" "$PROV_JSON" "$head" "$compiled" <<'PYSTAMP'
+import json,sys
+old=json.load(open(sys.argv[1])); new=json.loads(sys.argv[2])
+new.update(build=old['build'], trigger=sys.argv[3], compiled_at=sys.argv[4], restamped=True)
+print(json.dumps(new))
+PYSTAMP
+) || return 1
+  cp -p "${INSTALL}.identity.json" "${INSTALL}.identity.json.rollback"
+  printf '%s\n' "$PROV_JSON" > "${INSTALL}.identity.json.new.$$"
+  mv -f "${INSTALL}.identity.json.new.$$" "${INSTALL}.identity.json"
+  echo "== ACTIVATION RESTAMPED identity=$PROV_JSON: no compile input changed since $compiled (${#paths[@]} includes outside crates/ checked) verdict=activation_restamped"
+  if wait_live_identity "$sha" "${AMUX_ACTIVATION_HEALTH_S:-300}"; then
+    echo "$head" > "$STAMP"
+    date +%s > "${STAMP}.adopted_at"
+    printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
+    rm -f "${INSTALL}.identity.json.rollback"
+    echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) restamped=1 verdict=activation_healthy"
+    return 0
+  fi
+  mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"
+  echo "$sha" > "${STAMP}.restamp_failed"
+  echo "== !! ACTIVATION RESTAMP UNADOPTED sha=$sha: not live after ${waited}s; the receipt is restored; compiling now verdict=activation_restamp_unadopted"
+  return 1
+}
+
 activation_authorized() {
   local authority
   authority=$(git -C "$REPO" rev-parse --verify -q "${ACTIVATION_REF}^{commit}" 2>/dev/null) || {
@@ -491,7 +579,8 @@ PYINSTALLED
           echo "== $(date '+%F %T') !! ACTIVATION AWAITING ADOPTION expected=$built_sha live=$live installed_match=true measured=true action=skip_rebuild" >> "$LOG"
           exit 0
         fi
-        echo "== $(date '+%F %T') !! ACTIVATION STAMP DRIFT $built_sha live=$live measured=true action=rebuild — measured foreign image" >> "$LOG" ;;
+        echo "== $(date '+%F %T') !! ACTIVATION STAMP DRIFT $built_sha live=$live measured=true action=rebuild — measured foreign image" >> "$LOG"
+        RESTAMP_CANDIDATE=1 ;;
     esac
   fi
 fi
@@ -601,6 +690,11 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" = "1" ]; then
   # The real path deliberately does not write here — see AEAB-50 above.
   printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
   [ "$on_main" = "yes" ] || echo "OFF-MAIN $head_ref $built_sha"
+  exit 0
+fi
+
+# Every gate above has run (authority, cooldown, shell defer, overlap).
+if [ "${RESTAMP_CANDIDATE:-0}" = 1 ] && restamp_without_compile "$built_sha" >> "$LOG" 2>&1; then
   exit 0
 fi
 
@@ -1051,7 +1145,7 @@ fi
 import hashlib,json,sys
 with open(sys.argv[1], 'rb') as f:
     build=hashlib.file_digest(f, 'sha256').hexdigest()[:16] if hasattr(hashlib, 'file_digest') else hashlib.sha256(f.read()).hexdigest()[:16]
-d=json.loads(sys.argv[2]); d.update(build=build, trigger=sys.argv[3])
+d=json.loads(sys.argv[2]); d.update(build=build, trigger=sys.argv[3], compiled_at=d['sha'])
 print(json.dumps(d))
 PYIDENTITY
 )

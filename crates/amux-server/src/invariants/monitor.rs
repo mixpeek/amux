@@ -3282,7 +3282,7 @@ fn repeat_offer_check(state: &AppState) -> Vec<InvariantResult> {
 /// unmeasured deploy pipeline is not a healthy one, which is the entire lesson
 /// of AMUX-4947.
 async fn served_commit_check() -> Vec<InvariantResult> {
-    let served = env!("AMUX_BUILD_COMMIT_FULL");
+    let served = crate::activation::served().full.as_str();
     let Some(repo) = std::env::var("AMUX_REPO_DIR")
         .or_else(|_| std::env::var("AMUX_REPO"))
         .ok()

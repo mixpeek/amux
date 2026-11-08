@@ -55,8 +55,14 @@ pub struct Health {
     /// uncommitted changes under crates/ at build time (the local builder
     /// compiles the working tree, so a bare sha would overclaim);
     /// "unknown" outside a git checkout (the cloud image).
+    ///
+    /// Since a commit with no compile-input change deploys without a compile,
+    /// this is the commit SERVED: the builder's receipt names it when the
+    /// receipt is for these exact bytes (`activation::served`).
+    /// `build_commit` is the commit the bytes were compiled at.
     pub commit: &'static str,
     pub commit_full: &'static str,
+    pub build_commit: &'static str,
     pub uptime_s: u64,
     pub rev: Option<u64>,
     pub store: &'static str,
@@ -803,7 +809,7 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             tracing::warn!(target: "health", verdict = reason, measured = false,
                 phase = phase.load(std::sync::atomic::Ordering::Relaxed),
                 elapsed_ms = started.elapsed().as_millis() as u64,
-                commit = env!("AMUX_BUILD_COMMIT"), build = %state.build_hash,
+                commit = %crate::activation::served().short, build = %state.build_hash,
                 pid = std::process::id(), "health store probe unavailable; returning identity without blocking the runtime");
             (
                 None,
@@ -881,8 +887,9 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             },
             board,
             build: state.build_hash.clone(),
-            commit: env!("AMUX_BUILD_COMMIT"),
-            commit_full: env!("AMUX_BUILD_COMMIT_FULL"),
+            commit: crate::activation::served().short.as_str(),
+            commit_full: crate::activation::served().full.as_str(),
+            build_commit: env!("AMUX_BUILD_COMMIT_FULL"),
             uptime_s: state.started.elapsed().as_secs(),
             rev,
             store,

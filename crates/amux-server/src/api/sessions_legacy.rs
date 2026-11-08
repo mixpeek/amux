@@ -1641,7 +1641,7 @@ async fn compute_owner_requests(state: AppState, session: String, days: f64, key
             }
         }
         // Live is a fact only about the repo this server is built from.
-        let build = env!("AMUX_BUILD_COMMIT_FULL").trim().to_string();
+        let build = crate::activation::served().full.trim().to_string();
         let deploys = repo.join("crates").join("amux-server").is_dir() && !build.is_empty();
         let mut live = std::collections::HashMap::new();
         if deploys {

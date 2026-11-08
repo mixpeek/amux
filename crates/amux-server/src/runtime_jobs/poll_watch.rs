@@ -13,7 +13,7 @@ pub(super) async fn watch<T>(job: &str, future: impl Future<Output = T>) -> T {
                 thread_cpu_measured = timing.cpu.is_some(),
                 thread_cpu_ms = timing.cpu.map(|d| d.as_millis() as u64).unwrap_or(0),
                 runtime_pool = super::executor::pool_for(job),
-                commit = env!("AMUX_BUILD_COMMIT_FULL"),
+                commit = %crate::activation::served().full,
                 "job held an async runtime thread without yielding; other jobs in this pool may stall");
         }
     }).await

@@ -60,3 +60,44 @@ so the owner has to approve that diff. A Rust commit would still take minutes.
 
 Running ios-safari on a schedule instead of on every push would remove 47% of e2e time.
 A WebKit-only break would then surface at the next scheduled run.
+
+## Push to live, 2026-11-08
+
+Owner ask, 2026-11-08: "get our cicd below 2 min". The deploy waits only for
+`gate` (decision A above, taken 2026-11-01), so the number that matters is
+push to live: from the push to the server answering with the commit.
+
+Measured over the 25 deploys before 2026-11-08 (`gate` run created to
+`ACTIVATION HEALTHY` in `~/.amux/logs/rust-auto-build.log`): median 193 s,
+p90 412 s, 2 of 25 under 120 s.
+
+| Step | Median | p90 |
+|---|---|---|
+| `gate` | 31 s | 78 s |
+| builder picks it up | 10 s | 77 s |
+| deploy build | 96 s | 195 s |
+
+The builder's own `push_to_live_s` starts at the committer time, which for an
+`amux land` commit is when the land gate rebased it, so it also counts the land
+gate and reads higher (median 363 s).
+
+**The build ran for commits that change no compiled input.** The server
+compiles its commit in, so a docs commit read as "STAMP DRIFT" and rebuilt
+amux-server: 80 to 185 s for bytes identical to the running ones. In the week
+to 2026-11-07, 182 of 269 commits changed no Rust source.
+
+**Fix.** The server takes its commit from the receipt beside its binary when
+the receipt names its own bytes (`activation::served`), and re-executes when
+the receipt changes. The builder re-stamps the receipt instead of compiling
+when nothing the compile reads changed since the bytes were compiled: crates/,
+Cargo.*, the toolchain files and every include target outside crates/
+(`ci-rust-key.mjs`). `/health` keeps `commit` as the commit served and adds
+`build_commit`. `scripts/test-build-restamp.sh` covers it. Such a commit should
+go live in about `gate` plus one builder tick plus a re-exec.
+
+**Still over 2 minutes:**
+- Commits that change Rust: `gate` plus a 90 to 200 s incremental build of
+  amux-server.
+- Commits that change only the dashboard: it is compiled into the binary.
+  Serving it from a deployed snapshot (`AMUX_DASHBOARD_DIR`, already supported)
+  would put those 44 commits a week on the re-stamp path. That is the next step.
