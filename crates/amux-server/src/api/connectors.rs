@@ -1016,6 +1016,21 @@ async fn mattermost_login(
     Ok((token, user_id))
 }
 
+/// Where a Google row's credential comes from. A stored sign-in answers a mint
+/// before the service account (connector_token), so it is named first: on
+/// 2026-11-08 the row read "service account" while hello@amux.io's grant did
+/// the work and the service account's delegation was failing.
+fn google_cred_source(home: &std::path::Path, category: &str) -> Option<Value> {
+    if category != "Google" {
+        return None;
+    }
+    let grants = store_accounts(home, "google");
+    if !grants.is_empty() {
+        return Some(json!(format!("Google sign-in ({})", grants.join(", "))));
+    }
+    super::google_sa::sa_config_in(home).map(|_| json!("service account (domain-wide delegation)"))
+}
+
 /// GET /api/connectors — the registry with per-provider status. `?worker=` is
 /// accepted for parity with the scope explain link but the status here is
 /// global (credential presence + token); per-scope enablement is the scope
@@ -1044,8 +1059,8 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
             // Where the credential came from, so the tab can say "reusing the
             // existing Google client" rather than looking un-configured (AMUX-3341).
             let in_server_env = keys.iter().all(|k| env_val(&file_env, k).is_some());
-            let cred_source = if p.category == "Google" && super::google_sa::sa_config_in(&ctx.home).is_some() {
-                json!("service account (domain-wide delegation)")
+            let cred_source = if let Some(google) = google_cred_source(&ctx.home, p.category) {
+                google
             } else if !all_creds_set {
                 Value::Null
             } else if in_server_env {
@@ -2248,6 +2263,11 @@ async fn complete_exchange(
             })
             .is_ok();
     }
+    supersede_tests_after_grant(&ctx.home, &family, &account);
+    // The accounts rollup caches for ROLLUP_TTL_S. Without this the Google
+    // card read "Connections (0)" for five minutes after hello@amux.io's grant
+    // (2026-11-08); gmail_auth and declared_oauth already drop it on a grant.
+    invalidate_rollup(&ctx.home);
     tracing::info!(
         "connector_oauth_callback: {} grant stored for {} (gmail_mirror={}, scopes=[{}])",
         family,
@@ -2320,6 +2340,47 @@ pub(crate) fn record_test(home: &std::path::Path, id: &str, result: &Value) {
             "a connector's live test failed; the list now reports it"
         );
     }
+}
+
+/// A new grant is a new credential, so a failed live test recorded before it
+/// no longer describes the connector. On 2026-11-08 Ethan connected hello@amux.io
+/// and Gmail still read "error" from an Oct 31 service-account test until someone
+/// re-ran the test by hand. Drop those receipts for every row the grant covers;
+/// the list then shows the computed status until the next live test.
+pub(crate) fn supersede_tests_after_grant(home: &std::path::Path, family: &str, account: &str) {
+    let ids: Vec<&str> = REGISTRY
+        .iter()
+        .filter(|p| family_of(p) == family)
+        .map(|p| p.id)
+        .chain(std::iter::once(family))
+        .collect();
+    let path = last_tests_path(home);
+    let mut cleared: Vec<String> = Vec::new();
+    let committed = (|| -> std::io::Result<()> {
+        let _lease = crate::integrations::secure_store::lock(&path)?;
+        let mut all: Map<String, Value> = crate::integrations::secure_store::read_json(&path)?;
+        all.retain(|id, t| {
+            let stale = ids.contains(&id.as_str()) && test_failed(t);
+            if stale {
+                cleared.push(id.clone());
+            }
+            !stale
+        });
+        if cleared.is_empty() {
+            return Ok(());
+        }
+        crate::integrations::secure_store::write(&path, Value::Object(all).to_string().as_bytes())
+    })();
+    tracing::info!(
+        family,
+        account,
+        cleared = ?cleared,
+        durable = committed.is_ok(),
+        measured = true,
+        n_considered = ids.len(),
+        verdict = "connector_status_refreshed_after_grant",
+        "a new grant superseded failed live tests recorded before it"
+    );
 }
 
 /// Whether a recorded test result is a failure the list reports. A "needs_*"
@@ -4117,6 +4178,48 @@ mod tests {
         assert_eq!(last_tests(home.path())["google-gmail"]["ok"], false);
     }
 
+    #[test]
+    fn a_google_rows_source_names_the_sign_in_over_the_service_account() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("server.env"),
+            "GOOGLE_SA_KEY_FILE=/tmp/k.json\nGOOGLE_SA_SUBJECT=hello@amux.io\n").unwrap();
+        assert_eq!(google_cred_source(home.path(), "Google"),
+            Some(json!("service account (domain-wide delegation)")));
+        let dir = home.path().join("connectors").join("google");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hello@amux.io.json"), "{}").unwrap();
+        assert_eq!(google_cred_source(home.path(), "Google"),
+            Some(json!("Google sign-in (hello@amux.io)")),
+            "the grant answers mints first, so the row names it");
+        assert_eq!(google_cred_source(home.path(), "Chat"), None);
+    }
+
+    /// 2026-11-08: hello@amux.io was connected and working, and Gmail still
+    /// listed "error" from a service-account test recorded a week before the
+    /// grant. A grant drops failed receipts for the family it covers, and only
+    /// those: another family's failure and a passing receipt stay.
+    #[test]
+    fn a_new_grant_supersedes_failed_tests_recorded_before_it() {
+        let home = tempfile::tempdir().unwrap();
+        let failed = json!({"ok": false, "status": "needs_auth",
+            "detail": "service-account delegation failed"});
+        record_test(home.path(), "google-gmail", &failed);
+        record_test(home.path(), "google-calendar", &failed);
+        record_test(home.path(), "google-drive", &json!({"ok": true, "status": "connected"}));
+        record_test(home.path(), "slack", &failed);
+        supersede_tests_after_grant(home.path(), "google", "hello@amux.io");
+        let after = last_tests(home.path());
+        assert!(!after.contains_key("google-gmail"), "gmail's stale failure must go: {after:?}");
+        assert!(!after.contains_key("google-calendar"), "the grant covers the whole family");
+        assert_eq!(after["google-drive"]["ok"], true, "a passing receipt is kept");
+        assert_eq!(after["slack"]["ok"], false, "another family's failure is not this grant's to clear");
+        assert_eq!(
+            status_after_test("connected", after.get("google-gmail")),
+            ("connected".to_string(), None),
+            "the list now shows the computed status"
+        );
+    }
+
     /// AMUX-3738: a delegation REFUSAL is 403 + needs_auth, a real fault stays
     /// 502.
     ///
@@ -4692,6 +4795,11 @@ mod tests {
         let state = qparam(v["authorize_url"].as_str().unwrap(), "state")
             .unwrap()
             .to_string();
+        // A rollup cached before the grant (no accounts) must not outlive it.
+        ROLLUP_CACHE.lock().unwrap().insert(
+            home.path().to_path_buf(),
+            (Instant::now(), json!({"accounts": []})),
+        );
         let (st, page) = send(
             &app,
             "GET",
@@ -4701,6 +4809,10 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{page}");
         assert!(page.contains("connected"), "{page}");
         assert!(page.contains("email API included"), "{page}");
+        assert!(
+            !ROLLUP_CACHE.lock().unwrap().contains_key(home.path()),
+            "the grant must drop the pre-grant accounts rollup, or the card reads Connections (0) for the TTL"
+        );
 
         // The exchange carried the PKCE verifier and the SAME redirect URI the
         // auth request was issued with — the registered gmail one (AMUX-3427).
