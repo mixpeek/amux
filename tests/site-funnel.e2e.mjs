@@ -242,7 +242,7 @@ await p.reload();
 ok(await p.evaluate(() => !('oldtest' in JSON.parse(localStorage.getItem('amux-ab')))), 'ended tests are dropped from storage');
 
 // The featured video is one shared poster: no YouTube request until the visitor presses play.
-const videoSpots = [['/demos/', 'demos-featured-video'], ['/', 'home-video'], ['/walkthrough/', 'walkthrough-featured-video']];
+const videoSpots = [['/demos/', 'demos-featured-video'], ['/walkthrough/', 'walkthrough-featured-video']];
 for (const mobile of [false, true]) for (const [path, spot] of videoSpots) {
   const where = `${path} ${mobile ? 'phone' : 'desktop'}`;
   p = await page({ mobile });
@@ -264,7 +264,7 @@ for (const mobile of [false, true]) for (const [path, spot] of videoSpots) {
 p = await page();
 await p.goto(B + '/');
 await p.evaluate(() => document.addEventListener('click', e => e.preventDefault()));
-await p.click('#tour a[href="/walkthrough/"]');
+await p.click('.hero-walk a[href="/walkthrough/"]');
 cta = await evs(p, 'cta_click');
 ok(cta.some(e => e.goal === 'walkthrough' && e.spot === 'home-walkthrough'), 'homepage walkthrough link -> goal walkthrough, spot home-walkthrough');
 await p.context().close();
