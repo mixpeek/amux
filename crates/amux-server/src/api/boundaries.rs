@@ -76,7 +76,10 @@ pub fn merge(base: Vec<toml::Table>, over: Vec<toml::Table>) -> Vec<toml::Table>
     out
 }
 
-fn layer(text: &str) -> Result<Vec<toml::Table>, String> {
+/// Parse one registry LAYER (a file's `[[boundary]]` array). `pub(crate)` so
+/// a test can read the bytes this commit ships (`DEFAULT_REGISTRY`) rather
+/// than whatever is installed on the machine — `load()` is for enforcement.
+pub(crate) fn layer(text: &str) -> Result<Vec<toml::Table>, String> {
     let t: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
     Ok(t.get("boundary")
         .and_then(|v| v.as_array())

@@ -13,6 +13,13 @@ scratch/
 # it just never goes through git.
 RESUME.md
 
+# Planning memory bank (plans/progress/decisions/learnings/prompt-history).
+# Local-only by owner instruction, 2026-10-17: this fork proposes branches
+# upstream as PRs, so working plans must never ride along — committed plans
+# live in docs/. Previously enforced per-checkout via .git/info/exclude, which
+# every clone has to be told to set; .gitignore is the portable place to say it.
+memory-bank/
+
 # Compiled app binary (rebuild via ./desktop/build-desktop.sh)
 Amux.app/Contents/MacOS/amux
 

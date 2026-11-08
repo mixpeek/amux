@@ -64,7 +64,9 @@
 //! (migration 0011), hydrated back at registration by backend::bootstrap,
 //! so continuity survives a server restart.
 
-use super::{acp, events, AgentProtocol, AgentState, Prompt, ProtocolError, Result};
+use super::{
+    acp, boundary_policy, events, serve, AgentProtocol, AgentState, Prompt, ProtocolError, Result,
+};
 use amux_core::ids::{MessageId, TurnId, WorkerId};
 use amux_core::protocol::{ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent};
 use async_trait::async_trait;
@@ -402,9 +404,32 @@ struct WorkerShared {
     /// first turn and reused until the worker is paused/stopped. `None` for
     /// every other provider, and for OpenCode when the transport is disabled.
     acp: tokio::sync::Mutex<Option<Arc<acp::AcpSession>>>,
+    /// The serve session for an OpenCode worker (M3), created on the first
+    /// turn and reused the same way. Its conversation ref rides the `conversation`
+    /// slot above, so a worker can move between transports without losing
+    /// continuity. `None` for every other provider.
+    serve: tokio::sync::Mutex<Option<Arc<serve::ServeSession>>>,
+    /// Whether this worker already has an SSE forwarder feeding `events`
+    /// (spawned once on first session acquisition — a second one would
+    /// duplicate every event).
+    serve_events: std::sync::atomic::AtomicBool,
+    /// M7: a model switched at runtime. Outranks the registered model and is
+    /// consulted when the next session is created, so "switch now" (a live
+    /// session is told) and "switch for later" are one behaviour.
+    model_override: Mutex<Option<String>>,
 }
 
 impl WorkerShared {
+    /// The model the NEXT session should use: a runtime switch wins over the
+    /// registered model, which itself falls back to the fleet default.
+    fn effective_model_now(&self) -> Option<String> {
+        self.model_override
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.config.effective_model())
+    }
+
     fn emit(&self, ev: WorkerEvent) {
         // No receivers is fine — broadcast keeps working when they arrive.
         let _ = self.events.send(ev);
@@ -425,9 +450,26 @@ pub struct StructuredCliProtocol {
     workers: Mutex<BTreeMap<WorkerId, Arc<WorkerShared>>>,
     /// Shared by every worker registered on this protocol instance.
     sink: Option<Arc<dyn ConversationSink>>,
-    /// Whether OpenCode workers use the persistent ACP transport (M2).
-    /// `None` = the environment decides ([`acp_transport_enabled`]).
-    acp: Option<bool>,
+    /// Transport pin for OpenCode workers (plan D2). `None` = the environment
+    /// decides via [`transport_from_env`]; tests pin it explicitly so M1 stays
+    /// on `run` and M2 on `acp` regardless of the host's env.
+    transport: Option<Transport>,
+    /// The serve client to use. `None` = join the box's shared server via
+    /// [`serve::ServeClient::from_env`] (explicit env, else the registry
+    /// opencode writes — M4); set it when the fleet owns its serve (D1: the
+    /// password is captured from the spawn log and handed to
+    /// [`serve::ServeClient::connect`]).
+    serve_client: Option<serve::ServeClient>,
+    /// M3: ONE hub and ONE event reader for the whole protocol (D1: one
+    /// reader per serve process, never one per worker). Both are created
+    /// lazily on the first serve session and dropped with the protocol.
+    serve_hub: Mutex<Option<Arc<serve::ServeEventHub>>>,
+    serve_reader: Mutex<Option<serve::EventReader>>,
+    /// M6: how a permission ask is answered. `None` = the production default,
+    /// [`boundary_policy::active`] (boundaries.toml, with
+    /// `AMUX_OPENCODE_BOUNDARIES=0` as the escape hatch). Tests pin a policy so
+    /// no test depends on the host's registry.
+    approval: Option<Arc<dyn acp::ApprovalPolicy>>,
 }
 
 /// How long a worker's ACP session may wait for an ACP turn. Generous — a long
@@ -455,6 +497,109 @@ pub fn acp_transport_enabled() -> bool {
     }
 }
 
+/// Which transport an OpenCode worker's turns take (plan D2). Replaces the
+/// old `uses_acp: bool`, which could only express "ACP or fall back to run" —
+/// serve made that a lie about the state space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// M1: one-shot `opencode run --format json` per prompt.
+    Run,
+    /// M2: the persistent `opencode acp` session.
+    Acp,
+    /// M3: direct HTTP against `opencode serve`.
+    Serve,
+}
+
+impl Transport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Transport::Run => "run",
+            Transport::Acp => "acp",
+            Transport::Serve => "serve",
+        }
+    }
+}
+
+/// The transport `AMUX_OPENCODE_TRANSPORT` asks for (`run` | `acp` | `serve`).
+///
+/// **Default: `serve` when this box has a shared server to join, `acp`
+/// otherwise.** That is the one-server-per-box rule made automatic (measured
+/// 2026-10-30: a bare `opencode` is a CLIENT of the single
+/// `opencode serve --service`, and only `--standalone`/`acp` spawn private
+/// servers — `acp` has no `--server` flag, so it always pays for its own).
+///
+/// The fallback is bounded and self-announcing: a box with no reachable
+/// registry keeps working exactly as it did before, and the reason is logged
+/// ONCE with a verdict (the two-fix rule: a silent switch of transport is a
+/// diagnosis nobody can make). An explicit value still wins over everything —
+/// that is the escape hatch that makes this flip reversible without a rebuild.
+pub fn transport_from_env() -> Transport {
+    if let Ok(raw) = std::env::var("AMUX_OPENCODE_TRANSPORT") {
+        return transport_from_var(Some(raw.as_str()));
+    }
+    // The M2 escape hatch keeps working: `AMUX_OPENCODE_ACP=0` still sends
+    // OpenCode back to the M1 `run` transport, which the module docs promise.
+    if !acp_transport_enabled() {
+        return Transport::Run;
+    }
+    let available = serve::shared_service_available();
+    if !available {
+        warn_no_shared_service();
+    }
+    transport_default(available)
+}
+
+/// The un-pinned transport, as a pure function of "is there a shared server".
+/// Split out for the same reason [`transport_from_var`] is: the rule gets
+/// tested without `set_var`, which every parallel test would otherwise share.
+pub fn transport_default(shared_service_available: bool) -> Transport {
+    if shared_service_available {
+        Transport::Serve
+    } else {
+        Transport::Acp
+    }
+}
+
+/// One warn per process, not per prompt: `transport_from_env` runs on every
+/// operation, so a per-call log would bury the fleet in the same line.
+fn warn_no_shared_service() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            verdict = "no shared `opencode serve` registered; opencode workers stay on acp \
+                       and spawn a private server each",
+            hint = "run `opencode service start`, or set AMUX_OPENCODE_SERVICE_URL, or pin \
+                    AMUX_OPENCODE_TRANSPORT=acp to silence this",
+            "opencode transport gate"
+        );
+    });
+}
+
+/// [`transport_from_env`] as a pure function of the raw value — factored out
+/// for the same reason [`resolve_model`] is: a rule that needs `set_var` to be
+/// tested is a rule that gets tested against every other test's environment.
+/// `None` means "no explicit pin", which production never passes (the un-pinned
+/// case is [`transport_default`]); it stays `Acp` so the historical meaning of
+/// this function does not move under its callers.
+pub fn transport_from_var(raw: Option<&str>) -> Transport {
+    let Some(raw) = raw else {
+        return Transport::Acp;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "run" => Transport::Run,
+        "acp" => Transport::Acp,
+        "serve" => Transport::Serve,
+        other => {
+            tracing::warn!(
+                value = %other,
+                verdict = "unknown AMUX_OPENCODE_TRANSPORT value; defaulting to acp",
+                "opencode transport gate"
+            );
+            Transport::Acp
+        }
+    }
+}
+
 impl StructuredCliProtocol {
     pub fn new() -> Self {
         Self::default()
@@ -466,25 +611,65 @@ impl StructuredCliProtocol {
         Self {
             workers: Mutex::new(BTreeMap::new()),
             sink: Some(sink),
-            acp: None,
+            transport: None,
+            serve_client: None,
+            serve_hub: Mutex::new(None),
+            serve_reader: Mutex::new(None),
+            approval: None,
         }
     }
 
     /// Force the OpenCode transport on or off (tests). Production leaves it to
     /// `AMUX_OPENCODE_ACP`.
+    /// Pin the transport (the M1/M2 test seam, kept so its callers don't
+    /// move): `true` → ACP, `false` → run. Production leaves this unset and
+    /// lets [`transport_from_env`] decide.
     pub fn with_acp(mut self, enabled: bool) -> Self {
-        self.acp = Some(enabled);
+        self.transport = Some(if enabled {
+            Transport::Acp
+        } else {
+            Transport::Run
+        });
         self
     }
 
-    fn acp_enabled(&self) -> bool {
-        self.acp.unwrap_or_else(acp_transport_enabled)
+    /// Pin the transport to any of the three, `serve` included.
+    pub fn with_transport(mut self, transport: Transport) -> Self {
+        self.transport = Some(transport);
+        self
     }
 
-    /// Whether this worker's turns go over ACP: only OpenCode speaks it, and
-    /// only while the transport is enabled.
-    fn uses_acp(&self, shared: &WorkerShared) -> bool {
-        self.acp_enabled() && shared.config.provider == CliProvider::OpenCode
+    /// Pin the serve client (D1: an amux-owned serve hands its captured
+    /// password to [`serve::ServeClient::connect`]; the shared service comes
+    /// from the environment instead — this is also the seam tests use, so no
+    /// test has to reach for `set_var`).
+    pub fn with_serve_client(mut self, client: serve::ServeClient) -> Self {
+        self.serve_client = Some(client);
+        self
+    }
+
+    /// Pin how permission asks are answered (tests). Production leaves it unset
+    /// and gets [`boundary_policy::active`].
+    pub fn with_approval_policy(mut self, policy: Arc<dyn acp::ApprovalPolicy>) -> Self {
+        self.approval = Some(policy);
+        self
+    }
+
+    /// The policy every ask goes through — one place, so ACP and serve cannot
+    /// answer the same ask differently.
+    fn approval_policy(&self) -> Arc<dyn acp::ApprovalPolicy> {
+        self.approval
+            .clone()
+            .unwrap_or_else(boundary_policy::active)
+    }
+
+    /// The transport this worker's turns take. Only OpenCode speaks ACP or
+    /// serve, so every other provider is pinned to `run` by construction.
+    fn transport(&self, config: &WorkerConfig) -> Transport {
+        if config.provider != CliProvider::OpenCode {
+            return Transport::Run;
+        }
+        self.transport.unwrap_or_else(transport_from_env)
     }
 
     /// Register a worker. Without registration every call fails with
@@ -496,11 +681,7 @@ impl StructuredCliProtocol {
         // The transport is a per-worker decision made ONCE, at registration, and
         // said out loud: a worker whose turns take a different path than its
         // peers must not do so silently (ethos rule 4).
-        let transport = if self.acp_enabled() && config.provider == CliProvider::OpenCode {
-            "acp"
-        } else {
-            "run"
-        };
+        let transport = self.transport(&config).as_str();
         tracing::info!(
             worker = %worker,
             provider = config.provider.family(),
@@ -528,6 +709,9 @@ impl StructuredCliProtocol {
                 conversation: Mutex::new(conversation),
                 sink: self.sink.clone(),
                 acp: tokio::sync::Mutex::new(None),
+                serve: tokio::sync::Mutex::new(None),
+                serve_events: std::sync::atomic::AtomicBool::new(false),
+                model_override: Mutex::new(None),
             }),
         );
     }
@@ -551,12 +735,29 @@ impl StructuredCliProtocol {
 
     /// The one spawn path for both prompts and idle-time message delivery.
     async fn run_prompt(&self, worker: &WorkerId, text: &str, key: String) -> Result<()> {
+        self.prompt_with(worker, text, key, false).await
+    }
+
+    /// `steering = true` marks a DURABLE message delivery (plan D4): on the
+    /// serve transport a busy worker takes it mid-turn with
+    /// `delivery:"steer"` instead of rejecting it to the turn boundary. A
+    /// fresh `send_prompt` never steers — an unrelated prompt must not land
+    /// inside a turn it knows nothing about.
+    async fn prompt_with(
+        &self,
+        worker: &WorkerId,
+        text: &str,
+        key: String,
+        steering: bool,
+    ) -> Result<()> {
         let shared = self.shared(worker)?;
-        // ACP workers take the persistent-session path (M2). The guard below is
-        // shared with the M1 path, so dedupe/paused semantics cannot drift
-        // between the two transports.
-        if self.uses_acp(&shared) {
-            return self.run_acp_prompt(shared, text, key).await;
+        // ACP workers take the persistent-session path (M2), serve workers the
+        // HTTP one (M3). The guards inside each are copies of the same rules,
+        // so dedupe/paused semantics cannot drift between transports.
+        match self.transport(&shared.config) {
+            Transport::Acp => return self.run_acp_prompt(shared, text, key).await,
+            Transport::Serve => return self.run_serve_prompt(shared, text, key, steering).await,
+            Transport::Run => {}
         }
 
         // Dedupe + busy-check + spawn under the per-worker key lock so two
@@ -828,9 +1029,12 @@ impl StructuredCliProtocol {
             binary,
             shared.events.clone(),
         );
-        start.model = cfg.effective_model();
+        start.model = shared.effective_model_now();
         start.resume = resume.clone();
         start.turn_timeout = acp_turn_timeout();
+        // M6: boundaries.toml answers the ask. Without this an opencode worker
+        // had NO boundary enforcement at all — it has no hooks.
+        start.policy = self.approval_policy();
         let (session, handshake) = acp::AcpSession::spawn(start).await?;
         tracing::info!(
             worker = %shared.worker,
@@ -862,6 +1066,576 @@ impl StructuredCliProtocol {
         *slot = Some(session.clone());
         Ok(session)
     }
+
+    // ------------------------------------------------------------------
+    // Serve (M3)
+    // ------------------------------------------------------------------
+
+    /// The client every serve call goes through: a pinned one when the fleet
+    /// owns its serve (D1 — the password captured from the spawn log), else the
+    /// box's shared server (M4: explicit env, else opencode's own registry —
+    /// which is why no hand-set variable is needed). Failing here names every
+    /// source instead of failing later as an opaque connect error.
+    fn serve_client(&self) -> Result<serve::ServeClient> {
+        if let Some(client) = &self.serve_client {
+            return Ok(client.clone());
+        }
+        serve::ServeClient::from_env().map_err(|e| {
+            ProtocolError::Transport(format!("serve transport not configured: {e}"))
+        })
+    }
+
+    /// ONE hub and ONE event reader for the whole protocol (D1: one SSE
+    /// reader per serve process, never one per worker). Created lazily on the
+    /// first serve session, so a fleet that never selects `serve` pays
+    /// nothing. Dropping the protocol drops the reader with it.
+    fn serve_hub(&self) -> Result<Arc<serve::ServeEventHub>> {
+        let mut slot = self.serve_hub.lock().unwrap();
+        if let Some(hub) = slot.as_ref() {
+            return Ok(hub.clone());
+        }
+        let client = self.serve_client()?;
+        let hub = serve::ServeEventHub::new();
+        *self.serve_reader.lock().unwrap() = Some(serve::EventReader::spawn(client, hub.clone()));
+        *slot = Some(hub.clone());
+        tracing::info!(
+            verdict = "serve_event_reader_started",
+            "one serve SSE reader started for the fleet (M3.2 hub live)"
+        );
+        Ok(hub)
+    }
+
+    /// The worker's serve session, created on first use exactly like the ACP
+    /// one: the conversation ref (a `ses_…` id) rides the SAME `conversation`
+    /// slot and the same [`ConversationSink`], so continuity is
+    /// transport-independent — a worker can switch transports and resume.
+    async fn serve_session(
+        &self,
+        shared: &Arc<WorkerShared>,
+    ) -> Result<Arc<serve::ServeSession>> {
+        let mut slot = shared.serve.lock().await;
+        // M4: the SHARED service can be restarted, and the replacement binds a
+        // new random port with a new password. A cached session is bound to the
+        // endpoint it was opened against, so reusing it after that is a
+        // permanent failure with no way out. Compare first, and reopen when the
+        // endpoint moved — resuming by `ses_` ref keeps the conversation, since
+        // refs are portable between serve instances (measured 2026-10-30: the
+        // shared service answers 200 for a session a different serve created).
+        let cached = slot.clone();
+        if let Some(session) = cached {
+            let discovered = self.serve_client().ok().map(|c| c.base().to_string());
+            let stale = matches!(&discovered, Some(base) if base != session.base());
+            if stale {
+                tracing::warn!(
+                    worker = %shared.worker,
+                    cached_endpoint = session.base(),
+                    discovered_endpoint = discovered.as_deref().unwrap_or("-"),
+                    verdict = "serve endpoint changed (service restarted); reopening the session",
+                    "serve session endpoint moved"
+                );
+                *slot = None;
+            } else {
+                return Ok(session);
+            }
+        }
+        let client = self.serve_client()?;
+        let hub = self.serve_hub()?;
+        let resume = shared.conversation.lock().unwrap().clone();
+        let model = shared.effective_model_now();
+        // M9: a session is created with the permission ruleset that makes
+        // boundary enforcement possible at all. Without an `ask` rule opencode
+        // auto-approves and the policy never sees a call — measured 2026-11-03.
+        let permissions = boundary_policy::session_permission_ruleset();
+        let actions: Vec<&str> = permissions
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|r| r.get("action").and_then(|v| v.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if actions.is_empty() {
+            tracing::warn!(
+                worker = %shared.worker,
+                verdict = "boundary_ruleset_empty",
+                "no enabled boundary names a tool, so this session asks for nothing and \
+                 boundaries are NOT enforced for it",
+            );
+        } else {
+            tracing::info!(
+                worker = %shared.worker,
+                asks = ?actions,
+                verdict = "boundary_ruleset_applied",
+                "permission ruleset applied to the new session",
+            );
+        }
+        let (session, opened) = serve::ServeSession::open_with_permissions(
+            client,
+            &shared.config.cwd,
+            model.as_deref(),
+            resume.as_deref(),
+            Some(&permissions),
+        )
+        .await?;
+        tracing::info!(
+            worker = %shared.worker,
+            session = %opened.session_id,
+            resumed = opened.resumed,
+            transport = "serve",
+            "serve session established"
+        );
+        if let Some(dead) = &opened.resume_dropped {
+            tracing::warn!(worker = %shared.worker, conversation = %dead,
+                "serve resume target was gone; dropped the conversation ref");
+            if let Some(sink) = &shared.sink {
+                sink.forget(&shared.worker);
+            }
+        }
+        // Continuity, same shape as the ACP arm: the session id IS the ref.
+        *shared.conversation.lock().unwrap() = Some(opened.session_id.clone());
+        if let Some(sink) = &shared.sink {
+            sink.save(
+                &shared.worker,
+                shared.config.provider.family(),
+                &opened.session_id,
+            );
+        }
+        // M3.2's hub becomes a production consumer here: one forwarder per
+        // session feeds the worker's own channel (the one `AcpStart::new`
+        // writes to). Lag detection and backfill marking stay the hub's job.
+        if !shared
+            .serve_events
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            let mut rx = serve::ServeEventHub::subscribe(&hub, &opened.session_id);
+            let events = shared.events.clone();
+            let worker = shared.worker.clone();
+            tokio::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    let _ = events.send(ev);
+                }
+                tracing::info!(worker = %worker,
+                    verdict = "serve_event_forwarder_closed",
+                    "serve SSE forwarder stopped (worker channel closed)");
+            });
+        }
+        let session = Arc::new(session);
+        *slot = Some(session.clone());
+        Ok(session)
+    }
+
+    /// Serve's prompt path: same guard rules as the ACP arm (dedupe under the
+    /// key lock, paused rejects, busy rejects) with ONE deliberate difference
+    /// (plan D4) — a DURABLE message on a busy worker is admitted with
+    /// `delivery:"steer"` instead of being bounced to the turn boundary.
+    async fn run_serve_prompt(
+        &self,
+        shared: Arc<WorkerShared>,
+        text: &str,
+        key: String,
+        steering: bool,
+    ) -> Result<()> {
+        let turn = TurnId::from_ulid(ulid::Ulid::new());
+        let already_running = {
+            let mut keys = shared.seen_keys.lock().unwrap();
+            if shared.paused.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(ProtocolError::Rejected(format!(
+                    "worker {} is paused",
+                    shared.worker
+                )));
+            }
+            if keys.contains(&key) {
+                return Ok(()); // Invariant 9: redelivery must not double-run.
+            }
+            let busy = matches!(
+                *shared.state.lock().unwrap(),
+                AgentState::Working { .. }
+            );
+            if busy && !steering {
+                return Err(ProtocolError::Rejected(format!(
+                    "worker {} has a turn in progress; redeliver at the turn boundary",
+                    shared.worker
+                )));
+            }
+            keys.insert(key.clone());
+            if !busy {
+                shared.set_state(AgentState::Working {
+                    turn: Some(turn.clone()),
+                    progress: None,
+                });
+            }
+            busy
+        };
+
+        if !already_running {
+            shared.emit(WorkerEvent::TraceObserved(TurnTrace {
+                turn_id: turn.clone(),
+                kind: TurnTraceKind::Prompt,
+                content: text.to_string(),
+            }));
+            shared.emit(WorkerEvent::TurnStarted {
+                turn_id: turn.clone(),
+            });
+        }
+
+        let session = match self.serve_session(&shared).await {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(self.serve_start_failed(
+                    &shared,
+                    &key,
+                    &turn,
+                    e,
+                    already_running,
+                    "session unavailable",
+                ));
+            }
+        };
+
+        // Snapshot the outcome count BEFORE admitting: an `idle` row that
+        // appears after this point is this run's, which is how the watcher
+        // tells "my run ended" from "old history". If the baseline itself
+        // cannot be read, the turn could never be observed — so it never
+        // starts, rather than starting unwatchable.
+        let baseline = match session.turn_outcomes().await {
+            Ok(list) => list.len(),
+            Err(e) => {
+                return Err(self.serve_start_failed(
+                    &shared,
+                    &key,
+                    &turn,
+                    e,
+                    already_running,
+                    "outcome baseline unreadable",
+                ));
+            }
+        };
+
+        // D4: steer only into a turn that is actually running; a fresh prompt
+        // uses `queue`, whose measured behaviour on an idle session is
+        // "start it now" (an idle-session steer is NOT measured).
+        let admitted = if already_running {
+            session.steer(text).await
+        } else {
+            session.prompt_async(text, serve::Delivery::Queue).await
+        };
+        match admitted {
+            Ok(admitted_id) => {
+                tracing::info!(
+                    worker = %shared.worker,
+                    turn = %turn,
+                    admitted = %admitted_id,
+                    delivery = if already_running { "steer" } else { "queue" },
+                    "serve prompt admitted"
+                );
+                if !already_running {
+                    spawn_serve_turn_watcher(
+                        shared,
+                        session,
+                        turn,
+                        baseline,
+                        self.approval_policy(),
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => Err(self.serve_start_failed(
+                &shared,
+                &key,
+                &turn,
+                e,
+                already_running,
+                "prompt admission failed",
+            )),
+        }
+    }
+
+    /// A serve start that never admitted a turn, in the shape the ACP arm
+    /// already uses: un-burn the idempotency key so the queue can retry (a
+    /// failed start must not swallow a redelivery), classify and report the
+    /// failure (M3.6), and — when THIS call opened the turn — close it and
+    /// leave the worker `Idle`. A turn that was ALREADY running (a steer that
+    /// never landed) is left completely alone: reporting it failed would be
+    /// inventing an outcome, which is D3's cardinal sin.
+    fn serve_start_failed(
+        &self,
+        shared: &Arc<WorkerShared>,
+        key: &str,
+        turn: &TurnId,
+        error: ProtocolError,
+        already_running: bool,
+        what: &str,
+    ) -> ProtocolError {
+        shared.seen_keys.lock().unwrap().remove(key);
+        // M4: a failure with no HTTP status means the SERVER is gone — the
+        // cached session is bound to an endpoint that no longer answers, so
+        // keeping it would fail every future turn. Drop it and the next attempt
+        // rediscovers (and resumes by `ses_` ref). Best-effort by design: if the
+        // slot is held, an acquisition is already in flight and will do this.
+        if serve::is_server_gone(&error) {
+            if let Ok(mut slot) = shared.serve.try_lock() {
+                if slot.take().is_some() {
+                    tracing::warn!(
+                        worker = %shared.worker,
+                        stage = what,
+                        verdict = "serve server unreachable; dropped the cached session so the \
+                                   next turn rediscovers the endpoint",
+                        "serve session cache cleared"
+                    );
+                }
+            }
+        }
+        // M3.6: classify BEFORE reporting. `None` means the server REJECTED
+        // us (a `SessionBusyError` while our own state said idle) — not a
+        // failure, so no `Failed` event goes out; the queue's turn-boundary
+        // retry is the whole handling.
+        let event = serve::serve_worker_event(&error);
+        tracing::warn!(
+            worker = %shared.worker,
+            error = %error,
+            stage = what,
+            classified = match &event {
+                Some(WorkerEvent::RateLimited(_)) => "rate_limited",
+                Some(WorkerEvent::Failed(_)) => "failed",
+                Some(_) => "other",
+                None => "rejected (no event; queue retries at the boundary)",
+            },
+            verdict = "serve turn could not start; key released for retry",
+            "serve turn start failed"
+        );
+        let outcome = match &event {
+            Some(WorkerEvent::RateLimited(rl)) => format!(
+                "rate limited{}",
+                rl.reset_at
+                    .map(|t| format!(" until {t}"))
+                    .unwrap_or_default()
+            ),
+            Some(WorkerEvent::Failed(f)) => format!("failed: {}", f.reason),
+            _ => format!("rejected: {error}"),
+        };
+        if let Some(ev) = event {
+            shared.emit(ev);
+        }
+        if !already_running {
+            // The turn THIS call opened must close: a `TurnStarted` with no
+            // `TurnCompleted` leaves the worker `Working` forever, which is a
+            // diagnosis nobody can make (ethos rule 4).
+            shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
+                turn_id: turn.clone(),
+                outcome,
+            }));
+            shared.set_state(AgentState::Idle);
+        }
+        error
+    }
+}
+
+/// How often the serve turn watcher asks `/message` whether the turn ended.
+/// The cadence is a DESIGN CHOICE (nothing about it is measured) — 1 s is a
+/// round trip to localhost, and the alternative (`POST …/experimental/…/wait`)
+/// would need a client with no total timeout plus our own outer bound.
+const SERVE_TURN_POLL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a serve turn may run before the watcher calls it failed. Mirrors
+/// `acp::DEFAULT_TURN_TIMEOUT` (30 min) so both transports fail a wedged agent
+/// on the same clock; `AMUX_OPENCODE_SERVE_TIMEOUT_S` overrides it.
+fn serve_turn_timeout() -> std::time::Duration {
+    std::env::var("AMUX_OPENCODE_SERVE_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(acp::DEFAULT_TURN_TIMEOUT)
+}
+
+/// Find a serve turn's END without inventing one.
+///
+/// `prompt_async` returns at ADMISSION (D3), so there is no stream to read a
+/// close from — and D3 forbids deriving the outcome from the SSE stream
+/// anyway. So the watcher polls the durable `GET …/message` list (every
+/// request stays bounded by the client's 30 s timeout) until an `idle` row
+/// appears that was not in `baseline`, then reports its `outcome`. Bounded by
+/// [`serve_turn_timeout`]; on expiry the turn is reported `failed`, never left
+/// `Working` forever — a worker that looks permanently busy is a diagnosis
+/// nobody can make (ethos rule 4).
+fn spawn_serve_turn_watcher(
+    shared: Arc<WorkerShared>,
+    session: Arc<serve::ServeSession>,
+    turn: TurnId,
+    baseline: usize,
+    policy: Arc<dyn acp::ApprovalPolicy>,
+) {
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let timeout = serve_turn_timeout();
+        let mut warned = false;
+        // M4: consecutive "the server is not answering" reads. One blip must
+        // not kill a healthy turn, but a dead endpoint must not be polled for
+        // 30 minutes either — see the fail-fast below.
+        let mut gone_strikes = 0u32;
+        // M6: permission asks answered once each. The serve transport had the
+        // wire (M3.4) but nothing drove it, so a tool the worker's opencode
+        // config marks `ask` would hang the turn to its timeout — and with
+        // `serve` now the default (M4) that was the next worker to be stuck.
+        let mut answered: HashSet<String> = HashSet::new();
+        // Separate from `warned`: a failed permission poll must not suppress the
+        // (different) warning about an unreadable outcome.
+        let mut perm_warned = false;
+        loop {
+            // An ask is a step the agent is BLOCKED on, so this runs on every
+            // poll (1s) rather than a slower cadence: the cost is one GET on an
+            // empty list, and the alternative is a stalled turn.
+            match session.poll_permissions().await {
+                Ok(asks) => {
+                    for request in asks {
+                        if !answered.insert(request.id.clone()) {
+                            continue;
+                        }
+                        match session.answer_permission(&request, policy.as_ref()).await {
+                            Ok(reply) => {
+                                tracing::info!(
+                                    worker = %shared.worker,
+                                    turn = %turn,
+                                    request = %request.id,
+                                    tool = %request.ask.tool,
+                                    reply = reply.as_str(),
+                                    verdict = "serve permission answered",
+                                    "serve permission answered"
+                                );
+                            }
+                            Err(e) => {
+                                // A reply that did not land must be retried, not
+                                // remembered as answered — otherwise the ask
+                                // hangs until the turn times out.
+                                answered.remove(&request.id);
+                                tracing::warn!(
+                                    worker = %shared.worker,
+                                    turn = %turn,
+                                    request = %request.id,
+                                    error = %e,
+                                    verdict = "serve permission reply failed; will retry",
+                                    "serve permission reply failed"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Not fatal: the turn can still finish without an ask (most
+                    // turns never ask). Announce it once per turn.
+                    if !perm_warned {
+                        perm_warned = true;
+                        tracing::warn!(
+                            worker = %shared.worker,
+                            turn = %turn,
+                            error = %e,
+                            verdict = "serve permission poll failed; the turn continues",
+                            "serve permission poll failed"
+                        );
+                    }
+                }
+            }
+            match session.turn_outcomes().await {
+                Ok(outcomes) => {
+                    gone_strikes = 0;
+                    if outcomes.len() > baseline {
+                        // `data` is newest-first (measured on 2.2.1), so the
+                        // first row is the one just written.
+                        let outcome = outcomes
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string());
+                        tracing::info!(
+                            worker = %shared.worker,
+                            turn = %turn,
+                            outcome = %outcome,
+                            elapsed_s = started.elapsed().as_secs(),
+                            verdict = "serve turn completed; outcome read from /message (D3)",
+                            "serve turn completed"
+                        );
+                        shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
+                            turn_id: turn,
+                            outcome,
+                        }));
+                        shared.set_state(AgentState::Idle);
+                        return;
+                    }
+                }
+                Err(e) => {
+                    // M4: if the SERVER is gone, spinning until the 30-minute
+                    // turn timeout would report "turn exceeded 30m" — a
+                    // diagnosis pointing at the model when the truth is the
+                    // process. Three consecutive refusals (~3s at the 1s poll)
+                    // is enough to call it: one blip must not kill a healthy
+                    // turn, and a dead endpoint must not be polled for half an
+                    // hour.
+                    if serve::is_server_gone(&e) {
+                        gone_strikes += 1;
+                        if gone_strikes < 3 {
+                            tracing::warn!(
+                                worker = %shared.worker,
+                                turn = %turn,
+                                strike = gone_strikes,
+                                error = %e,
+                                verdict = "serve server not answering; retrying the outcome read \
+                                           before failing the turn",
+                                "serve outcome read failed"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                        tracing::error!(
+                            worker = %shared.worker,
+                            turn = %turn,
+                            error = %e,
+                            elapsed_s = started.elapsed().as_secs(),
+                            verdict = "serve server unreachable mid-turn; turn failed now \
+                                       (retryable) instead of polling to the timeout",
+                            "serve turn lost its server"
+                        );
+                        if let Ok(mut slot) = shared.serve.try_lock() {
+                            *slot = None;
+                        }
+                        shared.emit(WorkerEvent::Failed(Failure {
+                            reason: format!("serve server unreachable: {e}"),
+                            retryable: true,
+                        }));
+                        shared.emit(WorkerEvent::TurnCompleted(
+                            amux_core::protocol::TurnResult {
+                                turn_id: turn,
+                                outcome: "failed: serve server unreachable".to_string(),
+                            },
+                        ));
+                        shared.set_state(AgentState::Idle);
+                        return;
+                    }
+                    if !warned {
+                        warned = true;
+                        tracing::warn!(worker = %shared.worker, error = %e,
+                            verdict = "serve turn outcome unreadable; polling continues until the turn timeout",
+                            "could not read /message for turn outcome");
+                    }
+                }
+            }
+            if started.elapsed() > timeout {
+                let reason = format!("serve turn exceeded {timeout:?}");
+                tracing::error!(worker = %shared.worker, turn = %turn,
+                    elapsed_s = started.elapsed().as_secs(),
+                    verdict = "serve turn timed out; reported failed, worker returned to idle",
+                    "serve turn timed out");
+                shared.emit(WorkerEvent::Failed(Failure {
+                    reason: reason.clone(),
+                    retryable: true,
+                }));
+                shared.emit(WorkerEvent::TurnCompleted(amux_core::protocol::TurnResult {
+                    turn_id: turn,
+                    outcome: format!("failed: {reason}"),
+                }));
+                shared.set_state(AgentState::Idle);
+                return;
+            }
+            tokio::time::sleep(SERVE_TURN_POLL).await;
+        }
+    });
 }
 
 /// Keep the last few stderr lines so a nonzero exit is diagnosable from the
@@ -1086,12 +1860,15 @@ impl AgentProtocol for StructuredCliProtocol {
             .await
     }
 
-    /// Deliver a durable message. Headless CLIs have no mid-turn stdin, so
-    /// an idle worker gets the message as a new turn (keyed by the durable
-    /// `MessageId`, so redelivery is idempotent) and a busy worker rejects —
-    /// the queue's `AtTurnBoundary` timing retries at the boundary.
+    /// Deliver a durable message. Headless CLIs have no mid-turn stdin, so on
+    /// `run`/`acp` an idle worker gets the message as a new turn (keyed by the
+    /// durable `MessageId`, so redelivery is idempotent) and a busy worker
+    /// rejects — the queue's `AtTurnBoundary` timing retries at the boundary.
+    /// On **serve** a busy worker takes it mid-turn instead (`delivery:
+    /// "steer"`, plan D4) — that difference is the whole point of M3, and it
+    /// is scoped to durable messages only.
     async fn deliver_message(&self, worker: &WorkerId, msg: MessageId, body: String) -> Result<()> {
-        self.run_prompt(worker, &body, msg.as_str().to_string())
+        self.prompt_with(worker, &body, msg.as_str().to_string(), true)
             .await
     }
 
@@ -1099,18 +1876,34 @@ impl AgentProtocol for StructuredCliProtocol {
     /// nothing running is Ok — the absence of a turn IS the cancelled state.
     async fn cancel(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
-        // ACP: ask the agent to stop the turn with a `session/cancel`
-        // notification (measured: it is a notification, not a request). The
-        // process stays warm, so the next turn needs no handshake.
-        if self.uses_acp(&shared) {
-            let session = { shared.acp.lock().await.clone() };
-            let Some(session) = session else {
-                return Ok(()); // nothing running
-            };
-            session.cancel()?;
-            tracing::info!(worker = %worker, verdict = "acp_turn_cancelled",
-                "acp turn cancel requested");
-            return Ok(());
+        match self.transport(&shared.config) {
+            // ACP: ask the agent to stop the turn with a `session/cancel`
+            // notification (measured: it is a notification, not a request). The
+            // process stays warm, so the next turn needs no handshake.
+            Transport::Acp => {
+                let session = { shared.acp.lock().await.clone() };
+                let Some(session) = session else {
+                    return Ok(()); // nothing running
+                };
+                session.cancel()?;
+                tracing::info!(worker = %worker, verdict = "acp_turn_cancelled",
+                    "acp turn cancel requested");
+                return Ok(());
+            }
+            // Serve: POST …/interrupt. `false` (nothing was running) is the
+            // same Ok the other arms return for a missing turn; the ack itself
+            // is logged inside `ServeSession::interrupt`. The turn's watcher
+            // still owns the state transition — it reads the outcome from
+            // /message (D3).
+            Transport::Serve => {
+                let session = { shared.serve.lock().await.clone() };
+                let Some(session) = session else {
+                    return Ok(()); // no session yet = no turn
+                };
+                session.interrupt().await?;
+                return Ok(());
+            }
+            Transport::Run => {}
         }
         let pid = shared.child.lock().unwrap().as_ref().and_then(|c| c.id());
         let Some(pid) = pid else {
@@ -1136,21 +1929,41 @@ impl AgentProtocol for StructuredCliProtocol {
     /// Pause terminates current work and retains the conversation reference.
     async fn pause(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
-        // ACP: cancel the turn and close the process, KEEPING the session id
-        // (the conversation ref) so resume continues the same conversation
-        // with a fresh process. That is the M1 contract, expressed the ACP way.
-        if self.uses_acp(&shared) {
-            shared.paused.store(true, std::sync::atomic::Ordering::SeqCst);
-            shared.set_state(AgentState::Paused);
-            let session = { shared.acp.lock().await.take() };
-            if let Some(session) = session {
-                session.cancel().ok();
-                session.close().await;
-                tracing::info!(worker = %worker, verdict = "acp_session_paused_closed",
-                    conversation = %session.session_id(),
-                    "paused acp worker closed its session (ref retained)");
+        match self.transport(&shared.config) {
+            // ACP: cancel the turn and close the process, KEEPING the session id
+            // (the conversation ref) so resume continues the same conversation
+            // with a fresh process. That is the M1 contract, expressed the ACP way.
+            Transport::Acp => {
+                shared.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+                shared.set_state(AgentState::Paused);
+                let session = { shared.acp.lock().await.take() };
+                if let Some(session) = session {
+                    session.cancel().ok();
+                    session.close().await;
+                    tracing::info!(worker = %worker, verdict = "acp_session_paused_closed",
+                        conversation = %session.session_id(),
+                        "paused acp worker closed its session (ref retained)");
+                }
+                return Ok(());
             }
-            return Ok(());
+            // Serve: there is no per-worker process to close (D1: one serve
+            // for the fleet), so pause stops the TURN and keeps the session —
+            // the same contract with fewer moving parts. A turn watcher still
+            // running cannot undo this: `set_state` re-imposes Paused while
+            // the flag is up.
+            Transport::Serve => {
+                shared.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+                shared.set_state(AgentState::Paused);
+                let session = { shared.serve.lock().await.clone() };
+                if let Some(session) = session {
+                    session.interrupt().await.ok();
+                    tracing::info!(worker = %worker, verdict = "serve_session_paused",
+                        session = %session.session_id(),
+                        "paused serve worker interrupted its turn (session kept)");
+                }
+                return Ok(());
+            }
+            Transport::Run => {}
         }
         let pid = {
             let _keys = shared.seen_keys.lock().unwrap();
@@ -1182,15 +1995,79 @@ impl AgentProtocol for StructuredCliProtocol {
         Ok(())
     }
 
+    /// M7: switch the model for subsequent turns, without ending the session.
+    ///
+    /// Two cases, one behaviour:
+    /// - a LIVE session is told now (`POST /api/session/{id}/model`, measured
+    ///   204; ACP `session/set_config_option`), so the next turn uses it;
+    /// - no live session — the override is remembered and the next session is
+    ///   CREATED with it, which is why "switch now" and "switch for later" do
+    ///   not need two code paths.
+    ///
+    /// The override always wins over the registered model, and the log says
+    /// which of the two happened, because "the model is still the old one" must
+    /// be answerable from the log alone.
+    async fn set_model(&self, worker: &WorkerId, model: &str) -> Result<bool> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(ProtocolError::Rejected(
+                "a model switch needs a non-empty model name".to_string(),
+            ));
+        }
+        let shared = self.shared(worker)?;
+        *shared.model_override.lock().unwrap() = Some(model.to_string());
+
+        // A live speak: apply it to the session the next turn will use.
+        let serve_session = shared.serve.lock().await.clone();
+        let acp_session = shared.acp.lock().await.clone();
+        if let Some(session) = serve_session {
+            session.set_model(model).await?;
+            tracing::info!(
+                worker = %shared.worker,
+                model,
+                transport = "serve",
+                live = true,
+                verdict = "model switched on the live session; subsequent turns use it",
+                "worker model switched"
+            );
+            return Ok(true);
+        }
+        if let Some(session) = acp_session {
+            session.set_model(model).await?;
+            tracing::info!(
+                worker = %shared.worker,
+                model,
+                transport = "acp",
+                live = true,
+                verdict = "model switched on the live session; subsequent turns use it",
+                "worker model switched"
+            );
+            return Ok(true);
+        }
+        tracing::info!(
+            worker = %shared.worker,
+            model,
+            transport = self.transport(&shared.config).as_str(),
+            live = false,
+            verdict = "no live session; the override applies when the next one is created",
+            "worker model switched"
+        );
+        Ok(false)
+    }
+
     async fn resume(&self, worker: &WorkerId) -> Result<()> {
         let shared = self.shared(worker)?;
-        // ACP: pause already closed the session, so there is no process to
-        // wait on — the next turn restarts it from the retained conversation
-        // ref.
-        if self.uses_acp(&shared) {
-            shared.paused.store(false, std::sync::atomic::Ordering::SeqCst);
-            shared.set_state(AgentState::Idle);
-            return Ok(());
+        match self.transport(&shared.config) {
+            // ACP: pause already closed the session, so there is no process to
+            // wait on — the next turn restarts it from the retained
+            // conversation ref. Serve: pause kept the session warm, so resume
+            // is just the flag and the state — nothing to reap either way.
+            Transport::Acp | Transport::Serve => {
+                shared.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+                shared.set_state(AgentState::Idle);
+                return Ok(());
+            }
+            Transport::Run => {}
         }
         let _keys = shared.seen_keys.lock().unwrap();
         if shared.reading.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2410,5 +3287,1087 @@ mod tests {
         );
         let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
         assert_eq!(settled, AgentState::Idle);
+    }
+
+    // ------------------------------------------------------------------
+    // M3.5 — the Transport enum
+    // ------------------------------------------------------------------
+
+    /// The gate is a pure function of the raw value (factored out for exactly
+    /// this reason — see [`transport_from_var`]): no `set_var`, so no test
+    /// mutates the environment every parallel test shares.
+    #[test]
+    fn transport_gate_parses_the_value_and_falls_back_to_acp() {
+        assert_eq!(transport_from_var(None), Transport::Acp);
+        assert_eq!(transport_from_var(Some("serve")), Transport::Serve);
+        assert_eq!(transport_from_var(Some("run")), Transport::Run);
+        assert_eq!(transport_from_var(Some("acp")), Transport::Acp);
+        assert_eq!(transport_from_var(Some("  SERVE  ")), Transport::Serve);
+        // A typo must not silently pick a transport — it falls back AND logs.
+        assert_eq!(transport_from_var(Some("srv")), Transport::Acp);
+    }
+
+    /// M4's rule, as the pure function production uses: opencode workers join
+    /// the box's ONE shared server when it is registered, and stay on `acp`
+    /// only when there is nothing to join. Pure so no test needs `set_var` —
+    /// the environment is shared by every parallel test in the binary.
+    #[test]
+    fn the_unpinned_transport_joins_the_shared_server_when_one_exists() {
+        assert_eq!(transport_default(true), Transport::Serve);
+        assert_eq!(transport_default(false), Transport::Acp);
+
+        // An explicit pin still beats both — that is the escape hatch that
+        // makes this default reversible without a rebuild.
+        assert_eq!(transport_from_var(Some("acp")), Transport::Acp);
+        assert_eq!(transport_from_var(Some("run")), Transport::Run);
+        assert_eq!(transport_from_var(Some("serve")), Transport::Serve);
+    }
+
+    /// This box runs the registry opencode writes, so the discovery path is
+    /// exercised against a REAL file rather than only the pure parser — the
+    /// thing a parser unit test cannot catch is the path itself being wrong.
+    /// Skipped (not failed) where nothing is registered, so CI on a box with no
+    /// opencode stays green without pretending it proved anything.
+    #[test]
+    fn this_box_discovers_the_service_opencode_registered() {
+        let Some(service) = serve::registered_shared_service() else {
+            eprintln!("no shared opencode service registered here; discovery not exercised");
+            return;
+        };
+        assert!(
+            service.url.starts_with("http://127.0.0.1:"),
+            "the registry must yield a loopback URL, got {}",
+            service.url
+        );
+        assert!(!service.password.is_empty());
+        // And the gate must agree with the discovery it is built on.
+        assert_eq!(
+            transport_default(serve::shared_service_available()),
+            Transport::Serve
+        );
+    }
+
+    /// Only OpenCode can leave the `run` transport: `serve` and `acp` are
+    /// unreachable for every other provider, no matter how the gate is pinned.
+    #[test]
+    fn only_opencode_can_leave_the_run_transport() {
+        let cfg = |provider: CliProvider| WorkerConfig {
+            provider,
+            cwd: PathBuf::from("/tmp/m35"),
+            binary: None,
+            model: None,
+            conversation: None,
+        };
+        let pinned = StructuredCliProtocol::new().with_transport(Transport::Serve);
+        assert_eq!(pinned.transport(&cfg(CliProvider::OpenCode)), Transport::Serve);
+        assert_eq!(pinned.transport(&cfg(CliProvider::ClaudeCode)), Transport::Run);
+        assert_eq!(pinned.transport(&cfg(CliProvider::CodexCli)), Transport::Run);
+        assert_eq!(pinned.transport(&cfg(CliProvider::GeminiCli)), Transport::Run);
+
+        // The old seam keeps its meaning: with_acp(true/false) == acp/run.
+        let acp = StructuredCliProtocol::new().with_acp(true);
+        let run = StructuredCliProtocol::new().with_acp(false);
+        assert_eq!(acp.transport(&cfg(CliProvider::OpenCode)), Transport::Acp);
+        assert_eq!(run.transport(&cfg(CliProvider::OpenCode)), Transport::Run);
+    }
+
+    /// M3.5's done-when, literally: the per-worker line says which transport
+    /// the worker will use, `serve` included (ethos rule 4 — a worker whose
+    /// turns take a different path must not do so silently).
+    #[test]
+    fn register_says_out_loud_which_transport_a_worker_will_use() {
+        let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let writer = Writer(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let proto = StructuredCliProtocol::new().with_transport(Transport::Serve);
+            proto.register(
+                worker_id("00T01"),
+                WorkerConfig {
+                    provider: CliProvider::OpenCode,
+                    cwd: PathBuf::from("/tmp/m35"),
+                    binary: None,
+                    model: None,
+                    conversation: None,
+                },
+            );
+            let proto = StructuredCliProtocol::new().with_transport(Transport::Acp);
+            proto.register(
+                worker_id("00T02"),
+                WorkerConfig {
+                    provider: CliProvider::OpenCode,
+                    cwd: PathBuf::from("/tmp/m35"),
+                    binary: None,
+                    model: None,
+                    conversation: None,
+                },
+            );
+        });
+
+        let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        // `transport` is an un-`%` field, so tracing renders it Debug-quoted —
+        // the same format this line has had since M1.
+        assert!(logs.contains(r#"transport="serve""#), "{logs}");
+        assert!(logs.contains(r#"transport="acp""#), "{logs}");
+        assert!(logs.contains("structured transport selected"), "{logs}");
+    }
+
+    /// A fixture serve drives the whole M3.5 path: register → prompt →
+    /// admission → the turn's END found by reading the durable `/message` list
+    /// (D3) → `TurnCompleted` → `Idle`; then a durable message delivered while
+    /// that turn runs goes over as `delivery:"steer"` (D4).
+    #[tokio::test]
+    async fn a_serve_worker_admits_completes_and_steers_from_the_durable_list() {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        const PW: &str = "test-password-43-chars-test-password-43";
+        // Test-controlled: `/message` only reports an `idle` row once released,
+        // so "is the turn still running" is deterministic instead of racing a
+        // 1 s poll.
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deliveries = Arc::new(Mutex::new(Vec::<String>::new()));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let released = Arc::clone(&released);
+            let deliveries = Arc::clone(&deliveries);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(|| async move {
+                        axum::Json(json!({"data": {"id": "ses_m35"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/prompt",
+                    axum::routing::post(
+                        move |axum::Json(body): axum::Json<Value>| {
+                            deliveries.lock().unwrap().push(
+                                body.get("delivery")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("")
+                                    .to_string(),
+                            );
+                            async move {
+                                axum::Json(json!({"data": {"id": "msg_m35"}})).into_response()
+                            }
+                        },
+                    ),
+                )
+                .route(
+                    "/api/session/{id}/message",
+                    axum::routing::get(move || {
+                        let released = Arc::clone(&released);
+                        async move {
+                            if released.load(std::sync::atomic::Ordering::SeqCst) {
+                                axum::Json(json!({
+                                    "data": [{"type": "idle", "outcome": "succeeded"}],
+                                    "cursor": "cur_m35"
+                                }))
+                                .into_response()
+                            } else {
+                                axum::Json(json!({"data": []})).into_response()
+                            }
+                        }
+                    }),
+                )
+                // The M3.2 reader connects here; a heartbeat then EOF is all
+                // this test needs (the reader reconnects on its own).
+                .route(
+                    "/api/event",
+                    axum::routing::get(|| async {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            ": heartbeat\n\n",
+                        )
+                            .into_response()
+                    }),
+                );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+        let base = format!("http://{addr}");
+        let client = serve::ServeClient::connect(base, PW).unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client);
+        let w = worker_id("00S01");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: PathBuf::from("/tmp/m35-fixture"),
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("m35-1")).await.unwrap();
+        // The turn is running (the fixture will not report it ended until we
+        // release it), so a durable message must STEER, not queue.
+        proto
+            .deliver_message(&w, MessageId::from_ulid(ulid::Ulid::new()), "steer me".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            *deliveries.lock().unwrap(),
+            vec!["queue".to_string(), "steer".to_string()],
+            "fresh prompt queues; a durable message on a running turn steers (D4)"
+        );
+
+        // Release the turn: the watcher reads `/message` and closes it (D3).
+        released.store(true, std::sync::atomic::Ordering::SeqCst);
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        assert!(kinds.contains(&"turn_started"), "{kinds:?}");
+        let completed = evs
+            .iter()
+            .find_map(|e| match e {
+                WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+                _ => None,
+            })
+            .expect("the serve turn must be closed from /message");
+        assert_eq!(completed, "succeeded", "{kinds:?}");
+
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle);
+    }
+
+    // ------------------------------------------------------------------
+    // M7 — switch a model on a live serve session
+    // ------------------------------------------------------------------
+
+    /// Spins a fixture serve whose `/model` records the body it received.
+    /// Returns (base_url, models_seen, create_bodies).
+    async fn model_fixture() -> (
+        String,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        let models: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let creates: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let models = Arc::clone(&models);
+            let creates = Arc::clone(&creates);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                        let creates = Arc::clone(&creates);
+                        async move {
+                            creates.lock().unwrap().push(body);
+                            axum::Json(json!({"data": {"id": "ses_m7"}})).into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/prompt",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "msg_m7"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/message",
+                    axum::routing::get(|| async {
+                        axum::Json(json!({"data": [{"type": "idle", "outcome": "succeeded"}]}))
+                            .into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/model",
+                    axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                        let models = Arc::clone(&models);
+                        async move {
+                            models.lock().unwrap().push(body);
+                            axum::http::StatusCode::NO_CONTENT.into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/event",
+                    axum::routing::get(|| async {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            ": heartbeat\n\n",
+                        )
+                    }),
+                );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+        (format!("http://{addr}"), models, creates)
+    }
+
+    /// The capability M7 adds: a LIVE session is told to switch, in the measured
+    /// wire shape (`{"model": {providerID, id}}`), and the call is synchronous —
+    /// a caller learns whether it landed.
+    #[tokio::test]
+    async fn a_live_serve_session_switches_its_model_on_the_wire() {
+        let (base, models, _creates) = model_fixture().await;
+        let client = serve::ServeClient::connect(base, "pw").unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client);
+        let w = worker_id("M7001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+        // One turn so a session exists (the model switch needs something live).
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("m7-1")).await.expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        let live = proto
+            .set_model(&w, "opencode-go/deepseek-v4.1-flash")
+            .await
+            .expect("a live session must accept a model switch");
+        assert!(
+            live,
+            "a switch that reached a live session must report live=true — the HTTP door              answers `live` from exactly this value"
+        );
+
+        let seen = models.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "exactly one switch on the wire: {seen:?}");
+        assert_eq!(
+            seen[0]["model"],
+            serde_json::json!({"providerID": "opencode-go", "id": "deepseek-v4.1-flash"}),
+            "Model.Ref is {{providerID, id}} — a bare {{providerID, modelID}} is rejected upstream"
+        );
+    }
+
+    /// Switched BEFORE any session exists: the override is remembered and the
+    /// session is CREATED with it. One behaviour, so a caller never has to know
+    /// whether a session happened to be live.
+    #[tokio::test]
+    async fn a_model_switched_with_no_live_session_applies_to_the_next_one() {
+        let (base, models, creates) = model_fixture().await;
+        let client = serve::ServeClient::connect(base, "pw").unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client);
+        let w = worker_id("M7002");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                // The registered model differs from the switch, so the test
+                // proves the OVERRIDE wins rather than coincidence.
+                model: Some("opencode/deepseek-v4.1-flash-free".to_string()),
+                conversation: None,
+            },
+        );
+        let live = proto
+            .set_model(&w, "opencode-go/deepseek-v4.1-flash")
+            .await
+            .expect("no session yet is not an error");
+        assert!(
+            !live,
+            "with no live session the switch is only RECORDED; reporting live=true here was              the bug this fixes"
+        );
+
+        let mut rx = proto.events(&w);
+        proto.send_prompt(&w, prompt("m7-2")).await.expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        assert!(
+            models.lock().unwrap().is_empty(),
+            "with no live session there is nothing to POST to"
+        );
+        let created = creates.lock().unwrap().clone();
+        assert_eq!(created.len(), 1, "{created:?}");
+        assert_eq!(
+            created[0]["model"],
+            serde_json::json!({"providerID": "opencode-go", "id": "deepseek-v4.1-flash"}),
+            "the session must be CREATED with the switched model, not the registered one"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // M8 — a restarted server: fail fast, then reconnect and RESUME
+    // ------------------------------------------------------------------
+
+    /// Spawn a dedicated `opencode serve` whose password and port are chosen
+    /// here, so a test can restart it on a DIFFERENT port without touching the
+    /// fleet's shared service. `OPENCODE_PASSWORD` is honoured (measured
+    /// 2026-10-30), which is why no startup log has to be parsed.
+    fn spawn_serve(port: u16, password: &str) -> std::process::Child {
+        std::process::Command::new("opencode")
+            .env("OPENCODE_PASSWORD", password)
+            .args(["serve", "--hostname", "127.0.0.1", "--port", &port.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a dedicated opencode serve")
+    }
+
+    async fn wait_until_listening(port: u16) {
+        for _ in 0..60 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("dedicated serve on :{port} never started listening");
+    }
+
+    /// Point the registry opencode would write at OUR server. This is the same
+    /// file the production path reads, so the test exercises discovery — not a
+    /// pinned client, which could never notice the endpoint moving.
+    fn write_registry(path: &std::path::Path, port: u16, password: &str) {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"id":"test","version":"test","url":"http://127.0.0.1:{port}","pid":0,"password":"{password}"}}"#
+            ),
+        )
+        .expect("write the registry the discovery path reads");
+    }
+
+    /// The one behaviour never run live before this test: the server the worker
+    /// is talking to RESTARTS mid-turn. Two things must be true, and only one of
+    /// them is obvious:
+    ///
+    /// 1. the turn must END — fast, with a retryable failure. Polling a dead
+    ///    endpoint until the 30-minute turn timeout would report "turn exceeded
+    ///    30m", which blames the model for a dead process;
+    /// 2. the NEXT turn must work, on the SAME `ses_`. The cached session is
+    ///    bound to the old endpoint, so this is the reopen-by-ref path: refs are
+    ///    portable between serve instances (measured), so continuity survives a
+    ///    restart instead of forking the conversation.
+    ///
+    /// Caller sets `AMUX_OPENCODE_SERVICE_STATE` (the registry to own) and
+    /// `AMUX_SMOKE_MODEL` (a paid model; the fleet default's free quota runs
+    /// out). `#[ignore]`d because it spawns processes and spends tokens.
+    #[tokio::test]
+    #[ignore = "live: spawns and restarts a dedicated `opencode serve`"]
+    async fn a_serve_turn_fails_fast_then_resumes_after_the_server_restarts() {
+        let (Ok(state), Ok(model)) = (
+            std::env::var("AMUX_OPENCODE_SERVICE_STATE"),
+            std::env::var("AMUX_SMOKE_MODEL"),
+        ) else {
+            eprintln!(
+                "RESTART SMOKE NOT RUN: set AMUX_OPENCODE_SERVICE_STATE and AMUX_SMOKE_MODEL"
+            );
+            return;
+        };
+        let state = std::path::PathBuf::from(state);
+        let (port1, port2) = (49_971u16, 49_972u16);
+        let (pw1, pw2) = (
+            "restart-smoke-pw-one-0123456789abcdefg",
+            "restart-smoke-pw-two-0123456789abcdefg",
+        );
+
+        let mut first = spawn_serve(port1, pw1);
+        wait_until_listening(port1).await;
+        write_registry(&state, port1, pw1);
+
+        // NO transport pin, NO pinned client: an un-pinned worker discovers the
+        // registry, which is exactly the production shape.
+        let proto = StructuredCliProtocol::new();
+        let w = worker_id("RS001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: Some(model),
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+
+        // Long enough to still be running when the restart lands.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Write a 1200-word essay about tides into essay.txt. Do not stop early."
+                        .to_string(),
+                    idempotency_key: "restart-smoke-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit the long turn");
+        tokio::time::sleep(Duration::from_secs(8)).await;
+
+        // --- the restart: kill it, bring one up on a DIFFERENT port, rewrite the
+        // registry the way opencode would.
+        first.kill().ok();
+        let _ = first.wait();
+        let mut second = spawn_serve(port2, pw2);
+        wait_until_listening(port2).await;
+        write_registry(&state, port2, pw2);
+        let restarted_at = std::time::Instant::now();
+        eprintln!("smoke: server restarted on :{port2} (was :{port1})");
+
+        // 1. The turn must END quickly. 90s is generous for 3 strikes at a 1s
+        // poll; the failure this guards against takes 30 MINUTES.
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(90)).await;
+        let took = restarted_at.elapsed();
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        let outcome = evs.iter().find_map(|e| match e {
+            WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+            _ => None,
+        });
+        eprintln!("smoke: turn ended after {:.1}s, outcome = {outcome:?}", took.as_secs_f64());
+        eprintln!("smoke: events = {kinds:?}");
+        assert!(
+            outcome.is_some(),
+            "the turn must CLOSE after the server vanished, not hang: {kinds:?}"
+        );
+        assert!(
+            took < Duration::from_secs(90),
+            "the turn must fail fast on a dead endpoint, took {took:?}"
+        );
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+
+        // 2. The NEXT turn works, on the SAME conversation.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Reply with exactly: RESUMED-OK".to_string(),
+                    idempotency_key: "restart-smoke-2".to_string(),
+                },
+            )
+            .await
+            .expect("the recovered worker must admit a new turn");
+        let evs2 = collect_until_terminal(&mut rx, Duration::from_secs(120)).await;
+        let kinds2: Vec<_> = evs2.iter().map(kind).collect();
+        let outcome2 = evs2.iter().find_map(|e| match e {
+            WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+            _ => None,
+        });
+        eprintln!("smoke: post-restart outcome = {outcome2:?}");
+        assert_eq!(
+            outcome2.as_deref(),
+            Some("succeeded"),
+            "the turn after the restart must succeed: {kinds2:?}"
+        );
+
+        let shared = proto.shared(&w).expect("registered worker");
+        let session = shared.conversation.lock().unwrap().clone();
+        let session = session.expect("a session ref must exist after the restart");
+        assert!(session.starts_with("ses_"), "{session}");
+        eprintln!("smoke: RESUMED on {session}");
+
+        second.kill().ok();
+        let _ = second.wait();
+        let _ = std::fs::remove_file(&state);
+        eprintln!(
+            "LIVE SMOKE VERDICT: restart recovery proven — failed fast, then resumed the same session"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // M6 — boundaries.toml answers a serve permission ask
+    // ------------------------------------------------------------------
+
+    /// The chain M6 exists for, end to end over the WIRE: a running serve turn
+    /// polls its permission asks, the pinned policy consults `boundaries.toml`,
+    /// and a write into the vault is REFUSED — `reject` is what the fixture
+    /// records, not what our enum says.
+    ///
+    /// Before M6 nothing polled at all, so the ask would have hung the turn to
+    /// its timeout; and before it, no boundary applied to an opencode worker at
+    /// all (it has no PreToolUse hooks).
+    #[tokio::test]
+    async fn a_running_serve_turn_refuses_a_boundary_path_on_the_wire() {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        const PW: &str = "test-password-43-chars-test-password-43";
+        let replies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let permission_polls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let replies = Arc::clone(&replies);
+            let polls = Arc::clone(&permission_polls);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "ses_perm"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/prompt",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "msg_perm"}})).into_response()
+                    }),
+                )
+                // The turn is already over: the watcher polls permissions
+                // BEFORE it reads the outcome, so one iteration proves the chain.
+                .route(
+                    "/api/session/{id}/message",
+                    axum::routing::get(|| async {
+                        axum::Json(json!({
+                            "data": [{"type": "idle", "outcome": "succeeded"}],
+                            "cursor": "cur_perm"
+                        }))
+                        .into_response()
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/permission",
+                    axum::routing::get(move || {
+                        let polls = Arc::clone(&polls);
+                        async move {
+                            polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            axum::Json(json!({"data": [{
+                                "id": "per_vault01",
+                                "sessionID": "ses_perm",
+                                "action": "write",
+                                "resources": ["/home/pv/.amux/vault/items.json"],
+                                "message": "Write /home/pv/.amux/vault/items.json?"
+                            }]}))
+                            .into_response()
+                        }
+                    }),
+                )
+                .route(
+                    "/api/session/{id}/permission/{rid}/reply",
+                    axum::routing::post(
+                        move |axum::Json(body): axum::Json<Value>| {
+                            let replies = Arc::clone(&replies);
+                            async move {
+                                replies.lock().unwrap().push(
+                                    body.get("decision")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                );
+                                axum::http::StatusCode::NO_CONTENT.into_response()
+                            }
+                        },
+                    ),
+                )
+                // The M3.2 reader connects here; a heartbeat then EOF.
+                .route(
+                    "/api/event",
+                    axum::routing::get(|| async {
+                        (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            ": heartbeat\n\n",
+                        )
+                    }),
+                );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+
+        // The registry's own vault rule, so the test cannot pass against a
+        // shape that changed underneath it.
+        let registry_toml = r#"
+[[boundary]]
+id = "credentials"
+[[boundary.deny]]
+tools = ["Write", "Edit", "Read"]
+match_all = ['\.amux/(vault|ts-secrets)']
+path = '\.amux/(vault|ts-secrets)/'
+reason = "The vault holds card and secret data."
+"#;
+        let parsed: toml::Table = toml::from_str(registry_toml).unwrap();
+        let registry: Vec<toml::Table> = parsed
+            .get("boundary")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_table().cloned()).collect())
+            .unwrap();
+        let policy: Arc<dyn acp::ApprovalPolicy> =
+            Arc::new(boundary_policy::BoundaryPolicy::from_registry(registry));
+
+        let client = serve::ServeClient::connect(format!("http://{addr}"), PW).unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client)
+            .with_approval_policy(Arc::clone(&policy));
+        let w = worker_id("BP001");
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd: std::env::temp_dir(),
+                binary: None,
+                model: None,
+                conversation: None,
+            },
+        );
+        let mut rx = proto.events(&w);
+        proto
+            .send_prompt(&w, prompt("m6-perm-1"))
+            .await
+            .expect("admit");
+        let _ = collect_until_terminal(&mut rx, Duration::from_secs(20)).await;
+
+        // The wire carried `reject` — the boundary's decision, not a default.
+        let sent = replies.lock().unwrap().clone();
+        assert_eq!(
+            sent,
+            vec!["reject".to_string()],
+            "the vault write must be refused exactly once"
+        );
+        // And it was asked once, because an answered id is not re-answered.
+        assert!(
+            permission_polls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "the watcher must poll permission asks during a turn"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // M3.5 — the live smoke (a REAL turn over the serve transport)
+    // ------------------------------------------------------------------
+
+    /// M3.5's done-condition on real hardware: a worker registered on the
+    /// `serve` transport runs a real turn to completion — prompt → admission →
+    /// **SSE progress reaching the worker's own channel** (M3.2's hub, now with
+    /// a production consumer) → **a steered durable message landing mid-turn**
+    /// (D4) → the outcome read from `/message` (D3) → `Idle`.
+    ///
+    /// `#[ignore]`d: it needs a serve process and provider quota. Driven by
+    /// hand in the D1 shape (one dedicated serve, password from its startup
+    /// log) — the same harness as the M3.3 smoke:
+    ///
+    /// ```text
+    /// opencode serve --hostname 127.0.0.1 --port <p> > serve.log 2>&1 &
+    /// pw=$(sed -n 's/^server password //p' serve.log)
+    /// AMUX_SMOKE_URL=http://127.0.0.1:<p> AMUX_SMOKE_PASSWORD="$pw" \
+    ///   cargo test -p amux-server --lib live_smoke -- --ignored --nocapture
+    /// ```
+    ///
+    /// `AMUX_SMOKE_MODEL` pins the model for the turn; unset means the fleet
+    /// default applies. It exists because the fleet default may be a FREE model
+    /// whose quota is spent (measured: `provider.free-limit`, 429) — a paid
+    /// model through `AMUX_SMOKE_MODEL` is how a full pass gets forced WITHOUT
+    /// baking a paid dependency into the repo. Either way the model used is
+    /// printed, so the run's evidence names it.
+    #[tokio::test]
+    #[ignore = "live smoke: needs a running `opencode serve` and provider quota"]
+    async fn a_live_smoke_a_serve_worker_completes_and_steers_a_real_turn() {
+        let (Ok(url), Ok(pw)) = (
+            std::env::var("AMUX_SMOKE_URL"),
+            std::env::var("AMUX_SMOKE_PASSWORD"),
+        ) else {
+            eprintln!("LIVE SMOKE NOT RUN: set AMUX_SMOKE_URL and AMUX_SMOKE_PASSWORD");
+            return;
+        };
+        let client = serve::ServeClient::connect(url, pw).expect("connect to the smoke serve");
+        let cwd = std::env::temp_dir().join("m35-smoke-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let proto = StructuredCliProtocol::new()
+            .with_transport(Transport::Serve)
+            .with_serve_client(client.clone());
+        let w = worker_id("SM001");
+        // Unset → the fleet default (`effective_model`). Set → that exact
+        // model, e.g. `AMUX_SMOKE_MODEL=opencode-go/deepseek-v4.1-flash` when
+        // the free default's quota is spent.
+        let smoke_model = std::env::var("AMUX_SMOKE_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd,
+                binary: None,
+                model: smoke_model.clone(),
+                conversation: None,
+            },
+        );
+        eprintln!(
+            "smoke: model = {}",
+            smoke_model.unwrap_or_else(|| format!("{} (fleet default)", crate::opencode::default_model()))
+        );
+        let mut rx = proto.events(&w);
+
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Write a 3000-word essay about lighthouses into essay.txt. \
+                     Do not stop early."
+                        .to_string(),
+                    idempotency_key: "m35-live-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit the long task");
+
+        // D4: a durable message while that turn runs must be ADMITTED, not
+        // bounced to the turn boundary — that difference is why M3 exists.
+        let marker = "SMOKE-STEER-1 stop the essay and reply exactly STEERED-OK";
+        proto
+            .deliver_message(
+                &w,
+                MessageId::from_ulid(ulid::Ulid::new()),
+                marker.to_string(),
+            )
+            .await
+            .expect("a durable message on a running turn must be admitted");
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(240)).await;
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        eprintln!("smoke: events = {kinds:?}");
+
+        // 1. The run CLOSED, and D3 held: the outcome came from `/message`,
+        //    never from SSE (which D3 forbids for outcomes anyway).
+        let outcome = evs
+            .iter()
+            .find_map(|e| match e {
+                WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+                _ => None,
+            })
+            .expect("TurnCompleted must arrive: the watcher reads /message");
+        eprintln!("smoke: outcome = {outcome}");
+
+        // 2. M3.2 in production: the reader consumed real frames. Asserted via
+        //    the HUB'S counter rather than "did text arrive", because a
+        //    provider that refuses before answering streams no text at all —
+        //    a smoke must fail on transport regressions, not on quota.
+        let frames = proto
+            .serve_hub
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|h| h.stats().frames)
+            .unwrap_or(0);
+        let sse_only: Vec<&&str> = kinds
+            .iter()
+            .filter(|k| matches!(**k, "progress" | "tool_used" | "rate_limited"))
+            .collect();
+        eprintln!("smoke: hub frames = {frames}; SSE-only kinds = {sse_only:?}");
+        assert!(
+            frames > 0,
+            "the SSE reader must consume real frames (M3.2 as a production consumer): {kinds:?}"
+        );
+
+        // 3. The steer did not merely get a 200 — it is in the DURABLE list.
+        //    (`shared` is bound first: a temporary MutexGuard in a block's
+        //    tail expression would outlive it — E0597.)
+        let shared = proto.shared(&w).expect("registered worker");
+        let conversation = shared.conversation.lock().unwrap().clone();
+        let session_id =
+            conversation.expect("the ses_ ref must be captured on session acquisition");
+        let messages = client
+            .messages(&session_id)
+            .await
+            .expect("read /message");
+        assert!(
+            messages.to_string().contains(marker),
+            "the steered durable message must appear in the session's history"
+        );
+        eprintln!("smoke: steered message present in /message (session {session_id})");
+
+        // 4. THE VERDICT. `succeeded` is the full pass. A TYPED provider
+        //    refusal is accepted — measured live on 2026-10-30 as
+        //    `provider.free-limit` (429, "Free usage limit reached") — because
+        //    in that case the transport is what we are smoke-testing and the
+        //    transport demonstrably worked: admission, SSE frames, the D3
+        //    outcome read and the persisted steer all happened. Anything else
+        //    (an untyped failure, a timeout) still fails loudly: accepting all
+        //    failures would make this smoke worthless.
+        let idle_error = messages
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r.get("type").and_then(serde_json::Value::as_str) == Some("idle"))
+                    .and_then(|r| r.get("error"))
+                    .cloned()
+            });
+        let refusal = idle_error.as_ref().and_then(|e| {
+            let ty = e.get("type").and_then(serde_json::Value::as_str)?;
+            let msg = e.get("message").and_then(serde_json::Value::as_str)?;
+            Some((ty.to_string(), msg.to_string()))
+        });
+        match (refusal.as_ref(), outcome.as_str()) {
+            (Some((ty, msg)), _)
+                if ty.contains("limit")
+                    || ty.contains("quota")
+                    || events::is_rate_limit_message(msg) =>
+            {
+                eprintln!("LIVE SMOKE VERDICT: transport proven; PROVIDER refused the turn");
+                eprintln!("  {ty}: {msg}");
+                eprintln!("  (admission, SSE frames, D3 outcome and the persisted steer all verified above)");
+            }
+            (_, "succeeded") => eprintln!("LIVE SMOKE VERDICT: full turn succeeded end to end"),
+            other => panic!(
+                "serve turn failed for a NON-provider reason: outcome={outcome}, \
+                 idle_error={other:?}, events={kinds:?}"
+            ),
+        }
+
+        // 5. The worker ends idle, and its ref is the provider-native ses_ id.
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+        assert!(session_id.starts_with("ses_"), "{session_id}");
+    }
+
+    // ------------------------------------------------------------------
+    // M4 — a worker joins the ONE shared server, by discovery
+    // ------------------------------------------------------------------
+
+    /// M4's done-condition on real hardware: an OpenCode worker with **no
+    /// transport pin and no serve client** resolves to `serve` from the box's
+    /// own registry and runs a real turn against the single
+    /// `opencode serve --service` — not a private child of its own.
+    ///
+    /// Deliberately different from the M3.5 smoke: that one took
+    /// `AMUX_SMOKE_URL`/`AMUX_SMOKE_PASSWORD` for a DEDICATED serve it started
+    /// itself. Discovering the endpoint is the thing under test here, so this
+    /// takes neither. `AMUX_SMOKE_MODEL` still pins the model (the fleet default
+    /// is a free model whose quota can be spent).
+    ///
+    /// It cleans up after itself with `DELETE /api/session/{id}`: on a SHARED
+    /// service every session is visible to every worker, so a leftover smoke
+    /// session is litter in the fleet's one database, not a private mess.
+    #[tokio::test]
+    #[ignore = "live: needs the shared `opencode serve --service` and provider quota"]
+    async fn a_worker_joins_the_shared_service_by_discovery_and_completes_a_turn() {
+        let Some(service) = serve::registered_shared_service() else {
+            eprintln!("LIVE SMOKE NOT RUN: no shared opencode service registered on this box");
+            return;
+        };
+        // The gate and the discovery must agree BEFORE a worker is registered:
+        // an un-pinned worker on this box takes `serve`, and that decision is
+        // the whole point of M4.
+        assert_eq!(
+            transport_default(serve::shared_service_available()),
+            Transport::Serve,
+            "a registered service must make serve the un-pinned default"
+        );
+
+        let client = serve::ServeClient::from_env()
+            .expect("discovery (registry → url + password) must produce a client");
+        let cwd = std::env::temp_dir().join("m4-shared-smoke-ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // NO with_transport / with_serve_client: this is the un-pinned path.
+        let proto = StructuredCliProtocol::new();
+        let w = worker_id("SH001");
+        let smoke_model = std::env::var("AMUX_SMOKE_MODEL")
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        proto.register(
+            w.clone(),
+            WorkerConfig {
+                provider: CliProvider::OpenCode,
+                cwd,
+                binary: None,
+                model: smoke_model.clone(),
+                conversation: None,
+            },
+        );
+        eprintln!(
+            "smoke: shared service {} (pid {:?}, v{:?}), model = {}",
+            service.url,
+            service.pid,
+            service.version,
+            smoke_model.unwrap_or_else(|| format!(
+                "{} (fleet default)",
+                crate::opencode::default_model()
+            ))
+        );
+        let mut rx = proto.events(&w);
+
+        // One word of work: this smoke proves the JOIN, not endurance.
+        proto
+            .send_prompt(
+                &w,
+                Prompt {
+                    text: "Reply with exactly: SHARED-OK".to_string(),
+                    idempotency_key: "m4-shared-1".to_string(),
+                },
+            )
+            .await
+            .expect("admit a turn on the shared service");
+
+        let evs = collect_until_terminal(&mut rx, Duration::from_secs(240)).await;
+        let kinds: Vec<_> = evs.iter().map(kind).collect();
+        let outcome = evs
+            .iter()
+            .find_map(|e| match e {
+                WorkerEvent::TurnCompleted(t) => Some(t.outcome.clone()),
+                _ => None,
+            })
+            .expect("TurnCompleted must arrive: the watcher reads /message");
+        eprintln!("smoke: events = {} total, outcome = {outcome}", evs.len());
+
+        let shared = proto.shared(&w).expect("registered worker");
+        let conversation = shared.conversation.lock().unwrap().clone();
+        let session_id =
+            conversation.expect("the ses_ ref must be captured on session acquisition");
+        let settled = wait_for_state(&proto, &w, |s| *s == AgentState::Idle).await;
+        assert_eq!(settled, AgentState::Idle, "{kinds:?}");
+
+        // The session must be readable on the SERVICE WE DISCOVERED — that is
+        // what proves the ref belongs to the fleet's one server rather than to
+        // a private child that would vanish with this process.
+        let visible = client
+            .session_exists(&session_id)
+            .await
+            .expect("the shared service must answer for the session");
+        let cleanup = client.delete_session(&session_id).await;
+        assert!(
+            visible,
+            "the turn's session must live on the discovered service ({session_id})"
+        );
+
+        match (outcome.as_str(), cleanup) {
+            ("succeeded", Ok(())) => {
+                eprintln!(
+                    "LIVE SMOKE VERDICT: worker joined the shared server and the turn succeeded"
+                );
+            }
+            ("succeeded", Err(e)) => {
+                // The turn is the claim; a failed cleanup is reported so it can
+                // be swept, not silently ignored.
+                eprintln!("LIVE SMOKE VERDICT: turn succeeded on the shared server; CLEANUP FAILED: {e}");
+            }
+            (other, _) => panic!(
+                "the shared-service turn did not succeed: outcome={other}, events={kinds:?}"
+            ),
+        }
     }
 }

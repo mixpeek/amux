@@ -1,5 +1,15 @@
 # ACP coverage spike (RR-0028f)
 
+> **STATUS (2026-10-30): the "uniform ACP ingester" recommendation below was
+> REJECTED by the owner, not deferred.** OpenCode — the runtime this fleet
+> actually runs, and the owner's main interest — moved to its HTTP API (see
+> `docs/opencode-provider-plan.md`, M3/M4), so ACP now describes the *fallback*
+> transport rather than the way forward. Building one ingester around ACP would
+> optimise for the least-used path and still leave the HTTP client to maintain.
+> If a second provider ever matters, the question is "does it have an HTTP
+> surface like OpenCode's", not "does it speak ACP". The protocol analysis below
+> stays as measured history.
+
 Question: should ACP (Agent Client Protocol, agentclientprotocol.com — Zed's
 JSON-RPC agent<->client standard) be amux's abstraction for uniform provider
 output rendering? Follows the "do it" on uniform provider output (AMUX-3201) and
