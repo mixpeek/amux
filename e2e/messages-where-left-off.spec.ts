@@ -16,12 +16,13 @@ const posts = (conv: string, n: number) => Array.from({ length: n }, (_, i) => (
   body: 'message ' + (i + 1) + ' in ' + conv + '\n\nwith a second paragraph so the list scrolls',
   mentions: [], deliveries: [], ts: now - (n - i) * 60000 }));
 
-async function open(page: Page, lastRead: number) {
+async function open(page: Page, lastRead: number, slowA?: { ms: number }) {
   await page.route(/\/api\/conversations(\?.*)?$/, r => r.fulfill({ json: LIST }));
-  await page.route(/\/api\/conversations\/[^/]+\/posts(\?.*)?$/, r => {
+  await page.route(/\/api\/conversations\/[^/]+\/posts(\?.*)?$/, async r => {
     const conv = decodeURIComponent(r.request().url().split('/api/conversations/')[1].split('/')[0]);
     const after = Number(new URL(r.request().url()).searchParams.get('after') || 0);
     const all = posts(conv, 60).filter(p => p.id > after);
+    if (conv === A && slowA && slowA.ms) await new Promise(res => setTimeout(res, slowA.ms));
     return r.fulfill({ json: { measured: true, n_considered: all.length, posts: all, last_read: conv === A ? lastRead : 1060,
       people: [], workers: [], mentionable_workers: [], typing: [] } });
   });
@@ -64,5 +65,31 @@ test('a conversation you scrolled up in reopens at the post you were reading', a
   await page.evaluate(c => (0, eval)('_cvSelect(' + JSON.stringify(c) + ')'), A);
   await expect(page.locator('#cv-posts .cv-post[data-id="12"]'), 'conversation A rendered again').toBeAttached();
   await expect(page.locator('#cv-posts .cv-unread-line')).toHaveCount(0);
+  await expect.poll(() => inView(page, 12)).toBe(true);
+});
+
+test('a place saved just before switching is not filed under the next conversation', async ({ page }) => {
+  // CI, ios-safari, 2026-11-08: the position save runs 300ms after a scroll and
+  // read the selected conversation THEN. Scrolling B and switching to A inside
+  // that window, with A's posts still loading, saved B's bottom as A's place.
+  const slowA = { ms: 0 };
+  await open(page, 60, slowA);
+  await page.evaluate(c => (0, eval)('_cvSelect(' + JSON.stringify(c) + ')'), A);
+  await expect(page.locator('#cv-posts .cv-post[data-id="12"]')).toBeAttached();
+  await page.evaluate(() => {
+    const box = document.getElementById('cv-posts')!, el = box.querySelector('.cv-post[data-id="12"]')!;
+    box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.dispatchEvent(new Event('scroll'));
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(c => (0, eval)('_cvSelect(' + JSON.stringify(c) + ')'), B);
+  await expect(page.locator('#cv-posts .cv-post[data-id="1060"]')).toBeVisible();
+  slowA.ms = 700;
+  await page.evaluate(b => {
+    const box = document.getElementById('cv-posts')!;
+    box.dispatchEvent(new Event('scroll'));
+    (0, eval)('_cvSelect(' + JSON.stringify(b) + ')');
+  }, A);
+  await expect(page.locator('#cv-posts .cv-post[data-id="12"]'), 'conversation A rendered again').toBeAttached({ timeout: 5000 });
   await expect.poll(() => inView(page, 12)).toBe(true);
 });

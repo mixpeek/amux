@@ -70660,8 +70660,16 @@ function _cvRestoreScroll(box) {
 let _cvPosT = 0;
 function _cvSavePosition(box) {
   clearTimeout(_cvPosT);
+  // The conversation this scroll happened in. A switch inside the debounce
+  // used to save the old list's place under the new conversation's name, so it
+  // reopened at the bottom (CI, ios-safari, 2026-11-08).
+  const sel = _cv.sel, gen = _cv.gen;
   _cvPosT = setTimeout(() => {
-    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+    if (_cv.sel !== sel || _cv.gen !== gen) {
+      if (window._clientDebug) window._clientDebug('cv-position', { verdict: 'stale_save_dropped', measured: true, n_considered: 1 });
+      return;
+    }
+    if (!sel || sel[0] === '@') return;
     const top = box.getBoundingClientRect().top;
     const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
     const all = _cvPositions();
