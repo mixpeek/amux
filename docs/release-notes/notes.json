@@ -1,5 +1,56 @@
 [
   {
+    "hash": "944be154e1607ca022f5545c3f8c11caabeea5b1",
+    "title": "Schedule a held email for a date and time",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "email"
+    ],
+    "description": "A held outbound email now has Schedule beside Approve, Edit and Discard. Pick a date and time, and it sends then. Until it does, Send now and Discard still work."
+  },
+  {
+    "hash": "3299036a5f3fc691b6e894fa43380efa6c6fe22f",
+    "title": "Spell check and autocorrect in the Mac app",
+    "date": "2026-11-07",
+    "type": "feat",
+    "tags": [
+      "desktop"
+    ],
+    "description": "Every text box in the Mac app now checks spelling and corrects as you type. Edit > Spelling and Grammar and Edit > Substitutions let you turn each one off. Smart quotes and dashes stay off, so a command you send to a worker is not altered."
+  },
+  {
+    "hash": "35549b2f2dde2da89c81f2ad357858c8d51e730f",
+    "title": "Cmd-K shows which workers and tabs are already open",
+    "date": "2026-11-07",
+    "type": "feat",
+    "tags": [
+      "palette",
+      "desktop"
+    ],
+    "description": "The Cmd-K list marks the worker on this page as Open here, and a worker or tab open elsewhere in the Mac app as Open. Choosing it takes you there."
+  },
+  {
+    "hash": "80ca2e0370f96db9d69935514b0f6a92788c554e",
+    "title": "Workers can message people one to one",
+    "date": "2026-11-07",
+    "type": "feat",
+    "tags": [
+      "messages"
+    ],
+    "description": "A direct message from a worker is listed with your people and opens as a 1:1 conversation. Your own entry opens too, and an image link of any common format previews inline."
+  },
+  {
+    "hash": "040359161255d51ed3c6e9caed55ecf8259fe3b7",
+    "title": "OpenCode workers take steering, interrupts and live model switches",
+    "date": "2026-11-07",
+    "type": "feat",
+    "tags": [
+      "opencode"
+    ],
+    "description": "amux now drives OpenCode through its own server API, so you can steer and interrupt an OpenCode worker, switch its model while it runs, and apply the same worker boundaries."
+  },
+  {
     "hash": "e06057c294bfe3a58df2272fe54c03a71020c391",
     "title": "A new device with the right password asks you in Needs you",
     "date": "2026-11-06",
