@@ -828,6 +828,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chipCommitOrder": {
+      "kind": "command._chipCommitOrder",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_chipKeySequence": {
       "kind": "command._chipKeySequence",
       "feedback_required": true,
@@ -836,6 +842,18 @@
     },
     "_chipPress": {
       "kind": "command._chipPress",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chipsBeacon": {
+      "kind": "command._chipsBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chipsPrefPost": {
+      "kind": "command._chipsPrefPost",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2348,12 +2366,6 @@
     },
     "_fselReport": {
       "kind": "command._fselReport",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_getChips": {
-      "kind": "command._getChips",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4314,8 +4326,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_pushChipsToServer": {
-      "kind": "command._pushChipsToServer",
+    "_pushChipsNow": {
+      "kind": "command._pushChipsNow",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4878,12 +4890,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_saveChips": {
-      "kind": "command._saveChips",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_savePeekTabPrefs": {
       "kind": "command._savePeekTabPrefs",
       "feedback_required": true,
@@ -5030,84 +5036,6 @@
     },
     "_skillPinToggle": {
       "kind": "command._skillPinToggle",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillPinned": {
-      "kind": "command._skillPinned",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsFilter": {
-      "kind": "command._skillsFilter",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsFilterSet": {
-      "kind": "command._skillsFilterSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsGroupPick": {
-      "kind": "command._skillsGroupPick",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsJump": {
-      "kind": "command._skillsJump",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsLayoutSet": {
-      "kind": "command._skillsLayoutSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsRender": {
-      "kind": "command._skillsRender",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsRerender": {
-      "kind": "command._skillsRerender",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsSectionAll": {
-      "kind": "command._skillsSectionAll",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsSectionToggle": {
-      "kind": "command._skillsSectionToggle",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsSortSet": {
-      "kind": "command._skillsSortSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsTabLoad": {
-      "kind": "command._skillsTabLoad",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_skillsWindowSet": {
-      "kind": "command._skillsWindowSet",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5342,6 +5270,12 @@
     },
     "_syncChipsFromServer": {
       "kind": "command._syncChipsFromServer",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_syncChipsOnce": {
+      "kind": "command._syncChipsOnce",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6620,12 +6554,6 @@
     },
     "openBoardDetail": {
       "kind": "command.openBoardDetail",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "openChipPicker": {
-      "kind": "command.openChipPicker",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

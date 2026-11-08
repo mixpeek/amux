@@ -24897,7 +24897,10 @@ function _getAllChips() {
 }
 
 let _chipEditing = false;
-let _chipDragIdx = -1;
+// The boot read of the shared chip set finished (ok or not). A later default
+// is only offered after it: offered before, a device that never saw the
+// removal re-added the chip and its pending save overwrote the server's set.
+let _chipsSynced = false;
 
 function _loadChips() {
   try {
@@ -24913,25 +24916,79 @@ function _loadChips() {
 // at boot; saves push up debounced (a drag-reorder is one POST, not ten);
 // an empty server pref is seeded from the first device that has local
 // customizations, so nobody's existing layout is lost by the migration.
-let _chipsPushTimer = null;
-function _pushChipsToServer(chips) {
-  clearTimeout(_chipsPushTimer);
-  _chipsPushTimer = setTimeout(() => {
-    fetch(API + '/api/prefs', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
-      body: JSON.stringify({ key: 'ui_chips', value: JSON.stringify(chips) }),
-    }).catch(() => {});  // offline: localStorage still holds it; the next save retries
-  }, 800);
+//
+// SAVED MEANS THE SERVER HAS IT (Ethan, 2026-11-08: "today it doesnt save").
+// The push used to be fire-and-forget: a refused or dropped POST left the
+// server on the old set, and the next boot, where the server wins, put the old
+// order back. A change is now PENDING (amux_chips_pending) until a POST
+// answers ok; a pending change wins at boot and is pushed again, a failed push
+// retries, and leaving the page flushes a push still waiting on its debounce.
+// Each outcome is beaconed as kind=chips-sync.
+let _chipsPushTimer = null, _chipsRetryTimer = null;
+const _CHIPS_PENDING = 'amux_chips_pending';
+const _CHIPS_OFFERED = 'amux_chips_offered';
+function _chipsBeacon(verdict, extra) {
+  try { fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ kind: 'chips-sync', verdict, measured: true, n_considered: 1, ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }, extra || {})) }).catch(() => {}); } catch (_) { /* a beacon must never break the save it reports */ }
 }
+function _chipsPrefPost(key, value) {
+  return fetch(API + '/api/prefs', {
+    method: 'POST', keepalive: true, _skipOutbox: true,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+    body: JSON.stringify({ key, value }),
+  }).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r; });
+}
+function _pushChipsNow() {
+  clearTimeout(_chipsPushTimer); _chipsPushTimer = null;
+  clearTimeout(_chipsRetryTimer); _chipsRetryTimer = null;
+  const value = localStorage.getItem('amux_chips');
+  if (!value || !localStorage.getItem(_CHIPS_PENDING)) return Promise.resolve();
+  const offered = localStorage.getItem(_CHIPS_OFFERED) || '[]';
+  return Promise.all([_chipsPrefPost('ui_chips', value), _chipsPrefPost('ui_chips_offered', offered)]).then(() => {
+    // Only clear the mark for the set that was sent: a change made while the
+    // POST was in flight stays pending.
+    if (localStorage.getItem('amux_chips') === value) localStorage.removeItem(_CHIPS_PENDING);
+    _chipsBeacon('chips_saved', { count: (JSON.parse(value) || []).length });
+  }).catch(e => {
+    _chipsBeacon('chips_save_failed', { error: String(e && e.message || e).slice(0, 120) });
+    _chipsRetryTimer = setTimeout(_pushChipsNow, 15000);
+  });
+}
+function _pushChipsToServer() {
+  clearTimeout(_chipsPushTimer);
+  _chipsPushTimer = setTimeout(_pushChipsNow, 400);   // a drag is one POST, not ten
+}
+// Leaving the page must not drop a change still waiting on its debounce.
+document.addEventListener('visibilitychange', () => { if (document.hidden && localStorage.getItem(_CHIPS_PENDING)) _pushChipsNow(); });
+window.addEventListener('pagehide', () => { if (localStorage.getItem(_CHIPS_PENDING)) _pushChipsNow(); });
 async function _syncChipsFromServer() {
+  try { await _syncChipsOnce(); } finally { _chipsSynced = true; }
+  if (_NEW_DEFAULT_CHIPS.length) refreshAllChipBars();
+}
+async function _syncChipsOnce() {
   try {
-    const r = await fetch(API + '/api/prefs?key=ui_chips', { headers: _authHeaders() });
+    // A change this device has not had confirmed wins: the server copy is the
+    // one that is behind.
+    if (localStorage.getItem(_CHIPS_PENDING) && _loadChips()) { _chipsBeacon('chips_local_pending_pushed'); _pushChipsNow(); return; }
+    const [r, ro] = await Promise.all([
+      fetch(API + '/api/prefs?key=ui_chips', { headers: _authHeaders() }),
+      fetch(API + '/api/prefs?key=ui_chips_offered', { headers: _authHeaders() }),
+    ]);
     if (!r.ok) return;
     const d = await r.json();
+    // Which later defaults were already offered, on any device: one removed
+    // on a phone stays removed on the desktop.
+    try {
+      const od = ro.ok ? await ro.json() : null;
+      const theirs = od && typeof od.value === 'string' && od.value ? JSON.parse(od.value) : [];
+      const mine = JSON.parse(localStorage.getItem(_CHIPS_OFFERED) || '[]');
+      if (Array.isArray(theirs)) localStorage.setItem(_CHIPS_OFFERED, JSON.stringify([...new Set(mine.concat(theirs))]));
+    } catch (e) { _chipsBeacon('chips_offered_unreadable', { error: String(e && e.message || e).slice(0, 120) }); }
+    if (localStorage.getItem(_CHIPS_PENDING)) return;   // changed while this read was in flight
     if (d && typeof d.value === 'string' && d.value) {
       const chips = JSON.parse(d.value);
       if (Array.isArray(chips) && chips.length) {
+        if (_chipEditing) return;   // never swap the set under a drag
         localStorage.setItem('amux_chips', JSON.stringify(chips));
         refreshAllChipBars();
         return;
@@ -24939,9 +24996,8 @@ async function _syncChipsFromServer() {
     }
     // Server has no chip pref yet: seed it from this device's customizations
     // (null when the user never customized — nothing to seed, defaults rule).
-    const local = _loadChips();
-    if (local) _pushChipsToServer(local);
-  } catch (e) {}
+    if (_loadChips()) { localStorage.setItem(_CHIPS_PENDING, String(Date.now())); _pushChipsNow(); }
+  } catch (e) { _chipsBeacon('chips_read_failed', { error: String(e && e.message || e).slice(0, 120) }); }
 }
 if (document.body) _syncChipsFromServer();
 else document.addEventListener('DOMContentLoaded', _syncChipsFromServer);
@@ -25324,7 +25380,8 @@ if (document.body) _approvalsBoot();
 else document.addEventListener('DOMContentLoaded', _approvalsBoot);
 function _saveChips(chips) {
   localStorage.setItem('amux_chips', JSON.stringify(chips));
-  _pushChipsToServer(chips);
+  localStorage.setItem(_CHIPS_PENDING, String(Date.now()));
+  _pushChipsToServer();
 }
 function _getChips() {
   const saved = _loadChips();
@@ -25339,16 +25396,16 @@ function _getChips() {
     // A chip added to the defaults later joins a customized set once, after
     // Enter (or at the front). Removing it afterwards sticks: it is offered once.
     let offered = [];
-    try { offered = JSON.parse(localStorage.getItem('amux_chips_offered') || '[]'); } catch (e) {}
+    try { offered = JSON.parse(localStorage.getItem(_CHIPS_OFFERED) || '[]'); } catch (e) {}
     const fresh = _NEW_DEFAULT_CHIPS.filter(id => !offered.includes(id) && !saved.some(c => c.id === id));
-    if (fresh.length) {
+    if (fresh.length && _chipsSynced) {
       const next = saved.slice();
       for (const id of fresh) {
         const chip = DEFAULT_CHIPS.find(c => c.id === id);
         const at = next.findIndex(c => c.id === 'enter');
         next.splice(at >= 0 ? at + 1 : 0, 0, { ...chip });
       }
-      try { localStorage.setItem('amux_chips_offered', JSON.stringify(offered.concat(_NEW_DEFAULT_CHIPS))); } catch (e) {}
+      try { localStorage.setItem(_CHIPS_OFFERED, JSON.stringify([...new Set(offered.concat(_NEW_DEFAULT_CHIPS))])); } catch (e) {}
       _saveChips(next);
       return next;
     }
@@ -25429,6 +25486,8 @@ function _chipAction(chip, sessionName, isPeek) {
 // device, or a migration) ran whatever chip now sat at that position: Yes and
 // Status? sent "continue", and a slash chip there filled the input instead.
 function _chipPress(el, sessionName, isPeek) {
+  // Editing the bar: a press picks a button up, it never sends (2026-11-08).
+  if (_chipEditing) return;
   const bar = el.parentElement;
   const i = parseInt(el.dataset.chipIdx, 10);
   const chip = bar && bar._chips && bar._chips[i];
@@ -25453,8 +25512,7 @@ function renderChips(container, sessionName, isPeek) {
   chips.forEach((chip, i) => {
     if (chatTab ? (chip.action === 'keys' && !_CHAT_CHIP_KEYS[chip.value]) : (noKeys && chip.action === 'keys')) return;
     const cls = chip.danger ? 'chip danger' : 'chip';
-    const drag = _chipEditing ? 'draggable="true"' : '';
-    html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
+    html += '<div class="' + cls + '" data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
       + ' onclick="_chipPress(this,\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
       + (_chipEditing ? '<span class="chip-drag-handle">\u2630</span>' : '')
       + esc(chip.label)
@@ -25473,79 +25531,64 @@ function renderChips(container, sessionName, isPeek) {
     _setupChipDrag(container, sessionName, isPeek);
   } else {
     container.classList.remove('editing');
+    _chipSortableDrop(container);
   }
 }
 
+// REORDERING BUTTONS (Ethan, 2026-11-08: "the drag is not intuitive/ordering
+// isnt saved"). The bar drags with the shared Sortable setup the tab menus use
+// (_tabMenuSortableCreate): pointer driven, so it works in the Mac app where
+// native drag and drop does not, the neighbours make room as a button moves so
+// where it lands shows before letting go, touch waits a short press, and the
+// click a drop would send is swallowed. It replaced native HTML5 drag on
+// desktop beside a separate touch path, which showed no drop mark with a mouse
+// and always landed a right-moving button one place short. With a button
+// focused, ArrowLeft and ArrowRight move it one place. Buttons this bar hides
+// (keystroke buttons on a chat worker) keep their slots in the saved list.
+// Drags are beaconed as kind=tabcust-drag which=chips, saves as kind=chips-sync.
+function _chipBarOrder(container) {
+  // The full saved list with this bar's visible buttons in their on-screen order.
+  const chips = _getChips();
+  const shown = [...container.querySelectorAll('.chip[data-chip-idx]')].map(c => parseInt(c.dataset.chipIdx, 10));
+  const slots = shown.slice().sort((a, b) => a - b);
+  const next = chips.slice();
+  slots.forEach((slot, k) => { next[slot] = chips[shown[k]]; });
+  return next;
+}
+function _chipCommitOrder(container, how) {
+  const before = _getChips().map(c => c.id).join(',');
+  const next = _chipBarOrder(container);
+  if (next.map(c => c.id).join(',') === before) return false;
+  _saveChips(next);
+  _chipsBeacon('chips_reordered', { how });
+  refreshAllChipBars();
+  return true;
+}
+function _chipSortableDrop(container) {
+  const s = container._chipSortable;
+  container._chipSortable = null;
+  // Sortable throws when its element was already replaced; the instance is gone either way.
+  if (s) { try { s.destroy(); } catch (e) { console.warn('chips: sortable destroy', e); } }
+}
 function _setupChipDrag(container) {
-  const draggables = container.querySelectorAll('.chip[draggable]');
-  draggables.forEach(el => {
-    el.addEventListener('dragstart', e => {
-      _chipDragIdx = parseInt(el.dataset.chipIdx);
-      el.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    el.addEventListener('dragend', () => {
-      el.classList.remove('dragging');
-      _chipDragIdx = -1;
-    });
-    el.addEventListener('dragover', e => {
+  _chipSortableDrop(container);
+  container._chipSortable = _tabMenuSortableCreate(container, 'chips', '.chip[data-chip-idx]',
+    () => _chipCommitOrder(container, 'drag'));
+  container.querySelectorAll('.chip[data-chip-idx]').forEach(el => {
+    el.tabIndex = 0;
+    el.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    });
-    el.addEventListener('drop', e => {
-      e.preventDefault();
-      const toIdx = parseInt(el.dataset.chipIdx);
-      if (_chipDragIdx < 0 || _chipDragIdx === toIdx) return;
-      const chips = _getChips();
-      const [moved] = chips.splice(_chipDragIdx, 1);
-      chips.splice(toIdx, 0, moved);
-      _saveChips(chips);
-      refreshAllChipBars();
-    });
-    let _touchClone = null;
-    el.addEventListener('touchstart', e => {
-      _chipDragIdx = parseInt(el.dataset.chipIdx);
-      el.classList.add('dragging');
-      _touchClone = el.cloneNode(true);
-      _touchClone.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;opacity:0.85;transform:scale(1.05);';
-      _touchClone.style.width = el.offsetWidth + 'px';
-      _touchClone.style.left = e.touches[0].clientX - el.offsetWidth / 2 + 'px';
-      _touchClone.style.top = e.touches[0].clientY - el.offsetHeight / 2 + 'px';
-      document.body.appendChild(_touchClone);
-      e.preventDefault();
-    }, {passive: false});
-    el.addEventListener('touchmove', e => {
-      if (_chipDragIdx < 0) return;
-      const t = e.touches[0];
-      if (_touchClone) {
-        _touchClone.style.left = t.clientX - el.offsetWidth / 2 + 'px';
-        _touchClone.style.top = t.clientY - el.offsetHeight / 2 + 'px';
+      const sib = e.key === 'ArrowLeft' ? el.previousElementSibling : el.nextElementSibling;
+      if (!sib || !sib.matches('.chip[data-chip-idx]')) return;
+      const id = ((container._chips || [])[parseInt(el.dataset.chipIdx, 10)] || {}).id;
+      if (e.key === 'ArrowLeft') container.insertBefore(el, sib); else container.insertBefore(sib, el);
+      // The commit re-renders the bar; keep focus on the same button in its new place.
+      if (_chipCommitOrder(container, 'keyboard')) {
+        const at = _getChips().findIndex(c => c.id === id);
+        const again = container.querySelector('.chip[data-chip-idx="' + at + '"]');
+        if (again) again.focus();
       }
-      container.querySelectorAll('.chip[data-chip-idx]').forEach(c => c.classList.remove('drag-over'));
-      const target = document.elementFromPoint(t.clientX, t.clientY);
-      const chipTarget = target && target.closest('.chip[data-chip-idx]');
-      if (chipTarget && chipTarget !== el) chipTarget.classList.add('drag-over');
-      e.preventDefault();
-    }, {passive: false});
-    el.addEventListener('touchend', e => {
-      if (_touchClone) { _touchClone.remove(); _touchClone = null; }
-      el.classList.remove('dragging');
-      container.querySelectorAll('.chip[data-chip-idx]').forEach(c => c.classList.remove('drag-over'));
-      if (_chipDragIdx < 0) return;
-      const ct = e.changedTouches[0];
-      const target = document.elementFromPoint(ct.clientX, ct.clientY);
-      const chipTarget = target && target.closest('.chip[data-chip-idx]');
-      if (chipTarget) {
-        const toIdx = parseInt(chipTarget.dataset.chipIdx);
-        if (toIdx !== _chipDragIdx) {
-          const chips = _getChips();
-          const [moved] = chips.splice(_chipDragIdx, 1);
-          chips.splice(toIdx, 0, moved);
-          _saveChips(chips);
-          refreshAllChipBars();
-        }
-      }
-      _chipDragIdx = -1;
     });
   });
 }

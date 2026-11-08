@@ -42,7 +42,8 @@ test('a customized chip set gets Send Now once, after Enter, and keeps it remove
     { id: 'enter', label: 'Enter', action: 'keys', value: 'Enter' }, { id: 'yes', label: 'Yes', action: 'send', value: 'yes' }];
   await boot(page, mine);
   const ids = () => page.evaluate(() => (globalThis as any)._getChips().map((c: any) => c.id));
-  expect(await ids()).toEqual(['continue', 'enter', 'sendnow', 'yes']);
+  // Offered once the boot read of the shared set is done (it may say Send Now was removed elsewhere).
+  await expect.poll(ids).toEqual(['continue', 'enter', 'sendnow', 'yes']);
   // Removed by the owner: not added back.
   await page.evaluate((m: any) => localStorage.setItem('amux_chips', JSON.stringify(m)), mine);
   expect(await ids()).toEqual(['continue', 'enter', 'yes']);

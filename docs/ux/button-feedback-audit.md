@@ -639,11 +639,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Details and examples | `_skillToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Expand  | `_skillToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | View | `_skillToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | button | `_skillsJump` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Grid | `_skillsLayoutSet` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | List | `_skillsLayoutSet` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | … | `_skillsSectionAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | + | `_skillsSectionToggle` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save | `_smSave` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | All workers | `_smSetScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | This worker | `_smSetScope` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -878,7 +873,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `openBoardDetail` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js | + | `openChipPicker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Message history | `openCmdHistoryModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Search amux (Cmd-K) | `openCmdk` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | add-menu-search | `openCmdk` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1466,8 +1460,13 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Attach this device | `_settingsToggleGeo` | onclick |
 | index.html | Translation prompt &amp; display settings | `_simpleCfgToggle` | onclick |
 | app.js | Copy | `_skillCopyExample` | onclick |
+| app.js | button | `_skillsJump` | onclick |
+| index.html | Grid | `_skillsLayoutSet` | onclick |
+| index.html | List | `_skillsLayoutSet` | onclick |
 | app.js | More actions for  | `_skillsMenu` | onclick |
 | app.js | Copy command | `_skillsMenuClose` | onclick |
+| app.js | … | `_skillsSectionAll` | onclick |
+| app.js | + | `_skillsSectionToggle` | onclick |
 | index.html | Dismiss tip | `_skillsTipDismiss` | onclick |
 | index.html | sp-actions | `_spMoreClose` | onclick |
 | index.html | Scratchpad actions | `_spMoreToggle` | onclick |
@@ -1662,6 +1661,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `go` | onclick |
 | app.js | b | `navBack` | addEventListener |
 | index.html | Continue all limited workers | `openBulkActions` | onclick |
+| app.js | + | `openChipPicker` | onclick |
 | app.js | + | `openCustomChipForm` | onclick |
 | index.html | Filters | `openFiltersModal` | onclick |
 | index.html | Style guide | `openStyleGuide` | onclick |

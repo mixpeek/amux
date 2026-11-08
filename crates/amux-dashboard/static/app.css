@@ -803,8 +803,8 @@
   .chip.chip-edit-toggle.active { color: var(--accent); }
   .chips.editing { flex-wrap: wrap; overflow-x: visible; touch-action: none; gap: var(--space-2); }
   .chips.editing .chip { cursor: grab; padding: var(--space-2) var(--space-3); min-height: 40px; }
-  .chips.editing .chip.dragging { opacity: 0.3; }
-  .chips.editing .chip.drag-over { box-shadow: -3px 0 0 var(--accent); }
+  .chips.editing .chip { user-select: none; -webkit-user-select: none; }
+  .chips.editing .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .chips.editing .chip-drag-handle { margin-right: var(--space-1); opacity: 0.4; font-size: var(--fs-xs); }
   .chips.editing .chip-remove-btn { display: inline-flex; margin-left: var(--space-1-5); font-size: var(--fs-md); opacity: 0.6; cursor: pointer; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: var(--radius-round); background: color-mix(in srgb, var(--red) 10%, transparent); }
   .chips.editing .chip-remove-btn:hover { opacity: 1; color: var(--red); background: color-mix(in srgb, var(--red) 20%, transparent); }
