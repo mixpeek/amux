@@ -177,6 +177,7 @@ pub mod usage_accounts;
 pub mod verify;
 pub mod why;
 pub mod worker_create;
+pub mod outcome_plan;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;
@@ -404,6 +405,7 @@ pub fn router_with_connector_transport(
         .nest("/api/pinned", pinned::routes())
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())
+        .merge(outcome_plan::routes())
         .merge(worker_exec::routes())
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
