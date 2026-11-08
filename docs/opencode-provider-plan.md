@@ -400,6 +400,27 @@ by the guard from a gate receipt, per command segment. The policy reports
 `boundary_not_decidable` for it rather than duplicating a receipt-shaped
 tokenizer — refusing every match would refuse the registry's own allow examples.
 
+### M11 — the scoped context rides the SESSION, not the process
+
+`OPENCODE_CONFIG_CONTENT` is a per-PROCESS launch env, which is why TUI lanes
+have always been forced onto `--standalone` (measured 2026-10-16: a TUI on the
+shared `--service` loaded its config before the worker existed, so the composed
+scoped context never reached the model). A shared serve is what D1 wants, so the
+context has to travel with the session.
+
+opencode exposes per-session instruction entries — `PUT
+/api/experimental/session/{id}/instructions/entries/{key} {"value": …}` — and a
+live probe on the shared server (2.2.5, 2026-11-08) settled the question: a
+session whose only instruction entry said `ZUCCHINI-7731` answered
+`ZUCCHINI-7731`. The serve transport now writes `compose_worker_context(worker,
+false)` into the session under ONE key (`amux-scoped`, so a recomposition
+replaces rather than accumulates), clears the entry when a scope is emptied, and
+logs `opencode_scoped_context_delivered|absent` either way. The `Put` answers
+204 with an empty body, so that path checks the status instead of parsing JSON.
+
+This is what makes one `opencode serve` usable by the whole fleet; the remaining
+step is a product one, not a protocol one — a serve worker has no tmux pane.
+
 ### M10 — the model switch gets its door
 
 `AgentProtocol::set_model` had no caller. Rather than add a second way to change

@@ -601,6 +601,57 @@ impl ServeClient {
         }
     }
 
+    /// Give THIS session its own instructions — the per-worker scoped context,
+    /// on a server whose config was loaded before the worker existed.
+    ///
+    /// Why this endpoint exists at all: `OPENCODE_CONFIG_CONTENT` is a
+    /// per-PROCESS launch env, and the shared `opencode serve --service` read
+    /// its config long before this worker was created (measured 2026-10-16 —
+    /// that is why TUI lanes are forced onto `--standalone`). A shared serve
+    /// is exactly what decision D1 wants, so the context has to travel with
+    /// the SESSION instead of the process.
+    ///
+    /// MEASURED on the live shared server, opencode 2.2.5, 2026-11-08:
+    /// `PUT /api/experimental/session/{id}/instructions/entries/{key}` with
+    /// `{"value": "<text>"}` answers **204** (empty body, so this path checks
+    /// the status like [`ServeClient::reply_permission`]); `GET …/entries`
+    /// then answers `{"data":[{"key","value"}]}`; and the model ANSWERS FROM
+    /// IT — a session given only `ZUCCHINI-7731` replied with that word.
+    pub async fn set_session_instructions(
+        &self,
+        session_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let endpoint =
+            format!("/api/experimental/session/{session_id}/instructions/entries/{key}");
+        let body = json!({"value": value});
+        let (status, text) = self
+            .request(reqwest::Method::PUT, &endpoint, Some(body))
+            .await?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(serve_failure("PUT", &endpoint, status, &text))
+        }
+    }
+
+    /// Drop one instruction entry. Used when a worker's scope is cleared: the
+    /// session (and its `ses_` ref) survives, the stale context does not.
+    pub async fn clear_session_instructions(&self, session_id: &str, key: &str) -> Result<()> {
+        let endpoint =
+            format!("/api/experimental/session/{session_id}/instructions/entries/{key}");
+        let (status, text) = self
+            .request(reqwest::Method::DELETE, &endpoint, None)
+            .await?;
+        // 404 = already absent, which is the state the caller asked for.
+        if (200..300).contains(&status) || status == 404 {
+            Ok(())
+        } else {
+            Err(serve_failure("DELETE", &endpoint, status, &text))
+        }
+    }
+
     /// The endpoint this client speaks to (`http://host:port`). Exists so the
     /// protocol can notice that the SHARED service restarted on a different
     /// port and reopen its session instead of caching a dead endpoint forever.
@@ -1035,6 +1086,22 @@ impl ServeSession {
     /// The durable history of this session (the reconciliation path).
     pub async fn messages(&self) -> Result<Value> {
         self.client.messages(&self.session_id).await
+    }
+
+    /// Give this session its own instructions (see
+    /// [`ServeClient::set_session_instructions`]) — how a worker keeps its
+    /// scoped context while sharing one server with the whole fleet.
+    pub async fn set_instructions(&self, key: &str, value: &str) -> Result<()> {
+        self.client
+            .set_session_instructions(&self.session_id, key, value)
+            .await
+    }
+
+    /// Drop this session's instruction entry (scope cleared).
+    pub async fn clear_instructions(&self, key: &str) -> Result<()> {
+        self.client
+            .clear_session_instructions(&self.session_id, key)
+            .await
     }
 
     /// Deliver `text` INSIDE this session's running turn — the case ACP
@@ -2434,6 +2501,63 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{addr}"), seen)
+    }
+
+    /// The scoped context rides the SESSION: `PUT …/instructions/entries/{key}`
+    /// with a `{"value": text}` body, MEASURED on the live shared server
+    /// (opencode 2.2.5, 2026-11-08: 204, and a session given only
+    /// `ZUCCHINI-7731` replied with that word). A cleared scope DELETEs it, and
+    /// an entry that is already gone is not an error.
+    #[tokio::test]
+    async fn a_session_carries_its_own_instructions_and_clears_them() {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        let writes: Arc<Mutex<Vec<(String, String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let writes = Arc::clone(&writes);
+            let app = axum::Router::new()
+                .route(
+                    "/api/experimental/session/{id}/instructions/entries/{key}",
+                    axum::routing::put(
+                        move |axum::extract::Path((id, key)): axum::extract::Path<(String, String)>,
+                              axum::Json(body): axum::Json<Value>| {
+                            let writes = Arc::clone(&writes);
+                            async move {
+                                writes.lock().unwrap().push((id, key, body));
+                                axum::http::StatusCode::NO_CONTENT.into_response()
+                            }
+                        },
+                    )
+                    .delete(|axum::extract::Path((_id, _key)): axum::extract::Path<(String, String)>| async {
+                        // 404 is the "already absent" answer an API may give.
+                        axum::http::StatusCode::NOT_FOUND.into_response()
+                    }),
+                )
+                .with_state(());
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+        let client = ServeClient::connect(format!("http://{addr}"), PW).unwrap();
+        client
+            .set_session_instructions("ses_x", "amux-scoped", "the owner's rules")
+            .await
+            .expect("204 is success");
+        {
+            let w = writes.lock().unwrap();
+            assert_eq!(w.len(), 1);
+            assert_eq!(w[0].0, "ses_x");
+            assert_eq!(w[0].1, "amux-scoped");
+            assert_eq!(w[0].2["value"], json!("the owner's rules"));
+        }
+        // Already absent is the state the caller asked for, not a failure.
+        client
+            .clear_session_instructions("ses_x", "amux-scoped")
+            .await
+            .expect("404 on DELETE means gone, which is what was wanted");
     }
 
     #[tokio::test]
