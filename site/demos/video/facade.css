@@ -1,0 +1,9 @@
+/* Click-to-load YouTube poster, shared by /, /demos/ and /walkthrough/. */
+.yt-frame{position:relative;display:block;aspect-ratio:16/9;width:100%;overflow:hidden;border:1px solid var(--border,#2a2d35);border-radius:10px;background:#000}
+.yt-frame img,.yt-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block;object-fit:cover}
+/* Sits low in the frame so it clears the words on the poster. */
+.yt-play{position:absolute;top:72%;left:50%;width:72px;height:72px;margin:-36px 0 0 -36px;border-radius:50%;background:rgba(0,0,0,.72);color:#fff;display:flex;align-items:center;justify-content:center;transition:transform .15s,background .15s}
+.yt-play svg{width:30px;height:30px;margin-left:4px}
+.yt-frame:hover .yt-play,.yt-frame:focus-visible .yt-play{transform:scale(1.08);background:#c81e1e}
+.yt-frame:focus-visible{outline:2px solid var(--accent,#e8b34b);outline-offset:2px}
+@media (max-width:600px){.yt-play{width:52px;height:52px;margin:-26px 0 0 -26px}.yt-play svg{width:22px;height:22px;margin-left:3px}}
