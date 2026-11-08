@@ -58,7 +58,11 @@ pub fn served() -> &'static Served {
     static SERVED: std::sync::OnceLock<Served> = std::sync::OnceLock::new();
     SERVED.get_or_init(|| {
         let receipt = std::env::current_exe().ok().and_then(|exe| std::fs::read(receipt_path(&exe)).ok());
-        let served = served_from(receipt.as_deref(), &crate::build_hash(),
+        // Hash the executable only when there is a receipt to check it against:
+        // the first call can be inside a handler, and a binary with no receipt
+        // (a test, a hand build) must not pay for reading itself there.
+        let running = if receipt.is_some() { crate::build_hash() } else { String::new() };
+        let served = served_from(receipt.as_deref(), &running,
             env!("AMUX_BUILD_COMMIT_FULL"), env!("AMUX_BUILD_COMMIT"));
         tracing::info!(verdict = "served_commit_measured", commit = %served.full, source = served.source,
             build_commit = env!("AMUX_BUILD_COMMIT_FULL"), measured = true,
