@@ -6995,7 +6995,7 @@ if w:
     if pr.get('declared'):
         print('  profile %s cpus, %s GB' % (pr.get('cpus') or '-', pr.get('mem_gb') or '-'))
     else:
-        print('  profile not declared (set AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab)')
+        print('  profile not declared: tools default to a quarter of the cores (set AMUX_WORKER_CPUS / AMUX_WORKER_MEM_GB in the Scope tab)')
     for o in w.get('over_profile') or []:
         print('  OVER    %s' % o)
 PY

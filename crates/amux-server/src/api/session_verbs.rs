@@ -312,32 +312,56 @@ pub(crate) fn grpc_fork_safe_exports(name: &str) -> String {
         .to_string()
 }
 
-/// The parallelism knobs a worker's own tools read, defaulted to its declared
-/// CPU budget (`AMUX_WORKER_CPUS`, worker > group > global). Before this the
+/// The parallelism knobs a worker's own tools read, defaulted to its CPU
+/// budget (`AMUX_WORKER_CPUS`, worker > group > global). Before this the
 /// profile was declare-only: `amux resources` printed it and nothing read it, so
 /// Rust test binaries, cargo, rayon, tokio and `pytest -n auto` sized themselves
 /// to all 28 cores. Mac CPU RCA 20261018-085309: one isolated lane held ~1100%
 /// (a `mvs_shard` test binary at 777% plus ten xdist workers) at load15 40.6/28.
+///
+/// Unset used to mean no budget, and no worker had one, so the exports above
+/// reached nobody. Mac CPU RCA 20261108-120929: one mixpeek-research Python
+/// (numpy/sklearn/torch on OpenBLAS) held 1653% at load15 71.4/28. Unset now
+/// means a quarter of the machine (at least 2); `off` keeps machine-wide
+/// defaults. The BLAS pools (OpenBLAS, MKL, Accelerate) are capped too.
 /// `${VAR:-N}`, so a value the lane or any scope sets explicitly still wins.
-/// Unset or invalid budgets change nothing.
 pub(crate) fn worker_cpu_budget_exports(name: &str) -> String {
-    let Some(raw) = scoped_setting_in(&home(), name, "AMUX_WORKER_CPUS") else {
-        return String::new();
+    let raw = scoped_setting_in(&home(), name, "AMUX_WORKER_CPUS");
+    let (n, source) = match raw.as_deref().map(str::trim) {
+        None | Some("") => (default_worker_cpus(), "default"),
+        Some(v) if v.eq_ignore_ascii_case("off") => {
+            tracing::info!(session = name, measured = true, n_considered = 1,
+                verdict = "worker_cpu_budget_off",
+                "AMUX_WORKER_CPUS=off: the worker's tools keep their machine-wide defaults");
+            return String::new();
+        }
+        Some(v) => match v.parse::<f64>().ok().filter(|f| f.is_finite() && *f >= 1.0) {
+            Some(f) => (f.floor() as u32, "declared"),
+            None => {
+                tracing::warn!(session = name, value = %v, measured = true, n_considered = 1,
+                    verdict = "worker_cpus_invalid",
+                    "AMUX_WORKER_CPUS is not a number of at least 1 (or off); using the default budget");
+                (default_worker_cpus(), "default")
+            }
+        },
     };
-    let Some(n) = raw.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 1.0).map(|v| v.floor() as u32) else {
-        tracing::warn!(session = name, value = %raw, measured = true, n_considered = 1,
-            verdict = "worker_cpus_invalid",
-            "AMUX_WORKER_CPUS is not a number of at least 1; the worker's tools keep their machine-wide defaults");
-        return String::new();
-    };
-    tracing::info!(session = name, cpus = n, measured = true, n_considered = 1,
+    tracing::info!(session = name, cpus = n, source, measured = true, n_considered = 1,
         verdict = "worker_cpu_budget_applied",
-        "worker shell defaults cargo, Rust test, rayon, tokio, OpenMP and pytest-xdist parallelism to AMUX_WORKER_CPUS");
-    ["CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "RAYON_NUM_THREADS", "TOKIO_WORKER_THREADS",
-     "OMP_NUM_THREADS", "PYTEST_XDIST_AUTO_NUM_WORKERS"]
+        "worker shell defaults cargo, Rust test, rayon, tokio, OpenMP, BLAS and pytest-xdist parallelism to its CPU budget");
+    WORKER_CPU_KNOBS
         .iter()
         .map(|k| format!("export {k}=\"${{{k}:-{n}}}\"; "))
         .collect()
+}
+
+const WORKER_CPU_KNOBS: [&str; 10] = ["CARGO_BUILD_JOBS", "RUST_TEST_THREADS", "RAYON_NUM_THREADS",
+    "TOKIO_WORKER_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS", "NUMEXPR_MAX_THREADS", "PYTEST_XDIST_AUTO_NUM_WORKERS"];
+
+/// A quarter of the machine, at least 2: four busy workers fill it.
+fn default_worker_cpus() -> u32 {
+    let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(8);
+    (cores / 4).max(2)
 }
 
 pub(crate) fn docker_vm_exports(name: &str) -> String {
@@ -58261,7 +58285,7 @@ mod docker_vm_tests {
     }
 
     /// Mac CPU RCA 20261018-085309: a declared CPU budget reaches the worker's
-    /// tools, a value the lane set wins, and unset or invalid changes nothing.
+    /// tools and a value the lane set wins.
     #[test]
     fn a_declared_worker_cpu_budget_defaults_tool_parallelism() {
         let home = tempfile::tempdir().unwrap();
@@ -58269,9 +58293,17 @@ mod docker_vm_tests {
         std::fs::create_dir_all(home.path().join("sessions")).unwrap();
         let env = home.path().join("sessions").join("lane.env");
         std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\n").unwrap();
-        assert_eq!(worker_cpu_budget_exports("lane"), "", "unset is a no-op");
+        // Mac CPU RCA 20261108-120929: unset is a quarter of the machine,
+        // BLAS included, and an invalid value falls back to the same.
+        let d = default_worker_cpus();
+        assert!(d >= 2);
+        let unset = worker_cpu_budget_exports("lane");
+        assert!(unset.contains(&format!("OPENBLAS_NUM_THREADS=\"${{OPENBLAS_NUM_THREADS:-{d}}}\"")), "{unset}");
+        assert!(unset.contains(&format!("OMP_NUM_THREADS=\"${{OMP_NUM_THREADS:-{d}}}\"")), "{unset}");
         std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\nAMUX_WORKER_CPUS=\"lots\"\n").unwrap();
-        assert_eq!(worker_cpu_budget_exports("lane"), "", "an invalid budget is a no-op");
+        assert_eq!(worker_cpu_budget_exports("lane"), unset, "an invalid budget is the default");
+        std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\nAMUX_WORKER_CPUS=\"off\"\n").unwrap();
+        assert_eq!(worker_cpu_budget_exports("lane"), "", "off keeps machine-wide defaults");
         std::fs::write(&env, "CC_DIR=\"/tmp\"\nCC_ISOLATED=\"1\"\nAMUX_WORKER_CPUS=\"8\"\n").unwrap();
         let ex = worker_cpu_budget_exports("lane");
         let run = |pre: &str| {
