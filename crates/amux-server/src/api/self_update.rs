@@ -57,8 +57,20 @@ fn activation_ref() -> String {
 pub(crate) fn gate_state() -> Option<serde_json::Value> {
     let path = std::env::var("AMUX_ACTIVATION_GATE_STATE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| crate::api::session_verbs::home().join(".amux/activation-gate.json"));
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+        // home() is already ~/.amux (AF-1127). This joined ".amux/" onto it, so
+        // it read ~/.amux/.amux/activation-gate.json, which nothing writes, and
+        // the deploy invariant and Settings never saw a CI hold.
+        .unwrap_or_else(|_| crate::api::session_verbs::home().join("activation-gate.json"));
+    let state = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if state.is_none() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            tracing::warn!(path = %path.display(), measured = false, n_considered = 0,
+                verdict = "activation_gate_unread",
+                "the activation gate's state could not be read; deploy lag cannot tell a CI hold from a stalled builder");
+        });
+    }
+    state
 }
 
 fn short(sha: &str) -> &str {
@@ -667,6 +679,17 @@ mod deploy_summary_tests {
 
 #[cfg(test)]
 mod tests {
+    /// AF-1127: through the real default path, with nothing injected. The
+    /// builder writes $HOME/.amux/activation-gate.json and home() is $HOME/.amux.
+    #[test]
+    fn gate_state_reads_the_file_the_builder_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::write(dir.path().join("activation-gate.json"), r#"{"verdict":"ci_gate_held_back","target":"abc"}"#).unwrap();
+        let gate = gate_state().expect("the gate state is read from home()");
+        assert_eq!(gate["verdict"], "ci_gate_held_back");
+    }
+
     #[test]
     fn a_retired_package_install_is_pointed_at_the_installer() {
         for channel in ["brew", "pip"] {

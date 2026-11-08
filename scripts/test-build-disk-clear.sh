@@ -14,6 +14,9 @@
 #
 # Exit 0 = all pass, 1 = a failure. Wired into .github/workflows/checks.yml.
 set -euo pipefail
+# Never the real amux on this machine: its in-flight shell schedules would defer
+# this fixture's build, and the test fails only while one is running (AF-1129).
+export AMUX_RS_RUNS_URL=http://127.0.0.1:9/none
 cd "$(dirname "$0")/.."
 SCRIPT="$(pwd)/scripts/rust-auto-build.sh"
 SELF="$(pwd)/scripts/test-build-disk-clear.sh"

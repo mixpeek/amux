@@ -93,6 +93,25 @@ class CargoReclaimTests(unittest.TestCase):
         self.assertEqual(idle.returncode,0,idle.stdout+idle.stderr)
         self.assertFalse(self.marker.exists(), 'the same cleanup works after lease release')
 
+    def test_a_busy_lock_names_the_process_holding_it(self):
+        # AF-1067: a leaked daemon holding the lease read only as "lock busy".
+        lock = guard.lease_path(self.root)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl,os,sys,time\n'
+                                   'fd=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT)\n'
+                                   'fcntl.flock(fd,fcntl.LOCK_SH)\nprint("held",flush=True)\ntime.sleep(30)',
+                                   str(lock)], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), 'held')
+            with self.assertRaises(guard.Deferred) as raised:
+                self.mutate()
+            self.assertIn('lock busy', str(raised.exception))
+            self.assertIn('held by pid %d ' % holder.pid, str(raised.exception))
+            self.assertTrue(self.marker.exists())
+        finally:
+            holder.kill()
+            holder.wait()
+
     def test_native_cargo_lock_blocks_unwrapped_build(self):
         lock = self.root / 'debug' / '.cargo-lock'
         fd = guard.open_lock(lock)
@@ -230,7 +249,11 @@ class CargoReclaimTests(unittest.TestCase):
         resolved = guard.process_executable(
             '1177', 'sleep', linux=True, proc_root=self.base / 'proc',
             readlink=denied, which=lambda name: '/usr/bin/sleep' if name == 'sleep' else None)
-        self.assertEqual(resolved, Path('/usr/bin/sleep'))
+        # process_executable resolves what PATH names, so expect the same: on
+        # the ubuntu26 runner /usr/bin/sleep is a link into uutils coreutils
+        # (/usr/lib/cargo/bin/coreutils/sleep), which reddened checks
+        # 2026-10-31 (run 41190837012).
+        self.assertEqual(resolved, Path('/usr/bin/sleep').resolve())
 
     def test_hardened_linux_proc_still_fails_closed_for_unknown_binary(self):
         proc = self.base / 'proc' / '1178'

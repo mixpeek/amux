@@ -30,11 +30,14 @@ let headers={};
 try {
   // The peer keeps one board switch on: with every switch off it has no board
   // (board_lifecycle::board_unused) and is refused before the boundary check.
+  // Since 682df9aaa an explicit steering Off means no board whatever else is
+  // set, and a created worker gets AMUX_BOARD_FORCE_ADHERENCE=0 by default, so
+  // the peer turns that switch On (later lines in the env file win).
   for(const [name,group] of [[peer,'gs12-platform'],[hub,'ops,gs12-platform'],[harness,'amux'],[outside,'unrelated']]) {
     const dir=path.join(amux.root,name);fs.mkdirSync(dir);
     const created=await amux.req('POST','/api/sessions',{name,dir,start:false});
     check('private worker created '+name,created.status===201,created.status);
-    fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_TAGS=${group}\nAMUX_CONTRACT_DONE=1\nAMUX_BOARD_DELEGATION=1\nAMUX_CONTRACT_HUB=${peer}\nAMUX_CONTRACT_RULES_OFF=1,2,3,4,5,6,7,8,9\nCC_AUTO_PICKUP=${name===peer?1:0}\nCC_AUTO_CONTINUE=0\nCC_SEND_ALLOW=*\nCC_RECEIVE_ANY=1\n`);
+    fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_TAGS=${group}\nAMUX_CONTRACT_DONE=1\nAMUX_BOARD_DELEGATION=1\nAMUX_CONTRACT_HUB=${peer}\nAMUX_CONTRACT_RULES_OFF=1,2,3,4,5,6,7,8,9\nCC_AUTO_PICKUP=${name===peer?1:0}\nAMUX_BOARD_FORCE_ADHERENCE=${name===peer?1:0}\nCC_AUTO_CONTINUE=0\nCC_SEND_ALLOW=*\nCC_RECEIVE_ANY=1\n`);
     const started=await amux.req('POST',`/api/sessions/${name}/start`);
     check('provider start accepted '+name,started.status<300,started.status);
     await waitFor('actual credentialed provider launch '+name,()=>amux.fakeLog().some(x=>x.event==='launch'&&x.argv.includes(name)&&x.env_sha256?.AMUX_WORKER_TOKEN),30000);

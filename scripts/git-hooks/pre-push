@@ -289,6 +289,8 @@ _SPA_SUITE_FILES = ("tests/dashboard-outage-recovery.mjs", "package.json", "pack
                     "scripts/build-state.mjs", "scripts/button-audit.mjs",
                     "docs/ux/button-feedback-audit.md")
 _SPA_NOT_OK = re.compile(r"^\s*not ok \d+ - (.+?)(?:\s+#.*)?$")
+# Why the last _spa_failures run could not be measured, for the hook's line.
+_SPA_UNREAD = {"why": ""}
 
 
 def _spa_touched(path):
@@ -304,6 +306,7 @@ def _spa_failures(sha, node_modules):
         arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
                               capture_output=True, text=True, timeout=60)
         if arch.returncode != 0:
+            _SPA_UNREAD["why"] = "git archive failed: " + (arch.stderr.strip().splitlines() or ["?"])[-1][:160]
             return None
         os.symlink(node_modules, os.path.join(tmp, "node_modules"))
         suites = [s for s in ["tests/dashboard-outage-recovery.mjs",
@@ -323,13 +326,20 @@ def _spa_failures(sha, node_modules):
                         if re.search(r"stale|error|✖", l)]
                 names.add("scripts/spa-lint.sh: " + (said[0] if said else "exit %d" % lint.returncode))
         if suites:
-            r = subprocess.run(["node", "--test"] + suites, cwd=tmp, capture_output=True,
-                               text=True, timeout=180)
+            # TAP, asked for by name: the counts below are read from TAP lines,
+            # and node's default reporter depends on the version and on whether
+            # stdout is a terminal. On 2026-10-31 CI read this as "could not be
+            # read" from 09:38Z on and every SPA gate went unmeasured.
+            r = subprocess.run(["node", "--test", "--test-reporter=tap"] + suites, cwd=tmp,
+                               capture_output=True, text=True, timeout=180)
             m = re.search(r"^# tests (\d+)$", r.stdout, re.M)
             if not m:
+                tail = (r.stdout + r.stderr).strip().splitlines()[-2:]
+                _SPA_UNREAD["why"] = "node --test printed no '# tests' line (exit %d): %s" % (r.returncode, " | ".join(tail)[:200])
                 return None
             run_names = {x.group(1) for x in map(_SPA_NOT_OK.match, r.stdout.splitlines()) if x}
             if r.returncode != 0 and not run_names:
+                _SPA_UNREAD["why"] = "node --test exited %d without a named failure" % r.returncode
                 return None
             tests += int(m.group(1))
             names |= run_names
@@ -379,6 +389,142 @@ def _harness_guard_gate(refs):
     return 0
 
 
+# AF-1073: land_gate.py runs Rust tests and e2e specs and no scripts/test-*.sh,
+# so a script whose only test is a checks.yml step lands untested. 5d52181bc
+# (AF-1055) and 8d6057fb7 each reddened main's checks that way on 2026-10-30
+# and 10-31. This leg runs the shell tests checks.yml runs that name a changed
+# script, on the pushed tree, and blocks only on a failure the remote's tip
+# does not share.
+# Every form checks.yml uses: `./scripts/test-x.sh`, `bash scripts/test-x.sh`,
+# behind `run:`, chained with `&&`, with arguments or an env prefix. A test
+# with arguments runs here without them; if that makes it fail, it fails on
+# the remote's tip the same way and counts as inherited (review F1).
+_SCRIPT_TEST_STEP = re.compile(r"(?:\./|\bbash\s+)(scripts/test-[A-Za-z0-9_.-]+\.sh)\b")
+_SCRIPT_TESTS_MAX = 12
+_SCRIPT_TEST_TIMEOUT_S = 300
+
+
+def _git_show(sha, path):
+    r = subprocess.run(["git", "show", "%s:%s" % (sha, path)], capture_output=True, text=True, timeout=30)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _script_tests_for(sha, touched):
+    """The checks.yml shell tests that name a changed script, then the
+    scripts/git-hooks/test_*.py that name a changed hook: (selected, wired
+    count). A changed test selects itself. ab340f923 changed pre-push and ran
+    none of the hook tests, and one of them reddened main (AF-1128)."""
+    changed = [p for p in touched if p.startswith("scripts/") and "/" not in p[len("scripts/"):]]
+    hooks = [p for p in touched if p.startswith("scripts/git-hooks/")]
+    if not changed and not hooks:
+        return [], 0
+    steps = "\n".join(l for l in _git_show(sha, ".github/workflows/checks.yml").splitlines()
+                      if not l.lstrip().startswith("#"))
+    wired = list(dict.fromkeys(_SCRIPT_TEST_STEP.findall(steps)))
+    picked = []
+    for t in wired:
+        if t in changed:
+            picked.append(t)
+            continue
+        body = _git_show(sha, t)
+        if any(os.path.basename(c) in body for c in changed):
+            picked.append(t)
+    if hooks:
+        listed = subprocess.run(["git", "ls-tree", "--name-only", sha, "scripts/git-hooks/"],
+                                capture_output=True, text=True, timeout=30).stdout.split()
+        for t in (x for x in listed if os.path.basename(x).startswith("test_") and x.endswith(".py")):
+            wired.append(t)
+            if t in hooks or any(os.path.basename(h) in _git_show(sha, t) for h in hooks):
+                picked.append(t)
+    return picked, len(wired)
+
+
+def _script_test_failures(sha, tests):
+    """Run `tests` on `sha`'s tree with no amux session in the environment, so
+    a test cannot reach the live server. Returns failing names, or None."""
+    tmp = tempfile.mkdtemp(prefix="amux-script-tests-")
+    try:
+        arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
+                              capture_output=True, text=True, timeout=60)
+        if arch.returncode != 0:
+            return None
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("AMUX_", "CC_", "GIT_")) and k not in ("TMUX", "TMUX_PANE")}
+        env["HOME"] = os.path.join(tmp, ".home")
+        os.makedirs(env["HOME"])
+        failing = []
+        for t in tests:
+            if not os.path.exists(os.path.join(tmp, t)):
+                continue
+            try:
+                run = [sys.executable, t] if t.endswith(".py") else ["bash", t]
+                r = subprocess.run(run, cwd=tmp, env=env, capture_output=True, text=True,
+                                   timeout=_SCRIPT_TEST_TIMEOUT_S)
+                if r.returncode != 0:
+                    failing.append((t, "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:])))
+            except subprocess.TimeoutExpired:
+                failing.append((t, "did not finish in %ds" % _SCRIPT_TEST_TIMEOUT_S))
+        return failing
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _script_tests_gate(refs):
+    """refs: [(local_sha, remote_sha, touched paths)]. Returns 1 to refuse."""
+    if os.environ.get("AMUX_SKIP_SCRIPT_TESTS", "").strip().lower() in ("1", "true", "yes", "on"):
+        _audit("script_tests", "verdict=script_tests_skipped")
+        return 0
+    for local, remote, touched in refs:
+        tests, wired = _script_tests_for(local, touched)
+        if not tests:
+            continue
+        short = local[:9]
+        dropped = tests[_SCRIPT_TESTS_MAX:]
+        tests = tests[:_SCRIPT_TESTS_MAX]
+        t0 = datetime.datetime.now()
+        failing = _script_test_failures(local, tests)
+        if failing is None:
+            sys.stderr.write("amux pre-push: script tests on %s could not run (git archive failed); "
+                             "CI's checks still runs them verdict=script_tests_unmeasured\n" % short)
+            _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
+            continue
+        inherited = []
+        if failing:
+            base = remote if remote != ZERO else subprocess.run(
+                ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
+                text=True, timeout=10).stdout.strip()
+            was = _script_test_failures(base, [t for t, _ in failing]) if base else None
+            if was is None:
+                # A first push, or a base tree that cannot be read: this leg
+                # blocks only what it can show is new, so CI decides (AF-1128).
+                sys.stderr.write("amux pre-push: script tests on %s: %d failing, not compared (%s); "
+                                 "CI's checks still runs them verdict=script_tests_unmeasured\n"
+                                 % (short, len(failing), "base %s could not be read" % base[:9]
+                                    if base else "no remote tip"))
+                _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
+                continue
+            was_names = {t for t, _ in was}
+            inherited = [t for t, _ in failing if t in was_names]
+        mine = [(t, why) for t, why in failing if t not in inherited]
+        secs = (datetime.datetime.now() - t0).total_seconds()
+        verdict = "script_tests_fail" if mine else "script_tests_pass"
+        sys.stderr.write("amux pre-push: script tests on %s: %d of %d wired tests name a "
+                         "changed script or hook, %d failing from this push, %d already failing on the remote, "
+                         "%d not run (cap %d), %.0fs verdict=%s\n"
+                         % (short, len(tests), wired, len(mine), len(inherited), len(dropped),
+                            _SCRIPT_TESTS_MAX, secs, verdict))
+        _audit("script_tests", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f"
+               % (verdict, short, len(tests), len(mine), len(inherited), secs))
+        if mine:
+            sys.stderr.write("\nBLOCKED: this push fails tests that CI runs:\n")
+            for t, why in mine:
+                sys.stderr.write("  %s\n    %s\n" % (t, why.replace("\n", "\n    ")))
+            sys.stderr.write("\nReproduce: run that test on your commit.\nOverride for this push, if "
+                             "you are deliberately landing it red:\n  AMUX_SKIP_SCRIPT_TESTS=1 git push ...\n")
+            return 1
+    return 0
+
+
 def _spa_gates(refs):
     """refs: [(local_sha, remote_sha, touched paths)]. Returns 1 to refuse."""
     if os.environ.get("AMUX_SKIP_SPA_GATES", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -405,8 +551,8 @@ def _spa_gates(refs):
         got = _spa_failures(local, nm)
         secs = (datetime.datetime.now() - t0).total_seconds()
         if got is None:
-            sys.stderr.write("amux pre-push: SPA gates on %s could not be read; CI's spa-gates "
-                             "still runs verdict=spa_gates_unmeasured\n" % short)
+            sys.stderr.write("amux pre-push: SPA gates on %s could not be read (%s); CI's spa-gates "
+                             "still runs verdict=spa_gates_unmeasured\n" % (short, _SPA_UNREAD["why"] or "no reason recorded"))
             _audit("spa_gates", "verdict=spa_gates_unmeasured sha=%s" % short)
             continue
         tests, failing = got
@@ -556,6 +702,59 @@ def main():
     except Exception:
         pass  # fail open, same rule as the guard above
 
+    # THE RULE TREE AND THE SLOP RATCHET (VISION.md, 2026-10-30). Selected from
+    # the pushed range like the harness check above: the rule tree runs when a
+    # push touches a rule file, the ratchet when it touches server Rust or the
+    # dashboard's scripts. AMUX_SKIP_RULES_TREE / AMUX_SKIP_SLOP_RATCHET skip
+    # once, said on stderr.
+    try:
+        _touch2, _heads = [], []
+        for _line in stdin_text.splitlines():
+            _p = _line.split()
+            if len(_p) < 4 or _p[1].strip("0") == "":
+                continue
+            _heads.append(_p[1])
+            _rng = [_p[1], "--not", "--remotes=origin"]
+            if _p[3] != ZERO:
+                _rng.append(_p[3])
+            _r = subprocess.run(["git", "log", "--name-only", "--format="] + _rng,
+                                capture_output=True, text=True, timeout=30)
+            _touch2.extend(x for x in _r.stdout.splitlines() if x.strip())
+        _root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+        _skip = lambda k: os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on")
+        if any(x == "VISION.md" or x.endswith("CLAUDE.md") or x.endswith("AGENTS.md") for x in _touch2):
+            _chk = os.path.join(_root, "scripts", "check_rules_tree.py")
+            # At each pushed head's committed bytes, never the shared working tree.
+            for _h in (_heads if os.path.exists(_chk) else []):
+                _w = subprocess.run([sys.executable, _chk, "--root", _root, "--ref", _h],
+                                    capture_output=True, text=True, timeout=60)
+                if _w.returncode != 0:
+                    sys.stderr.write("\nBLOCKED: the rule tree under VISION.md is broken at %s.\n\n" % _h[:9] + _w.stdout + _w.stderr)
+                    if not _skip("AMUX_SKIP_RULES_TREE"):
+                        return 1
+                    sys.stderr.write("AMUX_SKIP_RULES_TREE set: pushing anyway.\n")
+        _code = [x for x in _touch2 if (x.endswith(".rs") and x.startswith("crates/") and "/src/" in x)
+                 or (x.startswith("crates/amux-dashboard/static/") and x.endswith((".js", ".mjs")))]
+        _chk = os.path.join(_root, "scripts", "check_slop_ratchet.py")
+        if _code and os.path.exists(_chk):
+            for _h in _heads:
+                _base = subprocess.run(["git", "merge-base", "origin/main", _h],
+                                       capture_output=True, text=True, timeout=30).stdout.strip()
+                if not _base:
+                    continue
+                _w = subprocess.run([sys.executable, _chk, "--base", _base, "--head", _h],
+                                    capture_output=True, text=True, timeout=300)
+                sys.stderr.write(_w.stdout)
+                if _w.returncode != 0:
+                    sys.stderr.write("\nBLOCKED: the slop ratchet (scripts/check_slop_ratchet.py).\n")
+                    if not _skip("AMUX_SKIP_SLOP_RATCHET"):
+                        return 1
+                    sys.stderr.write("AMUX_SKIP_SLOP_RATCHET set: pushing anyway.\n")
+    except Exception as _e:
+        sys.stderr.write("amux pre-push: rule tree / slop ratchet could not run (%s); not blocking "
+                         "(verdict=rules_slop_unmeasured)\n" % _e)
+
     # SPA GATES (_spa_gates above). Also before the session early-returns: a
     # red spa-gates holds the deploy for everyone, whoever pushed it.
     try:
@@ -568,7 +767,7 @@ def main():
             _r = subprocess.run(["git", "log", "--name-only", "--format="] + _rng,
                                 capture_output=True, text=True, timeout=30)
             _refs.append((_p[1], _p[3], [x for x in _r.stdout.splitlines() if x.strip()]))
-        if _spa_gates(_refs) or _harness_guard_gate(_refs):
+        if _spa_gates(_refs) or _harness_guard_gate(_refs) or _script_tests_gate(_refs):
             return 1
     except Exception as e:
         sys.stderr.write("amux pre-push: the pushed-commit gates errored (%s); CI still runs "

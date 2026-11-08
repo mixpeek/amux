@@ -58,6 +58,11 @@ const ALLOWED: &[(&str, &str)] = &[
         "id TEXT, source_ref TEXT, status TEXT",
         "the autofix one-card-per-fault fixture: names only what it queries",
     ),
+    (
+        "id TEXT, status TEXT, archived INTEGER DEFAULT 0,",
+        "the autofix invariant-regrowth fixture (365081463): five columns, the card fields the \
+         regrowth rule reads beside session_events.idem, no schema claim",
+    ),
 ];
 
 fn sources() -> Vec<(String, String)> {

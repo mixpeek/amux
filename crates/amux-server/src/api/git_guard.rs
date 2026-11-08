@@ -4204,7 +4204,7 @@ pub async fn guard_outcome(
         if let Some(tid) = target_id {
             n = conn.execute(
                 "UPDATE guard_verdicts SET resolution=?1, override_used=?2, outcome_basis=?3, \
-                 outcome_ts=?4, outcome_elapsed_s=?5, outcome_link=?6 WHERE id=?7",
+                 outcome_ts=?4, outcome_elapsed_s=?5, outcome_link=?6 WHERE id=?7 AND resolution IS NULL",
                 rusqlite::params![res_c, ov, basis_c, now, elapsed, link, tid],
             )?;
             // Close the episode's earlier retry-blocks as 'superseded' —

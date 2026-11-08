@@ -521,10 +521,13 @@ const SKILL_BACKFILL_DAYS: u64 = 90;
 /// Skill call or a typed command are parsed, so the 15G tree reads in minutes.
 /// Marked done in prefs; safe to repeat anyway (INSERT OR IGNORE by uuid).
 pub async fn backfill_skill_usage(store: &SharedStore, projects: &Path) -> anyhow::Result<Option<usize>> {
-    let done = {
-        let conn = store.read()?;
-        conn.query_row("SELECT 1 FROM prefs WHERE key=?1", [SKILL_BACKFILL_PREF], |_| Ok(())).is_ok()
-    };
+    let done = store
+        .read_async(|conn| {
+            Ok(conn
+                .query_row("SELECT 1 FROM prefs WHERE key=?1", [SKILL_BACKFILL_PREF], |_| Ok(()))
+                .is_ok())
+        })
+        .await?;
     if done {
         return Ok(None);
     }
@@ -601,13 +604,9 @@ fn claude_projects_dir() -> PathBuf {
 /// One indexing pass. Returns rows inserted. Cheap on a fully-indexed tree —
 /// a stat per file and nothing else.
 pub async fn index_once(store: &SharedStore, home: &Path) -> anyhow::Result<usize> {
-    index_once_at(
-        store,
-        home,
-        &claude_projects_dir(),
-        &crate::api::session_verbs::conversation_claims(),
-    )
-    .await
+    let claims =
+        tokio::task::spawn_blocking(crate::api::session_verbs::conversation_claims).await?;
+    index_once_at(store, home, &claude_projects_dir(), &claims).await
 }
 
 /// The pass, with the projects root injected. Split out so tests drive a temp
@@ -622,7 +621,88 @@ pub async fn index_once_at(
     if !projects.is_dir() {
         return Ok(0);
     }
-    let projects = projects.to_path_buf();
+    // On a blocking thread: the walk stats every transcript on the box (18,993
+    // files across 8,262 project dirs, measured 2026-11-01), and on the runtime
+    // it held a thread for up to 47.7s at a time (AF-1142).
+    let (pending, skipped_for_cap, cap) = {
+        let store = store.clone();
+        let home = home.to_path_buf();
+        let projects = projects.to_path_buf();
+        let claims = claims.clone();
+        tokio::task::spawn_blocking(move || scan_pending(&store, &home, &projects, &claims))
+            .await??
+    };
+    if skipped_for_cap > 0 {
+        tracing::info!(
+            indexed = pending.len(),
+            deferred = skipped_for_cap,
+            cap,
+            "token-ledger: capped this pass; the rest are picked up next tick"
+        );
+    }
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let expected: usize = pending.iter().map(|(_, _, _, t, _)| t.len()).sum();
+
+    let inserted = store
+        .write_async(move |conn| {
+            let mut n = 0usize;
+            {
+                let mut ins = conn.prepare(
+                    // A response already billed by an EARLIER pass (the cursor
+                    // resumed mid-message, or a repeat landed after a flush)
+                    // updates its row to the larger output instead of adding one.
+                    "INSERT INTO token_ledger
+                       (ts, session, conversation, model, input, cache_read, cache_write, output, cost_usd,
+                        message_id, request_id)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                     ON CONFLICT(conversation, message_id) WHERE message_id IS NOT NULL
+                     DO UPDATE SET output = MAX(output, excluded.output),
+                                   cost_usd = MAX(cost_usd, excluded.cost_usd)",
+                )?;
+                let mut cur = conn.prepare(
+                    "INSERT INTO ledger_cursor (conversation, offset, mtime) VALUES (?1,?2,?3)
+                     ON CONFLICT(conversation) DO UPDATE SET offset=?2, mtime=?3",
+                )?;
+                let mut sk = conn.prepare(
+                    "INSERT OR IGNORE INTO skill_usage (record_uuid, skill, source, session, ts) VALUES (?1,?2,?3,?4,?5)",
+                )?;
+                for (conv, off, mtime, turns, skill_uses) in &pending {
+                    for u in skill_uses {
+                        sk.execute(rusqlite::params![u.uuid, u.skill, u.source, u.session, u.ts])?;
+                    }
+                    for t in turns {
+                        ins.execute(rusqlite::params![
+                            t.ts, t.session, t.conversation, t.model,
+                            t.tokens[0], t.tokens[1], t.tokens[2], t.tokens[3], t.cost,
+                            t.message_id, t.request_id
+                        ])?;
+                        n += 1;
+                    }
+                    cur.execute(rusqlite::params![conv, *off as i64, mtime])?;
+                }
+            }
+            debug_assert_eq!(n, expected, "insert count must match what was parsed");
+            Ok(WriteOutcome { applied: n > 0, events: vec![] })
+        })
+        .await
+        .map(|_| expected)?;
+
+    if inserted > 0 {
+        attribute_tasks(store).await?;
+    }
+    Ok(inserted)
+}
+
+/// Everything before the commit: the cursors, the walk and the parse. Blocking
+/// by nature, so `index_once_at` runs it on the blocking pool.
+fn scan_pending(
+    store: &SharedStore,
+    home: &Path,
+    projects: &Path,
+    claims: &BTreeMap<String, String>,
+) -> anyhow::Result<(Vec<PendingFile>, usize, usize)> {
     let table = prices(home);
 
     let cursors: HashMap<String, (u64, i64)> = {
@@ -656,8 +736,8 @@ pub async fn index_once_at(
     // all share one parent, so cache per parent rather than re-opening it once
     // per delegated transcript.
     let mut owner_cache: HashMap<PathBuf, String> = HashMap::new();
-    let Ok(entries) = std::fs::read_dir(&projects) else {
-        return Ok(0);
+    let Ok(entries) = std::fs::read_dir(projects) else {
+        return Ok((pending, skipped_for_cap, cap));
     };
     for proj in entries.flatten() {
         let p = proj.path();
@@ -731,67 +811,7 @@ pub async fn index_once_at(
             }
         }
     }
-    if skipped_for_cap > 0 {
-        tracing::info!(
-            indexed = pending.len(),
-            deferred = skipped_for_cap,
-            cap,
-            "token-ledger: capped this pass; the rest are picked up next tick"
-        );
-    }
-    if pending.is_empty() {
-        return Ok(0);
-    }
-    let expected: usize = pending.iter().map(|(_, _, _, t, _)| t.len()).sum();
-
-    let inserted = store
-        .write_async(move |conn| {
-            let mut n = 0usize;
-            {
-                let mut ins = conn.prepare(
-                    // A response already billed by an EARLIER pass (the cursor
-                    // resumed mid-message, or a repeat landed after a flush)
-                    // updates its row to the larger output instead of adding one.
-                    "INSERT INTO token_ledger
-                       (ts, session, conversation, model, input, cache_read, cache_write, output, cost_usd,
-                        message_id, request_id)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
-                     ON CONFLICT(conversation, message_id) WHERE message_id IS NOT NULL
-                     DO UPDATE SET output = MAX(output, excluded.output),
-                                   cost_usd = MAX(cost_usd, excluded.cost_usd)",
-                )?;
-                let mut cur = conn.prepare(
-                    "INSERT INTO ledger_cursor (conversation, offset, mtime) VALUES (?1,?2,?3)
-                     ON CONFLICT(conversation) DO UPDATE SET offset=?2, mtime=?3",
-                )?;
-                let mut sk = conn.prepare(
-                    "INSERT OR IGNORE INTO skill_usage (record_uuid, skill, source, session, ts) VALUES (?1,?2,?3,?4,?5)",
-                )?;
-                for (conv, off, mtime, turns, skill_uses) in &pending {
-                    for u in skill_uses {
-                        sk.execute(rusqlite::params![u.uuid, u.skill, u.source, u.session, u.ts])?;
-                    }
-                    for t in turns {
-                        ins.execute(rusqlite::params![
-                            t.ts, t.session, t.conversation, t.model,
-                            t.tokens[0], t.tokens[1], t.tokens[2], t.tokens[3], t.cost,
-                            t.message_id, t.request_id
-                        ])?;
-                        n += 1;
-                    }
-                    cur.execute(rusqlite::params![conv, *off as i64, mtime])?;
-                }
-            }
-            debug_assert_eq!(n, expected, "insert count must match what was parsed");
-            Ok(WriteOutcome { applied: n > 0, events: vec![] })
-        })
-        .await
-        .map(|_| expected)?;
-
-    if inserted > 0 {
-        attribute_tasks(store).await?;
-    }
-    Ok(inserted)
+    Ok((pending, skipped_for_cap, cap))
 }
 
 /// A claim window may not run longer than this, however it ended.
@@ -1154,6 +1174,26 @@ mod tests {
         }
         wins.sort_by_key(|(_, _, from, _)| *from);
         wins
+    }
+
+    /// AF-1142: the walk stats every transcript on the box, so the async
+    /// half of a pass must hand all of it to the blocking pool. A filesystem or
+    /// store call that comes back here holds a runtime thread for seconds.
+    #[test]
+    fn a_pass_never_walks_the_disk_on_a_runtime_thread() {
+        for (src, pass, scan) in [
+            (include_str!("token_ledger.rs"), "pub async fn index_once_at(", "fn scan_pending("),
+            (include_str!("codex_ledger.rs"), "pub async fn index_once_at(", "fn scan_rollouts("),
+            (include_str!("gemini_ledger.rs"), "pub(crate) async fn index_once_at(", "fn scan_chats("),
+        ] {
+            let start = src.find(pass).expect("the async pass");
+            let end = start + src[start..].find(scan).expect("its blocking scan");
+            let body = &src[start..end];
+            assert!(body.contains("spawn_blocking"), "{pass} left the blocking pool");
+            for banned in ["std::fs::", "store.read()", "read_cursors(", "metadata()"] {
+                assert!(!body.contains(banned), "{banned} is back on the runtime in {pass}");
+            }
+        }
     }
 
     #[test]

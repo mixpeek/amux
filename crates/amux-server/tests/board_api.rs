@@ -1957,6 +1957,64 @@ async fn worker_cannot_create_locally_then_reassign_to_a_peer_or_unassigned_boar
     assert_eq!(after["session"], owner);
 }
 
+/// AF-1069: a card whose owner is no longer registered may be moved to a
+/// live, non-isolated lane by any worker (discarding it already could). A card
+/// a registered worker owns, an unregistered target and an isolated target are
+/// still refused.
+#[tokio::test]
+async fn an_orphaned_card_may_move_to_a_live_lane_and_a_live_owners_card_may_not() {
+    let (app, _dir) = app();
+    let sessions = std::path::PathBuf::from(std::env::var("AMUX_HOME").unwrap()).join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(sessions.join("af1069-live.env"), "CC_DESC=live\n").unwrap();
+    std::fs::write(sessions.join("af1069-owner.env"), "CC_DESC=owner\n").unwrap();
+    std::fs::write(sessions.join("af1069-iso.env"), "CC_ISOLATED=1\n").unwrap();
+    let card = |owner: &'static str| {
+        let app = app.clone();
+        async move { create(&app, json!({"title": format!("owned by {owner}"), "session": owner})).await["id"].as_str().unwrap().to_string() }
+    };
+    let patch = |id: String, to: &'static str| {
+        let app = app.clone();
+        async move {
+            send_with(&app, "PATCH", &format!("/api/board/{id}"), Some(json!({"session": to})),
+                &[("X-Amux-Worker", "af1069-caller")]).await
+        }
+    };
+
+    let orphan = card("af1069-gone").await;
+    for to in ["af1069-nowhere", "af1069-iso"] {
+        let (st, _, v) = patch(orphan.clone(), to).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{to}: {v}");
+        assert_eq!(v["code"], "cross_board_reassignment_forbidden");
+    }
+    let (st, _, v) = patch(orphan.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::OK, "an orphaned card moves to a live lane: {v}");
+    let (_, _, after) = send(&app, "GET", &format!("/api/board/{orphan}"), None).await;
+    assert_eq!(after["session"], "af1069-live");
+
+    // The owner's board is unregistered too, and holds the asks waiting on
+    // the owner: it is never orphaned.
+    let owner = std::env::var("AMUX_OWNER_NAME").ok().filter(|v| !v.trim().is_empty())
+        .or_else(|| std::env::var("AMUX_OWNER_EMAIL").ok().and_then(|e| e.split('@').next().map(str::to_string)))
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "ethan".into())
+        .to_uppercase();
+    let ask = create(&app, json!({"title": "an ask on the owner's board", "session": owner})).await["id"]
+        .as_str().unwrap().to_string();
+    let (st, _, v) = patch(ask.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the owner's board is not orphaned: {v}");
+    let human = card("af1069-gone-human").await;
+    send(&app, "PATCH", &format!("/api/board/{human}"), Some(json!({"owner_type": "human"}))).await;
+    let (st, _, v) = patch(human.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a human's card is not orphaned: {v}");
+
+    let owned = card("af1069-owner").await;
+    let (st, _, v) = patch(owned.clone(), "af1069-live").await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "a registered owner's card stays theirs: {v}");
+    let (_, _, after) = send(&app, "GET", &format!("/api/board/{owned}"), None).await;
+    assert_eq!(after["session"], "af1069-owner");
+}
+
 #[tokio::test]
 async fn circular_depends_on_is_rejected_with_the_cycle_path() {
     let (app, _dir) = app();
@@ -5684,9 +5742,13 @@ async fn reopening_terminal_card_retires_stale_summary_without_erasing_history()
         &app,
         "PATCH",
         &format!("/api/board/{id}"),
+        // A worker leaves a terminal status only with force and a reason
+        // (2026-11-06, implicit state machines #39).
         Some(json!({
             "status": "todo",
             "last_result": current_result,
+            "force": true,
+            "reason": "reopened for the current reconciliation run",
         })),
         &[("X-Amux-Worker", lane)],
     )
@@ -9152,4 +9214,48 @@ async fn an_all_ignored_patch_says_why_at_the_top_level() {
         Some(json!({ "verify_cmd": "pytest -q" })), &[("X-Amux-Session", "lane-a")]).await;
     let why = v["ignored_hints"][0]["why"].as_str().unwrap_or("").to_string();
     assert!(why.contains("not a contract lane"), "{v}");
+}
+
+/// 2026-11-06 (implicit state machines): a PATCH with no named transition out
+/// of a terminal status became an implicit Force, so a lane reopened a
+/// discarded card that `advance()` refuses to reopen. A worker now needs
+/// `force` with a reason; the owner's dashboard still reopens by moving it.
+#[tokio::test]
+async fn a_worker_patch_cannot_reopen_a_terminal_card_without_force() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "terminal reopen", "type": "chore" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    let path = format!("/api/board/{id}");
+    let (st, _, v) = send(&app, "PATCH", &path, Some(json!({ "status": "discarded" }))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let worker = [("X-Amux-Session", "orch")];
+    let (st, _, v) = send_with(&app, "PATCH", &path, Some(json!({ "status": "todo" })), &worker).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["code"], json!("terminal_requires_force"));
+    let (_, _, back) = send(&app, "GET", &path, None).await;
+    assert_eq!(back["status"], json!("discarded"));
+    let (st, _, v) = send_with(&app, "PATCH", &path,
+        Some(json!({ "status": "todo", "force": true, "reason": "reopened on purpose" })), &worker).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, _, v) = send(&app, "PATCH", &path, Some(json!({ "status": "discarded" }))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, _, v) = send(&app, "PATCH", &path, Some(json!({ "status": "todo" }))).await;
+    assert_eq!(st, StatusCode::OK, "the owner's dashboard still reopens by moving: {v}");
+}
+
+/// 2026-11-06: needsyou, blocked, armed and quarantined have no `statuses`
+/// row, so deleting one force-moved every card in it to todo and answered ok.
+#[tokio::test]
+async fn deleting_a_board_status_with_no_custom_column_moves_nothing() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({ "title": "parked", "type": "chore", "status": "blocked" })).await;
+    let id = card["id"].as_str().unwrap().to_string();
+    for sid in ["needsyou", "blocked", "armed", "quarantined"] {
+        let (st, _, v) = send(&app, "DELETE", &format!("/api/board/statuses/{sid}"), None).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{sid}: {v}");
+    }
+    let (st, _, v) = send(&app, "DELETE", "/api/board/statuses/no-such-column", None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+    let (_, _, back) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert_eq!(back["status"], json!("blocked"));
 }

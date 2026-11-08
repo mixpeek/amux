@@ -137,16 +137,28 @@ fn newest(current: Option<f64>, incoming: Option<f64>) -> Option<f64> {
     }
 }
 
-/// Section 1a's per-route totals over the last ROUTE_WINDOW_DAYS, kept between
-/// passes. Hog RCA 20261029-134000: recomputing them every pass grouped the
-/// whole 14-day request log (6.8M rows, 29,951 method+path groups, 8.4 CPU
-/// seconds in the sqlite3 shell) and took 16.6 s of a 24 s pass, every 30 s,
-/// while the server sat at 836% CPU. Now a full build happens every
-/// ROUTE_REBUILD_SECS and each pass in between folds in only the rows added
-/// since (by `id`, which only grows), so a new 5xx still shows within one pass.
-/// Rows that age out of the window, or that log retention deletes, leave at the
-/// next rebuild.
-#[derive(Default)]
+/// Section 1a's per-route totals over the request log's recent window, kept
+/// between passes. Hog RCA 20261029-134000: regrouping the whole 14-day log
+/// every pass (6.8M rows, 29,951 method+path groups) took 16.6 s of a 24 s
+/// pass, every 30 s, with the server at 836% CPU. 5671d2e96 rebuilt it every 10
+/// minutes instead, and that single query grew to 116-118 s once the server was
+/// busy: one read that long also stops SQLite checkpointing its WAL.
+///
+/// Now it is a sliding window. Each pass folds in the rows added since the last
+/// one (by `id`, which only grows) and takes out the rows that aged out of the
+/// window (a `ts` slice, from the index). The window ends a day short of the
+/// log's retention, so a row leaves it before retention deletes it and its
+/// subtraction always finds it. A full build runs every ROUTE_REBUILD_SECS as
+/// a resync, in id ranges of ROUTE_BUILD_CHUNK rows, so no single read holds
+/// the log for long.
+///
+/// The window is saved to `route-window.json` and a restart picks it up and
+/// slides it forward. The builder restarts the server on every deploy, and a
+/// full build reads the whole 2.3 GB table: 36.9 s on a652320f7 (32.5 s of it
+/// SQL, the same 36.6 s from a plain sqlite3 client at load 31), 20 times in
+/// five hours. Totals are kept per raw path and folded into route shapes when
+/// read, so a saved window stays right when a deploy changes the route table.
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 struct RouteAcc {
     ok: i64,
     n: i64,
@@ -159,24 +171,53 @@ struct RouteAcc {
 }
 struct RouteWindow {
     built_at: f64,
+    /// The window's start the totals are taken from.
+    lo: f64,
     last_id: i64,
+    /// Totals per (method, raw path).
     groups: std::collections::HashMap<(String, String), RouteAcc>,
+    /// When the window was last written to its file.
+    saved_at: f64,
+    /// Raw path -> route shape, so each distinct path is normalized once.
+    /// normalize_target_verb scores a path against all ~1,250 routes; the
+    /// chunked boot build sees each raw path once per chunk, ~263k lookups for
+    /// ~30k distinct paths, and that took 106.8 s of a 33-chunk build on
+    /// 3027f2512 while each chunk's SQL took 0.18 s in the sqlite3 shell.
+    shapes: std::collections::HashMap<String, String>,
+    /// Time spent in normalize_target_verb and how many paths it ran on, so a
+    /// slow build says whether the time went to SQL or to route matching
+    /// (the memo above did not move a 34-chunk boot build: 84.8 s on f7ff7741b).
+    normalize_ms: f64,
+    normalized: usize,
 }
-const ROUTE_WINDOW_DAYS: f64 = 14.0;
-const ROUTE_REBUILD_SECS: f64 = 600.0;
+/// Past this many remembered paths the memo starts over, so an unbounded set
+/// of distinct paths cannot grow it forever.
+const ROUTE_SHAPES_MAX: usize = 200_000;
+const ROUTE_REBUILD_SECS: f64 = 6.0 * 3600.0;
+const ROUTE_BUILD_CHUNK: i64 = 200_000;
+/// How often a sliding window is written back to its file between rebuilds.
+const ROUTE_SAVE_SECS: f64 = 600.0;
+/// Bump when the saved layout changes; an older file is rebuilt instead.
+const ROUTE_SAVE_VERSION: u32 = 1;
 static ROUTE_WINDOW: std::sync::Mutex<Option<RouteWindow>> = std::sync::Mutex::new(None);
 
+/// One day short of the request log's retention (at most 14 days).
+fn route_window_secs() -> f64 {
+    (crate::api::request_log::retain_days_config().min(14.0) - 1.0).max(1.0) * 86400.0
+}
+
 /// Fold `(method, raw path)` aggregates for the rows `where_sql` selects into
-/// `w`, by route shape. TWO-STAGE AGGREGATION, deliberately: the grouping key
-/// is `normalize_target_verb`, a Rust function, so SQL collapses to (method,
-/// raw path) and Rust folds those into shapes. 503 is summed apart from the
-/// rest of the 5xx band (AMUX-4545) and 3xx counts as the route answering
-/// (AMUX-4753).
+/// `w`, added (`sign` 1) or taken out (-1). TWO-STAGE AGGREGATION,
+/// deliberately: the grouping key is `normalize_target_verb`, a Rust function,
+/// so SQL collapses to (method, raw path) and `route_rows` folds those into
+/// shapes. 503 is summed apart from the rest of the 5xx band (AMUX-4545)
+/// and 3xx counts as the route answering (AMUX-4753).
 fn route_fold(
     conn: &rusqlite::Connection,
     where_sql: &str,
-    param: &dyn rusqlite::ToSql,
+    params: &[&dyn rusqlite::ToSql],
     w: &mut RouteWindow,
+    sign: i64,
 ) -> rusqlite::Result<()> {
     let sql = format!(
         "SELECT method, path, \
@@ -190,7 +231,7 @@ fn route_fold(
          FROM _amux_request_log WHERE {where_sql} GROUP BY method, path"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([param], |r| {
+    let rows = stmt.query_map(params, |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -201,41 +242,136 @@ fn route_fold(
     })?;
     for row in rows {
         let (method, path, [ok, n, c4, c5, c503, c3], last, max_id) = row?;
-        let shape = crate::api::request_log::normalize_target_verb(&path);
-        let e = w.groups.entry((method, shape)).or_default();
-        e.ok += ok;
-        e.n += n;
-        e.redirect += c3;
-        e.client_err += c4;
-        e.server_err += c5;
-        e.unavailable += c503;
-        e.last_seen = newest(e.last_seen, last);
-        w.last_id = w.last_id.max(max_id);
+        let e = w.groups.entry((method, path)).or_default();
+        e.ok += sign * ok;
+        e.n += sign * n;
+        e.redirect += sign * c3;
+        e.client_err += sign * c4;
+        e.server_err += sign * c5;
+        e.unavailable += sign * c503;
+        if sign > 0 {
+            e.last_seen = newest(e.last_seen, last);
+            w.last_id = w.last_id.max(max_id);
+        }
+    }
+    if sign < 0 {
+        w.groups.retain(|_, a| a.n > 0);
     }
     Ok(())
 }
 
-/// Section 1a's route rows, from `cache` (rebuilt when it is missing or older
-/// than ROUTE_REBUILD_SECS, otherwise brought up to date with the rows added
-/// since its last pass). A failed build keeps the previous window.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedRouteWindow {
+    version: u32,
+    built_at: f64,
+    lo: f64,
+    last_id: i64,
+    groups: Vec<(String, String, RouteAcc)>,
+}
+
+fn route_window_save(w: &RouteWindow, file: &std::path::Path) -> Result<(), String> {
+    let saved = SavedRouteWindow {
+        version: ROUTE_SAVE_VERSION,
+        built_at: w.built_at,
+        lo: w.lo,
+        last_id: w.last_id,
+        groups: w.groups.iter().map(|((m, p), a)| (m.clone(), p.clone(), a.clone())).collect(),
+    };
+    let bytes = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, file).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// The saved window, if it is current enough to slide forward: written by a
+/// build less than ROUTE_REBUILD_SECS ago, in this layout, and not ahead of the
+/// log (a replaced database starts its ids over).
+fn route_window_load(file: &std::path::Path, conn: &rusqlite::Connection, now: f64) -> Result<RouteWindow, String> {
+    let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
+    let saved: SavedRouteWindow = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if saved.version != ROUTE_SAVE_VERSION {
+        return Err(format!("layout {} is not {ROUTE_SAVE_VERSION}", saved.version));
+    }
+    let age = now - saved.built_at;
+    if !(0.0..ROUTE_REBUILD_SECS).contains(&age) {
+        return Err(format!("built {age:.0} s ago"));
+    }
+    let max_id: Option<i64> = conn
+        .query_row("SELECT MAX(id) FROM _amux_request_log", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if saved.last_id > max_id.unwrap_or(0) {
+        return Err(format!("saved through id {} but the log ends at {:?}", saved.last_id, max_id));
+    }
+    Ok(RouteWindow {
+        built_at: saved.built_at,
+        lo: saved.lo,
+        last_id: saved.last_id,
+        groups: saved.groups.into_iter().map(|(m, p, a)| ((m, p), a)).collect(),
+        saved_at: now,
+        shapes: Default::default(),
+        normalize_ms: 0.0,
+        normalized: 0,
+    })
+}
+
+/// Section 1a's route rows for the `window_secs` before `now`, from `cache`:
+/// built in id chunks when missing or older than ROUTE_REBUILD_SECS, otherwise
+/// slid forward (new rows in, aged rows out). A failed build keeps the
+/// previous window. With `file`, an empty cache is first loaded from it, and
+/// the window is written back after a build and every ROUTE_SAVE_SECS.
 fn route_window(
     cache: &mut Option<RouteWindow>,
     conn: &rusqlite::Connection,
     now: f64,
+    window_secs: f64,
+    file: Option<&std::path::Path>,
 ) -> Vec<checks::RouteOutcomeRow> {
+    let lo = now - window_secs;
+    if let (None, Some(file)) = (cache.as_ref(), file) {
+        if file.exists() {
+            match route_window_load(file, conn, now) {
+                Ok(w) => {
+                    tracing::info!(age_s = (now - w.built_at) as u64, last_id = w.last_id, measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_loaded", "section 1a picked up its saved route window");
+                    *cache = Some(w);
+                }
+                Err(why) => tracing::info!(why = %why, measured = true, n_considered = 0,
+                    verdict = "route_window_load_rejected", "section 1a rebuilds its route window instead of loading the saved one"),
+            }
+        }
+    }
     let rebuild = cache.as_ref().is_none_or(|w| now - w.built_at >= ROUTE_REBUILD_SECS);
     if rebuild {
         let started = std::time::Instant::now();
-        let mut w = RouteWindow { built_at: now, last_id: 0, groups: Default::default() };
-        match route_fold(conn, "ts >= ?1", &(now - ROUTE_WINDOW_DAYS * 86400.0), &mut w) {
-            Ok(()) => {
+        let shapes = cache.as_mut().map(|w| std::mem::take(&mut w.shapes)).unwrap_or_default();
+        let mut w = RouteWindow { built_at: now, lo, last_id: 0, groups: Default::default(), saved_at: 0.0, shapes, normalize_ms: 0.0, normalized: 0 };
+        let built = (|| -> rusqlite::Result<i64> {
+            let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
+                "SELECT MIN(id), MAX(id) FROM _amux_request_log WHERE ts >= ?1",
+                [lo],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let (Some(first), Some(last)) = (first, last) else { return Ok(0) };
+            let mut chunks = 0;
+            let mut from = first;
+            while from <= last {
+                let to = from + ROUTE_BUILD_CHUNK;
+                route_fold(conn, "id >= ?1 AND id < ?2 AND ts >= ?3", &[&from, &to, &lo], &mut w, 1)?;
+                from = to;
+                chunks += 1;
+            }
+            w.last_id = w.last_id.max(last);
+            Ok(chunks)
+        })();
+        match built {
+            Ok(chunks) => {
                 let ms = started.elapsed().as_millis() as u64;
                 if ms > 5000 {
-                    tracing::warn!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
-                        verdict = "route_window_rebuild_slow", "section 1a rebuilt its 14-day route window slowly");
+                    tracing::warn!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuild_slow", "section 1a rebuilt its route window slowly");
                 } else {
-                    tracing::info!(ms, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
-                        verdict = "route_window_rebuilt", "section 1a rebuilt its 14-day route window");
+                    tracing::info!(ms, chunks, groups = w.groups.len(), measured = true, n_considered = w.groups.len(),
+                        verdict = "route_window_rebuilt", "section 1a rebuilt its route window");
                 }
                 *cache = Some(w);
             }
@@ -244,17 +380,65 @@ fn route_window(
         }
     } else if let Some(w) = cache.as_mut() {
         let since_id = w.last_id;
-        if let Err(e) = route_fold(conn, "id > ?1", &since_id, w) {
+        if let Err(e) = route_fold(conn, "id > ?1", &[&since_id], w, 1) {
             tracing::warn!(error = %e, measured = false, n_considered = 0,
                 verdict = "route_window_update_failed", "section 1a could not read new request-log rows");
         }
+        if lo > w.lo {
+            let (old_lo, last) = (w.lo, w.last_id);
+            match route_fold(conn, "ts >= ?1 AND ts < ?2 AND id <= ?3", &[&old_lo, &lo, &last], w, -1) {
+                Ok(()) => w.lo = lo,
+                Err(e) => tracing::warn!(error = %e, measured = false, n_considered = 0,
+                    verdict = "route_window_age_out_failed", "section 1a could not take aged rows out of its window"),
+            }
+        }
     }
-    let Some(w) = cache.as_ref() else { return Vec::new() };
-    w.groups
-        .iter()
+    let Some(w) = cache.as_mut() else { return Vec::new() };
+    if let Some(file) = file {
+        if now - w.saved_at >= ROUTE_SAVE_SECS {
+            w.saved_at = now;
+            if let Err(e) = route_window_save(w, file) {
+                tracing::warn!(error = %e, measured = false, n_considered = 0,
+                    verdict = "route_window_save_failed", "section 1a could not save its route window; a restart will rebuild it");
+            }
+        }
+    }
+    route_rows(w)
+}
+
+/// The window's raw-path totals folded into route shapes, normalizing each
+/// distinct path once per process (the memo in `shapes`).
+fn route_rows(w: &mut RouteWindow) -> Vec<checks::RouteOutcomeRow> {
+    let mut by_shape: std::collections::HashMap<(String, String), RouteAcc> = Default::default();
+    for ((method, path), a) in &w.groups {
+        let shape = match w.shapes.get(path) {
+            Some(shape) => shape.clone(),
+            None => {
+                if w.shapes.len() >= ROUTE_SHAPES_MAX {
+                    w.shapes.clear();
+                }
+                let t = std::time::Instant::now();
+                let shape = crate::api::request_log::normalize_target_verb(path);
+                w.normalize_ms += t.elapsed().as_secs_f64() * 1000.0;
+                w.normalized += 1;
+                w.shapes.insert(path.clone(), shape.clone());
+                shape
+            }
+        };
+        let e = by_shape.entry((method.clone(), shape)).or_default();
+        e.ok += a.ok;
+        e.n += a.n;
+        e.redirect += a.redirect;
+        e.client_err += a.client_err;
+        e.server_err += a.server_err;
+        e.unavailable += a.unavailable;
+        e.last_seen = newest(e.last_seen, a.last_seen);
+    }
+    by_shape
+        .into_iter()
         .map(|((method, shape), a)| checks::RouteOutcomeRow {
-            method: method.clone(),
-            shape: shape.clone(),
+            method,
+            shape,
             n: a.n,
             ok: a.ok,
             redirect: a.redirect,
@@ -301,7 +485,8 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
         Ok(conn) => {
             let groups = {
                 let mut cache = ROUTE_WINDOW.lock().unwrap_or_else(|p| p.into_inner());
-                route_window(&mut cache, &conn, crate::config::now_f64())
+                let file = crate::config::ServerConfig::from_process_env().amux_home.join("route-window.json");
+                route_window(&mut cache, &conn, crate::config::now_f64(), route_window_secs(), Some(&file))
             };
             out.extend(checks::mounted_routes_answer(&groups, &mounted));
         }
@@ -420,19 +605,38 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             "/../../scripts/git-hooks/git-shared-guard.py"
         ));
         let repo = crate::api::self_update::repo_dir();
+        // ORIGIN/MAIN FIRST, THEN HEAD (AF-1107): the source install.sh's
+        // install_hook_from_head reads, in the same order. A shared checkout's
+        // HEAD lags origin by hundreds of commits, so a hook installed from
+        // origin/main read as "DRIFTED from HEAD" while it was exactly the
+        // committed bytes (fa9954062dd9 installed == origin/main, HEAD
+        // d0a5a83631d8, 2026-10-31).
         let read_head = |rel: &str| -> Option<String> {
             let dir = repo.as_ref()?;
-            let out = std::process::Command::new("git")
+            ["origin/main", "HEAD"].iter().find_map(|r| {
+                let out = std::process::Command::new("git")
+                    .args(["-C", &dir.to_string_lossy(), "show", &format!("{r}:{rel}")])
+                    .output()
+                    .ok()?;
+                out.status
+                    .success()
+                    .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            })
+        };
+        // Only a worktree copy that differs from this checkout's own HEAD is an
+        // edit. A shared checkout lags origin by hundreds of commits, so its
+        // clean file equals an install from that lagging HEAD, and the check
+        // told the lane to commit it, which would revert origin (AF-1160).
+        let read_worktree = |rel: &str| -> Option<String> {
+            let dir = repo.as_ref()?;
+            let on_disk = std::fs::read_to_string(dir.join(rel)).ok()?;
+            let local_head = std::process::Command::new("git")
                 .args(["-C", &dir.to_string_lossy(), "show", &format!("HEAD:{rel}")])
                 .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-        };
-        let read_worktree = |rel: &str| -> Option<String> {
-            repo.as_ref()
-                .and_then(|d| std::fs::read_to_string(d.join(rel)).ok())
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+            checks::uncommitted_edit(on_disk, local_head.as_deref())
         };
         let amux_home = crate::config::ServerConfig::from_process_env().amux_home;
         let runtime = std::fs::read_to_string(amux_home.join("hooks/git-shared-guard.py"))
@@ -467,6 +671,12 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             wt.as_deref(),
             runtime,
         ));
+
+        // -- 6a'. the shared checkout is not bare (AF-1116).
+        if let Some(dir) = repo.as_ref() {
+            let cfg = dir.join(".git").join("config");
+            out.push(checks::shared_config_is_not_bare(&cfg.to_string_lossy(), std::fs::read_to_string(&cfg).ok().as_deref()));
+        }
 
         // -- 6b. the DEPLOY path is still ticking (AMUX-4809). launchd stopped
         // firing com.amux.server-rs-builder for 59 consecutive cycles and
@@ -530,6 +740,26 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
         out.extend(checks::installed_script_matches_committed(
             &checks::BOUNDARY_GUARD,
             crate::api::boundaries::DEFAULT_GUARD,
+            head.as_deref(),
+            wt.as_deref(),
+            runtime,
+        ));
+
+        // -- the repo's pre-push hook, same rule (AF-1129). No repo, or a linked
+        // worktree whose .git is a file, reads as unreadable: Unknown, not a pass.
+        const BAKED_PRE_PUSH: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/git-hooks/pre-push"
+        ));
+        let runtime = repo
+            .as_ref()
+            .ok_or_else(|| "no repo".to_string())
+            .and_then(|d| std::fs::read_to_string(d.join(checks::PRE_PUSH_HOOK.runtime_path)).map_err(|e| e.to_string()));
+        let head = read_head(checks::PRE_PUSH_HOOK.committed_path);
+        let wt = read_worktree(checks::PRE_PUSH_HOOK.committed_path);
+        out.extend(checks::installed_script_matches_committed(
+            &checks::PRE_PUSH_HOOK,
+            BAKED_PRE_PUSH,
             head.as_deref(),
             wt.as_deref(),
             runtime,
@@ -734,6 +964,101 @@ mod f64_roundtrip_wiring_tests {
     /// goes with it, and `checks`'s own unit tests keep passing on a function
     /// nobody calls. An unregistered invariant is silence that reads as health.
     #[test]
+    fn the_route_window_normalizes_each_raw_path_once() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let now = 2_000_000_000.0;
+        for path in ["/api/board/AMUX-1", "/api/board/AMUX-2", "/api/board/AMUX-1"] {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', ?2, 200)",
+                rusqlite::params![now - 10.0, path],
+            )
+            .unwrap();
+        }
+        let mut cache = None;
+        super::route_window(&mut cache, &conn, now, 1000.0, None);
+        let w = cache.as_ref().unwrap();
+        // Two distinct raw paths, each remembered with the shape it folds into.
+        assert_eq!(w.shapes.len(), 2, "{:?}", w.shapes);
+        assert_eq!(w.normalized, 2, "each distinct path is normalized once, and counted");
+        let want = crate::api::request_log::normalize_target_verb("/api/board/AMUX-1");
+        assert_eq!(w.shapes.get("/api/board/AMUX-1"), Some(&want));
+        // A rebuild keeps what it learned.
+        super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0, 1000.0 + super::ROUTE_REBUILD_SECS, None);
+        assert_eq!(cache.as_ref().unwrap().shapes.len(), 2);
+    }
+
+    #[test]
+    fn a_restart_picks_up_the_saved_route_window_instead_of_rebuilding() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let add = |ts: f64, status: i64| {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', '/api/board', ?2)",
+                rusqlite::params![ts, status],
+            )
+            .unwrap();
+        };
+        let now = 2_000_000_000.0;
+        add(now - 100.0, 200);
+        add(now - 90.0, 500);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("route-window.json");
+        let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let mut cache = None;
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now, 1000.0, Some(&file))), (2, 1));
+        assert!(file.exists(), "a build writes the window to its file");
+        // A restart: nothing in memory. A row the build counted is gone from the
+        // log, so a rebuild would read (1, 1); the loaded window still has it,
+        // and the row added since is folded in.
+        conn.execute("DELETE FROM _amux_request_log WHERE ts = ?1", [now - 100.0]).unwrap();
+        add(now + 5.0, 503);
+        let mut restarted = None;
+        assert_eq!(total(&super::route_window(&mut restarted, &conn, now + 30.0, 1000.0, Some(&file))), (3, 2), "the restart rebuilt instead of loading");
+        // A window saved longer ago than the resync interval is rebuilt.
+        let mut stale = None;
+        let later = now + super::ROUTE_REBUILD_SECS + 1.0;
+        assert_eq!(total(&super::route_window(&mut stale, &conn, later, 1000.0 + super::ROUTE_REBUILD_SECS, Some(&file))), (2, 2));
+        // So is one saved ahead of the log, as after the database is replaced:
+        // a rebuild reads (1, 1) once another row is gone; a load would keep (2, 2).
+        conn.execute("DELETE FROM _amux_request_log WHERE ts = ?1", [now - 90.0]).unwrap();
+        std::fs::write(&file, std::fs::read_to_string(&file).unwrap().replace("\"last_id\":", "\"last_id\":9")).unwrap();
+        let mut replaced = None;
+        assert_eq!(total(&super::route_window(&mut replaced, &conn, later + 30.0, 1000.0 + super::ROUTE_REBUILD_SECS, Some(&file))), (1, 1), "a window saved ahead of the log was loaded");
+    }
+
+    #[test]
+    fn rows_that_age_out_of_the_route_window_leave_it_without_a_rebuild() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL NOT NULL, method TEXT, path TEXT, status INTEGER);",
+        )
+        .unwrap();
+        let now = 2_000_000_000.0;
+        for (ts, status) in [(now - 900.0, 500), (now - 100.0, 200)] {
+            conn.execute(
+                "INSERT INTO _amux_request_log (ts, method, path, status) VALUES (?1, 'GET', '/api/board', ?2)",
+                rusqlite::params![ts, status],
+            )
+            .unwrap();
+        }
+        let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+        let mut cache = None;
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now, 1000.0, None)), (2, 1));
+        // 200 s later the 900 s-old 500 is past a 1000 s window: it leaves on
+        // this pass, with no rebuild.
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 200.0, 1000.0, None)), (1, 0), "an aged-out row stayed in the window");
+        // Later still the other row leaves too, and its group is dropped.
+        assert!(super::route_window(&mut cache, &conn, now + 1000.0, 1000.0, None).is_empty());
+    }
+
+    #[test]
     fn the_route_window_folds_new_rows_between_rebuilds_instead_of_rescanning() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -752,15 +1077,15 @@ mod f64_roundtrip_wiring_tests {
         add(now - 90.0, 500);
         let total = |rows: &[super::checks::RouteOutcomeRow]| rows.iter().map(|r| (r.n, r.server_err)).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         let mut cache = None;
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now)), (2, 1));
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now, 14.0 * 86400.0, None)), (2, 1));
         // A new failure shows on the next pass.
         add(now + 10.0, 503);
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 30.0)), (3, 2));
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 30.0, 14.0 * 86400.0, None)), (3, 2));
         // Between rebuilds the old rows are not read again: deleting one changes
         // nothing until the window is rebuilt.
         conn.execute("DELETE FROM _amux_request_log WHERE ts = ?1", [now - 100.0]).unwrap();
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 60.0)), (3, 2), "a pass between rebuilds rescanned the window");
-        assert_eq!(total(&super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0)), (2, 2), "the rebuild drops what left the log");
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + 60.0, 14.0 * 86400.0, None)), (3, 2), "a pass between rebuilds rescanned the window");
+        assert_eq!(total(&super::route_window(&mut cache, &conn, now + super::ROUTE_REBUILD_SECS + 1.0, 14.0 * 86400.0, None)), (2, 2), "the rebuild drops what left the log");
     }
 
     #[test]
@@ -1088,9 +1413,18 @@ fn schedule_kind_check(state: &AppState) -> Vec<InvariantResult> {
 /// while its other gaps are one, and taking a narrow gap there would call a
 /// perfectly healthy Saturday overdue.
 fn cadence_seconds(expr: &str) -> Option<i64> {
+    cadence_seconds_at(expr, chrono::Local::now())
+}
+
+/// `cadence_seconds` from a given moment. The widest of the next eight gaps
+/// is wall-clock, so a daily schedule measured across the end of daylight
+/// saving reads 25 h (90000 s): true, harmless for an overdue bound, and the
+/// reason the tests pin a clock (AF-1007: they failed every year in the week
+/// before the first Sunday of November).
+fn cadence_seconds_at(expr: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
     use crate::runtime_jobs::scheduler::ScheduleExpr;
     let parsed = ScheduleExpr::parse(expr).ok()?;
-    let mut at = chrono::Local::now();
+    let mut at = now;
     let mut widest = 0i64;
     for _ in 0..8 {
         let Some(next) = parsed.next_run_after(at) else {
@@ -1224,15 +1558,21 @@ fn unrecorded_schedule_outcomes_check(state: &AppState) -> Vec<InvariantResult> 
 /// The query `schedule.enabled_is_firing` runs, as a `const` so a test drives
 /// the SHIPPED SQL. `deleted IS NULL AND enabled = 1` is the scheduler's own
 /// due predicate (scheduler.rs `due_schedules`), so this check judges exactly
-/// the rows the scheduler would fire. Column 8 is the newest re-enable or
-/// expression change from `schedule_audit`: a schedule switched back on today
-/// has not been silent since its last fire a month ago.
+/// the rows the scheduler would fire. Column 8 is the newest re-enable,
+/// expression change or PATCH from `schedule_audit`: a schedule switched back
+/// on today has not been silent since its last fire a month ago. Every PATCH
+/// recomputes `next_run` from the moment of the edit (api/schedules.rs), so a
+/// brief edit restarts the clock too (AF-1062: SCHED-880, every 120m, last ran
+/// 00:29Z, its command PATCHed at 01:37:57Z moved next_run to 03:37, and this
+/// check called it silent at 03:34). Only `api-patch` rows count: the run
+/// path's own `pass_state` writes are not edits.
 pub(crate) const ENABLED_SCHEDULE_CLOCK_SQL: &str =
     "SELECT s.id, COALESCE(s.title,''), COALESCE(s.schedule_expr,''), \
             COALESCE(s.sched_type,'recurring'), s.last_run, s.created, \
             COALESCE(s.next_run,''), s.not_before, \
             (SELECT MAX(a.ts) FROM schedule_audit a WHERE a.schedule_id = s.id \
-               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr')) \
+               AND ((a.field = 'enabled' AND a.new_value = '1') OR a.field = 'schedule_expr' \
+                    OR a.source = 'api-patch')) \
      FROM schedules s WHERE s.deleted IS NULL AND s.enabled = 1";
 
 /// `last_run` is declared TEXT and has held unix ints, floats and digit
@@ -1368,6 +1708,15 @@ pub(crate) fn enabled_schedule_clocks(
 fn enabled_schedule_firing_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "schedule.enabled_is_firing";
     static LAST_SILENT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    // The host guard holds due schedules while the machine is critical, and the
+    // rows stay due. That is an answer about the host, not a silent schedule; a
+    // schedule that stays silent fails once the guard lets go.
+    if crate::runtime_jobs::host_guard::deferred_within("schedules", 300) {
+        return vec![InvariantResult::unknown(
+            ID,
+            "the host guard held schedules in the last 5 minutes",
+        )];
+    }
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "could not read the store")];
     };
@@ -1445,9 +1794,36 @@ fn provider_launch_check() -> Vec<InvariantResult> {
 
 // Use the same isolation boundary as command intake. Raw owner transport is
 // deliberately cardless, including workers with boards from before isolation.
+/// Should this prompt row count toward `pipeline.user_prompts_card`? The mint's
+/// text predicate, minus the prompts the capture path DECIDED not to card
+/// (AMUX-6542). With "decompose onto board" off for a lane, session_verbs
+/// keeps the message uncarded on purpose and stamps intake_result.state =
+/// "board_capture_off"; the check read those as "board leg silently dropped"
+/// and failed 151 times on mixpeek-seo, whose every owner prompt is kept that
+/// way. Reading the recorded verdict is the fix the comment below asks for.
+fn counts_toward_capture(session: &str, text: &str, intake_state: &str) -> bool {
+    !matches!(intake_state, "board_capture_off" | INTAKE_DECIDED_NO_TASK)
+        && measures_board_capture(session, text)
+}
+
+/// Intake read the prompt and found no task in it: a question, information or
+/// policy. Committed with no task ids is its answer, not a dropped card
+/// (AF-1150: four questions to mvs-infra failed the check as "silently dropped").
+const INTAKE_DECIDED_NO_TASK: &str = "decided_no_task";
+
+const INTAKE_STATE_SQL: &str = "CASE WHEN NOT json_valid(intake_result) THEN '' \
+     WHEN json_extract(intake_result, '$.state') = 'committed' \
+      AND COALESCE(json_array_length(intake_result, '$.task_ids'), 0) = 0 \
+     THEN 'decided_no_task' \
+     ELSE COALESCE(json_extract(intake_result, '$.state'), '') END";
+
 fn measures_board_capture(session: &str, text: &str) -> bool {
     !session.is_empty()
         && !crate::api::session_verbs::session_is_isolated(session)
+        // Same gate the send path uses to queue capture at all
+        // (session_verbs `capture_pending`): a worker with every board switch
+        // off gets no capture and no intake verdict on the row (AMUX-6541).
+        && !crate::api::board_lifecycle::board_unused(session)
         && amux_core::board::title_from_prompt(text).is_some()
         && !amux_core::board::is_informational_query(text)
 }
@@ -1478,15 +1854,16 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
-    let rows: Vec<(String, String, bool, i64)> = {
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT session, text, card_id IS NOT NULL, ts FROM cmd_history \
+    let rows: Vec<(String, String, bool, i64, String)> = {
+        let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT session, text, card_id IS NOT NULL, ts, {INTAKE_STATE_SQL} \
+               FROM cmd_history \
              WHERE type = 'user' AND ts > (strftime('%s','now') - ?1) * 1000",
-        ) else {
+        )) else {
             return vec![InvariantResult::unknown(ID, "cmd_history query failed")];
         };
         stmt.query_map(rusqlite::params![lookback_s], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?))
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?, r.get(4)?))
         })
         .map(|it| it.flatten().collect())
         .unwrap_or_default()
@@ -1524,8 +1901,8 @@ fn capture_pipeline_check(state: &AppState) -> Vec<InvariantResult> {
         max_ts: i64,
     }
     let mut map: std::collections::HashMap<String, Acc> = std::collections::HashMap::new();
-    for (session, text, carded, ts) in rows {
-        if !measures_board_capture(&session, &text) {
+    for (session, text, carded, ts, intake_state) in rows {
+        if !counts_toward_capture(&session, &text, &intake_state) {
             continue;
         }
         let e = map.entry(session).or_insert(Acc {
@@ -1993,10 +2370,16 @@ async fn registered_lanes_running_check(state: &AppState) -> Vec<InvariantResult
                 .copied()
                 .unwrap_or(checks::HeldWork { open: 0, doing: 0 })
         });
+        let registered_age_s = std::fs::metadata(crate::api::session_verbs::env_path(&name))
+            .and_then(|m| m.created())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() as i64);
         lanes.push(checks::LaneRunState {
             name,
             is_running,
             held,
+            registered_age_s,
         });
     }
     checks::registered_lanes_are_running(&lanes)
@@ -2994,17 +3377,48 @@ async fn served_commit_check() -> Vec<InvariantResult> {
             age_source: age_source.to_string(),
             gate_hold: crate::api::self_update::gate_state()
                 .as_ref()
-                .and_then(checks::gate_hold_reason),
+                .and_then(|g| checks::gate_hold_reason(g, served)),
+            target_wait_s: crate::api::self_update::gate_state()
+                .as_ref()
+                .and_then(|g| checks::target_wait_s(g, served, chrono::Utc::now().timestamp())),
+            restart_pending: installed_awaiting_restart(served),
+            gate_verdict: crate::api::self_update::gate_state().as_ref().and_then(|g| g["verdict"].as_str().map(str::to_string)),
+            gate_target: crate::api::self_update::gate_state().as_ref().and_then(|g| g["target"].as_str().map(str::to_string)),
+            target_is_served: crate::api::self_update::gate_state().as_ref().is_some_and(|g| {
+                let t = g["target"].as_str().unwrap_or("");
+                let n = t.len().min(served.len());
+                n >= 7 && t[..n] == served[..n]
+            }),
         }),
         "",
         checks::deploy_lag_threshold_s(),
     )
 }
 
+/// The installed build, when it is not the served one and was installed within
+/// [`checks::RESTART_PENDING_S`]: the server is about to restart onto it.
+/// Read from the builder's provenance file (`ACTIVATION INSTALLED identity=`).
+fn installed_awaiting_restart(served: &str) -> Option<String> {
+    let path = std::env::var("AMUX_RS_BUILD_PROVENANCE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| crate::config::amux_home().join("rust-build-provenance.json"));
+    let age_s = std::fs::metadata(&path).ok()?.modified().ok()?.elapsed().ok()?.as_secs() as i64;
+    if age_s > checks::RESTART_PENDING_S {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    let sha = v["sha"].as_str()?;
+    let n = sha.len().min(served.len());
+    if n >= 7 && sha[..n] == served[..n] {
+        return None;
+    }
+    Some(format!("build {} installed {age_s}s ago; the server restarts onto it", sha.chars().take(12).collect::<String>()))
+}
+
 async fn argv_secret_check() -> Vec<InvariantResult> {
     const ID: &str = "security.no_secrets_in_process_argv";
     let output = tokio::process::Command::new("ps")
-        .args(["-axww", "-o", "pid=,etime=,command="])
+        .args(["-axww", "-o", "pid=,ppid=,etime=,command="])
         .output()
         .await;
     match output {
@@ -3023,7 +3437,16 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                 // two were previously the same verdict.
                 let (pid, rest) = line.split_once(' ').unwrap_or((line, ""));
                 let rest = rest.trim_start();
+                let (ppid, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                let rest = rest.trim_start();
                 let (etime, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+                // The executable's NAME only (AMUX-6586), so a seconds-old
+                // carrier can be traced to whatever launched it.
+                let exe = rest
+                    .split_whitespace()
+                    .next()
+                    .map(|a| a.rsplit('/').next().unwrap_or(a).to_string())
+                    .unwrap_or_default();
                 let age_s = crate::runtime_jobs::mac_health::parse_etime(etime);
                 for token in rest.split_whitespace() {
                     let Some((key, value)) = token.split_once('=') else {
@@ -3033,6 +3456,7 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                     // Identifier shape alone matched `jsonwebtoken`, an npm
                     // package whose name uppercases to contain TOKEN.
                     if checks::argv_key_is_env_shaped(key)
+                        && !checks::argv_value_is_expansion(value)
                         && !crate::backend::tmux::env_pair_is_argv_safe(key, value)
                     {
                         found.push(checks::ArgvSecret {
@@ -3041,6 +3465,9 @@ async fn argv_secret_check() -> Vec<InvariantResult> {
                             // LENGTH, never the value.
                             value_len: value.len(),
                             age_s,
+                            exe: exe.clone(),
+                            ppid: ppid.to_string(),
+                            cmd_head: checks::argv_command_head(rest),
                         });
                     }
                 }
@@ -3089,7 +3516,11 @@ async fn todo_reachable_check(state: &AppState) -> Vec<InvariantResult> {
     let managed: Vec<_> = per_lane
         .into_iter()
         .filter(|(lane, _)| {
-            !lane.is_empty() && !crate::api::session_verbs::session_is_isolated(lane)
+            !lane.is_empty()
+                && !crate::api::session_verbs::session_is_isolated(lane)
+                // The owner's board (ETHAN) has no worker registration and is
+                // not dispatched: its cards wait on the owner, not on a lane.
+                && !lane.eq_ignore_ascii_case(crate::api::turn_end::owner_name().trim())
         })
         .collect();
     let total = managed.iter().map(|(_, n)| n).sum();
@@ -4910,7 +5341,13 @@ mod section_timing_tests {
 /// during normal recovery, too large and a dead schedule never surfaces.
 #[cfg(test)]
 mod cadence_seconds_tests {
-    use super::cadence_seconds;
+    /// A mid-July noon: eight runs of any shape here stay clear of a
+    /// daylight-saving change in every zone that has one.
+    fn cadence_seconds(expr: &str) -> Option<i64> {
+        use chrono::TimeZone;
+        let july = chrono::Local.with_ymd_and_hms(2026, 7, 15, 12, 0, 0).single().expect("unambiguous");
+        super::cadence_seconds_at(expr, july)
+    }
 
     /// The shapes the live fleet actually runs, with the periods measured off
     /// `schedule_runs` on 2026-09-19: every-15m recovered in 14-15m, every-30m
@@ -5181,6 +5618,30 @@ mod enabled_schedule_clock_sql_tests {
         assert_eq!(verdict(&c).0, Status::Pass);
     }
 
+    /// AF-1062: a PATCH that edits only the brief recomputes next_run from the
+    /// edit, so the clock restarts there; a check's pass_state write does not.
+    #[test]
+    fn a_patched_brief_restarts_the_clock_and_a_check_write_does_not() {
+        let c = db();
+        add(&c, "BRIEF", "every 120m", 1, Some(NOW - 11_100), NOW - 900_000);
+        let (st, obs, _) = verdict(&c);
+        assert_eq!(st, Status::Fail, "silent 3h05m on a 2h cadence: {obs}");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'pass_state','','ok','check')",
+            [NOW - 600],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Fail, "a check's write is not an edit");
+        c.execute(
+            "INSERT INTO schedule_audit(schedule_id,ts,field,old_value,new_value,source) \
+             VALUES('BRIEF',?1,'command','old brief','new brief','api-patch')",
+            [NOW - 7_000],
+        )
+        .unwrap();
+        assert_eq!(verdict(&c).0, Status::Pass, "an edit 1h57m ago restarts the 2h clock");
+    }
+
     #[test]
     fn one_shot_and_unparseable_rows_are_counted_not_judged() {
         let c = db();
@@ -5212,5 +5673,42 @@ mod enabled_schedule_clock_sql_tests {
         assert!(owed.unwrap() > 40 * 86_400, "{owed:?}");
         assert_eq!(super::owed_fire("every 5m", since), (Some(300), Some(300)));
         assert_eq!(super::owed_fire("whenever", since), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod capture_off_tests {
+    /// AMUX-6542: a prompt the capture path kept uncarded on purpose is not a
+    /// dropped card; an ordinary uncarded prompt still counts.
+    #[test]
+    fn a_prompt_kept_uncarded_by_the_board_switch_does_not_count() {
+        let ask = "can you review this and come up with a robust plan for the seo pages";
+        assert!(super::counts_toward_capture("lane-a", ask, ""), "an ordinary prompt counts");
+        assert!(!super::counts_toward_capture("lane-a", ask, "board_capture_off"), "a deliberate no-card does not");
+        assert!(super::counts_toward_capture("lane-a", ask, "captured"), "other intake states still count");
+    }
+
+    /// AF-1150: the state comes from the row, so the proof runs the real SQL.
+    #[test]
+    fn a_prompt_intake_found_no_task_in_does_not_count() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let state = |raw: Option<&str>| -> String {
+            conn.query_row(
+                &format!("SELECT {} FROM (SELECT ?1 AS intake_result)", super::INTAKE_STATE_SQL),
+                [raw],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let ask = "can you review this and come up with a robust plan for the seo pages";
+        let question = state(Some(r#"{"state":"committed","task_ids":[]}"#));
+        assert_eq!(question, super::INTAKE_DECIDED_NO_TASK);
+        assert!(!super::counts_toward_capture("lane-a", ask, &question));
+        let carded = state(Some(r#"{"state":"committed","task_ids":["AF-1"]}"#));
+        assert_eq!(carded, "committed", "a committed task keeps its state");
+        assert!(super::counts_toward_capture("lane-a", ask, &carded));
+        assert_eq!(state(None), "", "no verdict still counts as a possible drop");
+        assert_eq!(state(Some("not json")), "");
+        assert_eq!(state(Some(r#"{"state":"board_capture_off"}"#)), "board_capture_off");
     }
 }

@@ -1,0 +1,48 @@
+{
+ "taken_at": "2026-10-30T18:34:37-0400",
+ "workers": {
+  "mxp-gs12": {
+   "window_h": 168,
+   "busy_h": 74.6,
+   "idle_h": 93.4,
+   "events": 22333,
+   "busy_h_by_day": {
+    "10-23": 2.8,
+    "10-24": 12.8,
+    "10-25": 12.8,
+    "10-26": 12.6,
+    "10-27": 13.6,
+    "10-28": 8.1,
+    "10-29": 7.0,
+    "10-30": 4.8
+   },
+   "open_cards_now": {
+    "backlog": 83,
+    "doing": 1
+   },
+   "method": "busy = sum of gaps under 300 s between consecutive session.native_status hook events"
+  },
+  "tubescience-parity": {
+   "window_h": 168,
+   "busy_h": 64.2,
+   "idle_h": 103.8,
+   "events": 21381,
+   "busy_h_by_day": {
+    "10-23": 0.9,
+    "10-24": 4.6,
+    "10-25": 7.7,
+    "10-26": 13.9,
+    "10-27": 12.5,
+    "10-28": 7.1,
+    "10-29": 11.4,
+    "10-30": 6.2
+   },
+   "open_cards_now": {
+    "backlog": 28,
+    "doing": 1,
+    "todo": 7
+   },
+   "method": "busy = sum of gaps under 300 s between consecutive session.native_status hook events"
+  }
+ }
+}

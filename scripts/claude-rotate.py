@@ -46,6 +46,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -93,8 +94,11 @@ SETTLE_S = int(os.environ.get("CLAUDE_ROTATE_SETTLE_S", "180"))
 MIN_SWITCH_GAP_S = int(os.environ.get("CLAUDE_ROTATE_MIN_GAP_S", "900"))
 CHROME_PROFILE = os.environ.get("CLAUDE_ROTATE_CHROME_PROFILE", "Profile 16")
 CLAUDE = os.environ.get("CLAUDE_ROTATE_CLAUDE", "claude")
-# The probe CLI starts here; it must be a folder the owner already trusts.
-PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, "Dev"))
+# The probe CLI starts here; it must be a folder the owner already trusts. The installer
+# creates this empty folder and trusts it, so the probe never opens in a folder of real files.
+# 2026-10-31: on a new Linux host ~/Dev was untrusted, every probe stopped at the trust
+# prompt, and every switch was rolled back as unproven.
+PROBE_CWD = os.environ.get("CLAUDE_ROTATE_PROBE_CWD", os.path.join(HOME, ".amux", "claude-rotate", "probe"))
 SWITCH_TIMEOUT_S = int(os.environ.get("CLAUDE_ROTATE_SWITCH_TIMEOUT_S", "240"))
 
 
@@ -469,11 +473,32 @@ def window(w, at):
     return (0.0 if reset and reset <= at else float(used)), reset
 
 
+def held(a, at):
+    """An account held off until `hold_until` (`hold <email> <until>`). Two
+    machines share some accounts, and each machine's rotator sees only its own
+    readings: 2026-11-04 this Mac moved onto ethan@mixpeekvectors.com, the
+    only account the mixpeek-dev VM could still use, so both drew one weekly
+    window. A held account is no target, and holding the current one moves
+    this machine off it on the next tick."""
+    until = _reset(a.get("hold_until"))
+    return bool(until) and until > at
+
+
 def rank(at=None):
     at = at or now()
     rows = []
-    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
-        if a.get("disabled"):
+    accounts = dict(load(ACCOUNTS, {"accounts": {}})["accounts"])
+    # A signed-in config folder is an account too, before any reading of it exists. 2026-10-31:
+    # a new host with eight folders held "no_usable_account" on every tick, because readings
+    # only come from the logged-in account and nothing ever switched to the other seven.
+    folders = account_folders()
+    for email in folders:
+        if email not in accounts:
+            side = folder_login(email, folders)
+            if side and not _expired(side["claudeAiOauth"]):
+                accounts[email] = {}
+    for email, a in accounts.items():
+        if a.get("disabled") or held(a, at):
             continue
         u5, r5 = window(a.get("five_hour"), at)
         u7, r7 = window(a.get("seven_day"), at)
@@ -584,10 +609,19 @@ def forgive_recovered_mailboxes(state, dead, at_s=None):
     return cleared
 
 
+def unproven(state, at_s=None):
+    """Accounts whose saved login failed its trial (trial_login) inside
+    FAIL_BACKOFF_S. Unlike a backoff, nothing relaxes this: the login is known
+    not to work, so trying it again only spends the tick. A later trial that
+    passes, or a fresh capture of that login, clears it."""
+    at_s = at_s or time.time()
+    return {e for e, t in (state.get("unproven") or {}).items() if at_s - float(t) < FAIL_BACKOFF_S}
+
+
 def decide(current, rows, state, at=None, unreachable=()):
     """Return (target or None, reason). `unreachable` accounts are never targets."""
     at = at or now()
-    dead = {e.lower() for e in unreachable} - {current}
+    dead = ({e.lower() for e in unreachable} | unproven(state)) - {current}
     skip = (backed_off(state) | dead) - {current}
     marked = [dict(r, usable=False) if r["email"] in skip else r for r in rows]
     # A backoff saves sign-in time; it must never leave the fleet with no
@@ -607,6 +641,20 @@ def decide(current, rows, state, at=None, unreachable=()):
     # joinmixpeek was picked for its early reset and hit 99% three minutes later).
     best = next(iter(under), None) or max((r for r in rows if r["usable"]), key=lambda r: r["headroom"], default=None)
     cur = next((r for r in rows if r["email"] == current), None)
+    if best is None and cur is not None and not cur["usable"]:
+        # THE LAST FEW PERCENT (mixpeek-dev, 2026-11-04 06:13Z). Every account
+        # was at 96% or more, so none was "usable" (MIN_HEADROOM), and the
+        # current one at 100% stopped every worker on the weekly limit while
+        # joinmixpeek and mixpeek each had 4% left. Switching at 4% remaining
+        # is the rule for leaving a working account; once the current one is
+        # spent, an account with anything left beats one with nothing.
+        spare = [r for r in rows if r["email"] != current and r["email"] not in dead
+                 and r["email"] not in backed_off(state)
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < SWITCH_AT
+                 and max(r["five_hour"] or 0, r["weekly"] or 0) < max(cur["five_hour"] or 0, cur["weekly"] or 0)]
+        last = min(spare, key=lambda r: max(r["five_hour"] or 0, r["weekly"] or 0), default=None)
+        if last is not None:
+            return last["email"], "current_exhausted_last_headroom"
     if best is None:
         return None, "no_usable_account"
     # Preempt first: the account nearest its limit is often also the one whose
@@ -655,14 +703,28 @@ MONTHS = {m: i for i, m in enumerate(
 
 
 def parse_reset(text, at=None):
-    """'Resets 4:20pm (America/New_York)' or 'Resets Oct 16 at 3am (...)'."""
+    """'Resets 4:20pm (America/New_York)', 'Resets Oct 16 at 3am (...)' or
+    'Resets Nov 7, 6am (UTC)'. The time is read in the zone in parentheses.
+
+    2026-11-05, mixpeek-dev: the CLI moved to the comma form, every weekly
+    reset parsed as None, and six of eight accounts sat at 100% with no reset,
+    so the rotator never tried them again after their week ended."""
     at = at or now()
-    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
+    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})(?:\s*,\s*|\s+at\s+))?"
+                  r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?", text)
     if not m:
         return None
-    mon, day, hour, minute, ampm = m.groups()
+    mon, day, hour, minute, ampm, zone = m.groups()
+    tz = None
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = dt.timezone.utc if zone.strip().upper() in ("UTC", "GMT") else ZoneInfo(zone.strip())
+        except Exception:
+            log("claude_rotate_reset_zone_unknown", zone=zone, note="read in this machine's zone")
+    local = at.astimezone(tz) if tz else at
     hour = int(hour) % 12 + (12 if ampm == "pm" else 0)
-    when = at.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+    when = local.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
     if mon:
         when = when.replace(month=MONTHS[mon], day=int(day))
         if when < at - dt.timedelta(days=1):
@@ -696,15 +758,25 @@ def tmux(*args):
     return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=20)
 
 
-def probe():
+# 2026-11-03 23:59: a trial of a working login read this on /usage, and the
+# trial called the login dead. The CLI only reaches it with a login that answers.
+USAGE_RATE_LIMITED = "Usage endpoint is rate limited"
+
+
+def probe(config_dir=None):
     """Read the logged-in account's usage from /usage in a temporary CLI
     session. It sends no prompt, so it spends no quota, and it works whether
-    or not any worker is active."""
-    email = current_email()
+    or not any worker is active. With `config_dir` the CLI runs on that config
+    folder's login instead of the one every session shares (trial_login)."""
+    if config_dir:
+        email = ((load(os.path.join(config_dir, ".claude.json"), {}) or {}).get("oauthAccount") or {}).get("emailAddress")
+    else:
+        email = current_email()
     name = "claude-rotate-probe-%d" % os.getpid()
     cwd = PROBE_CWD
     started = time.time()
-    tmux("new-session", "-d", "-s", name, "-x", "160", "-y", "60", "-c", cwd, CLAUDE)
+    env = ["-e", "CLAUDE_CONFIG_DIR=" + config_dir] if config_dir else []
+    tmux("new-session", "-d", "-s", name, "-x", "160", "-y", "60", "-c", cwd, *env, CLAUDE)
     try:
         sent, screen = False, ""
         while time.time() - started < 60:
@@ -721,15 +793,21 @@ def probe():
             if sent and "Current week (all models)" in screen and re.search(
                     r"Current week \(all models\)[\s\S]*?\d+% used", screen):
                 break
+            if config_dir and (USAGE_RATE_LIMITED in screen or AUTH_LOST.search(screen)):
+                break
         windows = parse_usage(screen)
     finally:
         tmux("kill-session", "-t", name)
     elapsed = round(time.time() - started, 1)
+    if config_dir and USAGE_RATE_LIMITED in screen and not AUTH_LOST.search(screen):
+        log("claude_rotate_trial_usage_rate_limited", measured=True, n_considered=1, current=email, elapsed_s=elapsed,
+            note="the login answered; its usage numbers are not available yet")
+        return {"rate_limited": True}
     if not email or "seven_day" not in windows:
         log("claude_rotate_probe_failed", measured=False, why_unmeasured="no /usage screen parsed",
             current=email, elapsed_s=elapsed, screen_tail=re.sub(r"\s+", " ", screen)[-200:])
         return None
-    if current_email() != email:  # the login changed mid-probe; the reading is ambiguous
+    if not config_dir and current_email() != email:  # the login changed mid-probe; the reading is ambiguous
         log("claude_rotate_probe_failed", measured=False, why_unmeasured="login changed during probe")
         return None
     five, week = windows.get("five_hour") or {}, windows["seven_day"]
@@ -767,6 +845,61 @@ def install_drift():
     return fields
 
 
+# A reading that can no longer heal by itself: readings only come from the
+# logged-in account, so a full account with no reset, or one whose week has
+# ended, keeps its old number until something reads it again. 2026-11-05,
+# mixpeek-dev: six of eight accounts read 100% with no reset for days.
+STALE_AT = float(os.environ.get("CLAUDE_ROTATE_STALE_AT", "90"))
+HEAL_EVERY_S = int(os.environ.get("CLAUDE_ROTATE_HEAL_EVERY_S", str(3 * 3600)))
+
+
+def stale_accounts(current, state, at=None):
+    """Accounts (not the logged-in one) whose saved reading needs a fresh
+    /usage: a window at STALE_AT or more with no known reset, or a weekly
+    reset that has passed. Each is tried at most once per HEAL_EVERY_S.
+    Returns [(email, why)], oldest attempt first."""
+    at = at or now()
+    tried = state.get("heal_tried") or {}
+    out = []
+    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+        if email == current or a.get("disabled") or held(a, at):
+            continue
+        why = None
+        for key in ("seven_day", "five_hour"):
+            w = a.get(key) or {}
+            if w.get("used_percentage") is not None and not _reset(w.get("resets_at")) \
+                    and float(w["used_percentage"]) >= STALE_AT:
+                why = "full_no_reset"
+        week = _reset((a.get("seven_day") or {}).get("resets_at"))
+        if why is None and week is not None and week <= at:
+            why = "weekly_reset_passed"
+        if why and at.timestamp() - float(tried.get(email) or 0) >= HEAL_EVERY_S:
+            out.append((email, why))
+    return sorted(out, key=lambda e: float(tried.get(e[0]) or 0))
+
+
+def heal_stale(current, limit=1):
+    """Re-read up to `limit` stale accounts through trial_login: the /usage
+    screen in a scratch folder, so no quota is spent, the shared credential is
+    untouched and a refreshed token is kept. One per tick keeps the tick short
+    and the usage endpoint under its rate limit."""
+    state = load(STATE, {})
+    healed = []
+    for email, why in stale_accounts(current, state)[:limit]:
+        state = load(STATE, {})
+        state.setdefault("heal_tried", {})[email] = time.time()
+        save(STATE, state)
+        saved = next((s for _via, s in login_candidates(email) if not _expired(s.get("claudeAiOauth") or {})), None)
+        if saved is None:
+            log("claude_rotate_heal_skipped", measured=False, account=email, why=why,
+                why_unmeasured="no saved login that has not expired")
+            continue
+        ok = trial_login(email, saved) is not None
+        log("claude_rotate_heal", measured=ok, n_considered=1, account=email, why=why, read=ok)
+        healed.append(email)
+    return healed
+
+
 ENABLED_FILE = os.path.join(DIR, "enabled")
 
 
@@ -800,6 +933,14 @@ def cmd_tick():
             capture_login()
         except Exception as e:
             log("claude_rotate_capture_failed", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            heal_stale(current_email())
+        except Exception as e:
+            log("claude_rotate_heal", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            check_refusal(current_email(), load(STATE, {}))
+        except Exception as e:
+            log("claude_rotate_refusal_check", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
@@ -844,12 +985,12 @@ def cmd_tick():
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
               target=target, reason=reason, backed_off=skipped))
     rc = switch(target, reason)
-    if rc == 0 or reason != "current_exhausted" or cli_email() != current:
+    if rc == 0 or not reason.startswith("current_exhausted") or cli_email() != current:
         return rc
     # The current account is spent and that target failed: try the next one now
     # rather than leaving the fleet stopped until the next tick.
     rows = [dict(r, usable=False) if r["email"] == target else r for r in rows]
-    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=dead)
+    target2, reason2 = decide(current, rows, load(STATE, {}), unreachable=set(dead) | {target})
     if not target2 or target2 == target:
         return rc
     print(log("claude_rotate_switch_planned", measured=True, n_considered=len(rows), current=current,
@@ -945,7 +1086,96 @@ def resume_stranded(force=False):
 # run /login": something read the login while it was being replaced. That write
 # is Claude Code's, so the gap is measured here and the workers it hits are
 # resumed, the same way limit-parked workers are.
-AUTH_LOST = re.compile(r"Not logged in.{0,40}/login")
+# 2026-11-03: "Login expired · Please run /login" did not match this, and
+# mixpeek-meta-worker stayed stopped through two later switches.
+AUTH_LOST = re.compile(r"(Not logged in|Login expired).{0,40}/login")
+# A subscription Anthropic will not serve, usually a payment past due. 2026-11-07
+# 06:00: the rotator moved this Mac onto hello@amux.io, whose /usage answered
+# only "rate limited" (which the trial takes as a working login), and every
+# prompt on it read "Claude Code can't use your Claude subscription, usually
+# because a payment is past due". The rotator held there four hours as
+# current_is_best on a 3% reading copied from another account's status lines.
+SUBSCRIPTION_REFUSED = re.compile(r"can.t use your Claude subscription")
+REFUSED_HOLD_S = int(os.environ.get("CLAUDE_ROTATE_REFUSED_HOLD_S", str(24 * 3600)))
+REFUSAL_CHECK_GAP_S = int(os.environ.get("CLAUDE_ROTATE_REFUSAL_CHECK_GAP_S", "900"))
+CHECK_MODEL = os.environ.get("CLAUDE_ROTATE_CHECK_MODEL", "claude-haiku-5-5")
+
+
+def refused_text(text):
+    return bool(SUBSCRIPTION_REFUSED.search(ANSI.sub("", text or "")))
+
+
+def prompt_check(config_dir=None):
+    """Send one one-word prompt on the shared login, or on `config_dir`'s.
+    'refused' when Anthropic declines the subscription, 'ok' when it answers,
+    None when the check itself could not run. /usage cannot tell a refused
+    subscription from a rate-limited endpoint; a prompt can, and a refused one
+    spends nothing."""
+    env = dict(os.environ)
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    try:
+        r = subprocess.run([CLAUDE, "-p", "reply with the single word ok", "--model", CHECK_MODEL],
+                           cwd=PROBE_CWD, env=env, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log("claude_rotate_prompt_check", measured=False, why_unmeasured=str(e)[:200])
+        return None
+    if refused_text(r.stdout + r.stderr):
+        return "refused"
+    return "ok" if r.returncode == 0 else None
+
+
+def mark_refused(email, via, workers=()):
+    """Hold a refused account off for REFUSED_HOLD_S. Paying the bill is the
+    owner's; the rotator only stops choosing the account."""
+    until = (now() + dt.timedelta(seconds=REFUSED_HOLD_S)).isoformat(timespec="seconds")
+    with locked(ACCOUNTS + ".lock"):
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        acct["hold_until"], acct["hold_why"] = until, "subscription_refused (%s)" % via
+        save(ACCOUNTS, data)
+    print(log("claude_rotate_subscription_refused", measured=True, n_considered=1, account=email, via=via,
+              workers=sorted(workers), held_until=until,
+              fix="pay or renew at https://claude.ai/settings/billing, then: claude-rotate.py hold %s now" % email))
+
+
+def refused_workers(sessions=None):
+    """Running, non-isolated workers whose last lines are the refusal."""
+    sessions = sessions if sessions is not None else (_amux("/api/sessions") or [])
+    out = []
+    for s in sessions:
+        if not s.get("running") or s.get("isolated"):
+            continue
+        peek = _amux(f"/api/sessions/{urllib.parse.quote(s['name'])}/peek?lines=12") or {}
+        lines = [l for l in (peek.get("output") or "").splitlines() if l.strip()][-10:]
+        if any(refused_text(l) for l in lines):
+            out.append(s["name"])
+    return out
+
+
+def check_refusal(current, state):
+    """When a worker's screen ends on the refusal, check the shared login with
+    one prompt. Refused: hold the account, so the next decide() moves off it.
+    Answered: the worker's process is on an older login, which is logged, since
+    switching would not help it. Returns True when the current account was held."""
+    if not current:
+        return False
+    workers = refused_workers()
+    if not workers:
+        return False
+    checked = state.setdefault("refusal_checked", {})
+    if time.time() - float(checked.get(current) or 0) < REFUSAL_CHECK_GAP_S:
+        return False
+    checked[current] = time.time()
+    save(STATE, state)
+    verdict = prompt_check()
+    if verdict == "refused":
+        mark_refused(current, "worker_screen", workers)
+        return True
+    log("claude_rotate_refusal_not_current", measured=verdict is not None, n_considered=len(workers),
+        current=current, workers=workers, check=verdict,
+        note="the shared login answers; these workers hold an older login until their next restart")
+    return False
 
 
 class LoginGapProbe:
@@ -996,8 +1226,8 @@ def gap_stats(samples):
 def auth_lost(screen):
     """True when Claude's not-logged-in error is among the last lines on screen,
     which is where a turn that died on it leaves it."""
-    lines = [l for l in (screen or "").splitlines() if l.strip()][-8:]
-    return any(AUTH_LOST.search(l) for l in lines)
+    lines = [l for l in (screen or "").splitlines() if l.strip()][-10:]
+    return any(AUTH_LOST.search(l) or refused_text(l) for l in lines)
 
 
 def resume_auth_lost():
@@ -1229,18 +1459,71 @@ CRED_ACCT = os.environ.get("CLAUDE_ROTATE_CRED_ACCOUNT", os.environ.get("USER", 
 STORE_SVC = os.environ.get("CLAUDE_ROTATE_STORE_SERVICE", "amux-claude-rotate")
 
 
+# LINUX HAS NO KEYCHAIN (mixpeek-dev.amux.io, 2026-10-31: "make sure it does the
+# claude account rotation thing too like i have here"). Claude Code on Linux
+# keeps its login in <CLAUDE_CONFIG_DIR or ~/.claude>/.credentials.json, so the
+# CLI's own item maps to that file and every other item (the rotator's
+# snapshots) to a 0600 file under DIR/keyring. macOS keeps the Keychain.
+USE_KEYCHAIN = sys.platform == "darwin" and os.environ.get("CLAUDE_ROTATE_KEYSTORE") != "file"
+KEYRING = os.path.join(DIR, "keyring")
+
+
+def _cli_cred_file(config_dir=None):
+    base = config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return os.path.join(base, ".credentials.json")
+
+
+def _file_for(service, account):
+    if service == "Claude Code-credentials" and account == CRED_ACCT:
+        return _cli_cred_file()
+    safe = lambda v: re.sub(r"[^A-Za-z0-9@._+-]", "_", v) or "_"
+    return os.path.join(KEYRING, safe(service), safe(account) + ".json")
+
+
+def _file_read(path):
+    try:
+        with open(path) as f:
+            v = f.read().strip()
+        return v or None
+    except OSError:
+        return None
+
+
+def _file_write(path, value):
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".new.")
+        with os.fdopen(fd, "w") as f:
+            f.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
+
+
 def _kc_read(service, account):
+    if not USE_KEYCHAIN:
+        return _file_read(_file_for(service, account))
     p = subprocess.run(["security", "find-generic-password", "-s", service, "-a", account, "-w"],
                        capture_output=True, text=True)
     return p.stdout.strip() if p.returncode == 0 and p.stdout.strip() else None
 
 
 def _kc_write(service, account, value):
+    if not USE_KEYCHAIN:
+        return _file_write(_file_for(service, account), value)
     # -X takes hex, so quotes in the JSON cannot break the command line, and
     # `security -i` reads it from stdin, so the value is never an argv element.
     cmd = 'add-generic-password -U -s "%s" -a "%s" -X %s\n' % (service, account, value.encode().hex())
     p = subprocess.run(["security", "-i"], input=cmd, capture_output=True, text=True)
     return p.returncode == 0 and "error" not in (p.stderr or "").lower()
+
+
+def _kc_delete(service, account):
+    if not USE_KEYCHAIN:
+        return
+    subprocess.run(["security", "delete-generic-password", "-s", service, "-a", account], capture_output=True)
 
 
 # Per-account config folders, each signed in on its own with CLAUDE_CONFIG_DIR
@@ -1286,7 +1569,8 @@ def folder_login(email, folders=None):
     if not folder:
         return None
     try:
-        oauth = json.loads(_kc_read(_folder_service(folder), CRED_ACCT) or "{}").get("claudeAiOauth")
+        raw = _kc_read(_folder_service(folder), CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        oauth = json.loads(raw or "{}").get("claudeAiOauth")
     except ValueError:
         oauth = None
     if not oauth or not oauth.get("refreshToken"):
@@ -1367,9 +1651,66 @@ def capture_login():
         return email
     if _kc_write(STORE_SVC, email, blob):
         log("claude_rotate_captured", measured=True, account=email, new=prev is None)
+        st = load(STATE, {})
+        if (st.get("unproven") or {}).pop(email, None) is not None:
+            save(STATE, st)
         return email
     log("claude_rotate_capture_failed", measured=False, account=email, why_unmeasured="keychain write failed")
     return None
+
+
+def trial_login(target, saved):
+    """Prove a saved login in a scratch config folder before it goes near the
+    credential every running session reads. Returns the login as the trial
+    left it (the CLI may have refreshed its token), or None when it cannot
+    read /usage.
+
+    2026-11-03 23:38-23:49: the rotator retried a switch to ethan@getmixpeek.com
+    whose saved login was dead. Each try wrote it into the shared credential,
+    probed for about 60 s and wrote the old one back, and mixpeek-meta-worker,
+    reading the credential inside that window, was left on the dead login
+    ("Login expired · Please run /login", footer getmixpeek)."""
+    oauth = saved.get("claudeAiOauth") or {}
+    folder = tempfile.mkdtemp(prefix="trial-", dir=DIR)
+    svc = _folder_service(folder)
+    try:
+        cfg = dict(load(CLAUDE_JSON, {}) or {})
+        cfg["oauthAccount"] = saved.get("oauthAccount") or {}
+        save(os.path.join(folder, ".claude.json"), cfg)
+        cred = json.dumps({"claudeAiOauth": oauth})
+        if not (_kc_write(svc, CRED_ACCT, cred) if USE_KEYCHAIN else _file_write(_cli_cred_file(folder), cred)):
+            log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
+            return None
+        windows = probe(config_dir=folder)
+        if windows == {"rate_limited": True} and prompt_check(folder) == "refused":
+            mark_refused(target, "trial")
+            windows = None
+        # The CLI may have refreshed the token in the folder, which ends the saved
+        # one. Keep the newest whatever the probe said, before the folder goes.
+        raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
+        try:
+            fresh = json.loads(raw or "{}").get("claudeAiOauth") or oauth
+        except ValueError:
+            fresh = oauth
+        if fresh != oauth:
+            _kc_write(STORE_SVC, target, json.dumps(dict(saved, claudeAiOauth=fresh, captured=time.time())))
+            log("claude_rotate_trial_token_kept", measured=True, n_considered=1, target=target)
+        state = load(STATE, {})
+        marks = state.setdefault("unproven", {})
+        if windows is None:
+            marks[target] = time.time()
+            save(STATE, state)
+            log("claude_rotate_stored_login_unproven", measured=True, n_considered=1, target=target,
+                note="it did not read /usage in a scratch folder; the shared credential was not touched; "
+                     "skipped as a target until a trial passes or its login is captured again")
+            return None
+        if marks.pop(target, None) is not None:
+            save(STATE, state)
+        return fresh
+    finally:
+        if USE_KEYCHAIN:
+            _kc_delete(svc, CRED_ACCT)
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def stored_switch(target, before, reason, started):
@@ -1386,6 +1727,14 @@ def stored_switch(target, before, reason, started):
         if _expired(oauth):
             log("claude_rotate_stored_login_expired", target=target, via=via)
             continue
+        # Proven in isolation first; only a login that reads /usage reaches
+        # the shared credential.
+        fresh = trial_login(target, saved)
+        if fresh is None:
+            log("claude_rotate_stored_switch_failed", target=target, via=via, still=current_email(),
+                probed=False, restored=False, shared_untouched=True)
+            continue
+        oauth = fresh
         prev_raw = _kc_read(CRED_SVC, CRED_ACCT)
         prev_acct = (load(CLAUDE_JSON, {}) or {}).get("oauthAccount")
         try:
@@ -1397,9 +1746,10 @@ def stored_switch(target, before, reason, started):
             log("claude_rotate_stored_switch_failed", target=target, via=via, why="keychain write failed")
             return None
         _write_oauth_account(saved.get("oauthAccount") or {})
+        # The trial proved the login, so a second /usage is not asked to prove it
+        # again: the endpoint rate limits, and that would roll back a good switch.
         after = cli_email()
-        windows = probe() if after == target else None
-        if after == target and windows is not None:
+        if after == target:
             elapsed = round(time.time() - started, 1)
             state = load(STATE, {})
             state.update({"switched_at": time.time(), "from": before, "to": target, "reason": reason})
@@ -1417,7 +1767,7 @@ def stored_switch(target, before, reason, started):
         if prev_acct:
             _write_oauth_account(prev_acct)
         log("claude_rotate_stored_switch_failed", target=target, via=via, still=cli_email(), cli_said=after,
-            probed=windows is not None, restored=bool(prev_raw))
+            restored=bool(prev_raw))
     return None
 
 
@@ -1494,6 +1844,12 @@ def _switch(target, reason):
     rc = stored_switch(target, before, reason, started)
     if rc is not None:
         return rc
+    # A trial that found the subscription refused held the target; a browser
+    # sign-in would only reach the same refusal after minutes under the lock.
+    if held(load(ACCOUNTS, {"accounts": {}})["accounts"].get(target) or {}, now()):
+        print(log("claude_rotate_switch_skipped_held", measured=True, n_considered=1, target=target, reason=reason,
+                  still=before, why="the target is held (a refused subscription or an owner hold); no browser sign-in"))
+        return 1
     upstream = relay_upstream()
     if upstream is not None and upstream != "connected":
         return browser_unreachable(target, reason, upstream)
@@ -1665,6 +2021,23 @@ def main(argv):
         elif os.path.exists(ENABLED_FILE):
             os.remove(ENABLED_FILE)
         print(log("claude_rotate_" + ("enabled" if cmd == "on" else "disabled"), measured=True, n_considered=1, file=ENABLED_FILE))
+        return 0
+    if cmd == "hold" and len(argv) in (4, 5):
+        # hold <email> <until ISO-8601> [why]   ("now" as <until> lifts it)
+        email, until = argv[2].lower(), argv[3]
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        if until == "now":
+            acct.pop("hold_until", None)
+            acct.pop("hold_why", None)
+        else:
+            if _reset(until) is None or _reset(until).tzinfo is None:
+                print("hold: <until> must be ISO-8601 with a zone, e.g. 2026-11-07T06:00:00+00:00", file=sys.stderr)
+                return 2
+            acct["hold_until"], acct["hold_why"] = until, (argv[4] if len(argv) == 5 else "")
+        save(ACCOUNTS, data)
+        print(log("claude_rotate_hold_set" if until != "now" else "claude_rotate_hold_lifted", measured=True,
+                  n_considered=1, account=email, until=acct.get("hold_until"), why=acct.get("hold_why")))
         return 0
     if cmd == "probe":
         return 0 if probe() else 1

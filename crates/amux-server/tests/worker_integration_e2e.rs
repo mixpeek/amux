@@ -201,7 +201,8 @@ async fn verified_requires_the_current_clean_fanout_head_to_be_integrated() {
     let name = "verified-child";
     std::fs::write(
         r.home.join("sessions").join(format!("{name}.env")),
-        "CC_EPHEMERAL=1\n",
+        // The board is opt-in (2026-11-02): this worker's gates need one.
+        "CC_EPHEMERAL=1\nAMUX_BOARD_DEFAULT=on\n",
     )
     .unwrap();
     let item = create(&r.app, json!({"title":"Publish tested result", "session":name, "status":"done", "type":"code", "evidence":"result.txt tested in candidate"})).await;

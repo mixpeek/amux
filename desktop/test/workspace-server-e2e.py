@@ -23,6 +23,10 @@ Runs a second copy of the app with its own config and its own server key
    a Mac's first sync keeps the workspaces only it had.
 7. The open windows reach the server with their tab names, and a Mac with no
    windows of its own opens them.
+8. A Mac that reaches the same server at another address (127.0.0.1 here, for
+   the first Mac's localhost) opens the workspace with every tab, pane and
+   pane tab on its own address (owner, 2026-10-29: "workspace should maintain
+   the connections"), and its last windows saved on localhost reopen there too.
 """
 import json, os, signal, subprocess, sys, tempfile, time
 
@@ -219,6 +223,43 @@ try:
     time.sleep(4)
     titles = sorted(w["title"] for w in e.state()["windows"])
     check("a Mac with no windows opens the server's, with the tab's name", "Planning" in titles, f"{titles} {e.text()[-400:]}")
+    e.stop()
+
+    # Another Mac that reaches this server at another address.
+    other = url.replace("://localhost", "://127.0.0.1")
+    check("the test has a second address for the server", other != url, url)
+    f = App("six", dict(base, connections=[{"name": "studio", "url": other}], lastUrl=other, launch="new"))
+    apps.append(f)
+    f.wait_log("verdict=workspaces_synced key=" + KEY, 40)
+    f.send("amux://workspace/E2E", 3)
+    f.settle(2)
+    time.sleep(4)
+    st = f.state()["windows"]
+    servers = [w["server"] for w in st] + [s for w in st for p in (w.get("pane_servers") or []) for s in p]
+    check("a workspace from another Mac opens every tab on this Mac's address for the server",
+          len(servers) >= 4 and all(s.rstrip("/") == other for s in servers), f"servers={servers}")
+    check("the move is logged", "verdict=workspace_rehomed what=workspace E2E" in f.text(), f.text()[-600:])
+    check("and it opens the same windows", f.shape() == saved, f"saved={json.dumps(saved)} got={json.dumps(f.shape())}")
+    f.stop()
+
+    # That Mac before the fix: it opened the workspace on its own localhost and
+    # saved those windows. Launching again puts them on its address for the
+    # server. Its address is this Mac's .local name: last windows carry no saved
+    # address, so a loopback link moves only to a non-loopback one.
+    lan = url.replace("://localhost", "://" + sh("/usr/sbin/scutil", "--get", "LocalHostName").stdout.strip() + ".local")
+    g = App("seven", dict(base, connections=[{"name": "studio", "url": lan}], lastUrl=lan, launch="last", windows=[
+        {"url": url + "/#view=board", "frame": frame, "tabGroup": 1, "selected": True, "grid": grid},
+        {"url": url + "/#view=messages", "frame": frame, "tabGroup": 1, "selected": False},
+    ]))
+    apps.append(g)
+    g.wait_log("verdict=windows_restored", 25)
+    g.settle(2)
+    time.sleep(4)
+    st = g.state()["windows"]
+    servers = [w["server"] for w in st] + [s for w in st for p in (w.get("pane_servers") or []) for s in p]
+    check("last windows saved on localhost reopen on this Mac's address for the server",
+          len(servers) >= 3 and all(s.rstrip("/") == lan for s in servers), f"servers={servers}")
+    check("the launch move is logged", "verdict=workspace_rehomed what=last windows" in g.text(), g.text()[-600:])
 finally:
     for x in apps:
         if x.p.poll() is None:

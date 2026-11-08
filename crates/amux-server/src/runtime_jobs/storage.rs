@@ -553,40 +553,52 @@ fn oldest_secs(conn: &Connection, spec: &SweepSpec) -> Option<f64> {
     }
 }
 
-/// Sweep one table. Counts what would remain BEFORE deleting anything, and
-/// refuses rather than empty a table — see the module docs.
+/// Sweep one table: [`sweep_guarded_delete`] then [`sweep_report`] on the same
+/// connection. Asks what would remain BEFORE deleting anything, and refuses
+/// rather than empty a table — see the module docs. [`storage_tick`] runs the
+/// two halves on the writer and on a read connection respectively.
 pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepResult {
+    let result = sweep_guarded_delete(conn, spec, now_secs);
+    sweep_report(conn, spec, now_secs, result)
+}
+
+/// The half of [`sweep_one`] that runs on the single writer: the guard and one
+/// bounded DELETE, and nothing that grows with the table (AF-1075).
+///
+/// It used to open with SELECT COUNT(*) FROM <table> and also count every row
+/// at or after the cutoff. On _amux_policy_receipts (1.8M rows, in a 15.8 GB
+/// database) each count is 0.1 s with a warm cache and 5 s with a cold one,
+/// and inside the writer on a busy Mac it held every other write for up to
+/// 43 s, every tick, mostly to delete nothing. The guard needs only whether
+/// ANY row survives, which is one index seek; the whole-table count runs only
+/// on the rare refuse path. A `Deleted` from here carries `kept: -1`;
+/// [`sweep_report`] fills it in.
+pub fn sweep_guarded_delete(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepResult {
     let days = retain_days(spec);
     if days <= 0.0 {
         return SweepResult::Disabled;
     }
     let cutoff = cutoff_for(spec.unit, now_secs, days);
 
-    let total: i64 =
-        match conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| {
-            r.get(0)
-        }) {
-            Ok(v) => v,
-            Err(e) => return SweepResult::Error(format!("count {}: {e}", spec.table)),
-        };
-    if total == 0 {
-        return SweepResult::Deleted { rows: 0, kept: 0 };
-    }
-
     // THE GUARD. Ask what survives, not what dies: an unbounded match and a
     // correct match are indistinguishable from the deleted rows alone.
-    let kept: i64 = match conn.query_row(
-        &format!(
-            "SELECT COUNT(*) FROM {} WHERE {} >= ?1",
-            spec.table, spec.ts_col
-        ),
+    let survives: bool = match conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM {} WHERE {} >= ?1)", spec.table, spec.ts_col),
         rusqlite::params![&cutoff],
         |r| r.get(0),
     ) {
         Ok(v) => v,
         Err(e) => return SweepResult::Error(format!("guard {}: {e}", spec.table)),
     };
-    if kept == 0 {
+    if !survives {
+        let total: i64 =
+            match conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| r.get(0)) {
+                Ok(v) => v,
+                Err(e) => return SweepResult::Error(format!("count {}: {e}", spec.table)),
+            };
+        if total == 0 {
+            return SweepResult::Deleted { rows: 0, kept: 0 };
+        }
         tracing::warn!(
             verdict = "storage_retention_empty_hold",
             table = spec.table,
@@ -612,62 +624,75 @@ pub fn sweep_one(conn: &Connection, spec: &SweepSpec, now_secs: f64) -> SweepRes
         ),
         rusqlite::params![&cutoff],
     ) {
-        Ok(rows) => {
-            // Include protected unfinished message consequences in the actual
-            // survivor count without weakening the timestamp-unit guard above.
-            let kept = total - rows as i64;
-            if rows > 0 {
-                tracing::info!(
-                    table = spec.table,
-                    deleted = rows,
-                    batch_limit = SWEEP_BATCH,
-                    batch_saturated = rows == SWEEP_BATCH,
-                    kept,
-                    retain_days = days,
-                    knob = spec.env,
-                    "storage retention sweep"
-                );
-            } else if let Some(oldest_secs) = oldest_secs(conn, spec) {
-                // GUARD 2. Deleting nothing is safe, so this warns instead of
-                // refusing — but a table holding rows the sweep should have
-                // reached is a table whose bound is not working.
-                //
-                // TWO tells, and the first one is not the obvious one. A
-                // MILLISECOND column read as seconds does not look OLD, it
-                // looks like it is dated ~55,000 years in the FUTURE, so an
-                // "older than retention" test alone never fires on the exact
-                // mismatch this guard exists to catch. That is not a
-                // hypothetical: the first version of this check tested only
-                // `age > retention` and the unit test walked straight through
-                // it.
-                let age_days = (now_secs - oldest_secs) / 86_400.0;
-                let reason = if age_days < 0.0 {
-                    "the oldest row is dated in the FUTURE, which a real timestamp cannot be — \
-                     this column is almost certainly milliseconds being read as seconds"
-                } else if age_days > days * 1.5 {
-                    "the table holds rows older than its own retention window, so the cutoff is \
-                     not landing where it should"
-                } else {
-                    ""
-                };
-                if !reason.is_empty() {
-                    tracing::warn!(
-                        table = spec.table,
-                        column = spec.ts_col,
-                        unit = ?spec.unit,
-                        oldest_row_age_days = age_days,
-                        retain_days = days,
-                        knob = spec.env,
-                        reason,
-                        "storage retention deleted NOTHING and should have — this knob is not \
-                         bounding this table"
-                    );
-                }
-            }
-            SweepResult::Deleted { rows, kept }
-        }
+        Ok(rows) => SweepResult::Deleted { rows, kept: -1 },
         Err(e) => SweepResult::Error(format!("delete {}: {e}", spec.table)),
     }
+}
+
+/// The read-only half of [`sweep_one`]: counts what survived (protected rows
+/// included), logs the sweep, and runs the deleted-nothing diagnostic. Both
+/// counts can walk many rows (session_events' oldest chat messages are kept
+/// forever), so [`storage_tick`] runs this on a read connection.
+pub fn sweep_report(conn: &Connection, spec: &SweepSpec, now_secs: f64, result: SweepResult) -> SweepResult {
+    let SweepResult::Deleted { rows, kept } = result else { return result };
+    if kept >= 0 {
+        return result;
+    }
+    let days = retain_days(spec);
+    let kept: i64 =
+        match conn.query_row(&format!("SELECT COUNT(*) FROM {}", spec.table), [], |r| r.get(0)) {
+            Ok(v) => v,
+            Err(e) => return SweepResult::Error(format!("count {}: {e}", spec.table)),
+        };
+        if rows > 0 {
+            tracing::info!(
+                table = spec.table,
+                deleted = rows,
+                batch_limit = SWEEP_BATCH,
+                batch_saturated = rows == SWEEP_BATCH,
+                kept,
+                retain_days = days,
+                knob = spec.env,
+                "storage retention sweep"
+            );
+        } else if let Some(oldest_secs) = oldest_secs(conn, spec) {
+            // GUARD 2. Deleting nothing is safe, so this warns instead of
+            // refusing — but a table holding rows the sweep should have
+            // reached is a table whose bound is not working.
+            //
+            // TWO tells, and the first one is not the obvious one. A
+            // MILLISECOND column read as seconds does not look OLD, it
+            // looks like it is dated ~55,000 years in the FUTURE, so an
+            // "older than retention" test alone never fires on the exact
+            // mismatch this guard exists to catch. That is not a
+            // hypothetical: the first version of this check tested only
+            // `age > retention` and the unit test walked straight through
+            // it.
+            let age_days = (now_secs - oldest_secs) / 86_400.0;
+            let reason = if age_days < 0.0 {
+                "the oldest row is dated in the FUTURE, which a real timestamp cannot be — \
+                 this column is almost certainly milliseconds being read as seconds"
+            } else if age_days > days * 1.5 {
+                "the table holds rows older than its own retention window, so the cutoff is \
+                 not landing where it should"
+            } else {
+                ""
+            };
+            if !reason.is_empty() {
+                tracing::warn!(
+                    table = spec.table,
+                    column = spec.ts_col,
+                    unit = ?spec.unit,
+                    oldest_row_age_days = age_days,
+                    retain_days = days,
+                    knob = spec.env,
+                    reason,
+                    "storage retention deleted NOTHING and should have — this knob is not \
+                     bounding this table"
+                );
+            }
+        }
+    SweepResult::Deleted { rows, kept }
 }
 
 /// One more batch for a table whose `sweep_one` already passed the guard this
@@ -1460,7 +1485,7 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
         let sink2 = sink.clone();
         let result = state.store.write_async(move |conn| {
             let started = std::time::Instant::now();
-            let result = sweep_one(conn, spec, now);
+            let result = sweep_guarded_delete(conn, spec, now);
             let elapsed_ms = started.elapsed().as_millis() as u64;
             if elapsed_ms >= 100 {
                 tracing::warn!(verdict="storage_retention_slow", table=spec.table,
@@ -1470,13 +1495,20 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
             if let Ok(mut output) = sink2.lock() { *output = Some(result); }
             Ok(crate::db::WriteOutcome { applied:false, events:vec![] })
         }).await;
+        // What survived, the sweep's log line and its diagnostic, on a read
+        // connection: they count rows, and the writer must not (AF-1075).
+        let written = sink.lock().ok().and_then(|v| v.clone());
+        let reported = match written.clone() {
+            Some(w) => state.store.read_async(move |conn| Ok(sweep_report(conn, spec, now, w))).await.ok(),
+            None => None,
+        };
         let outcome = match result {
             Err(error) => format!("Error({error})"),
-            Ok(_) => sink.lock().ok().and_then(|v| v.clone())
+            Ok(_) => reported.or(written.clone())
                 .map(|v| format!("{v:?}"))
                 .unwrap_or_else(|| "Error(retention receipt unavailable)".into()),
         };
-        let first_rows = sink.lock().ok().and_then(|v| v.clone());
+        let first_rows = written;
         if let Some(SweepResult::Deleted { rows, .. }) = first_rows {
             if rows == SWEEP_BATCH {
                 catch_up(state, spec, now).await;
@@ -2230,6 +2262,38 @@ mod tests {
         assert_eq!(
             sweep_one(&c, &right, now),
             SweepResult::Deleted { rows: 2, kept: 1 }
+        );
+    }
+
+    /// AF-1075: the writer half counts nothing. It reports kept as -1, and the
+    /// read half fills in what survived, protected rows included, so the
+    /// whole-table count no longer holds the single writer.
+    #[test]
+    fn the_writer_half_leaves_counting_to_the_read_half() {
+        let c = mem();
+        c.execute_batch("CREATE TABLE session_events (id INTEGER PRIMARY KEY, ts REAL, type TEXT)")
+            .unwrap();
+        let now = unix_now();
+        for (d, ty) in [(200.0, "x"), (150.0, "chat.message"), (5.0, "x"), (1.0, "x")] {
+            c.execute(
+                "INSERT INTO session_events (ts, type) VALUES (?1, ?2)",
+                rusqlite::params![now - d * 86_400.0, ty],
+            )
+            .unwrap();
+        }
+        let spec = SweepSpec {
+            table: "session_events",
+            ts_col: "ts",
+            unit: TsUnit::Secs,
+            env: "AMUX_TEST_UNSET_SESSION_EVENTS_SPLIT",
+            default_days: 90.0,
+        };
+        let written = sweep_guarded_delete(&c, &spec, now);
+        assert_eq!(written, SweepResult::Deleted { rows: 1, kept: -1 }, "the writer half does not count");
+        assert_eq!(
+            sweep_report(&c, &spec, now, written),
+            SweepResult::Deleted { rows: 1, kept: 3 },
+            "the read half counts the survivors, the protected 150-day chat row included"
         );
     }
 

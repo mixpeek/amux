@@ -249,12 +249,21 @@ fn save(conn: &Connection, c: &Contract, now: f64) -> rusqlite::Result<()> {
     .map(|_| ())
 }
 
-fn set_state(conn: &Connection, card: &str, state: &str, sha: Option<&str>, log: &str, now: f64) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE card_contracts SET state = ?2, sha = COALESCE(?3, sha), log = ?4, at = ?5 WHERE card = ?1",
+/// A verification's result, written only while the contract is still
+/// `verifying`: a reset to `frozen` (a failed review, a new commit) during the
+/// run made that run's verdict stale, and an old pass then marked the card
+/// passed and moved it to done (implicit state machines inventory
+/// 2026-10-31, #10). Returns whether it was recorded.
+fn set_state(conn: &Connection, card: &str, state: &str, sha: Option<&str>, log: &str, now: f64) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE card_contracts SET state = ?2, sha = COALESCE(?3, sha), log = ?4, at = ?5 WHERE card = ?1 AND state = 'verifying'",
         rusqlite::params![card, state, sha, log, now],
-    )
-    .map(|_| ())
+    )?;
+    if n == 0 {
+        tracing::warn!(card, to = state, measured = true, n_considered = 1, verdict = "contract_verify_result_stale",
+            "a verification finished after its contract left verifying; the result is dropped");
+    }
+    Ok(n > 0)
 }
 
 fn refuse(status: StatusCode, code: &str, error: String, fix: Value) -> Response {
@@ -976,7 +985,9 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             );
             let (c, ev, sha2) = (card.to_string(), evidence.clone(), sha.clone());
             let r = state.store.write_async(move |conn| {
-                set_state(conn, &c, "passed", Some(&sha2), "exit 0", now)?;
+                if !set_state(conn, &c, "passed", Some(&sha2), "exit 0", now)? {
+                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                }
                 let left: Option<String> = conn.query_row("SELECT left_undone FROM card_contracts WHERE card = ?1", [&c], |r| r.get(0)).optional()?.flatten();
                 let ev = match left.and_then(|l| serde_json::from_str::<Vec<Value>>(&l).ok()) {
                     Some(items) => format!("{ev} Left undone (contract rule 8): {}", left_undone_summary(&items)),
@@ -1006,9 +1017,10 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
                     Err(why) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("{why:?}"))))),
                 }
             }).await;
-            tracing::info!(card, lane, sha = %sha, ok = r.is_ok(), measured = true, n_considered = 1,
-                verdict = "contract_verify_passed", "server verification passed; done granted");
-            if r.is_ok() {
+            let granted = r.as_ref().is_ok_and(|o| o.applied);
+            tracing::info!(card, lane, sha = %sha, ok = r.is_ok(), granted, measured = true, n_considered = 1,
+                verdict = "contract_verify_passed", "server verification passed; done granted when the contract was still verifying");
+            if granted {
                 crate::api::contract_fresh::mark_pending(lane, card); // rule 7
                 // Reuse the coalescing periodic clock. A completed check need
                 // not wait another five minutes before its first review.
@@ -1021,7 +1033,9 @@ async fn finish(state: &AppState, card: &str, lane: &str, result: Result<(String
             // A1: a prod-change card's failed positive control is a hold for
             // the owner and a rollback for the lane (`applied` reports it).
             let held = state.store.write_async(move |conn| {
-                set_state(conn, &c, "failed", s2.as_deref(), &log, now)?;
+                if !set_state(conn, &c, "failed", s2.as_deref(), &log, now)? {
+                    return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
+                }
                 let held = crate::api::prod_change::hold_on_failed_control(conn, &c, &log)?;
                 Ok(crate::db::WriteOutcome { applied: held, events: vec![] })
             }).await.is_ok_and(|o| o.applied);
@@ -2338,7 +2352,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("A3", &["done_line_frozen", "done_line_revised", "done_line_change_refused", "done_line_revision_refused"]),
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
-    ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused", "land_lock_acquired", "land_lock_waited", "land_lock_timeout_requeued"]),
+    ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused", "land_lock_acquired", "land_lock_waited", "land_lock_timeout_requeued", "land_gate_green", "land_gate_red", "land_gate_unmeasured", "land_gate_undeclared", "land_gate_leg_refused", "land_red_rerun", "land_red_flaky", "land_red_healed", "land_red_unattributed", "land_red_unmeasured", "land_red_fix_opened", "land_red_revert_queued", "land_red_reverted", "land_red_revert_refused", "land_red_revert_capped", "land_red_revert_unbuildable"]),
     ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered", "rules_withheld_isolated"]),

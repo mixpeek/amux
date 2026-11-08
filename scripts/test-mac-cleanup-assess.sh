@@ -95,6 +95,17 @@ check "the family line names the family"               "yes" "$(FAMILY_DESC='16.
 check "with no description it still reads as a family" "family a process family is over its share of RAM" "$(FAMILY_DESC= classify_constraints 600 - - 1 2000 10 28 1 20000)"
 check "unmeasured inputs (-1) never trip a class"     ""   "$(classify_constraints -1 - - -1 -1 -1 28 0 -1)"
 
+echo "2a. a load carried by niced work is not contention (cpu RCA 20261106-090048)"
+printf '#!/bin/sh\nprintf "10 1100.0\\n0 270.0\\n0 30.5\\n"\n' > "$FIX/niced-ps"; chmod +x "$FIX/niced-ps"
+NICED_PS_CMD="$FIX/niced-ps"   # a script: the tick runs the command word-split, unquoted
+check "the niced share is summed from nice >= 10 only"  "1100" "$(niced_cpu_pct)"
+check "load 29.4 on 28 less 11 niced cores is not over"  "no"  "$(cpu_over_after_niced 29.4 28 1100 && echo yes || echo no)"
+check "control: the same load with nothing niced is over" "yes" "$(cpu_over_after_niced 29.4 28 0 && echo yes || echo no)"
+check "an unmeasured niced share leaves the verdict"      "yes" "$(cpu_over_after_niced 29.4 28 -1 && echo yes || echo no)"
+NICED_PS_CMD=false
+check "a failed ps reads unmeasured, never zero"          "-1"  "$(niced_cpu_pct)"
+NICED_PS_CMD="ps -axo nice=,%cpu="
+
 echo "2b. swap_total=0 means no swapfile was ever created, not exhaustion (MO-3629/MO-3638, 3 escalations in one day: swap_free=0.00MB, pressure=1/normal, >=90% memory free every time)"
 check "fresh boot, swap free=0 AND total=0: not a constraint"  ""       "$(classify_constraints 600 - - 1 0 10 28 0 0)"
 check "same free=0, a real swapfile (total>0) and no disk to grow it: still trips" "memory" "$(classify_constraints 10 - - 1 0 10 28 0 20000 | grep -o '^memory')"
@@ -119,6 +130,13 @@ state_put "$S" esc_disk=10000
 check "inside the cooldown it is not due"             "no"  "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
 check "control: past the cooldown it is due again"    "yes" "$(escalation_due "$S" disk 31600 6 && echo yes || echo no)"
 check "the cooldown is per class"                     "yes" "$(escalation_due "$S" cpu 20000 6 && echo yes || echo no)"
+note_cleared_classes "$S" "disk burning 9G/h" 15000 >/dev/null
+check "#27: a class still constrained is not marked clear" "no" "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
+note_cleared_classes "$S" "cpu 15-min load 40" 16000 >/dev/null
+check "#27: a cleared class is recorded"              "16000" "$(state_get "$S" esc_disk_cleared)"
+check "#27: a new incident after a clear escalates inside the cooldown" "yes" "$(escalation_due "$S" disk 20000 6 && echo yes || echo no)"
+state_put "$S" esc_disk=21000
+check "#27: once escalated again, the cooldown holds"  "no" "$(escalation_due "$S" disk 22000 6 && echo yes || echo no)"
 
 echo "3b. the hand-off prompt (DESKT-58)"
 first=$(escalation_message cpu "cpu load 40" /b.md /c.card "disk=600G load15=40/28" - - -)
@@ -135,7 +153,9 @@ check "and quotes the previous card and its numbers"  "yes" "$(has "$again" 'car
 check "control: the first-time line is absent then"   "no"  "$(has "$again" 'first cpu escalation')"
 
 echo "4. lane attribution walks the parent chain to a pane"
-bash -c 'sleep 30 & wait' & shell=$!
+# From /: a sleep started in a lane's scratch dir is attributed to that lane
+# by path, so the no-lane control failed whenever the suite ran from one.
+bash -c 'cd / && { sleep 30 & wait; }' & shell=$!
 sleep 0.5; child=$(pgrep -P "$shell" sleep | head -1)
 check "a grandchild of a pane is attributed to its lane" "lane-under-test" "$(lane_for_pid "$child" "$shell amux-lane-under-test")"
 check "control: with no pane in its chain it has no lane" "no lane" "$(lane_for_pid "$child" "999999 amux-other")"

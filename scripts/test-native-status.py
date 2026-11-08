@@ -75,6 +75,28 @@ class NativeStatus(unittest.TestCase):
             values=[json.loads(p.read_text())['state'] for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
             self.assertEqual(values, ['waiting','waiting','waiting','active','blocked'])
 
+    def test_a_compaction_keeps_the_lanes_state(self):
+        # AF-1046, mixpeek-general 2026-10-30: compacting an idle lane read as
+        # mid-turn for an hour because every compaction edge mapped to active.
+        def states(events):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for i, data in enumerate(events, 1):
+                    observer.observe(data, root, 'worker', 'abc', 'claude', float(i))
+                return [json.loads(p.read_text())['state'] for p in sorted((root/'status-events/worker/abc').glob('0*.json'))]
+        compaction = [{'hook_event_name':'PreCompact'},
+                      {'hook_event_name':'SessionStart','source':'compact'},
+                      {'hook_event_name':'PostCompact'}]
+        # At idle, the live sequence: the lane stays idle through all three.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}, {'hook_event_name':'Stop'}] + compaction),
+                         ['active', 'idle', 'idle', 'idle', 'idle'])
+        # Inside a turn: still active, and the turn's own Stop ends it.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}] + compaction + [{'hook_event_name':'Stop'}]),
+                         ['active', 'active', 'active', 'active', 'idle'])
+        # CONTROL: an ordinary SessionStart is not a compaction and still says idle.
+        self.assertEqual(states([{'hook_event_name':'PreToolUse'}, {'hook_event_name':'SessionStart','source':'startup'}]),
+                         ['active', 'idle'])
+
     def test_subagent_prompt_blocks_the_lane_and_only_its_own_edge_clears_it(self):
         # tubescience-parity 2026-09-30: a subagent's permission prompt read as
         # WORKING because every subagent edge was dropped.
@@ -166,5 +188,32 @@ class NativeStatus(unittest.TestCase):
             self.assertNotIn('bypass',json.dumps(second))
             self.assertIn('PermissionRequest',second['hooks'])
             self.assertNotIn('SubagentStop',second['hooks'])
+
+    def test_a_run_killed_at_the_timeout_is_counted_by_the_next_run(self):
+        # AF-1054: the provider kills a hook at its timeout and a killed run
+        # writes nothing, so its lost Stop was invisible. A marker left by a
+        # process that is gone is reported as hook_killed; a live one is not.
+        import os, subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root/'status-events/worker/abc'
+            folder.mkdir(parents=True)
+            gone = subprocess.Popen(['true']); gone.wait()
+            (folder/('.hook.%d' % gone.pid)).write_text(json.dumps({'event':'Stop','at':1.0}))
+            (folder/('.hook.%d' % os.getpid())).write_text(json.dumps({'event':'PreToolUse','at':1.0}))
+            mine = observer.mark_running(root, 'worker', 'abc', 'PostToolUse')
+            errors=[json.loads(l) for l in (root/'status-observer-errors.jsonl').read_text().splitlines()]
+            self.assertEqual([(e['error_type'], e['event']) for e in errors], [('hook_killed','Stop')])
+            self.assertFalse((folder/('.hook.%d' % gone.pid)).exists(), 'a dead run is reported once')
+            self.assertTrue((folder/('.hook.%d' % os.getpid())).exists(), 'a live run is left alone')
+            self.assertEqual(mine, folder/('.hook.%d' % os.getpid()))
+            self.assertEqual(json.loads(mine.read_text())['event'], 'PostToolUse')
+
+    def test_installer_gives_the_hook_room_past_a_loaded_host(self):
+        # AF-1054: at 3 s an overloaded host's runs were killed mid-write.
+        data=installer.merge({}, 'claude', Path('/tmp/native-status.py'))
+        timeouts={h['timeout'] for gs in data['hooks'].values() for g in gs for h in g['hooks']}
+        self.assertEqual(timeouts, {installer.HOOK_TIMEOUT_S})
+        self.assertGreaterEqual(installer.HOOK_TIMEOUT_S, 10)
 
 if __name__=='__main__': unittest.main()

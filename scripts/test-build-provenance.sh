@@ -18,6 +18,9 @@
 # build would be ignored within a day, and the whole value is that the line only
 # appears when something is actually off.
 set -euo pipefail
+# Never the real amux on this machine: its in-flight shell schedules would defer
+# this fixture's build, and the test fails only while one is running (AF-1129).
+export AMUX_RS_RUNS_URL=http://127.0.0.1:9/none
 cd "$(dirname "$0")/.."
 BUILDER="$(pwd)/scripts/rust-auto-build.sh"
 PASS=0; FAIL=0

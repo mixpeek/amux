@@ -318,6 +318,11 @@ pub(super) async fn disconnect(
         )
             .into_response();
     }
+    // The builtin Google connectors share one grant; disconnecting any of them
+    // disconnects the account (connectors::disconnect_google).
+    if super::is_google_connector(&id) {
+        return super::disconnect_google(&ctx, &account).await;
+    }
     let _registry = match registry_lease(&ctx.home).await {
         Ok(lease) => lease,
         Err(error) => return storage_error(error),

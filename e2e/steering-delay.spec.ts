@@ -28,9 +28,14 @@ test('the delay dialog shows when it goes, and the row says so at once and after
   await page.evaluate((w) => { (window as any).openPeek(w); (window as any)._stopPeekPoll?.(); (window as any).setPeekTab('steering'); }, W);
 
   const list = page.locator('#peek-steering-list');
-  await list.getByRole('button', { name: 'Delay delivery' }).click();
   const dlg = page.getByRole('dialog', { name: 'Delay delivery' });
-  await expect(dlg).toBeVisible();
+  // On a loaded CI WebKit the first tap can land without a click (ios-safari,
+  // both attempts of run 41074858622; 5/5 locally), as in tasks-tab.spec.ts.
+  // Tap until the dialog opens; a button that never opens it still fails.
+  await expect(async () => {
+    if (!(await dlg.isVisible())) await list.getByRole('button', { name: 'Delay delivery' }).click();
+    await expect(dlg).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
   await dlg.locator('#steer-dp-val').fill('3');
   await dlg.locator('#steer-dp-unit').selectOption('3600');
   const expected = await page.evaluate(() => (window as any)._steerDeliverLabel(Date.now() / 1000 + 3 * 3600));

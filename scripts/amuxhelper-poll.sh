@@ -59,7 +59,12 @@ echo $$ >"$LOCK/pid"
 
 echo "$(date -Iseconds) amuxhelper: tick start"
 
-board_json="$(curl -sk --max-time 20 "$AMUX_URL/api/board?all=1&slim=0")"
+# Ask for this lane's todo cards only (AF-1164). The tick used to read the
+# whole board, every lane and status with desc and log, to pick out the few
+# rows assigned here: 234 MB a response, 273 times a day, and a 34.6 s request
+# that held up other board reads while the host was loaded. The filter below
+# keeps its own check, and each candidate's desc is read from its own card.
+board_json="$(curl -sk --max-time 20 "$AMUX_URL/api/board?session=$SESSION&status=todo")"
 if [ -z "$board_json" ]; then
   echo "$(date -Iseconds) amuxhelper: board unreachable, measured=false, skipping tick"
   exit 0
@@ -68,10 +73,9 @@ fi
 # Candidate ids: agent-owned todo cards assigned to us. python does the JSON
 # work; everything after this is plain bash + curl, no other dependency.
 #
-# JSON goes in on STDIN, never as an argv element — the full board (all
-# lanes, unslimmed) is well past ARG_MAX as a single argument (measured:
-# "Argument list too long" against a ~1600-card board). stdin has no such
-# ceiling.
+# JSON goes in on STDIN, never as an argv element: a large answer is past
+# ARG_MAX as a single argument (measured: "Argument list too long" against a
+# ~1600-card board). stdin has no such ceiling.
 #
 # Not `mapfile` — this box's /bin/bash is 3.2 (macOS froze it there over the
 # GPLv3 switch), and mapfile/readarray are bash-4+ builtins. A while-read

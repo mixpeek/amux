@@ -2,6 +2,9 @@ import Foundation
 import CoreLocation
 import CoreMotion
 import UIKit
+import os
+
+private let log = Logger(subsystem: "io.amux.app", category: "Location")
 
 /// Records the owner's location history and uploads it to their own amux server
 /// (AMUX-5458, docs/design/location-history.md). Off until the owner turns it on.
@@ -12,6 +15,12 @@ import UIKit
 /// - Always: visits + significant-location-change monitoring. These are what
 ///   relaunch an app iOS has terminated, so recording comes back by itself.
 /// - Core Motion labels each point and its raw transitions are stored too.
+///   Full detail runs live activity updates; Battery saver asks the motion
+///   coprocessor for its history at each wake-up instead (it keeps 7 days).
+/// - Energy (2026-10-31): standard updates pause when still, uploads are paced
+///   and back off on failure, the timer allows coalescing, and turning the
+///   switch off stops every service. Each decision logs under
+///   `io.amux.app` / `Location` and shows in `status`.
 /// - RAW: every fix delivered is stored with every field, nothing thinned or
 ///   dropped; `delivered` and `stored` count both sides so a gap is visible.
 /// - Every point goes to a durable buffer first; uploads drain it.
@@ -24,6 +33,7 @@ final class LocationRecorder: NSObject, ObservableObject {
     static let modeKey = "locationHistoryMode"
     static let deliveredKey = "locationHistoryDelivered"
     static let storedKey = "locationHistoryStored"
+    static let lastMotionKey = "locationHistoryLastMotion"
     static let statusChanged = Notification.Name("amuxLocationStatusChanged")
 
     @Published private(set) var enabled = UserDefaults.standard.bool(forKey: LocationRecorder.enabledKey)
@@ -48,6 +58,18 @@ final class LocationRecorder: NSObject, ObservableObject {
     private var serviceSession: AnyObject?         // CLServiceSession on iOS 18+
     private var uploadTimer: Timer?
     private var uploading = false
+    /// Upload pacing (LocationRules.uploadDue): when the last request was tried
+    /// and how many failed in a row, so no network means a backoff, not a
+    /// request per fix.
+    private var lastAttempt: Double = 0
+    @Published private(set) var uploadFailures = 0
+    /// iOS paused standard updates because the phone stayed still.
+    private var managerPaused = false
+    /// Newest motion transition stored, so live updates and history queries
+    /// never store the same transition twice.
+    private var lastMotionTs = UserDefaults.standard.double(forKey: LocationRecorder.lastMotionKey)
+    private var lastMotion: MotionSample?
+    private var lastMotionQuery: Double = 0
     /// Live-stream health (AMUX-5549). 2026-10-03: live fixes stopped at 9:31
     /// and nothing restarted them; only wake-up fixes and visits arrived until
     /// evening, so every move that day went unrecorded. The stream is now
@@ -82,7 +104,13 @@ final class LocationRecorder: NSObject, ObservableObject {
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
                                                object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.ensureLive(moved: false, why: "foreground") }
+            Task { @MainActor in
+                guard let self, self.enabled else { return }
+                self.ensureLive(moved: false, why: "foreground")
+                self.backfillMotion(why: "foreground")
+                // The radio is up for the dashboard anyway: send what waits.
+                self.maybeUpload(interval: 0, why: "foreground")
+            }
         }
     }
 
@@ -106,7 +134,9 @@ final class LocationRecorder: NSObject, ObservableObject {
         if enabled {
             stopContinuous()
             startContinuous()
+            startMotion()   // live updates in Full detail, history queries in saver
         }
+        log.info("location mode=\(m.rawValue, privacy: .public)")
         publish()
     }
 
@@ -130,14 +160,43 @@ final class LocationRecorder: NSObject, ObservableObject {
         }
         startContinuous()
         if uploadTimer == nil {
-            uploadTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            // The stall check and upload pacing need a tick, not a precise one:
+            // the tolerance lets iOS fold it into other wake-ups.
+            let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
                 Task { @MainActor in
-                    self?.ensureLive(moved: false, why: "timer")
-                    await self?.upload()
+                    guard let self else { return }
+                    self.ensureLive(moved: false, why: "timer")
+                    self.maybeUpload(interval: self.uploadInterval, why: "timer")
                 }
             }
+            t.tolerance = 15
+            RunLoop.main.add(t, forMode: .common)
+            uploadTimer = t
         }
+        log.info("location start: mode=\(self.mode.rawValue, privacy: .public) visits=on significant_change=\(CLLocationManager.significantLocationChangeMonitoringAvailable(), privacy: .public) motion=\(self.mode == .full ? "live" : "query", privacy: .public)")
         publish()
+    }
+
+    /// Standard updates with the mode's settings (iOS 16 Full detail, and the
+    /// iOS 17+ backstop). Background updates are allowed only while they run.
+    private func startStandardUpdates(why: String) {
+        guard let c = LocationRules.standardUpdates(for: mode) else { return }
+        manager.desiredAccuracy = c.desiredAccuracy
+        manager.distanceFilter = c.distanceFilter
+        manager.activityType = c.activityType
+        manager.pausesLocationUpdatesAutomatically = c.pausesAutomatically
+        manager.allowsBackgroundLocationUpdates = c.allowsBackground
+        manager.showsBackgroundLocationIndicator = c.showsIndicator
+        managerPaused = false
+        manager.startUpdatingLocation()
+        log.info("location standard updates on (\(why, privacy: .public)): pauses_when_still=\(c.pausesAutomatically, privacy: .public)")
+    }
+
+    private func stopStandardUpdates() {
+        manager.stopUpdatingLocation()
+        manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
+        managerPaused = false
     }
 
     /// Full detail only: every fix, navigation-grade, no distance filter.
@@ -147,13 +206,7 @@ final class LocationRecorder: NSObject, ObservableObject {
         if #available(iOS 17.0, *) {
             startLiveUpdates()
         } else {
-            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-            manager.distanceFilter = kCLDistanceFilterNone
-            manager.activityType = .otherNavigation
-            manager.pausesLocationUpdatesAutomatically = false
-            manager.allowsBackgroundLocationUpdates = true
-            manager.showsBackgroundLocationIndicator = true
-            manager.startUpdatingLocation()
+            startStandardUpdates(why: "full detail")
         }
     }
 
@@ -169,9 +222,11 @@ final class LocationRecorder: NSObject, ObservableObject {
         }
         backgroundSession = nil
         serviceSession = nil
-        manager.stopUpdatingLocation()
+        stopStandardUpdates()
     }
 
+    /// Off means off: no location service, motion stream, session or timer is
+    /// left running. One last upload sends what is already buffered.
     private func stop() {
         stopContinuous()
         manager.stopMonitoringVisits()
@@ -179,6 +234,7 @@ final class LocationRecorder: NSObject, ObservableObject {
         motion.stopActivityUpdates()
         uploadTimer?.invalidate()
         uploadTimer = nil
+        log.info("location stop: live, standard, visits, significant_change, motion and timer all off")
         Task { await upload() }   // send whatever is already buffered
     }
 
@@ -225,7 +281,8 @@ final class LocationRecorder: NSObject, ObservableObject {
         lastLiveFix = Date().timeIntervalSince1970
         if backstop {
             backstop = false
-            manager.stopUpdatingLocation()
+            stopStandardUpdates()
+            log.info("location backstop off: live fixes are back")
         }
         record([fix], source: "live")
     }
@@ -241,7 +298,16 @@ final class LocationRecorder: NSObject, ObservableObject {
     /// iOS only sends after real movement, so a stale stationary flag is ignored.
     func ensureLive(moved: Bool, why: String) {
         guard enabled, mode == .full else { return }
-        guard #available(iOS 17.0, *) else { return }
+        guard #available(iOS 17.0, *) else {
+            // iOS 16: standard updates paused while still; a wake-up after
+            // real movement turns them back on.
+            if moved && managerPaused { startStandardUpdates(why: "resume after pause: \(why)") }
+            return
+        }
+        if moved && backstop && managerPaused {
+            // The backstop paused while still and the phone has moved again.
+            startStandardUpdates(why: "backstop resume: \(why)")
+        }
         let now = Date().timeIntervalSince1970
         let silent = now - lastLiveFix > Self.liveStallS
         let stalled = liveTask == nil || (silent && (moved || !liveStationary))
@@ -257,49 +323,95 @@ final class LocationRecorder: NSObject, ObservableObject {
             // Backstop until live fixes come back: standard updates keep a
             // woken app running and recording in the background.
             backstop = true
-            manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-            manager.distanceFilter = kCLDistanceFilterNone
-            manager.activityType = .otherNavigation
-            manager.pausesLocationUpdatesAutomatically = false
-            manager.allowsBackgroundLocationUpdates = true
-            manager.showsBackgroundLocationIndicator = true
-            manager.startUpdatingLocation()
+            startStandardUpdates(why: "backstop: \(why)")
         }
+        log.notice("location live stream restarted (\(why, privacy: .public)) restarts=\(self.liveRestarts, privacy: .public)")
         lastError = "live stream restarted (\(why))"
         publish()
     }
 
+    /// Full detail: live activity updates, since the app runs while moving and
+    /// labels a fix a second. Battery saver: no live stream. The app is
+    /// suspended between wake-ups there, so live updates would deliver nothing
+    /// while it sleeps; the coprocessor keeps 7 days of history, and each
+    /// wake-up asks it once for everything since the last stored transition
+    /// (Apple's documented pattern for a suspended app). Both modes backfill on
+    /// start and foreground, which also recovers transitions from while the
+    /// app was terminated.
     private func startMotion() {
         guard CMMotionActivityManager.isActivityAvailable() else {
             motionState = "unavailable"
             return
         }
-        motion.startActivityUpdates(to: .main) { [weak self] a in
-            guard let a else { return }
-            let name = LocationRules.activityName(automotive: a.automotive, cycling: a.cycling,
-                                                  running: a.running, walking: a.walking,
-                                                  stationary: a.stationary)
-            let conf: String
-            switch a.confidence {
-            case .high: conf = "high"
-            case .medium: conf = "medium"
-            default: conf = "low"
-            }
-            let m = MotionSample(id: UUID().uuidString, ts: a.startDate.timeIntervalSince1970,
-                                 stationary: a.stationary, walking: a.walking, running: a.running,
-                                 cycling: a.cycling, automotive: a.automotive, unknown: a.unknown,
-                                 confidence: conf)
-            Task { @MainActor in
-                self?.activity = (name, conf)
-                self?.motionState = "on"
-                if self?.motionLog.append([m]) == true { self?.motionPending += 1 }
+        motion.stopActivityUpdates()
+        if mode == .full {
+            motion.startActivityUpdates(to: .main) { [weak self] a in
+                guard let a else { return }
+                Task { @MainActor in self?.storeMotion([a]) }
             }
         }
+        backfillMotion(why: "start", force: true)
         switch CMMotionActivityManager.authorizationStatus() {
         case .denied: motionState = "denied in iOS Settings"
         case .restricted: motionState = "restricted"
         case .authorized: motionState = "on"
         default: motionState = "asking"
+        }
+    }
+
+    private static func motionSample(_ a: CMMotionActivity) -> MotionSample {
+        let conf: String
+        switch a.confidence {
+        case .high: conf = "high"
+        case .medium: conf = "medium"
+        default: conf = "low"
+        }
+        return MotionSample(id: UUID().uuidString, ts: a.startDate.timeIntervalSince1970,
+                            stationary: a.stationary, walking: a.walking, running: a.running,
+                            cycling: a.cycling, automotive: a.automotive, unknown: a.unknown,
+                            confidence: conf)
+    }
+
+    /// Store transitions not stored yet and take the newest as the label.
+    @discardableResult
+    private func storeMotion(_ acts: [CMMotionActivity]) -> Int {
+        let fresh = LocationRules.newMotion(acts.map(Self.motionSample), afterTs: lastMotionTs,
+                                            lastStored: lastMotion)
+        guard let newest = fresh.last else { return 0 }
+        lastMotion = newest
+        activity = (LocationRules.activityName(automotive: newest.automotive, cycling: newest.cycling,
+                                               running: newest.running, walking: newest.walking,
+                                               stationary: newest.stationary), newest.confidence)
+        motionState = "on"
+        if motionLog.append(fresh) { motionPending += fresh.count }
+        lastMotionTs = newest.ts
+        UserDefaults.standard.set(lastMotionTs, forKey: Self.lastMotionKey)
+        return fresh.count
+    }
+
+    /// Ask the motion coprocessor for transitions since the last stored one.
+    /// At most once a minute unless forced; `then` runs after the label is
+    /// current, so a wake-up fix is labelled with the activity that woke it.
+    private func backfillMotion(why: String, force: Bool = false, then: (() -> Void)? = nil) {
+        let now = Date().timeIntervalSince1970
+        guard enabled, CMMotionActivityManager.isActivityAvailable(),
+              force || now - lastMotionQuery >= 60 else { then?(); return }
+        lastMotionQuery = now
+        // No stored cursor yet (first enable, or the first run of the build
+        // that added it): start from now. A week of history from before would
+        // re-send transitions the live stream already uploaded, under new ids.
+        let from = lastMotionTs > 0 ? max(lastMotionTs, now - 7 * 86_400) : now - 60
+        motion.queryActivityStarting(from: Date(timeIntervalSince1970: from), to: Date(), to: .main) { [weak self] acts, err in
+            Task { @MainActor in
+                guard let self else { return }
+                let n = self.storeMotion(acts ?? [])
+                if let err {
+                    log.error("location motion query failed (\(why, privacy: .public)): \(err.localizedDescription, privacy: .public)")
+                } else if n > 0 {
+                    log.info("location motion backfill (\(why, privacy: .public)): stored=\(n, privacy: .public)")
+                }
+                then?()
+            }
         }
     }
 
@@ -321,9 +433,25 @@ final class LocationRecorder: NSObject, ObservableObject {
         }
         UserDefaults.standard.set(delivered, forKey: Self.deliveredKey)
         UserDefaults.standard.set(stored, forKey: Self.storedKey)
-        if pending >= LocationRules.batchSize || now - lastUpload >= 60 {
-            Task { await upload() }
-        }
+        maybeUpload(interval: uploadInterval, why: "fix")
+    }
+
+    // MARK: - Upload pacing
+
+    private var uploadInterval: Double {
+        UIApplication.shared.applicationState == .active
+            ? LocationRules.foregroundUploadS : LocationRules.backgroundUploadS
+    }
+
+    /// Upload when LocationRules.uploadDue says so. Every automatic trigger
+    /// comes through here; "Upload now" and the dashboard call upload() direct.
+    private func maybeUpload(interval: Double, why: String) {
+        let waiting = pending + motionPending + visits.count
+        guard LocationRules.uploadDue(waiting: waiting, now: Date().timeIntervalSince1970,
+                                      lastAttempt: lastAttempt, failures: uploadFailures,
+                                      interval: interval) else { return }
+        log.debug("location upload due (\(why, privacy: .public)): waiting=\(waiting, privacy: .public)")
+        Task { await upload() }
     }
 
     // MARK: - Upload
@@ -338,6 +466,8 @@ final class LocationRecorder: NSObject, ObservableObject {
     func upload() async {
         guard !uploading, let server = AmuxStore.serverURL else { return }
         uploading = true
+        lastAttempt = Date().timeIntervalSince1970
+        var sent = 0
         defer { uploading = false; pending = points.count; motionPending = motionLog.count; publish() }
         do {
             while true {
@@ -352,6 +482,7 @@ final class LocationRecorder: NSObject, ObservableObject {
                     throw AmuxClient.ClientError.malformed("upload not acknowledged")
                 }
                 points.remove(ids: Set(batch.map(\.id)))
+                sent += batch.count
                 lastUpload = Date().timeIntervalSince1970
                 UserDefaults.standard.set(lastUpload, forKey: Self.lastUploadKey)
                 if batch.count < LocationRules.batchSize { break }
@@ -380,12 +511,22 @@ final class LocationRecorder: NSObject, ObservableObject {
                 if reply["ok"] as? Bool == true { visits.remove(ids: Set(v.map(\.id))) }
             }
             lastError = nil
+            if uploadFailures > 0 || sent > 0 {
+                log.info("location upload ok: points=\(sent, privacy: .public) after_failures=\(self.uploadFailures, privacy: .public)")
+            }
+            uploadFailures = 0
         } catch {
+            uploadFailures += 1
             lastError = error.localizedDescription
+            log.error("location upload failed: failures=\(self.uploadFailures, privacy: .public) next_try_s=\(Int(LocationRules.backoff(failures: self.uploadFailures)), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
     }
 
     private func uploadInBackgroundTask() {
+        guard pending + motionPending + visits.count > 0,
+              LocationRules.uploadDue(waiting: pending + motionPending + visits.count,
+                                      now: Date().timeIntervalSince1970, lastAttempt: lastAttempt,
+                                      failures: uploadFailures, interval: 0) else { return }
         var id: UIBackgroundTaskIdentifier = .invalid
         id = UIApplication.shared.beginBackgroundTask(withName: "location-upload") {
             UIApplication.shared.endBackgroundTask(id)
@@ -415,7 +556,12 @@ final class LocationRecorder: NSObject, ObservableObject {
         var s: [String: Any] = ["enabled": enabled, "authorization": auth, "precise": precise,
                                 "motion": motionState, "pending": pending, "mode": mode.rawValue,
                                 "delivered": delivered, "stored": stored, "motion_pending": motionPending,
-                                "live_restarts": liveRestarts, "live_stationary": liveStationary, "backstop": backstop]
+                                "live_restarts": liveRestarts, "live_stationary": liveStationary, "backstop": backstop,
+                                "upload_failures": uploadFailures, "paused_when_still": managerPaused,
+                                "motion_source": mode == .full ? "live" : "query"]
+        if uploadFailures > 0 {
+            s["next_upload_s"] = max(0, Int(lastAttempt + LocationRules.backoff(failures: uploadFailures) - Date().timeIntervalSince1970))
+        }
         if lastLiveFix > 0 { s["last_live_fix"] = lastLiveFix }
         if lastUpload > 0 { s["last_upload"] = lastUpload }
         if let lastError { s["last_error"] = lastError }
@@ -447,8 +593,32 @@ extension LocationRecorder: CLLocationManagerDelegate {
             // iOS 16 standard updates, the stall backstop, and significant-change
             // wake-ups on every iOS. A wake-up means the phone moved: make sure
             // the live stream is running to record the rest of the move.
-            self.record(locations, source: "manager")
-            self.ensureLive(moved: true, why: "location wake-up")
+            if self.mode == .saver {
+                // A saver wake-up is short: label the fix with the coprocessor's
+                // history first, then store it.
+                self.backfillMotion(why: "wake-up") {
+                    self.record(locations, source: "manager")
+                }
+            } else {
+                self.record(locations, source: "manager")
+                self.ensureLive(moved: true, why: "location wake-up")
+            }
+        }
+    }
+
+    nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            self.managerPaused = true
+            log.info("location standard updates paused by iOS: phone still (backstop=\(self.backstop, privacy: .public))")
+            self.publish()
+        }
+    }
+
+    nonisolated func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            self.managerPaused = false
+            log.info("location standard updates resumed by iOS")
+            self.publish()
         }
     }
 
@@ -468,7 +638,10 @@ extension LocationRecorder: CLLocationManagerDelegate {
         Task { @MainActor in
             self.visits.append([v])
             if departure != nil { self.ensureLive(moved: true, why: "visit ended") }
-            await self.upload()
+            self.backfillMotion(why: "visit")
+            // A visit wake-up is the saver mode's only window: send now unless
+            // the server is failing and backing off.
+            self.maybeUpload(interval: 0, why: "visit")
         }
     }
 

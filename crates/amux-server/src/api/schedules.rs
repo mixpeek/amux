@@ -3839,7 +3839,9 @@ mod tests {
         assert_eq!(d["lock_reason"], json!("prod freeze"));
         assert!(!d["locked_by"].as_str().unwrap_or("").is_empty(), "{d}");
         assert!(d["disabled_reason"].as_str().unwrap().contains("owner"), "{d}");
-        assert_eq!(d["disable_notice"]["route"], json!("none"), "an unregistered worker cannot be told: {d}");
+        assert_eq!(d["disable_notice"]["route"], json!("none"), "{d}");
+        assert_eq!(d["disable_notice"]["cause"], json!("owner_disable_locked"),
+            "an owner's disable types nothing into the worker; the lock refusal tells it: {d}");
 
         // A worker cannot re-enable it, and is told why.
         let (st, r) = send(&app, "PATCH", &path, Some(json!({"enabled": 1})), &SES).await;

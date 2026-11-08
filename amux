@@ -1616,7 +1616,8 @@ USAGE
 cmd_post() {
   local conv="${1:-}"
   [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [--thread <post id>] [text]   (or text on stdin)
-  From a worker, p:<person> posts in your own thread as you, @mentioning them."
+  From a worker, p:<person> posts in your direct message with that person (d:<you>|<their email>),
+  which only the two of you read; their answers there come back to you."
   shift
   [[ "$conv" == \#* ]] && conv="g:${conv#\#}"
   # --thread <id>: reply in that post's thread (a Messages thread, like Slack's).
@@ -1637,7 +1638,9 @@ try: d=json.loads(os.environ["OUT"])
 except Exception: d={}
 to=[m.split(":",1)[1] for m in d.get("mentions",[]) if m.startswith("person:")]
 th=os.environ.get("THREAD")
-print("posted to %s as %s%s%s" % (d.get("conv") or os.environ["CONV"], d.get("author") or d.get("author_name") or "unknown author", (" (thread %s)" % th) if th else "", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
+c=d.get("conv") or os.environ["CONV"]
+where=(" (your direct message with %s)" % c.split("|",1)[1]) if c.startswith("d:") and "|" in c else ""
+print("posted to %s%s as %s%s%s" % (c, where, d.get("author") or d.get("author_name") or "unknown author", (" (thread %s)" % th) if th else "", (" (mentions %s)" % ", ".join(to)) if to else ""))' ;;
     *)   echo "not posted (HTTP ${code:-none}): $out" >&2; return 1 ;;
   esac
 }
@@ -2876,6 +2879,7 @@ The effective global/group/worker policy may allow only budget and customer_outb
 Ordinary choices should proceed. If no human act is required, work the blocker:
 
   amux board backlog $id --trigger \"<the condition that re-arms it>\"   external wait
+  amux board block $id --on \"<the peer card or lane it waits on>\"     waits on a peer: stays out of pickup
   amux board doing $id                                                work the blocker
 
   amux board needsyou $id --actor Ethan --ask decision --question \"...?\" --unblocks \"...\""
@@ -4610,6 +4614,43 @@ A block with no named cause is unfalsifiable: nobody else can tell when it clear
       echo "$result" | _board_outcome "$id" "" "blocked"
       return $?
       ;;
+    triage|accept)
+      # TRIAGE (owner, 2026-10-31: "tell the worker to capture the task in a
+      # issue and keep it there dont automatically flush it"; "triage sounds
+      # right"). The `triage` tag keeps a card in backlog: no drain, promotion,
+      # blocker review or nudge touches it until `accept`. Who and why land on
+      # the card.
+      local verb="$subcmd" id="${1:-}"
+      _board_id_guard "$verb" "$id"
+      [[ -n "$id" ]] || die "Usage: amux board triage <ISSUE-ID> [why]   keep a card in backlog, never picked up automatically
+       amux board accept <ISSUE-ID> [why]   release it to backlog, where auto-dispatch can take it"
+      shift
+      local why="$*" result
+      result=$(_curl -sk "$AMUX_API/api/board/$id" | V="$verb" W="${AMUX_WORKER:-${AMUX_SESSION:-owner}}" Y="$why" python3 -c '
+import json, os, sys
+c = json.load(sys.stdin)
+if "id" not in c:
+    print(json.dumps({"__error": c.get("error") or "card not found"})); sys.exit(0)
+tags = [t for t in (c.get("tags") or []) if t.strip().lower() != "triage"]
+body = {}
+if os.environ["V"] == "triage":
+    tags.append("triage")
+    if c.get("status") == "todo":
+        body["status"] = "backlog"
+    note = "In triage (%s): kept in backlog, never picked up automatically, until amux board accept." % os.environ["W"]
+else:
+    note = "Accepted (%s): back in backlog, where auto-dispatch can take it." % os.environ["W"]
+if os.environ["Y"].strip():
+    note += " Why: " + os.environ["Y"].strip()
+body["tags"] = tags
+body["desc_append"] = note
+print(json.dumps(body))' )
+      echo "$result" | grep -q '"__error"' && die "amux board $verb: $(echo "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin)["__error"])')"
+      result=$(printf '%s' "$result" | _curl -sk -X PATCH -H 'Content-Type: application/json' \
+            -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
+      echo "$result" | _board_outcome "$id" "" "$([[ $verb == triage ]] && echo "put in triage" || echo accepted)"
+      return $?
+      ;;
     unblock)
       local id="${1:-}"
       _board_id_guard "unblock" "$id"
@@ -6065,7 +6106,8 @@ card = d.get("selection") or {}
 print("  identity: " + (card.get("identity") or "unknown") + "; role: " + (card.get("role") or "ordinary"), file=sys.stderr)
 print("  use for: " + (card.get("use_for") or "purpose not recorded"), file=sys.stderr)
 print("  avoid: " + (card.get("avoid") or "verify identity before acting"), file=sys.stderr)
-state = "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence"
+state = ("device-bound session: cookie evidence does not mean signed in" if d.get("session_bound")
+         else "login-cookie evidence (verify live access)" if d.get("signed_in") else "no login-cookie evidence")
 lg = d.get("login") or {}
 exp = f", login expires in {lg['days_left']} day(s)" if lg.get("days_left") is not None else ""
 print(f"  {d['site']}: {state}{exp}", file=sys.stderr)
@@ -6073,7 +6115,8 @@ print(f"  why: {d.get('why','')}", file=sys.stderr)
 if d.get("alternatives"):
     # Live-login alternatives when the pick is signed in; otherwise these are
     # only REGISTERED for the site, which is not the same claim.
-    what = "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)"
+    what = ("also holds its cookies (device-bound, not proof)" if d.get("session_bound")
+            else "also has cookie evidence" if d.get("signed_in") else "also registered (no cookie evidence)")
     print(f"  {what}: " + ", ".join(d["alternatives"]), file=sys.stderr)
 import shlex
 target = os.environ["TARGET"]
@@ -6653,13 +6696,18 @@ ${BOLD}Worker management:${RESET}
                                  ${DIM}compaction backlog. See /api/debug/context-health${RESET}
   amux start-all                 Start all registered workers
   amux stop-all                  Stop all running workers
+  amux pause <name>              Pause a worker: no automation is queued for,
+                                 typed into, or wakes it until resumed
+  amux resume <name>             Resume a paused worker
+  amux pause-all                 Pause every worker
+  amux resume-all                Resume every worker
 
 ${BOLD}Interaction:${RESET}
   amux attach <name>             Attach to a running worker (detach: Ctrl-b d)
   amux grid [-c N] <name>...     Tile those workers' terminals in a grid (macOS/iTerm2)
   amux peek <name> [lines]       View last N lines without attaching (default: 30)
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
-                                 worker: lands in your thread as you, @mentioning them). Prints who it posted as
+                                 worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
@@ -6677,6 +6725,15 @@ ${BOLD}Coordination:${RESET}
   amux explain <path>... [--since 14d] [--save]   An explainer of that slice of the code and what changed in it lately
   amux sync-checkout [--check]   Bring this checkout's branch current with origin when that loses nothing; else name what blocks it
   amux sync-checkout --override  Make this checkout match origin exactly; local work is saved to a restore ref first
+  amux contribute [--title T] [--then-pull] [--check]
+                                 Send this checkout's local amux work upstream as a PR
+                                 (--then-pull: match remote main once the PR is open)
+  amux github login|status       Connect this machine's GitHub account for contribute
+  amux ci wait <run-id> [--repo O/R] [--timeout S]
+                                 Wait for a GitHub Actions run; exit 0 success, 1 other,
+                                 2 timeout, 3 unmeasured. One poller per run, fleet-wide
+  amux receipts [--keep] [<worker>]
+                                 Read (and consume) outcomes held back so they would not wake you
   amux memory [add --stdin]      Show, or append to, your worker memory (the Memory tab)
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
@@ -6702,19 +6759,30 @@ ${BOLD}Info:${RESET}
   amux whoami                    Live worker identity vs inherited env (mismatch warns)
   amux url [--verify]            Print the canonical API base (use \$(amux url), not
                                  \$AMUX_URL — self-heals a stale port; --verify probes)
+  amux velocity [WORKER] [--card ID] [--days N] | --fleet
+                                 Where a worker's time goes; --card estimates a card
+  amux version                   This CLI's version (also --version, -v)
 
 ${BOLD}Delegation:${RESET}
   amux delegate read --question <text> -- <files...>
                                  Compress large reads with the configured fast helper;
                                  returns path:line evidence and a measured receipt
+  amux delegate-job run [--worker W] (--stdin | --prompt TEXT)
+                                 A read-only background job on a worker's own agent;
+                                 never touches the live worker. status <id> | ls [W]
+  amux get <api path>            Read-only GET against the API (e.g. api/email/inbox?count=5)
 
 ${BOLD}Dashboard:${RESET}
   amux                           Interactive dashboard (optimized for phone)
+  amux pin <file> [--opacity 0.85] [--x X] [--y Y] [--width W] [--height H]
+                                 Float a file as an always-on-top macOS overlay window
 
 ${BOLD}Web Dashboard:${RESET}
   amux serve [port]              Start the Rust server (normally launchd's job;
                                  installed service 8824, bare default 8823;
                                  8822 is retired — the compat bind is gone)
+  amux server start|stop|restart|status
+                                 Control the installed server service
 
 ${BOLD}Move (local and amux Cloud):${RESET}
   amux export [file]             Write this server's move bundle: config plus cards,
@@ -6722,6 +6790,8 @@ ${BOLD}Move (local and amux Cloud):${RESET}
   amux import <file> [--to <url>] [--user <email>] [--yes]
                                  Dry run, then add the rows (never overwrites).
                                  ${DIM}amux import amux-*.amuxmove.json --to https://<you>.amux.io${RESET}
+  amux iac export | apply <file.yaml>
+                                 This instance as declarative YAML (- reads stdin)
 
 ${BOLD}CRM:${RESET}
   amux crm list [query]          List contacts (search name/company/role)
@@ -7071,6 +7141,10 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
+
+This is the default host for anything you publish. Do not deploy to Netlify,
+Vercel, Cloudflare Pages, GitHub Pages or another outside host unless the owner
+names it; build a password or feedback form into the app instead.
 
 The Apps tab holds apps with a backend and files shared outside amux, used only
 when the owner asks for one. A file for the owner is not an App: name it by its
@@ -8232,6 +8306,42 @@ _land_regen_extract() {
   printf '%s\n' "$dir"
 }
 
+# _land_queue_wait <POST response>: follow one server queue entry to its end.
+# 0 merged, 1 refused or withdrawn. Past AMUX_LAND_WAIT_S the entry stays queued
+# and this says so, because the land has not failed.
+_land_queue_wait() {
+  local id t0 now body st budget="${AMUX_LAND_WAIT_S:-7200}" last=""
+  id="$(printf '%s' "$1" | head -1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" || return 1
+  t0=$(date +%s)
+  while :; do
+    body="$(_curl -sk -m 20 "${AMUX_API:-$(cmd_url)}/api/land?id=$id" 2>/dev/null || true)"
+    st="$(printf '%s' "$body" | python3 -c '
+import json,sys
+try:
+    i=[x for x in json.load(sys.stdin)["items"]][0]
+except Exception:
+    sys.exit()
+print(i["state"]); print((i.get("merged_sha") or "")[:12]); print(i.get("gate_verdict") or ""); print(i.get("output") or "")' 2>/dev/null || true)"
+    case "$(printf '%s' "$st" | head -1)" in
+      merged)
+        echo "amux land: landed $(printf '%s\n' "$st" | sed -n 2p) on main (gate: $(printf '%s\n' "$st" | sed -n 3p))"
+        return 0 ;;
+      refused|withdrawn)
+        printf '%s\n' "$st" | tail -n +4 >&2
+        echo "amux land: the queue did not land this (entry $id, $(printf '%s' "$st" | head -1)); nothing of it was merged" >&2
+        return 1 ;;
+      "$last") ;;
+      *) last="$(printf '%s' "$st" | head -1)"; [ -z "$last" ] || echo "amux land: entry $id is $last" >&2 ;;
+    esac
+    now=$(date +%s)
+    if [ $((now - t0)) -ge "$budget" ]; then
+      echo "amux land: entry $id is still in the server queue after ${budget}s; it stays queued, and the lane gets a message when it ends" >&2
+      return 0
+    fi
+    sleep "${AMUX_LAND_WAIT_POLL_S:-5}"
+  done
+}
+
 _land_regenerate() {
   local tip="$1" cmd inputs globs tmp idx rc=0 out t0 tree new n=0 p g hit
   local budget="${AMUX_LAND_REGENERATE_TIMEOUT_S:-300}"
@@ -8595,7 +8705,7 @@ _land_status() {
     # 13183349 min", 2026-10-03); its file's mtime is the best record left.
     if [ "${t%%-*}" = 000000000000 ]; then
       tag="at head (--to-head) "
-      since_t="$(stat -f %m "$q/$t" 2>/dev/null || stat -c %Y "$q/$t" 2>/dev/null || date +%s)"
+      since_t="$(stat -c %Y "$q/$t" 2>/dev/null || stat -f %m "$q/$t" 2>/dev/null || date +%s)"
     fi
     # Batch flag and land code beside each ticket (gs12-compute, 2026-10-02:
     # --status could not answer "is my ticket batchable now?").
@@ -8904,7 +9014,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-10-18.56"
+LAND_BEHAVIOR_VERSION="2026-11-02.58"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -8928,6 +9038,86 @@ LAND_BEHAVIOR_VERSION="2026-10-18.56"
 # MSG-<id>` trailer, or MSG-<id> anywhere in the message), LIVE when that commit
 # is in the running build, CLOSED when someone closed it with a reason. All of
 # it is computed from the message history, git and /health; no model call.
+# amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet
+# amux velocity [WORKER] --projection [--backlog]: when the open cards land.
+# Where a worker's time goes, what wastes it and who can fix it, and with
+# --card an estimate of that card's minutes and tokens from the worker's own
+# finished cards (docs/design/worker-velocity.md). WORKER defaults to you.
+cmd_velocity() {
+  local worker="" card="" days=30 raw="" fleet="" proj="" backlog=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --card)  card="${2:-}"; shift 2 ;;
+      --days)  days="${2:-30}"; shift 2 ;;
+      --json)  raw=1; shift ;;
+      --fleet) fleet=1; shift ;;
+      --projection) proj=1; shift ;;
+      --backlog) backlog=1; shift ;;
+      -h|--help) sed -n '/^# amux velocity/,/^cmd_velocity/p' "$0" | sed '$d'; return 0 ;;
+      *)       worker="$1"; shift ;;
+    esac
+  done
+  local base="${AMUX_API:-$(cmd_url)}" url
+  if [[ -n "$fleet" ]]; then
+    url="$base/api/velocity?days=$days"
+  else
+    worker="${worker:-${AMUX_SESSION:-}}"
+    [[ -n "$worker" ]] || die "usage: amux velocity [WORKER] [--card ID] [--days N] [--json] | --fleet  (no WORKER and no \$AMUX_SESSION)"
+    url="$base/api/velocity/$worker?days=$days"
+    [[ -n "$proj" ]] && url="$base/api/velocity/$worker/projection?days=$days${backlog:+&include=backlog}"
+    [[ -n "$card" ]] && url="$url&card=$card"
+  fi
+  local body
+  body=$(_curl -sk --max-time 30 -H "X-Amux-Session: ${AMUX_SESSION:-}" "$url") || die "amux velocity: the server did not answer ($url)"
+  if [[ -n "$raw" ]]; then printf '%s\n' "$body"; return 0; fi
+  python3 -c '
+import json, sys
+d = json.loads(sys.argv[1])
+if "workers" in d:
+    print("Fleet velocity, last %s days (%s attempts). Most wasted hours first." % (d.get("window_days"), d.get("n_considered")))
+    for r in d["workers"]:
+        print("  %-26s finished %4s  %5s/day  %3s%% of time finished  %5.1f h wasted  top: %s" % (
+            r["worker"], r["finished_cards"], r["finished_per_day"], r["finished_share_of_time"], r["wasted_hours"], r.get("top_bottleneck") or "-"))
+    sys.exit(0)
+if "work_minutes" in d:
+    if not d.get("measured", True):
+        print(d.get("why_unmeasured")); sys.exit(0)
+    wm = d["work_minutes"]; c = d.get("calibration") or {}; pace = d.get("pace") or {}; fb = d.get("finish_by") or {}
+    print("%s: %s open cards%s." % (d["worker"], d["n_considered"], " (with backlog)" if d.get("include_backlog") else ""))
+    for x in d["cards"]:
+        b = (" blocked by " + ", ".join(x["blocked_by"])) if x["blocked_by"] else ""
+        if x.get("over_estimate"):
+            b += "  OVER ESTIMATE: %s min so far, %s expected" % (x["over_estimate"]["elapsed_minutes"], x["over_estimate"]["expected_minutes_p75"])
+        print("  %-10s %-7s %4.0f min (to %4.0f)  done after %5.0f min%s  %s" % (x["card"], x["status"], x["minutes_p50"], x["minutes_p75"], x["work_done_after_minutes"], b, x["title"][:50]))
+    print("Work time: %s min (pessimistic %s)%s." % (wm["p50"], wm["p75"], (", after scaling by %sx: your past cards took that many times their estimate" % c["actual_over_estimate"]) if c else ""))
+    if pace:
+        print("At your recent pace (%s days per finished card): done by %s, %s pessimistic." % (pace["days_per_finished_card"], (fb.get("p50") or "")[:16], (fb.get("p75") or "")[:16]))
+    if d.get("blocked_by_outside"):
+        print("Waits on work outside this queue: %s. The dates assume it lands in time." % ", ".join(d["blocked_by_outside"]))
+    sys.exit(0)
+if not d.get("measured", True):
+    print(d.get("why_unmeasured") or d.get("error") or d); sys.exit(1)
+print("%s, last %s days: finished %s of %s cards (%s a day), %s attempts, %s per card." % (
+    d["worker"], d["window_days"], d["finished_cards"], d["cards"], d["finished_per_day"], d["attempts"], d["attempts_per_card"]))
+print("Time: %s h in all, %s h (%s%%) on attempts that finished." % (d["hours"]["total"], d["hours"]["finished"], d["finished_share_of_time"]))
+m = d["per_finished_card"]["minutes"]; t = d["per_finished_card"]["tokens"]
+fmt = lambda v: "-" if v is None else ("%.0f" % v)
+print("A finished card: %s min median (%s to %s), %s tokens median, over %s cards." % (fmt(m["p50"]), fmt(m["p25"]), fmt(m["p75"]), fmt(t["p50"]), m["n"]))
+print("Waste, by who can fix it:")
+for w in sorted(d["waste"], key=lambda w: -w["hours"]):
+    print("  %-22s %-10s %4s attempts %6.1f h %3s%%  %s" % (w["kind"], w["owner"] or "-", w["attempts"], w["hours"], w["share_of_time"], w["what_it_means"]))
+if d.get("waited_on"):
+    print("Parked work waited on:")
+    for x in d["waited_on"]:
+        print("  %5.1f h  %s attempts  %s" % (x["hours"], x["attempts"], x["waiting"]))
+e = d.get("estimate")
+if e:
+    em, et = e["minutes"], e["tokens"]
+    print("Estimate for %s (%s): %s min (%s to %s), %s tokens, from %s %s." % (
+        e["card"], (e.get("title") or "")[:60], fmt(em["p50"]), fmt(em["p25"]), fmt(em["p75"]), fmt(et["p50"]), e["n"], e["basis"]))
+' "$body"
+}
+
 cmd_requests() {
   local days=7 only_open="" raw="" all="" workers=()
   if [[ "${1:-}" == "close" ]]; then
@@ -8954,6 +9144,21 @@ print(("linked MSG-%s to %s: %s" % (mid, sha, reason)) if sha else ("closed MSG-
 PY
     return $?
   fi
+  if [[ "${1:-}" == "reply" ]]; then
+    local id="${2:-}"
+    [[ "$id" =~ ^(MSG-)?[0-9]+$ ]] || die "usage: amux requests reply MSG-<id>"
+    curl -sk --connect-timeout 5 --max-time 30 "$AMUX_API/api/history/${id#MSG-}/reply" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"): sys.exit(d["error"])
+if not d.get("measured"): sys.exit("not read: " + d.get("why_unmeasured", "unknown"))
+if not d.get("found"): sys.exit("MSG-%s is not in the current transcript of %s" % (d["id"], d["session"]))
+if not d.get("text") and d.get("ended") == "next_input": sys.exit("another message reached %s before it answered MSG-%s; read the reply to that one" % (d["session"], d["id"]))
+if not d.get("text"): sys.exit("%s has not answered MSG-%s yet" % (d["session"], d["id"]))
+print(d["text"])
+if not d.get("ended"): print("(turn still open)")'
+    return $?
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --days)  days="${2:-7}"; shift 2 ;;
@@ -8964,6 +9169,7 @@ PY
         cat <<'HELP'
 Usage: amux requests [<worker>...|--all] [--days N] [--open] [--json]
        amux requests close [--sha <commit>] MSG-<id> <reason>
+       amux requests reply MSG-<id>    what the worker answered, from its transcript
 
 The owner's requests to a worker (default: $AMUX_SESSION) and where each one
 stands: open, on main, live (in the running build), or closed.
@@ -9047,6 +9253,12 @@ while True:
     offset += len(page)
     if min(h["ts"] for h in page) < cutoff or offset > 50000:
         break
+answered_cache = {}
+def answered_for(w):
+    if w not in answered_cache:
+        d = get("/api/task-history/requests?session=%s&days=%g" % (urllib.parse.quote(w), days)) or {}
+        answered_cache[w] = {r["id"]: r.get("evidence", "") for r in d.get("requests") or [] if r.get("status") == "answered"}
+    return answered_cache[w]
 by_session = {}
 for h in owner_hist:
     by_session.setdefault(h.get("session"), []).append(h)
@@ -9083,7 +9295,19 @@ for w in workers:
             st, ev = "closed", closed[mid]["reason"]
         elif sha:
             lv = live(repo, sha)
-            st, ev = ("live" if lv else "on-main") if lv is not None else "on-main", sha[:9]
+            # A repo this server never deploys cannot become "live": its landed
+            # work is finished, not held (AF-1058: amux-gtm read 10 "not live").
+            # Decided by the repo, not by live() being None: an unreachable
+            # /health also gives None, and amux work must then stay on-main.
+            if lv is not None:
+                st = "live" if lv else "on-main"
+            else:
+                st = "on-main" if os.path.isdir(os.path.join(repo, "crates", "amux-server")) else "landed"
+            ev = sha[:9]
+        elif ("MSG-" + mid) in answered_for(w):
+            # The server's rule, not a second copy of it (AF-1059): a question
+            # whose own turn ended with a reply before the next message.
+            st, ev = "answered", answered_for(w)["MSG-" + mid]
         else:
             st, ev = "open", ""
         if sha:
@@ -9099,7 +9323,7 @@ for r in rows:
     mid = r["id"][4:]
     if r["status"] == "closed" and (closed.get(mid) or {}).get("at"):
         when[r["id"]] = "%s@%s" % (r["worker"], closed[mid]["at"])
-    elif r["status"] in ("on-main", "live") and r["repo"]:
+    elif r["status"] in ("on-main", "live", "landed") and r["repo"]:
         ct = subprocess.run(["git", "-C", r["repo"], "show", "-s", "--format=%ct", lm_sha.get(r["id"], r["evidence"])],
                             capture_output=True, text=True).stdout.strip()
         if ct.isdigit():
@@ -9116,7 +9340,7 @@ for r in rows:
     t = tasks_at.get(when.get(r["id"], "")) or {}
     r["task"] = t.get("task") or ""
     r["task_ts"] = t.get("ts")
-counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "closed")}
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "landed", "answered", "closed")}
 summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
@@ -9138,13 +9362,17 @@ if only_open:
 if raw:
     print(json.dumps(dict(summary, requests=rows), indent=1))
     sys.exit(0)
-order = {"open": 0, "on-main": 1, "live": 2, "closed": 3}
+order = {"open": 0, "on-main": 1, "live": 2, "landed": 2, "answered": 3, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
-    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"], r["evidence"][:10], r["text"][:90]))
+    answered = r["status"] == "answered"
+    print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"],
+                                              "" if answered else r["evidence"][:10], r["text"][:90]))
+    if answered:  # the reply is the disposition, too long for the sha column
+        print("%59s %s" % ("", r["evidence"][:120]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
-print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d closed%s" % (
-    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["closed"],
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d answered, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["landed"], counts["answered"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
 if summary.get("held_by_ci"):
     g = summary["held_by_ci"]
@@ -9708,10 +9936,24 @@ _ci_wait() {
     # "completed" can be the previous attempt (2026-10-29, run 40872577418).
     if [ "$role" = reader ] && ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("status") == "completed" and d.get("polled_at", 0) >= float(sys.argv[2]) else 1)' "$state" "$start" 2>/dev/null; then
       if mkdir "$lock" 2>/dev/null; then
+        ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' > "$lock/start"
         echo $$ > "$lock/pid"; role=poller
       else
-        local hp; hp="$(cat "$lock/pid" 2>/dev/null || true)"
-        if [ -n "$hp" ] && ! kill -0 "$hp" 2>/dev/null; then rm -rf -- "${lock:?}"; continue; fi
+        # A dead holder, a reused pid (start time differs) or a lock left with
+        # no pid by a wait killed between mkdir and the pid write. That last one
+        # was never broken, so every reader stayed `pending` (2026-11-06).
+        local hp hs age; hp="$(cat "$lock/pid" 2>/dev/null || true)"
+        hs="$(cat "$lock/start" 2>/dev/null || true)"
+        if [ -z "$hp" ]; then
+          age="$(python3 -c 'import os,sys,time; print(int(time.time()-os.stat(sys.argv[1]).st_mtime))' "$lock" 2>/dev/null || echo 0)"
+          if [ "${age:-0}" -gt 30 ]; then
+            echo "amux ci wait: breaking a poller lock with no pid, ${age}s old (verdict=ci_wait_lock_empty_broken)" >&2
+            rm -rf -- "${lock:?}"; continue
+          fi
+        elif ! kill -0 "$hp" 2>/dev/null \
+             || { [ -n "$hs" ] && [ "$(ps -o lstart= -p "$hp" 2>/dev/null | tr -s ' ')" != "$hs" ]; }; then
+          rm -rf -- "${lock:?}"; continue
+        fi
       fi
     fi
     if [ "$role" = poller ]; then
@@ -9809,7 +10051,7 @@ lines = [l for l in text.splitlines() if l.startswith("amux land:")]
 reason = lines[-1][len("amux land:"):].strip() if lines else ""
 m = re.findall(r"landed (?:in a batch: landed )?([0-9a-f]{7,40}) on ", text)
 sha = m[-1] if m else None
-queued = bool(re.search(r"queued on the server|detached \(pid \d+\)", text))
+queued = bool(re.search(r"queued on the server|detached \(pid \d+\)", text)) and not re.search(r"landed [0-9a-f]{7,40} on main \(gate:", text)
 on_origin, not_on, why, n_cmp = None, [], None, 0
 if src:
     f = subprocess.run(["git", "fetch", "-q", remote, branch], capture_output=True, text=True)
@@ -9897,6 +10139,242 @@ Plain markdown with headings, short paragraphs, no filler. Say plainly when some
   printf '%s\n' "$out"
 }
 
+# The land gate builds and tests the workspace on the machine every worker
+# shares. Uncapped, two at once with a lane's own builds held load at 78 on 28
+# cores (Mac cpu RCA 20261101-184920) and one build reached 15.4 G. Slower lands
+# are the cost; AMUX_LAND_BUILD_JOBS and AMUX_LAND_TEST_THREADS raise the caps.
+land_gate_run() {
+  local jobs=${AMUX_LAND_BUILD_JOBS:-12} threads=${AMUX_LAND_TEST_THREADS:-8}
+  echo "amux land: the gate runs at nice 10 with $jobs build jobs and $threads test threads (verdict=land_gate_capped)" >&2
+  CARGO_BUILD_JOBS=$jobs NEXTEST_TEST_THREADS=$threads nice -n 10 "$@"
+}
+
+# MERGE QUEUE (MC-92; Z2 of Mixpeek's 2026-11-01 no-baggage plan). The CI half
+# is Mixpeek's research/cicd/MERGE-QUEUE.md, which Ethan approved on
+# 2026-10-23: main moves only to a tree the repository's workflow already
+# passed. Off unless the repository opts in with `landMergeQueue` in
+# .amux/land.conf ([amux] section), or AMUX_LAND_MERGE_QUEUE for one process:
+#   off      (the default) the holder pushes the composed stack to the branch.
+#   shadow   the stack is also pushed to refs/heads/mq/<batch> and the workflow
+#            dispatched on it, then landed directly as with off. Each candidate
+#            is a line in ~/.amux/logs/land-mq.jsonl, so its verdict can be
+#            compared with the verdict the branch later reaches.
+#   enforce  the stack lands only after the workflow concluded success on the
+#            candidate ref, as a fast-forward. A red batch is bisected over its
+#            landings (prefixes on the same base); the culprit waiter is ejected
+#            and the rest re-composed. rc 6: this lane's own change was red, or
+#            the candidate could not be measured; the waiters keep their places.
+# Other keys: landMergeQueueWorkflow (the workflow file to dispatch; required),
+# landMergeQueueBaseInput (a workflow_dispatch input that receives the sha the
+# stack was composed on), landMergeQueueRepo (owner/name when the remote URL
+# does not say it), landMergeQueueBudgetMin (wait for one run, default 75),
+# landMergeQueueBatchMax (landings per candidate with the holder, default 8),
+# landMergeQueueLostJob (an ERE: a red run with a failed job of that name is
+# dispatched once more instead of bisected; a lost runner is not a culprit).
+_land_mq_cfg() { # <key suffix> [default]
+  local v; v="$(_land_cfg --get "amux.landMergeQueue$1" 2>/dev/null || true)"
+  printf '%s\n' "${v:-${2:-}}"
+}
+# NO-CODE PATHS. amux.landMergeQueueNoCodePath (repeatable, a glob where * crosses
+# directories; a leading ! excludes; the last match wins) names files nothing runs.
+# A stack of only those needs no candidate: a candidate tests nothing about them,
+# and 23 commits an hour against a 10-minute candidate starved a records lane out of
+# its 8 tries (Mixpeek, 2026-11-02). amux.landMergeQueueNoCodeCheck, if set, still
+# runs on it with AMUX_LAND_BASE and AMUX_LAND_TIP set, so a secret scan isn't lost.
+# --no-renames: a rename lists only its new name, so moving code under a no-code
+# path would read as no-code, and a rename by main would read as sharing no file.
+_land_mq_no_code() { # <a> <b>: 0 when a..b changes files and every one is a no-code path
+  local pats files
+  pats="$(_land_cfg --get-all amux.landMergeQueueNoCodePath 2>/dev/null || true)"
+  [ -n "$pats" ] || return 1
+  files="$(git diff --no-renames --name-only "$1" "$2" 2>/dev/null)" || return 1
+  [ -n "$files" ] || return 1
+  PATS="$pats" FILES="$files" python3 -c '
+import fnmatch, os, sys
+pats = os.environ["PATS"].split("\n")
+for f in os.environ["FILES"].split("\n"):
+    ok = False
+    for p in pats:
+        neg = p.startswith("!")
+        if fnmatch.fnmatchcase(f, p[1:] if neg else p):
+            ok = not neg
+    if not ok:
+        sys.exit(1)
+'
+}
+# A green candidate stays good when main moved under it, if what landed since is
+# no-code or shares no file with the candidate. Otherwise a busy branch outruns any
+# candidate that takes minutes, and the queue starves however many tries it has.
+_land_mq_moved_ok() { # <base> <new main> <candidate>
+  _land_mq_no_code "$1" "$2" && return 0
+  local moved mine
+  moved="$(git diff --no-renames --name-only "$1" "$2" 2>/dev/null)" || return 1
+  mine="$(git diff --no-renames --name-only "$1" "$3" 2>/dev/null)" || return 1
+  [ -z "$(comm -12 <(printf '%s\n' "$moved" | sort -u) <(printf '%s\n' "$mine" | sort -u))" ]
+}
+# Replays base..candidate onto new main, printing the new tip. Fails on a conflict.
+_land_mq_replay() { # <base> <new main> <candidate>
+  local tip="$2" c tree new
+  for c in $(git rev-list --reverse "$1..$3"); do
+    tree="$(_land_pick_tree "$tip" "$c")" && [ -n "$tree" ] || return 1
+    new="$(GIT_AUTHOR_NAME="$(git log -1 --format=%an "$c")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$c")" \
+           GIT_AUTHOR_DATE="$(git log -1 --format=%aD "$c")" git commit-tree "$tree" -p "$tip" -m "$(git log -1 --format=%B "$c")")" || return 1
+    tip="$new"
+  done
+  printf '%s\n' "$tip"
+}
+_land_mq_mode() { # prints off, shadow or enforce
+  local m="${AMUX_LAND_MERGE_QUEUE:-}"
+  [ -n "$m" ] || m="$(_land_cfg --get amux.landMergeQueue 2>/dev/null || true)"
+  case "$m" in
+    ''|off|false|0) echo off; return 0 ;;
+    shadow|enforce) ;;
+    *) _land_log "WARN verdict=mq_mode_unknown value=$m: amux.landMergeQueue is off, shadow or enforce; landing directly"; echo off; return 0 ;;
+  esac
+  if [ -z "$(_land_mq_cfg Workflow)" ] || [ -z "$(_land_mq_slug)" ]; then
+    _land_log "WARN verdict=mq_misconfigured mode=$m: amux.landMergeQueueWorkflow or the repository (amux.landMergeQueueRepo, or a github.com remote) is missing; landing directly"
+    echo off; return 0
+  fi
+  echo "$m"
+}
+_land_mq_slug() {
+  local s; s="$(_land_mq_cfg Repo)"
+  [ -n "$s" ] || s="$(git remote get-url "${remote:-origin}" 2>/dev/null | sed -nE 's#^.*github\.com[^:/]*[:/]+([^/]+/[^/]+)$#\1#p')"
+  printf '%s\n' "${s%.git}"
+}
+# gh with a token minted per call: a wait outlives an exported App token (an
+# hour), as the push comment in cmd_land measured. AMUX_LAND_MQ_GH: a stand-in for tests.
+_land_mq_gh() {
+  local tok=""
+  [ -x "$HOME/.amux/github-app/get-token.sh" ] && tok="$("$HOME/.amux/github-app/get-token.sh" --min-remaining 600 --raw 2>/dev/null || true)"
+  GH_TOKEN="${tok:-${GH_TOKEN:-}}" "${AMUX_LAND_MQ_GH:-gh}" "$@"
+}
+_land_mq_ledger() { # key=value ...
+  mkdir -p "$HOME/.amux/logs"
+  python3 -c 'import json, sys, time
+d = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+for a in sys.argv[1:]:
+    k, _, v = a.partition("=")
+    d[k] = v
+print(json.dumps(d))' "$@" >> "$HOME/.amux/logs/land-mq.jsonl" 2>/dev/null || true
+}
+# The candidate ref skips the push hook: it is only the workflow's input, and the
+# hook gates the same tree again on the push to the branch.
+_land_mq_push_ref() { # <sha> <batch id>
+  local t
+  for t in 1 2 3; do
+    git push --no-verify -q "$remote" "$1:refs/heads/mq/$2" 2>/dev/null && return 0
+    sleep $(( t * ${AMUX_LAND_NET_BACKOFF_S:-10} ))
+  done
+  return 1
+}
+_land_mq_drop_ref() { git push --no-verify -q "$remote" ":refs/heads/mq/$1" >/dev/null 2>&1 || true; }
+_land_mq_dispatch() { # <batch id> <base sha>; the error on stderr
+  local input args=()
+  input="$(_land_mq_cfg BaseInput)"
+  [ -z "$input" ] || args=(-f "$input=$2")
+  _land_mq_gh workflow run "$(_land_mq_cfg Workflow)" --repo "$(_land_mq_slug)" --ref "mq/$1" ${args[@]+"${args[@]}"} >/dev/null
+}
+_land_mq_run() { # <batch id> <sha> -> "<run id> <status> <conclusion> <url>" of the newest run of that sha
+  _land_mq_gh api "repos/$(_land_mq_slug)/actions/workflows/$(_land_mq_cfg Workflow)/runs?branch=mq/$1&event=workflow_dispatch&per_page=10" 2>/dev/null \
+    | python3 -c 'import json, sys
+try:
+    runs = json.load(sys.stdin).get("workflow_runs") or []
+except Exception:
+    runs = []
+for r in sorted(runs, key=lambda r: r.get("id") or 0, reverse=True):
+    if r.get("head_sha") == sys.argv[1]:
+        print(r.get("id"), r.get("status") or "-", r.get("conclusion") or "-", r.get("html_url") or "-")
+        break' "$2"
+}
+_land_mq_lost() { # <run id>: rc 0 when a failed job's name matches landMergeQueueLostJob
+  local re; re="$(_land_mq_cfg LostJob)"
+  [ -n "$re" ] || return 1
+  _land_mq_gh api "repos/$(_land_mq_slug)/actions/runs/$1/jobs?per_page=100" 2>/dev/null \
+    | python3 -c 'import json, re, sys
+try:
+    jobs = json.load(sys.stdin).get("jobs") or []
+except Exception:
+    jobs = []
+sys.exit(0 if any(j.get("conclusion") == "failure" and re.search(sys.argv[1], j.get("name") or "") for j in jobs) else 1)' "$re"
+}
+_land_mq_wait() { # <batch id> <sha> -> "green|red|lost|unmeasured <run id> <url> [why]"
+  local budget poll t0 r rid="-" st co url="-"
+  budget=$(( $(_land_mq_cfg BudgetMin 75) * 60 )); poll="${AMUX_LAND_MQ_POLL_S:-30}"; t0=$(date +%s)
+  while [ $(( $(date +%s) - t0 )) -le "$budget" ]; do
+    # A candidate run is longer than --max-hold by design, so the holder keeps its
+    # attempt stamp fresh while it waits; a waiter still takes over a dead holder.
+    [ "$(cat "${lock:-/nonexistent}/pid" 2>/dev/null)" = "$$" ] && date +%s > "$lock/since"
+    r="$(_land_mq_run "$1" "$2")"
+    if [ -n "$r" ]; then
+      read -r rid st co url <<< "$r"
+      if [ "$st" = completed ]; then
+        case "$co" in
+          success) echo "green $rid $url" ;;
+          failure) if _land_mq_lost "$rid"; then echo "lost $rid $url"; else echo "red $rid $url"; fi ;;
+          *) echo "unmeasured $rid $url conclusion=$co" ;;
+        esac
+        return 0
+      fi
+    fi
+    sleep "$poll"
+  done
+  echo "unmeasured $rid $url no_conclusion_in_${budget}s"
+}
+_land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <run id> <url> [why]"
+  local id="$1" v err try
+  for try in 1 2; do
+    _land_mq_push_ref "$3" "$id" || { echo "unmeasured - - candidate_push_failed"; return 0; }
+    if ! err="$(_land_mq_dispatch "$id" "$2" 2>&1)"; then
+      _land_mq_drop_ref "$id"
+      echo "unmeasured - - dispatch_failed:$(printf '%s' "$err" | tr -s ' \n' '__' | cut -c1-160)"; return 0
+    fi
+    _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$id (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
+    v="$(_land_mq_wait "$id" "$3")"
+    _land_mq_drop_ref "$id"
+    _land_mq_ledger phase=judge batch="$id" base="$2" candidate="$3" verdict="${v%% *}" run="$(printf '%s' "$v" | cut -d' ' -f3)" what="${4:-}"
+    { [ "${v%% *}" = lost ] && [ "$try" = 1 ]; } || break
+    _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
+    id="$id-r"
+  done
+  [ "${v%% *}" != lost ] || v="red ${v#lost }"
+  echo "$v"
+}
+# Binary search over the batch's prefixes on the same base, each regenerated as
+# the full stack was. Prefix 0 is the holder's own change, prefix k adds the
+# k-th waiter (line k of stack_map). The base is taken as green: in enforce mode
+# the branch only moves to green candidates.
+_land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit index> <url>" or "unmeasured <why>"
+  local lo=-1 hi n mid tip v url="$4"
+  n="$(printf '%s\n' "$stack_map" | grep -c .)"; hi="$n"
+  while [ $(( hi - lo )) -gt 1 ]; do
+    mid=$(( (lo + hi) / 2 ))
+    if [ "$mid" = 0 ]; then tip="$3"
+    else tip="$(printf '%s\n' "$stack_map" | grep . | sed -n "${mid}p" | awk '{print $(NF-1)}')"; fi
+    # A failing generator leaves the prefix unrendered, as the full stack would be.
+    v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
+    v="$(_land_mq_judge "$2-b$mid" "$1" "$tip" "bisect: prefix of $((mid + 1)) of $((n + 1)) landings")"
+    case "${v%% *}" in
+      green) lo="$mid" ;;
+      red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
+      *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
+    esac
+  done
+  echo "$hi $url"
+}
+# Candidate refs land made, past twice the budget (shadow leaves its refs for the
+# run; a killed holder leaves one). Other mq/ refs (a CI self-test) are not ours.
+_land_mq_sweep() {
+  local cut ref name
+  cut=$(( $(date +%s) - 2 * $(_land_mq_cfg BudgetMin 75) * 60 ))
+  git ls-remote "$remote" 'refs/heads/mq/*' 2>/dev/null | while read -r _ ref; do
+    name="${ref#refs/heads/mq/}"
+    case "${name%%-*}" in ''|*[!0-9]*) continue ;; esac
+    [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ] && _land_mq_drop_ref "$name"
+  done
+  return 0
+}
+
 cmd_land() {
   # amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--batch-max N] [--priority] [--detach] [--sha <commit>] [--json] | --cancel | --status
   #
@@ -9974,6 +10452,26 @@ cmd_land() {
   # sha, queued, not_on_origin, rc, reason), with `landed` measured against the
   # remote after the land, never taken from land's own log line.
   #
+  # A repository that declares `queueGate` in .amux/land.conf (the one key that
+  # turns this on; docs/orchestration-contract.md) has one land path: this
+  # command posts to the server queue, which tests each change on main plus
+  # everything ahead of it with that gate, read from origin/main, and refuses a
+  # red one. It waits for the outcome and exits 0 on merged, 1 on refused (--detach
+  # returns once queued; AMUX_LAND_WAIT_S bounds the wait, default 7200). Exit 6:
+  # the server did not answer, so nothing was tested and nothing was pushed.
+  # AMUX_LAND_CLIENT=1 AMUX_LAND_CLIENT_REASON=<why> takes the client path anyway,
+  # logged as verdict=land_queue_bypassed; it is the way to land a fix to the
+  # declaration or to the server itself. With no declaration the client path runs
+  # as it always has and says nothing tested the composed tree
+  # (verdict=land_gate_undeclared).
+  #
+  # Merge queue (off unless .amux/land.conf sets landMergeQueue = shadow or
+  # enforce; see _land_mq_mode): the composed stack goes to refs/heads/mq/<batch>,
+  # the repository's workflow is dispatched on it, and with enforce the branch is
+  # fast-forwarded only when that run is green. A red batch is bisected and its
+  # culprit ejected. Exit 6: this lane's change was red, or the run could not be
+  # measured. AMUX_LAND_MERGE_QUEUE=off lands directly for one process.
+  #
   # Repository config lives in `.amux/land.conf` (git-config syntax, committed):
   # the [amux] land* keys, read from the remote branch (the regenerate keys from
   # the tree being pushed), and [freeze "<name>"] sections (path, until, owner,
@@ -10016,6 +10514,16 @@ cmd_land() {
       --cancel-for) shift; _land_cancel_for "$@"; return $? ;;
       --to-head) shift; _land_to_head "$@"; return $? ;;
       --status) _land_status; return $? ;;
+      # For the server queue: render declared paths on a composed tree and
+      # print the commit to push, with this file's own _land_regenerate.
+      --regenerate-on)
+        local me="${AMUX_WORKER:-amux-land}" log="$HOME/.amux/logs/land.log" key=queue
+        mkdir -p "$HOME/.amux/logs"
+        _land_log() { printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$me" "$*" "$key" >> "$log"; echo "amux land: $*" >&2; }
+        # In a condition, as the client calls it: its find | while pipelines end
+        # non-zero on a tree whose last file matches no glob, and set -e must not
+        # see that.
+        local _rr=0; _land_regenerate "${2:?}" || _rr=$?; return "$_rr" ;;
       -h|--help) sed -n '/^cmd_land()/,/^  local remote/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
       *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
     esac
@@ -10048,7 +10556,7 @@ cmd_land() {
     _lg_dir="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-gate.XXXXXX")"
     git show "$remote/$branch:scripts/land_gate.py" > "$_lg_dir/land_gate.py" \
       && git show "$remote/$branch:scripts/land_review.py" > "$_lg_dir/land_review.py" \
-      && python3 "$_lg_dir/land_gate.py" || _lg_rc=$?
+      && land_gate_run python3 "$_lg_dir/land_gate.py" || _lg_rc=$?
     rm -rf "$_lg_dir"
     if [ "$_lg_rc" != 0 ]; then
       echo "amux land: the land gate did not pass (above); nothing queued. Fix it and run amux land again." >&2
@@ -10060,20 +10568,72 @@ cmd_land() {
   # refused. A 409 land_queue_off (the rule is off for this lane) or an
   # unreachable server falls through to the client queue below.
   # AMUX_LAND_CLIENT=1 forces the client path.
-  if [ -n "${AMUX_SESSION:-}" ] && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
-    local _q_sha _q_out _q_code _q_body
+  #
+  # A repository's own declaration (Z2) puts every land there, session or not,
+  # and the client waits: the declaration is read here from committed bytes so
+  # a server that cannot be reached refuses the land instead of skipping the gate.
+  local _q_decl="" _q_who="${AMUX_SESSION:-${AMUX_WORKER:-$(whoami)}}" _q_tree
+  _q_tree="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$branch" = main ] && [ "${AMUX_LAND_GUARDED:-0}" != 1 ]; then
+    _q_decl="$(git config --blob "$remote/$branch:.amux/land.conf" --get amux.queueGate 2>/dev/null || true)"
+  fi
+  if [ -n "$_q_decl" ] && [ "${AMUX_LAND_CLIENT:-0}" = 1 ]; then
+    mkdir -p "$HOME/.amux/logs"
+    printf '%s %s verdict=land_queue_bypassed reason=%s\n' "$(date -u +%FT%TZ)" "$_q_who" "${AMUX_LAND_CLIENT_REASON:-none given}" >> "$HOME/.amux/logs/land.log"
+    echo "amux land: WARN this repository declares a queue gate and AMUX_LAND_CLIENT=1 skips it (verdict=land_queue_bypassed, reason: ${AMUX_LAND_CLIENT_REASON:-none given})" >&2
+  fi
+  # The client merge queue (landMergeQueue) is the other way a repository can
+  # test the composed tree; a server queue gate takes the land first, so a
+  # repository that sets both runs only the queue gate, and says so.
+  # The effective mode, so AMUX_LAND_MERGE_QUEUE and a misconfigured key (which
+  # lands directly) count the way the hold below will count them.
+  local _q_mq; _q_mq="$(_land_mq_mode 2>/dev/null || echo off)"
+  if [ -n "$_q_decl" ] && { [ "$_q_mq" = enforce ] || [ "$_q_mq" = shadow ]; }; then
+    echo "amux land: WARN amux.queueGate and amux.landMergeQueue are both set; the server queue gate takes this land and the merge queue does not run (verdict=land_mq_shadowed_by_queue_gate)" >&2
+  fi
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ -z "$_q_decl" ] && [ "$_q_mq" != enforce ] && git rev-parse -q --verify "$remote/$branch" >/dev/null 2>&1; then
+    mkdir -p "$HOME/.amux/logs"
+    printf '%s %s verdict=land_gate_undeclared repo declares no amux.queueGate: the push hook is the only check on the composed tree\n' "$(date -u +%FT%TZ)" "$_q_who" >> "$HOME/.amux/logs/land.log"
+    echo "amux land: this repository declares no amux.queueGate in .amux/land.conf, so no queue gate tests the composed tree (verdict=land_gate_undeclared)" >&2
+  fi
+  if { [ -n "${AMUX_SESSION:-}" ] || [ -n "$_q_decl" ]; } && [ "${AMUX_LAND_CLIENT:-0}" != 1 ]; then
+    local _q_sha _q_out _q_code _q_body _q_pol
     _q_sha="${land_sha:-$(git rev-parse HEAD 2>/dev/null)}"
+    # Ask whether the queue is on for this lane before queueing (AF-1103).
+    # Posting blind drew a 409 land_queue_off on every land of every lane where
+    # the rule is off: 563 a day, the top error group, and the reason
+    # route.mounted_routes_answer read POST /api/land as a dead route. An
+    # unreadable policy (old server, unreachable) still tries the POST.
+    _q_pol=$(_curl -sk -m 10 -G --data-urlencode "lane=${_q_who}" --data-urlencode "tree=${_q_tree}" "${AMUX_API:-$(cmd_url)}/api/land/policy" 2>/dev/null) || _q_pol=""
+    case "$_q_pol" in *'"queue":false'*) [ -n "$_q_decl" ] || _q_sha="" ;; esac
     if [ -n "$_q_sha" ]; then
       # The server re-runs the land guards and is authoritative, so the
       # lane's own escapes travel with the request.
       _q_body=$(python3 -c 'import json,sys; d={"sha": sys.argv[1], "priority": sys.argv[2] == "1", "reason": sys.argv[3], "allow_reused_message": sys.argv[4] == "1"}
 if sys.argv[5]: d["freeze_override"] = sys.argv[5]
-print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}")
-      _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
-        -H "X-Amux-Session: $AMUX_SESSION" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
-      _q_code="${_q_out##*$'\n'}"
+if sys.argv[6]: d["tree"] = sys.argv[6]
+print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_REUSED_MESSAGE:-0}" "${AMUX_LAND_FREEZE_OVERRIDE:-}" "$_q_tree")
+      local _q_try
+      for _q_try in 1 2 3; do
+        _q_out=$(_curl -sk -m 30 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' \
+          -H "X-Amux-Session: $_q_who" -d "$_q_body" "${AMUX_API:-$(cmd_url)}/api/land" 2>/dev/null) || _q_out=""
+        _q_code="${_q_out##*$'\n'}"
+        # Only a declared repository retries: a restart is seconds, and past
+        # this the land refuses rather than lose its gate.
+        case "$_q_code" in ''|000) [ -n "$_q_decl" ] && [ "$_q_try" != 3 ] && sleep "${AMUX_LAND_QUEUE_RETRY_S:-5}" ;; *) break ;; esac
+      done
+      if [ -n "$_q_decl" ]; then case "$_q_code" in ''|000)
+        mkdir -p "$HOME/.amux/logs"
+        printf '%s %s verdict=land_queue_unreachable nothing pushed\n' "$(date -u +%FT%TZ)" "$_q_who" >> "$HOME/.amux/logs/land.log"
+        echo "amux land: this repository lands through the server queue and the server did not answer; nothing was tested or pushed. Retry, or AMUX_LAND_CLIENT=1 AMUX_LAND_CLIENT_REASON=<why> amux land (verdict=land_queue_unreachable)" >&2
+        return 6 ;; esac
+      fi
       case "$_q_code" in
-        202) echo "amux land: queued on the server (contract rule 5); you get a message when it lands or is refused. ${_q_out%$'\n'*}"; return 0 ;;
+        202) echo "amux land: queued on the server (contract rule 5); you get a message when it lands or is refused. ${_q_out%$'\n'*}"
+          case "$_q_out" in *'"declared":true'*)
+            [ "$detach" = 1 ] || { _land_queue_wait "$_q_out"; return $?; } ;;
+          esac
+          return 0 ;;
         # 400: the queue refused THIS request (unknown commit, a priority land
         # with no reason). Anything else (409 rule off, 404 from a server
         # without the route, unreachable) falls through to the client queue.
@@ -10082,7 +10642,14 @@ print(json.dumps(d))' "$_q_sha" "$priority" "$prio_reason" "${AMUX_LAND_ALLOW_RE
         # message): the same refusal as the client guard above, rc 4.
         409) case "$_q_out" in *'"verdict":"land_refused_'*)
                echo "amux land: refused by a land guard on the server; nothing queued: ${_q_out%$'\n'*}" >&2; return 4 ;;
-             esac ;;
+             esac
+             # The queue is off on this server (AMUX_LAND_QUEUE_DECLARED=0, or a
+             # server older than the declaration): the client path carries it.
+             if [ -n "$_q_decl" ]; then
+               mkdir -p "$HOME/.amux/logs"
+               printf '%s %s verdict=land_queue_unavailable the server refused the declared queue: %s\n' "$(date -u +%FT%TZ)" "$_q_who" "${_q_out%$'\n'*}" >> "$HOME/.amux/logs/land.log"
+               echo "amux land: WARN the server does not run the declared queue here, so the client path lands this and the gate does not run (verdict=land_queue_unavailable)" >&2
+             fi ;;
       esac
     fi
   fi
@@ -10224,6 +10791,217 @@ p.communicate(msg.encode())
   _land_log() { printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$me" "$*" "$key" >> "$log"; echo "amux land: $*" >&2; }
   # _land_pushing <pid>: does that process have a live `git push` or pre-push
   # hook among its descendants?
+  # Is the lock's holder still the process that took it? `kill -0` alone passes
+  # for whatever process now has a dead holder's pid, and the queue then waited
+  # out --max-hold behind nobody (implicit state machines inventory #23). The
+  # holder's start time is written with the lock and must still match.
+  # THE LOCK ABOVE IS ONE MACHINE'S. Two amux servers landing on one repo's
+  # main raced each other: the mixpeek-dev VM's green batch lost its push twice
+  # in an hour (2026-11-06 16:2xZ, 17:00Z, "cannot lock ref") to this Mac's
+  # queue, and every retry re-ran its gate, which the Mac's 10-15 minute lands
+  # kept overtaking. So land also holds a LEASE on the remote,
+  # refs/amux/land-lock/<branch>: a tiny commit naming holder, lane and
+  # expires_at, taken and released by compare-and-swap pushes (--no-verify:
+  # the lease is not a change to gate). Held from before the gate to after the
+  # push, so neither machine's push lands inside the other's gate. An expired
+  # lease is taken over; a remote that refuses the ref falls back to the local
+  # lock and says so. AMUX_LAND_REMOTE_LEASE=off disables it.
+  # Lease state lives in files under the local lock dir, because a heartbeat
+  # subprocess renews it while this process gates and pushes (mixpeek-cicd's
+  # review, 2026-11-06: a merge-queue hold ran 15:48Z to past 18:00Z, past any
+  # fixed TTL). rl-sha is the lease commit we hold now, rl-lost says a renewal
+  # lost its compare-and-swap, rl-hb.pid is the heartbeat, push.pid the push.
+  _land_rl_ref() { printf 'refs/amux/land-lock/%s' "$1"; }
+  _land_rl_field() { git log -1 --format=%B "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -1; }
+  _land_rl_commit() { # <expires_at> -> a lease commit sha (holder, start, lane, head, expiry)
+    local _t; _t="$(git mktree </dev/null)" || return 1
+    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\n' \
+      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" \
+      | GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost git commit-tree "$_t"
+  }
+  _land_rl_push() { # <remote> <ref> <expected sha or empty> <new sha or empty to delete>
+    git push --no-verify --porcelain "$1" "--force-with-lease=$2:$3" "${4}:$2" >/dev/null 2>&1
+  }
+  _land_rl_ls() { # <remote> <ref>: the ref's sha (empty when absent); 1 only after 3 failed reads
+    # One failed read used to refuse a whole merge-queue batch (mixpeek-cicd's
+    # review, item 3): retry over about a minute first.
+    local _i _o
+    for _i in 1 2 3; do
+      _o="$(git ls-remote "$1" "$2" 2>/dev/null)" && { printf '%s\n' "$_o" | awk '{print $1}'; return 0; }
+      [ "$_i" = 3 ] || sleep $(( ${AMUX_LAND_REMOTE_LEASE_RETRY_S:-10} * _i ))
+    done
+    return 1
+  }
+  _land_rl_say() { # <message>: works from the EXIT trap and the heartbeat, where land's locals are gone
+    printf '%s %s %s [%s]\n' "$(date -u +%FT%TZ)" "$_LAND_RL_ME" "$1" "$_LAND_RL_KEY" >> "$_LAND_RL_LOG" 2>/dev/null || true
+    echo "amux land: $1" >&2
+  }
+  _land_rl_dead_here() { # <lease sha>: a lease written on THIS machine by a process that is gone
+    local _h _p _st; _h="$(_land_rl_field "$1" holder)"; _p="${_h##*:}"
+    [ "${_h%:*}" = "${_LAND_RL_ID%:*}" ] || return 1
+    case "$_p" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$_p" 2>/dev/null || return 0
+    _st="$(ps -o lstart= -p "$_p" 2>/dev/null | tr -s ' ')"
+    [ -n "$(_land_rl_field "$1" holder_start)" ] && [ "$_st" != "$(_land_rl_field "$1" holder_start)" ]
+  }
+  _land_rl_take() { # <remote> <branch> <lock dir>: 0 holding (or off), 7 not held: nothing may be pushed
+    [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+    local _r="$1" _ref _ttl _cap _skew _w=0 _cur _exp _age _who _new _said="" _now _yielded="" _cas_fail=0
+    # The lease state lives BESIDE the local lock, per process: a local
+    # takeover (rm -rf of the lock dir) deleted rl-sha and rl-hb.pid, so the
+    # old holder's heartbeat exited and its lease stopped renewing (review item 1).
+    _ref="$(_land_rl_ref "$2")"; _LAND_RL_LOCK="$3"; _LAND_RL_DIR="$3.rl.$$"; mkdir -p "$_LAND_RL_DIR"
+    _ttl="${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200}"; _cap="${AMUX_LAND_REMOTE_LEASE_WAIT_S:-14400}"
+    _skew="${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120}"
+    _LAND_RL_ID="$(hostname -s 2>/dev/null || hostname):$$"
+    _LAND_RL_START="$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ')"
+    _LAND_RL_ME="$me"; _LAND_RL_LOG="$log"; _LAND_RL_KEY="$key"
+    _LAND_RL_HEAD="$(git rev-parse --short HEAD 2>/dev/null)"
+    while :; do
+      _now="$(date +%s)"
+      if ! _cur="$(_land_rl_ls "$_r" "$_ref")"; then
+        _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not read $_ref on $_r; nothing pushed (AMUX_LAND_REMOTE_LEASE=off lands under the local lock alone)"
+        return 7
+      fi
+      if [ -n "$_cur" ]; then
+        git fetch -q --no-tags "$_r" "+$_ref:refs/amux/land-lock-seen/$2" 2>/dev/null || true
+        _exp="$(_land_rl_field "$_cur" expires_at)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
+        _age="$(_land_rl_field "$_cur" taken_at)"; case "$_age" in ''|*[!0-9]*) _age='?' ;; *) _age="$(( _now - _age ))s" ;; esac
+        _who="$(_land_rl_field "$_cur" holder) ($(_land_rl_field "$_cur" lane), head $(_land_rl_field "$_cur" head))"
+        # Expired only past the skew margin: another machine's clock may run behind.
+        if [ "$_now" -le $(( _exp + _skew )) ] && ! _land_rl_dead_here "$_cur"; then
+          if [ "$_w" -ge "$_cap" ]; then
+            _land_rl_say "ERROR verdict=land_remote_lease_timeout: $_ref still held by $_who, lease age $_age, after ${_w}s; nothing pushed"
+            # Hours with no land is a stuck pipeline, not a wait (review item 5).
+            ${AMUX_LAND_REMOTE_LEASE_ALERT_CMD:-amux alert} "amux land: $2 has waited ${_w}s for the remote land lease held by $_who (lease age $_age); nothing landed" "land lease timeout on $2" >/dev/null 2>&1 || true
+            return 7
+          fi
+          # A waiter still holds its LOCAL lock: keep its since fresh, or the
+          # next local waiter takes the lock over after --max-hold and two
+          # lands from one machine wait for the remote lease (review item 1).
+          date +%s > "$_LAND_RL_LOCK/since" 2>/dev/null || true
+          [ "$_said" = "$_cur" ] || _land_rl_say "verdict=land_remote_lease_wait: $2 is being landed elsewhere by $_who, lease age $_age, expires $(( _exp - _now ))s from now; waiting"
+          _said="$_cur"; sleep "${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}"; _w=$(( _w + ${AMUX_LAND_REMOTE_LEASE_POLL_S:-20} )); continue
+        fi
+        _land_rl_say "verdict=land_remote_lease_takeover: $_ref held by $_who, lease age $_age, $( _land_rl_dead_here "$_cur" && echo "whose process on this machine is gone" || echo "expired $(( _now - _exp ))s ago" ); taking it over"
+      fi
+      # Fairness (review item 4): right after this machine released, a waiter
+      # here would take the lease at once while the other machine polls every
+      # POLL_S, so back-to-back lands here could starve it. Yield once.
+      local _rel; _rel="$(cat "$_LAND_RL_LOCK.rl-released" 2>/dev/null || echo 0)"; case "$_rel" in ''|*[!0-9]*) _rel=0 ;; esac
+      local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}"
+      if [ -z "${_yielded:-}" ] && [ $(( _now - _rel )) -lt $(( _poll * 2 )) ]; then
+        _yielded=1
+        local _y=$(( _poll + RANDOM % (_poll + 1) ))
+        _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago; yielding ${_y}s so another machine's waiter can take it first"
+        sleep "$_y"; continue
+      fi
+      _LAND_RL_TAKEN="$_now"
+      _new="$(_land_rl_commit $(( _now + _ttl )))" || { _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not write a lease commit; nothing pushed"; return 7; }
+      if _land_rl_push "$_r" "$_ref" "$_cur" "$_new"; then
+        echo "$_new" > "$_LAND_RL_DIR/rl-sha"; rm -f -- "$_LAND_RL_DIR/rl-lost"
+        _land_rl_say "verdict=land_remote_lease_taken: $_ref for ${_ttl}s, renewed every ${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}s while held"
+        _land_rl_heartbeat "$_r" "$_ref" &
+        echo $! > "$_LAND_RL_DIR/rl-hb.pid"
+        return 0
+      fi
+      # Lost the compare-and-swap, or the push failed with the ref unchanged:
+      # the network, or a remote rule. Three tries before refusing (item 3).
+      if [ "$(_land_rl_ls "$_r" "$_ref")" = "$_cur" ]; then
+        _cas_fail=$(( ${_cas_fail:-0} + 1 ))
+        if [ "$_cas_fail" -ge 3 ]; then
+          _land_rl_say "ERROR verdict=land_remote_lease_unavailable: $_r refused $_ref three times; nothing pushed (AMUX_LAND_REMOTE_LEASE=off lands under the local lock alone)"
+          return 7
+        fi
+        sleep $(( ${AMUX_LAND_REMOTE_LEASE_RETRY_S:-10} * _cas_fail ))
+      fi
+    done
+  }
+  _land_rl_heartbeat() { # <remote> <ref>: renew by CAS while the land lives; a lost CAS stops its push
+    local _parent=$$ _cur _new
+    while sleep "${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}"; do
+      kill -0 "$_parent" 2>/dev/null || exit 0
+      _cur="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"; [ -n "$_cur" ] || exit 0
+      _new="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" || continue
+      if _land_rl_push "$1" "$2" "$_cur" "$_new"; then echo "$_new" > "$_LAND_RL_DIR/rl-sha"; continue; fi
+      # Lost only on a READ that answers with another value. An unreadable
+      # remote is the network, and the next beat retries: an empty read used
+      # to count as "someone else took it" during an outage.
+      local _seen
+      _seen="$(git ls-remote "$1" "$2" 2>/dev/null)" || continue
+      [ "$(printf '%s\n' "$_seen" | awk '{print $1}')" = "$_cur" ] && continue
+      : > "$_LAND_RL_DIR/rl-lost"
+      _land_rl_say "ERROR verdict=land_remote_lease_lost: $2 is no longer ours (another machine took it); stopping this land's push"
+      local _pp; _pp="$(cat "$_LAND_RL_LOCK/push.pid" 2>/dev/null)"
+      [ -n "$_pp" ] && kill -TERM "$_pp" 2>/dev/null
+      exit 0
+    done
+  }
+  _land_rl_check() { # before the push: is the lease still ours?
+    [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+    [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    # A test seam: hold here so a test can move the lease before this read.
+    case "${AMUX_LAND_TEST_PRE_PUSH_PAUSE_S:-}" in ''|*[!0-9]*) ;; *) sleep "$AMUX_LAND_TEST_PRE_PUSH_PAUSE_S" ;; esac
+    if [ -e "$_LAND_RL_DIR/rl-lost" ]; then
+      _land_rl_say "ERROR verdict=land_remote_lease_lost: the lease was lost while holding; nothing pushed"; return 7
+    fi
+    # The flag is set at most once a beat. Read the ref itself (review item 2):
+    # it must still be our lease, with its expiry still ahead past the skew.
+    local _mine _seen _exp _ref; _ref="$(_land_rl_ref "$_LAND_RL_BRANCH")"
+    _mine="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
+    if ! _seen="$(_land_rl_ls "$_LAND_RL_REMOTE" "$_ref")"; then
+      _land_rl_say "ERROR verdict=land_remote_lease_unverified: could not read $_ref before the push; nothing pushed"; return 7
+    fi
+    if [ -z "$_mine" ] || [ "$_seen" != "$_mine" ]; then
+      _land_rl_say "ERROR verdict=land_remote_lease_not_ours: $_ref reads ${_seen:-nothing}, not our lease ${_mine:-?}; nothing pushed"; return 7
+    fi
+    _exp="$(_land_rl_field "$_mine" expires_at)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
+    if [ $(( _exp - ${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120} )) -le "$(date +%s)" ]; then
+      _land_rl_say "ERROR verdict=land_remote_lease_expiring: our lease on $_ref expires $(( _exp - $(date +%s) ))s from now, inside the skew margin; nothing pushed"; return 7
+    fi
+  }
+  _land_rl_release() { # <remote> <branch>: stop the heartbeat, then delete the ref by CAS
+    [ -n "${_LAND_RL_DIR:-}" ] || return 0
+    # Finish the release whatever arrives next: `amux land --cancel` signals
+    # the group twice (the recorded pid, then any unrecorded land), and the
+    # second TERM ended this trap mid-release with the lease still held. The
+    # ignore is inherited by the git push below.
+    trap '' TERM INT HUP
+    local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null)"
+    # `|| true`: the CLI runs under set -e, and wait reports the killed
+    # heartbeat as 143, which ended the EXIT trap before the release.
+    if [ -n "$_hb" ]; then kill "$_hb" 2>/dev/null || true; wait "$_hb" 2>/dev/null || true; fi
+    _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
+    rm -f -- "$_LAND_RL_DIR/rl-sha" "$_LAND_RL_DIR/rl-hb.pid"
+    if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0; fi
+    # A CAS delete is safe to repeat (review item 5).
+    local _i _ok=""
+    for _i in 1 2 3; do
+      _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "" && { _ok=1; break; }
+      # Gone only on a read that ANSWERS with nothing: a failed read is empty
+      # too, and counted as released it logged a false verdict (gate review).
+      local _left; if _left="$(_land_rl_ls "$1" "$(_land_rl_ref "$2")" 2>/dev/null)" && [ -z "$_left" ]; then _ok=1; break; fi
+      [ "$_i" = 3 ] || sleep $(( ${AMUX_LAND_REMOTE_LEASE_RETRY_S:-10} * _i ))
+    done
+    if [ -n "$_ok" ]; then
+      date +%s > "$_LAND_RL_LOCK.rl-released" 2>/dev/null || true
+      _land_rl_say "verdict=land_remote_lease_released: $(_land_rl_ref "$2")"
+    else
+      _land_rl_say "WARN verdict=land_remote_lease_release_failed: $(_land_rl_ref "$2") stays until it expires"
+    fi
+    rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""
+  }
+  _land_holder_alive() {
+    local pid="$1" lockdir="$2" want got
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    want="$(cat "$lockdir/start" 2>/dev/null || true)"
+    [ -z "$want" ] && return 0
+    got="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' || true)"
+    if [ "$got" != "$want" ]; then
+      _land_log "lock holder pid $pid is a different process now (started $got, the holder started $want) verdict=land_holder_pid_reused"
+      return 1
+    fi
+  }
   _land_pushing() {
     local frontier="$1" next found=1 p
     for _ in 1 2 3 4 5 6 7 8; do
@@ -10275,7 +11053,12 @@ p.communicate(msg.encode())
     _cwt="$(git config --file "$_shared_cfg" --get core.worktree 2>/dev/null || true)"
     _cbare="$(git config --file "$_shared_cfg" --get core.bare 2>/dev/null || true)"
     if [ -n "$_cwt" ] || [ "$_cbare" = true ]; then
-      _land_log "refused: the shared git config $_shared_cfg sets ${_cwt:+core.worktree=$_cwt }${_cbare:+core.bare=$_cbare }; every lane's git reads that as its tree. Remove it (git config --file $_shared_cfg --unset core.worktree) and land again; nothing queued"
+      # The remedy names the key it found (2026-10-31: a core.bare=true refusal
+      # said to unset core.worktree, which leaves the repository bare).
+      local _fix=""
+      [ -n "$_cwt" ] && _fix="git config --file $_shared_cfg --unset core.worktree"
+      [ "$_cbare" = true ] && _fix="${_fix:+$_fix && }git config --file $_shared_cfg core.bare false"
+      _land_log "refused: the shared git config $_shared_cfg sets ${_cwt:+core.worktree=$_cwt }${_cbare:+core.bare=$_cbare }; every lane's git reads that as its tree. Fix it ($_fix) and land again; nothing queued"
       return 2
     fi
   fi
@@ -10644,7 +11427,7 @@ p.communicate(msg.encode())
     # Reading that as 0 made it look decades old: gs12-cicd deleted
     # gs12-retrievers' brand-new lock at 12:10:44Z and two lanes pushed at
     # once. The directory's own mtime is the floor.
-    hsince="$(cat "$lock/since" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || date +%s)"
+    hsince="$(cat "$lock/since" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || date +%s)"
     # Only the head of the queue may take a lock over, so waiters behind it
     # cannot race each other into the same decision.
     # A holder whose `git push` or pre-push hook is still running is slow,
@@ -10661,8 +11444,8 @@ p.communicate(msg.encode())
         timed_out=1
       fi
     fi
-    if [ "$head" = "$tname" ] && [ -d "$lock" ] && { { [ -n "$hpid" ] && ! kill -0 "$hpid" 2>/dev/null; } || [ "$timed_out" = 1 ]; }; then
-      if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then
+    if [ "$head" = "$tname" ] && [ -d "$lock" ] && { { [ -n "$hpid" ] && ! _land_holder_alive "$hpid" "$lock"; } || [ "$timed_out" = 1 ]; }; then
+      if [ -n "$hpid" ] && _land_holder_alive "$hpid" "$lock"; then
         _land_log "taking over a lock on $branch whose current attempt passed --max-hold ${max_hold}s (holder ${hwho:-?} pid $hpid STILL ALIVE, attempt since $hsince); its push may still land"
       else
         _land_log "taking over a stale lock on $branch (holder ${hwho:-?} pid ${hpid:-?} is gone, since $hsince)"
@@ -10691,6 +11474,7 @@ p.communicate(msg.encode())
   done
   rm -f -- "${q:?}/${tname:?}"
   echo $$ > "$lock/pid"; date +%s > "$lock/since"; echo "$me" > "$lock/who"
+  ps -o lstart= -p $$ 2>/dev/null | tr -s ' ' > "$lock/start" || true
   # shellcheck disable=SC2064  # $lock is a local: it must be expanded when the trap is set
   # Remove the lock only while this process still owns it. An unconditional
   # rm deleted the NEXT holder's lock after a takeover (2026-10-01 11:18Z:
@@ -10698,9 +11482,8 @@ p.communicate(msg.encode())
   # A hold cancelled by another lane (--cancel-for) names who and why in the
   # holder's OWN output: gs12-compute's detached log ended at "batching ..."
   # with neither, and it read as a crash (2026-10-02 20:31Z).
-  trap "[ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
+  trap "_land_rl_release '$remote' '$branch'; [ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
   [ "$waited" -gt 0 ] && _land_log "acquired $branch after waiting ${waited}s"
-
   # LANDING WINDOW (Ethan, 2026-10-04 15:31 ET, harness efficiency): with
   # `git config amux.landMinIntervalS N`, a holder whose branch was pushed less
   # than N seconds ago keeps the lock until N has passed, so waiters that
@@ -10733,6 +11516,14 @@ p.communicate(msg.encode())
     fi
   fi
 
+  # The other machine's land holds the remote lease: wait for it here, after
+  # the landing window and before composing, so this gate is not overtaken by
+  # its push. After the window, not before: the fairness yield inside the take
+  # used up the window, and its batching with it (test-land-window.sh on main,
+  # 2026-11-06).
+  _LAND_RL_REMOTE="$remote"; _LAND_RL_BRANCH="$branch"
+  _land_rl_take "$remote" "$branch" "$lock" || return 7
+
   # _land_stack <tip>: replay queued waiters' commits onto <tip>. Sets
   # stack_tip and stack_in ("<ticket> <lane>" lines) in this shell. A waiter it
   # cannot take is told why and keeps its place.
@@ -10745,6 +11536,13 @@ p.communicate(msg.encode())
     local max="$batch_max"
     [ -n "$max" ] || max="$(_land_cfg --get amux.landBatchMax 2>/dev/null || true)"
     case "$max" in ''|*[!0-9]*) max=6 ;; esac
+    # An enforced merge queue caps a candidate at landMergeQueueBatchMax landings
+    # with the holder (default 8): a red batch then costs at most 3 bisect runs.
+    if [ "${_mq:-off}" = enforce ]; then
+      local _mqm; _mqm="$(_land_mq_cfg BatchMax 8)"
+      case "$_mqm" in ''|*[!0-9]*|0) _mqm=8 ;; esac
+      [ "$max" -le $(( _mqm - 1 )) ] || max=$(( _mqm - 1 ))
+    fi
     local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made
     stack_tip="$1"; stack_in=""; stack_map=""
     # Every skip names itself (mixpeek-override, 2026-10-02 16:09Z: 7 of 22
@@ -10916,6 +11714,13 @@ $f"
   }
 
   local i out rc full verdicts lanes solo=0 _force_replay=0 batch_skip=" " stack_map="" named
+  # The merge queue's mode for this hold (see _land_mq_mode); off lands as before.
+  local _mq _mq_own="" _mq_base _mq_id _mq_v _mq_url _mq_b _mq_tk _mq_new _mq_chk _mq_chk_out
+  _mq="$(_land_mq_mode)"
+  if [ "$_mq" != off ]; then
+    _land_log "merge queue: $_mq ($(_land_mq_cfg Workflow) on $(_land_mq_slug))"
+    _land_mq_sweep
+  fi
   # A --priority holder lands alone again (mixpeek-override, 2026-10-02: the
   # granted one-line Fast Checks fix batched six lanes, 23 min into the gate,
   # and any one of them could refuse it). AMUX_LAND_PRIORITY_BATCH=1 restores
@@ -11010,6 +11815,7 @@ $f"
       _land_log "refused at its turn by a land guard (freeze or reused message, lines above); nothing pushed"
       return 4
     fi
+    _mq_own="$stack_tip"
     [ "$solo" = 1 ] || _land_stack "$stack_tip"
     lanes="$(printf '%s' "$stack_in" | awk 'NF {printf "%s%s", sep, $2; sep=", "}')"
     [ -z "$lanes" ] || _land_log "batching ${lanes} behind this push (one gate run)"
@@ -11113,6 +11919,88 @@ $f"
       [ "$_pc_rc" = 0 ] && _land_log "composed batch passed the land precheck in $(( $(date +%s) - _pc_t0 ))s (rc $_pc_raw$([ "$_pc_raw" = 0 ] || echo ', judged by its verdict line')). Output: $full"
       [ "$_pc_rc" = 2 ] && _land_log "composed batch precheck unmeasured after $(( $(date +%s) - _pc_t0 ))s ($(printf '%s\n' "$_pc_out" | grep -E '^land-precheck:' | tail -1 | cut -c1-120)); pushing the batch to the gate"
     fi
+    # MERGE QUEUE (see _land_mq_mode). Shadow sends the stack as a candidate and
+    # lands it below as before; enforce lands it only once its candidate is green.
+    if [ "$_mq" != off ]; then
+      _mq_base="$(git rev-parse "$remote/$branch")"
+      _mq_id="$(date +%s)-$$-a$i"
+      if [ "$_mq" = shadow ]; then
+        if _land_mq_push_ref "$stack_tip" "$_mq_id" && _land_mq_dispatch "$_mq_id" "$_mq_base" 2>/dev/null; then
+          _land_mq_ledger phase=shadow batch="$_mq_id" base="$_mq_base" candidate="$stack_tip" lanes="$me${lanes:+, $lanes}"
+          _land_log "merge queue (shadow): candidate $(git rev-parse --short "$stack_tip") dispatched on mq/$_mq_id; landing directly as before"
+        else
+          _land_log "WARN verdict=mq_shadow_not_dispatched: candidate mq/$_mq_id was not pushed or dispatched; landing directly as before"
+        fi
+      else
+        if _land_mq_no_code "$_mq_base" "$stack_tip"; then
+          _mq_chk="$(_land_cfg --get amux.landMergeQueueNoCodeCheck 2>/dev/null || true)"
+          _mq_v="direct - -"
+          if [ -n "$_mq_chk" ]; then
+            if ! _mq_chk_out="$(AMUX_LAND_BASE="$_mq_base" AMUX_LAND_TIP="$stack_tip" bash -c "$_mq_chk" 2>&1)"; then
+              if [ -n "$lanes" ]; then
+                _land_log "merge queue: no-code batch with ${lanes} refused by its check; landing this lane alone next, the waiters keep their places"
+                solo=1; continue
+              fi
+              _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run=no-code-check
+              _land_log "merge queue: no-code stack refused by its check: $(printf '%s' "$_mq_chk_out" | tail -3 | cut -c1-300)"
+              return 6
+            fi
+          fi
+          _land_mq_ledger phase=no_code batch="$_mq_id" base="$_mq_base" candidate="$stack_tip" lanes="$me${lanes:+, $lanes}"
+          _land_log "merge queue: only no-code paths changed; landing with no candidate"
+        else
+          _mq_v="$(_land_mq_judge "$_mq_id" "$_mq_base" "$stack_tip" "${lanes:+with $lanes}")"
+        fi
+        _mq_url="$(printf '%s' "$_mq_v" | cut -d' ' -f3)"
+        case "${_mq_v%% *}" in
+          direct) ;;
+          green)
+            git fetch -q "$remote" "$branch" 2>/dev/null || true
+            if ! git merge-base --is-ancestor "$remote/$branch" "$stack_tip" \
+              && _land_mq_moved_ok "$_mq_base" "$remote/$branch" "$stack_tip" \
+              && _mq_new="$(_land_mq_replay "$_mq_base" "$remote/$branch" "$stack_tip")"; then
+              _land_mq_ledger phase=carried batch="$_mq_id" base="$_mq_base" onto="$(git rev-parse "$remote/$branch")" candidate="$stack_tip" sha="$_mq_new"
+              _land_log "merge queue: $branch moved under the green candidate ($_mq_url), with nothing that overlaps it; replayed onto the new tip"
+              stack_tip="$_mq_new"
+            fi
+            if ! git merge-base --is-ancestor "$remote/$branch" "$stack_tip"; then
+              _land_log "merge queue: $branch moved under the green candidate ($_mq_url); re-composing on the new tip (attempt $i)"
+              continue
+            fi
+            _land_log "merge queue: candidate green ($_mq_url); fast-forwarding $branch" ;;
+          red)
+            if [ -z "$lanes" ]; then
+              _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="$_mq_url"
+              _land_log "merge queue: candidate red ($_mq_url); this lane's change is refused and nothing was pushed. Fix it and land again"
+              return 6
+            fi
+            _land_log "merge queue: batch with ${lanes} red ($_mq_url); bisecting"
+            _mq_b="$(_land_mq_bisect "$_mq_base" "$_mq_id" "$_mq_own" "$_mq_url")"
+            case "${_mq_b%% *}" in
+              0)
+                _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="${_mq_b#* }"
+                _land_log "merge queue: bisected to this lane's own change (${_mq_b#* }); refused, nothing pushed. The waiters keep their places"
+                return 6 ;;
+              [1-9]*)
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $1}')"
+                batch_skip="$batch_skip$_mq_tk "
+                echo "excluded: the merge queue refused the batch on your commit (bisected; run ${_mq_b#* }); fix it and run amux land again" > "$rdir/$_mq_tk"
+                rm -f -- "${q:?}/${_mq_tk:?}"
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $2}')"
+                _land_mq_ledger phase=ejected batch="$_mq_id" lane="$_mq_tk" run="${_mq_b#* }"
+                _land_log "merge queue: bisected to ${_mq_tk}'s commit (${_mq_b#* }); ejected it, re-composing the rest (attempt $i)"
+                continue ;;
+              *)
+                _land_log "merge queue: bisect did not finish (${_mq_b}); landing this lane alone next, the waiters keep their places"
+                solo=1; continue ;;
+            esac ;;
+          *)
+            _land_mq_ledger phase=unmeasured batch="$_mq_id" lane="$me" why="${_mq_v}"
+            _land_log "merge queue: candidate not measured (${_mq_v}); nothing pushed. The waiters keep their places; AMUX_LAND_MERGE_QUEUE=off lands directly"
+            return 6 ;;
+        esac
+      fi
+    fi
     # `|| rc=$?`, not `; rc=$?`: this CLI runs under set -e, and a rejected
     # push in a bare assignment would exit the script before the retry.
     # AMUX_LAND_HOLDER_PID marks this push as the lock holder's, so a pre-push
@@ -11151,11 +12039,27 @@ $f"
     # timed out and gs12-obs's land stopped on "Could not resolve host:
     # github.com" as if the hook had refused it, so the lane re-ran it by hand.
     local _net=0 _net_max="${AMUX_LAND_NET_RETRIES:-8}" _net_wait
+    # git opens the connection BEFORE pre-push runs, and GitHub closes an idle one
+    # at about 6 minutes, so a hook over that lost the push after every leg passed
+    # (2026-11-02: 611s of script tests, then "closed by remote host"). An ssh
+    # command the owner set keeps precedence, GIT_SSH included: GIT_SSH_COMMAND
+    # outranks it, so it is carried over rather than left to be overridden.
+    local _ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand 2>/dev/null || true)}"
+    [ -n "$_ssh" ] || [ -z "${GIT_SSH:-}" ] || _ssh="$(printf %q "$GIT_SSH")"
+    [ -n "$_ssh" ] || _ssh="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=40"
     while :; do
-    rc=0; out="$(set -o pipefail; env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" git push "$remote" "$stack_tip:$branch" 2>&1 \
+    # Inside the retry loop: a network retry must not push on a lease the
+    # heartbeat declared lost while this loop slept (land gate review, F1/F2).
+    _land_rl_check || return 7
+    # The push runs in the background with its pid on file, so a heartbeat
+    # that loses the lease can stop it before it updates the branch.
+    rc=0; out="$(set -o pipefail; { env -u GH_TOKEN -u GITHUB_TOKEN $_fg_env AMUX_LAND_HOLDER_PID=$$ AMUX_LAND_LOCK="$lock" GIT_SSH_COMMAND="$_ssh" git push "$remote" "$stack_tip:$branch" 2>&1 & echo $! > "$lock/push.pid"; wait $!; } \
       | AMUX_TL="$_tl" perl -MTime::HiRes=time -ne 'BEGIN{$|=1; $t0=time; open($o,">>",$ENV{AMUX_TL}) or die} printf $o "%8.1fs %s", time-$t0, $_; print')" || rc=$?
     _land_leg_summary "$_tl" "$(( $(date +%s) - _t0p ))"
     _land_heal_core_worktree "the push and its hook (rc $rc)"
+    if [ $rc -ne 0 ] && printf '%s\n' "$out" | grep -q 'closed by remote host'; then
+      _land_log "WARN verdict=push_connection_lost: $remote closed the connection during the push, $(( $(date +%s) - _t0p ))s in (a hook that long outlived it)"
+    fi
     if [ $rc -ne 0 ] && [ "$_net" -lt "$_net_max" ] && printf '%s\n' "$out" | grep -qE "^(fatal: unable to access .*: (Could not resolve host|Failed to connect|Couldn't connect|Connection timed out|Operation timed out|Connection reset|Recv failure|SSL_ERROR_SYSCALL|The requested URL returned error: 5[0-9][0-9])|fatal: unable to connect|ssh: Could not resolve hostname|error: RPC failed|send-pack: unexpected disconnect)"; then
       _net=$((_net + 1))
       _net_wait=$(( ${AMUX_LAND_NET_BACKOFF_S:-60} * _net )); [ "$_net_wait" -gt 180 ] && _net_wait=180
@@ -11174,6 +12078,14 @@ $f"
     find "${full%/*}" -name '*.log' -mtime +14 -delete 2>/dev/null || true
     printf '%s\n' "$out" > "$full"
     if [ $rc -eq 0 ]; then
+      # Read the branch back before the lease goes (mixpeek-cicd's review): the
+      # release must follow a push the remote shows, not one git reported.
+      if [ -n "${_LAND_RL_DIR:-}" ]; then
+        local _rb; _rb="$(git ls-remote "$remote" "refs/heads/$branch" 2>/dev/null | awk '{print $1}')"
+        [ "$_rb" = "$(git rev-parse "$stack_tip")" ] || _land_log "WARN verdict=land_push_not_read_back: $remote $branch reads ${_rb:-nothing}, not $(git rev-parse --short "$stack_tip")"
+        [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_log "ERROR verdict=land_pushed_after_lease_lost: the lease was lost while this push ran and it still landed; check $branch for a second machine's push"
+      fi
+      [ "$_mq" = off ] || _land_mq_ledger phase=landed mode="$_mq" batch="$_mq_id" base="$_mq_base" sha="$stack_tip" lanes="$me${lanes:+, $lanes}"
       if [ -n "$lanes" ]; then
         _land_tell "landed $(git rev-parse --short "$stack_tip") on $branch, batched by $me"
         _land_log "landed $(git rev-parse --short "$stack_tip") on $branch (attempt $i), with ${lanes}. Hook output: $full"
@@ -11577,6 +12489,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     contribute)       shift; cmd_contribute "$@" ;;
     github)           shift; cmd_github "$@" ;;
     requests)         shift; cmd_requests "$@" ;;
+    velocity)         shift; cmd_velocity "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;
     cdp)              shift; cmd_cdp "$@" ;;
     computer|cu)     shift; cmd_computer "$@" ;;

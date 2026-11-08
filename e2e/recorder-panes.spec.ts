@@ -79,6 +79,10 @@ test('a filed meeting opens into its transcript, notes, summary, action items, w
   await expect(lines.nth(2).locator('.rec-line-at')).toHaveText('4:12');
   await page.locator('.rec-tsearch').fill('pelican');
   await expect(page.locator('#rec-lines .rec-line:visible')).toHaveCount(1);
+  // A re-render (the detail fetch answering, a saved note) keeps the search.
+  await page.evaluate(() => (0, eval)('_recRenderDetail()'));
+  await expect(page.locator('.rec-tsearch')).toHaveValue('pelican');
+  await expect(page.locator('#rec-lines .rec-line:visible')).toHaveCount(1);
   // Notes tab renders the notes file.
   await page.locator('#rec-detail .rec-tab[data-t="notes"]').click();
   await expect(page.locator('.rec-notes')).toContainText('Ship the hotkey');

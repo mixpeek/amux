@@ -24,11 +24,16 @@ test('a card created while the board read is in flight still reaches the board',
 
   let title = '';
   let held = false;
+  let stale: any = null;
   await page.route(/\/api\/board\?archived=0&slim=1&quota=1/, async route => {
-    if (held) return route.continue();
+    // With the stream closed the poll fallback can read during this window. It
+    // gets the same old snapshot, or it delivers the card and the check below
+    // proves nothing (nightly 41283498168, desktop).
+    if (held) return stale ? route.fulfill({ response: stale }) : route.continue();
     held = true;
     // The server answers first; the card is created after its snapshot.
     const response = await route.fetch({ headers: { ...route.request().headers(), 'if-none-match': '' } });
+    stale = response;
     title = `seed race ${Date.now()}`;
     const r = await request.post('/api/board', { headers, data: { title, status: 'todo' } });
     expect(r.ok()).toBeTruthy();

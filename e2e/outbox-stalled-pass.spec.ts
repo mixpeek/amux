@@ -82,3 +82,27 @@ test('a pass stuck in any phase is abandoned, named, and replaced', async ({ pag
   await expect.poll(() => beacons.find(b => b.verdict === 'outbox_flight_stalled')?.phase, { timeout: 70_000 }).toBe('test_hang');
   await expect.poll(() => posts.includes('m-stall'), { timeout: 30_000 }).toBe(true);
 });
+
+// AF-1036: a page frozen by a sleeping Mac or a suspended app runs no timers,
+// so the first check after waking used to call the whole freeze a stall
+// (outbox_flight_stalled, phase=deliver, stalled_ms 255778, queued 0). The
+// clock jump is simulated by moving Date.now; the phase clock must restart.
+test('a page that was frozen does not report its freeze as a stalled pass', async ({ page }) => {
+  test.setTimeout(60_000);
+  // No stubs: the pass hangs on purpose and never delivers, and the point is
+  // that NO stall beacon is sent, so a client-debug stub could match nothing
+  // (the fixture fails a stub that matched zero requests). Observe instead.
+  const beacons: any[] = [];
+  page.on('request', r => { if (r.url().includes('/api/client-debug')) { try { beacons.push(JSON.parse(r.postData() || '{}')); } catch (e) {} } });
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any)._mutateQueue === 'function' && typeof (window as any).runSyncBanner === 'function');
+  await page.evaluate(() => (window as any).eval(
+    "{ const orig = _runSyncBanner; let n = 0; _runSyncBanner = async q => { if (n++ === 0) { _syncSetPhase('test_frozen'); return new Promise(() => {}); } return orig(q); }; }"));
+  await seedAndSync(page);
+  await page.waitForTimeout(6_000);
+  // The page "wakes" 200 s later: every timestamp jumps, nothing ran meanwhile.
+  await page.evaluate(() => { const real = Date.now.bind(Date); (Date as any).now = () => real() + 200_000; });
+  await page.waitForTimeout(10_000);
+  expect(beacons.filter(b => b.verdict === 'outbox_flight_stalled'), 'a freeze is not a stall').toEqual([]);
+});

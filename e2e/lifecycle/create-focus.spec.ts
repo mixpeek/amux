@@ -7,7 +7,11 @@ test('LC-CREATE-FOCUS: delayed dialog focus cannot redirect directory text into 
     (window as any).openCreate();
     const name=document.getElementById('create-name') as HTMLInputElement;
     name.value='lc-focus-worker';
-    (document.getElementById('create-dir') as HTMLInputElement).focus();
+    // The dialog seeds this from the Files tab's folder, which an earlier spec
+    // in the same shard may have set: this test is about focus, not that seed.
+    const dir=document.getElementById('create-dir') as HTMLInputElement;
+    dir.value='';
+    dir.focus();
   });
   await page.clock.fastForward(150);
   await expect(page.locator('#create-dir')).toBeFocused();

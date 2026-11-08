@@ -164,14 +164,49 @@ pub fn build_hash() -> String {
         .clone()
 }
 
+/// Stack for every runtime worker thread. Tokio's default is 2 MiB, and a debug
+/// build's board-drive pass overflowed it on `amux-maintenance` once tmux calls
+/// went over the control connection (3126420d3): "thread 'amux-maintenance' has
+/// overflowed its stack", aborting the server in the harness-recovery pool and
+/// conversation-recycle scenarios. `AMUX_THREAD_STACK_MB` overrides it.
+fn worker_stack_bytes() -> usize {
+    std::env::var("AMUX_THREAD_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|mb| *mb >= 2)
+        .unwrap_or(8)
+        * 1024
+        * 1024
+}
+
 pub fn run() {
+    // Before any thread or child exists: a handed-over listener arrives with
+    // close-on-exec cleared, and every process spawned before adopt_or_bind
+    // (gh, bash, pgrep from boot jobs) would otherwise hold port 8824.
+    listener_handoff::seal_inherited();
+    let stack = worker_stack_bytes();
     let maintenance = tokio::runtime::Builder::new_multi_thread()
         .thread_name("amux-maintenance")
+        .thread_stack_size(stack)
         .enable_all()
         .build()
         .expect("maintenance runtime");
     runtime_jobs::executor::install(maintenance.handle().clone());
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    // AF-1006: board-drive and orchestrator-runtime hold a thread for seconds
+    // per tick; two threads of their own keep that off the shared pool.
+    let heavy = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("amux-heavy-jobs")
+        .worker_threads(2)
+        .thread_stack_size(stack)
+        .enable_all()
+        .build()
+        .expect("heavy-job runtime");
+    runtime_jobs::executor::install_heavy(heavy.handle().clone());
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(stack)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     rt.block_on(async_main());
 }
 
@@ -348,6 +383,16 @@ async fn async_main() {
     tracing::info!(port = cfg.port, db = %cfg.db_path.display(), pid = std::process::id(),
         commit = env!("AMUX_BUILD_COMMIT_FULL"), build = %running_build,
         self_adopted = std::env::var("AMUX_SELF_ADOPTED").is_ok(), "starting amux-rust");
+    {
+        let dir = crate::api::session_verbs::tmux_fleet_shim_dir();
+        match crate::api::session_verbs::refresh_fleet_shims(&dir) {
+            Ok(true) => tracing::info!(dir = %dir.display(), measured = true, n_considered = 3, verdict = "fleet_shims_refreshed", "installed fleet shims match this build"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(dir = %dir.display(), error = %e, measured = false, n_considered = 0, verdict = "fleet_shims_refresh_failed", "installed fleet shims could not be refreshed; workers keep the old copies until a launch rewrites them"),
+        }
+    }
+    tracing::info!(stack_bytes = worker_stack_bytes(), measured = true, n_considered = 2,
+        verdict = "runtime_stack_configured", "runtime worker threads use this stack size");
     // Resolve the dashboard source now, so an unreadable AMUX_DASHBOARD_DIR
     // fails at startup instead of on the first page load, and say which
     // bytes this process serves. Production never sets it (embedded).
@@ -634,6 +679,8 @@ async fn async_main() {
     drop(runtime_jobs::capture_reconcile::spawn(state.clone()));
     // AMUX-5240: one daily owner digest of pending outbound-email approvals.
     drop(runtime_jobs::email_approval_digest::spawn(state.clone()));
+    // Z15: daily digest of needsyou cards, dry run until the owner opts in.
+    drop(runtime_jobs::decision_digest::spawn(state.clone()));
     // AMUX-5301: approve new needs-input items the owner's policy covers.
     drop(runtime_jobs::needs_input_auto::spawn(state.clone()));
     // AMUX-5239: a lane that pushed and said "live in ~40 min" was never told
@@ -650,6 +697,9 @@ async fn async_main() {
     drop(runtime_jobs::heartbeat::spawn(store.clone()));
     drop(runtime_jobs::storage::spawn(state.clone()));
     drop(runtime_jobs::disk_watch::spawn(state.clone()));
+    // Storage tiers: watched folders between the internal disk and a cold drive.
+    drop(crate::api::tiering::spawn(state.clone()));
+    crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());
@@ -669,6 +719,8 @@ async fn async_main() {
     // channel reads. WhatsApp and Slack arrive by webhook (api/bridge.rs).
     drop(bridge::spawn(state.clone()));
     drop(bridge::adapters::spawn_discord(state.clone()));
+    // The owner's WhatsApp self chat, read from the WhatsApp app on this Mac.
+    drop(bridge::whatsapp_app::spawn(state.clone()));
     // Auto-relay: send session replies back to Telegram when linked sessions respond
     // to Telegram-routed messages. Works for all workers without per-session configuration.
     drop(runtime_jobs::telegram_relay::spawn(state.clone()));

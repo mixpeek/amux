@@ -225,13 +225,15 @@ function accountUrl(env, email) {
   if (env.MODE === 'test' && env.SELF_URL) q.set('api', env.SELF_URL);
   return `${SITE}/start/billing/?${q}`;
 }
-function userData(env, slug, email, pwHash, entryKey) {
+function userData(env, slug, email, pwHash, entryKey, allowIp) {
   // Standalone: the golden image's bootstrap gets its domain and its one owner login. The
   // password arrives already hashed (door.py scrypt format); nothing else about the customer.
   // `owner`: no member token, so amux treats this login as the host owner (Settings can invite teammates).
   const envFile = [`AMUX_DOMAIN='${host(slug)}'`, `AMUX_WEB_USERS='${email}:${pwHash}:${email}:owner'`,
     `AMUX_ACCOUNT_URL='${accountUrl(env, email)}'`,
-    `AMUX_SKIP_PACKAGES=1`, ...(entryKey ? [`AMUX_ENTRY_SECRET='${entryKey}'`] : [])].join('\n');
+    `AMUX_SKIP_PACKAGES=1`, ...(entryKey ? [`AMUX_ENTRY_SECRET='${entryKey}'`] : []),
+    // "Only let my current address reach my server" at signup: the door's allowlist starts on, with it.
+    ...(validIp(allowIp) ? [`AMUX_IP_ALLOWLIST='${allowIp}'`] : [])].join('\n');
   return `#cloud-config
 write_files:
   - path: /etc/amux/standalone.env
@@ -241,6 +243,12 @@ ${envFile.split('\n').map(l => '      ' + l).join('\n')}
 runcmd:
   - [bash, -c, "${BOOT}"]
 `;
+}
+
+// An address as Cloudflare reported it (CF-Connecting-IP): digits, dots, hex and colons only, so it
+// is safe inside the quoted env line above.
+function validIp(ip) {
+  return typeof ip === 'string' && /^(\d{1,3}(\.\d{1,3}){3}|[0-9a-f:]{2,39})$/i.test(ip) && ip.includes(ip.includes(':') ? ':' : '.');
 }
 
 async function goldenImage(env) {
@@ -299,7 +307,7 @@ async function provision(env, { sub, meta, email }) {
   for (const location of ['fsn1', 'nbg1', 'hel1']) {
     try {
       srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
-        location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
+        location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug), meta.allow_ip), start_after_create: true })).server;
       break;
     } catch (e) {
       lastErr = e;
@@ -310,7 +318,7 @@ async function provision(env, { sub, meta, email }) {
         image = golden; delete labels['amux-restored-from'];
         try {
           srv = (await hetzner(env, 'POST', '/servers', { name: `amux-${slug}`, server_type: plan.server_type, image,
-            location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug)), start_after_create: true })).server;
+            location, labels, user_data: userData(env, slug, email, meta.pw_hash, await entryKey(env, slug), meta.allow_ip), start_after_create: true })).server;
           break;
         } catch (e2) { lastErr = e2; if (!['resource_unavailable', 'placement_error'].includes(e2.code)) throw e2; continue; }
       }
@@ -330,18 +338,28 @@ async function finish(env, sub, slug, srv) {
   await ensureDns(env, sub, slug, srv);
   // The hash has done its job (it is on the server now); an empty value removes it from Stripe and
   // marks the signup finished, so reconcile() stops looking at this subscription.
-  await stripe(env, 'POST', `/subscriptions/${sub}`, { metadata: { slug, hetzner_id: srv.id, pw_hash: '' } });
+  await stripe(env, 'POST', `/subscriptions/${sub}`, { metadata: { slug, hetzner_id: srv.id, pw_hash: '', allow_ip: '' } });
   log('provision.finished', { sub, slug, server: srv.id });
   return srv;
 }
 
+// Every server is behind Cloudflare (Ethan, 2026-10-31: "yes re: ts, and all new cloud instances").
+// A proxied record is all a server needs: cloud/desktop/edge-harden.sh, on its next self-update,
+// sees its name resolve to Cloudflare and admits web traffic from Cloudflare only. Let's Encrypt
+// still reaches Caddy, since Cloudflare passes plain-HTTP challenge requests through.
 async function ensureDns(env, sub, slug, srv) {
   const ip = srv.public_net.ipv4.ip;
   const recs = await cf(env, 'GET', `/zones/${env.CF_ZONE_ID}/dns_records?name=${host(slug)}`);
-  if (recs.some(r => r.type === 'A' && r.content === ip)) return false;
+  const mine = recs.find(r => r.type === 'A' && r.content === ip);
+  if (mine && mine.proxied) return false;
+  if (mine) {   // a server from before 2026-10-31, still DNS-only
+    await cf(env, 'PATCH', `/zones/${env.CF_ZONE_ID}/dns_records/${mine.id}`, { proxied: true, ttl: 1 });
+    log('dns.proxied', { slug });
+    return true;
+  }
   for (const r of recs) await cf(env, 'DELETE', `/zones/${env.CF_ZONE_ID}/dns_records/${r.id}`);
   await cf(env, 'POST', `/zones/${env.CF_ZONE_ID}/dns_records`, { type: 'A', name: host(slug), content: ip,
-    proxied: false, ttl: 60, comment: `amux cloud ${sub}` });
+    proxied: true, ttl: 1, comment: `amux cloud ${sub}` });
   log('dns.written', { slug, replaced: recs.length });
   return true;
 }
@@ -888,7 +906,9 @@ async function route(req, env) {
         : 'That name is taken.' }, 409, cors(req));
     }
     const price = (await stripe(env, 'GET', '/prices', { lookup_keys: [plan.stripe_lookup_key], active: 'true' })).data[0];
+    const signupIp = req.headers.get('cf-connecting-ip') || '';
     const meta = { slug, plan: plan.id, email, pw_hash: b.pw_hash, source: (b.source || 'start').slice(0, 40),
+                   ...(b.ip_lock === true && validIp(signupIp) ? { allow_ip: signupIp } : {}),
                    ...(/^[A-Za-z0-9._:-]{1,100}$/.test(b.ph || '') ? { ph: b.ph } : {}),
                    ...(/^[a-z0-9_]+=[a-z0-9_-]+(,[a-z0-9_]+=[a-z0-9_-]+)*$/.test(b.ab || '') ? { ab: b.ab.slice(0, 200) } : {}) };
     const api = env.MODE === 'test' ? `&api=${encodeURIComponent(url.origin)}` : '';

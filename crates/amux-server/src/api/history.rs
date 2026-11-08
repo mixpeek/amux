@@ -64,6 +64,9 @@ pub fn routes() -> Router<AppState> {
         // AMUX-4664: ask a question of these messages. A literal POST, like
         // `/import`, so the `/{id}` capture below does not take it.
         .route("/ask", axum::routing::post(super::history_ask::ask))
+        .route("/pins", get(list_pins))
+        .route("/{id}/pin", axum::routing::post(pin_message))
+        .route("/{id}/reply", axum::routing::get(message_reply))
         // Look up ONE message by its id. `/import` is a literal POST above, so
         // this GET capture never swallows it.
         .route("/{id}", get(get_history_item))
@@ -156,6 +159,251 @@ fn attach_linked_cards(conn: &rusqlite::Connection, rows: &mut [Value]) -> rusql
         row["linked_cards"] = Value::Array(cards);
     }
     Ok(())
+}
+
+fn pins_for(conn: &rusqlite::Connection, session: &str) -> anyhow::Result<Vec<Value>> {
+    let mut st = conn.prepare(
+        "SELECT p.msg_id, h.text, h.ts, p.pinned_by, p.pinned_at FROM message_pins p
+         JOIN cmd_history h ON h.id = p.msg_id
+         WHERE p.session = ?1 ORDER BY p.pinned_at DESC, p.msg_id DESC LIMIT 100",
+    )?;
+    let rows = st.query_map([session], |r| {
+        Ok(json!({"id": r.get::<_, i64>(0)?, "text": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?,
+            "pinned_by": r.get::<_, String>(3)?, "pinned_at": r.get::<_, i64>(4)?}))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// GET /api/history/pins?session=<worker> — that worker's pinned messages,
+/// newest pin first.
+async fn list_pins(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let session = q.get("session").cloned().unwrap_or_default();
+    let store = state.store.clone();
+    match crate::db::interactions::spawn_blocking(move || pins_for(&*store.read()?, &session)).await {
+        Ok(Ok(pins)) => Json(json!({ "pins": pins })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    }
+}
+
+/// POST /api/history/{id}/pin `{"pinned": true|false}` — pin a message to its
+/// worker's Messages tab, or take the pin off. Answers with that worker's pins.
+async fn pin_message(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(b): axum::Json<Value>,
+) -> Response {
+    let Ok(nid) = id.trim().trim_start_matches("MSG-").trim_start_matches("msg-").parse::<i64>() else {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": format!("'{id}' is not a message id") }));
+    };
+    let pinned = b.get("pinned").and_then(Value::as_bool).unwrap_or(true);
+    let by = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).unwrap_or("owner").to_string();
+    let now = chrono::Utc::now().timestamp_millis();
+    let found = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let found_w = found.clone();
+    let wrote = state.store.write_async(move |conn| {
+        let session: Option<String> = conn
+            .query_row("SELECT session FROM cmd_history WHERE id=?1", [nid], |r| r.get(0))
+            .ok();
+        let Some(session) = session.filter(|s| !s.is_empty()) else {
+            return Ok(WriteOutcome { applied: false, events: vec![] });
+        };
+        if pinned {
+            conn.execute(
+                "INSERT INTO message_pins (msg_id, session, pinned_by, pinned_at) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(msg_id) DO NOTHING",
+                rusqlite::params![nid, session, by, now],
+            )?;
+        } else {
+            conn.execute("DELETE FROM message_pins WHERE msg_id=?1", [nid])?;
+        }
+        found_w.store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!(session = %session, msg = nid, pinned, measured = true, n_considered = 1,
+            verdict = if pinned { "worker_message_pinned" } else { "worker_message_unpinned" }, "a worker message pin changed");
+        Ok(WriteOutcome { applied: true, events: vec![] })
+    }).await;
+    if let Err(e) = wrote {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }));
+    }
+    if !found.load(std::sync::atomic::Ordering::SeqCst) {
+        return err(StatusCode::NOT_FOUND, json!({ "error": format!("no message MSG-{nid} on a worker") }));
+    }
+    let store = state.store.clone();
+    let listed = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+        let conn = store.read()?;
+        let session: String = conn.query_row("SELECT session FROM cmd_history WHERE id=?1", [nid], |r| r.get(0))?;
+        pins_for(&conn, &session)
+    }).await;
+    match listed {
+        Ok(Ok(pins)) => Json(json!({ "pins": pins })).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    }
+}
+
+/// What a worker said back to one message, read from its transcript.
+#[derive(Debug, PartialEq)]
+struct TranscriptReply {
+    /// The message is in this transcript.
+    found: bool,
+    text: String,
+    /// `end_turn`: the worker finished a turn. `next_input`: someone wrote
+    /// again before it did. Empty: the turn is still open.
+    ended: &'static str,
+    at: f64,
+    lines: usize,
+    /// The deadline stopped the read, so "not found" means "not reached".
+    timed_out: bool,
+}
+
+/// The text of a transcript record's message, for either role.
+fn transcript_text(record: &Value) -> String {
+    match &record["message"]["content"] {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|p| p["type"] == "text")
+            .filter_map(|p| p["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
+}
+
+fn collapse_space(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Find `message` in a Claude Code transcript and return what the worker said
+/// by the end of that turn (MSG-103434, Ethan, 2026-11-02: "wgat was the answer
+/// to this MSG-103328"). The turn's FIRST `end_turn` is the boundary, because
+/// the last text in the file can be anything: MSG-103328's answer was followed
+/// by a run of "Still unmet. I'm waiting on your decision." from /goal.
+///
+/// `sent_at` keeps a repeated "try again" from matching an older one; the slack
+/// covers the delivery landing in the file before the row's stamp.
+fn reply_in_transcript(
+    lines: impl Iterator<Item = String>,
+    message: &str,
+    sent_at: f64,
+    mut expired: impl FnMut() -> bool,
+) -> TranscriptReply {
+    const SLACK_S: f64 = 120.0;
+    let needle: String = collapse_space(message).chars().take(200).collect();
+    let mut out = TranscriptReply { found: false, text: String::new(), ended: "", at: 0.0, lines: 0, timed_out: false };
+    for line in lines {
+        out.lines += 1;
+        if out.lines.is_multiple_of(256) && expired() {
+            out.timed_out = true;
+            return out;
+        }
+        // Most of a transcript is tool output, so skip the parse where the
+        // record cannot matter.
+        if !line.contains("\"user\"") && !(out.found && line.contains("\"assistant\"")) {
+            continue;
+        }
+        let Ok(r) = serde_json::from_str::<Value>(&line) else { continue };
+        let ts = r["timestamp"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.timestamp_millis() as f64 / 1000.0)
+            .unwrap_or(0.0);
+        if r["type"] == "user" && r["isMeta"] != true {
+            let typed = collapse_space(&transcript_text(&r));
+            if !out.found {
+                out.found = !needle.is_empty() && ts >= sent_at - SLACK_S && typed.contains(&needle);
+            } else if !typed.is_empty() && !typed.starts_with('<') {
+                out.ended = "next_input";
+                return out;
+            }
+        } else if out.found && r["type"] == "assistant" {
+            let said = transcript_text(&r);
+            if !said.trim().is_empty() {
+                out.text = said.trim().to_string();
+                out.at = ts;
+            }
+            if r["message"]["stop_reason"] == "end_turn" && !out.text.is_empty() {
+                out.ended = "end_turn";
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// GET /api/history/{id}/reply: what the worker answered, so "answered in chat"
+/// can be read without scrolling a terminal. It reads the transcript, which can
+/// be hundreds of MB, so it is its own route rather than part of the lookup
+/// above, and it stops at a deadline and says so.
+async fn message_reply(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    let raw = id.trim().trim_start_matches("MSG-").trim_start_matches("msg-").trim();
+    let Ok(nid) = raw.parse::<i64>() else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("'{id}' is not a message id — expected MSG-<number> or a number") }),
+        );
+    };
+    let store = state.store.clone();
+    let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+        let row: Option<(String, String, f64)> = {
+            let conn = store.read()?;
+            conn.query_row("SELECT text, session, ts FROM cmd_history WHERE id=?1", [nid], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .ok()
+        };
+        let Some((text, session, ts)) = row else { return Ok(None) };
+        let base = json!({ "id": nid, "session": session });
+        let unmeasured = |why: String| {
+            let mut v = base.clone();
+            v["measured"] = json!(false);
+            v["n_considered"] = json!(0);
+            v["why_unmeasured"] = json!(why);
+            v
+        };
+        let Some(path) = super::session_verbs::session_jsonl_path(&session) else {
+            return Ok(Some(unmeasured(format!("'{session}' has no Claude Code transcript"))));
+        };
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) => return Ok(Some(unmeasured(format!("cannot read {}: {e}", path.display())))),
+        };
+        use std::io::BufRead;
+        let lines = std::io::BufReader::new(file).split(b'\n').map_while(Result::ok).map(|b| String::from_utf8_lossy(&b).into_owned());
+        let started = std::time::Instant::now();
+        // cmd_history.ts is milliseconds.
+        let found = reply_in_transcript(lines, &text, ts / 1000.0, || started.elapsed() > DEADLINE);
+        if found.timed_out {
+            tracing::warn!(session = %session, message = nid, lines = found.lines, measured = false, n_considered = found.lines,
+                verdict = "message_reply_timed_out", "message reply: the transcript read hit its deadline");
+            let mut v = unmeasured(format!("stopped after {}s, {} transcript lines read", DEADLINE.as_secs(), found.lines));
+            v["n_considered"] = json!(found.lines);
+            return Ok(Some(v));
+        }
+        let mut v = base.clone();
+        v["measured"] = json!(true);
+        v["n_considered"] = json!(found.lines);
+        v["found"] = json!(found.found);
+        v["text"] = json!(found.text);
+        v["ended"] = json!(found.ended);
+        v["at"] = json!(found.at);
+        Ok(Some(v))
+    })
+    .await;
+    match joined {
+        Ok(Ok(Some(v))) => Json(v).into_response(),
+        Ok(Ok(None)) => err(StatusCode::NOT_FOUND, json!({ "error": format!("no message {nid}") })),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() })),
+    }
 }
 
 /// GET /api/history/{id} — look up ONE message by its id, accepting either a
@@ -3103,5 +3351,93 @@ mod bound_tests {
         assert_eq!(parse_bound_ms("1790692800"), Some(1_790_692_800_000), "epoch seconds");
         assert_eq!(parse_bound_ms("1790692800000"), Some(1_790_692_800_000), "epoch milliseconds");
         assert_eq!(parse_bound_ms("yesterday"), None, "unreadable is refused, not dropped");
+    }
+}
+
+#[cfg(test)]
+mod message_reply_tests {
+    use super::*;
+
+    fn user(ts: &str, text: &str) -> String {
+        json!({"type":"user","timestamp":ts,"message":{"content":text}}).to_string()
+    }
+    fn said(ts: &str, text: &str, stop: &str) -> String {
+        json!({"type":"assistant","timestamp":ts,"message":{"stop_reason":stop,"content":[{"type":"text","text":text}]}}).to_string()
+    }
+    fn at(ts: &str) -> f64 {
+        chrono::DateTime::parse_from_rfc3339(ts).unwrap().timestamp() as f64
+    }
+    fn run(lines: Vec<String>, message: &str, sent: &str) -> TranscriptReply {
+        reply_in_transcript(lines.into_iter(), message, at(sent), || false)
+    }
+
+    /// MSG-103328: the answer, then /goal's repeats. The answer is the reply.
+    #[test]
+    fn the_reply_stops_at_the_first_end_of_turn() {
+        let got = run(vec![
+            user("2026-11-02T03:58:00Z", "anything here that helps ?"),
+            said("2026-11-02T03:58:30Z", "Reading the post.", "tool_use"),
+            said("2026-11-02T04:00:00Z", "Yes, three parts map onto board problems.", "end_turn"),
+            said("2026-11-02T04:01:00Z", "Still unmet. I'm waiting on your decision.", "end_turn"),
+        ], "anything here that helps ?", "2026-11-02T03:58:00Z");
+        assert!(got.found);
+        assert_eq!(got.text, "Yes, three parts map onto board problems.");
+        assert_eq!(got.ended, "end_turn");
+        assert_eq!(got.at, at("2026-11-02T04:00:00Z"));
+    }
+
+    /// "try again" twice: the one sent at 02:14 gets the 02:14 answer.
+    #[test]
+    fn a_repeated_message_matches_the_one_sent_at_that_time() {
+        let lines = vec![
+            user("2026-11-01T20:05:00Z", "try again"),
+            said("2026-11-01T20:06:00Z", "First answer.", "end_turn"),
+            user("2026-11-02T02:14:00Z", "try again"),
+            said("2026-11-02T02:15:00Z", "Second answer.", "end_turn"),
+        ];
+        assert_eq!(run(lines.clone(), "try again", "2026-11-01T20:05:00Z").text, "First answer.");
+        assert_eq!(run(lines, "try again", "2026-11-02T02:14:00Z").text, "Second answer.");
+    }
+
+    /// A machine record inside the turn is not someone writing again, and a
+    /// typed message is. Whitespace from the paste does not stop the match.
+    #[test]
+    fn a_later_message_answered_first_is_not_this_ones_reply() {
+        let got = run(vec![
+            user("2026-11-02T10:00:00Z", "fix the auth bug"),
+            user("2026-11-02T10:00:05Z", "also check the tests"),
+            said("2026-11-02T10:00:10Z", "I will check the tests.", "end_turn"),
+        ], "fix the auth bug", "2026-11-02T10:00:00Z");
+        assert!(got.found);
+        assert_eq!(got.text, "");
+        assert_eq!(got.ended, "next_input");
+    }
+
+    #[test]
+    fn only_typed_input_ends_a_turn_early() {
+        let got = run(vec![
+            user("2026-11-02T10:00:00Z", "line one\n\nline   two"),
+            said("2026-11-02T10:00:10Z", "Working on it.", "tool_use"),
+            user("2026-11-02T10:00:20Z", "<task-notification>done</task-notification>"),
+            said("2026-11-02T10:00:30Z", "Halfway.", "tool_use"),
+            user("2026-11-02T10:00:40Z", "also check this"),
+            said("2026-11-02T10:00:50Z", "Later answer.", "end_turn"),
+        ], "line one line two", "2026-11-02T10:00:00Z");
+        assert_eq!(got.text, "Halfway.");
+        assert_eq!(got.ended, "next_input");
+    }
+
+    /// The three non-answers read differently: not in this file, in it with the
+    /// turn still open, and stopped by the deadline.
+    #[test]
+    fn each_non_answer_says_which_it_is() {
+        let lines = vec![user("2026-11-02T10:00:00Z", "hello")];
+        let absent = run(lines.clone(), "goodbye", "2026-11-02T10:00:00Z");
+        assert!(!absent.found && absent.text.is_empty() && absent.ended.is_empty());
+        let open = run(lines, "hello", "2026-11-02T10:00:00Z");
+        assert!(open.found && open.text.is_empty() && open.ended.is_empty());
+        let many = (0..512).map(|_| user("2026-11-02T10:00:00Z", "noise")).collect::<Vec<_>>();
+        let cut = reply_in_transcript(many.into_iter(), "goodbye", 0.0, || true);
+        assert!(cut.timed_out && !cut.found);
     }
 }

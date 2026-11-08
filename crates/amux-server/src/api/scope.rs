@@ -1191,6 +1191,7 @@ fn write_memory(
 /// could have raised its own spend cap or switched on outbound auto-approval.
 const OWNER_ONLY_ENV_PREFIXES: &[&str] = &[
     "AMUX_NEEDS_INPUT_AUTO",
+    "AMUX_DECISION_DIGEST",
     "AMUX_BROWSER_PROFILES_",
     "AMUX_APPROVAL_TYPES",
     "AMUX_EMAIL_EXTERNAL_ALLOW",

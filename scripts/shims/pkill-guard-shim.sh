@@ -24,13 +24,24 @@ set -u
 shimdir=$(cd "$(dirname "$0")" && pwd -P)
 me=$(basename "$0")
 
+# ANOTHER COPY OF AN AMUX SHIM IS NOT THE REAL BINARY (cpu RCA 20261030-065821).
+# Skipping only this directory let two copies on one PATH (~/.amux/shims and a
+# demo home's shims) each take the other for the real binary and exec it back
+# and forth: one `pgrep` ran that way for 7h44m and the Mac allocated ~875
+# pids a second. A candidate that is a script mentioning amux is a shim copy,
+# whatever its age; real binaries are not scripts.
+_amux_shim_copy() { # <path>
+  local first=""
+  IFS= read -r first < "$1" 2>/dev/null || return 1
+  case "$first" in '#!'*) grep -qs 'amux' "$1" ;; *) return 1 ;; esac
+}
 real=""
 IFS=: read -r -a dirs <<< "${PATH:-}"
 for d in "${dirs[@]}"; do
   [ -n "$d" ] || continue
   dd=$(cd "$d" 2>/dev/null && pwd -P) || continue
   [ "$dd" = "$shimdir" ] && continue
-  if [ -x "$d/$me" ]; then real="$d/$me"; break; fi
+  if [ -x "$d/$me" ] && ! _amux_shim_copy "$d/$me"; then real="$d/$me"; break; fi
 done
 if [ -z "$real" ]; then
   echo "amux $me guard: no real $me found on PATH" >&2
@@ -99,7 +110,7 @@ if [ "$me" = pkill ] && [ "${AMUX_PKILL_ALLOW_MANY:-0}" != 1 ]; then
     [ -n "$d" ] || continue
     dd=$(cd "$d" 2>/dev/null && pwd -P) || continue
     [ "$dd" = "$shimdir" ] && continue
-    if [ -x "$d/pgrep" ]; then pgrep_real="$d/pgrep"; break; fi
+    if [ -x "$d/pgrep" ] && ! _amux_shim_copy "$d/pgrep"; then pgrep_real="$d/pgrep"; break; fi
   done
   if [ -n "$pgrep_real" ] && [ "${#args[@]}" -gt 0 ]; then
     count=$("$pgrep_real" "${args[@]}" 2>/dev/null | wc -l | tr -d ' ')

@@ -12,7 +12,7 @@ pub(super) async fn watch<T>(job: &str, future: impl Future<Output = T>) -> T {
                 elapsed_ms = timing.elapsed.as_millis() as u64, pid = std::process::id(),
                 thread_cpu_measured = timing.cpu.is_some(),
                 thread_cpu_ms = timing.cpu.map(|d| d.as_millis() as u64).unwrap_or(0),
-                runtime_pool = super::executor::pool_name(),
+                runtime_pool = super::executor::pool_for(job),
                 commit = env!("AMUX_BUILD_COMMIT_FULL"),
                 "job held an async runtime thread without yielding; other jobs in this pool may stall");
         }

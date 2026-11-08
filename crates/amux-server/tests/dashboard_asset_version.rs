@@ -148,6 +148,27 @@ async fn served_app_js_and_sw_js_carry_the_build_hash() {
     assert!(String::from_utf8_lossy(&raw).contains(placeholder));
 }
 
+/// The page asks for the app.js of its own build. `/app.js` used to be one URL
+/// across builds, and the service worker answers it cache first, so on
+/// 2026-10-31 the Mac app ran the previous day's app.js under the current HTML
+/// and Messages threw on an element that HTML no longer had. A versioned URL
+/// is a cache miss for a new build and a hit for its own.
+#[tokio::test]
+async fn the_page_loads_the_app_js_of_its_own_build() {
+    let ver = amux_dashboard::asset_version();
+    let (status, _, html) = get("/").await;
+    assert_eq!(status, 200);
+    let tag = format!("<script src=\"/app.js?v={ver}\"></script>");
+    assert!(html.contains(&tag), "index.html must load {tag}");
+    assert!(
+        !html.contains("<script src=\"/app.js\""),
+        "an unversioned app.js tag lets a cached copy of another build run"
+    );
+    let (status, _, app) = get(&format!("/app.js?v={ver}")).await;
+    assert_eq!(status, 200, "the versioned URL is served");
+    assert!(app.contains(&format!("const APP_VER = '{ver}';")));
+}
+
 /// The kernel no longer bundles the registry, so the registry must be served
 /// on its own at the URL state/feedback.mjs fetches and sw.js precaches.
 #[tokio::test]

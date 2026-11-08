@@ -312,8 +312,13 @@ async fn verify_task(
                 tracing::warn!(target:"amux::verification", card=%id2, "gate changed during verification; result not applied");
                 return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other("gate changed during verification"))));
             }
+            // A failed re-check of a VERIFIED card reopens it: that leaves a
+            // terminal status, which the transition engine allows only by an
+            // attributed force (implicit state machines inventory #6). Every
+            // other verification transition keeps its gates.
+            let reopen = !passed && board_store::parse_status(&expected_status).is_some_and(|s| s.is_terminal());
             let opts = crate::db::advance::AdvanceOpts {
-                force: false,
+                force: reopen,
                 gate_ack: true,
                 expected_from: Some(expected_status.clone()),
                 log_line: Some(summary.clone()),

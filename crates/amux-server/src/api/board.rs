@@ -976,12 +976,19 @@ async fn board_changes(
         .unwrap_or(500)
         .clamp(1, 5000);
 
+    // A read that cannot get a pooled connection is the pool saturated, not
+    // this handler failing (AMUX-6515: "db read failed" after 5143 ms, the
+    // pool's acquire timeout, during a fleet-wide stall). 503 with
+    // Retry-After says what it is; the dashboard only reads `ok` and retries
+    // on its next poll, and autofix keeps 501/503 out of its 5xx cards because
+    // the overload already reports itself (read_pool_exhausted).
     let conn = match state.store.read() {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "db read failed"})),
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "2")],
+                Json(json!({"error": "board read pool busy; retry", "detail": e.to_string(), "retryable": true})),
             )
                 .into_response();
         }
@@ -2158,7 +2165,11 @@ async fn delete_status(
         "verified",
         "discarded",
     ];
-    if BUILTINS.contains(&sid.as_str()) {
+    // Every status the board itself knows is built in, not only the seven
+    // seeded columns: needsyou, blocked, armed and quarantined have no row in
+    // `statuses`, so deleting one force-moved every card in it to todo and then
+    // deleted nothing, answering ok (2026-11-06).
+    if BUILTINS.contains(&sid.as_str()) || bs::parse_status(&sid).is_some() {
         return err(
             StatusCode::BAD_REQUEST,
             json!({ "error": "cannot delete built-in status" }),
@@ -2176,6 +2187,17 @@ async fn delete_status(
     let write = state
         .store
         .write_async(move |conn| {
+            // Only a custom column that exists moves its cards.
+            let custom: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM statuses WHERE id = ?1 AND is_builtin = 0",
+                [&sid_w],
+                |r| r.get(0),
+            )?;
+            if custom == 0 {
+                tracing::warn!(status = %sid_w, measured = true, n_considered = 0,
+                    verdict = "status_delete_not_custom", "no custom column by that id; no card moved");
+                return Ok(WriteOutcome { applied: false, events: Vec::new() });
+            }
             let moved: Vec<String> = conn
                 .prepare("SELECT id FROM issues WHERE status = ?1 AND deleted IS NULL")?
                 .query_map([&sid_w], |r| r.get::<_, String>(0))?
@@ -2216,11 +2238,12 @@ async fn delete_status(
     if let Err(e) = write {
         return internal(e);
     }
-    let moved = out
-        .lock()
-        .expect("status slot poisoned")
-        .take()
-        .unwrap_or_default();
+    let Some(moved) = out.lock().expect("status slot poisoned").take() else {
+        return err(
+            StatusCode::NOT_FOUND,
+            json!({ "error": format!("no custom status column {sid:?}; nothing moved") }),
+        );
+    };
     Json(json!({
         "ok": true,
         "moved": moved.len(),
@@ -4544,6 +4567,25 @@ pub async fn export_board(
         .into_response()
 }
 
+fn count_response(p: &ListParams, total: usize) -> Response {
+    Json(json!({
+        "count": total,
+        "filter": {
+            "status": p.status.clone(),
+            "session": p.session.clone(),
+            "archived": p.archived.clone(),
+            "done_limit": p.done_limit,
+            "quota": p.quota.clone(),
+        },
+        "note": "count of what THIS filter would return, computed from the same \
+                 filter+cap the list runs. Terminal statuses are capped unless you pass \
+                 done_limit=0 or all=1, so a count taken with different params will \
+                 differ from one taken with these — pass the SAME params you will \
+                 fetch with.",
+    }))
+    .into_response()
+}
+
 pub async fn list_board(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4723,6 +4765,22 @@ pub async fn list_board(
     });
     let ids_asked = ids.as_ref().map(|v| v.len());
     let store = state.store.clone();
+    // A plain count needs no card bodies: hydrating them to take a length cost
+    // the dashboard's archive badge 3.4 s on average (AF-1151). Quota and ids
+    // have their own selections, so they stay on the path below.
+    if qp_truthy(p.count.as_deref()) && !quota && ids.is_none() {
+        return match store
+            .read_async(move |conn| {
+                Ok(bs::count_issues_capped(
+                    conn, &status_f, &session_f, archived, done_limit,
+                )?)
+            })
+            .await
+        {
+            Ok(total) => count_response(&p, total),
+            Err(e) => internal(e),
+        };
+    }
     let list_started = std::time::Instant::now();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         // Phase marks for `board_list_slow` (AMUX-5374): a slow read has to say
@@ -4806,22 +4864,7 @@ pub async fn list_board(
     // error rather than a plausible-looking one-element array, and a client
     // reading `.length` on `{"count": 662}` gets undefined rather than 1.
     if qp_truthy(p.count.as_deref()) {
-        return Json(json!({
-            "count": total,
-            "filter": {
-                "status": p.status.clone(),
-                "session": p.session.clone(),
-                "archived": p.archived.clone(),
-                "done_limit": p.done_limit,
-                "quota": p.quota.clone(),
-            },
-            "note": "count of what THIS filter would return, computed from the same \
-                     filter+cap the list runs. Terminal statuses are capped unless you pass \
-                     done_limit=0 or all=1, so a count taken with different params will \
-                     differ from one taken with these — pass the SAME params you will \
-                     fetch with.",
-        }))
-        .into_response();
+        return count_response(&p, total);
     }
 
     // TWO-FIXES (AMUX-3154): the terminal cap already reports itself in
@@ -8285,8 +8328,11 @@ async fn update_overlap_callback(
         .store
         .write_async(move |conn| {
             conn.execute(
+                // Forward only: `queued` is final, so a late retry result
+                // cannot pull a delivered callback back (implicit state
+                // machines inventory 2026-10-31, #19).
                 "UPDATE board_overlap_callbacks SET state=?1, error=?2, updated_at=?3 \
-                 WHERE coordination_id=?4 AND target_session=?5",
+                 WHERE coordination_id=?4 AND target_session=?5 AND state IN ('pending', 'retryable')",
                 rusqlite::params![
                     next_state,
                     error,
@@ -9064,6 +9110,23 @@ mod overlap_reconciliation_tests {
 
     async fn post(app: &Router, session: &str, body: Value) -> (StatusCode, Value) {
         call(app, "POST", "/api/board/overlap", session, Some(body)).await
+    }
+
+    /// AMUX-6515: with every pooled read connection held, /api/board/changes
+    /// answers 503 + Retry-After (overload, retryable) instead of a 500.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_saturated_read_pool_answers_503_not_500() {
+        let db = store();
+        let app = Router::new()
+            .nest("/api/board", routes())
+            .with_state(state(db.clone()));
+        let held: Vec<_> = (0..crate::db::read_pool_size()).map(|_| db.read().unwrap()).collect();
+        let (status, v) = call(&app, "GET", "/api/board/changes?since_seq=0&limit=1", "probe", None).await;
+        drop(held);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert_eq!(v["retryable"], true, "{v}");
+        let (status, _) = call(&app, "GET", "/api/board/changes?since_seq=0&limit=1", "probe", None).await;
+        assert_eq!(status, StatusCode::OK, "answers again once a connection is free");
     }
 
     #[tokio::test]
@@ -11203,7 +11266,36 @@ pub async fn patch_item(
                 let requested_owner = body_opt_str(&map, "session")
                     .flatten()
                     .filter(|owner| !owner.trim().is_empty());
-                if requested_owner.as_deref() != Some(caller_lane.as_str()) {
+                // AF-1069: a card whose owner is no longer registered is
+                // orphaned, and discarding it was already open to any worker
+                // (AF-1048 discarded 17 such cards while every reassignment
+                // of them was refused). Moving it to a live, non-isolated lane
+                // keeps the work, so that is allowed too, and logged. A card a
+                // registered worker owns stays theirs.
+                let orphan_rescue = requested_owner.as_deref().is_some_and(|to| {
+                    let from = row.session.as_deref().unwrap_or("").trim();
+                    // The owner's board (ETHAN) has no worker registration
+                    // either, and holds the asks waiting on the owner: never
+                    // orphaned, and neither is a card a human owns.
+                    !from.is_empty()
+                        && !from.eq_ignore_ascii_case(super::turn_end::owner_name().trim())
+                        && row.owner_type != "human"
+                        && !super::session_verbs::session_is_registered(from)
+                        && super::session_verbs::session_is_registered(to)
+                        && super::session_verbs::parse_env(to).get("CC_ISOLATED") != Some("1")
+                });
+                if orphan_rescue {
+                    tracing::info!(
+                        caller = %caller_lane,
+                        card = %id_w,
+                        from = ?row.session,
+                        to = ?requested_owner,
+                        measured = true,
+                        n_considered = 1,
+                        verdict = "orphaned_card_reassigned",
+                        "a card whose owner is no longer registered moved to a live lane"
+                    );
+                } else if requested_owner.as_deref() != Some(caller_lane.as_str()) {
                     tracing::warn!(
                         caller = %caller_lane,
                         card = %id_w,
@@ -14159,6 +14251,25 @@ pub async fn patch_item(
                         }
                     }
 
+                    // Terminal is terminal for a WORKER on this door too. A pair
+                    // with no named transition (verified->doing, discarded->todo)
+                    // used to become an implicit Force, which skips core's
+                    // terminal check: a lane's PATCH reopened what `advance()`
+                    // refuses (2026-11-06). The owner's dashboard (no worker
+                    // origin, which cannot send `force`) keeps reopening a card
+                    // by moving it, recorded below as a direct set.
+                    if !force && from.is_terminal() && from != target && !caller_lane.is_empty() {
+                        tracing::warn!(card = %row.id, from = %bs::db_status_spelling(from),
+                            to = %target_raw, actor = %actor_name, measured = true, n_considered = 1,
+                            verdict = "patch_terminal_exit_refused",
+                            "a terminal card is left only by a forced, attributed transition");
+                        return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT, json!({
+                            "error": format!("{} is {}, a terminal status; leaving it needs force (with a reason)",
+                                row.id, bs::db_status_spelling(from)),
+                            "code": "terminal_requires_force",
+                            "item": row.id,
+                        })), no_write());
+                    }
                     let now = chrono::Utc::now();
                     let tx = if force {
                         BoardTransition::Force {

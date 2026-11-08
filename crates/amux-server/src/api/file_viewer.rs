@@ -440,9 +440,29 @@ fn io_fail(e: &std::io::Error) -> Response {
 }
 
 async fn file_root(state: State<AppState>, req: Request) -> Response {
-    let _ = state; // reserved: keeps the handler signature uniform in this router
     match *req.method() {
-        Method::GET => view(req).await,
+        Method::GET => {
+            // An owner view (workers send X-Amux-Session) feeds the Cmd-K
+            // palette's visited files (api/file_visits.rs).
+            let owner_path = (!req.headers().contains_key("x-amux-session"))
+                .then(|| {
+                    let qs = parse_qs(req.uri().query().unwrap_or(""));
+                    qs_get(&qs, "path").filter(|p| p.starts_with('/')).map(str::to_string)
+                })
+                .flatten();
+            let resp = view(req).await;
+            if let Some(path) = owner_path.filter(|_| resp.status().is_success()) {
+                let at = crate::config::now_f64();
+                if let Err(e) = state.store.write_async(move |c| {
+                    crate::api::file_visits::record(c, &path, at)?;
+                    Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+                }).await {
+                    tracing::warn!(target: "amux::file_visits", error = %e, measured = false, n_considered = 1,
+                        verdict = "file_visit_unrecorded", "a file view was not recorded for the palette");
+                }
+            }
+            resp
+        }
         Method::PUT => put_file(req).await,
         _ => not_found().await,
     }
@@ -619,6 +639,8 @@ async fn view(req: Request) -> Response {
             "path": pystr(&p), "content": content,
             "is_markdown": is_md, "is_csv": is_csv, "is_html": is_html,
             "truncated": truncated, "total_chars": total_chars,
+            // The version this content is, sent back with a save.
+            "etag": current_etag(&p),
         }),
     )
 }
@@ -903,8 +925,20 @@ async fn put_file(req: Request) -> Response {
 const BINARY_WRITABLE_EXTS: &[&str] = &[".xlsx"];
 
 /// The same ETag GET /api/file/raw serves for this path, or None when absent.
+/// The file's version, for a save to say which one it edited. mtime+size alone
+/// cannot tell two saves in the same second of the same length apart, which
+/// two people editing one note do (owner, 2026-10-29: "proper collision
+/// reconciliation ... for multiple users in a workspace"), so a text-sized
+/// file adds a hash of its bytes.
 fn current_etag(p: &std::path::Path) -> Option<String> {
     let meta = std::fs::metadata(p).ok().filter(|m| m.is_file())?;
+    if meta.len() <= 4 * 1024 * 1024 {
+        if let Ok(bytes) = std::fs::read(p) {
+            use sha2::Digest;
+            let h = sha2::Sha256::digest(&bytes);
+            return Some(format!("\"{}-{}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}\"", mtime_secs(&meta), meta.len(), h[0], h[1], h[2], h[3], h[4], h[5]));
+        }
+    }
     Some(format!("\"{}-{}\"", mtime_secs(&meta), meta.len()))
 }
 
@@ -1214,8 +1248,10 @@ async fn raw(req: Request) -> Response {
     };
     let mime = raw_mime(&py_suffix(&p));
     let file_size = meta.len();
-    // ETag from mtime+size (py:68097) — If-None-Match short-circuits to 304.
-    let etag = format!("\"{}-{}\"", mtime_secs(&meta), file_size);
+    // ETag from mtime+size (py:68097), plus a content hash for a text-sized
+    // file — If-None-Match short-circuits to 304. The same value a save checks
+    // (current_etag): the spreadsheet and Draw editors save with this header.
+    let etag = current_etag(&p).unwrap_or_else(|| format!("\"{}-{}\"", mtime_secs(&meta), file_size));
     if req
         .headers()
         .get("if-none-match")
@@ -1636,6 +1672,12 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
             // predicate as prep_decision, re-checked transactionally so two
             // concurrent polls spawn one job (python's _media_prep_lock).
             let claimed = Arc::new(AtomicBool::new(false));
+            // The claim's created_at is its generation: the job's progress,
+            // done and error writes require it, so a job whose row a newer
+            // claim took over (stale after JOB_STALE_S) cannot overwrite that
+            // run (implicit state machines inventory 2026-10-31, tier 5).
+            let generation = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let g2 = generation.clone();
             let (c2, k2) = (claimed.clone(), key.clone());
             let (src_s, out_s) = (pystr(&p), pystr(&out));
             state
@@ -1662,6 +1704,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
                             rusqlite::params![k2, src_s, out_s, now],
                         )?;
                         c2.store(true, Ordering::SeqCst);
+                        g2.store(now, Ordering::SeqCst);
                     }
                     Ok(WriteOutcome { applied: false, events: vec![] })
                 })
@@ -1671,7 +1714,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
                 // Someone else claimed between our read and write.
                 return j(200, json!({"ready": false, "progress": 0.0}));
             }
-            tokio::spawn(run_prepare(state.clone(), ffmpeg, p, out, key));
+            tokio::spawn(run_prepare(state.clone(), ffmpeg, p, out, key, generation.load(Ordering::SeqCst)));
             j(
                 200,
                 json!({"ready": false, "progress": 0.0, "started": true}),
@@ -1684,7 +1727,7 @@ async fn prepare(State(state): State<AppState>, req: Request) -> Response {
 /// codecs are iOS-playable (HEVC needs the hvc1 tag or AVPlayer rejects it),
 /// else transcode via the videotoolbox hardware encoder — python pins the
 /// same macOS-specific encoder; parity kept deliberately.
-async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBuf, key: String) {
+async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBuf, key: String, generation: i64) {
     let src_name = src
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1699,7 +1742,7 @@ async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBu
             .unwrap_or_default(),
         std::process::id()
     ));
-    match do_prepare(&state, &ffmpeg, &src, &out, &tmp, &key).await {
+    match do_prepare(&state, &ffmpeg, &src, &out, &tmp, &key, generation).await {
         Ok(()) => {
             let sz = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             tracing::info!(
@@ -1716,8 +1759,8 @@ async fn run_prepare(state: AppState, ffmpeg: PathBuf, src: PathBuf, out: PathBu
             job_write(&state, move |conn| {
                 conn.execute(
                     "UPDATE _amux_media_jobs SET status='error', error=?2, updated_at=?3 \
-                     WHERE key = ?1",
-                    rusqlite::params![k, msg, chrono::Utc::now().timestamp()],
+                     WHERE key = ?1 AND created_at = ?4",
+                    rusqlite::params![k, msg, chrono::Utc::now().timestamp(), generation],
                 )?;
                 Ok(())
             })
@@ -1734,6 +1777,7 @@ async fn do_prepare(
     out: &Path,
     tmp: &Path,
     key: &str,
+    generation: i64,
 ) -> Result<(), String> {
     let cache = out.parent().ok_or("cache dir has no parent")?;
     std::fs::create_dir_all(cache).map_err(|e| e.to_string())?;
@@ -1824,13 +1868,13 @@ async fn do_prepare(
             job_write(state, move |conn| {
                 if progress >= 0.0 {
                     conn.execute(
-                        "UPDATE _amux_media_jobs SET progress=?2, updated_at=?3 WHERE key = ?1",
-                        rusqlite::params![k, progress, chrono::Utc::now().timestamp()],
+                        "UPDATE _amux_media_jobs SET progress=?2, updated_at=?3 WHERE key = ?1 AND created_at = ?4",
+                        rusqlite::params![k, progress, chrono::Utc::now().timestamp(), generation],
                     )?;
                 } else {
                     conn.execute(
-                        "UPDATE _amux_media_jobs SET updated_at=?2 WHERE key = ?1",
-                        rusqlite::params![k, chrono::Utc::now().timestamp()],
+                        "UPDATE _amux_media_jobs SET updated_at=?2 WHERE key = ?1 AND created_at = ?3",
+                        rusqlite::params![k, chrono::Utc::now().timestamp(), generation],
                     )?;
                 }
                 Ok(())
@@ -1855,8 +1899,8 @@ async fn do_prepare(
     job_write(state, move |conn| {
         conn.execute(
             "UPDATE _amux_media_jobs SET status='done', progress=100, updated_at=?2 \
-             WHERE key = ?1",
-            rusqlite::params![k, chrono::Utc::now().timestamp()],
+             WHERE key = ?1 AND created_at = ?3",
+            rusqlite::params![k, chrono::Utc::now().timestamp(), generation],
         )?;
         Ok(())
     })
@@ -2604,8 +2648,7 @@ pub(crate) mod tests {
         let p = dir.path().join("clip.mp4");
         let payload: Vec<u8> = (0u8..=99).collect();
         std::fs::write(&p, &payload).unwrap();
-        let meta = std::fs::metadata(&p).unwrap();
-        let etag = format!("\"{}-{}\"", mtime_secs(&meta), 100);
+        let etag = super::current_etag(&p).unwrap();
         let uri = format!("/api/file/raw?path={}", enc(p.to_str().unwrap()));
 
         // Bounded range.

@@ -97,6 +97,7 @@ export const TREE_GUARDS = {
 };
 export const RUST_ONLY_WALKERS = [
   'dead_pub_api', 'kill_on_drop_guard', 'no_ollama_cli', 'schema_fixtures', 'runtime_tick_bracketing',
+  'raw_status_write_guard',
   'tmux_target_audit',
   // read_dir over a temp dir the test made, not the repository:
   'chat_delegate', 'restart_persistence', 'worker_integration_e2e',

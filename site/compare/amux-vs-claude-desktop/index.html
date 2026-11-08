@@ -23,17 +23,28 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Claude Desktop","item":"https://amux.io/compare/amux-vs-claude-desktop/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Claude Desktop","description":"Claude Desktop is for conversations and MCP tool connections. amux runs Claude Code agents in parallel for autonomous coding at scale.","datePublished":"2026-03-06","dateModified":"2026-09-26","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"url":"https://amux.io/compare/amux-vs-claude-desktop/"}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between amux and Claude Desktop?","acceptedAnswer":{"@type":"Answer","text":"Claude Desktop is Anthropic's GUI app for conversational use of Claude — chat, document analysis, Projects, and MCP server connections. amux runs Claude Code (the coding-specialized CLI) in parallel terminal sessions with a web dashboard and agent orchestration layer. Claude Desktop is the right tool when you want to have a conversation. amux is the right tool when you want Claude to autonomously execute code changes in a repository, in parallel, without supervision."}},{"@type":"Question","name":"Can I use Claude Desktop and amux together?","acceptedAnswer":{"@type":"Answer","text":"Yes — they are complementary, not competing. A common workflow: use Claude Desktop (or Claude.ai) to plan a feature, generate the CLAUDE.md spec, and think through architecture. Then use amux to hand off the implementation to 5-10 parallel Claude Code sessions that each tackle one sub-task. Claude Desktop handles strategy and ideation; amux handles execution at scale."}},{"@type":"Question","name":"Does Claude Desktop replace Claude Code?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Desktop uses the same Claude model but in a conversational interface. Claude Code is a separate CLI tool with direct filesystem access, shell execution, and long-horizon coding capabilities. Claude Desktop can use MCP filesystem tools to read files, but it is not designed for autonomous code execution across a large repository — that is Claude Code's domain."}},{"@type":"Question","name":"What is amux and how does it relate to Claude Code?","acceptedAnswer":{"@type":"Answer","text":"amux is the orchestration layer for Claude Code. Claude Code is a single coding agent. amux multiplies that into a fleet: it manages 10-50 parallel Claude Code sessions, coordinates their tasks via a shared kanban board, resumes them after usage limits and macOS reboots, and provides a web dashboard for monitoring. You install amux once, configure sessions for your project, and queue tasks for the fleet to execute."}},{"@type":"Question","name":"Does amux work with Claude Desktop MCP servers?","acceptedAnswer":{"@type":"Answer","text":"MCP servers configured in Claude Desktop's settings are separate from the MCP servers used by Claude Code. amux ships with a centralized mcp.json that configures MCP servers for all Claude Code sessions in the fleet — filesystem, memory, github, browser automation. You configure them once in amux and all sessions inherit them; you don't need to configure each session individually."}},{"@type":"Question","name":"Which is better for coding projects — Claude Desktop or amux?","acceptedAnswer":{"@type":"Answer","text":"For active coding on a real repository (adding features, fixing bugs, writing tests, refactoring), amux with Claude Code wins on every dimension: it makes file changes, runs tests, commits code, and operates overnight without supervision. Claude Desktop is better for discussing code, reviewing architecture, generating specs, and tasks that don't require direct filesystem writes."}}]}</script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/guides/" class="hide-mobile">guides</a>
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/compare/" class="hide-mobile">compare</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
       <div class="theme-pick">
         <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
@@ -70,7 +81,7 @@
         <tr><td>Multi-runtime</td><td>Claude Code, Codex, Gemini CLI in the same fleet</td><td>Claude only</td></tr>
         <tr><td>Mobile monitoring</td><td>PWA dashboard, iOS app (App Store)</td><td>iOS/Android app (conversational)</td></tr>
         <tr><td>MCP servers</td><td>Centralized mcp.json for all sessions</td><td>Per-app settings, not fleet-wide</td></tr>
-        <tr><td>Open source</td><td>Yes — MIT + Commons Clause</td><td>No</td></tr>
+        <tr><td>Open source</td><td>Source-available, MIT + Commons Clause</td><td>No</td></tr>
         <tr><td>Cost</td><td>Free (you pay for Claude API tokens)</td><td>Included with Claude subscription</td></tr>
       </tbody>
     </table>
@@ -136,7 +147,7 @@ amux start myproject
       <div class="footer-top">
         <div class="footer-brand-col">
           <a href="/" class="footer-logo">amux</a>
-          <p>Open-source control plane for AI agents.</p>
+          <p>Self-hosted control plane for AI agents.</p>
         </div>
         <div class="footer-col">
           <div class="footer-col-label">Resources</div>

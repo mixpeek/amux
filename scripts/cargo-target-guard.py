@@ -93,8 +93,40 @@ def open_lock(path, shared=False, wait=False):
                     | (0 if wait else fcntl.LOCK_NB))
     except OSError:
         os.close(fd)
-        raise Deferred('lock busy or unmeasured: ' + str(path))
+        raise Deferred('lock busy or unmeasured: ' + str(path) + lock_holders(path))
     return fd
+
+
+def lock_holders(path):
+    """Who has the lock open, as `; held by pid 8462 tmux (01:38:50)`.
+
+    The lease is inherited on purpose, so a daemon a build or test starts keeps
+    it after cargo exits. Six leaked private tmux servers held it for 1.5 h on
+    2026-10-30 behind a bare "lock busy" (AF-1067). Holders that are not cargo,
+    rustc or a test binary are the ones to look at.
+    """
+    try:
+        # Bounded: this only explains a deferral and must not stretch it.
+        out = subprocess.run(['lsof', '-t', '--', str(path)], capture_output=True,
+                             text=True, timeout=3).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return '; holders unmeasured (lsof unavailable or slow)'
+    pids = [p for p in out if p.isdigit()]
+    if not pids:
+        return '; no holder found by lsof'
+    try:
+        rows = subprocess.run(['ps', '-o', 'pid=,etime=,comm=', '-p', ','.join(pids[:8])],
+                              capture_output=True, text=True, timeout=3).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        rows = []
+    held = []
+    for row in rows:
+        parts = row.split(None, 2)
+        if len(parts) == 3:
+            held.append('pid %s %s (%s)' % (parts[0], os.path.basename(parts[2].strip()), parts[1]))
+    held = held or ['pid ' + p for p in pids[:8]]
+    more = ' and %d more' % (len(pids) - 8) if len(pids) > 8 else ''
+    return '; held by ' + ', '.join(held) + more
 
 
 def native_locks(target):

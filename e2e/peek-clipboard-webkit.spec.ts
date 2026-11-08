@@ -6,6 +6,16 @@
 // paste lands there; readText is only a fallback when no paste event arrives.
 // The worker and every write are fakes.
 import { test, expect, allowUnusedRoute } from './fixtures';
+import type { Page } from '@playwright/test';
+
+// With a mouse or trackpad, opening a worker focuses its composer 50 ms later.
+// Wait for that first, or it takes focus from the terminal output mid-test
+// (rust 2026-11-03: Cmd+C copied nothing on the mobile project, which reports
+// a fine pointer).
+async function composerFocusSettled(page: Page) {
+  await page.waitForFunction(() => !matchMedia('(hover: hover) and (pointer: fine)').matches
+    || document.activeElement?.id === 'peek-cmd-input');
+}
 
 test('Cmd+V from the terminal output pastes into the composer without the clipboard API', async ({ page }) => {
   const worker = { name: 'clip-worker', running: true, status: 'idle', lifecycle: 'active', tags: [], dir: '/tmp', provider: 'claude' };
@@ -31,6 +41,7 @@ test('Cmd+V from the terminal output pastes into the composer without the clipbo
   await page.waitForFunction("typeof openPeek === 'function' && typeof sessions !== 'undefined' && sessions.length > 0");
   await page.evaluate(() => (window as any).openPeek('clip-worker'));
   await expect(page.locator('#peek-cmd-input')).toBeAttached();
+  await composerFocusSettled(page);
   // Focus is on the terminal output, as after clicking or selecting in it.
   await page.evaluate(() => { const b = document.getElementById('peek-body')!; b.tabIndex = -1; b.focus(); });
 
@@ -69,8 +80,11 @@ test('Cmd+C on selected terminal output copies through the native copy event', a
   });
   await page.goto('/');
   await page.waitForFunction("typeof openPeek === 'function' && typeof sessions !== 'undefined' && sessions.length > 0");
+  await page.evaluate(() => (window as any).openPeek('clip-worker'));
+  await composerFocusSettled(page);
   await page.evaluate(() => {
-    (window as any).openPeek('clip-worker');
+    // Selecting in the terminal output moves focus off the composer.
+    (document.activeElement as HTMLElement | null)?.blur();
     const b = document.getElementById('peek-body')!;
     b.textContent = 'line one of output\nselect me please\n';
     (window as any).__copied = null;

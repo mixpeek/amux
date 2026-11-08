@@ -65,7 +65,9 @@ test('Maps stopwatch: a trial is timed, measured from GPS, saved, and its route 
   await page.reload();
   await openMap(page);
   await page.locator('#map-sw-btn').click();
-  await expect(page.locator('#map-sw-past li')).toHaveCount(1);
+  // Trials render when /api/map answers, which outran 5 s on a loaded ios-safari
+  // shard (nightly 41288385907). Same allowance as the save above.
+  await expect(page.locator('#map-sw-past li')).toHaveCount(1, { timeout: 15_000 });
 
   // Route: the Location history view of the trial's window.
   await page.locator('#map-sw-past li .btn').first().click();

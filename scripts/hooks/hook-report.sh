@@ -36,6 +36,9 @@
 # keeps a failed exec from ending a script whose contract is to never be the
 # reason a hook fails; the guard variable stops a loop. AMUX_NATIVE_ARCH=0 opts
 # out. The bash builtins $OSTYPE/$HOSTTYPE decide, so a native run pays nothing.
+# The launching server's home, so a private test server's workers report to it
+# and never to the real server named by ~/.amux/endpoint.json (2026-11-02).
+AH="${AMUX_HOME:-$HOME/.amux}"
 case "$OSTYPE:$HOSTTYPE" in
   darwin*:x86_64)
     if [ "${AMUX_NATIVE_ARCH:-1}" != 0 ] && [ -z "${_AMUX_NATIVE_REEXEC:-}" ] && [ -x /usr/bin/arch ]; then
@@ -69,7 +72,7 @@ while True:
         time.sleep(.05)
 
 def corrupt_note(preserved,exc):
-    path=os.path.expanduser("~/.amux/logs/hook-report-failures.log")
+    path=os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),"logs/hook-report-failures.log")
     try:
         os.makedirs(os.path.dirname(path),exist_ok=True)
         with open(path,"a") as stream:
@@ -121,7 +124,7 @@ def locked_rows(change=None,release_on_empty=False):
         return rows
 
 def note(kind,row,code,attempt):
-    path=os.path.expanduser("~/.amux/logs/hook-report-failures.log")
+    path=os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),"logs/hook-report-failures.log")
     try:
         os.makedirs(os.path.dirname(path),exist_ok=True)
         with open(path,"a") as stream:
@@ -228,12 +231,12 @@ fi
 # 404, zero 200s). It cannot capture a deliberate cross-session claim, because
 # there the claimed session exists and this leaves it alone.
 CORRECTED=0
-if [ -n "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ] && [ ! -f "$HOME/.amux/sessions/$AMUX_SESSION.env" ]; then
+if [ -n "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ] && [ ! -f "$AH/sessions/$AMUX_SESSION.env" ]; then
   _TN=$(tmux display-message -p -t "$TMUX_PANE" '#S' 2>/dev/null)
   case "$_TN" in
     amux-*)
       _TRUE="${_TN#amux-}"
-      if [ "$_TRUE" != "$AMUX_SESSION" ] && [ -f "$HOME/.amux/sessions/$_TRUE.env" ]; then
+      if [ "$_TRUE" != "$AMUX_SESSION" ] && [ -f "$AH/sessions/$_TRUE.env" ]; then
         STALE_FROM="$AMUX_SESSION"
         export AMUX_SESSION="$_TRUE"
         CORRECTED=1
@@ -242,6 +245,10 @@ if [ -n "$AMUX_SESSION" ] && [ -n "${TMUX_PANE:-}" ] && [ ! -f "$HOME/.amux/sess
   esac
 fi
 [ -n "$AMUX_SESSION" ] || exit 0
+# A Chat tab runs its own Claude with AMUX_SESSION=<worker>@chat. It is not a
+# worker and has no status the server tracks, so its reports were 404 "is
+# <worker>'s Chat tab, not a worker", about 460 a day from 16 tabs (AF-1101).
+case "$AMUX_SESSION" in *@chat) exit 0 ;; esac
 # ISOLATED WORKERS (AMUX-3232). An isolated worker has AMUX_SESSION stripped at
 # spawn, so DERIVED=1 is the discriminator. But "derived" also covers a real lane
 # that lost its env var mid-run (the original MR-43 case). The two are separated
@@ -249,13 +256,13 @@ fi
 # real lane that lost its var did not. Skip reporting for isolated workers only —
 # a real lane that derived its session still gets a liveness report.
 if [ "$DERIVED" = "1" ]; then
-  _SF="$HOME/.amux/sessions/$AMUX_SESSION.env"
+  _SF="$AH/sessions/$AMUX_SESSION.env"
   if grep -qE '^CC_ISOLATED="?1"?' "$_SF" 2>/dev/null; then
     exit 0
   fi
 fi
 IN=$(cat 2>/dev/null)
-E="$HOME/.amux/endpoint.json"
+E="$AH/endpoint.json"
 C=$(sed -n 's/.*"canonical_url":"\([^"]*\)".*/\1/p' "$E" 2>/dev/null)
 L=$(sed -n 's/.*"legacy_port":\([0-9]*\).*/\1/p' "$E" 2>/dev/null)
 U="${AMUX_URL:-$C}"
@@ -468,7 +475,7 @@ if "subagent" not in out and (not out.get("model") or not out.get("tokens")):
         d2={"s":os.environ.get("AMUX_SESSION",""),"src":src,"keys":sorted(h.keys())[:12],
             "tp":bool(tp),"tp_exists":bool(tp) and os.path.exists(tp),"lines":nlines,
             "err":err,"got_model":bool(out.get("model")),"got_tokens":bool(out.get("tokens"))}
-        lg=os.path.expanduser("~/.amux/logs/hook-extract.jsonl")
+        lg=os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),"logs/hook-extract.jsonl")
         if os.path.exists(lg) and os.path.getsize(lg)>2000000: os.remove(lg)
         with open(lg,"a") as f: f.write(json.dumps(d2)+"\n")
     except Exception: pass
@@ -491,7 +498,7 @@ print(json.dumps(out))
 # Lifecycle facts are ordered and durable. Main-turn state uses a separate
 # singleton queue below: latest-wins replacement prevents an old queued idle
 # heartbeat from overwriting a newer active turn.
-QD="$HOME/.amux/hook-report-queue"
+QD="$AH/hook-report-queue"
 QF="$QD/$AMUX_SESSION.json"
 case "${MODE/subagent-/subagent:}" in
   subagent:*)
@@ -522,7 +529,7 @@ with open(path+".lock","a+") as guard:
         except FileNotFoundError: preserved="missing-before-preserve"
         except Exception as move_exc:
             preserved=path+f":preserve_failed:{type(move_exc).__name__}"
-        log=os.path.expanduser("~/.amux/logs/hook-report-failures.log")
+        log=os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),"logs/hook-report-failures.log")
         try:
             os.makedirs(os.path.dirname(log),exist_ok=True)
             with open(log,"a") as stream:
@@ -553,14 +560,14 @@ print(f"{len(rows)} {dropped} {limit}")
 PY
     )
     if [ -z "$QUEUE_NOTE" ]; then
-      D="$HOME/.amux/logs"; mkdir -p "$D" 2>/dev/null
+      D="$AH/logs"; mkdir -p "$D" 2>/dev/null
       printf '%s %s source=%s lifecycle_queue=enqueue_failed fallback=immediate\n' \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$AMUX_SESSION" "$SRC" \
         >> "$D/hook-report-failures.log" 2>/dev/null
     else
       set -- $QUEUE_NOTE
     if [ "${2:-0}" -gt 0 ] 2>/dev/null; then
-      D="$HOME/.amux/logs"; mkdir -p "$D" 2>/dev/null
+      D="$AH/logs"; mkdir -p "$D" 2>/dev/null
       printf '%s %s source=%s lifecycle_queue=overflow pending=%s dropped=%s limit=%s\n' \
         "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$AMUX_SESSION" "$SRC" "${1:-0}" "${2:-0}" "${3:-128}" \
         >> "$D/hook-report-failures.log" 2>/dev/null
@@ -610,7 +617,7 @@ with open(path+".lock","a+") as guard:
         except FileNotFoundError: preserved="missing-before-preserve"
         except Exception as move_exc:
             preserved=path+f":preserve_failed:{type(move_exc).__name__}"
-        log=os.path.expanduser("~/.amux/logs/hook-report-failures.log")
+        log=os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"),"logs/hook-report-failures.log")
         try:
             os.makedirs(os.path.dirname(log),exist_ok=True)
             with open(log,"a") as stream:
@@ -655,7 +662,7 @@ if [ -n "$STATE_NOTE" ]; then
     </dev/null >/dev/null 2>&1 &
   exit 0
 fi
-D="$HOME/.amux/logs"; mkdir -p "$D" 2>/dev/null
+D="$AH/logs"; mkdir -p "$D" 2>/dev/null
 printf '%s %s source=%s state_queue=enqueue_failed fallback=immediate\n' \
   "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$AMUX_SESSION" "$SRC" \
   >> "$D/hook-report-failures.log" 2>/dev/null
@@ -691,7 +698,7 @@ case "$CODE" in
   #
   # Still fails OPEN — this logs and exits 0. A hook that blocks a turn because
   # amux is unreachable would be worse than the silence it replaces.
-  D="$HOME/.amux/logs"; [ -d "$D" ] || mkdir -p "$D" 2>/dev/null
+  D="$AH/logs"; [ -d "$D" ] || mkdir -p "$D" 2>/dev/null
   F="$D/hook-report-failures.log"
   printf '%s %s source=%s url=%s http=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     "$AMUX_SESSION" "$SRC" "$U" "$CODE" >> "$F" 2>/dev/null

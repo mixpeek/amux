@@ -87,6 +87,11 @@ def state_for(data):
             'SessionEnd': 'idle', 'StopFailure': 'error'}.get(event)
 
 
+def is_compaction(data):
+    event = data.get('hook_event_name')
+    return event in ('PreCompact', 'PostCompact') or (event == 'SessionStart' and data.get('source') == 'compact')
+
+
 def pending(folder):
     return sorted(p for p in folder.glob('*.json') if p.name != 'counter.json')
 
@@ -181,6 +186,15 @@ def observe(data, root, worker, run, provider, occurred_at):
         # Preserve the explicit tool's waiting state until a real next edge.
         if data.get('hook_event_name') == 'Notification' and previous.get('state') == 'waiting':
             state = 'waiting'
+        # A compaction is not a turn edge: it keeps whatever state the lane was
+        # in (AF-1046). Compacting an IDLE lane mapped to 'active' and nothing
+        # followed it, so the lane read mid-turn until its next prompt
+        # (mixpeek-general 2026-10-30: Stop idle at 07:02:56, then PreCompact,
+        # SessionStart(compact), PostCompact all 'active' at 07:57) and
+        # session.self_reports_landing called its hooks broken. A compaction
+        # inside a turn still reads 'active', from the edge before it.
+        if is_compaction(data) and previous.get('state'):
+            state = previous['state']
         seq = previous.get('sequence', 0) + 1
         payload = {'native_status': True, 'provider': provider, 'run_id': run,
                    'sequence': seq, 'event_ts': occurred_at, 'state': state,
@@ -225,6 +239,40 @@ def observe(data, root, worker, run, provider, occurred_at):
     return True
 
 
+def mark_running(root, worker, run, event):
+    """Leave a marker for the length of this run, and report earlier runs that
+    left one behind (AF-1054). The provider kills a hook at its timeout, and a
+    killed run writes nothing: on 2026-10-31 a Stop was lost that way and the
+    lane read mid-turn for hours (session.self_reports_landing). slow_hook is
+    only recorded by a run that finishes, so its maximum sat at 2,955 ms, just
+    under the 3 s timeout, and the killed runs past it were invisible. A marker
+    whose process is gone is a run that never finished."""
+    folder = root / 'status-events' / worker / run
+    try:
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for old in folder.glob('.hook.*'):
+            try:
+                pid = int(old.name.rsplit('.', 1)[1])
+                os.kill(pid, 0)
+                continue
+            except ProcessLookupError:
+                pass
+            except (ValueError, PermissionError):
+                continue
+            try:
+                left = json.loads(old.read_text() or '{}')
+            except (OSError, ValueError):
+                left = {}
+            record_error(root, 'hook_killed', event=left.get('event', ''),
+                         age_s=int(time.time() - left.get('at', time.time())))
+            old.unlink(missing_ok=True)
+        marker = folder / ('.hook.%d' % os.getpid())
+        marker.write_text(json.dumps({'event': event, 'at': time.time()}))
+        return marker
+    except OSError:
+        return None
+
+
 def main():
     occurred_at = time.time()
     started = time.monotonic()
@@ -241,12 +289,17 @@ def main():
     if provider not in ('codex', 'claude'):
         return
     data = json.load(sys.stdin)
-    if observe(data, root, worker, run, provider, occurred_at) and \
-            not deliverer_running(root / 'status-events' / worker / run):
-        import subprocess
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--deliver'],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    marker = mark_running(root, worker, run, data.get('hook_event_name', ''))
+    try:
+        if observe(data, root, worker, run, provider, occurred_at) and \
+                not deliverer_running(root / 'status-events' / worker / run):
+            import subprocess
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--deliver'],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    finally:
+        if marker:
+            marker.unlink(missing_ok=True)
     elapsed = time.monotonic() - started
     if elapsed > SLOW_HOOK_S:
         record_error(root, 'slow_hook', event=data.get('hook_event_name', ''), elapsed_ms=int(elapsed * 1000))

@@ -58,6 +58,7 @@ function world() {
         const r = { id: 'r' + (++w.n), ...JSON.parse(o.body) }; w.dns.push(r); return ok({ success: true, result: r });
       }
       if (m === 'DELETE') { const id = p.split('/').pop(); w.dns = w.dns.filter(r => r.id !== id); return ok({ success: true, result: {} }); }
+      if (m === 'PATCH') { const r = w.dns.find(r => r.id === p.split('/').pop()); Object.assign(r, JSON.parse(o.body)); return ok({ success: true, result: r }); }
     }
     if (u.host === 'us.i.posthog.com') { (w.events ||= []).push(JSON.parse(o.body)); return ok({ status: 1 }); }
     if (u.host === 'appleid.apple.com') return ok({ keys: w.appleKeys || [] });
@@ -149,6 +150,19 @@ await test('C15-2 DNS write fails, Stripe redelivers: replay finishes it (one se
   eq(w.subs[sub].metadata.pw_hash !== undefined, true, 'signup still marked unfinished');
   eq((await webhook(w, sub)).status, 200, 'replay');
   eq([w.servers.length, w.dns.length, w.subs[sub].metadata.pw_hash], [1, 1, undefined], 'servers, records, pw_hash');
+});
+
+await test('every server is behind Cloudflare: new records proxied, an old DNS-only one switched', async () => {
+  const w = world(); const sub = paid(w, 'proxied');
+  eq((await webhook(w, sub)).status, 200, 'webhook');
+  eq(w.dns.map(r => [r.type, r.proxied]), [['A', true]], 'new record');
+  w.dns[0].proxied = false;                    // a server from before 2026-10-31
+  const s = w.servers[0]; s.labels['amux-ready'] = '1'; s.backup_window = '22-02';
+  s.id = 10 - (new Date().getUTCMinutes() % 10);           // this minute is its monitor slot
+  w.up = true;
+  await cron(w);
+  eq([w.dns.length, w.dns[0].proxied], [1, true], 'after the monitor');
+  eq(w.logs.some(l => l.event === 'dns.proxied'), true, 'dns.proxied logged');
 });
 
 await test('C15-2 DNS write fails and no redelivery: the cron finishes it', async () => {
@@ -532,6 +546,27 @@ await test('C9 a certificate that is not renewing reaches the operator before it
   w.up = { tls_days_left: 60 }; w.mail = [];
   await cron(w);
   eq(w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).some(t => /recovered/.test(t)), true, 'recovery email');
+});
+
+await test('"only my address" at signup starts the server\'s allowlist with the signup address, and only then', async () => {
+  const pw = 'scrypt$' + 'A'.repeat(24) + '$' + 'B'.repeat(44);
+  const w = world();
+  const ask = (slug, lock, ip) => api(w, '/api/checkout', { plan: 'team', slug, email: 'a@example.com', pw_hash: pw, ip_lock: lock },
+                                      { 'x-test-key': 'k', ...(ip ? { 'cf-connecting-ip': ip } : {}) });
+  eq((await ask('lockv4', true, '198.51.100.7')).status, 200, 'checkout');
+  eq(w.sessions.at(-1).metadata.allow_ip, '198.51.100.7', 'the signup address is kept on the order');
+  await ask('lockv6', true, '2001:db8::7');
+  eq(w.sessions.at(-1).metadata.allow_ip, '2001:db8::7', 'IPv6 too');
+  await ask('nolock', false, '198.51.100.8');
+  eq('allow_ip' in w.sessions.at(-1).metadata, false, 'unticked: no address kept');
+  await ask('badip', true, "1.2.3.4' ; rm -rf /");
+  eq('allow_ip' in w.sessions.at(-1).metadata, false, 'a header that is not an address is dropped');
+  const sub = paid(w, 'lockv4'); w.subs[sub].metadata.allow_ip = '198.51.100.7';
+  await webhook(w, sub);
+  eq(/AMUX_IP_ALLOWLIST='198\.51\.100\.7'/.test(w.servers.at(-1).user_data), true, 'user_data turns the allowlist on with it');
+  eq(w.subs[sub].metadata.allow_ip, undefined, 'the address leaves Stripe once the server exists');
+  const sub2 = paid(w, 'nolock2'); await webhook(w, sub2);
+  eq(/AMUX_IP_ALLOWLIST/.test(w.servers.at(-1).user_data), false, 'no choice, no allowlist');
 });
 
 await test('funnel: paid, ready and canceled reach PostHog under the visitor id, once per order', async () => {

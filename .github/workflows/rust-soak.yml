@@ -33,8 +33,9 @@ on:
         default: '50'
       malloc_arena_max:
         description: >-
-          glibc MALLOC_ARENA_MAX for this run. Empty leaves it UNSET, which is
-          the shipped behaviour. Set it to run the AMUX-4810 A/B: glibc creates
+          glibc MALLOC_ARENA_MAX for this run. Empty leaves it UNSET, and the
+          server then caps itself at 2 (crates/amux-server/src/main.rs, AF-1134).
+          A value here overrides that cap. It exists for the AMUX-4810 A/B: glibc creates
           up to 8 x ncores per-thread arenas and rarely returns their memory to
           the OS, which would explain in-run RSS growth that scales with
           SOAK_CONCURRENCY (0.41-0.62 at 4, 0.76-1.47 at 8) and decelerates to a

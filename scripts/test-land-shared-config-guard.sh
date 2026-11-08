@@ -21,6 +21,15 @@ out="$(HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=lsc bash "$AM" land 2>&1)"; rc=$
   && echo "ok   refused, naming core.worktree's value" || { echo "FAIL rc=$rc: $(printf '%s' "$out" | tail -2)"; fail=1; }
 git fetch -q origin; [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ] && echo "ok   nothing pushed" || { echo "FAIL it pushed"; fail=1; }
 git config --unset core.worktree
+# core.bare=true (found on the amux checkout 2026-10-31): refused, and the
+# remedy it prints is the one that clears it, not --unset core.worktree.
+git config core.bare true
+out="$(HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=lsc bash "$AM" land 2>&1)"; rc=$?
+fix="$(printf '%s' "$out" | sed -n 's/.*Fix it (\(.*\)) and land again.*/\1/p' | head -1)"
+[ "$rc" = 2 ] && printf '%s' "$fix" | grep -q 'core.bare false' && ! printf '%s' "$fix" | grep -q 'core.worktree' \
+  && echo "ok   core.bare=true is refused and the remedy names core.bare" || { echo "FAIL bare rc=$rc fix=[$fix]: $(printf '%s' "$out" | tail -2)"; fail=1; }
+eval "$fix"
+[ "$(git config --get core.bare)" = false ] && echo "ok   running the printed remedy clears it" || { echo "FAIL the remedy left core.bare=$(git config --get core.bare)"; fail=1; }
 HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=lsc bash "$AM" land >/dev/null 2>&1; rc2=$?
 git fetch -q origin
 # Compare content, not shas: land replays (a new sha) rather than rebasing the

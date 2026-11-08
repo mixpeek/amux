@@ -790,20 +790,35 @@ fn record_task_changes(store: &crate::db::SharedStore, conn: &rusqlite::Connecti
     }
     let n = changes.len();
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
-    let res = store.write(move |c| {
-        for (name, from, to, src, card) in &changes {
-            c.execute(
-                "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
-                rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
-            )?;
+    // THE LIST BUILD DOES NOT WAIT FOR THIS WRITE. It used to, and the one
+    // writer thread is often busy with a long job (the storage sweep, the
+    // orchestrator's WIP evaluation). On 2026-11-02 that held the single fleet
+    // build for 19 s at the median and 234 s at worst, and every client waited
+    // 30 s for a 503 (378 sessions_cache_stuck in five hours). The rename
+    // history can land a few seconds late; the list cannot.
+    let store = store.clone();
+    let queued = std::time::Instant::now();
+    let spawned = std::thread::Builder::new().name("task-history-write".into()).spawn(move || {
+        let res = store.write(move |c| {
+            for (name, from, to, src, card) in &changes {
+                c.execute(
+                    "INSERT INTO session_events (ts, session, type, data, source) VALUES (?1, ?2, 'task.renamed', ?3, 'sessions-snapshot')",
+                    rusqlite::params![now, name, json!({"from": from, "to": to, "source": src, "card": card}).to_string()],
+                )?;
+            }
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        });
+        let waited_ms = queued.elapsed().as_millis() as u64;
+        match res {
+            Ok(_) => tracing::info!(target: "amux::sessions", n, waited_ms, measured = true, n_considered = n,
+                verdict = "task_renamed_recorded", "recorded worker task-name changes"),
+            Err(e) => tracing::warn!(target: "amux::sessions", n, waited_ms, error = %e, verdict = "task_history_write_failed",
+                "could not record worker task-name changes"),
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     });
-    match res {
-        Ok(_) => tracing::info!(target: "amux::sessions", n, measured = true, n_considered = n,
-            verdict = "task_renamed_recorded", "recorded worker task-name changes"),
-        Err(e) => tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
-            "could not record worker task-name changes"),
+    if let Err(e) = spawned {
+        tracing::warn!(target: "amux::sessions", n, error = %e, verdict = "task_history_write_failed",
+            "could not start the task-name history write");
     }
 }
 
@@ -1237,6 +1252,518 @@ pub async fn task_links(
         "requests": requests, "handoff": handoff.and_then(|h| serde_json::from_str::<Value>(&h).ok())})).into_response()
 }
 
+/// One owner request and where it stands, as `amux requests <worker>` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OwnerRequest {
+    pub id: i64,
+    pub ts_ms: i64,
+    pub text: String,
+    /// open | on-main | live | closed
+    pub status: &'static str,
+    pub evidence: String,
+}
+
+/// A bare acknowledgement is not a request (same list as `amux requests`).
+pub(crate) fn is_ack(text: &str) -> bool {
+    static ACK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^\s*(continue|go|go on|keep going|ok(ay)?|k|yes|yep|y|no|nope|sure|thanks?( you)?|ty|done|proceed|do it|lgtm|nice|great|cool|good)\W*$")
+            .expect("static regex")
+    });
+    text.trim().chars().count() < 4 || ACK.is_match(text)
+}
+
+/// Classify owner messages the way `amux requests` does (AF-1060): a request
+/// a commit on origin/main cites is on main, and live when the running build
+/// contains it; one closed by hand is closed; anything else is open. `landed`
+/// maps MSG id -> sha cited on origin/main; `closed` maps id -> (reason, sha);
+/// `is_live` is None when the repo is not the one this server deploys.
+pub(crate) fn classify_requests(
+    msgs: Vec<(i64, i64, String)>,
+    landed: &std::collections::HashMap<i64, String>,
+    closed: &std::collections::HashMap<i64, (String, Option<String>)>,
+    is_live: &dyn Fn(&str) -> Option<bool>,
+    answered: &std::collections::HashMap<i64, String>,
+) -> Vec<OwnerRequest> {
+    msgs.into_iter()
+        .filter(|(_, _, text)| !is_ack(text))
+        .map(|(id, ts_ms, text)| {
+            let sha = landed.get(&id).cloned().or_else(|| closed.get(&id).and_then(|c| c.1.clone()));
+            let (status, evidence) = match (&sha, closed.get(&id)) {
+                (None, Some((reason, _))) => ("closed", reason.clone()),
+                (Some(sha), _) => match is_live(sha) {
+                    Some(true) => ("live", sha.chars().take(9).collect()),
+                    _ => ("on-main", sha.chars().take(9).collect()),
+                },
+                // A question the worker answered in a turn of its own (AF-1059).
+                (None, None) => match answered.get(&id) {
+                    Some(reply) => ("answered", reply.clone()),
+                    None => ("open", String::new()),
+                },
+            };
+            let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+            OwnerRequest { id, ts_ms, text, status, evidence }
+        })
+        .collect()
+}
+
+/// A message that asks something rather than tells the worker to do something
+/// (AF-1059). Only these can be closed by being answered; an ask still needs a
+/// commit or `amux requests close`.
+pub(crate) fn is_question(text: &str) -> bool {
+    let t = text.trim();
+    let words: Vec<String> = t.split_whitespace().take(2)
+        .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string()).collect();
+    let (first, second) = (words.first().map_or("", String::as_str), words.get(1).map_or("", String::as_str));
+    // A request phrased as a question is still a request (land review F2):
+    // "can you fix X?" must stay open until something is done about it.
+    if matches!(first, "can" | "could" | "would" | "will" | "should" | "shall" | "please" | "pls" | "plz")
+        && (matches!(second, "you" | "u" | "we" | "ya") || matches!(first, "please" | "pls" | "plz"))
+    {
+        return false;
+    }
+    if t.ends_with('?') {
+        return true;
+    }
+    matches!(first, "how" | "hows" | "how's" | "what" | "whats" | "what's" | "why" | "when" | "where" | "which" | "who"
+        | "is" | "are" | "does" | "did" | "was" | "were" | "has" | "have")
+}
+
+/// The last thing the assistant SAID (text, not tool calls) in a Claude Code
+/// transcript between two unix times. One JSON object per line.
+#[cfg(test)]
+pub(crate) fn last_assistant_text(jsonl: &str, from: f64, to: f64) -> Option<String> {
+    let mut last = None;
+    for line in jsonl.lines() {
+        if let Some(text) = assistant_text_in_window(line, from, to) {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// [`last_assistant_text`] over a transcript file, a line at a time. AF-1081:
+/// transcripts reach 455 MB (p90 89 MB), and reading one whole and parsing
+/// every line made a cold GET /api/task-history/requests take 6 s, 55 s
+/// under load.
+fn last_assistant_text_in_file(path: &std::path::Path, from: f64, to: f64) -> Option<String> {
+    use std::io::BufRead;
+    let mut last = None;
+    for line in std::io::BufReader::new(std::fs::File::open(path).ok()?).lines().map_while(Result::ok) {
+        if let Some(text) = assistant_text_in_window(&line, from, to) {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// The assistant text on one transcript line, when its timestamp is in the
+/// window. The type and timestamp are read off the raw line first, so the
+/// full JSON parse runs only for the lines that can answer (AF-1081).
+fn assistant_text_in_window(line: &str, from: f64, to: f64) -> Option<String> {
+    if !line.contains("\"assistant\"") {
+        return None;
+    }
+    // The top-level timestamp follows `message` on a transcript line, so the
+    // LAST one is it; a tool input's own timestamp key comes earlier. The
+    // parsed field is checked again below, so a miss only costs a parse.
+    let key = "\"timestamp\":\"";
+    let raw_at = line.rfind(key).map(|i| &line[i + key.len()..]).and_then(|r| r.split('"').next())?;
+    let at = chrono::DateTime::parse_from_rfc3339(raw_at).ok()?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let e: Value = serde_json::from_str(line).ok()?;
+    if e["type"] != "assistant" {
+        return None;
+    }
+    let at = e["timestamp"].as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())?.timestamp_millis() as f64 / 1000.0;
+    if at < from || at > to {
+        return None;
+    }
+    let text: String = e["message"]["content"].as_array().into_iter().flatten()
+        .filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join(" ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
+/// Each open question and the window its answer must fall in: (id, asked at,
+/// the owner's NEXT message to this worker, any message, a bare "continue"
+/// included, since it also lands in that turn). Unix seconds; `settled` is true
+/// for a request a commit or a close already decided.
+pub(crate) fn question_windows(msgs: &[(i64, i64, String)], settled: &dyn Fn(i64) -> bool) -> Vec<(i64, f64, f64)> {
+    let mut asc: Vec<&(i64, i64, String)> = msgs.iter().collect();
+    asc.sort_by_key(|m| m.1);
+    asc.iter().enumerate()
+        .filter(|(_, m)| !is_ack(&m.2) && is_question(&m.2) && !settled(m.0))
+        .map(|(i, m)| (m.0, m.1 as f64 / 1000.0, asc.get(i + 1).map_or(f64::INFINITY, |n| n.1 as f64 / 1000.0)))
+        .collect()
+}
+
+/// The question's OWN turn from the worker's (ts, event, session_id) events
+/// in time order (land review F1): the first prompt submitted at or after the
+/// question arrived, then the first Stop after that submit, and only if it
+/// stopped before the owner's next message. A Stop belonging to a turn already
+/// running when the question came in is never taken. Returns (began, stop, sid).
+/// Each question's own-turn stop, from one ts-sorted scan of the turn events.
+/// A window `(id, asked_at, next, until)` sees exactly the events a query for
+/// `ts >= asked_at - 5 AND ts < until` returned (AF-1081).
+pub(crate) fn stops_in_windows(events: &[(f64, String, String)], windows: &[(i64, f64, f64, f64)]) -> Vec<(i64, f64, f64, String)> {
+    windows.iter().filter_map(|&(id, at, next, until)| {
+        let a = events.partition_point(|e| e.0 < at - 5.0);
+        let b = events.partition_point(|e| e.0 < until);
+        own_turn_stop(&events[a..b.max(a)], at, next).map(|(began, stop, sid)| (id, began, stop, sid))
+    }).collect()
+}
+
+pub(crate) fn own_turn_stop(events: &[(f64, String, String)], asked_at: f64, next: f64) -> Option<(f64, f64, String)> {
+    let began = events.iter().find(|(ts, ev, _)| *ts >= asked_at - 5.0 && ev == "UserPromptSubmit")?.0;
+    let (stop, _, sid) = events.iter().find(|(ts, ev, _)| *ts > began && ev == "Stop")?;
+    // The Stop must come after the question too (land review F3): the 5 s
+    // tolerance on the submit would otherwise admit a short turn that began
+    // just before the question and ended before it arrived.
+    (*stop > asked_at && *stop < next).then(|| (began, *stop, sid.clone()))
+}
+
+/// Find a Claude Code transcript by its session id under ~/.claude/projects.
+fn transcript_for(session_id: &str) -> Option<std::path::PathBuf> {
+    if session_id.is_empty() || session_id.contains('/') {
+        return None;
+    }
+    // A transcript does not move, and the search stats every project folder
+    // (8,257 on 2026-10-31), so a found path is kept (AF-1081).
+    static FOUND: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>> =
+        std::sync::LazyLock::new(Default::default);
+    if let Some(p) = FOUND.lock().ok().and_then(|m| m.get(session_id).cloned()).filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let root = std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".claude").join("projects");
+    let found = std::fs::read_dir(root).ok()?.flatten()
+        .map(|d| d.path().join(format!("{session_id}.jsonl")))
+        .find(|p| p.is_file())?;
+    if let Ok(mut m) = FOUND.lock() {
+        m.insert(session_id.to_string(), found.clone());
+    }
+    Some(found)
+}
+
+/// GET /api/task-history/requests?session=&days=7: the owner's requests to one
+/// worker and where each stands, so the worker card can answer "is it done"
+/// without anyone asking (AF-1060). Same rules as `amux requests <worker>`:
+/// cited by a commit on origin/main is on main (live when the running build
+/// has it, and only for the repo this server deploys); closed with `amux
+/// requests close` is closed; the rest are open. Cached a minute per worker.
+/// One git read per (command, repo, window) for 60 s, shared by every caller
+/// (AF-1081). The dashboard asks for every worker card at once and ~40 lanes
+/// share the mixpeek checkout, so each ran its own git log at the same moment:
+/// 0.8 s alone, ~5 s each under that contention. A per-key lock makes the
+/// concurrent callers wait for the one read instead of each spawning their
+/// own; a failed read is not kept, so the next caller tries again.
+fn shared_git_stdout(key: String, read: impl FnOnce() -> Option<String>) -> Option<std::sync::Arc<String>> {
+    type Slot = std::sync::Arc<std::sync::Mutex<Option<(std::time::Instant, std::sync::Arc<String>)>>>;
+    static SLOTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Slot>>> =
+        std::sync::LazyLock::new(Default::default);
+    let slot = SLOTS.lock().ok()?.entry(key).or_default().clone();
+    let mut held = slot.lock().ok()?;
+    if let Some((at, out)) = held.as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(60) {
+            return Some(out.clone());
+        }
+    }
+    let out = std::sync::Arc::new(read()?);
+    *held = Some((std::time::Instant::now(), out.clone()));
+    Some(out)
+}
+
+/// The answer per (session, days), with when it was computed.
+static OWNER_REQUESTS_CACHE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Value)>>> =
+    std::sync::LazyLock::new(Default::default);
+/// Keys whose refresh is running, so an expired answer starts one refresh.
+static OWNER_REQUESTS_REFRESHING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// What a GET does with the cached answer for its key (AF-1081).
+#[derive(Debug, PartialEq)]
+pub(crate) enum CachedAnswer {
+    /// Under 60 s old: serve it.
+    Fresh,
+    /// Older: serve it now and refresh behind the reply, so a card never waits
+    /// on git (the first read per repo still took 1.5-2.8 s on a loaded box
+    /// after the shared read, 2026-10-31).
+    Stale,
+    /// Nothing cached (the first call after a restart): answer "computing"
+    /// at once and compute behind the reply (AF-1083).
+    Missing,
+}
+
+/// How long one worker's owner-request count is served without a refresh.
+/// Hog RCA 20261031-084253: at 60 s every open dashboard re-read cmd_history
+/// and git log for each worker card every minute, and owner_requests was
+/// 15.5% of the server's busy samples while it ran at 448% on two ticks. A
+/// count of your open asks does not need minute freshness; a stale answer is
+/// still served at once and refreshed behind it.
+pub(crate) const OWNER_REQUESTS_FRESH: std::time::Duration = std::time::Duration::from_secs(300);
+
+pub(crate) fn cached_answer(age: Option<std::time::Duration>) -> CachedAnswer {
+    match age {
+        Some(a) if a < OWNER_REQUESTS_FRESH => CachedAnswer::Fresh,
+        Some(_) => CachedAnswer::Stale,
+        None => CachedAnswer::Missing,
+    }
+}
+
+pub async fn owner_requests(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(session) = q.get("session").filter(|s| !s.is_empty()).cloned() else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "session is required", "measured": false, "n_considered": 0}))).into_response();
+    };
+    let days = q.get("days").and_then(|v| v.parse::<f64>().ok()).unwrap_or(7.0).clamp(1.0, 30.0);
+    let key = format!("{session}|{days}");
+    let cached = OWNER_REQUESTS_CACHE.lock().ok().and_then(|c| c.get(&key).cloned());
+    let verdict = cached_answer(cached.as_ref().map(|(at, _)| at.elapsed()));
+    if let (CachedAnswer::Fresh, Some((_, v))) = (&verdict, &cached) {
+        return Json(v.clone()).into_response();
+    }
+    // Stale or missing: one refresh per key, behind the reply.
+    let start = OWNER_REQUESTS_REFRESHING.lock().map(|mut r| r.insert(key.clone())).unwrap_or(false);
+    if start {
+        let k = key.clone();
+        let who = session.clone();
+        tokio::spawn(async move {
+            // AT MOST FOUR COMPUTES AT ONCE (AF-1083). After a restart every
+            // worker card asks at once with nothing cached; computing them all
+            // inline held each request 34-74 s (13:35Z and 14:33Z, 2026-10-31)
+            // and filled the read pool for every other endpoint.
+            static COMPUTES: std::sync::LazyLock<tokio::sync::Semaphore> =
+                std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(4));
+            if let Ok(_permit) = COMPUTES.acquire().await {
+                let _ = compute_owner_requests(state, who, days, k.clone()).await;
+            }
+            if let Ok(mut r) = OWNER_REQUESTS_REFRESHING.lock() {
+                r.remove(&k);
+            }
+        });
+    }
+    match cached {
+        Some((at, mut v)) => {
+            v["cached_age_s"] = json!(at.elapsed().as_secs());
+            v["refreshing"] = json!(true);
+            Json(v).into_response()
+        }
+        // The dashboard ignores measured:false and asks again on its next pass.
+        None => Json(json!({"measured": false, "n_considered": 0, "session": session, "days": days, "computing": true,
+            "why_unmeasured": "not computed since the server started; computing now, ask again in a few seconds"})).into_response(),
+    }
+}
+
+/// Compute the answer and cache it. Split from the handler so an expired
+/// answer can be refreshed behind the reply.
+async fn compute_owner_requests(state: AppState, session: String, days: f64, key: String) -> Response {
+    // Per-phase wall time, in the answer and in a WARN past 1 s (AF-1081): the
+    // cold GET was 3-6 s and the first fix aimed at the wrong phase.
+    let t0 = std::time::Instant::now();
+    let mut phases = serde_json::Map::new();
+    let mut mark = |name: &str, since: &mut std::time::Instant| {
+        phases.insert(format!("{name}_ms"), json!(since.elapsed().as_millis() as u64));
+        *since = std::time::Instant::now();
+    };
+    let mut lap = std::time::Instant::now();
+    let who = session.clone();
+    let since_ms = ((chrono::Utc::now().timestamp() as f64 - days * 86400.0) * 1000.0) as i64;
+    let msgs = state.store.read_async(move |c| {
+        let human = crate::api::history::HUMAN_TYPES.iter().map(|t| format!("'{t}'")).collect::<Vec<_>>().join(",");
+        let mut st = c.prepare(&format!(
+            "SELECT id, ts, COALESCE(text,'') FROM cmd_history WHERE session = ?1 AND ts >= ?2 \
+             AND COALESCE(type,'') IN ({human}) AND {} = 'owner' ORDER BY ts DESC",
+            crate::api::history::sender_sql()
+        ))?;
+        let rows = st.query_map(rusqlite::params![who, since_ms], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?
+            .flatten().collect::<Vec<_>>();
+        Ok(rows)
+    }).await;
+    let msgs = match msgs {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
+    };
+    mark("messages", &mut lap);
+    let closed: std::collections::HashMap<i64, (String, Option<String>)> =
+        std::fs::read_to_string(crate::api::session_verbs::home().join("requests-closed.json")).ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| v.as_object().cloned())
+            .into_iter().flatten()
+            .filter_map(|(id, c)| Some((id.parse().ok()?, (c["reason"].as_str().unwrap_or("").to_string(), c["sha"].as_str().map(str::to_string)))))
+            .collect();
+    let sess = session.clone();
+    // Only THIS worker's requests: the log names every MSG id any lane cited,
+    // and requests-closed.json holds every lane's closes; checking all of them
+    // spawned hundreds of git processes a request (GET for desktop and amux-app
+    // took over 60 s on 2026-10-30).
+    let mine: std::collections::HashSet<i64> = msgs.iter().map(|m| m.0).collect();
+    let closed_shas: Vec<String> = closed.iter().filter(|(id, _)| mine.contains(id)).filter_map(|(_, c)| c.1.clone()).collect();
+    // No requests in the window: nothing for git to settle (AF-1081: the
+    // dashboard asks for every worker card at once, and workers with none
+    // were each spending 5 s in a git log contended by 40 others).
+    let no_requests = msgs.is_empty();
+    let git = tokio::task::spawn_blocking(move || {
+        if no_requests {
+            return Err("no owner requests in the window, so git was not read".to_string());
+        }
+        let repo = worker_repo(&sess).ok_or_else(|| "the worker has no git checkout".to_string())?;
+        let log = shared_git_stdout(format!("log|{}|{}", repo.display(), days as i64), || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["log", "origin/main", "--max-count=2000", "--format=%H%x1f%B%x1e"])
+                .arg(format!("--since={} days ago", days as i64 + 3))
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests").map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        }).ok_or_else(|| format!("git log did not finish within {}s", TASK_GIT_BUDGET.as_secs()))?;
+        let msg_id = regex::Regex::new(r"MSG-(\d+)").expect("static regex");
+        let mut landed = std::collections::HashMap::new();
+        for rec in log.split('\x1e') {
+            let Some((sha, body)) = rec.trim_start_matches('\n').split_once('\x1f') else { continue };
+            for c in msg_id.captures_iter(body) {
+                if let Ok(n) = c[1].parse::<i64>() {
+                    if mine.contains(&n) {
+                        landed.entry(n).or_insert_with(|| sha.trim().to_string());
+                    }
+                }
+            }
+        }
+        // A closed request's sha counts only when it is on origin/main, as in
+        // `amux requests` (land review F1): otherwise the request is closed.
+        let mut closed_on_main = std::collections::HashSet::new();
+        for sha in &closed_shas {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, "origin/main"])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            if run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-closed").is_some_and(|o| o.status.success()) {
+                closed_on_main.insert(sha.clone());
+            }
+        }
+        // Live is a fact only about the repo this server is built from.
+        let build = env!("AMUX_BUILD_COMMIT_FULL").trim().to_string();
+        let deploys = repo.join("crates").join("amux-server").is_dir() && !build.is_empty();
+        let mut live = std::collections::HashMap::new();
+        if deploys {
+            // One rev-list over the window the log read, not a merge-base per
+            // sha: a landed sha came from that window, so it is in the build
+            // exactly when the build's history over the window lists it.
+            let listed = shared_git_stdout(format!("rev-list|{}|{build}|{}", repo.display(), days as i64), || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&repo).args(["rev-list", &build])
+                    .arg(format!("--since={} days ago", days as i64 + 3))
+                    .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+                run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live").filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            });
+            if let Some(listed) = listed {
+                let in_build: std::collections::HashSet<String> = listed.lines().map(str::to_string).collect();
+                for sha in landed.values() {
+                    live.insert(sha.clone(), in_build.contains(sha));
+                }
+            }
+            // Anything rev-list did not settle (a closed sha older than the
+            // window, or every sha if rev-list failed) is asked per sha; both
+            // sets are this worker's only, so that is a handful (land review F1).
+            let pending: Vec<String> = landed.values().chain(closed_shas.iter())
+                .filter(|s| !live.contains_key(*s)).cloned().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            for sha in &pending {
+                let mut cmd = std::process::Command::new("git");
+                cmd.arg("-C").arg(&repo).args(["merge-base", "--is-ancestor", sha, &build])
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if let Some(o) = run_bounded_output(cmd, TASK_GIT_BUDGET, "owner-requests-live") {
+                    live.insert(sha.clone(), o.status.success());
+                }
+            }
+        }
+        let name = repo.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        Ok::<_, String>((landed, deploys, live, name, closed_on_main))
+    }).await.unwrap_or_else(|e| Err(e.to_string()));
+    mark("git", &mut lap);
+    let (landed, deploys, live, repo_name, closed_on_main, git_why) = match git {
+        Ok((l, d, v, n, c)) => (l, d, v, n, c, Value::Null),
+        Err(e) => (Default::default(), false, Default::default(), String::new(), Default::default(), json!(e)),
+    };
+    let closed: std::collections::HashMap<i64, (String, Option<String>)> = closed.into_iter()
+        .map(|(id, (reason, sha))| (id, (reason, sha.filter(|s| closed_on_main.contains(s)))))
+        .collect();
+    // ANSWERED (AF-1059): a question whose own turn ended (a native Stop)
+    // before the owner's next message to this worker, with the reply that turn
+    // ended on. A turn the next message joined proves nothing, so it stays open.
+    let questions = question_windows(&msgs, &|id| landed.contains_key(&id) || closed.contains_key(&id));
+    let who = session.clone();
+    let qs = questions.clone();
+    let stops: Vec<(i64, f64, f64, String)> = state.store.read_async(move |c| {
+        // Events up to the next message are all the rule can use; a day caps an open end.
+        let windows: Vec<(i64, f64, f64, f64)> = qs.into_iter().map(|(id, at, next)| (id, at, next, next.min(at + 86_400.0))).collect();
+        let (Some(lo), Some(hi)) = (
+            windows.iter().map(|w| w.1 - 5.0).reduce(f64::min),
+            windows.iter().map(|w| w.3).reduce(f64::max),
+        ) else {
+            return Ok(Vec::new());
+        };
+        // ONE scan over the span of every window, then each window is a slice
+        // of it (AF-1081). A query per window re-read the overlapping day-long
+        // windows: 1.5-2.8 s for 36-55 questions, against 0.3-0.8 s for one scan.
+        let events: Vec<(f64, String, String)> = c.prepare(
+            "SELECT ts, json_extract(data,'$.event'), COALESCE(json_extract(data,'$.session_id'),'') FROM session_events \
+             WHERE session = ?1 AND type = 'session.native_status' AND ts >= ?2 AND ts < ?3 \
+             AND json_extract(data,'$.event') IN ('UserPromptSubmit','Stop') ORDER BY ts",
+        )?
+        .query_map(rusqlite::params![who, lo, hi], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .flatten().collect();
+        Ok(stops_in_windows(&events, &windows))
+    }).await.unwrap_or_default();
+    mark("turn_events", &mut lap);
+    // A turn that has stopped never changes its reply, so each answer is read
+    // from its transcript once, keyed by the message, the turn's session and
+    // its stop (AF-1081).
+    type AnswerKey = (i64, String, i64);
+    static ANSWERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<AnswerKey, Option<String>>>> =
+        std::sync::LazyLock::new(Default::default);
+    let answered: std::collections::HashMap<i64, String> = tokio::task::spawn_blocking(move || {
+        stops.into_iter().filter_map(|(id, at, stop, sid)| {
+            let key = (id, sid.clone(), stop as i64);
+            let known = ANSWERS.lock().ok().and_then(|m| m.get(&key).cloned());
+            let reply = match known {
+                Some(r) => r,
+                None => {
+                    let path = transcript_for(&sid)?;
+                    let r = last_assistant_text_in_file(&path, at - 5.0, stop + 5.0);
+                    if let Ok(mut m) = ANSWERS.lock() {
+                        m.insert(key, r.clone());
+                    }
+                    r
+                }
+            }?;
+            Some((id, format!("replied: {}", reply.chars().take(160).collect::<String>())))
+        }).collect()
+    }).await.unwrap_or_default();
+    mark("answers", &mut lap);
+    let rows = classify_requests(msgs, &landed, &closed, &|sha| if deploys { live.get(sha).copied() } else { None }, &answered);
+    let count = |s: &str| rows.iter().filter(|r| r.status == s).count();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let total_ms = t0.elapsed().as_millis() as u64;
+    if total_ms > 1000 {
+        let phase_ms = Value::Object(phases.clone()).to_string();
+        tracing::warn!(target: "amux::owner_requests", session = %session, total_ms, phases = %phase_ms,
+            n_considered = rows.len(), measured = true, "verdict=owner_requests_slow");
+    }
+    let body = json!({
+        "measured": true, "n_considered": rows.len(), "session": session, "days": days,
+        "took_ms": total_ms, "phases": Value::Object(phases),
+        "repo": repo_name, "deploys": deploys,
+        "git_measured": git_why.is_null(), "git_why_unmeasured": git_why,
+        "counts": {"open": count("open"), "on_main": count("on-main"), "live": count("live"), "answered": count("answered"), "closed": count("closed")},
+        "requests": rows.iter().map(|r| json!({"id": format!("MSG-{}", r.id), "status": r.status, "evidence": r.evidence,
+            "age_h": ((now_ms - r.ts_ms) as f64 / 3_600_000.0 * 10.0).round() / 10.0, "text": r.text})).collect::<Vec<_>>(),
+    });
+    if let Ok(mut c) = OWNER_REQUESTS_CACHE.lock() {
+        c.insert(key, (std::time::Instant::now(), body.clone()));
+    }
+    Json(body).into_response()
+}
+
 /// Where the single sessions builder is, so a stalled build names itself and
 /// can be shed (2026-10-21: the builder took the flight lock at ~05:59Z and
 /// never published; every reader was refused for 25 minutes, then the restart
@@ -1384,6 +1911,158 @@ fn capture_stall_stack(held_ms: u64, phase: &'static str) {
     });
 }
 
+thread_local! {
+    /// Set on the background refresh thread so its own call builds instead of
+    /// serving the stale snapshot and spawning another refresh.
+    static REFRESH_INLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// One background fleet refresh at a time; a second caller serves the
+/// snapshot while the first refresh runs.
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+enum RefreshSpawn {
+    AlreadyRunning,
+    Failed(std::io::Error),
+}
+
+/// Start the fleet build on its own thread. The flag clears when the thread
+/// ends however it ends, so a panicking build cannot stop every later refresh.
+fn spawn_background_refresh(store: &crate::db::SharedStore) -> Result<(), RefreshSpawn> {
+    let store = store.clone();
+    spawn_refresh_with(move || {
+        REFRESH_INLINE.with(|f| f.set(true));
+        let t0 = std::time::Instant::now();
+        let result = legacy_sessions_array_built(&store);
+        tracing::debug!(target: "amux::sessions", verdict = "sessions_refreshed_in_background",
+            measured = true, n_considered = 1, ok = result.is_ok(),
+            build_ms = t0.elapsed().as_millis() as u64,
+            "fleet snapshot rebuilt off the request path");
+        if let Err(error) = result {
+            tracing::warn!(target: "amux::sessions", verdict = "sessions_background_refresh_failed",
+                measured = true, n_considered = 1, %error,
+                "background fleet refresh failed; callers keep the previous snapshot");
+        }
+    })
+    .map(|_| ())
+}
+
+/// The single-flight part of [`spawn_background_refresh`], separate so a test
+/// can run it without a fleet.
+fn spawn_refresh_with(
+    work: impl FnOnce() + Send + 'static,
+) -> Result<std::thread::JoinHandle<()>, RefreshSpawn> {
+    use std::sync::atomic::Ordering::SeqCst;
+    if REFRESHING.swap(true, SeqCst) {
+        return Err(RefreshSpawn::AlreadyRunning);
+    }
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            REFRESHING.store(false, SeqCst);
+        }
+    }
+    std::thread::Builder::new()
+        .name("sessions-refresh".into())
+        .spawn(move || {
+            let _clear = Clear;
+            work();
+        })
+        .map_err(|e| {
+            REFRESHING.store(false, SeqCst);
+            RefreshSpawn::Failed(e)
+        })
+}
+
+/// THE LAST FLEET SNAPSHOT SURVIVES A RESTART (AF-1032).
+///
+/// A new process has no snapshot, so every dashboard's first /api/sessions
+/// waited for a cold fleet build: 16-19 s at each of the 2026-10-30 restarts
+/// (03:11, 03:15, 03:29 and 03:34Z, main moving every few minutes), and the
+/// stale-while-revalidate path (AF-1011) cannot help with nothing to serve.
+/// The published snapshot is kept on disk and a cold process adopts it AS
+/// STALE, so callers get it at once while the background refresh rebuilds.
+///
+/// Same structural guarantees as the in-memory snapshot: it is written only on
+/// a successful publish, deleted by every structural invalidation (a config,
+/// isolation or registry write), adopted only when the registry fingerprint
+/// still matches, and never past [`PERSISTED_MAX_AGE_S`].
+const PERSISTED_MAX_AGE_S: f64 = 600.0;
+const PERSIST_EVERY_S: f64 = 15.0;
+
+fn persisted_snapshot_path() -> std::path::PathBuf {
+    amux_home().join("cache").join("sessions-snapshot.json")
+}
+
+fn persist_snapshot(json: &str, registry: u64, published: f64) {
+    static LAST: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if published - *last < PERSIST_EVERY_S {
+            return;
+        }
+        *last = published;
+    }
+    let path = persisted_snapshot_path();
+    let body = json!({"registry": registry.to_string(), "published": published, "json": json}).to_string();
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    let written = path.parent().map(std::fs::create_dir_all).transpose().and_then(|_| std::fs::write(&tmp, body)).and_then(|_| std::fs::rename(&tmp, &path));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(target: "amux::sessions", verdict = "sessions_snapshot_persist_failed", %error,
+            measured = true, n_considered = 1, "fleet snapshot not kept for the next restart");
+    }
+}
+
+/// Install the snapshot kept by the previous process when this one has none.
+fn adopt_persisted_snapshot(store_key: &std::sync::Weak<crate::db::Store>, epoch_now: u64, now: f64) {
+    static TRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TRIED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let Ok(raw) = std::fs::read_to_string(persisted_snapshot_path()) else { return };
+    let (outcome, age_s, kept) = adoptable(&raw, now, registry_fingerprint());
+    if let Some((json, registry, published)) = kept {
+        if let Ok(mut c) = build_array_cache().lock() {
+            if c.json.is_empty() {
+                *c = ListSnapshot {
+                    store: store_key.clone(),
+                    stamp: published,
+                    json,
+                    epoch: epoch_now,
+                    runtime_epoch: 0,
+                    registry,
+                    published,
+                    build_s: 0.0,
+                };
+            }
+        }
+    }
+    tracing::info!(target: "amux::sessions", verdict = "sessions_snapshot_restored", outcome,
+        age_s = age_s as i64, measured = true, n_considered = 1,
+        "previous process's fleet snapshot considered for the cold start");
+}
+
+/// Whether a kept snapshot may be adopted: `adopted` with its parts, or why not.
+fn adoptable(raw: &str, now: f64, registry_now: Option<u64>) -> (&'static str, f64, Option<(String, u64, f64)>) {
+    let Ok(v) = serde_json::from_str::<Value>(raw) else { return ("unreadable", 0.0, None) };
+    let (Some(registry), Some(published), Some(json)) = (
+        v["registry"].as_str().and_then(|r| r.parse::<u64>().ok()),
+        v["published"].as_f64(),
+        v["json"].as_str(),
+    ) else {
+        return ("unreadable", 0.0, None);
+    };
+    let age_s = now - published;
+    if !(0.0..PERSISTED_MAX_AGE_S).contains(&age_s) {
+        return ("too_old", age_s, None);
+    }
+    if registry_now != Some(registry) {
+        return ("registry_changed", age_s, None);
+    }
+    ("adopted", age_s, Some((json.to_string(), registry, published)))
+}
+
 fn snapshot_fresh(now: f64, published: f64, build_s: f64, ttl: f64) -> bool {
     now - published < ttl.max(build_s)
 }
@@ -1510,6 +2189,8 @@ pub fn invalidate_sessions_cache() {
     // Epoch first: an in-flight builder checks it AFTER building, so bumping
     // before the clear means no interleaving lets a pre-bump build survive.
     SESSIONS_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // The copy on disk predates this change too: a restart must not bring it back.
+    let _ = std::fs::remove_file(persisted_snapshot_path());
     if let Ok(mut c) = build_array_cache().lock() {
         c.stamp = 0.0;
         c.json.clear();
@@ -3738,65 +4419,349 @@ pub(crate) fn subagent_cache_step(now: f64, cached_at: f64, scanning: bool) -> S
     }
 }
 
+/// Conversations known to have a `subagents/` dir, from the last full walk.
+struct SubagentDirs {
+    walked_at: f64,
+    /// (conversation transcript, its subagents dir)
+    dirs: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+}
+static SUBAGENT_DIRS: std::sync::Mutex<Option<SubagentDirs>> = std::sync::Mutex::new(None);
+/// A full walk of ~/.claude/projects runs at most this often; between, only the
+/// subagent dirs it found are read. Hog RCA 20261030-044026: the walk covered
+/// 8,257 project dirs and 12,806 conversations every 30 s to find the 272 that
+/// have subagents, and was the server's top steady CPU share (14.7%). A first
+/// subagent in a conversation shows on the next full walk; a lane's REPORTED
+/// subagent count, which outranks this mtime fallback, is unaffected.
+pub(crate) const SUBAGENT_FULL_WALK_S: f64 = 600.0;
+
 /// The walk itself: lane -> newest subagent mtime, and how many
 /// conversations it looked at.
 fn scan_subagent_activity_walk(now: f64) -> (BTreeMap<String, f64>, usize) {
     let projects = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
         .join(".claude/projects");
-    let mut out: BTreeMap<String, f64> = BTreeMap::new();
-    let mut n_conv = 0usize;
     let claims = crate::api::session_verbs::conversation_claims();
-    let Ok(projs) = std::fs::read_dir(&projects) else {
-        return (out, 0);
-    };
-    for proj in projs.flatten() {
-        let Ok(entries) = std::fs::read_dir(proj.path()) else {
+    let mut known = SUBAGENT_DIRS.lock().unwrap_or_else(|p| p.into_inner());
+    let (newest, n_conv, full) = subagent_newest(&projects, now, &mut known, SUBAGENT_FULL_WALK_S);
+    if full {
+        tracing::debug!(conversations = n_conv, subagent_dirs = newest.len(), verdict = "subagent_full_walk", "subagent scan walked every conversation");
+    }
+    let mut out: BTreeMap<String, f64> = BTreeMap::new();
+    for (conv, t) in newest {
+        let owner = crate::api::session_verbs::conversation_owner(&conv, &claims);
+        if owner.is_empty() {
             continue;
-        };
-        for e in entries.flatten() {
-            let conv = e.path();
-            if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
-                continue;
-            }
-            n_conv += 1;
-            let subs = conv.with_extension("").join("subagents");
-            let Ok(files) = std::fs::read_dir(&subs) else {
-                continue;
-            };
-            let mut newest = 0.0f64;
-            for f in files.flatten() {
-                if !f.file_name().to_string_lossy().ends_with(".jsonl") {
-                    continue;
-                }
-                if let Some(m) = f
-                    .metadata()
-                    .ok()
-                    .and_then(|md| md.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                {
-                    newest = newest.max(m.as_secs_f64());
-                }
-            }
-            if newest <= 0.0 || now - newest > 3600.0 {
-                continue;
-            }
-            let owner = crate::api::session_verbs::conversation_owner(&conv, &claims);
-            if owner.is_empty() {
-                continue;
-            }
-            let slot = out.entry(owner).or_insert(0.0);
-            if newest > *slot {
-                *slot = newest;
-            }
+        }
+        let slot = out.entry(owner).or_insert(0.0);
+        if t > *slot {
+            *slot = t;
         }
     }
     (out, n_conv)
+}
+
+/// Conversation -> newest subagent transcript mtime, for conversations whose
+/// subagents wrote in the last hour. A full walk when `known` is missing or
+/// older than `full_every`, otherwise only the dirs it recorded. Returns the
+/// conversations looked at and whether this was a full walk.
+fn subagent_newest(
+    projects: &std::path::Path,
+    now: f64,
+    known: &mut Option<SubagentDirs>,
+    full_every: f64,
+) -> (Vec<(std::path::PathBuf, f64)>, usize, bool) {
+    let full = known.as_ref().is_none_or(|k| now - k.walked_at >= full_every);
+    if full {
+        let mut dirs = Vec::new();
+        let mut n_conv = 0usize;
+        if let Ok(projs) = std::fs::read_dir(projects) {
+            for proj in projs.flatten() {
+                let Ok(entries) = std::fs::read_dir(proj.path()) else {
+                    continue;
+                };
+                for e in entries.flatten() {
+                    let conv = e.path();
+                    if conv.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+                        continue;
+                    }
+                    n_conv += 1;
+                    let subs = conv.with_extension("").join("subagents");
+                    if subs.is_dir() {
+                        dirs.push((conv, subs));
+                    }
+                }
+            }
+        }
+        *known = Some(SubagentDirs { walked_at: now, dirs });
+        let out = subagent_mtimes(known.as_ref().map(|k| &k.dirs[..]).unwrap_or(&[]), now);
+        return (out, n_conv, true);
+    }
+    let k = known.as_ref().expect("checked above");
+    (subagent_mtimes(&k.dirs, now), k.dirs.len(), false)
+}
+
+fn subagent_mtimes(dirs: &[(std::path::PathBuf, std::path::PathBuf)], now: f64) -> Vec<(std::path::PathBuf, f64)> {
+    let mut out = Vec::new();
+    for (conv, subs) in dirs {
+        let Ok(files) = std::fs::read_dir(subs) else {
+            continue;
+        };
+        let mut newest = 0.0f64;
+        for f in files.flatten() {
+            if !f.file_name().to_string_lossy().ends_with(".jsonl") {
+                continue;
+            }
+            if let Some(m) = f
+                .metadata()
+                .ok()
+                .and_then(|md| md.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            {
+                newest = newest.max(m.as_secs_f64());
+            }
+        }
+        if newest > 0.0 && now - newest <= 3600.0 {
+            out.push((conv.clone(), newest));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod subagent_walk_tests {
+    use super::*;
+
+    /// AF-1060: the worker card's request line uses the same states as
+    /// `amux requests`, including a repo the server never deploys.
+    #[test]
+    fn owner_requests_classify_like_amux_requests() {
+        use std::collections::HashMap;
+        let msgs = vec![
+            (1, 10, "continue".to_string()),
+            (2, 20, "make cmd k open the worker tab".to_string()),
+            (3, 30, "fix the editor button when zoomed".to_string()),
+            (4, 40, "hows the mac performing?".to_string()),
+            (5, 50, "add a scheduler wakeup".to_string()),
+        ];
+        let landed: HashMap<i64, String> = [(2, "aaaaaaaaaaaa".to_string()), (3, "bbbbbbbbbbbb".to_string())].into();
+        let closed: HashMap<i64, (String, Option<String>)> = [(4, ("answered in chat".to_string(), None))].into();
+        let rows = classify_requests(msgs.clone(), &landed, &closed, &|sha| Some(sha.starts_with('a')), &HashMap::new());
+        let got: Vec<(i64, &str)> = rows.iter().map(|r| (r.id, r.status)).collect();
+        assert_eq!(got, vec![(2, "live"), (3, "on-main"), (4, "closed"), (5, "open")], "the ack is dropped: {rows:?}");
+        assert_eq!(rows[0].evidence, "aaaaaaaaa");
+        assert_eq!(rows[2].evidence, "answered in chat");
+        // A repo this server does not deploy: a landed commit is on main, never "not live".
+        let other = classify_requests(msgs, &landed, &closed, &|_| None, &HashMap::new());
+        assert_eq!(other.iter().filter(|r| r.status == "on-main").count(), 2);
+        assert!(other.iter().all(|r| r.status != "live"));
+        // Closed WITH a sha (land review F1): the caller keeps the sha only when it
+        // is on origin/main. Kept, the request is on main; dropped, it is closed.
+        let msgs2 = vec![(6, 60, "answer this in chat please".to_string())];
+        let kept: HashMap<i64, (String, Option<String>)> = [(6, ("landed".to_string(), Some("cccccccccccc".to_string())))].into();
+        assert_eq!(classify_requests(msgs2.clone(), &HashMap::new(), &kept, &|_| Some(false), &HashMap::new())[0].status, "on-main");
+        let dropped: HashMap<i64, (String, Option<String>)> = [(6, ("answered in chat".to_string(), None))].into();
+        assert_eq!(classify_requests(msgs2, &HashMap::new(), &dropped, &|_| Some(false), &HashMap::new())[0].status, "closed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cold_cache_answers_computing_at_once_and_the_next_ask_gets_the_answer() {
+        // AF-1083: after a restart every card asked at once and each computed
+        // inline, 34-74 s per request. The first ask now answers at once.
+        use axum::extract::{Query, State};
+        let state = crate::api::standing_approvals::tests::test_state();
+        let q = || Query(std::collections::HashMap::from([("session".to_string(), format!("af1083-{}", std::process::id()))]));
+        let body = |r: Response| async move {
+            serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+        };
+        let t0 = std::time::Instant::now();
+        let first = body(owner_requests(State(state.clone()), q()).await).await;
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "the first ask waited {:?}", t0.elapsed());
+        assert_eq!((first["measured"].as_bool(), first["computing"].as_bool()), (Some(false), Some(true)), "{first}");
+        let mut got = Value::Null;
+        for _ in 0..100 {
+            got = body(owner_requests(State(state.clone()), q()).await).await;
+            if got["measured"].as_bool() == Some(true) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(got["measured"].as_bool(), Some(true), "the background compute never landed: {got}");
+    }
+
+    #[test]
+    fn an_expired_answer_is_served_and_refreshed_and_a_missing_one_is_computed_behind_the_reply() {
+        use std::time::Duration;
+        assert_eq!(cached_answer(Some(Duration::from_secs(299))), CachedAnswer::Fresh, "a minute-old count is served, not recomputed");
+        assert_eq!(cached_answer(Some(Duration::from_secs(300))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(Some(Duration::from_secs(3600))), CachedAnswer::Stale);
+        assert_eq!(cached_answer(None), CachedAnswer::Missing);
+    }
+
+    #[test]
+    fn concurrent_callers_share_one_git_read_and_a_failed_read_is_not_kept() {
+        // AF-1081: ~40 cards asked at once, each running its own git log.
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let key = format!("test|{}", std::process::id());
+        let handles: Vec<_> = (0..8).map(|_| {
+            let (reads, key) = (reads.clone(), key.clone());
+            std::thread::spawn(move || shared_git_stdout(key, || {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                Some("abc".to_string())
+            }))
+        }).collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap().as_deref().map(String::as_str), Some("abc"));
+        }
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "eight concurrent callers, one read");
+        let failing = format!("test-fail|{}", std::process::id());
+        assert!(shared_git_stdout(failing.clone(), || None).is_none());
+        assert_eq!(shared_git_stdout(failing, || Some("ok".into())).as_deref().map(String::as_str), Some("ok"), "a failed read is retried");
+    }
+
+    #[test]
+    fn one_scan_sliced_per_window_matches_a_query_per_window() {
+        // AF-1081: the handler now scans the turn events once and slices them.
+        // Overlapping day-long windows, an event 3 s before a question (inside
+        // the 5 s lead) and one exactly at `until` (outside) must all agree
+        // with filtering the events window by window, as the old query did.
+        let ev = |ts: f64, e: &str, sid: &str| (ts, e.to_string(), sid.to_string());
+        let events = vec![
+            ev(97.0, "UserPromptSubmit", "a"), ev(150.0, "Stop", "a"),
+            ev(200.0, "UserPromptSubmit", "b"), ev(300.0, "Stop", "b"),
+            ev(400.0, "UserPromptSubmit", "c"), ev(500.0, "Stop", "c"),
+        ];
+        let windows = vec![(1, 100.0, 180.0, 180.0), (2, 210.0, 400.0, 300.0), (3, 205.0, 1000.0, 1000.0), (4, 402.0, 900.0, 900.0)];
+        let naive: Vec<_> = windows.iter().filter_map(|&(id, at, next, until)| {
+            let w: Vec<_> = events.iter().filter(|e| e.0 >= at - 5.0 && e.0 < until).cloned().collect();
+            own_turn_stop(&w, at, next).map(|(b, s, sid)| (id, b, s, sid))
+        }).collect();
+        assert_eq!(stops_in_windows(&events, &windows), naive);
+        assert!(naive.iter().any(|r| r.0 == 1), "the prompt 3 s before the question still counts");
+        assert!(!naive.iter().any(|r| r.0 == 2), "a Stop exactly at until is outside the window");
+    }
+
+    /// AF-1059: a question answered in its own turn reads answered with the
+    /// reply; an ask, or anything landed or closed, is untouched.
+    #[test]
+    fn a_question_answered_in_its_own_turn_reads_answered() {
+        use std::collections::HashMap;
+        for q in ["hows mac perf", "how's the mac performing", "is it live?", "Does cmd k open the tab"] {
+            assert!(is_question(q), "{q}");
+        }
+        for a in ["make sure u fix it", "try again", "push to remote", "scan the devices on my network",
+                  "can you fix the editor button?", "could you add a scheduler wakeup", "should we push it?",
+                  "please check the deploy?", "do the rename too"] {
+            assert!(!is_question(a), "an ask is not a question: {a}");
+        }
+        let jsonl = [
+            r#"{"type":"user","timestamp":"2026-10-25T13:08:00Z","message":{"content":"hows the mac peforming?"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:08:10Z","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:08:31Z","message":{"content":[{"type":"text","text":"Let me check."}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T13:09:00Z","message":{"content":[{"type":"text","text":"The Mac is\nhealthy right now."}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-25T14:00:00Z","message":{"content":[{"type":"text","text":"a later turn"}]}}"#,
+        ].join("\n");
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        assert_eq!(last_assistant_text(&jsonl, t("2026-10-25T13:08:00Z"), t("2026-10-25T13:09:05Z")).as_deref(), Some("The Mac is healthy right now."));
+        assert_eq!(last_assistant_text(&jsonl, t("2026-10-25T15:00:00Z"), t("2026-10-25T16:00:00Z")), None, "nothing said in the window");
+        let msgs = vec![(7, 70, "hows the mac peforming?".to_string()), (8, 80, "make sure u fix it".to_string())];
+        let answered: HashMap<i64, String> = [(7, "replied: The Mac is healthy".to_string())].into();
+        let rows = classify_requests(msgs, &HashMap::new(), &HashMap::new(), &|_| None, &answered);
+        assert_eq!((rows[0].status, rows[0].evidence.as_str()), ("answered", "replied: The Mac is healthy"));
+        assert_eq!(rows[1].status, "open", "an ask with no commit stays open");
+        // The window ends at the owner's NEXT message, an ack included: a turn
+        // that message joined cannot be credited to the question.
+        let ms = vec![
+            (21, 200_000, "is it live?".to_string()),
+            (20, 100_000, "hows mac perf".to_string()),
+            (22, 150_000, "continue".to_string()),
+            (23, 300_000, "push to remote".to_string()),
+            (24, 400_000, "does cmd k work?".to_string()),
+        ];
+        // The question's own turn (land review F1). The worker was mid-turn when
+        // the question arrived at 100: that earlier turn stops at 120, and the
+        // question is submitted at 121 and answered by the Stop at 140.
+        let e = |ts: f64, ev: &str, sid: &str| (ts, ev.to_string(), sid.to_string());
+        let busy = vec![e(120.0, "Stop", "old"), e(121.0, "UserPromptSubmit", "s"), e(140.0, "Stop", "s")];
+        assert_eq!(own_turn_stop(&busy, 100.0, 150.0), Some((121.0, 140.0, "s".to_string())), "not the earlier turn's Stop at 120");
+        assert_eq!(own_turn_stop(&busy, 100.0, 130.0), None, "the next message (130) joined the question's turn");
+        assert_eq!(own_turn_stop(&[e(101.0, "UserPromptSubmit", "s")], 100.0, f64::INFINITY), None, "a turn that never stopped");
+        assert_eq!(own_turn_stop(&[e(97.0, "UserPromptSubmit", "p"), e(99.0, "Stop", "p")], 100.0, 150.0), None,
+            "a turn that began within the tolerance but ended before the question arrived");
+        let w = question_windows(&ms, &|id| id == 21);
+        assert_eq!(w, vec![(20, 100.0, 150.0), (24, 400.0, f64::INFINITY)], "settled 21 skipped, asks skipped: {w:?}");
+    }
+
+    /// AF-1081: the file reader streams and filters lines before parsing, and
+    /// must answer exactly what the whole-text reader answers, including when
+    /// a tool input carries its own earlier timestamp key.
+    #[test]
+    fn the_streamed_transcript_reader_agrees_with_the_whole_text_reader() {
+        let t = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp() as f64;
+        let line = |ty: &str, at: &str, content: &str| format!(
+            r#"{{"type":"{ty}","message":{{"content":{content}}},"uuid":"u","timestamp":"{at}"}}"#);
+        let jsonl = [
+            line("user", "2026-10-25T13:08:00Z", r#"[{"type":"text","text":"is the assistant done?"}]"#),
+            line("assistant", "2026-10-25T13:08:30Z", r#"[{"type":"tool_use","input":{"timestamp":"2026-10-25T09:00:00Z"}},{"type":"text","text":"Checked the job."}]"#),
+            line("assistant", "2026-10-25T13:09:00Z", r#"[{"type":"text","text":"It finished at noon."}]"#),
+            line("assistant", "2026-10-25T14:00:00Z", r#"[{"type":"text","text":"Later reply."}]"#),
+        ].join("\n");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, &jsonl).unwrap();
+        for (from, to) in [("2026-10-25T13:08:00Z", "2026-10-25T13:09:05Z"), ("2026-10-25T13:08:00Z", "2026-10-25T13:08:40Z"),
+                           ("2026-10-25T15:00:00Z", "2026-10-25T16:00:00Z")] {
+            assert_eq!(last_assistant_text_in_file(&path, t(from), t(to)), last_assistant_text(&jsonl, t(from), t(to)), "{from}..{to}");
+        }
+        assert_eq!(last_assistant_text_in_file(&path, t("2026-10-25T13:08:00Z"), t("2026-10-25T13:08:40Z")).as_deref(),
+            Some("Checked the job."), "the tool input's earlier timestamp does not move the line out of its window");
+    }
+
+    fn touch(p: &std::path::Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "{}\n").unwrap();
+    }
+
+    #[test]
+    fn between_full_walks_only_the_known_subagent_dirs_are_read() {
+        let t = tempfile::tempdir().unwrap();
+        let projects = t.path().join("projects");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+        touch(&projects.join("p1/c1.jsonl"));
+        touch(&projects.join("p1/c1/subagents/a.jsonl"));
+        touch(&projects.join("p1/c2.jsonl")); // no subagents
+        let mut known = None;
+        let (found, n, full) = subagent_newest(&projects, now, &mut known, 600.0);
+        assert!(full);
+        assert_eq!(n, 2, "a full walk looks at every conversation");
+        assert_eq!(found.len(), 1);
+        // A conversation that starts its first subagent between full walks...
+        touch(&projects.join("p2/c3.jsonl"));
+        touch(&projects.join("p2/c3/subagents/b.jsonl"));
+        let (found, n, full) = subagent_newest(&projects, now + 30.0, &mut known, 600.0);
+        assert!(!full, "a pass inside the window walked everything again");
+        assert_eq!(n, 1, "only the known subagent dir is read");
+        assert_eq!(found.len(), 1);
+        // ...shows on the next full walk.
+        let (found, n, full) = subagent_newest(&projects, now + 601.0, &mut known, 600.0);
+        assert!(full);
+        assert_eq!(n, 3);
+        assert_eq!(found.len(), 2);
+    }
 }
 
 /// The set of sessions currently `active` — the board's `stale` flag reads
 /// this (Python: `_session_prev_status[sess] == "active"`, py:15671-15697).
 /// Shares `FleetSignals` with the session list: one derivation, two readers.
 pub fn active_python_sessions(conn: &rusqlite::Connection) -> BTreeSet<String> {
+    // NO REGISTERED LANE, NOTHING TO PROBE (AF-1027). The answer is built from
+    // the sessions directory below, so with no `.env` there it is empty
+    // whatever tmux and the process table say. Probing them anyway made
+    // GET /api/board/derived wait on a fleet scan in a hermetic test home, and
+    // route_table's probe timed out at 15 s under the land gate's load.
+    let has_lane = std::fs::read_dir(amux_home().join("sessions"))
+        .map(|d| d.flatten().any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("env")))
+        .unwrap_or(false);
+    if !has_lane {
+        return BTreeSet::new();
+    }
     let mut signals = FleetSignals::load(conn);
     // The board must see the same evidence the session list sees, or a lane
     // reads active on one screen and idle on the other. Bounded: only lanes
@@ -4539,7 +5504,91 @@ fn announce_sticky_runtime_claim(session: &str, observed_card: &str, suppressed:
 /// load.
 pub fn legacy_sessions_array(store: &crate::db::SharedStore) -> anyhow::Result<String> {
     let json = legacy_sessions_array_built(store)?;
-    Ok(apply_config_overlays(json))
+    Ok(apply_status_reports(apply_config_overlays(json)))
+}
+
+// A STATUS REPORT SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
+// 2026-11-01: "make the status of workers more accurate and timely"). A hook
+// report pushes SSE immediately, but readers got the last snapshot, which is
+// rebuilt only once a build's own length has passed (median 8 s measured, so a
+// flip took 6-12 s to appear). Reports newer than the snapshot's build start
+// are laid over it the way config writes are; the next build retires them.
+// native_status::apply and report_post feed it.
+fn status_reports() -> &'static std::sync::Mutex<std::collections::HashMap<String, (f64, String)>> {
+    static R: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (f64, String)>>> = std::sync::OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// Record a report the writer just stored, for readers of the last snapshot.
+pub fn note_status_report(name: &str, state: &str, ts: f64) {
+    if let Ok(mut r) = status_reports().lock() {
+        r.insert(name.to_string(), (ts, state.to_string()));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn pending_status_report(name: &str) -> Option<String> {
+    status_reports().lock().ok()?.get(name).map(|(_, state)| state.clone())
+}
+
+fn apply_status_reports(json: String) -> String {
+    let built_at = build_array_cache().lock().map(|c| c.stamp).unwrap_or(0.0);
+    let pending: Vec<(String, (f64, String))> = {
+        let Ok(mut r) = status_reports().lock() else { return json };
+        r.retain(|_, (ts, _)| *ts >= built_at);
+        r.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    if pending.is_empty() {
+        return json;
+    }
+    let Ok(mut rows) = serde_json::from_str::<Vec<Value>>(&json) else { return json };
+    let mut flipped = 0usize;
+    for row in rows.iter_mut() {
+        let name = row["name"].as_str().unwrap_or("");
+        if let Some((_, (ts, state))) = pending.iter().find(|(n, _)| n == name) {
+            flipped += lay_status_report(row, state, *ts) as usize;
+        }
+    }
+    tracing::debug!(target: "amux::sessions", flipped, pending = pending.len(), measured = true,
+        n_considered = rows.len(), verdict = "sessions_status_report_applied",
+        "status reports were laid over a session list built before them");
+    serde_json::to_string(&rows).unwrap_or(json)
+}
+
+/// One report over one row. Returns whether the status moved. Only turn edges
+/// move: a rate limit, an API error or a stopped worker stay what the build
+/// decided, and a turn that ended with its own job or subagents still running
+/// stays active.
+fn lay_status_report(row: &mut Value, state: &str, ts: f64) -> bool {
+    if row["running"] != true {
+        return false;
+    }
+    if row["self_report"].is_object() {
+        row["self_report"]["state"] = json!(state);
+        row["self_report"]["ts"] = json!(ts as i64);
+    }
+    if row["last_progress_at"].as_f64().unwrap_or(0.0) < ts {
+        row["last_progress_at"] = json!(ts);
+    }
+    let busy = row["agents_working"].as_i64().unwrap_or(0) > 0
+        || row["background_jobs"].as_array().is_some_and(|j| j.iter().any(|b| b["waiting"] != true));
+    let current = row["status"].as_str().unwrap_or("");
+    let (status, turn, activity) = match (state, current) {
+        ("active", "idle" | "waiting" | "blocked") => ("active", "running", "working"),
+        ("idle", "active") if !busy => ("idle", "completed", "none"),
+        ("waiting", "active" | "idle") => ("waiting", "waiting", "waiting_for_input"),
+        ("blocked", "active" | "idle") => ("blocked", "waiting", "waiting_for_approval"),
+        _ => return false,
+    };
+    row["status"] = json!(status);
+    row["agent_state"] = json!(status);
+    row["turn_state"] = json!(turn);
+    row["activity"] = json!(activity);
+    row["status_authority"] = json!("authoritative");
+    if let Some(o) = row.as_object_mut() {
+        o.remove("waiting_reason");
+    }
+    true
 }
 
 // A CONFIG WRITE SHOWS AT ONCE, NOT AFTER THE NEXT FLEET BUILD (Ethan,
@@ -4613,6 +5662,7 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
     let ttl = env_secs("AMUX_SESSIONS_CACHE_TTL_S", 2.0);
     let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
     let epoch_now = SESSIONS_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
+    adopt_persisted_snapshot(&store_key, epoch_now, now);
     if let Ok(c) = build_array_cache().lock() {
         if snapshot_fresh(now, c.published, c.build_s, ttl)
             && c.store.ptr_eq(&store_key)
@@ -4711,6 +5761,25 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
             && registry_fingerprint().is_some_and(|f| c.registry == f))
         .then(|| c.json.clone())
     };
+    // THE CALLER THAT WOULD BUILD SERVES THE LAST SNAPSHOT TOO (AF-1011).
+    // Waiters already got the previous snapshot; the one request that won
+    // FLIGHT paid the whole build: 6 s at the median and up to 104 s on
+    // the live fleet (sessions_build_exceeds_ttl), so /api/sessions was the
+    // top slow path at steady state, not just after a restart. With a
+    // structurally valid snapshot in hand, the build runs on its own thread
+    // and this caller returns at once. Only a cold or invalidated cache (no
+    // snapshot to serve) still builds in the request.
+    if !REFRESH_INLINE.with(|f| f.get()) {
+        if let Some(json) = served() {
+            match spawn_background_refresh(store) {
+                Ok(()) | Err(RefreshSpawn::AlreadyRunning) => return Ok(json),
+                Err(RefreshSpawn::Failed(error)) => tracing::warn!(
+                    target: "amux::sessions", verdict = "sessions_refresh_spawn_failed",
+                    measured = true, n_considered = 1, %error,
+                    "background fleet refresh could not start; this request builds inline"),
+            }
+        }
+    }
     let (_flight, _watch) = match wait_for_flight(
         &FLIGHT,
         &BUILD_WATCH,
@@ -4835,6 +5904,8 @@ fn legacy_sessions_array_built(store: &crate::db::SharedStore) -> anyhow::Result
                     published,
                     build_s,
                 };
+                drop(c);
+                persist_snapshot(&json, registry, published);
             }
         }
         RaceVerdict::Raced => {
@@ -5460,6 +6531,28 @@ pub(crate) const NEW_WORKER_AUTOMATION_OFF: [(&str, &str); 6] = [
     ("AMUX_BOARD_FORCE_ADHERENCE", "0"),
 ];
 
+/// Is a worker's Chat tab on? On unless switched off (Ethan, 2026-11-02: "make it
+/// so chat is default enabled for all workers"). It is a flag: nothing runs until
+/// the first chat message. A worker turns it off with AMUX_CHAT_COMPANION=0, and a
+/// companion row has no Chat tab of its own.
+pub(crate) fn chat_on(value: Option<&str>, companion_of: Option<&str>) -> bool {
+    companion_of.is_none_or(|c| c.trim().is_empty())
+        && !value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+}
+
+#[cfg(test)]
+mod chat_default_tests {
+    use super::chat_on;
+    #[test]
+    fn chat_is_on_unless_switched_off() {
+        assert!(chat_on(None, None), "a worker nobody configured has Chat");
+        assert!(chat_on(Some("1"), None), "one already on stays on");
+        assert!(!chat_on(Some("0"), None), "an explicit off stays off");
+        assert!(!chat_on(None, Some("amux")), "a companion row has no Chat tab");
+        assert!(chat_on(None, Some("")));
+    }
+}
+
 pub async fn create_session_legacy(
     State(_state): State<AppState>,
     headers: HeaderMap,
@@ -5665,6 +6758,11 @@ pub async fn create_session_legacy(
         .unwrap_or(false)
     {
         pairs.push(("CC_ISOLATED", "1".to_string()));
+    }
+    // Chat is on unless asked otherwise (`chat_on`); `chat: false` creates a
+    // worker with it off.
+    if body.get("chat").is_some_and(|v| !crate::api::py_truthy(v)) {
+        pairs.push(("AMUX_CHAT_COMPANION", "0".to_string()));
     }
     // WORKTREE AT CREATE TIME (AMUX-4911). `worktree: false` is the dialog's
     // unchecked box, and it opts this worker out of group-level workspace
@@ -6085,6 +7183,10 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "auto_drain_backlog": crate::runtime_jobs::board_drive::dispatch_backlog_when_idle(&name),
             "board_decompose": crate::api::board_lifecycle::enabled(&name),
             "board_force_adherence": crate::api::board_lifecycle::force_adherence(&name),
+            // Whether amux uses the board for this worker at all: the same
+            // predicate every board gate enforces. The worker page's switch
+            // reads this, so Off on screen always means unused (2026-10-31).
+            "board_used": !crate::api::board_lifecycle::no_board(&name),
             "auto_drain_backlog_own": env.contains_key(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY),
             // AMUX-3048: the raw event-driven count behind agents_working, so a
             // LEAKED count (a lost SubagentStop pinning a lane "working") is
@@ -6277,12 +7379,12 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
         if let Some(row) = out.last_mut() {
             row["goal"] = if configured_provider == "claude" { crate::runtime_jobs::goal_keeper::goal_payload(&name) } else { serde_json::Value::Null };
         }
-        // The worker page's Chat tab (AMUX-5350): off unless switched on; the
+        // The worker page's Chat tab (AMUX-5350): on unless switched off; the
         // companion chat worker names the worker it talks about. Set here, not
         // in the literal above, which is at json!'s recursion limit.
         if let Some(v) = out.last_mut() {
             v["peers"] = json!(env.get("CC_PEERS").map(|t| t.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>()).unwrap_or_default());
-            v["chat_companion"] = json!(env.get("AMUX_CHAT_COMPANION").is_some_and(|x| x == "1"));
+            v["chat_companion"] = json!(chat_on(env.get("AMUX_CHAT_COMPANION").map(String::as_str), env.get("CC_COMPANION_OF").map(String::as_str)));
             v["companion_of"] = json!(env.get("CC_COMPANION_OF").cloned().unwrap_or_default());
             // Sparse worktree profile (AMUX-5341); empty = the repo's default.
             v["worktree_profile"] = json!(env.get("CC_WORKTREE_PROFILE").cloned().unwrap_or_default());
@@ -8727,6 +9829,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_report_moves_a_turn_edge_and_nothing_else() {
+        let row = |status: &str| json!({"running": true, "status": status, "self_report": {"state": "x", "ts": 1}, "last_progress_at": 5.0, "agents_working": 0, "background_jobs": [], "waiting_reason": "owner"});
+        let mut r = row("waiting");
+        assert!(lay_status_report(&mut r, "active", 100.0));
+        assert_eq!((r["status"].as_str(), r["activity"].as_str(), r["waiting_reason"].is_null()), (Some("active"), Some("working"), true));
+        assert_eq!((r["last_progress_at"].as_f64(), r["self_report"]["ts"].as_i64()), (Some(100.0), Some(100)));
+
+        let mut r = row("active");
+        assert!(lay_status_report(&mut r, "idle", 100.0));
+        assert_eq!(r["status"], "idle");
+
+        // A turn that ended with work still running stays active.
+        let mut r = row("active");
+        r["agents_working"] = json!(2);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": false}]);
+        assert!(!lay_status_report(&mut r, "idle", 100.0));
+        let mut r = row("active");
+        r["background_jobs"] = json!([{"waiting": true}]);
+        assert!(lay_status_report(&mut r, "idle", 100.0), "a watch loop is not work");
+
+        for held in ["rate_limited", "api_error", "error", "starting"] {
+            let mut r = row(held);
+            assert!(!lay_status_report(&mut r, "active", 100.0), "{held}");
+            assert_eq!(r["status"], held);
+        }
+        let mut r = row("idle");
+        r["running"] = json!(false);
+        assert!(!lay_status_report(&mut r, "active", 100.0));
+    }
+
+    #[test]
     fn status_blank_when_not_running() {
         let s = signals();
         assert_eq!(s.derive_status("x", false), "");
@@ -10639,6 +11774,42 @@ Checked, nothing of mine was at risk, no action needed from you.
         assert_eq!((c[0].1.as_str(), c[0].2.as_str()), ("Fix the build gate", "Ship the stopwatch"), "a change records from and to");
     }
 
+    /// 2026-11-02: the list build waited on this write while the writer ran a
+    /// long job, so /api/sessions answered 503 after 30 s. A busy writer must
+    /// not hold the build, and the rename must still be recorded.
+    #[test]
+    fn task_name_history_write_does_not_hold_the_list_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&dir.path().join("t.db")).unwrap());
+        let busy = store.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            busy.write(move |_| {
+                started_tx.send(()).ok();
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
+            })
+        });
+        started_rx.recv().unwrap();
+        let name = format!("zz-history-{}", std::process::id());
+        let conn = store.read().unwrap();
+        let t = std::time::Instant::now();
+        record_task_changes(&store, &conn, &[json!({"name": name, "task_name": "Ship it", "task_source": "generated_title"})]);
+        assert!(t.elapsed() < std::time::Duration::from_secs(1),
+            "record_task_changes waited {:?} on a busy writer", t.elapsed());
+        holder.join().unwrap().unwrap();
+        let count = || -> i64 {
+            store.read().unwrap().query_row(
+                "SELECT COUNT(*) FROM session_events WHERE type='task.renamed' AND session=?1",
+                [&name], |r| r.get(0)).unwrap()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while count() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(count(), 1, "the rename is recorded once the writer is free");
+    }
+
     #[test]
     fn task_rows_are_tasks_in_order_with_when_each_ended() {
         let c = crate::db::migrate::test_memdb();
@@ -11545,6 +12716,44 @@ mod config_overlay_tests {
 
 #[cfg(test)]
 mod subagent_scan_cache_tests {
+
+    /// AF-1032: a kept snapshot is adopted only while young and while the
+    /// registry is the one it was built against; anything else rebuilds cold.
+    #[test]
+    fn a_kept_snapshot_is_adopted_only_young_and_with_the_same_registry() {
+        let raw = |published: f64| serde_json::json!({"registry": "42", "published": published, "json": "[]"}).to_string();
+        let (ok, _, kept) = super::adoptable(&raw(1000.0), 1060.0, Some(42));
+        assert_eq!(ok, "adopted");
+        assert_eq!(kept, Some(("[]".to_string(), 42, 1000.0)));
+        assert_eq!(super::adoptable(&raw(1000.0), 1000.0 + super::PERSISTED_MAX_AGE_S + 1.0, Some(42)).0, "too_old");
+        assert_eq!(super::adoptable(&raw(1000.0), 1060.0, Some(43)).0, "registry_changed", "a worker added or deleted since");
+        assert_eq!(super::adoptable(&raw(1000.0), 1060.0, None).0, "registry_changed", "an unreadable registry is not a match");
+        assert_eq!(super::adoptable(&raw(2000.0), 1000.0, Some(42)).0, "too_old", "a snapshot from the future is not trusted");
+        assert_eq!(super::adoptable("{", 1000.0, Some(42)).0, "unreadable");
+    }
+
+    /// AF-1011: one background refresh at a time, and the flag clears when
+    /// the refresh ends, including when it panics.
+    #[test]
+    fn a_background_refresh_runs_once_at_a_time_and_always_clears() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let first = super::spawn_refresh_with(move || {
+            let _ = release_rx.recv();
+        })
+        .ok()
+        .expect("the first refresh starts");
+        assert!(
+            matches!(super::spawn_refresh_with(|| {}), Err(super::RefreshSpawn::AlreadyRunning)),
+            "a second caller must serve the snapshot, not start another fleet scrape"
+        );
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        let panicking = super::spawn_refresh_with(|| panic!("build failed")).ok().expect("free again after the first ended");
+        assert!(panicking.join().is_err());
+        let after = super::spawn_refresh_with(|| {}).ok().expect("a panicking refresh must not block every later one");
+        after.join().unwrap();
+    }
+
     use super::{subagent_cache_step, SubagentCacheStep, SUBAGENT_SCAN_TTL_S};
 
     /// Mac hog RCA 20261026-235522: callers that find the cache stale while a

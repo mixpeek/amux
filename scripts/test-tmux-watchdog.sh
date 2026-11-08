@@ -71,6 +71,56 @@ run; run; run; run
 check "a worker that keeps dying is restarted 3 times, then held" '[[ $(starts dead) == 3 ]]'
 check "the hold is logged once, not every scan" '[[ $(grep -c "HOLD dead:" "$T/home/logs/tmux-watchdog.log") == 1 ]]'
 
+# A REPLACED server (2026-10-29): tmux crashed and another process started a
+# new one before the next scan, so list-sessions answered and Mode 1 never ran.
+# A changed server pid recovers the fleet once; an unchanged one does not.
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions) echo "amux-x: 1 windows"; exit 0 ;;
+  display-message) cat "$PIDF" ;;
+  has-session) exit 0 ;;
+  list-panes) echo 102 ;;
+esac
+EOF
+cat > "$T/bin/amux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in url) echo "https://localhost:1";; start-all) echo "start-all" >> "$CALLS";; start) echo "start $2" >> "$CALLS";; esac
+EOF
+chmod +x "$T/bin/tmux" "$T/bin/amux"
+export PIDF="$T/pid"
+: > "$CALLS"; rm -f "$T/home/tmux-watchdog-server-pid"
+echo 500 > "$PIDF"; run
+check "the first scan only records the server's pid" '[[ $(grep -c "^start-all$" "$CALLS") == 0 ]]'
+run
+check "the same pid does not recover" '[[ $(grep -c "^start-all$" "$CALLS") == 0 ]]'
+echo 501 > "$PIDF"; run
+check "a replaced server recovers the fleet" '[[ $(grep -c "^start-all$" "$CALLS") == 1 ]]'
+check "the replacement is logged with both pids" 'grep -q "tmux server was REPLACED (pid 500 -> 501)" "$T/home/logs/tmux-watchdog.log"'
+run
+check "it recovers once, not every scan" '[[ $(grep -c "^start-all$" "$CALLS") == 1 ]]'
+
+# A DEAD server that Mode 1 restarts is recovered once. The server it starts
+# has a new pid, and the next scan must not read that as a replacement.
+cat > "$T/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions) [[ -f "$UP" ]] || exit 1; echo "keepalive: 1 windows" ;;
+  new-session) touch "$UP"; echo 777 > "$PIDF" ;;
+  display-message) [[ -f "$UP" ]] && cat "$PIDF" ;;
+  has-session) exit 0 ;;
+  list-panes) echo 102 ;;
+esac
+EOF
+chmod +x "$T/bin/tmux"
+export UP="$T/up"
+: > "$CALLS"; rm -f "$UP" "$T/home/tmux-watchdog-last-recovery"
+echo 501 > "$T/home/tmux-watchdog-server-pid"
+run
+check "a dead server is recovered" '[[ $(grep -c "^start-all$" "$CALLS") == 1 ]]'
+run
+check "the server Mode 1 started is not read as a replacement" '[[ $(grep -c "^start-all$" "$CALLS") == 1 ]]'
+
 echo "kill/start calls:"; sed 's/^/  /' "$CALLS"
 if (( fail )); then echo "test-tmux-watchdog: FAILED"; exit 1; fi
-echo "test-tmux-watchdog: all 7 checks passed"
+echo "test-tmux-watchdog: all 14 checks passed"

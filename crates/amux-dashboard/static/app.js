@@ -231,6 +231,134 @@ function _amuxClientIdentity() {
   };
 })();
 
+// ── A renamed worker's old name follows to the new one (2026-11-06) ──
+//
+// `workflows` became `wexus`; a phone that still had `workflows` open kept
+// sending to it, and its outbox said "the worker did not accept it" with a
+// Send again that retried the same dead name. The server now serves an old
+// name as the worker it became (and says so in `x-amux-renamed-to`), and
+// GET /api/session-renames lists every retired name. This rewrites the names
+// this app stored (the open worker, queued sends, the split panes, the grid
+// order) so the app stops asking for a worker that is gone. Runs at load and
+// whenever an answer says a name was renamed or not found.
+function _workerRenameRewrite(value, map) {
+  const urlRe = /(\/api\/(?:sessions|workers)\/)([^/?#]+)/g;
+  let changed = false;
+  const walk = v => {
+    if (typeof v === 'string') {
+      if (Object.prototype.hasOwnProperty.call(map, v)) { changed = true; return map[v]; }
+      if (v.indexOf('/api/') < 0 && v.indexOf('#peek=') < 0) return v;
+      const out = v.replace(urlRe, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      }).replace(/(#peek=)([^&]+)/, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      });
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o = {};
+      for (const [k, x] of Object.entries(v)) {
+        const key = Object.prototype.hasOwnProperty.call(map, k) ? (changed = true, map[k]) : k;
+        o[key] = walk(x);
+      }
+      return o;
+    }
+    return v;
+  };
+  const out = walk(value);
+  return {value: out, changed};
+}
+// Stored values that hold worker names. Board, history and pins live on the
+// server, which the rename already carried.
+const _WORKER_NAME_KEYS = ['amux_offline_queue', 'amux_peek_state', 'amux_peek_split_panes', 'amux_card_order'];
+async function _applyWorkerRenames(map) {
+  if (!map || typeof map !== 'object' || !Object.keys(map).length) return 0;
+  let rewritten = 0;
+  for (const [store, keys] of [[localStorage, _WORKER_NAME_KEYS], [sessionStorage, ['peekState']]]) {
+    for (const key of keys) {
+      if (key === 'amux_offline_queue') continue;
+      try {
+        const raw = store.getItem(key);
+        if (raw === null) continue;
+        const r = _workerRenameRewrite(JSON.parse(raw), map);
+        if (r.changed) { store.setItem(key, JSON.stringify(r.value)); rewritten++; }
+      } catch (e) { console.warn('[rename] could not rewrite a stored name', e); }
+    }
+  }
+  // The outbox goes through its own lock, so a delivery in flight is not raced.
+  try {
+    if (typeof _mutateQueue === 'function') {
+      await _mutateQueue(current => {
+        let n = 0;
+        for (let i = 0; i < current.length; i++) {
+          const r = _workerRenameRewrite(current[i], map);
+          if (r.changed) {
+            // A send refused only because its name was gone is sendable again.
+            const q = r.value;
+            if (q.state === 'blocked' || q.needs_decision) Object.assign(q, {state: 'pending', needs_decision: '', error: '', attempts: 0});
+            current[i] = q; n++;
+          }
+        }
+        if (n) rewritten++;
+      });
+    }
+  } catch (e) { console.warn('[rename] could not rewrite the outbox', e); }
+  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the card order', e); }
+  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the split panes', e); }
+  let reopened = '';
+  try {
+    if (typeof peekSession !== 'undefined' && peekSession && map[peekSession] && typeof openPeek === 'function') {
+      reopened = map[peekSession];
+      openPeek(reopened, typeof _peekTab === 'string' && _peekTab ? {tab: _peekTab} : undefined);
+    } else {
+      const h = _workerRenameRewrite(location.hash, map);
+      if (h.changed) history.replaceState(history.state, '', location.pathname + location.search + h.value);
+    }
+  } catch (e) { console.warn('[rename] could not reopen the renamed worker', e); }
+  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (e) { console.warn('[rename] rename beacon failed', e); }
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (e) { console.warn('[rename] could not redraw messages after a rename', e); }
+  return rewritten;
+}
+let _workerRenamesInFlight = null;
+function _syncWorkerRenames() {
+  if (_workerRenamesInFlight) return _workerRenamesInFlight;
+  _workerRenamesInFlight = (async () => {
+    try {
+      const r = await fetch('/api/session-renames', {cache: 'no-store'});
+      if (!r.ok) return 0;
+      const d = await r.json();
+      return await _applyWorkerRenames(d && d.renames);
+    } catch (_) { return 0; } finally { setTimeout(() => { _workerRenamesInFlight = null; }, 2000); }
+  })();
+  return _workerRenamesInFlight;
+}
+window._workerRenameRewrite = _workerRenameRewrite;
+window._applyWorkerRenames = _applyWorkerRenames;
+window._syncWorkerRenames = _syncWorkerRenames;
+(function installRenamedWorkerWatch() {
+  const _origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const p = _origFetch.call(this, input, init);
+    try {
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input || ''));
+      if (!/\/api\/(sessions|workers)\/[^/?]+/.test(url)) return p;
+      p.then(r => {
+        if (r && (r.headers.get('x-amux-renamed-to') || r.status === 404)) _syncWorkerRenames();
+      }, () => {});
+    } catch (e) { console.warn('[rename] rename watch could not read a fetch URL', e); }
+    return p;
+  };
+  const start = () => setTimeout(() => _syncWorkerRenames(), 1500);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+
 // ── A 200 is not proof the edit was applied (AMUX-2673, after AC-323) ──
 //
 // The API names unapplied request fields in `ignored_fields` (AC-263). Nothing
@@ -992,6 +1120,7 @@ async function _upgradeCheckout(billing) {
 }
 
 let sessions = [];
+let _sessionsReadAt = 0;   // when the worker list was last read from the server (_waitingNow)
 // A stream update and a poll response are two snapshots of the same runtime
 // truth. A request begun before an SSE update must not finish later and put the
 // old task attribution back on screen.
@@ -1033,22 +1162,40 @@ let _logSearchAbort = null;
 let filterProviders = new Set();   // 'claude' | 'codex' | 'gemini' | 'iterm2' | 'ollama' | 'grok' | 'muse'
 let filterStatuses = new Set();    // 'working' | 'blocked' | 'waiting' | 'idle' | 'stopped'
 // Stable status key for filtering: card WORKING = 'active' internally.
-function _sessStatusKey(s) {
-  if (s.status === 'starting') return 'starting';
-  if (!s.running) return 'stopped';
-  if (s.agent_state === 'unknown') return 'unknown';
-  if (s.status === 'rate_limited') return 'rate_limited';
-  if (s.status === 'api_error') return 'api_error';
-  if (s.status === 'error') return 'error';
-  if (s.status === 'unattributed') {
-    const rb = s.runtime_board || {};
-    return rb.runtime_status === 'active' ? 'working' : 'waiting';
-  }
-  if (s.status === 'blocked') return 'blocked';
-  if (s.status === 'active') return 'working';
-  if (s.status === 'waiting') return 'waiting';
-  return 'idle';
+// THE ONE CLIENT READING of a worker's status (implicit state machines
+// inventory 2026-10-31, #1). The card badge, the status filter and groups,
+// the sort, the grid dots and the board's is:working/is:waiting all read this,
+// so they cannot disagree. Before, the badge checked `waiting` before
+// `!running` and the filter the other way round: a stopped worker carrying a
+// stale waiting/owner showed "Needs input" on its card and filtered as
+// stopped; a paused worker still running filtered as working; the grid dot
+// showed a guessed (`unknown`) status as green.
+// `key` is what the badge shows; `group` is the filter/bucket it belongs to.
+// When the worker last did anything. last_activity is the last human or
+// message interaction, so a worker on a long run read "WORKING 12h ago".
+function _lastSeen(s) {
+  return Math.max(s.last_activity || 0, Math.floor(s.last_progress_at || 0));
 }
+
+function _workerStatus(s) {
+  const g = (key, group) => ({ key, group: group || key });
+  if (_workerLifecyclePending.has(s.name)) return g('pending', 'starting');
+  if (s.lifecycle === 'paused') return s.running ? g('pause_incomplete', 'blocked') : g('paused', 'stopped');
+  if (s.status === 'starting') return g('starting');
+  if (!s.running) return g('stopped');
+  if (s.agent_state === 'unknown') return g('unknown');
+  if (s.status === 'active' && s.activity === 'api_retry') return g('retrying', 'working');
+  if (s.status === 'active' && s.activity === 'background_shell') return g('background', 'working');
+  if (s.status === 'waiting') return s.waiting_reason === 'owner' ? g('needs_input', 'waiting') : g('waiting');
+  if (s.status === 'error') return g('error');
+  if (s.status === 'active') return g('working');
+  if (s.status === 'unattributed') return g('unattributed', (s.runtime_board || {}).runtime_status === 'active' ? 'working' : 'waiting');
+  if (s.status === 'blocked') return g('blocked');
+  if (s.status === 'rate_limited') return g('rate_limited');
+  if (s.status === 'api_error') return g('api_error');
+  return g('idle');
+}
+function _sessStatusKey(s) { return _workerStatus(s).group; }
 let filterModels = new Set();      // typed model family/capability from /api/models
 // Group pills HIDE as well as filter (Ethan, 2026-09-24: "press a pill/group
 // and that will hide them from the list"). A tap cycles neutral -> only this
@@ -1521,6 +1668,18 @@ window.addEventListener('online', () => {
   // true here because nothing had failed yet. Drain on the event itself, which
   // is the browser telling us the network is back.
   try { _syncBackoffReset(); _scheduleSyncRetry(); } catch (e) {}
+  // A read that failed while the network was down keeps the pill on "Sync
+  // error" until a read succeeds, and _onClientResume only resyncs when the
+  // data is over _SSE_REFRESH_MS old (and not at all in a hidden tab): the pill
+  // said "Sync error" over a running sync (LC-SYNC-PROGRESS, ios-safari, run
+  // 41010141601). Reconnecting with a read error outstanding re-reads once.
+  // Not on focus or visibility, so a persisting failure is no retry loop, and
+  // never for a 401 (session-load-failure.spec.ts).
+  if ((_sessionLoadError && _sessionLoadError.status !== 401) || _boardReadError || _syncReadError) {
+    // Plain text: engines format an object argument differently in the console.
+    console.info('[amux] reconnect resync after a failed read verdict=resume_resync_read_error');
+    try { _resyncEverything(); } catch (e) {}
+  }
 });
 // Migrate localStorage keys from cc_ to amux_
 ['offline_queue','sessions_cache','drafts'].forEach(k => {
@@ -2234,6 +2393,9 @@ async function _cloudOfferTry(trigger, worker) {
   if (!st || st.dismissed || st[trigger] || document.getElementById('cloud-offer')) return;
   const setup = document.getElementById('apikey-setup-modal');
   if (setup && setup.style.display === 'flex') return;   // first run comes first
+  // Not over an open file or worker: it covered the markdown editor's text on a phone
+  // (2026-10-31). Left unmarked, so it is offered again on the next trigger.
+  if (document.querySelector('#file-overlay.active, #peek-overlay.active')) return;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }
@@ -2798,13 +2960,20 @@ function _connectionSessionControls() {
   if (cloud) cloud.style.display = inApp ? '' : 'none';
   const out = document.getElementById('connection-sign-out');
   if (out && inApp) out.textContent = 'Sign out and switch server';
+  // A server behind the sign-in door (amux Cloud and dedicated hosts): its owner limits which
+  // addresses may reach it on the door's own page (cloud/desktop/door.py, /_door/allowlist).
+  const allow = document.getElementById('connection-allowlist');
+  if (allow) allow.style.display = _onDoorHost() ? '' : 'none';
+}
+function _onDoorHost() {
+  return /\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io';
 }
 // Sign out of this server on this device (2026-10-17). In the iOS app, back to its setup
 // screen (an address, or amux Cloud sign-in). On an amux Cloud server, the door's logout.
 // Elsewhere the owner/member cookies end and the page reloads to its sign-in.
 async function _connectionSignOut() {
   if (_appBridge('switch-server')) return;
-  if (/\.amux\.io$/.test(location.hostname) && location.hostname !== 'cloud.amux.io') {
+  if (_onDoorHost()) {
     location.assign('/_door/logout');
     return;
   }
@@ -4540,7 +4709,24 @@ async function _pendingSummary() {
   try { clips = ((await _idb.get('dict_pending')) || []).filter(x => x.state !== 'done'); } catch (e) {}
   const bytes = files.reduce((a, x) => a + (x.size || 0), 0)
               + clips.reduce((a, x) => a + ((x.blob && x.blob.size) || 0), 0);
-  return { files: files.length, clips: clips.length, total: files.length + clips.length, bytes };
+  // A clip past its automatic retries is waiting for a person, not sending.
+  const held = clips.filter(x => (x.attempts || 0) >= _DICT_MAX_AUTO && x.state !== 'sending');
+  // Sending only while a send is live; a clip that failed and waits for its next
+  // try says so, with its error, rather than reading "sending" (owner, 2026-10-31).
+  const sending = clips.filter(x => x.state === 'sending' && !_dictSendingStale(x));
+  const waiting = clips.filter(x => !held.includes(x) && !sending.includes(x));
+  return { files: files.length, clips: clips.length, total: files.length + clips.length, bytes,
+    clipsHeld: held.length, clipsSending: sending.length, clipsWaiting: waiting.length,
+    clipError: ((waiting[0] || held[0] || {}).error || ''),
+    clipSession: (held[0] || clips[0] || {}).session || '' };
+}
+// The recordings live in a worker's Dictation tab, which lists each one with
+// Play, Retry and Delete; the Files pill opens it.
+function _upqOpenRecordings(session) {
+  const s = session || (typeof peekSession !== 'undefined' && peekSession) || ((sessions || [])[0] || {}).name;
+  if (!s) return;
+  openPeek(s);
+  setPeekTab('dictation');
 }
 
 function _fmtPendingBytes(b) {
@@ -4560,7 +4746,16 @@ async function _upqRenderBadge() {
     if (p.clips) parts.push(p.clips + ' recording' + (p.clips === 1 ? '' : 's'));
     el.style.display = '';
     el.textContent = parts.join(' + ') + ' queued (' + _fmtPendingBytes(p.bytes) + ')'
-      + (online ? ' \u2014 sending\u2026' : ' \u2014 waiting for connection');
+      + (!online ? ' \u2014 waiting for connection'
+        : p.clipsHeld ? ' \u2014 ' + p.clipsHeld + ' not sent, open to retry'
+        : p.clips && !p.clipsSending ? ' \u2014 retrying soon' + (p.clipError ? ' (' + p.clipError.slice(0, 60) + ')' : '')
+        : ' \u2014 sending\u2026');
+    // Recordings are handled in the Dictation tab; say so and go there.
+    el.classList.toggle('upq-badge-link', !!p.clips);
+    el.title = p.clips ? 'Open the Dictation tab, where each recording can be played, retried or deleted' : '';
+    el.onclick = p.clips ? () => _upqOpenRecordings(p.clipSession) : null;
+    if (p.clips) { el.setAttribute('role', 'button'); el.tabIndex = 0; el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _upqOpenRecordings(p.clipSession); } }; }
+    else { el.removeAttribute('role'); el.removeAttribute('tabindex'); el.onkeydown = null; }
   });
 }
 
@@ -4664,16 +4859,82 @@ function _syncSetPhase(phase) { _syncPhase = phase; _syncPhaseAt = Date.now(); }
 // after_reset says whether that already happened since the last good read:
 // 1 on a later timeout means reopening did not help.
 let _upqResetSinceOk = false;
-function _upqListBounded(ms = 5000) {
+// STORAGE THAT STAYED DEAD COSTS EVERY SEND 5 SECONDS (AF-1008). Messages wait
+// for this read, and in the Mac app a reopened connection kept hanging for
+// hours: 2,368 timeouts from one Amux-Desktop client, after_reset=1 on nearly
+// all of them, each one a pass that held what the user had typed for 5s.
+// Once a read has timed out even after a reset, a pass waits 250ms instead.
+// The hung read keeps running, and if it ever completes it clears the flag,
+// so storage that is slow rather than dead gets the full 5s on the next pass.
+const _UPQ_DEAD_MS = 250;
+// ONE REPORT PER EPISODE, NOT PER PASS (AF-1117). With storage dead for
+// hours, every outbox pass beaconed the same timeout: 3,846 reports in one
+// log from two WebKit clients. The first timeout of an episode reports at
+// once, later ones at most every _UPQ_REPORT_EVERY_MS with how many were
+// folded in, and the first good read reports the episode's length.
+const _UPQ_REPORT_EVERY_MS = 10 * 60 * 1000;
+let _upqEpisode = null; // {start, last, folded, timeouts}
+// HOW BIG IS THE STORAGE THAT STOPPED ANSWERING (AF-1166). On 2026-11-02 every
+// window of one Mac app timed out on IndexedDB reads, about 200 resets an hour
+// each, while reads still finished now and then. Slow and dead read the same
+// from here, and so does a large origin. Each report carries the origin's
+// usage and quota from the last estimate that answered, how long it took, and
+// how many asks are still out: an estimate that never answers says the storage
+// process itself is stuck, not this store.
+const _upqEstimate = {asked: 0, answered: 0, usage: null, quota: null, ms: null};
+function _upqStorageFields() {
+  const est = typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate;
+  // Read before asking again, so an ask counts as unanswered only once a later
+  // report finds it still out.
+  const fields = {usage_bytes: _upqEstimate.usage, quota_bytes: _upqEstimate.quota, estimate_ms: _upqEstimate.ms,
+    estimates_unanswered: est ? _upqEstimate.asked - _upqEstimate.answered : null};
+  if (est && _upqEstimate.asked === _upqEstimate.answered) {
+    _upqEstimate.asked++;
+    const t0 = Date.now();
+    navigator.storage.estimate()
+      .then(e => { _upqEstimate.usage = e.usage ?? null; _upqEstimate.quota = e.quota ?? null; _upqEstimate.ms = Date.now() - t0; })
+      .catch(() => {})
+      .finally(() => { _upqEstimate.answered++; });
+  }
+  return fields;
+}
+function _upqTimeoutReport(fields) {
+  const now = Date.now();
+  if (!_upqEpisode) {
+    _upqEpisode = {start: now, last: now, folded: 0, timeouts: 1};
+    _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({episode_start: 1}, _upqStorageFields(), fields));
+    return;
+  }
+  _upqEpisode.timeouts++;
+  if (now - _upqEpisode.last < _UPQ_REPORT_EVERY_MS) { _upqEpisode.folded++; return; }
+  _outboxDiagnostic('outbox_upload_list_timeout', Object.assign({folded: _upqEpisode.folded,
+    episode_s: Math.round((now - _upqEpisode.start) / 1000)}, _upqStorageFields(), fields));
+  _upqEpisode.last = now;
+  _upqEpisode.folded = 0;
+}
+function _upqReadOk() {
+  _upqResetSinceOk = false;
+  if (!_upqEpisode) return;
+  _outboxDiagnostic('outbox_upload_list_recovered', Object.assign({timeouts: _upqEpisode.timeouts,
+    episode_s: Math.round((Date.now() - _upqEpisode.start) / 1000)}, _upqStorageFields()));
+  _upqEpisode = null;
+}
+function _upqListBounded(ms) {
+  if (ms == null) ms = _upqResetSinceOk ? _UPQ_DEAD_MS : 5000;
   let timer;
+  // A timer that fires far past its bound means the page was frozen while the
+  // read waited (AF-1036: an upload-list timeout landed in the same millisecond
+  // as a 255 s frozen-page "stall"). Give the read one fresh window instead.
+  let t0 = Date.now(), rearmed = false;
   return Promise.race([
-    _upqList().then(rows => { _upqResetSinceOk = false; return rows; }).catch(() => []),
-    new Promise(resolve => { timer = setTimeout(() => {
-      _outboxDiagnostic('outbox_upload_list_timeout', {waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
+    _upqList().then(rows => { _upqReadOk(); return rows; }).catch(() => []),
+    new Promise(resolve => { const fire = () => {
+      if (!rearmed && Date.now() - t0 > ms + 10000) { rearmed = true; t0 = Date.now(); timer = setTimeout(fire, ms); return; }
+      _upqTimeoutReport({waited_ms:ms, after_reset:_upqResetSinceOk ? 1 : 0, hidden:typeof document !== 'undefined' && document.hidden ? 1 : 0});
       _idb.reset('upload_list_timeout');
       _upqResetSinceOk = true;
       resolve([]);
-    }, ms); }),
+    }; timer = setTimeout(fire, ms); }),
   ]).finally(() => clearTimeout(timer));
 }
 // A FROZEN HOLDER IS PRE-EMPTED, NOT WAITED OUT (Ethan, 2026-10-23: the Mac
@@ -4732,9 +4993,20 @@ function runSyncBanner(quiet = false) {
   // A re-arming timeout, not setInterval: the outbox unit sandboxes provide
   // only setTimeout (tests/dashboard-outage-recovery.mjs).
   let watch = null;
+  // A FROZEN PAGE IS NOT A STALLED PASS (AF-1036). A sleeping Mac or a
+  // suspended app stops every timer, so the first check after waking saw the
+  // whole freeze as time in one phase: outbox_flight_stalled phase=deliver,
+  // stalled_ms 255778, queued 0, from a visible tab the moment it woke. A gap
+  // between checks far past their 5 s cadence means the page was not running;
+  // the phase clock restarts, and a pass truly stuck after waking still
+  // reports _SYNC_STALL_MS later.
+  let lastCheck = Date.now();
   const check = () => {
     watch = null;
     if (_syncFlightToken !== token) return;
+    const gap = Date.now() - lastCheck;
+    lastCheck = Date.now();
+    if (gap > 15000) { _syncPhaseAt = Date.now(); watch = setTimeout(check, 5000); return; }
     // Uploads report progress as they go; a long upload is not a stall.
     if (/^upload/.test(_syncPhase) || Date.now() - _syncPhaseAt < _SYNC_STALL_MS) { watch = setTimeout(check, 5000); return; }
     _outboxDiagnostic('outbox_flight_stalled', {phase:_syncPhase, stalled_ms:Date.now() - _syncPhaseAt,
@@ -5000,7 +5272,7 @@ async function _runSyncBanner(quiet = false, token = null) {
         // 5xx on its own to trip the route.mounted_routes_answer invariant
         // (AMUX-4900) where it was then filed as a server fault.
         if (!retryableMessageRefusal && (_outboxPermanentRefusal(r.status)
-          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) q.state = 'blocked';
+          || !(r.status >= 500 || [401, 408, 429].includes(r.status)))) Object.assign(q, {state: 'blocked', refused_status: r.status});
         throw new Error(await _apiErrText(r));
       }
       if (/\/api\/board\/[^/?]+$/.test(q.url) && (q.options.method || '').toUpperCase() === 'PATCH') {
@@ -5035,7 +5307,7 @@ async function _runSyncBanner(quiet = false, token = null) {
       } else if (e.outboxBlocked) q.state = 'blocked';
       if (_outboxIsMessage(q) && !q.needs_decision) {
         if (q.delivery_uncertain && q.checking_since && Date.now() - q.checking_since > _OUTBOX_DECIDE_AFTER_MS) _outboxMarkDecision(q, 'unconfirmed');
-        else if (q.state === 'blocked' && !q.delivery_uncertain) _outboxMarkDecision(q, 'refused');
+        else if (q.state === 'blocked' && !q.delivery_uncertain) _outboxBlockedMessageDecision(q);
       }
       if (!q.needs_decision) q.error = q.delivery_uncertain && _outboxMessageId(q)
         ? 'Awaiting confirmation — checking automatically' : String(e.message || e);
@@ -5043,7 +5315,7 @@ async function _runSyncBanner(quiet = false, token = null) {
         ...(q.delivery_uncertain ? {measured:false, why_unmeasured:'Server has not confirmed message acceptance'} : {}), feedback:{message:q.error}});
       q.attempts = (q.attempts || 0) + 1;
       _writeError = q.error;
-      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts, delivery_uncertain:!!q.delivery_uncertain, checking_since:q.checking_since || 0, needs_decision: q.needs_decision || ''}); });
+      await _mutateQueue(current => { const saved = current.find(entry => entry.id === q.id); if (saved) Object.assign(saved, {state: q.state, error: q.error, attempts: q.attempts, delivery_uncertain:!!q.delivery_uncertain, checking_since:q.checking_since || 0, needs_decision: q.needs_decision || '', refused_status: q.refused_status || 0}); });
       if (!q.needs_decision) failedResources.add(q.url);
       item.status = q.delivery_uncertain ? 'checking' : 'failed';
       item.label += ' — ' + q.error;
@@ -5274,10 +5546,35 @@ function _outboxIsMessage(q) {
 function _outboxNeedsDecision(q) {
   return !!(q && _outboxIsMessage(q) && q.needs_decision);
 }
+// "The worker did not accept it" is a claim about the SERVER'S ANSWER, so it
+// needs one (refused_status). A send that got no answer at all (WebKit's
+// "Fetch is aborted" on a reload or a dropped connection) was labelled refused
+// over a message the server never saw (owner, 2026-10-30: "mixpeek-vision and
+// other workers messages are not going thru"). It is sent again on its own,
+// with the same msg_id, so send_dedup never pastes it twice. After the attempt
+// cap it asks the reader, saying it never reached the server.
+// The server's answer: the recorded status, or for an entry stored before it
+// was recorded, the "409: ..." or "Error: 409" _apiErrText made its error.
+function _outboxServerAnswered(q) {
+  return !!(q.refused_status || /^(?:Error: )?[1-5]\d\d\b/.test(String(q.error || '')));
+}
+function _outboxBlockedMessageDecision(q, now = Date.now()) {
+  // Without a msg_id a resend could paste twice, so it waits for the reader.
+  if (_outboxServerAnswered(q) || !_outboxMessageId(q)) return _outboxMarkDecision(q, 'refused', now);
+  if ((q.attempts || 0) < 5) return _outboxRearmUnreached(q, 'no_server_answer');
+  return _outboxMarkDecision(q, 'unreached', now);
+}
+function _outboxRearmUnreached(q, why) {
+  try { _outboxDiagnostic('outbox_unanswered_send_rearmed', {id: q.id, msg_id: _outboxMessageId(q), why,
+    error: String(q.error || '').slice(0, 120), attempts: q.attempts || 0, measured: true, n_considered: 1}); } catch (_) {}
+  return Object.assign(q, {needs_decision: '', state: 'pending', delivery_uncertain: false,
+    attempts: why === 'mislabelled_refused' ? 0 : (q.attempts || 0)});
+}
 function _outboxMarkDecision(q, reason, now = Date.now()) {
   Object.assign(q, {needs_decision: reason, state: 'blocked', delivery_uncertain: false,
     error: reason === 'unconfirmed' ? 'Not confirmed by the worker; it may already be there'
          : reason === 'stale' ? 'Saved on this device and never sent'
+         : reason === 'unreached' ? 'Never reached the server: ' + String(q.error || 'no answer')
          : (q.error && !/^Awaiting confirmation/.test(q.error) ? q.error : 'The worker did not accept it')});
   try { amuxTrack('outbox_needs_decision', {id: q.id, reason, measured: true, n_considered: 1,
     age_ms: now - (q.timestamp || now)}); } catch (_) {}
@@ -5288,10 +5585,15 @@ function _outboxMarkDecision(q, reason, now = Date.now()) {
 function _outboxSettleDecisions(list, now = Date.now()) {
   let changed = 0;
   for (const q of list) {
+    // Labelled "refused" before 2026-10-30 with no answer from the server: the
+    // send was cut off (a reload, a dropped connection). Deliver it after all.
+    if (_outboxIsMessage(q) && q.needs_decision === 'refused' && !_outboxServerAnswered(q) && _outboxMessageId(q) && !_outboxActive.has(q.id)) {
+      _outboxRearmUnreached(q, 'mislabelled_refused'); changed++; continue;
+    }
     if (!_outboxIsMessage(q) || q.needs_decision || _outboxActive.has(q.id)) continue;
     const uncertain = _outboxUncertainMessage(q);
     if (uncertain && q.checking_since && now - q.checking_since > _OUTBOX_DECIDE_AFTER_MS) { _outboxMarkDecision(q, 'unconfirmed', now); changed++; }
-    else if (q.state === 'blocked' && !uncertain) { _outboxMarkDecision(q, 'refused', now); changed++; }
+    else if (q.state === 'blocked' && !uncertain) { _outboxBlockedMessageDecision(q, now); changed++; }
     else if (!uncertain && !q.attempted_at && !q.attempts && now - (q.timestamp || now) > _OUTBOX_STALE_SEND_MS) { _outboxMarkDecision(q, 'stale', now); changed++; }
   }
   return changed;
@@ -6275,9 +6577,33 @@ function _notifPush(icon, title, body, session, card) {
   _notifFireNative(title, body, session, card);
 }
 
+// One device alert per transition, however many tabs are open. Each tab runs
+// its own edge detector (implicit state machines inventory 2026-10-31, #30),
+// so the same "needs input" fired once per tab and Mac-app window. The first
+// tab to claim the notification's signature in the shared record fires it;
+// the Web Lock makes the check-and-set atomic across tabs where supported.
+const _NOTIF_CLAIM_KEY = 'amux_notif_claim';
+function _notifClaimOnce(sig) {
+  const claim = () => {
+    let prev = {};
+    try { prev = JSON.parse(localStorage.getItem(_NOTIF_CLAIM_KEY) || '{}'); } catch (e) {}
+    if (prev.sig === sig && Date.now() - (prev.ts || 0) < 20000) return false;
+    try { localStorage.setItem(_NOTIF_CLAIM_KEY, JSON.stringify({ sig, ts: Date.now() })); } catch (e) {}
+    return true;
+  };
+  // WebKit syncs localStorage between tabs after the lock is released, so the
+  // holder waits long enough to read the previous holder's claim.
+  if (navigator.locks && navigator.locks.request) return navigator.locks.request('amux-notif-claim', () => new Promise(r => setTimeout(() => r(claim()), 120))).catch(() => claim());
+  return Promise.resolve(claim());
+}
+
 async function _notifFireNative(title, body, session, card) {
   if (!amuxNotifyAllowed('native')) return;
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!(await _notifClaimOnce(title + '|' + (body || '') + '|' + (session || '')))) {
+    try { amuxTrack('notif_native_deduped', { measured: true, n_considered: 1 }); } catch (e) {}
+    return;
+  }
   const opts = {
     body, icon: '/icon-192.png', badge: '/icon-192.png',
     tag: 'amux-' + (session || Date.now()), renotify: true, silent: false,
@@ -6657,8 +6983,20 @@ function _fireAmuxAlert(a) {
   _notifPush(icon, title, body, a.session || '', /^[A-Za-z0-9_-]+$/.test(card) ? card : '');
 }
 
+let _transitionsCheckedAt = 0;
 function _checkSessionTransitions(newData) {
   if (_initialLoad) return;
+  // A tab that saw nothing for a minute (asleep, offline, backgrounded) would
+  // diff against a stale snapshot and announce long-past changes as new, such
+  // as a "finished" from an hour ago. Re-baseline instead (#30).
+  const now = Date.now();
+  const stale = _transitionsCheckedAt && now - _transitionsCheckedAt > 60000;
+  _transitionsCheckedAt = now;
+  if (stale) {
+    for (const s of newData) _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state };
+    try { amuxTrack('notif_transitions_rebaselined', { measured: true, n_considered: newData.length }); } catch (e) {}
+    return;
+  }
   for (const s of newData) {
     const prev = _prevSessionState[s.name];
     if (!prev) { _prevSessionState[s.name] = { status: s.status, running: s.running, goal: s.goal?.state }; continue; }
@@ -6924,13 +7262,15 @@ async function _fetchSessionsOnce() {
     const firstLoad = _initialLoad;
     _initialLoad = false;
     _sessionReadRecovered();
+    _sessionsReadAt = Date.now();
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
     if (j !== lastSessionsJSON) {
       _checkSessionTransitions(data);
       lastSessionsJSON = j;
-      sessions = data;
+      sessions = _applyLifecycleAcks(data);
+      _peekChatStateSync();
       _stateQuery.set(['sessions'], data);
       _sessionsSnapshotEpoch++;
       // Quota-full store: drop the cache rather than let the throw break rendering.
@@ -7142,8 +7482,12 @@ async function openNeedsInput() {
   ov.querySelector('.ni-close').focus();
   _niFetch();
 }
+// Closing the overlay ends an Approve all in progress: the owner approved the
+// batch they could see, and some of its items send outside (2026-11-06).
+let _niBatchGen = 0;
 function closeNeedsInput() {
   _niOpen = false;
+  _niBatchGen++;
   const ov = document.getElementById('ni-overlay');
   if (ov) ov.remove();
   document.body.classList.remove('ni-open');
@@ -7524,8 +7868,10 @@ async function _niApproveAllRun() {
   if (_niBusy) return;
   _niAllArmed = false;
   const skip = new Set();
-  let ok = 0, refused = 0;
+  const gen = _niBatchGen;
+  let ok = 0, refused = 0, stopped = false;
   for (let guard = 0; guard < 200; guard++) {
+    if (!_niOpen || gen !== _niBatchGen) { stopped = true; break; }
     const list = _niItems(_niShowOlder);
     const next = list.findIndex(i => !skip.has(i.key) && _niApprovable().some(a => a.key === i.key));
     if (next < 0) break;
@@ -7534,8 +7880,10 @@ async function _niApproveAllRun() {
     await _niAct('approve');
     if (_niItems(_niShowOlder).some(i => i.key === key)) { skip.add(key); refused++; } else ok++;
   }
-  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, refused ? (ok ? 'partial' : 'refused') : 'ok', ok + ' approved, ' + refused + ' refused');
-  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : ''));
+  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, stopped ? 'stopped' : refused ? (ok ? 'partial' : 'refused') : 'ok',
+    ok + ' approved, ' + refused + ' refused' + (stopped ? ', stopped when the overlay closed' : ''));
+  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : '') + (stopped ? '; stopped when you closed it' : ''));
+  if (!_niOpen) return;
   _niIdx = 0; _niRender();
 }
 
@@ -8051,21 +8399,20 @@ function _workerLifecycleInactive(s) {
   return !!(s && (s.archived || ['paused','archived','expired'].includes(s.lifecycle)));
 }
 function _workerExecutionBadge(s, runtimeBoard, opts) {
-  const pending = _workerLifecyclePending.get(s.name);
-  if (pending) return '<span class="status-badge idle">' + pending + '…</span>';
-  if (s.lifecycle === 'paused') return s.running
-    ? '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>'
-    : '<span class="status-badge paused">paused</span>';
+  const k = _workerStatus(s).key;
+  if (k === 'pending') return '<span class="status-badge idle">' + _workerLifecyclePending.get(s.name) + '…</span>';
+  if (k === 'pause_incomplete') return '<span class="status-badge blocked" title="Pause has not finished stopping this worker. Retry Pause.">pause incomplete</span>';
+  if (k === 'paused') return '<span class="status-badge paused">paused</span>';
   let badge = '';
   const tele = s.telemetry || {};
   // MSG-69352 items 2 and 4: a guess on an unhealthy status channel is shown
   // as a guess, and a finished turn waiting on its own background shell is
   // not "working".
-  if (s.running && s.agent_state === 'unknown') badge = '<button type="button" class="status-badge unknown" title="'
+  if (k === 'unknown') badge = '<button type="button" class="status-badge unknown" title="'
     + esc('Agent state unknown: only a screen guess (' + (s.status || '?') + ') is available and the status channel is ' + (tele.health || 'unmeasured') + '. ' + (tele.reason || '') + ' Automation will not act on it.')
     + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">unknown ▾</button>';
-  else if (s.running && s.status === 'active' && s.activity === 'api_retry') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
-  else if (s.running && s.status === 'active' && s.activity === 'background_shell') {
+  else if (k === 'retrying') badge = '<span class="status-badge rate-limited" title="A request to the API failed; the agent is waiting to retry it on its own.">retrying</span>';
+  else if (k === 'background') {
     // A status name and the job's age (MSG-99658: "idle" for 16 minutes while
     // etl_rest2.sh ran for 1h02m). The badge never shows the job's command: a
     // label is the whole command line ("cd /Users/... && AMUX_RESOURCES_ACK=..."),
@@ -8078,20 +8425,20 @@ function _workerExecutionBadge(s, runtimeBoard, opts) {
       + (jobs.length ? ' ' + jobs.map(j => j.label + ' (' + _bgJobAge(j.elapsed_s) + ')').join(', ') : '');
     badge = '<span class="status-badge background" title="' + esc(tip) + '">' + text + '</span>';
   }
-  else if (s.status === 'starting') badge = '<span class="status-badge idle">starting</span>';
-  else if (s.status === 'waiting' && s.waiting_reason === 'owner') badge = _needsInputBadge(s);
-  else if (s.status === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
-  else if (!s.running) badge = '<span class="status-badge idle">stopped</span>';
-  else if (s.status === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
-  else if (s.status === 'active')  badge = runtimeBoard.syncing
+  else if (k === 'starting') badge = '<span class="status-badge idle">starting</span>';
+  else if (k === 'stopped') badge = '<span class="status-badge idle">stopped</span>';
+  else if (k === 'needs_input') badge = _needsInputBadge(s);
+  else if (k === 'waiting') badge = '<span class="status-badge waiting"' + _waitingTitle(s) + '>' + _waitingLabel(s) + '</span>';
+  else if (k === 'error') badge = '<button type="button" class="status-badge blocked" title="' + esc(s.error_detail || s.state_detail || 'Worker failed; inspect the terminal for the provider error') + '" onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">error ▾</button>';
+  else if (k === 'working')  badge = runtimeBoard.syncing
     ? _runtimeBoardSyncBadge()
     : '<span class="status-badge active">working</span>' + _agentsChip(s)
       + (runtimeBoard.cardless ? _runtimeBoardCardlessBadge() : '');
-  else if (s.status === 'unattributed') badge = _runtimeBoardSplitBadge(s);
-  else if (s.status === 'blocked') badge = '<button type="button" class="status-badge blocked" title="Agent is waiting on a permission decision. Click for details." onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">blocked ▾</button>';
-  else if (s.status === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
-  else if (s.status === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
-  else if (s.status === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
+  else if (k === 'unattributed') badge = _runtimeBoardSplitBadge(s);
+  else if (k === 'blocked') badge = '<button type="button" class="status-badge blocked" title="Agent is waiting on a permission decision. Click for details." onclick="event.stopPropagation();_openStatusDetail(\'' + escJs(s.name) + '\')">blocked ▾</button>';
+  else if (k === 'rate_limited') badge = '<span class="status-badge rate-limited">rate limited</span>';
+  else if (k === 'api_error') badge = `<button type="button" class="status-badge rate-limited" title="API Error ${esc(s.api_error_code || '5xx')} — server-side and retryable. Send &quot;continue&quot;." onclick="event.stopPropagation();_openStatusDetail('${escJs(s.name)}')">API ${esc(s.api_error_code || '5xx')} ▾</button>`;
+  else if (k === 'idle')    badge = '<span class="status-badge idle"' + _idleMovedTitle(s) + '>idle' + _idleMovedSuffix(s) + '</span>';
 
   if (s.running && (tele.health === 'degraded' || tele.health === 'missing')) badge += '<span class="status-badge telemetry-warn" title="'
     + esc('Status channel ' + tele.health + ': ' + (tele.reason || '') + ' The status shown is ' + (s.status_authority || 'inferred') + '.') + '">⚠ telemetry</span>';
@@ -8316,6 +8663,69 @@ function _cardBoardActive(name) {
   });
   return n;
 }
+// OWNER REQUESTS ON THE WORKER CARD (AF-1060). Ethan asked "is it done" by
+// message four times in a day; the requests ledger already knew. The card shows
+// how many of his asks are open and how many are on main but not yet live, from
+// GET /api/task-history/requests (the same rules as `amux requests`). One fetch
+// per worker every two minutes, three at a time; the template reads the cache
+// so a re-render never waits on it.
+const _ownerReqCache = {};
+const _ownerReqQueue = [];
+let _ownerReqInFlight = 0;
+const _OWNER_REQ_TTL_MS = 120000;
+function _ownerReqWant(name) {
+  const c = _ownerReqCache[name];
+  if ((c && (Date.now() - c.at) < _OWNER_REQ_TTL_MS) || _ownerReqQueue.includes(name)) return;
+  _ownerReqQueue.push(name);
+  _ownerReqPump();
+}
+function _ownerReqPump() {
+  while (_ownerReqInFlight < 3 && _ownerReqQueue.length) {
+    const name = _ownerReqQueue.shift();
+    _ownerReqInFlight++;
+    _ownerReqCache[name] = Object.assign({}, _ownerReqCache[name], { at: Date.now() });
+    fetch(API + '/api/task-history/requests?session=' + encodeURIComponent(name))
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || d.measured === false) return;
+        _ownerReqCache[name] = { at: Date.now(), data: d };
+        document.querySelectorAll('[data-owner-req="' + CSS.escape(name) + '"]').forEach(el => { el.innerHTML = _ownerReqInner(name, el.dataset.trail === '1'); });
+      })
+      .catch(() => {})
+      .finally(() => { _ownerReqInFlight--; _ownerReqPump(); });
+  }
+}
+// A stable wrapper that LEADS the card's meta line; a fetch that lands fills
+// it in place, so the count never appears on a second row (css-mobile.md).
+// First, not last: on a 375px card a long meta line runs past the edge, and
+// the owner's asks are the part he acts on (seen live 2026-10-30: 6 of 36 lines
+// had the count clipped when it came last).
+function _ownerReqHTML(name, trail) {
+  return `<span class="mc-req-wrap" data-owner-req="${esc(name)}" data-trail="${trail ? 1 : 0}">${_ownerReqInner(name, trail)}</span>`;
+}
+function _ownerReqInner(name, trail) {
+  const d = (_ownerReqCache[name] || {}).data;
+  const open = d ? d.counts.open : 0;
+  const onMain = d ? d.counts.on_main : 0;
+  if (!open && !onMain) return '';
+  const parts = [];
+  if (open) parts.push(`<span class="mc-req-open">${open}</span> ${open === 1 ? 'ask' : 'asks'} open`);
+  if (onMain) parts.push(`<span class="mc-req-main">${onMain}</span> ${d.deploys ? 'on main' : 'landed'}`);
+  return `<span class="mc-req" role="button" tabindex="0" `
+    + `title="Your requests to ${esc(name)}: tap for the list" `
+    + `onclick="event.stopPropagation();_ownerReqShow('${escJs(name)}')">${parts.join(' · ')}</span>` + (trail ? ' · ' : '');
+}
+function _ownerReqShow(name) {
+  const d = (_ownerReqCache[name] || {}).data;
+  if (!d) return;
+  const label = { 'open': 'open', 'on-main': d.deploys ? 'on main, not live yet' : 'landed in ' + (d.repo || 'its repo'), 'live': 'live', 'closed': 'closed' };
+  const rows = d.requests.filter(r => r.status === 'open' || r.status === 'on-main').map(r =>
+    `<div style="padding:var(--space-2) 0;border-top:1px solid var(--border);">`
+    + `<div style="font-size:var(--fs-sm);color:var(--dim);">${esc(r.id)} · ${esc(label[r.status] || r.status)}${r.evidence ? ' · ' + esc(r.evidence) : ''} · ${esc(String(r.age_h))}h ago</div>`
+    + `<div>${esc(r.text)}</div></div>`).join('');
+  showAlertHtml('Your requests to ' + name, rows || '<div>Nothing open.</div>');
+}
+
 function _cardBoardStatusCounts(name) {
   const counts = {};
   (boardItems || []).forEach(c => {
@@ -8348,8 +8758,9 @@ function _cardDoingItem(name) {
 // An observed stale claim is a navigation aid, never promoted to a live claim.
 function _workerHasLiveActivity(s) {
   if (!s?.running || s.archived || ['paused','archived','expired'].includes(s.lifecycle)) return false;
-  const truth = s.runtime_board || {};
-  return truth.measured === true ? truth.runtime_status === 'active' : s.status === 'active';
+  // The list's own status decides. A status report can move it ahead of the
+  // board reading in the same row, and an idle worker is not "Working".
+  return s.status === 'active' || (s.status === 'unattributed' && s.runtime_board?.runtime_status === 'active');
 }
 
 function _boardActivityEntries(workerName) {
@@ -9100,7 +9511,7 @@ function render() {
           ${s.running && s.rate_limited_until ? `<span class="status-badge rate-limited" title="${s.rate_limit_weekly ? 'Weekly limit' : 'Rate-limited'} — auto-resume at ${_fmtResetTime(s.rate_limited_until)}">${s.rate_limit_weekly ? 'Weekly limit until' : 'Rate-limited until'} ${_fmtResetTime(s.rate_limited_until)}</span>` : ''}
           ${s.running && s.credit_limited ? `<span class="status-badge rate-limited" title="${esc(s.credit_limit_model || 'Model')} usage limit — switch model or top up credits (Bulk actions)${s.credit_limited_since ? '. Detected ' + timeAgo(s.credit_limited_since) + ' — clears on model change or restart' : ''}">${esc(s.credit_limit_model || 'model')} limit${s.credit_limited_since ? ` · ${timeAgo(s.credit_limited_since)}` : ''}</span>` : ''}
           ${_steerHumanCount(s) ? `<span class="status-badge steering" title="${_steerHumanCount(s)} steering message${_steerHumanCount(s)>1?'s':''} queued">${_steerHumanCount(s)} queued</span>` : ''}
-          ${s.last_activity ? `<span class="last-active">${timeAgo(s.last_activity)}</span>` : ''}
+          ${_lastSeen(s) ? `<span class="last-active">${timeAgo(_lastSeen(s))}</span>` : ''}
           ${(() => {
             /* Bare numbers, no chips (Ethan: "just numbers no outline ...
                conservative with real estate"). Keep runtime status and board
@@ -9109,6 +9520,7 @@ function render() {
                queue look like a stalled worker. Spell out the nonzero board
                columns from the SSE-synced boardItems instead. */
             if (s.isolated) return '';
+            _ownerReqWant(s.name);
             const byStatus = _cardBoardStatusCounts(s.name);
             const d = byStatus.doing || 0;
             const todo = byStatus.todo || 0;
@@ -9137,7 +9549,8 @@ function render() {
             if (needsYou) parts.push(`<span class="mc-total">${needsYou}</span> needs you`);
             if (review) parts.push(`<span class="mc-total">${review}</span> review`);
             if (done) parts.push(`<span class="mc-total">${done}</span> done`);
-            return parts.length ? `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${parts.join(' · ')}</span>` : '';
+            // Inside the one meta line, never a second row (css-mobile.md).
+            return `<span class="meta-count" title="Board status breakdown; parked or review work does not mean this worker is running">${_ownerReqHTML(s.name, parts.length > 0)}${parts.join(' · ')}</span>`;
           })()}
           ${!online ? '<span class="cached-badge">cached</span>' : ''}
         </div>` : ''}
@@ -9191,7 +9604,7 @@ function render() {
           // `desc` is absent and `desc_head` is the field that carries the line;
           // reading `.desc` rendered nothing for every worker.
           const shownCard = hasBoard ? (boardItems || []).find(c => c.id === displayTaskBoardId) : null;
-          const cardDesc = shownCard ? String(shownCard.desc || shownCard.desc_head || '').split('\n')[0].slice(0, 120) : '';
+          const cardDesc = shownCard ? _descPreviewLine(shownCard.desc || shownCard.desc_head).slice(0, 120) : '';
           return (showLlm
             ? `<div class="card-task-name" style="font-weight:600;">${esc(llmTask)}</div>`
             : '')
@@ -9502,9 +9915,8 @@ function _bindPeekTaskIdentity(s, identity) {
   const runtime = _runtimeBoardPresentation(s);
   const cardId = runtime.cardId || '';
   const llmTask = s.task_override || '';
-  const boardTitle = runtime.syncing
-    ? 'Synchronizing runtime/board truth…'
-    : (s.task_name || cardId || '');
+  // Not a "syncing" placeholder: a Task line reads the task it last knew.
+  const boardTitle = s.task_name || cardId || '';
   const showBoth = llmTask && boardTitle && llmTask !== boardTitle;
   row.style.display = (llmTask || boardTitle) ? 'flex' : 'none';
   if (showBoth) {
@@ -9600,20 +10012,27 @@ function _taskStaleAge(s) {
 // bare badge back, so the never case is spelled out instead of left blank.
 //
 // COMPACT ON PURPOSE: this badge sits in the worker list, which has to survive
-// 375px per .claude/rules/css-mobile.md. The badge carries "19m"; the full
+// 375px per crates/amux-dashboard/CLAUDE.md. The badge carries "19m"; the full
 // sentence goes in the title where it costs no width.
+// One line of a card's description as plain text: a preview shows no markdown
+// heading marks ("### Updated request").
+function _descPreviewLine(desc) {
+  return String(desc || '').split('\n')[0].replace(/^\s*#{1,6}\s+/, '');
+}
 function _idleMovedAt(s) {
   const at = Number(s && s.last_board_change_ts);
   return Number.isFinite(at) && at > 0 ? at : 0;
 }
+// A worker with no board has no card to have moved (the board is opt-in since
+// 2026-11-02), so "· never" said nothing about it.
 function _idleMovedSuffix(s) {
-  if (s?.isolated) return '';
+  if (s?.isolated || s?.board_used === false) return '';
   const at = _idleMovedAt(s);
   if (!at) return ' · never';
   return ' · ' + esc(timeAgo(at).replace(/ ago$/, ''));
 }
 function _idleMovedTitle(s) {
-  if (s?.isolated) return ' title="Idle — ready for your next message."';
+  if (s?.isolated || s?.board_used === false) return ' title="Idle — ready for your next message."';
   const at = _idleMovedAt(s);
   return at
     ? ' title="Idle right now. Last moved a board card ' + esc(timeAgo(at)) + '."'
@@ -10955,7 +11374,7 @@ function _renderPausedSection() {
   if (showExpanded) {
     html += '<div class="paused-body">';
     (q ? paused : allPaused).forEach(s => {
-      const ago = s.last_activity ? timeAgo(s.last_activity) : '';
+      const ago = _lastSeen(s) ? timeAgo(_lastSeen(s)) : '';
       const rawDir = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir.replace(/^\/Users\/[^/]+/, '~');
       const model = s.active_model || sessionConfiguredModel(s) || '';
@@ -11146,7 +11565,7 @@ function _renderArchivedSectionBody() {
   if (showExpanded) {
     html += '<div class="archived-body">';
     (q ? archived : allArchived).forEach(s => {
-      const ago = s.last_activity ? timeAgo(s.last_activity) : '';
+      const ago = _lastSeen(s) ? timeAgo(_lastSeen(s)) : '';
       const created = s.session_created ? new Date(s.session_created * 1000).toLocaleDateString([], {month:'short', day:'numeric', year:'2-digit'}) : '';
       const rawDir2 = s.worktree_active && s.worktree_path ? s.worktree_path : (s.dir || '');
       const dir = rawDir2.replace(/^\/Users\/[^/]+/, '~');
@@ -11698,6 +12117,7 @@ async function _outcomeStart(text, cfg, files) {
   showToast('Started ' + name + (dir ? ' in ' + dir : ''));
   await fetchSessions();
   document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return name;
 }
 
 // ── Set default model label from server config ──
@@ -12248,6 +12668,25 @@ async function deleteSession(session) {
 async function pauseWorker(session) { return _changeWorkerPaused(session, true); }
 async function resumeWorker(session) { return _changeWorkerPaused(session, false); }
 
+// An acknowledged pause/resume, kept until a snapshot agrees (or 30 s). A
+// sessions snapshot taken before the server applied it used to replace the
+// projection and flip the badge and the paused section back (implicit state
+// machines inventory 2026-10-31, #31). Re-applied to every incoming snapshot.
+const _lifecycleAck = new Map();
+function _applyLifecycleAcks(list) {
+  if (!_lifecycleAck.size || !Array.isArray(list)) return list;
+  const now = Date.now();
+  for (const [name, ack] of _lifecycleAck) {
+    const w = list.find(s => s.name === name);
+    if (!w || now - ack.at > 30000 || w.lifecycle === ack.lifecycle) { _lifecycleAck.delete(name); continue; }
+    w.lifecycle = ack.lifecycle;
+    if (typeof ack.running === 'boolean') w.running = ack.running;
+    if (ack.status) w.status = ack.status;
+    try { amuxTrack('lifecycle_ack_held_over_stale_snapshot', { measured: true, n_considered: 1 }); } catch (e) {}
+  }
+  return list;
+}
+
 async function _changeWorkerPaused(session, paused) {
   if (_workerLifecyclePending.has(session)) return;
   closeAllMenus();
@@ -12265,9 +12704,10 @@ async function _changeWorkerPaused(session, paused) {
       // must not leave a stale Resume action or a Working badge behind.
       const worker = sessions.find(s => s.name === session);
       if (worker && body.lifecycle) {
-        worker.lifecycle = body.lifecycle;
-        if (typeof body.running === 'boolean') worker.running = body.running;
-        if (body.session === 'starting' || (!paused && body.session === 'started')) worker.status = 'starting';
+        _lifecycleAck.set(session, { lifecycle: body.lifecycle, at: Date.now(),
+          running: typeof body.running === 'boolean' ? body.running : undefined,
+          status: (body.session === 'starting' || (!paused && body.session === 'started')) ? 'starting' : '' });
+        _applyLifecycleAcks(sessions);
       }
       updatePeekStatus();
       if (!paused) {
@@ -12608,7 +13048,10 @@ async function doKeys(name, keys) {
 
 const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
-  if (_fieldSizingSupported) return;
+  // A hand-sized box keeps its height while its draft lasts; its text scrolls
+  // (see _composerSetHeight). An empty box sizes to its content again.
+  if (el.classList.contains('user-sized') && !el.value) _composerSetHeight(el, 0);
+  if (_fieldSizingSupported || el.classList.contains('user-sized')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
@@ -12616,9 +13059,14 @@ function autoGrow(el) {
 // drag this input box by a corner and manually make it bigger"). The box sits
 // on the bottom edge, so the native bottom-right resize handle could only push
 // it off screen; the grip is on its top-left corner and dragging it up raises
-// the box's minimum height. Text still grows the box past that, up to 70% of
-// the screen. The height is kept per device; a double-click on the grip goes
-// back to sizing by content.
+// the box's height. Since 2026-11-06 that height holds in both directions
+// ("i should be able to drag this down even if the text is full"): longer text
+// scrolls inside it instead of holding the box open. Up to 70% of the screen.
+// The hand-set height lasts for the draft (Ethan, 2026-11-07: "the input box
+// should expand vertically as i type but i can also collapse it if i drag").
+// Kept per device, it held every later draft at one size and the box stopped
+// growing. Emptying the box (a send, or deleting the text) or a double-click
+// on the grip goes back to sizing by content.
 const _COMPOSER_H_KEY = 'amux_peek_composer_h';
 function _composerSetHeight(ta, h) {
   if (!ta) return;
@@ -12626,6 +13074,7 @@ function _composerSetHeight(ta, h) {
   const max = Math.round(innerHeight * 0.7);
   h = Math.max(44, Math.min(max, Math.round(h)));
   ta.style.setProperty('--composer-h', h + 'px');
+  ta.style.height = '';   // an inline height from autoGrow would override the hand-set one
   ta.classList.add('user-sized');
   return h;
 }
@@ -12633,20 +13082,18 @@ function _composerGripInit(gripId, taId, key) {
   const grip = document.getElementById(gripId), ta = document.getElementById(taId);
   if (!grip || !ta || grip._wired) return;
   grip._wired = true;
-  const saved = parseInt(localStorage.getItem(key) || '', 10);
-  if (saved > 0) _composerSetHeight(ta, saved);
-  let startY = 0, startH = 0, last = 0;
-  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  try { localStorage.removeItem(key); } catch (e) {}   // a height saved before 2026-11-07
+  let startY = 0, startH = 0;
+  const move = e => { _composerSetHeight(ta, startH + (startY - e.clientY)); e.preventDefault(); };
   const up = () => {
     grip.classList.remove('dragging');
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
-    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
   };
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
-    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    startY = e.clientY; startH = ta.getBoundingClientRect().height;
     grip.classList.add('dragging');
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -12654,7 +13101,6 @@ function _composerGripInit(gripId, taId, key) {
   });
   grip.addEventListener('dblclick', () => {
     _composerSetHeight(ta, 0);
-    try { localStorage.removeItem(key); } catch (e) {}
     autoGrow(ta);
   });
 }
@@ -12935,7 +13381,12 @@ function _draftInputChanged(input) {
   if (id === 'peek-cmd-input' || id === 'peek-input-fs-ta') _draftSave(_peekComposerTarget(), input.value);
   else if (id.startsWith('input-')) _draftSave(id.slice(6), input.value);
 }
-document.addEventListener('input', event => _draftInputChanged(event.target));
+document.addEventListener('input', event => {
+  _draftInputChanged(event.target);
+  // Deleting a hand-sized draft down to nothing sizes the box by content again.
+  const t = event.target;
+  if (t && t.classList && t.classList.contains('user-sized') && !t.value) _composerSetHeight(t, 0);
+});
 window.addEventListener('storage', event => {
   if (event.storageArea !== localStorage || !event.key || !event.key.startsWith(_DRAFT_PREFIX)) return;
   const session = event.key.slice(_DRAFT_PREFIX.length);
@@ -12980,11 +13431,10 @@ async function sendFromInput(name) {
     return;
   }
   const original = inp.value;
-  const queued = _sendMode === 'queue' && (sessions.find(s => s.name === name) || {}).status !== 'waiting';
+  const queued = _sendMode === 'queue' && !_waitingNow(name);
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _composerLockWatch(name, original);
+  const lock = _composerLockTake(name, original);
   _syncComposerPending();
   try {
     const identity = {};
@@ -13019,7 +13469,7 @@ async function sendFromInput(name) {
     _composerUnconfirmed(name, 'exception', _files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(name);
+    _composerLockRelease(name, lock);
     _syncComposerPending();
   }
 }
@@ -13500,7 +13950,7 @@ async function _scopeEditSave() {
 const _BOARD_SWITCHES = [
   { field: 'board_force_adherence', value: 'board_force_adherence', own: null, group: 'The board and this worker',
     label: 'Board steers this worker',
-    note: 'Lets the board type into this worker: start cards, nudge and remind it. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board only keeps records.' },
+    note: 'Lets the board type into this worker (start cards, nudge and remind it) only where AMUX_BOARD_STEERS=1 is set; otherwise the board records only. With planning on, a task-like message is held until it becomes cards, and the worker gets the cards instead. Off: the board is not used for this worker.' },
   { field: 'board_auto_pickup', value: 'auto_pickup_raw', active: 'auto_pickup', own: 'auto_pickup_own', parents: ['board_force_adherence'],
     label: 'Start To Do cards when idle',
     note: 'When the worker goes idle it claims its next To Do card and starts on it.' },
@@ -13550,10 +14000,14 @@ const _WORKER_BOARD_CONFIGS = _BOARD_SWITCHES;
 function _boardOneState(s) {
   if (!s || s.isolated) return { mode: 'off', on: false, label: 'Off' };
   if ('board_enabled' in _pbcPending) return _pbcPending.board_enabled ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
+  // The server's own answer (2026-10-31): `board_used` is the predicate every
+  // board gate enforces, so Off here means the board is not used at all. A
+  // worker nobody turned on reads Off (the board is opt-in since 2026-11-02).
+  if (typeof s.board_used === 'boolean') return s.board_used ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
   const st = _boardSwitchStates(s, _pbcPending);
   return st.board_force_adherence.effective ? { mode: 'on', on: true, label: 'On' } : { mode: 'off', on: false, label: 'Off' };
 }
-const _BOARD_ONE_NOTE = 'On: the board starts this worker\u2019s To Do cards when it is idle, keeps it going on unfinished cards, refills To Do from Backlog, turns task-like messages into cards, and nudges and reminds it. Off: the board only keeps records and never types into this worker.';
+const _BOARD_ONE_NOTE = 'On: the board keeps this worker\u2019s cards and turns task-like messages into cards. It never types into the worker: no card starts, nudges or reminders, unless AMUX_BOARD_STEERS=1 is set in its scope. Off: the board is not used for this worker. No cards are filed for it, nothing about the board is typed into it, and its own board calls are refused.';
 function _boardOneSwitchHTML(name, s, cls) {
   const b = _boardOneState(s);
   const dis = s && s.isolated ? ' disabled' : '';
@@ -14338,8 +14792,8 @@ async function _simpleRender(gen) {
 // companion worker, `<worker>-chat`, listed in the fleet with its own board,
 // schedules and steering. The chat is now addressed as `<worker>@chat`, a key
 // no worker can have, and the server keeps its state under the worker
-// (chat_worker.rs, COMPANION LANES). The on switch is AMUX_CHAT_COMPANION on
-// the worker; nothing else is created.
+// (chat_worker.rs, COMPANION LANES). The switch is AMUX_CHAT_COMPANION on the
+// worker, on unless it says 0 (sessions_legacy.rs chat_on); nothing else is created.
 // The worker the peek composer writes to: this worker, or its chat companion
 // while the Chat tab shows one. Drafts are keyed on it, so text typed in the
 // Chat tab is the companion's draft and a send there clears it (it used to
@@ -14376,7 +14830,7 @@ async function _peekChatSet(on) {
   const w = peekSession;
   if (!w) return;
   try {
-    await _peekChatScope(w, { AMUX_CHAT_COMPANION: on ? '1' : null });
+    await _peekChatScope(w, { AMUX_CHAT_COMPANION: on ? '1' : '0' });
     // The session list is cached server-side, so the switch can be missing
     // from the first refresh; the tab would then keep the off panel over the
     // composer. Refresh until the state it shows is the one just set.
@@ -14389,6 +14843,14 @@ async function _peekChatSet(on) {
     showToast(on ? 'Chat is on for ' + w : 'Chat is off for ' + w + ' (its history is kept)');
     setPeekTab('chat');
   } catch (e) { showToast('Chat: ' + (e.message || e)); }
+}
+// The Off panel is chosen when the tab opens, from the list the client holds
+// then. A new worker is not in it yet, so with Chat on by default the panel stayed
+// over the composer after the list caught up. Every fresh list settles it.
+function _peekChatStateSync() {
+  if (_peekTab !== 'chat' || !peekSession) return;
+  const panel = document.getElementById('peek-chat-panel');
+  if (panel && panel.classList.contains('active') === !!_peekChatTarget()) setPeekTab('chat');
 }
 function _peekChatPanelRender() {
   const p = document.getElementById('peek-chat-panel');
@@ -14831,7 +15293,7 @@ function _steeringDelayPrompt(msgId) {
   val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
   box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
-  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); bg.remove(); } };   // one Escape closes only the picker, not the worker view under it
   setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
 }
@@ -14884,7 +15346,10 @@ async function _steeringEdit(msgId) {
     + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">'
     + esc(m.text) + '</textarea>'
     + '<div style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1-5);">Still delivers at the worker\'s next pause. ⌘↩ saves.</div>', 'Save');
-  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
+  // Only when nothing has focused it yet: moving the caret under a selection
+  // someone already made turned a replace into an append ("draft onedraft
+  // two", steering-edit.spec.ts on desktop, run 41039786358).
+  setTimeout(() => { const t = document.getElementById('steer-edit-input'); if (t && document.activeElement !== t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); } }, 30);
   if (!await shown) return;
   const text = (document.getElementById('steer-edit-input')?.value || '').replace(/\s+$/, '');
   if (!text.trim()) { showToast('Empty. Use ✕ to remove the message instead'); return; }
@@ -16453,6 +16918,14 @@ window._clientDebug = function (kind, fields) {
       body: JSON.stringify(Object.assign({ kind: kind, ver: APP_VER }, fields || {})) }).catch(() => {});
   } catch (e) {}
 };
+// The page asks for the app.js of its own build (index.html: /app.js?v=<ver>).
+// Running any other one means HTML and code came from different builds, which
+// breaks on the first element one has and the other does not. Say so.
+try {
+  const asked = new URL(document.currentScript.src).searchParams.get('v');
+  if (asked && asked !== APP_VER && asked.indexOf('__') !== 0)
+    window._clientDebug('asset-version-mismatch', { verdict: 'html_and_app_js_builds_differ', measured: true, n_considered: 1, html_ver: asked });
+} catch (e) {}
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -17579,7 +18052,21 @@ function _selectWorkerType(id) {
   if (prompt) prompt.placeholder = t.renderer === 'chat' ? 'First message (optional)' : 'What should Claude work on first?';
 }
 
+// The Mac app's Freeze Workspace (desktop/amux-workspace.swift) sets
+// window.__amuxFrozen: a page showing a worker keeps showing that worker.
+// True, with a toast and a beacon, when `next` would replace or close it.
+function _frozenWorker(next) {
+  if (!window.__amuxFrozen || !peekSession || next === peekSession) return false;
+  if (!document.getElementById('peek-overlay')?.classList.contains('active')) return false;
+  showToast('This workspace is frozen. Unfreeze it in Window > Workspaces.');
+  fetch(API + '/api/client-debug', {method:'POST', headers:{'Content-Type':'application/json'}, keepalive:true,
+    body: JSON.stringify({kind:'frozen_refused', what: next ? 'switch_worker' : 'close_worker', worker: peekSession})})
+    .catch(e => console.warn('frozen_refused beacon failed', e));
+  return true;
+}
+
 function openPeek(name, opts) {
+  if (_frozenWorker(name)) return;
   _peekAgentsReset();
   _vxOnPeekOpen(name);   // switching worker ends another worker's live conversation
   if (_chat.name && _chat.name !== name) _chatUnmount();
@@ -17935,6 +18422,7 @@ async function _peekAgentRefresh() {
 }
 
 function closePeek() {
+  if (_frozenWorker(null)) return;
   _chatUnmount();
   _vxOnPeekClose();   // a live Converse conversation must not keep the mic open
   _peekFollowBottom = false;
@@ -18046,7 +18534,11 @@ function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
   _whereSoon();
   const cur = location.hash;
-  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur)) return;
+  // A folder's address (#path= with no file open) gives way to a worker opened
+  // over it, so a reload shows the worker; an open file keeps its own.
+  const fo = document.getElementById('file-overlay');
+  const folderOnly = /^#path=/.test(cur || '') && peekSession && !(fo && fo.classList.contains('active'));
+  if (cur && cur !== '#' && !/^#(view|peek)=/.test(cur) && !folderOnly) return;
   try {
     let hash = '';
     if (peekSession) {
@@ -18705,7 +19197,7 @@ async function _psfViewFile(filePath) {
       // Same as the file overlay: load from the file's own URL so in-page
       // anchors and relative links stay inside the document (see _htmlPreviewUrl).
       const _pu = _htmlPreviewUrl(data.path || filePath);
-      if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content;
+      _htmlSiteFrame(iframe, data.path || filePath, () => { if (_pu) iframe.src = _authUrl(_pu); else iframe.srcdoc = data.content; });
     } else if (data.content != null) {
       content.className = 'file-overlay-body file-code';
       content.innerHTML = typeof _fileHighlightHTML === 'function' ? _fileHighlightHTML(data) : '<pre>' + esc(data.content) + '</pre>';
@@ -19171,7 +19663,23 @@ function _detectTextLinks(plain) {
     // The host after the scheme. `slice(8)` assumed `https://` and cut the
     // first letter off an http host, so http://localhost:3077 was never a
     // link (owner, 2026-10-17: the port proxy links in the peek were dead).
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
+    if (!/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) continue;
+    // A HARD WRAP IS NOT THE END OF A URL (Ethan, 2026-11-07: "this isnt working
+    // this link"). A worker wrapped .../#view=apps&open=<32 hex> after 18 of the
+    // id's characters, the link stopped at the newline, and the Apps tab got an
+    // id it could not match. A URL that runs to the end of a long line takes the
+    // next line's first token when that token reads as URL text (a digit or
+    // / ? = & # % _ in it); a prose word or a "- " bullet ends it as before.
+    let val = v, end = m.index + v.length, open = v === m[0];   // trailing punctuation closed it
+    while (open && plain[end] === '\n' && end - (plain.lastIndexOf('\n', end - 1) + 1) >= 40) {
+      const tail = /^[ \t]*([^\s<>\]\)'"`,;\\$-]+)(?=\s|$)/.exec(plain.slice(end + 1));
+      if (!tail || tail[1].length < 3 || !/[0-9\/?=&#%_]/.test(tail[1])) break;
+      const t2 = trim(tail[1]);
+      val += t2;
+      end += 1 + tail[0].length - tail[1].length + t2.length;
+      open = t2 === tail[1];
+    }
+    add(m.index, end, 'url', val);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
@@ -19210,8 +19718,11 @@ function _detectTextLinks(plain) {
 }
 function _linkWrap(L, htmlText) {
   const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (L.type === 'url')
-    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  if (L.type === 'url') {
+    const fp = typeof _ownFilePath === 'function' ? _ownFilePath(L.value) : '';
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer"' + (fp ? ' class="own-file-link" title="' + ea(L.value) + '"' : '') + '>'
+      + (fp ? ea(fp) : htmlText) + '</a>';
+  }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
   return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
@@ -20293,6 +20804,8 @@ function _classifyPromptKind(promptText) {
   // and delivers through the steering queue, which writes no ledger row. It
   // is the harness acting on standing policy, so Harness, never Human.
   if (clean.includes("(Approved automatically under the owner's needs-input policy.)")) return 'amux';
+  // A published digest default (decision_digest.rs) is harness text too.
+  if (clean.includes('(Applied by digest default, not by the owner.)')) return 'amux';
   // Its send-back (needs_input_auto.rs send_back_text) is harness text too.
   if (clean.includes("This is yours to do; Ethan's needs-input policy returns")) return 'amux';
   // The Messages tab is a fetched snapshot; cmdHistoryAdd is the immediate
@@ -21414,7 +21927,7 @@ function _paintPeekRegions(body) {
 }
 // The DOM a search pass built, so the next pass can reuse it.
 let _peekSearchDom = { hist: null, live: null, first: null };
-const _peekSearchStats = { reused: 0, rebuilt: 0 };
+const _peekSearchStats = { reused: 0, rebuilt: 0, phases: null };
 function _peekClearHighlights(body) {
   const parents = new Set();
   for (const mark of body.querySelectorAll('span.peek-highlight')) {
@@ -21429,19 +21942,29 @@ function _peekSearchTyped(value) {
   peekSearchQuery = value;
   document.getElementById('peek-search-wrap')?.classList.toggle('has-value', !!value);
   clearTimeout(_peekSearchTimer);
-  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? 120 : 0);
+  _peekSearchTimer = setTimeout(() => { _peekSearchTimer = 0; _peekSearchTimed(); }, value.trim() ? _peekSearchPause() : 0);
+}
+// A pass on a big page blocks for seconds (3.4 s at 55,000 elements, 6.7 s at
+// 154,000: Ethan, 2026-11-02, "increase the speed of peek search"), so the pause
+// follows what the last pass cost, and a word typed there runs one pass, not one
+// per letter.
+let _peekSearchLastMs = 0;
+function _peekSearchPause() {
+  return _peekSearchLastMs > 1000 ? 600 : _peekSearchLastMs > 250 ? 350 : 120;
 }
 // A typed search that blocks the page for over 100ms says so in the server log.
 function _peekSearchTimed() {
   const t0 = performance.now();
   applyPeekSearch();
   const ms = Math.round(performance.now() - t0);
+  _peekSearchLastMs = peekSearchQuery.trim() ? ms : 0;
   if (ms <= 100 || !peekSearchQuery.trim()) return;
   try {
     fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'peek-search-slow', session: peekSession, ver: APP_VER, ms,
         nodes: document.getElementById('peek-body')?.getElementsByTagName('*').length || 0,
         reused: _peekSearchStats.reused, rebuilt: _peekSearchStats.rebuilt,
+        phases: _peekSearchStats.phases, matches: _peekMatches.length,
         verdict: 'peek_search_slow', measured: true, n_considered: 1 }) }).catch(() => {});
   } catch (e) {}
 }
@@ -21466,6 +21989,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     if (countEl) countEl.textContent = '';
     return;
   }
+  const _t0 = performance.now();
   if (_peekHistHidden) _peekHistExpand(false);
   // Search the rendered text, not serialized HTML. Entities and ANSI/link
   // spans must not turn one visible phrase into missing or duplicate matches.
@@ -21499,6 +22023,7 @@ function applyPeekSearch(keepIndex, doScroll) {
     _peekSearchDom = { hist: null, live: null, first: null };
   }
   _peekSearchStats[reuse ? 'reused' : 'rebuilt']++;
+  const _t1 = performance.now();
   const roots = !_peekFiltersActive() ? [body]
     : [...body.querySelectorAll('.peek-prompt')].filter(el => _peekPromptMatchesFilters(el));
   _peekMatches = [];
@@ -21532,12 +22057,14 @@ function applyPeekSearch(keepIndex, doScroll) {
       entry.node.replaceWith(fragment);
     }
   }
-  if (!reuse) _peekReclassifyPrompts();
+  // The paint above already classified; a highlight does not change the text.
+  const _t2 = performance.now();
   if (!keepIndex || peekSearchIndex >= _peekMatches.length) peekSearchIndex = 0;
   // Typed Find has the same late-history race as Locate: an empty live frame
   // is not proof that the requested text is absent from the arriving history.
   if (!keepIndex && doScroll !== false) _peekPendingFindScroll = !_peekMatches.length;
   _peekScrollTo(peekSearchIndex, doScroll);
+  _peekSearchStats.phases = { paint: Math.round(_t1 - _t0), mark: Math.round(_t2 - _t1), scroll: Math.round(performance.now() - _t2) };
   if (countEl) countEl.textContent = _peekMatches.length > 0 ? (peekSearchIndex + 1) + '/' + _peekMatches.length : 'none here · \u21b5 all logs';
 }
 
@@ -23369,6 +23896,20 @@ function handleCardPaste(name, e) {
   });
 })();
 
+// Queue mode sends straight to a worker that is waiting at a question, so the
+// reply answers it. Only on a FRESH reading: a snapshot older than 10 s may
+// say waiting for a worker that has moved on, and the message then skipped
+// the queue and landed mid-turn (implicit state machines inventory #36).
+// Fresh means the WORKER LIST was read in the last 10 s. _lastDataTime moves on
+// every SSE message, the 10 s ping included, so it called a minutes-old list
+// fresh and the queued message still landed mid-turn (2026-11-06).
+function _waitingNow(name) {
+  const s = (sessions || []).find(x => x.name === name);
+  if (!s || s.status !== 'waiting') return false;
+  const fresh = Date.now() - _sessionsReadAt < 10000;
+  if (!fresh) { try { amuxTrack('queue_kept_stale_waiting', { measured: true, n_considered: 1 }); } catch (e) {} }
+  return fresh;
+}
 let _sendMode = localStorage.getItem('amux_send_mode') || 'send'; // 'send' or 'queue'
 // Default flipped to SEND (2026-07-17): pressing Send should send — it types
 // straight into the terminal, and Claude Code itself queues mid-turn input and
@@ -23411,7 +23952,25 @@ function _updateSendSplit() {
 }
 setTimeout(_updateSendSplit, 0);
 
-const _composerPendingSends = new Set();
+// session -> the token of the ONE send holding that composer. A send releases
+// the lock only while it still holds it: after the 20 s watch gives the button
+// back and a second send starts, the first send's late finish must not unlock
+// the composer under the second (inventory #2, 2026-11-06).
+const _composerPendingSends = new Map();
+function _composerLockTake(name, original) {
+  const token = {};
+  _composerPendingSends.set(name, token);
+  _composerLockWatch(name, original, token);
+  return token;
+}
+function _composerLockRelease(name, token) {
+  if (_composerPendingSends.get(name) !== token) {
+    console.info('[amux] composer_stale_release_ignored', name);
+    return;
+  }
+  _composerPendingSends.delete(name);
+  _composerPendingSince.delete(name);
+}
 function _composerUnconfirmed(session, result, attachments) {
   // The local log is available even with analytics disabled. Never send message
   // contents, upload paths or credentials in a failure beacon.
@@ -23426,11 +23985,11 @@ function _composerUnconfirmed(session, result, attachments) {
 // arrived shows in Messages, so the toast says to look there before resending.
 const _COMPOSER_LOCK_MS = 20000;
 const _composerPendingSince = new Map();
-function _composerLockWatch(name, original) {
+function _composerLockWatch(name, original, token) {
   _composerPendingSince.set(name, Date.now());
   setTimeout(() => {
     const t = _composerPendingSince.get(name);
-    if (!t || !_composerPendingSends.has(name) || Date.now() - t < _COMPOSER_LOCK_MS) return;
+    if (!t || _composerPendingSends.get(name) !== token || Date.now() - t < _COMPOSER_LOCK_MS) return;
     _composerPendingSends.delete(name);
     _composerPendingSince.delete(name);
     // The text back where it was typed, as a refused send does.
@@ -23475,7 +24034,7 @@ async function sendPeekCmd() {
   if (!text && !files.length) { _submitSuggestion(session, true, 'Enter'); return; }
   let message = text;
   if (files.length) message = [text, ...files.map(f => '@' + f.path)].filter(Boolean).join(' ');
-  const atSelector = (sessions.find(s => s.name === session) || {}).status === 'waiting';
+  const atSelector = _waitingNow(session);
   // The Chat tab's chat queues turns itself and has no steering queue.
   const queued = _sendMode === 'queue' && !atSelector && !_chatCompanionOf(session);
   if (!queued) {
@@ -23491,8 +24050,7 @@ async function sendPeekCmd() {
   // Persist text and upload references in the local outbox before clearing.
   // A network refusal remains reviewable in Sync and pending Messages.
   const draftRevision = _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _composerLockWatch(session, original);
+  const lock = _composerLockTake(session, original);
   _syncComposerPending();
   let result = 'failed';
   try {
@@ -23532,7 +24090,7 @@ async function sendPeekCmd() {
     _composerUnconfirmed(session, 'exception', files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(session);
+    _composerLockRelease(session, lock);
     _syncComposerPending();
   }
 }
@@ -23940,7 +24498,18 @@ function _expandAtMentions(text) {
   const hints = mentioned.map(n =>
     `  @${n} → POST ${base}/api/sessions/${n}/send  {"text":"<msg>"}`
   ).join('\n');
-  return rewritten + '\n\n[amux: @-mentions above are amux workers, NOT files. Reach them via HTTP API, never tmux directly]\n' + hints;
+  return rewritten + _MENTION_NOTE + hints;
+}
+const _MENTION_NOTE = '\n\n[amux: @-mentions above are amux workers, NOT files. Reach them via HTTP API, never tmux directly]\n';
+// The text as typed: _expandAtMentions undone. The worker gets the note; the
+// owner's own Messages show what they wrote, and the sent copy matches the
+// local one (owner, 2026-10-29: the peek's Messages showed one send twice,
+// "direct?" beside the note-carrying echo).
+function _mentionNoteStrip(text) {
+  const s = String(text || '');
+  const i = s.indexOf(_MENTION_NOTE.trimEnd());
+  if (i < 0) return s;
+  return s.slice(0, i).replace(/`(@[\w][\w.-]*)`/g, '$1');
 }
 
 // ── @mention helpers ──
@@ -24001,6 +24570,44 @@ function _atGenPick(i) {
   cur.dd.classList.remove('open');
   inp.focus();
 }
+// Where the caret is in a textarea, in px from the textarea's top-left
+// (scroll applied): a mirror div with the same box and font, the text up to
+// the caret, and a marker after it.
+function _caretXY(ta) {
+  const cs = getComputedStyle(ta), m = document.createElement('div');
+  for (const k of ['boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderRightWidth',
+    'borderBottomWidth', 'borderLeftWidth', 'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'tabSize', 'textIndent', 'wordSpacing'])
+    m.style[k] = cs[k];
+  Object.assign(m.style, { position: 'absolute', visibility: 'hidden', top: '0', left: '-9999px', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', overflow: 'hidden' });
+  m.textContent = ta.value.slice(0, ta.selectionStart);
+  const mark = document.createElement('span');
+  mark.textContent = '\u200b';
+  m.appendChild(mark);
+  document.body.appendChild(m);
+  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4 || 18;
+  const out = { x: mark.offsetLeft - ta.scrollLeft, y: mark.offsetTop - ta.scrollTop, h: lh };
+  m.remove();
+  return out;
+}
+// In a tall textarea (the markdown editor) the list opens at the caret, not
+// under the whole box, where the status bar covered it (owner, 2026-10-29,
+// MSG-100765: "this should autocomplete dropdown the worker"). Above the line
+// when there is no room below. A one-line input keeps the dropdown.
+function _atPlaceAtCaret(inp, dd) {
+  const reset = () => { dd.style.top = dd.style.left = dd.style.right = dd.style.bottom = dd.style.width = ''; dd.classList.remove('ac-at-caret'); };
+  if (inp.tagName !== 'TEXTAREA') return reset();
+  const c = _caretXY(inp);
+  if (inp.clientHeight < c.h * 4) return reset();
+  const wrap = dd.parentElement, wr = wrap.getBoundingClientRect(), ir = inp.getBoundingClientRect();
+  const w = Math.min(360, wr.width - 8);
+  const x = Math.max(4, Math.min(ir.left - wr.left + c.x, wr.width - w - 4));
+  const below = ir.top - wr.top + c.y + c.h;
+  dd.classList.add('ac-at-caret');
+  dd.style.width = w + 'px'; dd.style.left = x + 'px'; dd.style.right = 'auto';
+  const room = wr.height - below, need = Math.min(dd.scrollHeight || 180, 180);
+  if (room >= need || below < need) { dd.style.top = below + 'px'; dd.style.bottom = 'auto'; }
+  else { dd.style.top = 'auto'; dd.style.bottom = (wr.height - (below - c.h)) + 'px'; }
+}
 function _atAttach(inp) {
   if (!inp || inp._atWired) return;
   inp._atWired = true;
@@ -24016,6 +24623,7 @@ function _atAttach(inp) {
     _atGenCur = { inp, dd };
     sel = -1;
     if (!_atRender(inp, dd, '_atGenPick')) dd.classList.remove('open');
+    else _atPlaceAtCaret(inp, dd);
   });
   inp.addEventListener('keydown', (e) => {
     if (!dd.classList.contains('open')) return;
@@ -24245,6 +24853,11 @@ const _ACTION_CHIPS = [
     { id: 'sendnow', label: 'Send Now', action: 'keys', value: 'C-x C-s', desc: 'Ctrl+X, release, then Ctrl+S' },
     { id: 'up', label: '\u2191', action: 'keys', value: 'Up', desc: 'Arrow Up' },
     { id: 'down', label: '\u2193', action: 'keys', value: 'Down', desc: 'Arrow Down' },
+    // Left/Right and Shift+Tab move between the questions of a multi-question
+    // prompt (Tab only goes forward). The server already accepts all three keys.
+    { id: 'left', label: '\u2190', action: 'keys', value: 'Left', desc: 'Arrow Left (previous question)' },
+    { id: 'right', label: '\u2192', action: 'keys', value: 'Right', desc: 'Arrow Right (next question)' },
+    { id: 'btab', label: 'Shift+Tab', action: 'keys', value: 'BTab', desc: 'Shift+Tab (previous question)' },
     { id: 'push', label: '\u2B06 Push', action: 'special', value: 'gitPush', desc: 'Git push' },
     { id: 'ctrlc', label: 'Ctrl+C', action: 'keys', value: 'C-c', desc: 'Interrupt', danger: true },
     { id: 'ctrlo', label: 'Ctrl+O', action: 'keys', value: 'C-o', desc: 'Accept & continue' },
@@ -24726,6 +25339,25 @@ function _chipAction(chip, sessionName, isPeek) {
   }
 }
 
+// A press runs the chip the bar SHOWS (Ethan, 2026-11-02: "when i press these
+// it should be send not put in the input"). It used to look up _getChips()[i]
+// at click time, and a list replaced after the render (synced from another
+// device, or a migration) ran whatever chip now sat at that position: Yes and
+// Status? sent "continue", and a slash chip there filled the input instead.
+function _chipPress(el, sessionName, isPeek) {
+  const bar = el.parentElement;
+  const i = parseInt(el.dataset.chipIdx, 10);
+  const chip = bar && bar._chips && bar._chips[i];
+  if (!chip) return;
+  const now = _getChips()[i];
+  if (!now || now.id !== chip.id) {
+    fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, _skipOutbox: true,
+      body: JSON.stringify({ kind: 'chip-list-moved', shown: chip.id, current: now ? now.id : null, measured: true, n_considered: 1, ver: APP_VER }) }).catch(() => {});
+    setTimeout(() => renderChips(bar, sessionName, isPeek), 0);
+  }
+  _chipAction(chip, sessionName, isPeek);
+}
+
 function renderChips(container, sessionName, isPeek) {
   const chips = _getChips();
   // Keystroke chips drive a terminal; a worker whose renderer is not a
@@ -24739,7 +25371,7 @@ function renderChips(container, sessionName, isPeek) {
     const cls = chip.danger ? 'chip danger' : 'chip';
     const drag = _chipEditing ? 'draggable="true"' : '';
     html += '<div class="' + cls + '" ' + drag + ' data-chip-idx="' + i + '" data-chip-action="' + esc(chip.action || '') + '"'
-      + ' onclick="_chipAction(_getChips()[' + i + '],\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
+      + ' onclick="_chipPress(this,\'' + esc(sessionName || '') + '\',' + !!isPeek + ')">'
       + (_chipEditing ? '<span class="chip-drag-handle">\u2630</span>' : '')
       + esc(chip.label)
       + (_chipEditing ? '<span class="chip-remove-btn" onclick="event.stopPropagation();removeChip(' + i + ')">\u00D7</span>' : '')
@@ -24751,6 +25383,7 @@ function renderChips(container, sessionName, isPeek) {
   html += '<div class="chip chip-edit-toggle' + (_chipEditing ? ' active' : '') + '" onclick="toggleChipEdit()">'
     + (_chipEditing ? '\u2713' : '\u270E') + '</div>';
   container.innerHTML = html;
+  container._chips = chips;
   if (_chipEditing) {
     container.classList.add('editing');
     _setupChipDrag(container, sessionName, isPeek);
@@ -26773,9 +27406,11 @@ function _linkifyUrls(safeHtml) {
     return String(safeHtml).replace(/(https?:\/\/[^\s<>"'`]+)(?![^<]*>)/g, (m) => {
       const url = m.replace(/[.,;:!?)]+$/, '');   // trailing punctuation is prose, not URL
       const tail = m.slice(url.length);
+      const fp = _ownFilePath(url.replace(/&amp;/g, '&'));   // a file on this amux reads as its path
       return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
-        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();">'
-        + url + '</a>' + tail;
+        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();"'
+        + (fp ? ' title="' + url + '"' : '') + '>'
+        + (fp ? esc(fp) : url) + '</a>' + tail;
     });
   } catch (e) { return safeHtml; }
 }
@@ -26857,6 +27492,56 @@ function _msgCardChips(message) {
 // be shared and the three drifted into looking like different content — which is
 // exactly what Ethan reported. Normalize once, at every fetch, and set BOTH names
 // so nothing downstream has to know which surface it came from.
+// Pinned messages in a worker's Messages tab. The list opens from the 📌 count
+// in the one control row, the same way a channel's pins do.
+let _pmPins = [], _pmPinsFor = null;
+function _pmPinned(id) { return _pmPinsFor === peekSession && _pmPins.some(p => String(p.id) === String(id)); }
+function _pmRenderPinsBtn() {
+  const btn = document.getElementById('pm-pins-btn'); if (!btn) return;
+  const n = _pmPinsFor === peekSession ? _pmPins.length : 0;
+  btn.hidden = !n;
+  document.getElementById('pm-pins-n').textContent = n ? String(n) : '';
+}
+async function _pmLoadPins() {
+  const sess = peekSession;
+  try {
+    const r = await fetch(API + '/api/history/pins?session=' + encodeURIComponent(sess));
+    if (!r.ok || sess !== peekSession) return;
+    _pmPins = (await r.json()).pins || []; _pmPinsFor = sess;
+    _pmRenderPinsBtn(); _peekMessagesRender();
+  } catch (e) { console.warn('pinned messages did not load', e); }
+}
+async function _pmPin(id, on) {
+  try {
+    const r = await fetch(API + '/api/history/' + id + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: on }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+    _pmPins = d.pins || []; _pmPinsFor = peekSession;
+    _pmRenderPinsBtn(); _peekMessagesRender();
+    showToast(on ? 'Pinned' : 'Unpinned');
+  } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
+}
+async function _pmShowPins() {
+  if (!_pmPins.length) return;
+  const html = '<div class="cv-pins-list">' + _pmPins.map((x, i) => '<div class="pm-pin-row"><button type="button" class="btn cv-pin-item" data-i="' + i + '">'
+    + '<span class="cv-pin-who">MSG-' + esc(String(x.id)) + ' <span class="cv-pin-when">' + esc(new Date(x.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></span>'
+    + '<span class="cv-pin-body">' + esc(String(x.text || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>'
+    + '<button type="button" class="btn pm-pin-unpin" data-id="' + esc(String(x.id)) + '">Unpin</button></div>').join('') + '</div>';
+  const chosen = new Promise(resolve => {
+    setTimeout(() => {
+      document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(_pmPins[Number(el.dataset.i)]); _modalClose(false); });
+      // Here as well as on the row: an older pin may not be on this page.
+      document.querySelectorAll('.pm-pin-unpin').forEach(el => el.onclick = async () => {
+        await _pmPin(Number(el.dataset.id), false);
+        el.closest('.pm-pin-row')?.remove();
+        if (!_pmPins.length) { resolve(null); _modalClose(false); }
+      });
+    }, 0);
+    showFormModal('Pinned messages', html, 'Close').then(() => resolve(null));
+  });
+  const x = await chosen; if (!x) return;
+  _pickCmdHistory(x.text);
+}
 function _msgCtxPeek() {
   return { sel: _pmSel, key: _pmKey, toggle: '_pmSelToggle', resend: '_pmResend',
            searchId: 'peek-messages-search', rowClass: 'pm-row', ownTab: true,
@@ -27036,7 +27721,7 @@ function _cmdHistItemHTML(e, ctx) {
   const session = typeof e === 'string' ? '' : (e.session || '');
   const origin = typeof e === 'string' ? '' : (e.origin || '');
   const ts = typeof e === 'string' ? '' : (e.time ? new Date(e.time).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '');
-  const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const safe = _mentionNoteStrip(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   // Highlight the active PEEK message search (Ethan: "all search should have
   // highlighting to show where it is"). Read from the input rather than a
   // global, because this row builder is shared by the peek list and there is
@@ -27082,7 +27767,8 @@ function _cmdHistItemHTML(e, ctx) {
   const idTag = _mid
     ? `<code class="msg-id-badge" title="Message id — click to copy" onclick="event.stopPropagation();_copyMsgId('${esc(_mid)}')">MSG-${esc(_mid)}</code>`
     : '';
-  const meta = tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + senderTag + sessTag + tsTag
+  const pinTag = ctx.ownTab && _mid && _pmPinned(_mid) ? '<span class="pm-pin-mark" title="Pinned">\u{1F4CC}</span>' : '';
+  const meta = pinTag + tag + _msgDeliveryChip(e) + _msgSubmitChip(e) + senderTag + sessTag + tsTag
     + _msgContextChip(e) + idTag
     + _msgCardChips(e);
   const locSess = (session || (typeof peekSession !== 'undefined' ? peekSession : '') || '').replace(/'/g,'');
@@ -27095,7 +27781,26 @@ function _cmdHistItemHTML(e, ctx) {
   const _matches = _mq && safe.toLowerCase().includes(_mq.trim().toLowerCase());
   const _collapsed = _msgCollapsed.has(_pk) && !_matches;
   const caret = `<button class="msg-caret" aria-expanded="${!_collapsed}" title="${_collapsed ? 'Expand message' : 'Collapse message'}" onclick="_msgToggleCollapse(this,&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? '&#9656;' : '&#9662;'}</button>`;
-  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:var(--space-2) var(--space-3);background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);transition:border-color 0.15s;display:flex;gap:var(--space-1-5);align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:var(--space-1);">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+  return `<div class="${ctx.rowClass||''}" data-msg-key="${esc(_pk)}" onclick="${ctx.onOpen ? ctx.onOpen(e, enc) : `_pickCmdHistory(decodeURIComponent('${enc}'))`}" title="${esc(ctx.title || 'Click to insert into the composer')}" style="cursor:pointer;padding:var(--space-2) var(--space-3);background:${km.bg};border:1px solid var(--border);border-left:3px solid ${km.color};border-radius:var(--radius-md);font-size:var(--fs-lg);color:var(--text);transition:border-color 0.15s;display:flex;gap:var(--space-1-5);align-items:flex-start;position:relative;" onmouseenter="this.style.borderColor='${km.color}'" onmouseleave="this.style.borderColor='var(--border)'"><input type="checkbox" class="pm-check" ${_psel?"checked":""} onclick="${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)" title="Select for bulk resend">${caret}<div style="flex:1;min-width:0;">${meta?`<div style="margin-bottom:var(--space-1);">${meta}</div>`:''}${(ctx.taskChip !== false && session && e.ts) ? `<span class="msg-task-chip" data-task-at="${esc(session + '@' + Math.floor(e.ts / 1000))}" hidden></span>` : ''}<div class="msg-body${_collapsed?' collapsed':''}" style="white-space:pre-wrap;word-break:break-word;line-height:1.45;">${_hlSearch(_linkifyScheduleIds(_linkifyCardIds(safe)), _mq)}</div></div><div class="pm-actions"><button class="btn pm-dots" onclick="_msgMenu(this,event)" title="Actions">&#x22ef;</button><div class="msg-menu">${ctx.ownTab && _mid ? `<button class="pm-menu-pin" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_pmPin(${Number(_mid)},${!_pmPinned(_mid)})">${_pmPinned(_mid) ? 'Unpin' : 'Pin'}</button>` : ''}${ctx.ownTab ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');${ctx.toggle}(&#39;${escJs(_pk)}&#39;,event)">${_psel ? 'Unselect' : 'Select'}</button><button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgToggleCollapse(this.closest('[data-msg-key]').querySelector('.msg-caret'),&#39;${escJs(_pk)}&#39;,event)">${_collapsed ? 'Expand' : 'Collapse'}</button>${_mid ? `<button class="pm-menu-phone" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_copyMsgId('${esc(_mid)}')">Copy MSG-${esc(_mid)}</button>` : ''}` : ''}${_mid && kind === 'human' ? `<button class="msg-menu-answer" onclick="event.stopPropagation();this.closest('.msg-menu').classList.remove('open');_msgShowAnswer(${Number(_mid)})">Show answer</button>` : ''}<button onclick="event.stopPropagation();${ctx.resend}([&#39;${escJs(_pk)}&#39;])">Resend to ${esc(_target || 'session')}</button><button onclick="event.stopPropagation();_msgCopyBtn(this,&#39;${enc}&#39;)">Copy text</button><button onclick="event.stopPropagation();_ttsSpeak(decodeURIComponent(&#39;${enc}&#39;),this)">Read aloud</button>${locSess ? `<button onclick="event.stopPropagation();_msgLocate(&#39;${escJs(locSess)}&#39;,&#39;${enc}&#39;)" title="Open that worker's peek and scroll to where this was sent">Find in ${esc(locSess)}</button>` : ''}</div></div></div>`;
+}
+// What the worker answered, read from its transcript, so an answer that scrolled
+// away or sat behind a compact can be read from the message that asked for it.
+async function _msgShowAnswer(id) {
+  let d;
+  try {
+    const r = await fetch(API + '/api/history/' + encodeURIComponent(id) + '/reply', { headers: _authHeaders() });
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) { showToast('Could not read the answer to MSG-' + id + ': ' + e.message); return; }
+  const who = d.session || 'The worker';
+  const note = !d.measured ? 'Could not read it: ' + (d.why_unmeasured || 'unknown')
+    : !d.found ? 'This message is not in the current transcript of ' + who + '.'
+    : d.text ? (d.ended ? '' : 'The turn is still open, so this is the answer so far.')
+    : d.ended === 'next_input' ? 'Another message reached ' + who + ' before it answered this one. Read the answer to that message.'
+    : who + ' has not answered yet.';
+  showAlertHtml('Answer to MSG-' + id,
+    (note ? '<div class="msg-answer-note">' + esc(note) + '</div>' : '')
+    + (d.text ? '<div class="msg-answer-text">' + _askFormat(d.text) + '</div>' : ''));
 }
 // The sender half of "owner → cowork-bot". `owner` is the server's own login
 // (no team-member or gateway identity on the send); the tooltip says so, and
@@ -27143,6 +27848,7 @@ function _pendingMsgState(p) {
   const [label, note] = p.decision === 'refused' ? ['Not sent', 'the worker did not accept it']
     : p.decision === 'unconfirmed' ? ['Not confirmed', 'it may already be with the worker; check its terminal']
     : p.decision === 'stale' ? ['Not sent', 'saved on this device and never sent']
+    : p.decision === 'unreached' ? ['Not sent', 'it never reached the server']
     : p.checking ? ['Awaiting confirmation', 'may already be with the worker']
     : p.attempted ? ['Awaiting confirmation', 'may already be with the worker']
     : ['Saved on this device', online ? 'waiting to sync' : 'waiting for connection'];
@@ -27369,8 +28075,8 @@ function _peekMessagesRender() {
               '<br><button class="btn" style="margin-top:var(--space-2-5);min-height:36px;" ' +
               'onclick="_peekMessagesLoad(false)">Retry</button>')
       : _note(_empty);
-  list.innerHTML = (_body || _placeholder)
-    + (!_body && !_loaded ? '' : moreHTML);
+  _msgListWrite(list, (_body || _placeholder)
+    + (!_body && !_loaded ? '' : moreHTML));
   _peekMessagesBadge();
   _msgTaskChipsFill(list);
 }
@@ -27492,7 +28198,7 @@ function _mergeUnechoed(serverRows, session) {
   // mentions; the local row keeps only what was typed. Compared as typed text,
   // MSG-92727 (two screenshots) never matched its echo and showed a second,
   // ghost "queued" row beside the delivered one (2026-10-22).
-  const canonical = text => String(text || '').replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
+  const canonical = text => _mentionNoteStrip(text).replace(/^\[\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*/i, '')
     .replace(/(?:\s+@\/\S+)+\s*$/, '').trim();
   const echoed = local => serverRows.some(row =>
     (row.session || '') === (local.session || '')
@@ -27563,6 +28269,7 @@ async function _exportMessageHistory() {
 
 async function _peekMessagesLoad(more) {
   const sess = peekSession;
+  if (more !== true) _pmLoadPins();
   if (_peekMsgRowsFor !== sess) {              // session changed -> back to page 1
     _peekMsgRows = null; _peekMsgServerRows = []; _peekMsgOffset = 0; _peekMsgDone = false;
     _peekMsgRowsFor = sess; _peekMsgPage = 1; _peekMsgTotal = null; more = false;
@@ -27744,7 +28451,11 @@ async function _dictStartRec() {
   try { _dictRecorder = new MediaRecorder(_dictStream, opts); }
   catch(e) { try { _dictRecorder = new MediaRecorder(_dictStream); } catch(e2) { showToast('Recorder unavailable'); return; } }
   _dictChunks = [];
-  await _dictLiveClear();
+  // Not awaited: in the Mac app a storage write can hang for minutes, and the
+  // recorder waited on it with the popup on "Starting mic…" at 0:00 (owner,
+  // 2026-11-03). Storage runs its writes in order, so this clear still lands
+  // before the first second is saved.
+  _dictLiveClear();
   _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { _dictChunks.push(e.data); _dictLiveSave(e.data); } };
   _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictLiveClear(); _dictStatus('Cancelled'); } else _dictUpload(); };
   // 1 s slices: each second reaches IndexedDB as it is spoken (see _dictLiveSave).
@@ -27826,34 +28537,61 @@ const _DICT_OUTBOX_MAX = 25;   // ring buffer; oldest fall off first
 const _DICT_KEEP_DONE  = 6;    // transcribed clips kept so a bad transcript can be re-run
 const _DICT_MAX_AUTO   = 6;    // give up auto-retrying after this many; manual Retry still works
 
-async function _dictOutbox() { try { return (await _idb.get('dict_pending')) || []; } catch(e) { return []; } }
-// The cap trims only clips that were already transcribed: a clip that never
-// sent is the one thing that cannot be recorded again, so it is never the one
-// dropped (it used to be: slice(-25) kept the newest 25 whatever their state).
-async function _dictOutboxSet(q) {
-  const done = q.filter(x => x.state === 'done');
-  const drop = new Set(done.slice(0, Math.max(0, q.length - _DICT_OUTBOX_MAX)).map(x => x.id));
-  try { await _idb.set('dict_pending', q.filter(x => !drop.has(x.id))); }
-  catch(e) {
-    // Never silent: the clip is still in memory, and the person is told it is not saved.
-    _dictStatus('This device could not save the recording: ' + ((e && e.message) || 'storage error'));
-    try { fetch(API + '/api/client-debug', {method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}), keepalive: true,
-      body: JSON.stringify({kind: 'dictation_outbox_write_failed', error: String((e && e.message) || e)})}).catch(() => {}); } catch(_) {}
-  }
-  _dictPendingBadge();
+// A read is bounded: in the Mac app a WebKit storage read can hang for hours
+// (outbox_upload_list_timeout), and the retry loop below awaits this one. A read
+// that never settled left _dictFlushing set for good, so every 45s pass returned
+// at once and a recording sat "1 recording queued (2.4 MB) — sending…" (owner,
+// 2026-10-31). A timeout reads as empty for this pass and is beaconed.
+const _DICT_READ_MS = 5000;
+async function _dictOutbox() {
+  let timer;
+  try {
+    return await Promise.race([
+      _idb.get('dict_pending').then(v => v || []),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_read_timeout')), _DICT_READ_MS); }),
+    ]);
+  } catch (e) {
+    if (e && e.message === 'dict_read_timeout') {
+      try { amuxTrack('dictation_outbox_read_timeout', {waited_ms: _DICT_READ_MS, measured: true, n_considered: 1}); } catch (_) {}
+      try { _idb.reset('dict_read_timeout'); } catch (_) {}
+    }
+    return [];
+  } finally { clearTimeout(timer); }
 }
 
 // A take in progress is saved every second (`dict_live`), so a reload or a
 // crash mid-dictation keeps it: the next page load files it in the outbox as
 // a recovered clip, and it is transcribed like any other.
+// Once a storage write has hung, dictation leaves storage alone for two
+// minutes and sends from memory: every take otherwise paid two 5 s waits, under
+// "Could not save on this device — sending now…" (owner, 2026-11-03). The
+// connection is dropped so the next use reopens it; beaconed as dict_storage_hung.
+let _dictStoreDownUntil = 0;
+function _dictStoreHung(why) {
+  _dictStoreDownUntil = Date.now() + 120000;
+  _idb.reset(why);   // catches its own errors
+  _dictBeacon('dict_storage_hung', { why });
+}
+const _dictStoreDown = () => Date.now() < _dictStoreDownUntil;
 async function _dictLiveSave(chunk) {
+  if (_dictStoreDown()) return;
   try {
     const live = (await _idb.get('dict_live')) || {started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
     live.chunks.push(chunk);
     await _idb.set('dict_live', live);
   } catch(e) {}
 }
-async function _dictLiveClear() { try { await _idb.set('dict_live', null); } catch(e) {} }
+// Bounded like the outbox read: a clear that never settles must not hold up
+// whoever awaits it (the upload after Done does). A timeout is beaconed.
+async function _dictLiveClear() {
+  let timer;
+  try {
+    await Promise.race([_idb.set('dict_live', null),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_live_clear_timeout')), _DICT_READ_MS); })]);
+  } catch(e) {
+    if (e && e.message === 'dict_live_clear_timeout') _dictStoreHung('dict_live_clear_timeout');
+  } finally { clearTimeout(timer); }
+}
 async function _dictRecoverLive() {
   let live = null;
   try { live = await _idb.get('dict_live'); } catch(e) { return; }
@@ -27867,24 +28605,48 @@ async function _dictRecoverLive() {
   setTimeout(_dictFlushOffline, 1500);
 }
 setTimeout(_dictRecoverLive, 3000);
+// Read, change and write the outbox in ONE storage transaction, bounded. The
+// three writers used to read, change and write it back separately, so a read that
+// failed (now also one that times out) wrote back a list without the other
+// clips: a new recording replaced every one still waiting. A write that cannot
+// finish throws; nothing is written from a guess.
+function _dictUpdate(mutate) {
+  let timer;
+  return Promise.race([
+    _idb.update('dict_pending', q => {
+      const next = mutate(Array.isArray(q) ? q : []);
+      const done = next.filter(x => x.state === 'done');
+      const drop = new Set(done.slice(0, Math.max(0, next.length - _DICT_OUTBOX_MAX)).map(x => x.id));
+      return next.filter(x => !drop.has(x.id));
+    }),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_write_timeout')), _DICT_READ_MS); }),
+  ]).finally(() => clearTimeout(timer))
+    // Every change repaints the Files badge and the Dictation count, as the
+    // old whole-list write did (land review F1/F2): otherwise they keep the
+    // state from before the change until the Dictation tab is opened.
+    .then(r => { _dictPendingBadge(); return r; });
+}
+// Returns the new clip's id, or null when this device could not save it (the
+// caller then sends the recording straight from memory).
 async function _dictOutboxAdd(blob, mime, ms) {
   const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const q = await _dictOutbox();
-  q.push({ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
-           state: 'pending', attempts: 0, last: 0, error: '', text: '' });
-  await _dictOutboxSet(q);
-  return id;
+  try {
+    await _dictUpdate(q => q.concat([{ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
+      state: 'pending', attempts: 0, last: 0, error: '', text: '' }]));
+    return id;
+  } catch (e) {
+    if (e && e.message === 'dict_write_timeout') _dictStoreHung('dict_write_timeout');
+    try { amuxTrack('dictation_outbox_add_failed', {error: String((e && e.message) || e).slice(0, 120), bytes: blob.size, measured: true, n_considered: 1}); } catch (_) {}
+    return null;
+  }
 }
 async function _dictOutboxPatch(id, patch) {
-  const q = await _dictOutbox();
-  const i = q.findIndex(x => x.id === id);
-  if (i < 0) return;
-  q[i] = Object.assign(q[i], patch);
-  await _dictOutboxSet(q);
+  try { await _dictUpdate(q => q.map(x => x.id === id ? Object.assign({}, x, patch) : x)); }
+  catch (e) { try { amuxTrack('dictation_outbox_patch_failed', {error: String((e && e.message) || e).slice(0, 120), measured: true, n_considered: 1}); } catch (_) {} }
 }
 async function _dictOutboxDel(id) {
-  const q = await _dictOutbox();
-  await _dictOutboxSet(q.filter(x => x.id !== id));
+  try { await _dictUpdate(q => q.filter(x => x.id !== id)); }
+  catch (e) { showToast('This device could not delete the recording yet; try again'); }
   if (_peekTab === 'dictation') _dictRender();
 }
 
@@ -27895,7 +28657,17 @@ async function _dictUpload() {
   _dictChunks = [];
   if (blob.size < 1200) { _dictStatus('Too short — hold a bit longer'); _dictClosePopup(false); return; }
   const mime = (blob.type || 'audio/webm').split(';')[0];
-  const id = await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  const online_ = typeof online === 'undefined' || online;
+  const id = _dictStoreDown() && online_ ? null : await _dictOutboxAdd(blob, mime, ms);   // safe on disk before anything can fail
+  if (id === null) {
+    // This device's storage would not take it: send it now, from memory, rather
+    // than lose it. The live take is kept until the send answers.
+    _dictStatus('Transcribing… (' + _dictKB(blob.size) + ')');
+    _dictBeacon('dict_sent_unsaved', { bytes: blob.size, storage_down: _dictStoreDown() });
+    const txt = await _dictSendDirect(blob, mime, ms);
+    if (txt !== null) { _dictLiveClear(); _dictClosePopup(false); }
+    return;
+  }
   await _dictLiveClear();                              // the take now lives in the outbox
   if (typeof online !== 'undefined' && !online) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
@@ -27906,6 +28678,25 @@ async function _dictUpload() {
   }
   const txt = await _dictTrySend(id, true);
   if (txt !== null) _dictClosePopup(false);
+}
+
+// A recording this device could not store, sent once from memory. Returns the
+// transcript, or null with the reason in the status line (the take stays live).
+async function _dictSendDirect(blob, mime, ms) {
+  const url = API + '/api/dictate?session=' + encodeURIComponent(peekSession || '')
+    + '&dur_ms=' + (ms || 0) + '&mime=' + encodeURIComponent(mime || 'audio/webm');
+  try {
+    const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime || 'audio/webm' }),
+      body: blob, signal: AbortSignal.timeout(120000) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    _dictStatus('Added to the composer — review, then send');
+    _dictInsert(d.text);
+    return d.text || '';
+  } catch (e) {
+    _dictStatus('Not sent and not saved: ' + String((e && e.message) || 'failed').slice(0, 80) + '. The recording is still here; try again.');
+    return null;
+  }
 }
 
 // One attempt against a stored clip. Never discards audio: a failure of ANY kind
@@ -27919,7 +28710,7 @@ async function _dictTrySend(id, interactive) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
     return null;
   }
-  await _dictOutboxPatch(id, { state: 'sending' });
+  await _dictOutboxPatch(id, { state: 'sending', sending_at: Date.now() });
   if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
   if (_peekTab === 'dictation') _dictRender();
   const url = API + '/api/dictate?session=' + encodeURIComponent(it.session || peekSession || '')
@@ -27952,37 +28743,57 @@ async function _dictTrySend(id, interactive) {
 // SAME audio — the "retry" that used to be impossible because we threw the
 // recording away the moment it succeeded.
 async function _dictPruneDone() {
-  const q = await _dictOutbox();
-  const done = q.filter(x => x.state === 'done');
-  if (done.length <= _DICT_KEEP_DONE) return;
-  const drop = new Set(done.slice(0, done.length - _DICT_KEEP_DONE).map(x => x.id));
-  await _dictOutboxSet(q.filter(x => !drop.has(x.id)));
+  try {
+    await _dictUpdate(q => {
+      const done = q.filter(x => x.state === 'done');
+      if (done.length <= _DICT_KEEP_DONE) return q;
+      const drop = new Set(done.slice(0, done.length - _DICT_KEEP_DONE).map(x => x.id));
+      return q.filter(x => !drop.has(x.id));
+    });
+  } catch (_) {}   // pruning is housekeeping; the next success prunes
 }
 
 // Exponential backoff so a hard failure (bad key, no quota) doesn't hammer the
 // endpoint on every reconnect, while a flaky link still recovers quickly.
+// A send gives up after 120s, so a clip still marked `sending` well past that
+// was cut off (the page reloaded or the tab was closed mid-upload) and nothing
+// owns it. It used to stay `sending` for good: never retried, while Files read
+// "1 recording queued (2.4 MB) - sending..." (Ethan, 2026-10-30).
+const _DICT_SENDING_STALE_MS = 150000;
+function _dictSendingStale(it) {
+  return it.state === 'sending' && Date.now() - (it.sending_at || 0) > _DICT_SENDING_STALE_MS;
+}
 function _dictReady(it) {
-  if (it.state === 'done' || it.state === 'sending') return false;
+  if (it.state === 'done' || (it.state === 'sending' && !_dictSendingStale(it))) return false;
   if ((it.attempts || 0) >= _DICT_MAX_AUTO) return false;
   const wait = Math.min(300000, 4000 * Math.pow(2, it.attempts || 0));
   return Date.now() - (it.last || 0) > wait;
 }
-let _dictFlushing = false;
+// When the running pass started, or 0. A pass older than _DICT_FLUSH_STALE_MS is
+// taken as hung (a send gives up at 120s, a read at 5s) and the next tick starts
+// a fresh one, said with dictation_flush_stalled.
+let _dictFlushing = 0;
+const _DICT_FLUSH_STALE_MS = 180000;
 async function _dictFlushOffline() {
-  if (_dictFlushing) return;
+  if (_dictFlushing && Date.now() - _dictFlushing < _DICT_FLUSH_STALE_MS) return;
+  if (_dictFlushing) { try { amuxTrack('dictation_flush_stalled', {age_ms: Date.now() - _dictFlushing, measured: true, n_considered: 1}); } catch (_) {} }
   if (typeof online !== 'undefined' && !online) return;
-  _dictFlushing = true;
+  _dictFlushing = Date.now();
   try {
     let sent = 0;
     for (const it of (await _dictOutbox())) {
       if (!_dictReady(it)) continue;
+      if (it.state === 'sending') {
+        try { amuxTrack('dictation_stale_sending_recovered', {id: it.id, age_ms: Date.now() - (it.sending_at || 0),
+          had_sending_at: !!it.sending_at, bytes: (it.blob && it.blob.size) || 0, measured: true, n_considered: 1}); } catch (_) {}
+      }
       if (await _dictTrySend(it.id, false) !== null) sent++;
     }
     if (sent) {
       showToast(sent + ' queued dictation' + (sent === 1 ? '' : 's') + ' transcribed');
       if (_peekTab === 'dictation') _dictLoad();
     }
-  } finally { _dictFlushing = false; }
+  } finally { _dictFlushing = 0; }
 }
 async function _dictRetry(id) { await _dictOutboxPatch(id, { attempts: 0, last: 0 }); await _dictTrySend(id, true); }
 
@@ -28577,7 +29388,7 @@ function renderFilterOptions() {
   // Status chips — fixed order, only states that exist (or are selected)
   const sEl = document.getElementById('filter-statuses');
   if (sEl) {
-    const opts = ['working', 'blocked', 'waiting', 'rate_limited', 'api_error', 'idle', 'unknown', 'stopped']
+    const opts = ['working', 'blocked', 'waiting', 'error', 'starting', 'rate_limited', 'api_error', 'idle', 'unknown', 'stopped']
       .filter(k => filterStatuses.has(k) || live.some(x => _sessStatusKey(x) === k));
     sEl.innerHTML = opts.length ? opts.map(k => {
       const on = filterStatuses.has(k);
@@ -28922,6 +29733,72 @@ function _fileMenuOutside(e) {
     m.classList.remove('open');
     document.removeEventListener('click', _fileMenuOutside);
   }
+}
+
+// ── Open in worker (owner, 2026-10-31 mockup) ──
+// Hands the open file to a worker, new or existing, with instructions. The file
+// goes as an @path the worker reads itself; nothing is copied or uploaded.
+const _FOW_CHIPS = { summarize: 'Summarize this file.', issues: 'Find issues in this file and list them.', change: 'Make these changes to this file: ' };
+function _fowChip(b) {
+  const ta = document.getElementById('fow-text');
+  if (!ta) return;
+  ta.value = _FOW_CHIPS[b.dataset.chip] || '';
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+function _fowMode() {
+  const existing = document.querySelector('input[name="fow-to"]:checked')?.value === 'existing';
+  const f = document.getElementById('fow-worker-field');
+  if (f) f.style.display = existing ? '' : 'none';
+}
+async function _fileOpenInWorker() {
+  const path = _fileData && _fileData.path;
+  if (!path) return;
+  const names = (typeof sessions !== 'undefined' ? sessions : []).map(s => s.name).filter(n => n && !String(n).endsWith('@chat'));
+  let last = '';
+  try { last = localStorage.getItem('amux_fow_to') || ''; } catch (e) {}
+  const def = names.includes(last) ? last : ((typeof _lastPeekedSession !== 'undefined' && _lastPeekedSession) || names[0] || '');
+  const dirty = _fileEditDirty();
+  const name = path.split('/').pop();
+  const html = '<div class="fow-to" role="radiogroup" aria-label="Send to">'
+    + '<label><input type="radio" name="fow-to" value="new" onchange="_fowMode()"> New worker</label>'
+    + '<label><input type="radio" name="fow-to" value="existing" checked onchange="_fowMode()"> Existing worker</label></div>'
+    + '<label class="ui-field" id="fow-worker-field">Worker<input id="fow-worker" class="input" list="fow-workers" value="' + esc(def) + '" autocomplete="off"></label>'
+    + '<datalist id="fow-workers">' + names.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist>'
+    + '<label class="ui-field">Instructions<textarea id="fow-text" class="input" rows="4" placeholder="What should it do with this file?"></textarea></label>'
+    + '<div class="fow-chips"><button type="button" class="btn" data-chip="summarize" onclick="_fowChip(this)">Summarize</button>'
+    + '<button type="button" class="btn" data-chip="issues" onclick="_fowChip(this)">Find issues</button>'
+    + '<button type="button" class="btn" data-chip="change" onclick="_fowChip(this)">Make changes</button></div>'
+    + '<div class="ui-help fow-file">Attached: <b>' + esc(name) + '</b> <code>' + esc(path) + '</code><br>'
+    + (dirty ? 'Your unsaved edits are saved first, so the worker reads them.' : 'No unsaved edits: the worker reads the file as it is on disk.') + '</div>';
+  const shown = showFormModal('Open in worker', html, 'Open in worker');
+  setTimeout(() => document.getElementById('fow-text')?.focus(), 30);
+  if (!(await shown)) return;
+  const to = document.querySelector('input[name="fow-to"]:checked')?.value || 'existing';
+  const worker = ((document.getElementById('fow-worker') || {}).value || '').trim();
+  const instr = ((document.getElementById('fow-text') || {}).value || '').trim();
+  if (!instr) { showToast('Say what the worker should do with the file'); return; }
+  if (to === 'existing' && !worker) { showToast('Pick a worker to send to'); return; }
+  if (dirty) { await _fileSave(); if (_fileEditDirty()) { showToast('Not sent: the file could not be saved first'); return; } }
+  const text = instr + '\n@' + path;
+  let opened = '';
+  if (to === 'new') {
+    const cfg = await _outcomeDefaults();
+    cfg.dir = path.slice(0, path.lastIndexOf('/')) || cfg.dir;
+    opened = await _outcomeStart(text, cfg) || '';
+  } else {
+    try { localStorage.setItem('amux_fow_to', worker); } catch (e) {}
+    const res = await doSend(worker, text);
+    if (res === 'sent' || res === 'queued') { showToast((res === 'sent' ? 'Sent to ' : 'Queued for ') + worker); opened = worker; }
+    else if (res !== 'declined') showToast('Not sent to ' + worker);
+  }
+  _mdBeacon('file_open_in_worker', { to, sent: opened ? 1 : 0 });
+  if (!opened) return;
+  // The worker opens over the file, and Back returns to it (as a @worker link does).
+  if (typeof _navNote === 'function') { clearTimeout(_nav.timer); _navNote(); }
+  closeFilePreview();
+  if (typeof openPeek === 'function') openPeek(opened);
+  if (typeof _navSoon === 'function') _navSoon();
 }
 
 // ── Reading position (resume where you left off) ─────────────────────────────
@@ -29961,7 +30838,7 @@ function _renderFileBody(data, mode) {
     body.appendChild(iframe);
     _bindReadPosFrame(iframe, data.path);   // resume reading position
     const _purl = _htmlPreviewUrl(data.path);   // own URL: anchors/links stay in the document
-    if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content;
+    _htmlSiteFrame(iframe, data.path, () => { if (_purl) iframe.src = _authUrl(_purl); else iframe.srcdoc = data.content; });
     iframe.onload = function() {
       // Bind anchor links to scroll within the iframe. Cross-origin under the
       // sandbox above → contentDocument access throws; the try/catch makes this a
@@ -30028,7 +30905,7 @@ function _fileBindAnchors(container) {
 // textarea Save, ⌘S and the unsaved-changes guard read) and #file-body (the
 // preview Find, Read Aloud, read position and links use) move into the panes
 // for a markdown file and back for anything else.
-const _mdx = { path: null, mode: 'preview', tab: 'preview', loaded: false, timer: 0, histFor: null, against: null, base: '' };
+const _mdx = { path: null, mode: 'preview', tab: 'preview', loaded: false, timer: 0, histFor: null, against: null, base: '', opened: null, autosave: 0 };
 const _MDX_MODES = ['edit', 'preview', 'split'];
 
 function _mdxEls() {
@@ -30070,6 +30947,7 @@ function _mdxShow(data, mode) {
     ta.setSelectionRange(0, 0);
     ta.scrollTop = 0;
     _mdx.base = ta.value;
+    _mdx.opened = ta.value;
     _mdx.path = data.path;
     _mdx.loaded = true;
     _mdx.against = null;
@@ -30082,7 +30960,7 @@ function _mdxShow(data, mode) {
   const want = mode === 'raw' || mode === 'edit' ? (_mdxWide() && localStorage.getItem('amux_mdx_mode') === 'split' ? 'split' : 'edit')
     : mode === 'split' ? 'split' : 'preview';
   _mdxSetMode(want, false);
-  _mdxSetTab(_mdx.tab === 'history' || _mdx.tab === 'diff' ? _mdx.tab : 'preview');
+  _mdxSetTab(want === 'preview' && (_mdx.tab === 'history' || _mdx.tab === 'diff') ? _mdx.tab : 'preview');
   _mdxHighlight();
   _mdxStatus();
   return true;
@@ -30113,13 +30991,16 @@ function _mdxSetMode(mode, remember) {
   _mdx.mode = mode;
   const root = document.getElementById('mdx');
   root.dataset.mode = mode;
+  // The source is highlighted only while it shows (_mdxHighlight).
+  if (mode !== 'preview' && !_mdx.hlLines) _mdxHighlight();
   _fileViewMode = mode === 'preview' ? 'preview' : 'edit';
   // The layout switch lives in whichever pane is showing.
   const seg = document.getElementById('mdx-mode');
   const into = document.getElementById(mode === 'preview' ? 'mdx-view-bar' : 'mdx-src-bar');
   if (seg && into && seg.parentElement !== into) into.insertBefore(seg, into.firstChild);
-  seg.querySelectorAll('[data-m]').forEach(b => { const on = b.dataset.m === mode; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
-  if (remember) { try { localStorage.setItem('amux_mdx_mode', mode); } catch (e) {} }
+  _mdxSyncBar();
+  // Remembered is the layout Edit opens in (edit or split); Preview is never remembered over it.
+  if (remember && mode !== 'preview') { try { localStorage.setItem('amux_mdx_mode', mode); } catch (e) {} }
   ['file-tab-search', 'file-tab-readaloud'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = mode === 'edit' ? 'none' : ''; });
   if (mode === 'edit') _mdSearchClose();
   if (mode !== 'preview') { const ta = document.getElementById('file-edit-ta'); if (ta && !ta.readOnly) requestAnimationFrame(() => ta.focus({ preventScroll: true })); }
@@ -30130,7 +31011,10 @@ function _mdxSetMode(mode, remember) {
 
 function _mdxSetTab(tab) {
   _mdx.tab = tab;
-  document.querySelectorAll('#mdx-tab [data-v]').forEach(b => { const on = b.dataset.v === tab; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  _mdxSyncBar();
+  // Copy and Copy-as act on the rendered note, so they show only beside it.
+  const acts = document.getElementById('mdx-preview-acts');
+  if (acts) acts.hidden = tab !== 'preview';
   const body = document.getElementById('file-body'), alt = document.getElementById('mdx-alt');
   body.style.display = tab === 'preview' ? '' : 'none';
   document.getElementById('mdx-out-host').hidden = tab !== 'preview';
@@ -30226,7 +31110,34 @@ function _mdxInline(s) {
       : link || url ? '<span class="mdx-url">' + m + '</span>' : tag ? '<span class="mdx-tg">' + m + '</span>'
       : at ? '<span class="mdx-at">' + m + '</span>' : '<span class="mdx-i">' + m + '</span>');
 }
-function _mdxHighlight() {
+// The highlighted copy of the source, under a transparent textarea. Kept in step
+// with the text one changed stretch at a time: a keystroke rewrote every line
+// (a 3,600-line note took 105 ms a key on desktop and 178 ms in WebKit, owner
+// 2026-10-31: "make it snappier ... faster to edit"). Line numbers are a CSS
+// counter, so inserting a line renumbers nothing. Not built while only the
+// preview shows, and not on a phone, which edits in the plain textarea.
+function _mdxLineHtml(raw, fence, big) {
+  const e = esc(raw);
+  let cls = '', inner;
+  if (fence) { cls = 'mdx-codeln'; inner = e; }
+  else if (/^#{1,6}\s/.test(raw)) { cls = 'mdx-h'; inner = e; }
+  else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { cls = 'mdx-hr'; inner = e; }
+  else if (big) inner = e;
+  else {
+    const li = /^(\s*)((?:[-*+]|\d+[.)]))(\s+)(\[[ xX]\]\s)?/.exec(raw);
+    if (li) {
+      inner = esc(li[1]) + '<span class="mdx-li">' + esc(li[2]) + '</span>' + li[3]
+        + (li[4] ? '<span class="mdx-task">' + esc(li[4]) + '</span>' : '') + _mdxInline(esc(raw.slice(li[0].length)));
+    } else if (/^\s*>/.test(raw)) { cls = 'mdx-q'; inner = _mdxInline(e); }
+    else inner = _mdxInline(e);
+  }
+  return '<span class="ln' + (cls ? ' ' + cls : '') + '">' + (inner || '') + '\n</span>';
+}
+const _MDX_FENCE = /^\s*(```|~~~)/;
+// A phone edits in the plain textarea: one layer, so the text, the caret and
+// iOS's selection handles always line up, at a size meant for a thumb.
+function _mdxPhone() { return !_mdxWide(); }
+function _mdxHighlight(force) {
   const { ta, wrap } = _mdxEls();
   if (!ta || !wrap || !_mdxActive()) return;
   let hl = document.getElementById('mdx-hl');
@@ -30235,29 +31146,41 @@ function _mdxHighlight() {
     hl.id = 'mdx-hl'; hl.setAttribute('aria-hidden', 'true');
     wrap.insertBefore(hl, ta);
   }
-  const big = ta.value.length > 300000;
-  wrap.classList.toggle('mdx-plain', big);
-  const lines = ta.value.split('\n');
-  let fence = false, h = '';
-  lines.forEach((raw, i) => {
-    const e = esc(raw);
-    let cls = '', inner;
-    if (/^\s*(```|~~~)/.test(raw)) { fence = !fence; cls = 'mdx-fence'; inner = e; }
-    else if (fence) { cls = 'mdx-codeln'; inner = e; }
-    else if (/^#{1,6}\s/.test(raw)) { cls = 'mdx-h'; inner = e; }
-    else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(raw)) { cls = 'mdx-hr'; inner = e; }
-    else if (big) inner = e;
-    else {
-      const li = /^(\s*)((?:[-*+]|\d+[.)]))(\s+)(\[[ xX]\]\s)?/.exec(raw);
-      if (li) {
-        inner = esc(li[1]) + '<span class="mdx-li">' + esc(li[2]) + '</span>' + li[3]
-          + (li[4] ? '<span class="mdx-task">' + esc(li[4]) + '</span>' : '') + _mdxInline(esc(raw.slice(li[0].length)));
-      } else if (/^\s*>/.test(raw)) { cls = 'mdx-q'; inner = _mdxInline(e); }
-      else inner = _mdxInline(e);
+  const phone = _mdxPhone(), big = ta.value.length > 300000;
+  wrap.classList.toggle('mdx-phone', phone);
+  wrap.classList.toggle('mdx-plain', big || phone);
+  if (phone || big) { if (_mdx.hlLines) { hl.textContent = ''; _mdx.hlLines = null; } return; }
+  if (_mdx.mode === 'preview') { _mdx.hlLines = null; return; }   // built when the source shows
+  const lines = ta.value.split('\n'), old = _mdx.hlLines;
+  if (!force && old && hl.childElementCount === old.length) {
+    const max = Math.min(old.length, lines.length);
+    let p = 0; while (p < max && old[p] === lines[p]) p++;
+    let q = 0; while (q < max - p && old[old.length - 1 - q] === lines[lines.length - 1 - q]) q++;
+    const oldMid = old.slice(p, old.length - q), newMid = lines.slice(p, lines.length - q);
+    // A fence opened or closed changes every line after it: build it all.
+    if (!oldMid.some(l => _MDX_FENCE.test(l)) && !newMid.some(l => _MDX_FENCE.test(l))) {
+      const fence = _mdx.hlFence[p];
+      const t = document.createElement('template');
+      t.innerHTML = newMid.map(l => _mdxLineHtml(l, fence, false)).join('');
+      for (let k = 0; k < oldMid.length; k++) hl.children[p].remove();
+      hl.insertBefore(t.content, hl.children[p] || null);
+      _mdx.hlLines = lines;
+      _mdx.hlFence = _mdx.hlFence.slice(0, p).concat(new Array(newMid.length).fill(fence), _mdx.hlFence.slice(old.length - q));
+      _mdxSyncScroll();
+      return;
     }
-    h += '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + (inner || '') + '\n</span>';
+  }
+  let fence = false, h = '';
+  const states = [];
+  lines.forEach(raw => {
+    states.push(fence);
+    if (_MDX_FENCE.test(raw)) { fence = !fence; h += '<span class="ln mdx-fence">' + esc(raw) + '\n</span>'; return; }
+    h += _mdxLineHtml(raw, fence, false);
   });
+  states.push(fence);
   hl.innerHTML = h;
+  _mdx.hlLines = lines;
+  _mdx.hlFence = states;
   // The pre wraps exactly as the textarea does: same width once its scrollbar is counted.
   hl.style.paddingRight = (parseFloat(getComputedStyle(ta).paddingRight) + (ta.offsetWidth - ta.clientWidth)) + 'px';
   _mdxSyncScroll();
@@ -30269,8 +31192,10 @@ function _mdxSyncScroll() {
 function _mdxStatus() {
   const ta = document.getElementById('file-edit-ta');
   if (!ta || !_mdxActive()) return;
-  const before = ta.value.slice(0, ta.selectionStart);
-  const ln = before.split('\n').length, col = ta.selectionStart - before.lastIndexOf('\n');
+  const v = ta.value, at = ta.selectionStart;
+  let ln = 1; for (let i = v.indexOf('\n'); i !== -1 && i < at; i = v.indexOf('\n', i + 1)) ln++;
+  // lastIndexOf reads a negative start as 0, so at the very start a leading newline read as Col 0.
+  const col = at - (at > 0 ? v.lastIndexOf('\n', at - 1) : -1);
   document.getElementById('mdx-pos').textContent = 'Ln ' + ln + ', Col ' + col;
   const n = ta.value.length;
   document.getElementById('mdx-chars').textContent = n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
@@ -30280,15 +31205,55 @@ function _mdxStatus() {
   d.textContent = ta.readOnly ? 'Read-only' : dirty ? 'Unsaved' : 'Saved';
   d.classList.toggle('on', dirty);
   const save = document.getElementById('file-save-btn');
-  if (save) save.style.display = _fileEditable(_fileData) && (_mdx.mode !== 'preview' || dirty) ? '' : 'none';
+  // Edits save themselves (_mdxAutosave), so Save shows only while something is unsaved.
+  if (save) save.style.display = _fileEditable(_fileData) && dirty ? '' : 'none';
 }
-// Every change to the source: highlight now, the preview a beat later.
+// Every change to the source: highlight now, the preview a beat later, and a
+// save once typing pauses (owner, 2026-10-29: "make sure edits are saved as
+// they happen"). Not a new note (it is named on its first save) and not while
+// a conflict waits on a choice.
+const _MDX_AUTOSAVE_MS = 1000;
 function _mdxChanged() {
   _mdxHighlight();
   _mdxStatus();
   clearTimeout(_mdx.timer);
   _mdx.timer = setTimeout(() => { if (_mdx.tab === 'diff') _mdxRenderDiff(); else _mdxRenderPreview(); }, 150);
+  clearTimeout(_mdx.autosave);
+  _mdx.autosave = setTimeout(_mdxAutosave, _MDX_AUTOSAVE_MS);
 }
+function _mdxAutosave() {
+  clearTimeout(_mdx.autosave);
+  if (!_mdxActive() || !_fileData || _fileData._isNew || _fileData.conflict || !_fileEditable(_fileData) || !_fileEditDirty()) return;
+  _fileSave();
+}
+// Another person's (or a worker's) save shows up while this copy has nothing
+// unsaved: the file is checked every few seconds while it is open and in view,
+// at the cost of a 304. With unsaved edits it is left alone: the next save
+// merges.
+const _MDX_FOLLOW_MS = 4000;
+async function _mdxFollow() {
+  if (!_mdxActive() || document.hidden || !_fileData || !_fileData.etag || _fileData._isNew || _fileData.conflict || _fileEditDirty()) return;
+  const path = _fileData.path, had = _fileData.etag;
+  let r;
+  try { r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders({ 'If-None-Match': had }), cache: 'no-store' }); } catch (e) { return; }
+  if (!r || r.status !== 200 || !_fileData || _fileData.path !== path || _fileData.etag !== had || _fileEditDirty()) return;
+  const text = await r.text(), etag = r.headers.get('etag');
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || text === ta.value) { if (etag) _fileData.etag = etag; return; }
+  const at = ta.selectionStart;
+  ta.value = text;
+  try { ta.setSelectionRange(Math.min(at, text.length), Math.min(at, text.length)); } catch (e) {}
+  _fileData.content = text;
+  _mdx.opened = text;
+  if (etag) _fileData.etag = etag;
+  _mdxHighlight(); _mdxStatus(); _mdxRenderPreview();
+  const d = document.getElementById('mdx-dirty');
+  if (d) d.textContent = 'Updated';
+  try { window._clientDebug?.('file-collab', { verdict: 'file_followed', measured: true, n_considered: 1 }); } catch (_) {}
+}
+setInterval(_mdxFollow, _MDX_FOLLOW_MS);
+// Leaving the page or hiding it saves what is pending, rather than waiting.
+document.addEventListener('visibilitychange', () => { if (document.hidden && _mdx.autosave) _mdxAutosave(); });
 
 // ── Editing commands ──
 function _mdxIndent() { return parseInt(localStorage.getItem('amux_mdx_indent') || '2', 10) === 4 ? 4 : 2; }
@@ -30454,12 +31419,18 @@ function _mdxDiffLines(a, b) {
 function _mdxRenderDiff() {
   const alt = document.getElementById('mdx-alt'), ta = document.getElementById('file-edit-ta');
   if (!alt || !ta || !_fileData) return;
-  const base = _mdx.against ? _mdx.against.content : (_fileData.content || '');
-  const what = _mdx.against ? 'commit ' + esc(_mdx.against.short) + ' (' + esc(_mdx.against.subject) + ')' : 'the saved file';
+  // With autosave the saved file is the text shown, so Diff compares with the
+  // file as it was opened (or as it last arrived from elsewhere).
+  const base = _mdx.against ? _mdx.against.content : (_mdx.opened != null ? _mdx.opened : (_fileData.content || ''));
+  const what = _mdx.against ? (_mdx.against.label ? esc(_mdx.against.label) : 'commit ' + esc(_mdx.against.short) + ' (' + esc(_mdx.against.subject) + ')')
+    : (_mdx.opened != null ? 'the file as you opened it' : 'the saved file');
   const rows = _mdxDiffLines(base, ta.value);
   const add = rows.filter(r => r[0] === '+').length, del = rows.filter(r => r[0] === '-').length;
-  let h = '<div class="mdx-diff-head">' + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b> against ' + what
-    : 'No changes against ' + what) + (_mdx.against ? ' <button type="button" class="btn mdx-diff-saved">Against the saved file</button>' : '') + '</div>';
+  // Both ends named (owner, 2026-10-31: "unclear Diff semantics"): red is the
+  // older side, green the text in the editor now.
+  let h = '<div class="mdx-diff-head"><span class="mdx-diff-ends"><span class="mdx-del">' + what + '</span> \u2192 <span class="mdx-add">the text now</span></span> '
+    + (add || del ? '<b class="mdx-add">+' + add + '</b> <b class="mdx-del">−' + del + '</b>' : '<span>no changes</span>')
+    + (_mdx.against ? ' <button type="button" class="btn mdx-diff-saved">Compare with the file as opened</button>' : '') + '</div>';
   if (add || del) {
     // Only the changes and three lines around each.
     const keep = new Set();
@@ -30503,11 +31474,15 @@ function _mdxDrawHistory(d) {
   const rel = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 3600 ? Math.round(s / 60) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : Math.round(s / 86400) + 'd ago'; };
   let h = '<div class="mdx-hist-head">' + d.commits.length + ' commit' + (d.commits.length === 1 ? '' : 's') + (d.uncommitted ? ' · <span class="mdx-dirty on">edits not committed</span>' : '') + '</div>';
   if (!d.commits.length) h += '<div class="mdx-empty">No commits include this file yet.</div>';
+  // A version reads by when it was and what changed; the hash is metadata. The
+  // row itself compares it with the text now; Restore is the second, smaller
+  // action and asks first (owner, 2026-10-31).
   h += d.commits.map(c => '<div class="mdx-commit" data-sha="' + esc(c.sha) + '">'
-    + '<div class="mdx-commit-main"><div class="mdx-commit-subj">' + esc(c.subject) + '</div>'
-    + '<div class="mdx-commit-meta">' + esc(c.author) + ' · ' + rel(c.at) + ' · <code>' + esc(c.short) + '</code></div></div>'
-    + '<button type="button" class="btn" data-act="diff">Diff</button>'
-    + (_fileEditable(_fileData) ? '<button type="button" class="btn" data-act="restore" title="Put this version in the editor (not saved until you save)">Restore</button>' : '')
+    + '<button type="button" class="mdx-commit-main" data-act="diff" title="Compare this version with the text now">'
+    + '<span class="mdx-commit-when">' + rel(c.at) + '</span>'
+    + '<span class="mdx-commit-subj">' + esc(c.subject) + '</span>'
+    + '<span class="mdx-commit-meta">' + esc(c.author) + ' · <code>' + esc(c.short) + '</code></span></button>'
+    + (_fileEditable(_fileData) ? '<button type="button" class="btn mdx-commit-restore" data-act="restore" title="Put this version in the editor">Restore</button>' : '')
     + '</div>').join('');
   alt.innerHTML = h;
 }
@@ -30524,10 +31499,17 @@ async function _mdxHistoryAct(sha, act) {
     const content = await _mdxCommitAt(sha);
     if (act === 'diff') { _mdx.against = { sha, short: c.short, subject: c.subject, content }; _mdxSetTab('diff'); }
     else if (act === 'restore') {
+      // Edits save themselves, so Restore writes the file: the text now stays
+      // one step away, in Diff (compared against it) and in ⌘Z.
+      const ok = await showConfirm('Put the version from ' + c.short + ' (' + c.subject + ') in the editor? It saves like any edit. The text there now is kept: Diff compares against it and \u2318Z puts it back.', 'Restore');
+      if (!ok) return;
       const ta = document.getElementById('file-edit-ta');
+      const before = ta.value;
       _mdxReplace(0, ta.value.length, content, 0);
-      if (_mdx.mode === 'preview') _mdxSetMode(_mdxWide() ? 'split' : 'edit', false);
-      showToast('Version ' + c.short + ' is in the editor. Save to keep it.');
+      _mdx.against = { label: 'the text before restoring ' + c.short, content: before };
+      _mdxSetMode('preview', false);
+      _mdxSetTab('diff');
+      showToast('Restored ' + c.short + '. Diff shows what it changed.');
       _mdxBeacon('history_restored');
     }
   } catch (e) { showToast('Could not read that version: ' + (e.message || e)); }
@@ -30553,8 +31535,38 @@ function _mdxFull(on) {
   requestAnimationFrame(_mdxHighlight);
 }
 
-// The Preview / Diff / History switch (index.html onclick). Diff opened from
-// the switch is against the saved file; History's Diff picks a commit.
+// The one view switch (owner, 2026-10-31: "Edit Preview Split Preview Diff
+// History" showed Preview twice). Preview, Edit, Diff and History are where
+// you are; Split is a desktop-only way of showing Edit, toggled beside them.
+// Inside, mode says which panes show and tab what the rendered pane holds.
+function _mdxCurrentView() {
+  if (_mdx.tab === 'diff' || _mdx.tab === 'history') return _mdx.tab;
+  return _mdx.mode === 'preview' ? 'preview' : 'edit';
+}
+function _mdxSyncBar() {
+  const seg = document.getElementById('mdx-mode');
+  if (!seg) return;
+  const view = _mdxCurrentView();
+  seg.querySelectorAll('[role="tab"][data-m]').forEach(b => { const on = b.dataset.m === view; b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); });
+  const sp = seg.querySelector('.mdx-split');
+  if (sp) { const on = _mdx.mode === 'split'; sp.classList.toggle('active', on); sp.setAttribute('aria-pressed', String(on)); }
+}
+function _mdxView(v) {
+  if (v === 'edit') {
+    const split = _mdxWide() && localStorage.getItem('amux_mdx_mode') === 'split';
+    _mdxSetMode(split ? 'split' : 'edit', false);
+    _mdxSetTab('preview');
+  } else {
+    _mdxSetMode('preview', false);
+    _mdxTabClick(v);
+  }
+  _mdxBeacon('view', { view: v });
+}
+function _mdxToggleSplit() {
+  _mdxSetMode(_mdx.mode === 'split' ? 'edit' : 'split', true);
+  _mdxSetTab('preview');
+}
+// Diff opened from the switch is against the saved file; History's Diff picks a commit.
 function _mdxTabClick(v) {
   if (v === 'diff' && _mdx.tab !== 'diff') _mdx.against = null;
   _mdxSetTab(v);
@@ -30570,7 +31582,8 @@ function _mdxBind() {
   ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) _mdxStatus(); }));
   ta.addEventListener('keydown', e => { if (_mdxActive()) _mdxKeydown(e); });
   _atAttach(ta);   // @ offers the workers
-  document.getElementById('mdx-tools').addEventListener('mousedown', e => { if (e.target.closest('[data-t]')) e.preventDefault(); });   // keep the selection
+  // Keep the selection, and on a phone the keyboard: a tap reaches pointerdown before mousedown.
+  for (const ev of ['pointerdown', 'mousedown']) document.getElementById('mdx-tools').addEventListener(ev, e => { if (e.target.closest('[data-t]')) e.preventDefault(); });
   document.getElementById('mdx-tools').addEventListener('click', e => {
     const b = e.target.closest('[data-t]');
     if (!b || ta.readOnly) return;
@@ -31890,6 +32903,7 @@ async function _openXlsxPreview(path) {
   if (subEl) { const dir = path.slice(0, path.lastIndexOf('/')) || '/'; subEl.textContent = dir; subEl.title = path; }
   document.getElementById('file-overlay').dataset.path = path;
   _fileHashSync(path);
+  _fileFresh(null);
   const body = document.getElementById('file-body');
   body.className = 'file-overlay-body';
   body.textContent = 'Loading spreadsheet…';
@@ -32005,6 +33019,7 @@ async function _cacheStreamedImage(path, data) {
 let _feOpenRecording = null;
 function _feRecordOpen(path) {
   if (!path) return;
+  _filesRecentAdd(path, 'file');
   return _feOpenRecording = fetch(API + '/api/fs/opened', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }), keepalive: true })
     .then(r => r.ok ? r.json() : null)
@@ -32031,15 +33046,28 @@ function _feRecordOpen(path) {
 // showed the folder (Ethan, 2026-10-26: "when i close and re-open it doesnt open
 // the file"). A link to anything else (#peek=, #issue=) is left alone; closing
 // the file puts back the folder, or nothing when the Files view is not showing.
+// A file opened over a worker or a view takes the address too, and closing it
+// puts that address back (owner, 2026-10-29: "when i refresh an open md file
+// it goes to the worker view"): the address had stayed #peek=<worker>.
+let _fileHashUnder = null;
 function _fileHashSync(path) {
   try {
     const h = location.hash;
-    if (h && !h.startsWith('#path=') && h !== '#view=files') return;
     // A split pane's page (?peekEmbed=) is addressed by its worker and tab; a
     // file opened from its Chat must not rewrite that address.
     if (/[?&]peekEmbed=/.test(location.search)) return;
-    const want = path ? '#path=' + _encodeHashPath(path)
+    const own = !h || h.startsWith('#path=') || h === '#view=files';
+    // A close while the address moved to something else (a card link): what
+    // the file covered is gone, and must not come back on a later close (land
+    // review F1).
+    if (!own && !/^#(peek|view)=/.test(h)) { if (!path) _fileHashUnder = null; return; }
+    if (path && !own) _fileHashUnder = h;
+    let want = path ? '#path=' + _encodeHashPath(path)
       : (activeView === 'files' && _filesPath && _filesPath !== '/' ? '#path=' + _encodeHashPath(_filesPath) : '');
+    if (!path && _fileHashUnder) { want = _fileHashUnder; _fileHashUnder = null; }
+    // Closed while the address moved elsewhere: what the file covered is
+    // gone already, and it must not be put back by a later close (land review F1).
+    if (!path && !own) { _fileHashUnder = null; return; }
     if (h !== want) history.replaceState(history.state, '', location.pathname + location.search + want);
   } catch (e) {}
 }
@@ -32090,6 +33118,7 @@ async function openFilePreview(path, options = {}) {
   // title can read as the markdown heading or carry a "cached" suffix.
   document.getElementById('file-overlay').dataset.path = path;
   _fileHashSync(path);
+  _fileFresh(null);   // the last file's label is not this one's
   document.getElementById('file-body').className = 'file-overlay-body';
   document.getElementById('file-body').textContent = 'Loading...';
   document.getElementById('file-view-tabs').style.display = 'none';
@@ -32115,6 +33144,7 @@ async function openFilePreview(path, options = {}) {
     const data = await r.json();
     if (gen !== _filePreviewGen) return;   // another file was opened meanwhile
     fresh = true;
+    _fileFresh(null);
     if (data.error) {
       // Say WHAT failed and WHERE, not a bare "Error: file not found" dead end
       // (Ethan, 2026-09-12: a terminal file link opened to that and nothing
@@ -32208,23 +33238,43 @@ async function openFilePreview(path, options = {}) {
     }
   } catch(e) {
     if (gen !== _filePreviewGen) return;
+    // The server has answered (by failing): the cache-first read above must
+    // not relabel the copy as "checking" after this says "Offline".
+    fresh = true;
     if (options.readOnly) {document.getElementById('file-body').textContent='Retained asset unavailable.';return;}
     // Offline or unreachable: the saved copy, if any (it may already be shown).
     const cached = await _idb.getFile(path).catch(() => null);
     if (gen !== _filePreviewGen) return;
-    if (cached && cached.type === 'file') { _fileShowCached(path, cached); return; }
+    if (cached && cached.type === 'file') { _fileShowCached(path, cached, true); return; }
     document.getElementById('file-body').textContent = 'Could not reach the server, and this file has no saved copy on this device yet.';
   }
 }
 
 let _filePreviewGen = 0;
-function _fileShowCached(path, cached) {
+// How fresh the shown copy is, beside the folder (owner, 2026-10-31: "To-Do.md
+// · cached 42h ago" stayed in the title after the file had loaded fresh, and
+// read as if the note were 42 hours stale while its last commit was 8h old).
+// The cached time is when this device last opened the file, not when the file
+// changed, so it says "your copy" and goes away once the server answers.
+// null: the file is the server's, nothing to say.
+function _fileFresh(state, ts) {
+  const el = document.getElementById('file-fresh');
+  if (!el) return;
+  if (!state) { el.hidden = true; el.textContent = ''; el.className = 'file-fresh'; return; }
+  const age = Math.max(0, Math.round((Date.now() - (ts || Date.now())) / 60000));
+  const ageStr = age < 1 ? 'just now' : age < 60 ? age + 'm ago' : age < 2880 ? Math.round(age / 60) + 'h ago' : Math.round(age / 1440) + 'd ago';
+  el.textContent = state === 'offline' ? 'Offline \u00b7 your copy from ' + ageStr : 'Your copy from ' + ageStr + ' \u00b7 checking\u2026';
+  el.title = state === 'offline'
+    ? 'The server could not be reached. This is the copy saved on this device when you last opened the file.'
+    : 'Showing the copy saved on this device while the current file loads.';
+  el.className = 'file-fresh' + (state === 'offline' ? ' offline' : '');
+  el.hidden = false;
+}
+function _fileShowCached(path, cached, offline) {
     {
       _idb.touchFile(path);   // opening refreshes the 30-day clock, even offline
       _fileData = cached.data;
-      const age = Math.round((Date.now() - cached.ts) / 60000);
-      const ageStr = age < 60 ? age + 'm ago' : Math.round(age/60) + 'h ago';
-      document.getElementById('file-title').textContent = path.split('/').pop() + ' \u2022 cached ' + ageStr;
+      _fileFresh(offline ? 'offline' : 'checking', cached.ts);
       const cachedIsText = !cached.data.is_image && !cached.data.is_pdf && !cached.data.is_video && !cached.data.is_audio && !cached.data.is_binary && !cached.data.is_ebook;
       if (cachedIsText) {
         document.getElementById('file-view-tabs').style.display = '';
@@ -32319,6 +33369,7 @@ function closeFilePreview() {
   delete _cTitleEl.dataset.spEditable;
   document.getElementById('file-overlay').classList.remove('active');
   _fileHashSync(null);
+  _fileFresh(null);
   document.getElementById('file-download-btn').style.display = 'none'; _presentSetup(null);
   document.getElementById('file-save-btn').style.display = 'none';
   const tpTab = document.getElementById('file-tab-teleprompter');
@@ -32329,6 +33380,10 @@ function closeFilePreview() {
   document.getElementById('file-body').style.display = '';
   _fileData = null;
   _fileViewMode = 'preview';
+  // A load still in flight belongs to a viewer that is gone: without this its
+  // cache read or reply passed the generation check and set _fileData on a
+  // closed overlay (2026-11-06).
+  _filePreviewGen++;
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -32377,6 +33432,127 @@ function _fileSave() {
   _fileSaveChain = (_fileSaveChain || Promise.resolve()).catch(() => {}).then(_fileSaveOnce).finally(() => { _fileSaveWaiting--; });
   return _fileSaveChain;
 }
+// ── Two people, one file (owner, 2026-10-29) ──
+// A save refused because the file changed since it was loaded is merged, line
+// by line, three ways: the text it was loaded as (_fileData.content), the text
+// being saved, and the file now. Edits to different lines merge and save on
+// their own. Edits to the same lines are a conflict: nothing is overwritten,
+// autosave stops, and a bar offers Keep mine, Take theirs and the differences.
+function _merge3(base, mine, theirs) {
+  if (mine === theirs || theirs === base) return { clean: true, text: mine };
+  if (mine === base) return { clean: true, text: theirs };
+  const B = base.split('\n');
+  const hunks = x => {
+    const out = []; let i = 0, cur = null;
+    for (const r of _mdxDiffLines(base, x)) {
+      if (r[0] === ' ') { if (cur) { out.push(cur); cur = null; } i++; continue; }
+      if (!cur) cur = { s: i, e: i, lines: [] };
+      if (r[0] === '-') { i++; cur.e = i; } else cur.lines.push(r[3]);
+    }
+    if (cur) out.push(cur);
+    return out;
+  };
+  const ha = hunks(mine), hb = hunks(theirs), out = [];
+  let pos = 0, ia = 0, ib = 0;
+  const same = (a, b) => a.s === b.s && a.e === b.e && a.lines.join('\n') === b.lines.join('\n');
+  const clash = (a, b) => (a.s < b.e && b.s < a.e) || a.s === b.s;
+  while (ia < ha.length || ib < hb.length) {
+    const a = ha[ia], b = hb[ib];
+    let h;
+    if (a && b && clash(a, b)) {
+      if (!same(a, b)) return { clean: false, text: mine };
+      h = a; ia++; ib++;
+    } else if (a && (!b || a.s < b.s)) { h = a; ia++; } else { h = b; ib++; }
+    out.push(...B.slice(pos, h.s), ...h.lines);
+    pos = h.e;
+  }
+  out.push(...B.slice(pos));
+  return { clean: true, text: out.join('\n') };
+}
+async function _fileReconcile(mine) {
+  const path = _fileData && _fileData.path;
+  if (!path) return;
+  let now = null;
+  try {
+    const r = await fetch(API + '/api/file?path=' + encodeURIComponent(path), { headers: _authHeaders(), cache: 'no-store' });
+    if (r.ok) now = await r.json();
+  } catch (e) {}
+  if (!now || typeof now.content !== 'string' || !_fileData || _fileData.path !== path) {
+    showToast('This file changed elsewhere and could not be read; your edits are kept unsaved');
+    return;
+  }
+  const ta = document.getElementById('file-edit-ta');
+  // Merged with what the editor holds NOW: typing while the file was read
+  // must not drop the merge and then overwrite their change on the next save
+  // (land review F1, F3).
+  const cur = ta ? ta.value : mine;
+  const m = _merge3(_fileData.content || '', cur, now.content);
+  try { window._clientDebug?.('file-collab', { verdict: m.clean ? 'file_merged' : 'file_conflict', measured: true, n_considered: 1 }); } catch (_) {}
+  // The file now is the base from here on.
+  _fileData.content = now.content;
+  _fileData.etag = now.etag || null;
+  if (m.clean) {
+    if (ta && m.text !== cur) {
+      const at = ta.selectionStart, line = cur.slice(0, at).split('\n').length - 1, col = at - cur.lastIndexOf('\n', at - 1) - 1;
+      ta.value = m.text;
+      const L = m.text.split('\n'); let off = 0;
+      for (let k = 0; k < Math.min(line, L.length - 1); k++) off += L[k].length + 1;
+      const c = off + Math.min(col, (L[Math.min(line, L.length - 1)] || '').length);
+      try { ta.setSelectionRange(c, c); } catch (e) {}
+      if (_mdxActive()) _mdxChanged();
+    }
+    showToast('Merged with changes made elsewhere');
+    _fileSave();
+    return;
+  }
+  _fileData.conflict = { theirs: now.content };
+  _fileConflictBar(true);
+}
+function _fileConflictBar(on) {
+  let bar = document.getElementById('file-conflict');
+  if (!on) { if (bar) bar.hidden = true; return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'file-conflict';
+    bar.className = 'file-conflict';
+    bar.setAttribute('role', 'alert');
+    bar.innerHTML = '<span>Someone else changed the same lines while you edited. Nothing was overwritten.</span>'
+      + '<button type="button" class="btn" onclick="_fileConflictResolve(\'diff\')">Show their version</button>'
+      + '<button type="button" class="btn" onclick="_fileConflictResolve(\'theirs\')">Take theirs</button>'
+      + '<button type="button" class="btn btn-primary" onclick="_fileConflictResolve(\'mine\')">Keep mine</button>';
+    const ov = document.getElementById('file-overlay');
+    const host = document.getElementById('mdx') || ov;
+    if (host && host.parentNode) host.parentNode.insertBefore(bar, host); else if (ov) ov.appendChild(bar);
+  }
+  bar.hidden = false;
+}
+function _fileConflictResolve(how) {
+  const c = _fileData && _fileData.conflict, ta = document.getElementById('file-edit-ta');
+  if (!c || !ta) { _fileConflictBar(false); return; }
+  if (how === 'diff') {
+    if (_mdxActive()) {
+      _mdx.against = { label: 'their version', content: c.theirs };
+      if (_mdx.mode === 'edit') _mdxSetMode(_mdxWide() ? 'split' : 'preview', false);
+      _mdxSetTab('diff');
+    }
+    return;
+  }
+  delete _fileData.conflict;
+  _fileConflictBar(false);
+  // Diff goes back to the file as opened, not "their version" (land review F2).
+  if (typeof _mdx !== 'undefined' && _mdx.against && _mdx.against.label === 'their version') {
+    _mdx.against = null;
+    if (_mdx.tab === 'diff') _mdxRenderDiff();
+  }
+  try { window._clientDebug?.('file-collab', { verdict: 'file_conflict_' + how, measured: true, n_considered: 1 }); } catch (_) {}
+  if (how === 'theirs') {
+    ta.value = c.theirs;
+    if (_mdxActive()) _mdxChanged();
+    return;
+  }
+  _fileSave();   // mine, over the version just read
+}
+
 async function _fileSaveOnce() {
   if (_xlsxEd) { await _xlsxSave(); return; }
   if (!_fileEditable(_fileData)) return;
@@ -32410,11 +33586,21 @@ async function _fileSaveOnce() {
         }
       } catch (e) { sent = false; }
     }
+    // The version this text was edited from, so a save never replaces a newer
+    // one (owner, 2026-10-29: "proper collision reconcilation etc. handled for
+    // multiple users in a workspace"). Without it the last save won silently.
+    let refused = null;
     if (!sent) r = await apiCall(API + '/api/file', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: _fileData.path, content})
+      body: JSON.stringify({path: _fileData.path, content, expected_etag: _fileData.etag || undefined}),
+      _onRefused: (status, body) => { refused = { status, body }; }
     });
+    if (!r && refused && refused.status === 409 && refused.body && refused.body.code === 'file_changed') {
+      btn.textContent = 'Save'; btn.classList.remove('saving');
+      await _fileReconcile(content);
+      return;
+    }
     if (!r) {  // offline-queued (or error) — reflect locally; the PUT replays on reconnect
       _fileData.content = content;
       btn.textContent = online ? 'Error' : 'Queued';
@@ -32425,6 +33611,7 @@ async function _fileSaveOnce() {
     const d = await r.json();
     if (d.ok) {
       _fileData.content = content;
+      if (d.etag) _fileData.etag = d.etag;
       if (_fileData._isNew) {
         _fileData._isNew = false;
         // Auto-name from first line if this was an auto-named scratchpad note
@@ -32474,7 +33661,7 @@ async function copyFileContent() {
   await navigator.clipboard.writeText(_fileData.content);
   const btn = document.getElementById('file-tab-copy');
   btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  setTimeout(() => { btn.textContent = 'Copy text'; }, 1500);
 }
 
 // ═══════ FILE EXPLORER ═══════
@@ -32758,6 +33945,94 @@ function _filesBookmarkOpen(path, type) {
   else loadFiles(path);
 }
 
+// The row's filter (owner, 2026-10-31: "a filter that stays selected
+// locally ... all, pinned, recent, modified, shared"). Kept per device in
+// localStorage, never on the server. Where each list comes from:
+// - pinned: the scoped shortcuts (/api/prefs files_bookmarks*), as before.
+// - recent: files and folders opened on this device (_filesRecentAdd, fed by
+//   _feRecordOpen and loadFiles), newest first.
+// - modified: the newest files by mtime in the folder on screen (the listing
+//   the view already has; no endpoint lists modified files machine-wide).
+// - shared: files and folders with an approved public link (Apps tab, "Share
+//   a file or folder", /api/page-links kind=file). A pin "for all workers" is
+//   a scope of a shortcut and stays under Pinned.
+// - all: the four above in that order, each path once.
+const _FILES_ROW_FILTERS = ['all', 'pinned', 'recent', 'modified', 'shared'];
+const _FILES_ROW_FILTER_KEY = 'amux_files_row_filter';
+function _filesRowFilter() {
+  try { const v = localStorage.getItem(_FILES_ROW_FILTER_KEY); if (_FILES_ROW_FILTERS.includes(v)) return v; } catch(e) {}
+  return 'all';
+}
+function _filesRowFilterSet(v) {
+  if (!_FILES_ROW_FILTERS.includes(v)) return;
+  try { localStorage.setItem(_FILES_ROW_FILTER_KEY, v); } catch(e) {}
+  if (_filesSharedErr) _filesSharedAt = 0;   // choosing a list asks again after a failed load
+  _filesRenderBookmarks();
+  const row = document.getElementById('files-bookmarks');
+  if (row) row.scrollLeft = 0;
+}
+function _filesRowShows(kind) { const f = _filesRowFilter(); return f === 'all' || f === kind; }
+
+const _FILES_RECENT_KEY = 'amux_files_recent';
+const _FILES_RECENT_MAX = 15;
+function _filesRecentGet() {
+  try {
+    const a = JSON.parse(localStorage.getItem(_FILES_RECENT_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(r => r && typeof r.path === 'string' && r.path) : [];
+  } catch(e) { return []; }
+}
+function _filesRecentAdd(path, type) {
+  if (!path || typeof path !== 'string') return;
+  const list = _filesRecentGet().filter(r => r.path !== path);
+  list.unshift({ path, type: type === 'file' ? 'file' : 'dir', at: Date.now() });
+  try { localStorage.setItem(_FILES_RECENT_KEY, JSON.stringify(list.slice(0, _FILES_RECENT_MAX))); } catch(e) {}
+  if (_filesRowShows('recent') && document.getElementById('files-bookmarks-list')) _filesRenderBookmarks();
+}
+function _filesModifiedItems() {
+  const fl = _filesLastData;
+  if (!fl || !fl.data || fl.path !== _filesPath) return [];
+  const base = String(fl.data.path || fl.path || '').replace(/\/$/, '');
+  return (fl.data.entries || [])
+    .filter(e => e && e.name && e.type !== 'dir' && e.modified)
+    .sort((a, b) => b.modified - a.modified)
+    .slice(0, 8)
+    .map(e => ({ path: base + '/' + e.name, label: e.name, type: 'file', note: 'modified ' + timeAgo(e.modified) + ' in this folder' }));
+}
+// Shared links, fetched only when the row shows them and at most once a
+// minute (a failure counts as a fetch, so a down endpoint is not retried on
+// every render). _filesSharedErr says the list is unknown rather than empty.
+let _filesShared = [], _filesSharedAt = 0, _filesSharedErr = '', _filesSharedLoading = null;
+function _filesSharedLoad() {
+  if (_filesSharedLoading || Date.now() - _filesSharedAt < 60000) return _filesSharedLoading;
+  _filesSharedAt = Date.now();
+  _filesSharedLoading = fetch(API + '/api/page-links', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(d => {
+      _filesShared = (d.links || []).filter(l => l && l.kind === 'file' && l.file && !l.pending).map(l => ({
+        path: l.file,
+        label: l.title || l.file.split('/').filter(Boolean).pop() || l.file,
+        type: ((l.files || 0) !== 1 || !/\.[^/]+$/.test(l.file)) ? 'dir' : 'file',
+        note: 'shared at ' + (l.url || l.path),
+      }));
+      _filesSharedErr = '';
+    })
+    .catch(e => { _filesSharedErr = (e && e.message) || 'unreachable'; })
+    .finally(() => { _filesSharedLoading = null; if (_filesRowShows('shared')) _filesRenderBookmarks(); });
+  return _filesSharedLoading;
+}
+// A chip that opens its path and has nothing to remove (recent, modified,
+// shared). `tag` names the source when the row mixes them (All).
+function _filesRowChip(b, src, tag) {
+  const t = b.type === 'file' ? 'file' : 'dir';
+  const ic = t === 'file' ? '\u{1F4C4} ' : '\u{1F4C1} ';
+  const label = b.label || b.path.split('/').filter(Boolean).pop() || b.path;
+  return '<span class="files-bm-chip files-row-chip" data-source="' + src + '" data-path="' + esc(b.path) + '" '
+    + 'style="display:inline-flex;align-items:center;background:transparent;border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
+    + 'title="' + esc(b.path + (b.note ? ' (' + b.note + ')' : '')) + '">'
+    + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + escJs(b.path) + '\',\'' + t + '\')">' + ic + esc(label)
+    + (tag ? ' <span style="color:var(--dim);font-size:var(--fs-3xs);">' + src + '</span>' : '') + '</span></span>';
+}
+
 function _filesRenderBookmarks() {
   const addBtn = document.getElementById('files-bm-add');
   if (addBtn) {
@@ -32766,20 +34041,53 @@ function _filesRenderBookmarks() {
   }
   const container = document.getElementById('files-bookmarks-list');
   if (!container) return;
+  const filter = _filesRowFilter();
+  const sel = document.getElementById('files-row-filter');
+  if (sel && sel.value !== filter) sel.value = filter;
+  const all = filter === 'all';
   const bm = _filesGetBookmarks();
-  // Chip = tappable label (navigate / open) + a × button (remove). The × works
-  // on touch too — right-click can't (mobile-first). Right-click still removes.
-  container.innerHTML = bm.map((b, i) => {
-    const t = b.type === 'file' ? 'file' : 'dir';
-    const ic = t === 'file' ? '\u{1F4C4} ' : '';
-    return '<span class="files-bm-chip" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
-      + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
-      + 'title="' + esc(b.path) + '">'
-      + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
-      + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
-      + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
-      + '</span>';
-  }).join('') + (_exploreSession ? _filesInheritedChips(bm) : '');
+  const seen = new Set();
+  let html = '';
+  if (all || filter === 'pinned') {
+    // Chip = tappable label (navigate / open) + a × button (remove). The × works
+    // on touch too — right-click can't (mobile-first). Right-click still removes.
+    html += bm.map((b, i) => {
+      seen.add(b.path);
+      const t = b.type === 'file' ? 'file' : 'dir';
+      const ic = t === 'file' ? '\u{1F4C4} ' : '';
+      return '<span class="files-bm-chip" data-source="pinned" oncontextmenu="event.preventDefault();_filesRemoveBookmark(' + i + ')" '
+        + 'style="display:inline-flex;align-items:center;gap:var(--space-0-5);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);font-size:var(--fs-xs);color:var(--text);white-space:nowrap;flex-shrink:0;" '
+        + 'title="' + esc(b.path) + '">'
+        + '<span style="cursor:pointer;" onclick="_filesBookmarkOpen(\'' + esc(b.path) + '\',\'' + t + '\')">' + ic + esc(b.label) + '</span>'
+        + '<button onclick="event.stopPropagation();_filesRemoveBookmark(' + i + ')" title="Remove shortcut" aria-label="Remove ' + esc(b.label) + '" '
+        + 'style="border:none;background:none;color:var(--dim);cursor:pointer;font-size:var(--fs-2xl);line-height:1;padding:var(--space-0-5) var(--space-1);min-width:24px;min-height:24px;border-radius:var(--radius-sm);">×</button>'
+        + '</span>';
+    }).join('');
+    if (_exploreSession) {
+      html += _filesInheritedChips(bm);
+      for (const layer of _filesBmInherited) for (const b of layer.items) if (b && b.path) seen.add(b.path);
+    }
+  }
+  const add = (items, src) => {
+    for (const b of items) {
+      if (!b || !b.path || seen.has(b.path)) continue;
+      seen.add(b.path);
+      html += _filesRowChip(b, src, all);
+    }
+  };
+  if (all || filter === 'recent') add(_filesRecentGet(), 'recent');
+  if (all || filter === 'modified') add(_filesModifiedItems(), 'modified');
+  if (all || filter === 'shared') {
+    _filesSharedLoad();
+    add(_filesShared, 'shared');
+    if (filter === 'shared' && _filesSharedErr) html += '<span class="files-row-empty" style="color:var(--dim);font-size:var(--fs-xs);white-space:nowrap;">Shared links could not be loaded (' + esc(_filesSharedErr) + ')</span>';
+  }
+  if (!html) {
+    const empty = { all: 'Nothing pinned, opened or shared yet', pinned: 'No shortcuts pinned', recent: 'Nothing opened on this device yet',
+      modified: 'No files in this folder', shared: _filesSharedLoading ? 'Loading shared links…' : 'No files or folders shared' }[filter];
+    html = '<span class="files-row-empty" style="color:var(--dim);font-size:var(--fs-xs);white-space:nowrap;">' + esc(empty) + '</span>';
+  }
+  container.innerHTML = html;
 }
 // Chips from the worker's groups and the global list, each tagged with where
 // it comes from, so an inherited shortcut never reads as the worker's own.
@@ -33110,6 +34418,7 @@ async function loadFiles(path) {
   const body = document.getElementById('files-body');
   body.innerHTML = '<div style="padding:var(--space-4);color:var(--dim)">Loading...</div>';
   _filesPath = path;
+  _filesRecentAdd(path, 'dir');
   // Update URL hash so path is shareable / bookmarkable (hash works in PWA mode).
   // A file open over the listing keeps the address: the listing behind a
   // deep-linked or just-opened file loads after it, and writing the folder
@@ -33120,7 +34429,9 @@ async function loadFiles(path) {
     if (openFile) {
       try { amuxTrack('file_hash_kept_open_file', {measured: true, n_considered: 1}); } catch (_) {}
       history.replaceState({}, '', location.pathname + location.search + '#path=' + _encodeHashPath(openFile));
-    } else {
+    } else if (!/^#peek=/.test(location.hash)) {
+      // A worker opened while this listing loaded keeps its address: the
+      // folder written late made a reload show the folder, not the worker.
       history.replaceState({}, '', location.pathname + (path && path !== '/' ? '#path=' + _encodeHashPath(path) : ''));
     }
   } catch(e) {}
@@ -33527,12 +34838,6 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && _fsel.paths.size) { e.preventDefault(); e.stopImmediatePropagation(); _fselClear(); return; }
   if (root && (e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); _fselSelectAll(root); }
 }, true);
-// Navigate to the parent of the current Files-tab folder (the "Up" action).
-function _filesUp() {
-  const p = (_filesPath || '/').replace(/\/+$/, '');
-  const i = p.lastIndexOf('/');
-  loadFiles(i > 0 ? p.slice(0, i) : '/');
-}
 // Toggle a folder's inline expansion (accordion). Inserts/removes the folder's
 // child rows right after it, without navigating into the folder.
 async function _feToggleExpand(btn) {
@@ -33570,6 +34875,7 @@ async function _feToggleExpand(btn) {
 }
 function _renderFilesEntries(body, path, data, cacheTs) {
   _filesLastData = { path, data, cacheTs };
+  if (_filesRowShows('modified')) _filesRenderBookmarks();
   _libUpdateBtn(data.entries);   // show the Library button for ebook folders (+ auto-close on nav)
   body.innerHTML = '';
 
@@ -37395,6 +38701,16 @@ function _ownLinkHash(href) {
   if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
   return null;
 }
+// The absolute path behind a link to a file on THIS amux (/f/<path>), or ''.
+// Such a link is shown as its path, the way amux shows every file: a worker
+// asked for "a link to the plan" wrote https://<this amux>/f/Users/... and the
+// owner read a server URL where a clickable path belonged (Ethan, 2026-11-06).
+// The href stays, so a plain click opens the file here (_openOwnLink).
+function _ownFilePath(href) {
+  const h = _ownLinkHash(href);
+  if (!h || h.indexOf('#path=') !== 0) return '';
+  try { return decodeURIComponent(h.slice(6)); } catch (_) { return ''; }
+}
 function _openOwnLink(href, how) {
   const hash = _ownLinkHash(href);
   if (!hash) return false;
@@ -37411,6 +38727,9 @@ document.addEventListener('click', e => {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = e.target.closest && e.target.closest('a[href]');
   if (!a || a.hasAttribute('download') || a.closest('#file-body iframe')) return;
+  // A worker tagged in markdown has its own handler (_bindMdFileLinks): it
+  // closes the file it sits in first, so the worker is not opened beneath it.
+  if (a.classList.contains('md-worker-link')) return;
   if (!_ownLinkHash(a.getAttribute('href'))) return;
   e.preventDefault(); e.stopPropagation();
   _openOwnLink(a.href, 'anchor');
@@ -38293,8 +39612,18 @@ async function submitCreate() {
   }
   showToast('Starting ' + name + '...');
   await fetchSessions();
+  // OPEN THE NEW WORKER (Ethan, 2026-10-31: "i just tried to make a worker
+  // nothing happened"). The create had succeeded (201) and the worker was
+  // running, but this only scrolled to its card when the card was on screen:
+  // from a worker view, a filtered list or another group, the dialog closed
+  // and nothing else visibly changed.
+  const listed = (sessions || []).some(s => s.name === name);
   const newCard = document.querySelector('[data-session="' + CSS.escape(name) + '"]');
-  if (newCard) newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (listed && typeof openPeek === 'function') openPeek(name);
+  else if (newCard) newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  else showToast('Created ' + name + '; it appears in Workers once the list refreshes');
+  try { amuxTrack('worker_create_opened', {session: name, listed: listed ? 1 : 0, card_on_screen: newCard ? 1 : 0,
+    opened: listed ? 1 : 0, measured: true, n_considered: 1}); } catch (_) {}
 }
 
 // ── Directory autocomplete + recent dirs ──
@@ -39073,6 +40402,7 @@ const _WORKER_STATUS_GROUPS = [
   { key: 'api_error', label: 'API Error', defaultOpen: true },
   { key: 'rate_limited', label: 'Rate Limited', defaultOpen: true },
   { key: 'idle', label: 'Idle', defaultOpen: true },
+  { key: 'unknown', label: 'Unknown', defaultOpen: true },
   { key: 'stopped', label: 'Stopped', defaultOpen: false },
 ];
 const _WORKER_STATUS_PRI = Object.fromEntries(_WORKER_STATUS_GROUPS.map((g, i) => [g.key, i]));
@@ -40029,9 +41359,20 @@ let boardOwnerFilter = localStorage.getItem('amux_board_owner') || 'human';
 // Smart Board: derived display-status data, fetched from /api/board/derived.
 let _smartBoardData = null;
 let _smartBoardFetching = false;
-let _sessionGroupCollapsed = JSON.parse(localStorage.getItem('amux_board_collapsed') || '{}');
+// A corrupt saved value is dropped, never thrown: a bare JSON.parse here ran
+// at script load, so one bad byte stopped the whole dashboard from starting
+// (implicit state machines inventory 2026-10-31, #37).
+function _savedJson(key, fallback, ok) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  try { const v = JSON.parse(raw); if (ok(v)) return v; } catch (e) {}
+  try { localStorage.removeItem(key); amuxTrack('saved_view_state_dropped', { key, measured: true, n_considered: 1 }); } catch (e) {}
+  return fallback;
+}
+const _isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+let _sessionGroupCollapsed = _savedJson('amux_board_collapsed', {}, _isPlainObject);
 let _boardWorkerDensityBeaconSent = false;
-let _tagGroupCollapsed = JSON.parse(localStorage.getItem('amux_status_collapsed') || '{}');
+let _tagGroupCollapsed = _savedJson('amux_status_collapsed', {}, _isPlainObject);
 // First visit collapses the archive columns. backlog + todo are 1082 of 1553
 // items — they are the reason the ~64 in-flight cards are invisible. Collapsed
 // still shows the count and expands in one tap, and the seed is written
@@ -40043,7 +41384,7 @@ let _collapsedCols;
     _collapsedCols = new Set(['backlog', 'todo']);
     try { localStorage.setItem('amux_col_collapsed', JSON.stringify([..._collapsedCols])); } catch(e) {}
   } else {
-    _collapsedCols = new Set(JSON.parse(_cc || '[]'));
+    _collapsedCols = new Set(_savedJson('amux_col_collapsed', [], Array.isArray));
   }
 }
 let _boardColPages = {};  // tracks how many cards to show per column (lazy load)
@@ -40377,9 +41718,9 @@ function switchView(view) {
   if (view === 'terminal') _termInit();
   if (view === 'graph') _graphInit();
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
-  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
+  if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','velocity','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
-  if (view === 'disk') _reclaimLoad(); else if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling();
+  if (view === 'disk') _reclaimLoad(); else { if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling(); if (typeof _tierStopPolling === 'function') _tierStopPolling(); }
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
 
   if (view === 'journal') _journalInit();
@@ -43760,7 +45101,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
   const freqTitle = s.cadence_class ? (s.schedule_expr || s.sched_type || '') : (s.schedule_expr || '') + ' (group guessed in the browser: this payload has no cadence_class)';
   return `<div class="sx-row sched-item${sel ? ' selected' : ''}" data-sched-id="${id}" data-status="${st.key}" role="button" tabindex="0"
       onclick="openSchedDetail('${idJs}')" onkeydown="if(event.key==='Enter'&&event.target===this)openSchedDetail('${idJs}')">
-    ${scoped ? '' : `<label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>`}
+    <label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>
     <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code>${_sxToldHTML(s)}</div></div>
     ${scoped ? '' : `<div class="sx-cell sx-worker">${_sxWorkerChip(s, sessMap)}</div>`}
     <div class="sx-cell sx-freq"><span title="${esc(freqTitle)}">${esc(_sxFreq(s))}</span>${_schedLastRunHTML(s)}</div>
@@ -43773,7 +45114,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
 }
 function _sxHeadRow(scoped) {
   return `<div class="sx-row sx-row-head" aria-hidden="true">
-    ${scoped ? '' : '<span class="sx-cell sx-sel"></span>'}
+    <span class="sx-cell sx-sel"></span>
     <span class="sx-cell sx-name">Name</span>
     ${scoped ? '' : '<span class="sx-cell sx-worker">Worker</span>'}
     <span class="sx-cell sx-freq">Frequency</span><span class="sx-cell sx-nextc">Next run</span>
@@ -43789,22 +45130,37 @@ function _sxSetGroup(g) {
 }
 function _sxToggleSel(id, on) {
   if (on) _sxSelected.add(id); else _sxSelected.delete(id);
-  const row = document.querySelector('#scheduler-list [data-sched-id="' + CSS.escape(id) + '"]');
-  if (row) row.classList.toggle('selected', on);
+  // The Scheduler page and a worker's Schedules tab can both show the row.
+  document.querySelectorAll('.sx-row[data-sched-id="' + CSS.escape(id) + '"]').forEach(row => row.classList.toggle('selected', on));
   _sxRenderBulk();
 }
-function _sxClearSelection() { _sxSelected.clear(); renderScheduler(); }
+function _sxClearSelection(session) {
+  for (const id of _sxSelectedIds(session)) _sxSelected.delete(id);
+  renderScheduler(); _peekRenderSchedules();
+}
+// The selected schedules, or only one worker's: a worker's Schedules tab acts
+// on its own rows, never on rows picked earlier on the Scheduler page.
+function _sxSelectedIds(session) {
+  if (!session) return [..._sxSelected];
+  const mine = new Set((schedules || []).filter(s => s.session === session).map(s => s.id));
+  return [..._sxSelected].filter(id => mine.has(id));
+}
 function _sxRenderBulk() {
-  const bar = document.getElementById('sched-bulk');
-  if (!bar) return;
   const live = new Set((schedules || []).map(s => s.id));
   for (const id of [..._sxSelected]) if (!live.has(id)) _sxSelected.delete(id);
-  bar.hidden = !_sxSelected.size;
-  const n = document.getElementById('sched-bulk-n');
-  if (n) n.textContent = _sxSelected.size + ' selected';
+  // The Scheduler page's bar and the open worker's (Ethan, 2026-10-30: "make
+  // it so i can do multiselect on a workers' schedules like bulk delete").
+  for (const [barId, nId, session] of [['sched-bulk', 'sched-bulk-n', null], ['peek-sched-bulk', 'peek-sched-bulk-n', peekSession || '']]) {
+    const bar = document.getElementById(barId);
+    if (!bar) continue;
+    const n = session === '' ? 0 : _sxSelectedIds(session).length;
+    bar.hidden = !n;
+    const label = document.getElementById(nId);
+    if (label) label.textContent = n + ' selected';
+  }
 }
-async function _sxBulk(action) {
-  const ids = [..._sxSelected];
+async function _sxBulk(action, session) {
+  const ids = _sxSelectedIds(session);
   if (!ids.length) return;
   if (action === 'delete') {
     const ok = await showConfirm('Delete ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's') + '? They stop firing. Each is a soft delete, recorded in Change history.', 'Delete', true);
@@ -43822,7 +45178,7 @@ async function _sxBulk(action) {
   const verb = { pause: 'Paused', resume: 'Resumed', delete: 'Deleted' }[action];
   showToast(verb + ' ' + done + ' of ' + ids.length + ' schedule' + (ids.length === 1 ? '' : 's')
     + (done < ids.length ? '; the rest were refused (see the messages above)' : ''));
-  _sxSelected.clear();
+  for (const id of ids) _sxSelected.delete(id);
   await Promise.all([fetchSchedules(), fetchSchedulerAudit()]);
   renderScheduler(); renderSchedulerAudit(); renderCalendar();
   _peekRefreshSchedIfActive();
@@ -45024,7 +46380,20 @@ function _bindMdFileLinks(container) {
       e.preventDefault();
       e.stopPropagation();
       _mdBeacon('md_worker_link_opened', { known: _mdWorkerKnown(w.dataset.worker) ? 1 : 0 });
+      // The file closes first: it covers the worker view, and the worker
+      // opened beneath it (owner, 2026-10-29: "when i @ a worker and click it
+      // it should open that worker"). Back (‹, ⌘[) returns to the file, as
+      // _nav records each as a place. Unsaved edits keep the file open.
+      const fo = document.getElementById('file-overlay');
+      if (fo && fo.classList.contains('active') && container.closest('#file-overlay')) {
+        // The file is a place now, however soon after opening it the link is
+        // clicked, so Back finds it.
+        if (typeof _navNote === 'function') { clearTimeout(_nav.timer); _navNote(); }
+        closeFilePreview();
+        if (fo.classList.contains('active')) { _mdBeacon('md_worker_link_kept_file', { reason: 'unsaved' }); return; }
+      }
       if (typeof openPeek === 'function') openPeek(w.dataset.worker);
+      if (typeof _navSoon === 'function') _navSoon();
       return;
     }
     const a = e.target.closest && e.target.closest('.md-file-link');
@@ -45285,6 +46654,13 @@ function _renderMarkdownInner(raw, basePath) {
           const isDir = (href || '').split('#')[0].split('?')[0].endsWith('/');
           return '<a href="#" class="md-file-link" data-file="' + esc(target) + '"' +
                  (isDir ? ' data-dir="1"' : '') + ' title="' + esc(target) + '">' + text + '</a>';
+        }
+        // A link to a file on THIS amux (/f/<path>) is that file: it opens in
+        // the viewer, and a bare URL reads as its path (Ethan, 2026-11-06).
+        const own = typeof _ownFilePath === 'function' ? _ownFilePath(href || '') : '';
+        if (own) {
+          const bare = text.replace(/<[^>]*>/g, '') === (href || '') || text === esc(href || '');
+          return '<a href="#" class="md-file-link" data-file="' + esc(own) + '" title="' + esc(own) + '">' + (bare ? esc(own) : text) + '</a>';
         }
         const isAnchor = (href || '').startsWith('#');
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
@@ -45784,8 +47160,8 @@ function _bqIs(item, val, ix) {
     // looks identical to one still legitimately waiting.
     case 'armedstale': return _BQ_DORMANT.has((item.type || '').toLowerCase()) && !_BQ_CLOSED.has(st)
                               && (Date.now() / 1000 - (item.updated || 0)) / 86400 > _BQ_ROT_DAYS;
-    case 'working':  return !!sess && sess.status === 'active';
-    case 'waiting':  return !!sess && sess.status === 'waiting';
+    case 'working':  return !!sess && _workerStatus(sess).group === 'working';
+    case 'waiting':  return !!sess && _workerStatus(sess).group === 'waiting';
     case 'gated':    return !!sess && !!(sess.credit_limited || sess.rate_limited_until);
     // Needs-you (AMUX-2167): the DURABLE union, not just live session state.
     // A session working other cards while these await your call read as
@@ -46539,8 +47915,12 @@ function renderBoardFilters() {
     if (t.includes(':') || t.includes('@')) return;
     tagCount[t] = (tagCount[t] || 0) + 1;
   }));
-  const topTags = Object.entries(tagCount).sort((a, b) => b[1] - a[1]).slice(0, 12);
+  const topTags = Object.entries(tagCount).filter(([t]) => t !== 'triage').sort((a, b) => b[1] - a[1]).slice(0, 12);
   let html = '';
+  // Cards a worker captured and the owner has not accepted yet: kept in
+  // backlog, never picked up automatically (amux board triage / accept).
+  const nTriage = tagCount.triage || 0;
+  if (nTriage) html += "<button class='board-filter-chip' id='board-triage-chip' title='Captured, waiting for you to accept; nothing picks these up automatically' onclick='_bfTarget=\"board\";_bfAppend(\"tag:triage\")'>Triage <span style='color:var(--dim)'>" + nTriage + "</span></button>";
   if (topTags.length) {
     html += '<span class="board-filter-label">Group:</span>';
     topTags.forEach(([t, n]) => {
@@ -46737,6 +48117,10 @@ function _boardCtxMenu(e, id) {
       + esc(st.label) + '</div>';
   });
   h += '<div class="card-menu-sep"></div>';
+  const triaged = _boardInTriage(item);
+  h += '<div class="card-menu-item" id="board-ctx-triage" onclick="event.stopPropagation();_boardCtxClose();_boardSetTriage(\''
+    + escJs(id) + '\',' + (!triaged) + ')"><span class="mi">' + (triaged ? '&#x2713;' : '&#x23F8;') + '</span> '
+    + (triaged ? 'Accept from triage' : 'Put in triage') + '</div>';
   h += '<div class="card-menu-item" onclick="event.stopPropagation();_boardCtxCopy(\''
     + escJs(id) + '\')"><span class="mi">&#x2398;</span> Copy ID</div>';
   const m = document.createElement('div');
@@ -46962,8 +48346,7 @@ function _renderBoardCard(item) {
   // is ALL slim ships of the description. Without this the card preview goes
   // blank for every card the moment the poll flips — the exact regression
   // list_body's own doc records from the last slimming attempt.
-  const firstLine = (item.desc !== undefined ? item.desc : (item.desc_head || ''))
-                      .split('\n')[0].slice(0, 80);
+  const firstLine = _descPreviewLine(item.desc !== undefined ? item.desc : item.desc_head).slice(0, 80);
   const pinned = item.pinned ? 1 : 0;
   // The server's exact runtime link drives live emphasis. A stale observed
   // claim is shown separately in amber, including cards outside Doing.
@@ -47049,6 +48432,25 @@ function _renderBoardCard(item) {
 //
 // Heartbeat age is the useful number, not the lease's existence: a held card
 // whose holder stopped beating looks identical to a healthy one in the column.
+// A board can sit open for an hour with nothing to re-render it, and an age
+// computed once read "just now" for the whole lease after its worker stopped.
+// While a Working strip shows, the list is also read again: one kept "Working
+// now" over a stopped worker for 37 minutes on a long-open page (VID-147).
+function _boardLiveTick() {
+  if (document.hidden) return;
+  document.querySelectorAll('.lease-beat[data-at]').forEach(el => { el.textContent = timeAgo(Number(el.dataset.at)); });
+  if (activeView !== 'board' || !_boardActivityEntries().length) return;
+  const before = window._boardLiveSig;
+  // The poll's ETag names the last polled list, and a late stream snapshot can
+  // be older than it: every poll then answers 304 over a stale screen until the
+  // fleet next changes. Only here, while a strip shows, so a phone keeps its 304s.
+  _sessEtag = null;
+  fetchSessions().then(() => {
+    if (window._boardLiveSig !== before) window._clientDebug?.('board-activity-tick', { verdict: 'board_activity_caught_by_tick', measured: true, n_considered: (sessions || []).length });
+  }).catch(e => console.warn('board activity tick', e));
+}
+setInterval(_boardLiveTick, 30000);
+
 function _leaseChip(item) {
   const lease = item && item.lease;
   if (!lease || !lease.holder) return '';
@@ -47059,7 +48461,7 @@ function _leaseChip(item) {
   const attempt = Number(lease.attempt || 0);
   const label = esc(lease.holder)
     + (attempt > 1 ? ' &middot; attempt ' + attempt : '')
-    + (beat ? ' &middot; \u2665 ' + timeAgo(beat) : ' &middot; no heartbeat recorded');
+    + (beat ? ' &middot; \u2665 <span class="lease-beat" data-at="' + beat + '">' + timeAgo(beat) + '</span>' : ' &middot; no heartbeat recorded');
   const why = expired
     ? 'Lease EXPIRED ' + timeAgo(expires) + '. ' + lease.holder + ' still holds the card on the board, but the hold is no longer alive, so another worker may claim it.'
     : 'Held by ' + lease.holder + ' (attempt ' + (attempt || 1) + ', generation ' + (lease.generation || 1) + ')'
@@ -49376,7 +50778,54 @@ function _renderDetailStatusBtns() {
   const sty = statusStyle(boardDetailStatus);
   document.getElementById('bd-status-row').innerHTML = '<label class="bd-status-control">Status <select id="bd-status-select" aria-label="Task status" style="background:' + sty.bg + ';color:' + sty.color + '" onchange="boardDetailSetStatus(this.value)">'
     + boardStatuses.map(s => '<option value="' + esc(s.id) + '"' + (boardDetailStatus === s.id ? ' selected' : '') + '>' + esc(s.label) + '</option>').join('')
-    + '</select></label><button type="button" class="btn" onclick="boardDetailSave()">Move</button>';
+    + '</select></label><button type="button" class="btn" onclick="boardDetailSave()">Move</button>'
+    + (() => {
+      const it = (boardItems || []).find(i => i.id === boardDetailId);
+      if (!it) return '';
+      const on = _boardInTriage(it);
+      return '<button type="button" class="btn" id="bd-triage-btn" title="' + (on ? 'Release it to the backlog, where workers pick it up' : 'Keep it in backlog; nothing picks it up until you accept it')
+        + '" onclick="_boardSetTriage(boardDetailId,' + (!on) + ')">' + (on ? 'Accept' : 'Triage') + '</button>';
+    })();
+}
+
+// TRIAGE (owner, 2026-10-31): a card in triage stays in backlog and nothing
+// picks it up until it is accepted. The `triage` tag is what the server's
+// board-drive honours; this writes the same tag `amux board triage` does.
+function _boardInTriage(item) {
+  return (item.tags || []).some(t => String(t).trim().toLowerCase() === 'triage');
+}
+
+async function _boardSetTriage(id, on) {
+  const item = (boardItems || []).find(i => i.id === id);
+  if (!item) return;
+  const tags = (item.tags || []).filter(t => String(t).trim().toLowerCase() !== 'triage');
+  if (on) tags.push('triage');
+  const body = { tags, desc_append: on
+    ? 'In triage (owner, from the board): kept in backlog, never picked up automatically, until accepted.'
+    : 'Accepted (owner, from the board): back in backlog, where auto-dispatch can take it.' };
+  if (on && item.status === 'todo') body.status = 'backlog';
+  try {
+    const r = await fetch(API + '/api/board/' + encodeURIComponent(id), { method: 'PATCH', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); showToast((on ? 'Could not put ' : 'Could not accept ') + id + ': ' + (d.error || r.status)); return; }
+    item.tags = tags;
+    if (body.status) item.status = body.status;
+    showToast(on ? id + ' is in triage: kept, not picked up' : id + ' accepted into the backlog');
+    try { amuxTrack('board_triage', { on, measured: true, n_considered: 1 }); } catch (e) {}
+    // The open detail follows at once: its status select and the button label
+    // (a todo card put in triage moved to backlog). The live check of d27f00593
+    // showed both stale until the card was reopened.
+    if (boardDetailId === id) {
+      if (body.status) boardDetailStatus = body.status;
+      _renderDetailStatusBtns();
+    }
+    renderBoard();
+    await fetchBoard();
+    if (boardDetailId === id) {
+      const fresh = (boardItems || []).find(i => i.id === id);
+      if (fresh && !_boardInTriage(fresh) === on) { fresh.tags = tags; if (body.status) fresh.status = body.status; }
+      _renderDetailStatusBtns();
+    }
+  } catch (e) { showToast('Could not reach the server: ' + e.message); }
 }
 
 function boardDetailSetStatus(st) {
@@ -49904,6 +51353,7 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   _boardMoveSeq.set(id, seq);
   // Optimistic: update in-memory + cache immediately; Sortable already moved the DOM
   const idx = boardItems.findIndex(i => i.id === id);
+  const before = idx >= 0 ? boardItems[idx] : null;
   if (idx >= 0) {
     const patch = { status: newStatus, updated: Math.floor(Date.now() / 1000) };
     if (typeof newPos === 'number' && isFinite(newPos)) patch.pos = newPos;
@@ -49917,7 +51367,18 @@ function moveBoardItem(id, newStatus, newPos, gateAck) {
   if (gateAck) { body.gate_ack = true; if (Array.isArray(gateAck)) body.gate_checked = gateAck; }
   apiCall(API + '/api/board/' + id, {
     method: 'PATCH', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    // The server said no: the card goes back where it was. Queued and offline
+    // moves also answer null, and those stay where the owner put them.
+    _onRefused: async status => {
+      if (!before || _boardMoveSeq.get(id) !== seq) return;
+      await _fenceBoardMutationReads();
+      const i = boardItems.findIndex(b => b.id === id);
+      if (i >= 0) boardItems[i] = before;
+      saveBoardCache();
+      renderBoard();
+      amuxTrack('board_move_rolled_back', { measured: true, n_considered: 1, status });
+    }
   }).then(async r => {
     if (!r) return;
     const updated = await r.json().catch(() => null);
@@ -50905,7 +52366,8 @@ function _updateGridPane(name) {
   if (!dot && !frame) { removeGridPane(name); return; }  // pane was removed
   if (dot) {
     const s = (sessions || []).find(s => s.name === name);
-    dot.className = 'gp-dot' + (!s || !s.running ? '' : s.status === 'active' ? ' working' : s.status === 'waiting' ? ' waiting' : ' idle');
+    const grp = s ? _workerStatus(s).group : 'stopped';
+    dot.className = 'gp-dot' + (grp === 'stopped' ? '' : grp === 'working' ? ' working' : (grp === 'waiting' || grp === 'blocked') ? ' waiting' : ' idle');
   }
 }
 
@@ -51637,19 +53099,42 @@ const _idb = (() => {
       if (isHidden()) flushCache(true); else flushCache();
     });
   }
+  const resetDb = (reason) => {
+    const had = !!db;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return had;
+  };
+  // A CACHE READ HAS A DEADLINE (Ethan, 2026-11-07: a worker opened to an empty
+  // terminal, "this keeps happening"). A WebKit storage read can hang for hours.
+  // The terminal's failed-fetch path awaited its saved copy, so its request
+  // never settled, and every later poll for that worker reused the stuck
+  // request: no fetch reached the server again until the app was reloaded. A
+  // rebuildable cache key reads as absent after 3s and the connection is reset
+  // (kind=idb-reopened reason=cache_read_timeout). Pending work (drafts,
+  // offline_queue, dictation) keeps waiting: reading it as empty could let a
+  // caller write the empty value back over it.
+  const _CACHE_READ_MS = 3000;
+  const readKv = key => withDb(d => new Promise((resolve) => {
+    const tx = d.transaction('kv', 'readonly');
+    const req = tx.objectStore('kv').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  })).catch(() => null);
+  const readCache = key => {
+    let timer;
+    return Promise.race([readKv(key), new Promise(resolve => {
+      timer = setTimeout(() => { resetDb('cache_read_timeout'); resolve(null); }, _CACHE_READ_MS);
+    })]).finally(() => clearTimeout(timer));
+  };
   return {
     // Drop the connection so the next call opens a fresh one. A connection
     // whose storage process went away can hang every request without an
     // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
     // in a day, every outbox pass after the first one on the same handle).
-    reset: (reason) => {
-      const had = !!db;
-      try { if (db) db.close(); } catch (_) {}
-      db = null;
-      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
-        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
-      return had;
-    },
+    reset: resetDb,
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
       : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
@@ -51693,12 +53178,8 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
-      const tx = d.transaction('kv', 'readonly');
-      const req = tx.objectStore('kv').get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    })).catch(() => null),
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key))
+      : _CACHE_KEY.test(String(key)) ? readCache(key) : readKv(key),
     del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
@@ -52045,9 +53526,16 @@ async function _cdcBoardUpdate() {
 let _verReloadWhenShown = '';
 function _reloadForServerVersion(v, delayMs) {
   if (document.hidden) { _verReloadWhenShown = v; return; }
-  const last = parseInt(sessionStorage.getItem('amux_ver_reload') || '0');
-  if (Date.now() - last <= 600000) return;
-  sessionStorage.setItem('amux_ver_reload', String(Date.now()));
+  // Throttled PER TARGET VERSION: the same version is tried at most once in
+  // 10 minutes (a reload that did not pick it up must not loop), but a newer
+  // deploy inside that window still reloads. A flat 10-minute throttle left a
+  // tab on old code after two deploys close together (implicit state
+  // machines inventory 2026-10-31, #34).
+  let last = {};
+  try { last = JSON.parse(sessionStorage.getItem('amux_ver_reload') || '{}') || {}; } catch (e) {}
+  if (typeof last !== 'object') last = {};
+  if (last.v === v && Date.now() - (last.at || 0) <= 600000) return;
+  sessionStorage.setItem('amux_ver_reload', JSON.stringify({ v, at: Date.now() }));
   console.warn('amux: server is v' + v + ', client is v' + APP_VER + ' — updating');
   // Nudge the SW first (it skipWaiting()s + claims on install), so the
   // reload serves the NEW shell in one cycle instead of two.
@@ -52077,6 +53565,7 @@ function connectSSE() {
     if (_initialLoad) { _initialLoad = false; render(); }
     if (_sseGraceUntil) _sseGraceUntil = 0;
     if (!_liveSSE) { _liveSSE = true; updateConnectionStatus(); }
+    if (_pollTimer) _stopPollingFallback();
     if (!online) setOnline(true);
     // On reconnect after being offline / zombie: catch up on anything we missed.
     // Note: _sseRetries is reset above, so we key off wasOffline alone.
@@ -52104,7 +53593,9 @@ function connectSSE() {
           // it whenever SSE is down — the healthier your SSE, the staler your
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
-          sessions = msg.payload;
+          sessions = _applyLifecycleAcks(msg.payload);
+          _sessionsReadAt = Date.now();
+          _peekChatStateSync();
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
           try { localStorage.setItem('amux_sessions_cache', j); localStorage.setItem('amux_sessions_cache_at', String(Date.now())); }
@@ -52185,7 +53676,12 @@ function connectSSE() {
           if (key === 'board') {
             clearTimeout(_invBoardTimer);
             if (document.hidden) _boardChangesWhileHidden++;
-            else _invBoardTimer = setTimeout(_cdcBoardUpdate, 400);
+            // Re-checked when it fires: a tab hidden inside the 400 ms read
+            // anyway (nightly 41283498168, ios-safari).
+            else _invBoardTimer = setTimeout(() => {
+              if (document.hidden) _boardChangesWhileHidden++;
+              else _cdcBoardUpdate();
+            }, 400);
           }
           if (key === 'sessions') {
             _scheduleSessionInvalidation();
@@ -52258,13 +53754,38 @@ function connectSSE() {
   };
 }
 
+// POLLING IS A DETOUR, NOT A DESTINATION (hog RCA 20261030-044026). Three
+// failed reconnects, which one deploy restart can cause, put a window on this
+// 5 s poll, and nothing ever tried the stream again or stopped the timer: the
+// Mac app's windows fetched the whole board (536 ms of server time each) about
+// 2,360 times an hour, one of them still on code two deploys old because the
+// reload hint rides the stream. While polling, the stream is retried every
+// _SSE_RETRY_FROM_POLL_MS, and its first message ends the poll.
+const _SSE_RETRY_FROM_POLL_MS = 30000;
+let _pollStartedAt = 0;
+let _sseRetryFromPollAt = 0;
 function enablePollingFallback() {
   _sseFallback = true;
   if (_sse) { _sse.close(); _sse = null; }
   fetchSessions(); fetchBoard(); _runDeltaSync();
+  if (!_pollStartedAt) _pollStartedAt = Date.now();
+  _sseRetryFromPollAt = Date.now() + _SSE_RETRY_FROM_POLL_MS;
   if (!_pollTimer) _pollTimer = setInterval(() => {
     fetchSessions(); fetchBoard();
+    if (!_sse && Date.now() >= _sseRetryFromPollAt) {
+      _sseRetryFromPollAt = Date.now() + _SSE_RETRY_FROM_POLL_MS;
+      _sseFallback = false; _sseRetries = 0;
+      connectSSE();
+    }
   }, 5000);
+}
+function _stopPollingFallback() {
+  if (!_pollTimer) return;
+  clearInterval(_pollTimer); _pollTimer = null;
+  _sseFallback = false;
+  const polledMs = _pollStartedAt ? Date.now() - _pollStartedAt : 0;
+  _pollStartedAt = 0;
+  console.info('[amux] stream back; polling stopped verdict=sse_recovered_from_polling polled_ms=' + polledMs);
 }
 
 // ── Freshness watchdog & resume handlers ───────────────────────────────────
@@ -52329,6 +53850,11 @@ function _forceSseReconnect(reason) {
   if (_sse) { try { _sse.close(); } catch(e) {} _sse = null; }
   _sseRetries = 0;
   _liveSSE = false;
+  // connectSSE() returns at once while the polling fallback is on, so a
+  // forced reconnect during polling waited for the next 30 s poll retry. Try
+  // the stream now; polling keeps running until its first message stops it
+  // (implicit state machines inventory 2026-10-31, #32).
+  _sseFallback = false;
   updateConnectionStatus();
   connectSSE();
 }
@@ -52496,12 +54022,25 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  let _swReloadWhenShown = false;
+  const _swReloadNow = () => {
+    // The draft in the open worker's composer survives the reload in the draft
+    // store, which the composer reads on open. (peekState.draft had no reader.)
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
+    } catch (e) { console.warn('[amux] draft not kept across the service worker reload', e); }
+    location.reload();
+  };
   // A first visit has no controller yet: the new worker claiming this page fires
   // controllerchange, and reloading then threw away whatever the visitor had started.
   // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
   // into their first load (2026-10-19). Only a REPLACED worker means stale code.
   let _swHadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('/sw.js').then(reg => {
+    // A registration that works clears an earlier failure, so a fixed
+    // origin stops being reported as broken (implicit state machines #34).
+    try { localStorage.removeItem('amux_sw_error'); } catch (e) {}
     // Store full page HTML in localStorage as fallback if iOS evicts SW cache
     if (navigator.onLine !== false) {
       fetch('/').then(r => r.text()).then(html => {
@@ -52517,17 +54056,22 @@ if ('serviceWorker' in navigator) {
       console.info('[amux] service worker installed on first visit; no reload needed');
       return;
     }
-    // Rescue in-progress peek input from the reload
-    try {
-      const inp = document.getElementById('peek-cmd-input');
-      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) {
-        const st = JSON.parse(sessionStorage.getItem('peekState') || '{}');
-        st.session = st.session || peekSession;
-        st.draft = inp.value;
-        sessionStorage.setItem('peekState', JSON.stringify(st));
+    // One tab's update makes the new worker claim EVERY tab. A hidden tab waits
+    // until it is shown, as the version reload does, so a deploy does not reload
+    // every background tab at once (inventory follow-up to #34, 2026-11-06).
+    if (document.hidden) {
+      if (!_swReloadWhenShown) {
+        _swReloadWhenShown = true;
+        document.addEventListener('visibilitychange', function onShown() {
+          if (document.hidden) return;
+          document.removeEventListener('visibilitychange', onShown);
+          console.info('[amux] sw_reload_deferred_until_shown');
+          _swReloadNow();
+        });
       }
-    } catch (e) {}
-    location.reload();
+      return;
+    }
+    _swReloadNow();
   });
   }).catch(err => {
     // NEVER swallow this. A failed registration is the difference between a
@@ -56253,6 +57797,21 @@ async function _handleDeeplink(hash) {
     } catch (e) { showToast('Could not reach the reply: ' + e.message); }
     return;
   }
+  // #digest-veto=<card> - the owner stops a card's digest default, from the
+  // link in the daily decision digest. Final; the POST carries the owner bearer.
+  if (hash && hash.startsWith('#digest-veto=')) {
+    const card = decodeURIComponent(hash.slice('#digest-veto='.length)).trim();
+    try { history.replaceState({}, '', location.pathname + location.search); } catch(e) { console.warn('digest-veto: could not clear the link hash', e); }
+    try {
+      if (!(await showConfirm('Veto ' + card + '? Its recommendation will not take effect, and the card stays with you.'))) return;
+      const a = await fetch(API + '/api/decision-digest/veto', { method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeaders()),
+        body: JSON.stringify({ card }) });
+      const b = await a.json().catch(() => ({}));
+      showToast(a.ok ? ('Vetoed ' + card) : ('Not vetoed: ' + (b.error || a.status)));
+    } catch (e) { showToast('Could not reach the veto: ' + e.message); }
+    return;
+  }
   if (hash && hash.startsWith('#land-approve=')) {
     const pid = decodeURIComponent(hash.slice('#land-approve='.length)).trim();
     try { history.replaceState({}, '', location.pathname + location.search); } catch(e) {}
@@ -57330,12 +58889,17 @@ const _ASK_MAX_THREAD = 6;
 let _askThread = [];          // [{q, a}] for the global tab
 let _peekAskThread = [];      // [{q, a}] for the worker tab
 let _peekAskThreadFor = '';   // which worker _peekAskThread belongs to
+// One generation per panel. An answer takes up to 300 s; a new question, a new
+// thread or a switch of worker in that time makes it someone else's answer, so
+// it is dropped rather than pushed into the thread on screen.
+const _askGen = { global: 0, peek: 0 };
 function _askThreadFor(peek) {
   if (!peek) return _askThread;
   if (_peekAskThreadFor !== peekSession) { _peekAskThread = []; _peekAskThreadFor = peekSession; }
   return _peekAskThread;
 }
 function _askNewThread(peek) {
+  _askGen[peek ? 'peek' : 'global']++;
   if (peek) { _peekAskThread = []; _peekAskThreadFor = peekSession; } else { _askThread = []; }
   const ansEl = document.getElementById(peek ? 'peek-ask-answer' : 'ask-answer');
   const metaEl = document.getElementById(peek ? 'peek-ask-meta' : 'ask-meta');
@@ -57402,6 +58966,12 @@ async function _askRun(peek) {
   if (!question) { if (qEl) qEl.focus(); return; }
   const days = +(document.getElementById(peek ? 'peek-ask-days' : 'ask-days')?.value || 14);
   const session = peek ? peekSession : null;
+  const genKey = peek ? 'peek' : 'global';
+  const gen = ++_askGen[genKey];
+  const askedThread = _askThreadFor(peek);
+  // Still the question on screen: same panel generation, same worker, same thread.
+  const current = () => gen === _askGen[genKey] && (!peek || peekSession === session) && askedThread === _askThreadFor(peek);
+  const dropStale = (why) => { console.info('[amux] ask_answer_dropped', { session, why }); };
   if (metaEl) metaEl.textContent = 'Asking' + (session ? ' about ' + session : '') + '\u2026';
   if (ansEl) ansEl.innerHTML = '';
   let r, d;
@@ -57418,14 +58988,16 @@ async function _askRun(peek) {
       // The thread goes with the question so a follow-up ("why?", "which of
       // those...") is interpreted against what was already asked.
       body: JSON.stringify({ question, session, days,
-        history: _askThreadFor(peek).slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
+        history: askedThread.slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
       _skipOutbox: true, signal: AbortSignal.timeout(300000),
     });
     d = await r.json();
   } catch (e) {
+    if (!current()) { dropStale('superseded'); return; }
     if (metaEl) metaEl.textContent = 'Could not reach the server: ' + String(e && e.message || e);
     return;
   }
+  if (!current()) { dropStale('superseded'); return; }
   // A locally queued 202 never left the browser, so it is not an answer.
   if (_isLocallyQueued(r)) {
     if (metaEl) metaEl.textContent = 'Not sent: this client queued the request offline. Reconnect and ask again.';
@@ -57453,19 +59025,36 @@ async function _askRun(peek) {
   if (metaEl) metaEl.textContent = 'answered over ' + considered + ' of ' + available
     + ' message' + (d.n_available === 1 ? '' : 's') + ' from ' + scope
     + ', last ' + d.window_days + ' day' + (d.window_days === 1 ? '' : 's')
-    + (d.truncated ? ' (oldest dropped to fit)' : '')
+    + (d.truncated
+      ? (d.n_relevant ? ' (' + d.n_relevant.toLocaleString() + ' best matches plus the newest)' : ' (no close matches; the newest)')
+      : '')
     + (d.history_turns ? ' \u00b7 follow-up with ' + d.history_turns + ' earlier exchange' + (d.history_turns === 1 ? '' : 's') : '')
     + secs;
-  const thread = _askThreadFor(peek);
-  thread.push({ q: question, a: d.answer || '' });
+  askedThread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
-  const cites = Array.isArray(d.cited) && d.cited.length
+  // One row of message buttons: what the answer cited, and the closest
+  // matches by shared words, so a message the prose missed is still one tap away.
+  const idRow = (label, ids) => Array.isArray(ids) && ids.length
     ? '<div style="margin-top:var(--space-2-5);display:flex;gap:var(--space-1-5);flex-wrap:wrap;align-items:center;">'
-      + '<span style="font-size:var(--fs-xs);color:var(--dim);">cited:</span>'
-      + d.cited.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
+      + '<span style="font-size:var(--fs-xs);color:var(--dim);">' + label + ':</span>'
+      + ids.map(id => '<button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2);" onclick="_askOpenCitation('
         + JSON.stringify(id) + ')">MSG-' + esc(id) + '</button>').join('') + '</div>'
     : '';
-  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + cites);
+  const cited = Array.isArray(d.cited) ? d.cited : [];
+  // What the search found, shown whatever the prose concludes: the top
+  // matches with who, when and how each opens. One tap opens the message.
+  const best = Array.isArray(d.best_matches) ? d.best_matches : [];
+  const bestHtml = best.length
+    ? '<div class="ask-best">'
+      + '<div class="ask-best-label">closest matches:</div>'
+      + best.map(m => '<button class="btn ask-best-row" onclick="_askOpenCitation('
+        + JSON.stringify(m.id) + ')"><b>MSG-' + esc(m.id) + '</b> · ' + esc(m.session || '') + ' · ' + esc(m.at || '')
+        + '<br><span class="ask-best-snippet">' + esc(String(m.snippet || '').replace(/\s+/g, ' ').slice(0, 220)) + '</span></button>').join('')
+      + '</div>'
+    : '';
+  const shown = cited.concat(best.map(m => m.id));
+  const closest = (Array.isArray(d.matches) ? d.matches : []).filter(id => !shown.includes(id));
+  _askRenderThread(peek, '<div>' + _askFormat(d.answer || '') + '</div>' + idRow('cited', cited) + bestHtml + idRow('more', closest));
 }
 /// Open the message an answer cited, so a claim can be checked against the row.
 async function _askOpenCitation(id) {
@@ -58183,6 +59772,7 @@ function _metricsSetMode(mode) {
   document.getElementById('metricsmode-system')?.classList.toggle('active', mode === 'system');
   document.getElementById('metricsmode-host')?.classList.toggle('active', mode === 'host');
   document.getElementById('metricsmode-resources')?.classList.toggle('active', mode === 'resources');
+  document.getElementById('metricsmode-velocity')?.classList.toggle('active', mode === 'velocity');
   document.getElementById('metricsmode-disk')?.classList.toggle('active', mode === 'disk');
   const mc = document.getElementById('metrics-content');
   const hc = document.getElementById('host-content');
@@ -58190,11 +59780,100 @@ function _metricsSetMode(mode) {
   if (mc) mc.style.display = mode === 'system' ? '' : 'none';
   if (hc) hc.style.display = mode === 'host' ? '' : 'none';
   if (rc) rc.style.display = mode === 'resources' ? '' : 'none';
+  const vc = document.getElementById('velocity-content');
+  if (vc) vc.style.display = mode === 'velocity' ? '' : 'none';
   const sb = document.getElementById('metrics-sidebar');
   if (sb) sb.style.display = (mode === 'system') ? '' : 'none';
   if (mode === 'disk') _reclaimLoad(); else _reclaimStopPolling();
   if (mode === 'host') _hostLoad();
   if (mode === 'resources') _resourcesLoad();
+  if (mode === 'velocity') _velocityLoad();
+}
+
+// ── Velocity (Metrics > Velocity) ─────────────────────────────────────────
+// Where each worker's time goes, what wastes it and who can fix it, and when
+// its open cards land (docs/design/worker-velocity.md, /api/velocity). The
+// fleet list first; a row opens that worker's breakdown and projection.
+let _velocityWorker = null;
+
+// The Usage tab (docs/design/usage-optimization.md): Metrics in its Usage mode.
+function openUsage() {
+  switchView('metrics');
+  _metricsSetMode('velocity');
+}
+
+// Usage & Optimization summary above the worker list: spend, what it produced,
+// and each opportunity with its evidence, $/month and who can act on it.
+function _usageSummaryHtml(o) {
+  if (!o || !o.totals) return '';
+  const t = o.totals, money = v => v == null ? '–' : '$' + Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const tile = (id, label, value, sub) => `<div class="metrics-card" id="${id}" style="flex:1 1 140px;min-width:0;"><div class="reclaim-safe-text" style="color:var(--dim);">${label}</div><div class="reclaim-safe-head" style="font-size:var(--fs-2xl);">${value}</div><div class="reclaim-safe-text" style="color:var(--dim);">${sub}</div></div>`;
+  const tiles = `<div style="display:flex;flex-wrap:wrap;gap:var(--space-2);">${
+    tile('usage-spend', 'Spend', money(t.spend_usd), 'last ' + o.window_days + ' days')}${
+    tile('usage-finished', 'Cards finished', t.finished_cards, t.success_rate + '% of ' + t.cards + ' attempted')}${
+    tile('usage-cps', 'Cost per success', money(t.cost_per_success_usd), 'per finished card')}${
+    tile('usage-savings', 'Potential savings', money(t.potential_savings_usd_month), 'a month, estimated')}</div>`;
+  const max = Math.max(1, ...(o.by_group || []).map(g => g.spend_usd));
+  const groups = (o.by_group || []).slice(0, 8).map(g => `<div class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-2);"><span style="flex:0 0 38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.group)}</span><span style="flex:1;height:8px;border-radius:var(--radius-sm);background:var(--border);"><span style="display:block;height:8px;border-radius:var(--radius-sm);background:var(--accent);width:${Math.round(100 * g.spend_usd / max)}%;"></span></span><span>${money(g.spend_usd)}</span></div>`).join('');
+  const opps = (o.opportunities || []).slice(0, 6).map(x => `<div class="reclaim-safe-text usage-opportunity" data-kind="${esc(x.kind)}" data-owner="${esc(String(x.owner || ''))}" style="margin-bottom:var(--space-2);overflow-wrap:anywhere;"><b>${money(x.est_usd_month)}/mo</b> · ${esc(x.kind === 'background_spend' ? 'Background spend' : 'Unfinished attempts')} · fix: ${esc(String(x.owner || '–'))}<br>${esc(x.evidence || '')}<br><span style="color:var(--dim);">${esc(String(x.action || ''))}</span></div>`).join('');
+  return `<div class="metrics-section-title">Usage & optimization, last ${o.window_days} days</div>${tiles}
+    <div class="metrics-section-title">Where the spend goes</div><div class="metrics-card">${groups || '<div class="reclaim-safe-text">No spend recorded.</div>'}<div class="reclaim-safe-text" style="color:var(--dim);">${esc(o.spend_note || '')}</div></div>
+    <div class="metrics-section-title">Optimization opportunities (${(o.opportunities || []).length})</div><div class="metrics-card" id="usage-opportunities">${opps || '<div class="reclaim-safe-text">None found.</div>'}</div>`;
+}
+
+function _velocityLoad() {
+  const el = document.getElementById('velocity-content');
+  if (!el) return;
+  if (_velocityWorker) return _velocityShowWorker(_velocityWorker);
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading usage…</div>';
+  // The workers render as soon as they arrive; the Usage summary fills in
+  // above them when /optimize answers (it reads 7 days of attribution and
+  // took 8-27 s on a loaded Mac, 2026-10-31).
+  const opt = fetch(API + '/api/velocity/optimize?days=30').then(r => r.ok ? r.json() : null).catch(() => null);
+  fetch(API + '/api/velocity?days=30').then(r => r.ok ? r.json() : null).then(d => {
+    const o = null;
+    opt.then(x => { const s = document.getElementById('usage-summary'); if (s && x && !_velocityWorker) s.innerHTML = _usageSummaryHtml(x); });
+    if (!d || !Array.isArray(d.workers)) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
+    const rows = d.workers.map(w => `<div class="metrics-card velocity-row" data-velocity-worker="${esc(w.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)" style="cursor:pointer;">
+        <div class="reclaim-safe-head">${esc(w.worker)}</div>
+        <div class="reclaim-safe-text">${w.finished_cards} finished (${w.finished_per_day}/day) · ${w.finished_share_of_time}% of time on finished work · ${w.wasted_hours} h wasted · top: ${esc(w.top_bottleneck || '–')}</div>
+      </div>`).join('');
+    el.innerHTML = `<div id="usage-summary">${_usageSummaryHtml(o) || '<div class="metrics-section-title">Usage & optimization: loading…</div>'}</div><div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
+  }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
+}
+
+function _velocityShowWorker(name) {
+  _velocityWorker = name;
+  const el = document.getElementById('velocity-content');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--dim);font-size:var(--fs-lg);padding:var(--space-10);text-align:center;">Loading ' + esc(name) + '…</div>';
+  const w = encodeURIComponent(name);
+  Promise.all([
+    fetch(API + '/api/velocity/' + w + '?days=30').then(r => r.ok ? r.json() : null),
+    fetch(API + '/api/velocity/' + w + '/projection?days=30&include=backlog').then(r => r.ok ? r.json() : null),
+  ]).then(([s, p]) => {
+    if (!s) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
+    const back = `<button class="btn" id="velocity-back" style="white-space:nowrap;flex-shrink:0;" onclick="_velocityWorker=null;_velocityLoad()">All workers</button>`;
+    const fmt = v => v == null ? '–' : Math.round(v);
+    const m = (s.per_finished_card || {}).minutes || {}, t = (s.per_finished_card || {}).tokens || {};
+    const waste = (s.waste || []).slice().sort((a, b) => b.hours - a.hours).map(x =>
+      `<div class="reclaim-safe-text velocity-waste" data-kind="${esc(x.kind)}" style="margin-bottom:var(--space-2);"><b>${esc(x.kind)}</b> (${esc(x.owner || '–')}) · ${x.attempts} attempts · ${x.hours} h · ${x.share_of_time}%<br><span style="color:var(--dim);">${esc(x.what_it_means || '')}</span></div>`).join('');
+    const waits = (s.waited_on || []).map(x => `<div class="reclaim-safe-text" style="overflow-wrap:anywhere;">${x.hours} h · ${esc(x.waiting)}</div>`).join('');
+    let proj = '';
+    if (p && p.measured) {
+      const cards = (p.cards || []).map(c => `<div class="reclaim-safe-text velocity-card" data-card="${esc(c.card)}" style="overflow-wrap:anywhere;margin-top:var(--space-2);">${esc(c.card)} · ${esc(c.status)} · ~${fmt(c.minutes_p50)} min${(c.blocked_by || []).length ? ' · waits on ' + esc(c.blocked_by.join(', ')) : ''}${c.over_estimate ? ` · <span style="color:var(--red);">over estimate: ${c.over_estimate.elapsed_minutes} of ${c.over_estimate.expected_minutes_p75} min</span>` : ''}<br><span style="color:var(--dim);">${esc((c.title || '').slice(0, 90))}</span></div>`).join('');
+      const fb = p.finish_by || {}, cal = p.calibration, pace = p.pace;
+      proj = `<div class="metrics-section-title">When the open cards land (${p.n_considered}, with backlog)</div>
+        <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-finish">${pace ? `At the recent pace (${pace.days_per_finished_card} days per finished card): by ${esc((fb.p50 || '').slice(0, 10))}, ${esc((fb.p75 || '').slice(0, 10))} if slower.` : 'No pace yet: no finished cards in the window.'} Work time ${fmt(p.work_minutes.p50)} min${cal ? `, scaled ${cal.actual_over_estimate}x (past cards against their estimates)` : ''}.${(p.blocked_by_outside || []).length ? ' Waits on ' + esc(p.blocked_by_outside.join(', ')) + ' outside this queue; the dates assume it lands in time.' : ''}</div>${cards}</div>`;
+    } else if (p) {
+      proj = `<div class="metrics-card reclaim-safe-text">${esc(p.why_unmeasured || 'No projection.')}</div>`;
+    }
+    el.innerHTML = `<div class="metrics-section-title" style="display:flex;align-items:center;gap:var(--space-2);">${back}<span>${esc(name)}, last ${s.window_days} days</span></div>
+      <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-summary">Finished ${s.finished_cards} of ${s.cards} cards (${s.finished_per_day}/day), ${s.attempts_per_card} attempts per card. ${s.finished_share_of_time}% of ${s.hours.total} h went to attempts that finished. A finished card: ${fmt(m.p50)} min median (${fmt(m.p25)} to ${fmt(m.p75)}), ${fmt(t.p50)} tokens.</div></div>
+      <div class="metrics-section-title">Waste, by who can fix it</div><div class="metrics-card">${waste || '<div class="reclaim-safe-text">None.</div>'}</div>
+      ${waits ? `<div class="metrics-section-title">What parked work waited on</div><div class="metrics-card">${waits}</div>` : ''}
+      ${proj}`;
+  }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
 }
 
 // ── Worker Resources (Metrics > Resources) ─────────────────────────────────
@@ -58484,6 +60163,7 @@ async function _reclaimLoad() {
     const [scan, quar] = await Promise.all([
       fetch(API + '/api/reclaim/scan/latest').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(API + '/api/reclaim/quarantine').then(r => r.ok ? r.json() : null).catch(() => null),
+      _tierLoad(),
     ]);
     _reclaimScan = scan;
     _reclaimQuarantine = quar;
@@ -58803,6 +60483,10 @@ function _reclaimRender() {
     </div>
   </div>`;
 
+  // With a scan, the tiers panel follows the scan's own warnings: above them
+  // it pushed the snapshot note below a phone's fold (reclaim-snapshot-context,
+  // red on 3189c6825).
+  if (!scan) html += _tierPanel();
   if (!scan) html += _reclaimActionsPanel(findings);
 
   if (!scan) {
@@ -58884,6 +60568,8 @@ function _reclaimRender() {
       </div>
     </div>`;
   }
+
+  html += _tierPanel();
 
   // What the scan did NOT look at. Shown next to the results rather than
   // behind a separate view, because a home-directory total that silently omits
@@ -59333,6 +61019,281 @@ function _torrentRender() {
       </div>` : ''}
     </div>`;
   }).join('');
+}
+
+// ── Storage tiers (api/tiering.rs) ─────────────────────────────────────────
+// Ethan, 2026-10-29: watched folders move between this Mac and a chosen cold
+// drive by how recently they were used, configured here in the Disk tab. The
+// server owns every decision and every refusal; this panel shows them and
+// queues requests. Polls only while a move or a run is in flight.
+let _tier = null;
+let _tierTimer = null;
+const _tierOpen = {};
+const _TIER_WHERE = {
+  mac: 'On this Mac', hdd: 'On the cold drive', hdd_unavailable: 'On the cold drive, which is not connected',
+  moving: 'Moving', missing: 'Missing', foreign_link: 'A symlink amux did not create', not_a_folder: 'Not a folder',
+};
+
+async function _tierLoad() {
+  const prev = _tier;
+  const r = await fetch(API + '/api/tiering').then(r => r.ok ? r.json() : null).catch(() => null);
+  _tier = r;
+  const busy = !!(r && (r.ticking || (r.folders || []).some(f => f.op)));
+  if (busy && !_tierTimer) _tierTimer = setInterval(_tierPoll, 2000);
+  if (!busy) _tierStopPolling();
+  // Say when a move finishes, so a click that took minutes does not end in silence.
+  for (const f of (r?.folders || [])) {
+    const was = (prev?.folders || []).find(x => x.path === f.path);
+    if (was?.op && !f.op) {
+      if (f.last_move && f.last_move.at >= was.op.started_at) showToast(f.path + ': ' + f.last_move.text);
+      else if (f.last_refusal) showToast(f.path + ': not moved. ' + f.last_refusal.text);
+    }
+  }
+  return r;
+}
+
+function _tierStopPolling() {
+  if (_tierTimer) { clearInterval(_tierTimer); _tierTimer = null; }
+}
+
+async function _tierPoll() {
+  await _tierLoad();
+  _tierRefresh();
+}
+
+function _tierRefresh() {
+  const el = document.getElementById('tier-status');
+  if (el) el.outerHTML = _tierStatusHtml();
+}
+
+// TB once past a terabyte: an 18 TB drive read as "18543.23 GB free".
+function _tierBytes(b) {
+  return b >= 1e12 ? (b / 1e12).toFixed(1) + ' TB' : _fmtBytes(b);
+}
+
+function _tierPanel() {
+  return `<div id="tier-panel">${_tierStatusHtml()}${_tierFormHtml()}</div>`;
+}
+
+function _tierStatusHtml() {
+  const t = _tier;
+  let h = '<div id="tier-status"><div class="metrics-section-title" style="margin-top:var(--space-3);" id="tier-title">Storage tiers</div>';
+  if (!t) return h + '<div class="metrics-card reclaim-safe-text" id="tier-unloaded">Storage tiers did not load.</div></div>';
+  if (!t.measured) return h + `<div class="metrics-card reclaim-safe-text" id="tier-unmeasured">Not measured: ${esc(t.why_unmeasured || 'no status')}</div></div>`;
+  const c = t.cold_root;
+  const vols = t.volumes || [];
+  h += '<div class="metrics-card reclaim-safe-card" id="tier-drive"><div class="reclaim-safe-head">Cold drive</div>';
+  if (c) {
+    h += `<div class="reclaim-safe-text" id="tier-drive-text" style="overflow-wrap:anywhere;"><code>${esc(c.path)}</code>, ${c.available
+      ? `${_tierBytes(c.free)} free of ${_tierBytes(c.total)}`
+      : '<b style="color:var(--red);">not connected</b>'}${c.same_disk_as_mac ? '. <b>This is the same disk as the Mac, so a move frees nothing.</b>' : ''}</div>`;
+  } else {
+    h += '<div class="reclaim-safe-text" id="tier-drive-text" style="overflow-wrap:anywhere;">Pick a drive for folders you are not using. A watched folder moves there after it sits idle, leaves a link behind so every path still works, and comes back when it is used.</div>';
+  }
+  h += `<div class="reclaim-actions-row">
+    <select class="input" id="tier-drive-pick" aria-label="Cold drive" style="max-width:100%;">
+      ${vols.map(v => `<option value="${esc(v.path)}/amux-tier"${c && c.path.startsWith(v.path + '/') ? ' selected' : ''}>${esc(v.path)} (${_tierBytes(v.free)} free)</option>`).join('')}
+      <option value=""${c && !vols.some(v => c.path.startsWith(v.path + '/')) ? ' selected' : ''}>Another folder</option>
+    </select>
+    <button class="btn" id="tier-drive-save" onclick="_tierSetDrive()">${c ? 'Change drive' : 'Use this drive'}</button>
+    <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);white-space:nowrap;"><input type="checkbox" id="tier-auto"${t.auto ? ' checked' : ''} onchange="_tierSetAuto(this.checked)"> Move automatically</label>
+    <button class="btn" id="tier-run" onclick="_tierRunNow()"${t.ticking ? ' disabled' : ''}>${t.ticking ? 'Checking' : 'Check now'}</button>
+  </div>`;
+  const pol = t.policy || {};
+  h += `<div class="reclaim-safe-text">Policy: a folder idle for its set days moves to the drive. It comes back on any write, or after reads on
+    <input class="input" id="tier-recall" type="number" min="1" max="7" value="${pol.recall_read_days || 3}" style="width:56px;" aria-label="Read days before a folder comes back">
+    separate days within ${pol.read_window_days || 7}. A pass that reads nearly every file at once, like a backup, does not count.
+    When this Mac drops under <input class="input" id="tier-low" type="number" min="1" max="90" value="${pol.pressure_free_pct || 15}" style="width:56px;" aria-label="Low-space level, percent free">% free,
+    the coldest folders move out sooner until <input class="input" id="tier-target" type="number" min="2" max="90" value="${pol.target_free_pct || 25}" style="width:56px;" aria-label="Target free space, percent">% is free.
+    A folder that just came back stays at least ${pol.residency_hours ?? 24} hours.
+    <button class="btn" id="tier-policy-save" onclick="_tierSavePolicy()">Save policy</button></div>`;
+  const lt = t.last_tick;
+  h += `<div class="reclaim-safe-text" id="tier-last-run">${t.auto ? `Checks every ${Math.round((t.interval_s || 300) / 60)} minutes.` : 'Automatic moves are off; the buttons below still work.'}
+    ${lt ? ` Last check ${esc(timeAgo(lt.at))}: ${lt.moved} moved, ${lt.refused} refused${lt.resumed ? `, ${lt.resumed} resumed` : ''}${lt.pressure ? ', with the Mac low on space' : ''}.` : ' No check has run yet.'}</div></div>`;
+  const fs = t.folders || [];
+  const top = fs.filter(f => !f.parent);
+  h += '<div id="tier-folders" class="reclaim-safe-grid" style="margin-top:var(--space-2-5);">';
+  if (!top.length) h += '<div class="metrics-card reclaim-safe-text" id="tier-empty">No watched folders yet. Add one below.</div>';
+  for (const f of top) h += f.each_subfolder ? _tierRootCard(f, fs.filter(k => k.parent === f.path)) : _tierFolderCard(f);
+  return h + '</div></div>';
+}
+
+// A folder that keeps growing: it never moves itself, each subfolder does.
+// Children sit in a collapsed list so hundreds of runs do not bury the panel.
+function _tierRootCard(f, kids) {
+  const on = w => kids.filter(k => k.location === w);
+  const sum = list => list.reduce((a, k) => a + (k.stats?.bytes || 0), 0);
+  const moving = on('moving').length, mac = on('mac'), hdd = on('hdd');
+  const p = escJs(f.path);
+  const openKey = 'tier-open:' + f.path;
+  const open = !!_tierOpen[openKey];
+  return `<div class="metrics-card reclaim-safe-card tier-root" data-tier-path="${esc(f.path)}" data-tier-root="1">
+    <div class="reclaim-safe-head" style="word-break:break-all;">${esc(f.path)}</div>
+    <div class="reclaim-safe-text" data-tier-summary><b>${kids.length} subfolder${kids.length === 1 ? '' : 's'}</b>, each moved on its own:
+      ${mac.length} on this Mac (${_tierBytes(sum(mac))}), ${hdd.length} on the cold drive (${_tierBytes(sum(hdd))})${moving ? `, ${moving} moving` : ''}.</div>
+    <div class="reclaim-safe-text">A subfolder moves out after ${f.idle_days} idle day${f.idle_days === 1 ? '' : 's'}${f.promote_on_use ? ' and comes back when used' : ''}. New subfolders are picked up as they appear.</div>
+    ${kids.length ? `<details data-tier-kids ${open ? 'open' : ''} ontoggle="_tierOpen['${escJs(openKey)}']=this.open">
+      <summary class="reclaim-safe-text" style="cursor:pointer;min-height:44px;display:flex;align-items:center;">Show subfolders</summary>
+      <div class="reclaim-safe-grid" style="margin-top:var(--space-2);">${kids.map(_tierFolderCard).join('')}</div>
+    </details>` : ''}
+    <div class="reclaim-actions-row"><button class="btn" data-tier-act="edit-days" onclick="_tierEditDays('${p}',${Number(f.idle_days)})">Change idle days</button><button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button></div>
+  </div>`;
+}
+
+function _tierFolderCard(f) {
+  const st = f.stats, op = f.op, where = f.location;
+  const state = op
+    ? (op.kind === 'to_hdd' ? 'Moving to the cold drive' : 'Bringing back to this Mac') + (op.phase === 'queued' ? ', queued' : `, ${op.phase} step`)
+    : (_TIER_WHERE[where] || where);
+  const size = st ? `${_tierBytes(st.bytes)} in ${Number(st.files).toLocaleString()} files` : 'Size not measured yet';
+  const used = st ? (st.last_used ? `last used ${timeAgo(st.last_used)}` : 'no use recorded') + (st.complete ? '' : ' (count still partial)') : '';
+  const p = escJs(f.path);
+  let btns = '';
+  if (!op && where === 'mac') btns += `<button class="btn" data-tier-act="to-hdd" onclick="_tierMove('${p}','hdd')">Move to cold drive</button>`;
+  if (!op && where === 'hdd') btns += `<button class="btn" data-tier-act="to-mac" onclick="_tierMove('${p}','mac')">Bring back to this Mac</button>`;
+  if (!f.parent) btns += `<button class="btn" data-tier-act="edit-days" onclick="_tierEditDays('${p}',${Number(f.idle_days)})">Change idle days</button>`;
+  if (!op && !f.parent) btns += `<button class="btn" data-tier-act="unwatch" onclick="_tierRemove('${p}')">Stop watching</button>`;
+  const notes = [];
+  if (where === 'hdd' && !op) {
+    const today = Math.floor(Date.now() / 86400000), win = _tier?.policy?.read_window_days || 7;
+    const n = (f.read_days || []).filter(d => d > today - win).length;
+    notes.push(`<div class="reclaim-safe-text" data-tier-note="reads">Reads seen on ${n} of the last ${win} days; it comes back at ${_tier?.policy?.recall_read_days || 3}, or on any write.</div>`);
+  }
+  if (f.last_refusal) notes.push(`<div class="reclaim-safe-text" data-tier-note="refused" style="color:var(--red);overflow-wrap:anywhere;">Not moved ${esc(timeAgo(f.last_refusal.at))}: ${esc(f.last_refusal.text)}</div>`);
+  if (f.last_error) notes.push(`<div class="reclaim-safe-text" data-tier-note="error" style="color:var(--red);overflow-wrap:anywhere;">Last step failed, retrying: ${esc(f.last_error.text)}</div>`);
+  if (f.last_move && !f.last_error) notes.push(`<div class="reclaim-safe-text" data-tier-note="moved" style="overflow-wrap:anywhere;">${esc(timeAgo(f.last_move.at))}: ${esc(f.last_move.text)}</div>`);
+  return `<div class="metrics-card reclaim-safe-card tier-folder" data-tier-path="${esc(f.path)}" data-tier-location="${esc(where)}">
+    <div class="reclaim-safe-head" style="word-break:break-all;">${esc(f.path)}</div>
+    <div class="reclaim-safe-text"><b data-tier-state>${esc(state)}</b>. ${esc(size)}${used ? ', ' + esc(used) : ''}.</div>
+    <div class="reclaim-safe-text">Moves out after ${f.idle_days} idle day${f.idle_days === 1 ? '' : 's'}${f.promote_on_use ? ', comes back when used' : ''}.</div>
+    ${notes.join('')}
+    ${btns ? `<div class="reclaim-actions-row">${btns}</div>` : ''}
+  </div>`;
+}
+
+function _tierFormHtml() {
+  return `<div class="metrics-card reclaim-safe-card" id="tier-add" style="margin-top:var(--space-2-5);">
+    <div class="reclaim-safe-head">Watch a folder</div>
+    <div class="reclaim-actions-row">
+      <input class="input" id="tier-add-path" placeholder="~/Dev/mixpeek/customers/primis" spellcheck="false" autocapitalize="off" style="flex:1 1 180px;min-width:0;" onkeydown="if(event.key==='Enter')_tierAdd()">
+      <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);white-space:nowrap;">Move after <input class="input" id="tier-add-days" type="number" min="1" max="3650" value="14" style="width:72px;"> idle days</label>
+      <button class="btn" id="tier-add-btn" onclick="_tierAdd()">Watch</button>
+    </div>
+    <label class="reclaim-safe-text" style="display:flex;align-items:center;gap:var(--space-1-5);min-height:44px;"><input type="checkbox" id="tier-add-each">
+      Move each subfolder on its own, for folders that keep growing, like run outputs</label>
+    <div class="reclaim-safe-text" id="tier-add-msg" role="status"></div>
+  </div>`;
+}
+
+async function _tierCall(method, url, body) {
+  try {
+    const r = await fetch(API + url, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+    let j = null;
+    try { j = await r.json(); } catch (e) {}
+    return {ok: r.ok, status: r.status, j};
+  } catch (e) {
+    return {ok: false, status: 0, j: {error: 'Could not reach the server: ' + String(e)}};
+  }
+}
+
+async function _tierAdd() {
+  const input = document.getElementById('tier-add-path');
+  const msg = document.getElementById('tier-add-msg');
+  const btn = document.getElementById('tier-add-btn');
+  const path = (input?.value || '').trim();
+  const days = parseInt(document.getElementById('tier-add-days')?.value, 10);
+  msg.style.color = 'var(--red)';
+  if (!path) { msg.textContent = 'Type the folder path first.'; return; }
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const each = !!document.getElementById('tier-add-each')?.checked;
+  const r = await _tierCall('POST', '/api/tiering/folders', {path, idle_days: days, each_subfolder: each});
+  btn.disabled = false;
+  if (!r.ok) { msg.textContent = r.j?.error || `Could not add it (HTTP ${r.status}).`; return; }
+  msg.style.color = '';
+  msg.textContent = '';
+  input.value = '';
+  const eachBox = document.getElementById('tier-add-each');
+  if (eachBox) eachBox.checked = false;
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Watching ' + path);
+  await _tierLoad();
+  _tierRefresh();
+}
+
+async function _tierMove(path, to) {
+  // Disable this card's buttons before the request, so a double click queues one move.
+  document.querySelectorAll('.tier-folder').forEach(card => {
+    if (card.dataset.tierPath === path) card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  });
+  const r = await _tierCall('POST', '/api/tiering/move', {path, to});
+  if (!r.ok) showToast(r.j?.error || `Move refused (HTTP ${r.status})`);
+  await _tierLoad();
+  _tierRefresh();
+}
+
+async function _tierEditDays(path, current) {
+  const root = (_tier?.folders || []).find(f => f.path === path && f.each_subfolder);
+  const v = await showPrompt(root ? `Move each subfolder of ${path} out after how many idle days?` : `Move ${path} out after how many idle days?`, '14', String(current || ''));
+  if (v == null || v === '') return;
+  const days = Number(v);
+  if (!Number.isInteger(days) || days < 1 || days > 3650) { showToast('Idle days must be a whole number from 1 to 3650'); return; }
+  const r = await _tierCall('PATCH', '/api/tiering/folders', {path, idle_days: days});
+  if (!r.ok) { showToast(r.j?.error || `Could not change the idle days (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  showToast(`Now moves out after ${days} idle day${days === 1 ? '' : 's'}`);
+  _tierRefresh();
+}
+
+async function _tierRemove(path) {
+  const root = (_tier?.folders || []).find(f => f.path === path && f.each_subfolder);
+  const msg = root
+    ? `Stop watching ${path} and its subfolders? Every file stays exactly where it is now, including subfolders on the cold drive.`
+    : `Stop watching ${path}? Its files stay exactly where they are now.`;
+  if (!(await showConfirm(msg, 'Stop watching'))) return;
+  const r = await _tierCall('DELETE', '/api/tiering/folders?path=' + encodeURIComponent(path));
+  if (!r.ok) { showToast(r.j?.error || `Could not stop watching (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+}
+
+async function _tierSetDrive() {
+  let p = document.getElementById('tier-drive-pick')?.value || '';
+  if (!p) {
+    p = await showPrompt('Folder on the cold drive', '/Volumes/YourDrive/amux-tier', _tier?.cold_root?.path || '');
+    if (!p) return;
+  }
+  const r = await _tierCall('PUT', '/api/tiering/config', {cold_root: p});
+  if (!r.ok) { showToast(r.j?.error || `Could not set the drive (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Cold drive set to ' + p);
+}
+
+async function _tierSetAuto(on) {
+  const r = await _tierCall('PUT', '/api/tiering/config', {auto: on});
+  if (!r.ok) showToast(r.j?.error || 'Could not change automatic moves');
+  else _tier = r.j;
+  _tierRefresh();
+}
+
+async function _tierSavePolicy() {
+  const num = id => parseInt(document.getElementById(id)?.value, 10);
+  const r = await _tierCall('PUT', '/api/tiering/config', {
+    recall_read_days: num('tier-recall'), pressure_free_pct: num('tier-low'), target_free_pct: num('tier-target'),
+  });
+  if (!r.ok) { showToast(r.j?.error || `Could not save the policy (HTTP ${r.status})`); return; }
+  _tier = r.j;
+  _tierRefresh();
+  showToast('Policy saved');
+}
+
+async function _tierRunNow() {
+  const r = await _tierCall('POST', '/api/tiering/run');
+  showToast(r.j?.started ? 'Checking watched folders' : 'A check is already running');
+  await _tierLoad();
+  _tierRefresh();
 }
 
 function _fmtBytes(b) {
@@ -60217,6 +62178,20 @@ function _msgSelToggle(key, ev) {
 function _msgSelAll(visibleKeys) { visibleKeys.forEach(k => _msgSel.add(k)); _messagesRender(); }
 function _msgSelNone() { _msgSel.clear(); _messagesRender(); }
 
+// The Messages lists re-render on every poll and SSE event. A rewrite replaced
+// the button under a finger and closed the row menu mid-tap, so skip one that
+// changes nothing and put an open menu back after one that does.
+function _msgListWrite(list, html) {
+  if (list._msgListHtml === html && list.firstChild === list._msgListFirst) return;
+  const openKey = list.querySelector('.msg-menu.open')?.closest('[data-msg-key]')?.dataset.msgKey;
+  list.innerHTML = html;
+  list._msgListHtml = html;
+  list._msgListFirst = list.firstChild;
+  if (openKey == null) return;
+  const row = list.querySelector('[data-msg-key="' + CSS.escape(openKey) + '"]');
+  row?.querySelector('.msg-menu')?.classList.add('open');
+}
+
 // The per-row overflow menu. One open at a time; click anywhere closes it.
 function _msgMenu(btn, ev) {
   if (ev) ev.stopPropagation();
@@ -60370,7 +62345,7 @@ function _messagesRender() {
   // (sticky, one per calendar day) is the review-by-calendar pattern (Ethan):
   // rows are newest-first, so each header labels the day of the messages below
   // it; `data-day` lets the date picker scroll straight to a day.
-  list.innerHTML = rows.map(m => {
+  _msgListWrite(list, rows.map(m => {
     const _ts = m.time || m.ts;
     let dateHdr = '';
     const _day = _msgDayKey(_ts);
@@ -60384,7 +62359,7 @@ function _messagesRender() {
     }
     _prevTs = _ts;
     return dateHdr + burst + _cmdHistItemHTML(m, _msgCtxMessages());
-  }).join('');
+  }).join(''));
   _msgTaskChipsFill(list);
 }
 
@@ -61076,7 +63051,10 @@ async function _pagesEnter() {
   const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
   const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
   await _pubList();
-  if (open) { _pubOpenInternal(open[1]); return; }
+  // &at=<path> opens it at that page: an app page opened in a tab of its own
+  // without its session is sent here (apps_origin.rs).
+  const at = /[#&]at=([^&]*)/.exec(h);
+  if (open) { let p = null; try { p = at ? decodeURIComponent(at[1]) : null; } catch (_) {} _pubOpenInternal(open[1], p); return; }
   if (add) {
     const port = parseInt(add[1], 10);
     const have = _pubLinks.find(l => l.kind === 'internal' && l.port === port);
@@ -61366,36 +63344,126 @@ async function _pubHandoff(id) {
   const d = await _pubFetch('/' + encodeURIComponent(id) + '/open', { method: 'POST' });
   return d.url;
 }
-async function _pubOpenInternal(id) {
+async function _pubOpenInternal(id, at) {
   const l = _pubLinks.find(x => x.id === id);
   if (!l) return;
   if (l.pending) { showToast('Approve it first: it does not open until you do.'); return; }
   let url;
-  try { url = await _pubHandoff(id); } catch (e) { showToast('Could not open: ' + e.message); return; }
+  try { url = _appUrlAt(await _pubHandoff(id), at); } catch (e) { showToast('Could not open: ' + e.message); return; }
   if (_pagesMounted) { _pagesMounted.destroy(); _pagesMounted = null; }
   _pagesCur = 'app:' + id; _pagesMeta = null;
   document.getElementById('pages-list-wrap').style.display = 'none';
   document.getElementById('pages-open').style.display = 'flex';
   document.getElementById('pages-page-actions').style.display = 'none';
   document.getElementById('pages-title').textContent = _pubName(l);
+  const where = l.file ? l.file : 'port ' + l.port;
+  const status = document.getElementById('pages-status');
+  const back = document.getElementById('pages-app-back');
+  // Pages the app went through, so Back shows only when there is a page to go back to.
+  const trail = [];
+  let goingBack = false;
   const standalone = document.getElementById('pages-standalone');
   standalone.href = '#';
-  // Each handoff opens once, so a new tab asks for its own.
+  // Each handoff opens once, so a new tab asks for its own, at the page shown.
   standalone.onclick = async (e) => {
     e.preventDefault();
     const w = window.open('', '_blank');
-    try { const u = await _pubHandoff(id); if (w) { w.opener = null; w.location = u; } }
+    try { const u = _appUrlAt(await _pubHandoff(id), trail[trail.length - 1]); if (w) { w.opener = null; w.location = u; } }
     catch (err) { if (w) w.close(); showToast('Could not open: ' + err.message); }
   };
-  document.getElementById('pages-status').textContent = l.file ? l.file : 'port ' + l.port;
+  status.textContent = where;
   const host = document.getElementById('pages-frame');
   const f = document.createElement('iframe');
   f.className = 'pub-app-frame';
   f.title = _pubName(l);
   f.src = url;
   host.replaceChildren(f);
-  _pagesMounted = { destroy() { f.remove(); } };
+  _appFrameWatch(f, {
+    nav(p) {
+      if (goingBack && trail.length > 1) trail.pop(); else if (trail[trail.length - 1] !== p) trail.push(p);
+      goingBack = false;
+      status.textContent = p === '/' ? where : p;
+      status.title = where + ' ' + p;
+      if (back) back.style.display = trail.length > 1 ? '' : 'none';
+    },
+    async reopen(p) {
+      try { _appFrameReplace(f, _appUrlAt(await _pubHandoff(id), p)); }
+      catch (e) { showToast('Could not open the page again: ' + e.message); }
+    },
+  });
+  if (back) {
+    back.style.display = 'none';
+    back.onclick = () => { if (trail.length > 1) { goingBack = true; history.back(); } };
+  }
+  _pagesMounted = { destroy() { f.remove(); if (back) back.style.display = 'none'; } };
   _pagesFit();
+}
+// Pages on the apps origin (static_files/app_viewer.js) tell the frame that
+// holds them which page they are on, and a page whose session is gone asks to
+// be opened again. Only a message from a frame registered here counts.
+const _appFrames = new Map();
+function _appFrameWatch(f, hooks) {
+  for (const k of _appFrames.keys()) if (!k.isConnected) _appFrames.delete(k);
+  _appFrames.set(f, Object.assign({ reopens: [] }, hooks));
+}
+// Load `url` in place of the page the frame shows, so the "opening again" page
+// does not stay in history (Back from the reopened page would land on it and
+// reopen it again).
+function _appFrameReplace(f, url) {
+  try { f.contentWindow.location.replace(url); } catch (_) { f.src = url; }
+}
+function _appPathOk(p) {
+  return typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.includes('\\');
+}
+window.addEventListener('message', (e) => {
+  const d = e.data;
+  if (!d || typeof d !== 'object' || !(d.amux_app_nav || d.amux_app_reopen)) return;
+  for (const [f, h] of _appFrames) {
+    if (f.contentWindow !== e.source) continue;
+    const p = _appPathOk(d.at) ? d.at : '/';
+    if (d.amux_app_nav) { if (h.nav) h.nav(p); return; }
+    // At most three reopens a minute, so a page that cannot open does not loop.
+    const now = Date.now();
+    h.reopens = h.reopens.filter(t => now - t < 60000);
+    if (h.reopens.length >= 3) { showToast('This page did not open again. Open it from Apps.'); return; }
+    h.reopens.push(now);
+    h.reopen(p);
+    return;
+  }
+});
+// A handoff URL opens the app's first page; point it at page `at` instead.
+// The one-time token stays in the query (apps_origin.rs takes it out).
+function _appUrlAt(url, at) {
+  if (!_appPathOk(at) || at === '/') return url;
+  const u = new URL(url);
+  const m = /^\/app\/[0-9a-f]{32}/.exec(u.pathname);
+  if (!m) return url;
+  const t = new URL(at, 'https://x.invalid');
+  const q = new URLSearchParams(t.search);
+  for (const [k, v] of u.searchParams) q.set(k, v);
+  u.pathname = m[0] + t.pathname;
+  u.search = q.toString();
+  u.hash = t.hash;
+  return u.toString();
+}
+// An HTML file in the Files tab opens as part of its folder's website on the
+// apps origin, so its relative CSS, scripts and links work and the pages run
+// sandboxed, away from the dashboard. `fallback` shows the file alone when
+// amux will not serve its folder.
+async function _htmlSiteFrame(iframe, path, fallback) {
+  const mint = (p) => _pubFetch('/site-view', { method: 'POST', body: JSON.stringify({ path: p }) });
+  let view;
+  try { view = await mint(path); } catch (e) { fallback(); return; }
+  iframe.src = view.url;
+  _appFrameWatch(iframe, {
+    async reopen(p) {
+      const page = p.split(/[?#]/)[0];
+      let file = page === '/' ? path : view.root + decodeURIComponent(page);
+      if (file.endsWith('/')) file += 'index.html';
+      try { view = await mint(file); _appFrameReplace(iframe, view.url + p.slice(page.length)); }
+      catch (e) { fallback(); }
+    },
+  });
 }
 async function _pubRevoke(id) {
   const l = _pubLinks.find(x => x.id === id);
@@ -65520,7 +67588,45 @@ function _nativeRecorderAvailable() {
 }
 function _nativeRecorderActive() { return !!_nativeRec && ['recording', 'paused'].includes(_nativeRec.state); }
 function _nativeRecorderPost(msg) {
-  try { window.webkit.messageHandlers.amuxRecorder.postMessage(msg); } catch (e) { _recorderStatus('The app did not answer: ' + e.message); }
+  try { window.webkit.messageHandlers.amuxRecorder.postMessage(msg); } catch (e) { _recorderStatus('The app did not answer: ' + e.message); _recorderBeacon('native_post_failed', { op: msg && msg.op, error: e.message }); return; }
+  if (msg && (msg.op === 'start' || msg.op === 'stop')) {
+    // Start and stop must come back as a status; silence means the app never acted.
+    const sent = Date.now();
+    clearTimeout(_nativeRecWaitT);
+    _nativeRecWaitT = setTimeout(() => {
+      if (_nativeRec && _nativeRec._at >= sent) return;
+      _recorderStatus('The amux app did not answer the ' + msg.op + '. Update the app if this keeps happening.');
+      _recorderBeacon('native_no_status', { op: msg.op, wait_ms: 4000 });
+    }, 4000);
+  }
+}
+let _nativeRecWaitT = 0, _nativeRecPollT = 0;
+// What the server hears of the app's recorder: every change of state and every
+// new error, so a recording that fails on a phone is in the server log.
+function _nativeRecorderTrack(prev, st) {
+  const a = prev && prev.state || 'none', b = st && st.state || 'none';
+  const err = st && st.error || '';
+  if (a !== b) _recorderBeacon('native_state', { from: a, to: b, id: st && st.id || '', segments: st && st.segments || 0, pending_upload: st && st.pending_upload || 0, gaps: st && st.gaps || 0, error: err });
+  else if (err && err !== (prev && prev.error)) _recorderBeacon('native_error', { state: b, error: err });
+}
+function _nativeRecorderPollSync() {
+  const want = !!_nativeRec && _nativeRec.state === 'recording' && !document.hidden;
+  if (want && !_nativeRecPollT) {
+    _nativeRecPollT = setInterval(() => {
+      const st = _nativeRec;
+      if (!st || st.state !== 'recording' || document.hidden) { clearInterval(_nativeRecPollT); _nativeRecPollT = 0; return; }
+      if (!st._slow && Date.now() - (st._at || 0) < 1500) return;
+      if (!st._slow) { st._slow = true; _recorderBeacon('native_push_quiet', { id: st.id || '' }); }
+      try { window.webkit.messageHandlers.amuxRecorder.postMessage({op: 'status'}); } catch (e) {}
+    }, 250);
+  } else if (!want && _nativeRecPollT) { clearInterval(_nativeRecPollT); _nativeRecPollT = 0; }
+}
+document.addEventListener('visibilitychange', () => { if (_nativeRec) _nativeRecorderPollSync(); if (!document.hidden) _recWaveDraw(); });
+function _recorderBeacon(verdict, extra) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ kind: 'recorder', verdict, measured: true, n_considered: 1, native: _nativeRecorderAvailable() ? 1 : 0, ver: APP_VER }, extra || {})) }).catch(() => {});
+  } catch (e) {}
 }
 function _recorderPauseToggle() {
   if (_nativeRecorderActive()) _nativeRecorderPost({op: _nativeRec.state === 'paused' ? 'resume' : 'pause'});
@@ -65536,8 +67642,23 @@ function _recorderSetMeeting(mode) {
   if (_nativeRecorderAvailable()) _nativeRecorderPost({op: 'settings', meeting: mode});
 }
 window._nativeRecorderStatus = function(st) {
-  const was = _nativeRec && _nativeRec.state;
+  const prev = _nativeRec;
+  const was = prev && prev.state;
+  const now = Date.now();
+  if (st) {
+    // The iOS app pushed only on a change (about every 10 s segment), so the
+    // clock, the meter and the live panel looked frozen and a recording that
+    // worked read as "nothing happened" (owner, 2026-10-31). A recording whose
+    // pushes go quiet for 1.5 s is asked for its status while this page is
+    // visible (_nativeRecorderPollSync); the Mac app pushes every second and
+    // is never asked.
+    st._at = now;
+    st._slow = !!(prev && prev._slow && prev.id === st.id);
+  }
   _nativeRec = st || null;
+  _nativeRecorderTrack(prev, st);
+  _nativeRecorderPollSync();
+  if (st && st.state === 'recording' && st.levels) _recWavePush(Math.min(1, Math.max(0, ...Object.values(st.levels).map(Number)) * 4));
   _nativeRecorderPaint();
   // Just stopped: the app uploads the last segments; show the filed recording when it lands.
   if (was && was !== 'idle' && st && st.state === 'idle') setTimeout(() => _recorderLoadServer().then(_recorderRender), 5000);
@@ -65582,11 +67703,7 @@ function _nativeRecorderPaint() {
   if (sys) { try { sys.checked = localStorage.getItem('amux_recorder_system') === '1'; } catch (e) {} }
   const el = document.getElementById('recorder-elapsed');
   if (el) el.textContent = _recorderClock(on ? Number(st.elapsed_ms || 0) : 0);
-  const fill = document.getElementById('recorder-level-fill');
-  if (fill) {
-    const lv = Math.max(0, ...Object.values(st.levels || {}).map(Number));
-    fill.style.width = (on ? Math.min(100, Math.round(lv * 400)) : 0) + '%';
-  }
+  if (!on && _recWave.levels.length) _recWaveClear();
   const tracks = (st.tracks || []).map(t => t === 'mic' ? 'microphone' : t === 'system' ? "the Mac's sound" : t).join(' and ');
   let text;
   if (st.state === 'recording') {
@@ -65614,6 +67731,7 @@ async function _recorderStart() {
   } catch (e) {
     _recorderStarting = false;
     _recorderStatus('Microphone unavailable: ' + ((e && (e.message || e.name)) || 'permission denied'));
+    _recorderBeacon('mic_unavailable', { error: String((e && (e.name || e.message)) || '') });
     return;
   }
   const release = () => { try { stream.getTracks().forEach(t => t.stop()); } catch (e) {} };
@@ -65655,6 +67773,7 @@ async function _recorderStart() {
     return;
   }
   _recorderStarting = false;
+  _recorderBeacon('started', { id: meta.id, mime: meta.mime });
   _recorderWakeLock();
   _recorderStartMeter();
   clearInterval(_recorderTimer);
@@ -65726,6 +67845,7 @@ async function _recorderFinalize(id) {
   _recorderStream = null; _recorderMedia = null;
   await _recorderWrites;   // the last dataavailable fires before stop, so every chunk is queued here
   const reason = _recorderStopReason || 'stopped';
+  _recorderBeacon('stopped', { id, reason });
   let m = null;
   try { m = await _recorderGet(id); } catch (e) {}
   const endedAt = Date.now();
@@ -65784,25 +67904,66 @@ function _recorderStartMeter() {
     src.connect(_recorderAnalyser);
   } catch (e) { return; }   // the meter is cosmetic; recording never depends on it
   const data = new Uint8Array(_recorderAnalyser.fftSize);
-  const fill = document.getElementById('recorder-level-fill');
-  const draw = () => {
+  // One bar every 80 ms is enough to read as live; measuring every frame
+  // costs the battery and adds nothing. A hidden page gets no frames at all.
+  let last = 0;
+  const draw = (t) => {
     if (!_recorderLive || !_recorderAnalyser) return;
-    _recorderAnalyser.getByteTimeDomainData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
-    const level = Math.min(1, Math.sqrt(sum / data.length) * 4);
-    if (fill) fill.style.transform = 'scaleX(' + Math.max(0.02, level).toFixed(3) + ')';
+    if (!t || t - last >= _REC_WAVE_MS) {
+      last = t || 0;
+      _recorderAnalyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      _recWavePush(Math.min(1, Math.sqrt(sum / data.length) * 4));
+    }
     _recorderRaf = requestAnimationFrame(draw);
   };
-  draw();
+  draw(0);
 }
 function _recorderStopMeter() {
   if (_recorderRaf) cancelAnimationFrame(_recorderRaf);
   _recorderRaf = 0; _recorderAnalyser = null;
   try { if (_recorderAudioCtx) _recorderAudioCtx.close(); } catch (e) {}
   _recorderAudioCtx = null;
-  const fill = document.getElementById('recorder-level-fill');
-  if (fill) fill.style.transform = 'scaleX(0.02)';
+  _recWaveClear();
+}
+
+// ── The waveform (owner, 2026-10-31: "put the audio wave thing to indicate
+// sound recording. like a quick feedback thing") ──
+// The last few seconds of sound level as bars, newest on the right, for the
+// page's own recorder and the app's. Drawn only when a level arrives, never on
+// a loop, and a level is measured at most every _REC_WAVE_MS.
+const _REC_WAVE_MS = 80, _REC_WAVE_BARS = 56;
+const _recWave = { levels: [], color: '' };
+function _recWavePush(level) {
+  const w = _recWave.levels;
+  w.push(Math.max(0, Math.min(1, Number(level) || 0)));
+  if (w.length > _REC_WAVE_BARS) w.splice(0, w.length - _REC_WAVE_BARS);
+  _recWaveDraw();
+}
+function _recWaveClear() { _recWave.levels = []; _recWaveDraw(); }
+function _recWaveDraw() {
+  const c = document.getElementById('recorder-wave');
+  if (!c || !c.isConnected || document.hidden) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const W = c.clientWidth, H = c.clientHeight;
+  if (!W || !H) return;
+  if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const lv = _recWave.levels;
+  // Quiet for the last second: dim bars, so silence reads as silence rather than as broken.
+  const recent = lv.slice(-Math.round(1000 / _REC_WAVE_MS));
+  c.classList.toggle('quiet', !recent.some(v => v > 0.06));
+  g.fillStyle = getComputedStyle(c).color;
+  const step = W / _REC_WAVE_BARS, bw = Math.max(1.5, step * 0.6), mid = H / 2;
+  for (let i = 0; i < _REC_WAVE_BARS; i++) {
+    const v = lv[lv.length - _REC_WAVE_BARS + i];
+    const h = Math.max(2, (v == null ? 0 : Math.sqrt(v)) * (H - 2));
+    const x = i * step + (step - bw) / 2;
+    g.fillRect(x, mid - h / 2, bw, h);
+  }
 }
 function _recorderTick() {
   const el = document.getElementById('recorder-elapsed');
@@ -66227,6 +68388,7 @@ function _recSetSide(t) {
 }
 function _recBack() { document.getElementById('record-view').classList.remove('rec-open'); }
 async function _recSelect(id) {
+  if (id !== _recSel) _recLineQuery = '';
   _recSel = id;
   document.getElementById('record-view').classList.add('rec-open');
   document.querySelectorAll('#recorder-list .recorder-item').forEach(e => e.classList.toggle('selected', e.dataset.recId === id));
@@ -66302,8 +68464,14 @@ function _recRenderDetail() {
       body.innerHTML = '<div class="recorder-empty">' + esc(_recorderTranscriptWords(row) || 'No transcript yet.') + '</div>';
       return;
     }
+    const searching = document.activeElement && document.activeElement.classList.contains('rec-tsearch');
     body.innerHTML = '<input class="input rec-tsearch" type="search" placeholder="Search transcript" aria-label="Search transcript" oninput="_recFilterLines(this.value)">'
       + '<div id="rec-lines" class="rec-lines">' + segs.map(_recLineHtml).join('') + '</div>';
+    // A re-render keeps the search someone is typing, and the lines it hides.
+    const search = body.querySelector('.rec-tsearch');
+    search.value = _recLineQuery;
+    if (searching) search.focus();
+    _recFilterLines(_recLineQuery);
   } else if (_recTab === 'notes') {
     const n = d.notes || {};
     let h = '';
@@ -66326,8 +68494,10 @@ function _recRenderDetail() {
     body.innerHTML = '<table class="rec-details">' + rows.filter(r => r[1]).map(r => '<tr><th>' + esc(r[0]) + '</th><td>' + esc(String(r[1])) + '</td></tr>').join('') + '</table>';
   }
 }
+let _recLineQuery = '';
 function _recFilterLines(q) {
-  q = (q || '').toLowerCase();
+  _recLineQuery = q || '';
+  q = _recLineQuery.toLowerCase();
   document.querySelectorAll('#rec-lines .rec-line').forEach(e => { e.hidden = !!q && !e.textContent.toLowerCase().includes(q); });
 }
 function _recSeek(ms) {
@@ -67001,6 +69171,8 @@ function _cvFindName(conv) {
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  // A worker's direct message with you (`d:<worker>|<you>`): the worker.
+  if (conv && conv.indexOf('d:') === 0) return conv.slice(2).split('|')[0];
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
@@ -67046,7 +69218,8 @@ function _cvNewCandidates() {
   const L = _cv.list || {};
   return [
     ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
-    ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.people || []).filter(p => p.conv).map(p => ({ conv: p.conv, label: p.me ? p.name + ' (you)' : p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.direct || []).map(d => ({ conv: d.conv, label: d.worker, kind: 'direct message', ico: _cvAvatar(d.worker, true) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
 }
@@ -67093,11 +69266,15 @@ function _cvRenderSide() {
     // Owners and admins manage channels from here (AA-52). The server refuses
     // everyone else, so this only hides a button nobody else could use.
     + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
-  const ppl = (L.people || []);
-  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
-  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+  const ppl = (L.people || []), dms = (L.direct || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length ? '' : 'none';
+  // Your own entry opens your notes to yourself, as in Slack (Ethan,
+  // 2026-11-06: "i should also be able to open my own"). A worker that wrote
+  // to you directly is listed here too, as its 1:1 with you.
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me && !p.conv
     ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
-    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.me ? p.name + ' (you)' : p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.me || p.online ? ' on' : '') + '" title="' + (p.me || p.online ? 'online' : 'away') + '"></span>')).join('')
+    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -67280,7 +69457,7 @@ function _cvEnter() {
     _cvSelect(sel, true);
   });
 }
-function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; clearInterval(_cv.pollT); _cv.pollT = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
@@ -67293,15 +69470,17 @@ function _cvSelect(sel, auto) {
   if (sel === '@all') { _cvShowPane('log'); return; }
   _cvShowPane('conv');
   _cvFit();
-  const compose = document.getElementById('cv-compose'), hint = document.getElementById('cv-hint');
-  const isConv = sel[0] !== '@';
-  compose.style.display = isConv ? '' : 'none'; hint.style.display = isConv ? '' : 'none';
+  document.getElementById('cv-compose').style.display = sel[0] !== '@' ? '' : 'none';
   document.getElementById('cv-typing').textContent = '';
   document.getElementById('cv-head-people').innerHTML = '';
+  { const pb = document.getElementById('cv-pins-btn'); if (pb) pb.hidden = true; }
   if (sel === '@mentions') return _cvLoadFeed('/api/conversations/mentions', 'Mentions', 'Messages that mention you');
   if (sel === '@unread') return _cvRenderUnread();
-  if (sel.indexOf('@search:') === 0) return _cvLoadFeed('/api/conversations/search?q=' + encodeURIComponent(sel.slice(8)), 'Search: ' + sel.slice(8), 'Messages you can read that contain this text');
+  if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
+  _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
+  _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
   document.getElementById('cv-meta').textContent = '';
@@ -67313,7 +69492,16 @@ function _cvSelect(sel, auto) {
   // fallback for a stream that is down (and for invited members, who get the
   // wake-up but not the event).
   _cv.pollT = setInterval(() => { if (_cvViewOn() && _cv.sel === sel && (!_liveSSE || Date.now() - (_cv.liveAt || 0) > 15000)) _cvPoll(false); }, 2500);
-  if (!_cvMobile()) setTimeout(() => inp.focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(inp);
+}
+// The message box takes focus when a conversation opens, unless you already
+// went somewhere to type (the search box): it used to take the focus back
+// 50 ms later, and what you typed went into the message box.
+function _cvFocusSoon(el) {
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (el && (!a || a === document.body || a === el || !a.matches('input, textarea, select, [contenteditable="true"]'))) el.focus();
+  }, 50);
 }
 function _cvFit() {
   const view = document.getElementById('messages-view'); if (!view) return;
@@ -67324,7 +69512,223 @@ function _cvFit() {
   });
 }
 window.addEventListener('resize', () => { if (_cvViewOn()) _cvFit(); });
-function _cvSearch(q) { q = (q || '').trim(); if (q) _cvSelect('@search:' + q); }
+function _cvSearch(q) { q = (q || '').trim(); if (!q) return; _cvSqRemember(q); _cvSqClose(); _cvSelect('@search:' + q); }
+
+// ── SEARCH AND DISCOVERY (owner, 2026-11-05: "improve the chat ux, we need
+// better search/discovery") ──
+// The sidebar box searches as you type. Its panel offers filters as chips
+// (From, In, Time, Has), which write the same operators the server reads
+// (conversations.rs SearchFilters: from:, in:, after:, has:), so a typed
+// query and a clicked one are the same thing. Results come grouped:
+// conversations whose name matches, then messages with the words marked.
+// Empty, it shows your recent searches. ↑ ↓ Enter Esc work; "/" focuses it.
+const _cvSq = { seq: 0, t: 0, sel: -1, items: [], menu: null, res: null, q: '' };
+const _CV_SQ_TIME = [['24h', 'Past 24 hours'], ['7d', 'Past week'], ['30d', 'Past 30 days'], ['365d', 'Past year']];
+const _CV_SQ_HAS = [['file', 'A file'], ['link', 'A link'], ['thread', 'A thread']];
+function _cvSqInput() { return document.getElementById('cv-search'); }
+function _cvSqPanel() { return document.getElementById('cv-sq'); }
+// The words of a query that are not operators.
+function _cvSqText(q) { return String(q || '').split(/\s+/).filter(w => w && !/^[a-z]+:/.test(w)).join(' '); }
+function _cvSqTok(q, op) { const m = String(q || '').match(new RegExp('(?:^|\\s)' + op + ':(\\S+)')); return m ? m[1] : ''; }
+function _cvSqSetTok(op, v) {
+  const inp = _cvSqInput();
+  let q = inp.value.replace(new RegExp('(^|\\s)' + op + ':\\S+', 'g'), ' ').replace(/\s+/g, ' ').trim();
+  if (v) q = (q ? q + ' ' : '') + op + ':' + v;
+  inp.value = q + (q ? ' ' : '');
+  _cvSq.menu = null;
+  inp.focus();
+  _cvSqRun();
+}
+function _cvSqRecent() { try { return JSON.parse(localStorage.getItem('amux_cv_recent_search') || '[]'); } catch (e) { return []; } }
+function _cvSqRemember(q) {
+  const list = [q].concat(_cvSqRecent().filter(x => x !== q)).slice(0, 8);
+  try { localStorage.setItem('amux_cv_recent_search', JSON.stringify(list)); } catch (e) { console.warn('recent searches not saved', e); }
+}
+function _cvSqOpen() {
+  const pan = _cvSqPanel(), inp = _cvSqInput(); if (!pan || !inp) return;
+  const r = inp.getBoundingClientRect();
+  const w = Math.min(560, window.innerWidth - Math.max(8, r.left) - 8);
+  pan.style.left = Math.max(8, r.left) + 'px';
+  pan.style.top = (r.bottom + 4) + 'px';
+  pan.style.width = Math.max(r.width, w) + 'px';
+  pan.style.maxHeight = Math.max(200, window.innerHeight - r.bottom - 16) + 'px';
+  pan.hidden = false;
+  inp.setAttribute('aria-expanded', 'true');
+  _cvSqRun(true);
+}
+function _cvSqClose() {
+  const pan = _cvSqPanel(); if (pan) pan.hidden = true;
+  const inp = _cvSqInput(); if (inp) inp.setAttribute('aria-expanded', 'false');
+  _cvSq.menu = null; _cvSq.sel = -1;
+}
+// Debounced: each keystroke restarts the wait, and an answer to an older
+// query is dropped (seq), so the list never shows results for text you deleted.
+function _cvSqRun(now) {
+  clearTimeout(_cvSq.t);
+  const q = _cvSqInput().value.trim();
+  _cvSq.q = q;
+  if (!q) { _cvSq.res = null; _cvSqRender(); return; }
+  _cvSqRender();
+  const seq = ++_cvSq.seq;
+  _cvSq.t = setTimeout(async () => {
+    try {
+      const r = await fetch(API + '/api/conversations/search?limit=8&q=' + encodeURIComponent(q));
+      const d = await r.json();
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = r.ok ? d : { error: d.error || ('HTTP ' + r.status) };
+    } catch (e) {
+      if (seq !== _cvSq.seq) return;
+      _cvSq.res = { error: String((e && e.message) || e) };
+    }
+    _cvSqRender();
+  }, now ? 0 : 180);
+}
+function _cvSqConvs() {
+  const L = _cv.list || {};
+  return [].concat(
+    (L.channels || []).map(c => ({ conv: c.conv, name: '#' + (c.title || c.name), kind: 'Channel', key: c.name, ico: '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>' })),
+    (L.people || []).filter(p => !p.me).map(p => ({ conv: p.conv, name: p.name, kind: 'Person', key: String(p.email || p.name).split('@')[0], ico: _cvAvatar(p.name, false, p.email) })),
+    (L.direct || []).map(d => ({ conv: d.conv, name: d.worker, kind: 'Direct message', key: d.worker, ico: _cvAvatar(d.worker, true) })),
+    (L.workers || []).map(w => ({ conv: w.conv, name: w.name, kind: 'Worker', key: w.name, ico: _cvAvatar(w.name, true) })));
+}
+function _cvSqWhen(ts) {
+  const d = new Date(ts);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+}
+function _cvSqChip(op, label, shown) {
+  const v = _cvSqTok(_cvSq.q, op);
+  const on = !!v;
+  return '<button type="button" class="cv-sq-chip' + (on ? ' on' : '') + (_cvSq.menu === op ? ' open' : '') + '" data-op="' + op + '" onmousedown="event.preventDefault()" onclick="'
+    + (on ? '_cvSqSetTok(this.dataset.op, \'\')' : '_cvSq.menu = _cvSq.menu === this.dataset.op ? null : this.dataset.op; _cvSqRender()')
+    + '" aria-pressed="' + on + '">' + esc(on ? label + ': ' + (shown ? shown(v) : v) + ' ×' : label + ' ▾') + '</button>';
+}
+function _cvSqRender() {
+  const pan = _cvSqPanel(); if (!pan || pan.hidden) return;
+  const q = _cvSq.q, text = _cvSqText(q).toLowerCase();
+  const items = [];   // what ↑ ↓ Enter move through: {run, html}
+  const add = (html, run) => { items.push(run); return html.replace('<button ', '<button data-i="' + (items.length - 1) + '" '); };
+  const convs = _cvSqConvs();
+  const convName = v => { const c = convs.find(x => x.conv === v || x.conv === 'g:' + v.replace(/^#/, '')); return c ? c.name : v; };
+  const timeName = v => (_CV_SQ_TIME.find(t => t[0] === v) || [v, v])[1];
+  let h = '<div class="cv-sq-chips" role="toolbar" aria-label="Filters">' + _cvSqChip('from', 'From') + _cvSqChip('in', 'In', convName)
+    + _cvSqChip('after', 'Time', timeName) + _cvSqChip('has', 'Has') + '</div>';
+  const opt = (label, ico, run) => add('<button type="button" class="cv-sq-row" role="option" onmousedown="event.preventDefault()">' + (ico || '') + '<span class="cv-sq-main">' + label + '</span></button>', run);
+  if (_cvSq.menu) {
+    const m = _cvSq.menu;
+    const list = m === 'from' ? convs.filter(c => c.kind !== 'Channel').map(c => [c.key, c.name, c.ico, c.kind])
+      : m === 'in' ? convs.map(c => [c.conv.indexOf('g:') === 0 ? '#' + c.conv.slice(2) : c.conv, c.name, c.ico, c.kind])
+      : (m === 'after' ? _CV_SQ_TIME : _CV_SQ_HAS).map(t => [t[0], t[1], '', '']);
+    h += '<div class="cv-sq-sec">' + esc({ from: 'Messages from', in: 'Messages in', after: 'Messages sent in the', has: 'Messages that have' }[m]) + '</div>'
+      + list.map(([v, name, ico, kind]) => opt(esc(name) + (kind ? '<small>' + esc(kind) + '</small>' : ''), ico, () => _cvSqSetTok(m, v))).join('');
+  } else if (!q) {
+    const recent = _cvSqRecent();
+    if (recent.length) h += '<div class="cv-sq-sec">Recent searches</div>' + recent.map(r => opt(esc(r), '<span class="cv-ico">&#x1F552;</span>', () => { _cvSqInput().value = r; _cvSearch(r); })).join('');
+    h += '<div class="cv-sq-tip">Type to search every conversation you can read. Filters: <code>from:doron</code> <code>in:#amux</code> <code>after:7d</code> <code>has:file</code></div>';
+  } else {
+    const hitConvs = text ? convs.filter(c => c.name.toLowerCase().replace(/^#/, '').includes(text.replace(/^#/, ''))).slice(0, 5) : [];
+    if (hitConvs.length) h += '<div class="cv-sq-sec">Conversations</div>' + hitConvs.map(c => opt(esc(c.name) + '<small>' + esc(c.kind) + '</small>', c.ico, () => { _cvSqClose(); _cvSqInput().blur(); _cvSelect(c.conv); })).join('');
+    const d = _cvSq.res;
+    h += '<div class="cv-sq-sec">Messages' + (d && d.total ? ' <span class="cv-sq-n">' + d.total + '</span>' : '') + '</div>';
+    if (!d) h += '<div class="cv-sq-tip">Searching…</div>';
+    else if (d.error) h += '<div class="cv-sq-tip">Search failed: ' + esc(d.error) + '</div>';
+    else {
+      const bad = ((d.filters || {}).unknown || []);
+      if (bad.length) h += '<div class="cv-sq-tip cv-sq-warn">Not a filter, ignored: ' + bad.map(esc).join(', ') + '</div>';
+      if (!(d.posts || []).length) h += '<div class="cv-sq-tip">No messages match.</div>';
+      h += (d.posts || []).map(p => {
+        const snip = p.snippet ? esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') : esc(String(p.body || '').slice(0, 160));
+        return add('<button type="button" class="cv-sq-row cv-sq-hit" role="option" onmousedown="event.preventDefault()">' + _cvAvatar(p.author_name, p.author_key.indexOf('worker:') === 0, p.author_key)
+          + '<span class="cv-sq-main"><span class="cv-sq-head"><b>' + esc(p.author_name) + '</b><span>' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' · thread' : '') + '</span><span class="cv-sq-ts">' + esc(_cvSqWhen(p.ts)) + '</span></span>'
+          + '<span class="cv-sq-snip">' + snip + '</span></span></button>',
+          () => { _cvSqRemember(q); _cvSqClose(); _cvSqInput().blur(); _cvOpenThreadOrScroll(p.conv, p.parent_id || p.id); });
+      }).join('');
+      if ((d.posts || []).length) h += add('<button type="button" class="cv-sq-row cv-sq-all" role="option" onmousedown="event.preventDefault()"><span class="cv-sq-main">See all ' + (d.total || '') + ' results for “' + esc(q) + '” <small>Enter</small></span></button>', () => _cvSearch(q));
+    }
+  }
+  pan.innerHTML = h;
+  _cvSq.items = items;
+  if (_cvSq.sel >= items.length) _cvSq.sel = -1;
+  pan.querySelectorAll('[data-i]').forEach(b => {
+    b.classList.toggle('sel', +b.dataset.i === _cvSq.sel);
+    b.onclick = () => (_cvSq.items[+b.dataset.i] || (() => {}))();
+  });
+}
+function _cvSqKey(e) {
+  const pan = _cvSqPanel();
+  if (e.key === 'Escape') { if (_cvSq.menu) { _cvSq.menu = null; _cvSqRender(); } else { _cvSqClose(); e.target.blur(); } e.preventDefault(); return; }
+  if (pan && pan.hidden && e.key !== 'Enter') _cvSqOpen();
+  const n = _cvSq.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!n) return;
+    _cvSq.sel = e.key === 'ArrowDown' ? (_cvSq.sel + 1) % n : (_cvSq.sel <= 0 ? n - 1 : _cvSq.sel - 1);
+    pan.querySelectorAll('[data-i]').forEach(b => b.classList.toggle('sel', +b.dataset.i === _cvSq.sel));
+    pan.querySelector('[data-i="' + _cvSq.sel + '"]')?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_cvSq.sel >= 0 && _cvSq.items[_cvSq.sel]) _cvSq.items[_cvSq.sel]();
+    else _cvSearch(e.target.value);
+  }
+}
+document.addEventListener('mousedown', e => {
+  const pan = _cvSqPanel();
+  if (pan && !pan.hidden && !pan.contains(e.target) && e.target !== _cvSqInput()) _cvSqClose();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || !_cvViewOn()) return;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return;
+  const inp = _cvSqInput(); if (!inp || !inp.offsetParent) return;
+  e.preventDefault(); inp.focus(); _cvSqOpen();
+});
+// THE RESULTS PAGE: every match, how many in each conversation (click one to
+// narrow to it), and which filters the server understood.
+async function _cvSearchPage(q) {
+  const inp = _cvSqInput(); if (inp && inp.value.trim() !== q) inp.value = q;
+  document.getElementById('cv-title').textContent = 'Search: ' + q;
+  document.getElementById('cv-meta').textContent = 'Searching…';
+  const box = document.getElementById('cv-posts'); box.innerHTML = '<div class="cv-empty">Loading…</div>';
+  let d;
+  try {
+    const r = await fetch(API + '/api/conversations/search?limit=200&q=' + encodeURIComponent(q));
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) { box.innerHTML = '<div class="cv-empty">Could not search: ' + esc(e.message) + '</div>'; document.getElementById('cv-meta').textContent = ''; return; }
+  if (_cv.sel !== '@search:' + q) return;
+  const posts = d.posts || [], by = Object.entries(d.by_conv || {}).sort((a, b) => b[1] - a[1]);
+  document.getElementById('cv-meta').textContent = (d.total || 0) + (d.total === 1 ? ' result' : ' results') + ' in ' + by.length + (by.length === 1 ? ' conversation' : ' conversations')
+    + (posts.length < (d.total || 0) ? ' (newest ' + posts.length + ' shown by best match)' : '');
+  const scoped = _cvSqTok(q, 'in');
+  const bar = '<div class="cv-sr-bar" role="toolbar" aria-label="Narrow to a conversation">'
+    + (scoped ? '<button type="button" class="cv-sq-chip on" onclick="_cvSearch(' + esc(JSON.stringify(q.replace(/(^|\s)in:\S+/, ' ').trim())) + ')">In: ' + esc(_cvFindName(scoped.indexOf(':') > 0 ? scoped : 'g:' + scoped.replace(/^#/, ''))) + ' ×</button>'
+      : by.slice(0, 10).map(([c, n]) => '<button type="button" class="cv-sq-chip" data-cv="' + esc(c) + '" onclick="_cvSearch(' + esc(JSON.stringify(q)) + ' + \' in:\' + (this.dataset.cv.indexOf(\'g:\') === 0 ? \'#\' + this.dataset.cv.slice(2) : this.dataset.cv))">' + esc(_cvFindName(c)) + ' <span class="cv-sq-n">' + n + '</span></button>').join(''))
+    + (((d.filters || {}).unknown || []).length ? '<span class="cv-sq-warn">Not a filter, ignored: ' + d.filters.unknown.map(esc).join(', ') + '</span>' : '')
+    + '</div>';
+  // The words are marked in the message itself, not in a snippet repeated under it.
+  box.innerHTML = bar + (posts.length ? posts.map(p => _cvPostHtml(Object.assign({}, p, { snippet: '' }), true)).join('') : '<div class="cv-empty">No messages match. Try fewer words, or remove a filter.</div>');
+  _cvMarkTerms(box, d.terms);
+}
+// Wraps each word that starts with a searched term (the server matches
+// prefixes: "clio" finds "Clio's") in <mark>, in text only, never in a tag.
+function _cvMarkTerms(box, fts) {
+  const words = String(fts || '').match(/"([^"]+)"/g);
+  if (!words) return;
+  const re = new RegExp('(^|[^\\p{L}\\p{N}])((?:' + words.map(w => w.slice(1, -1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')[\\p{L}\\p{N}_-]*)', 'giu');
+  box.querySelectorAll('.cv-post-body').forEach(body => {
+    const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes = []; while (walk.nextNode()) nodes.push(walk.currentNode);
+    for (const n of nodes) {
+      if (!re.test(n.nodeValue)) { re.lastIndex = 0; continue; }
+      re.lastIndex = 0;
+      const span = document.createElement('span');
+      span.innerHTML = esc(n.nodeValue).replace(re, '$1<mark class="cv-hl">$2</mark>');
+      n.replaceWith(...span.childNodes);
+    }
+  });
+}
 // One poll at a time. Posts arriving together each asked for an incremental
 // poll; overlapping ones answered out of order, a stale page moved lastId
 // backwards, and a post was fetched but never drawn (CI, 2026-10-27). A poll
@@ -67354,14 +69758,28 @@ async function _cvPollOnce(full) {
   // (after=) is usually empty and would say "nothing older", disarming
   // scroll-up loading.
   const hadMore = _cv.info && _cv.info.has_more;
+  const pinsWere = JSON.stringify(((_cv.info || {}).pins || []).map(x => x.id));
   _cv.info = d;
+  const pinsChanged = hadInfo && pinsWere !== JSON.stringify((d.pins || []).map(x => x.id));
   if (!full) _cv.info.has_more = hadMore;
   Object.assign(_cvProfiles, d.profiles || {});
   // Typing "@" before the member list arrived left the picker empty; offer
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
-  if (full) _cv.posts = d.posts || [];
-  else if ((d.posts || []).length) {
+  // A full refresh of a conversation already on screen MERGES (below): it used
+  // to replace the list, dropping the older pages scrolled in and the posts
+  // still waiting on the server (2026-11-06).
+  const hadPosts = _cv.posts.length > 0;
+  if (full && !hadPosts) _cv.posts = d.posts || [];
+  if (full && hadMore && _cv.posts.length && _cv.posts[0].id < ((d.posts || [])[0] || {}).id) _cv.info.has_more = hadMore;
+  // The first post someone else wrote after your read mark, captured before
+  // this load marks the conversation read (_cvMarkRead below).
+  if (full && _cv.restoreScroll) {
+    const lr = Number(d.last_read || 0), me = _cvMeKey();
+    const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
+    _cv.unreadFrom = first ? first.id : null;
+  }
+  if ((hadPosts || !full) && (d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
     for (const np of d.posts) byId.set(np.id, np);
@@ -67380,7 +69798,9 @@ async function _cvPollOnce(full) {
   if (full) _cv.readId = 0;
   _cv.readId = Math.max(_cv.readId || 0, latest);
   _cvRenderHead(sel, d);
-  if (full || grew || pending.length) _cvRenderPosts(full || grew);
+  _cvRenderPinsBtn();
+  if (full || grew || pending.length || pinsChanged) _cvRenderPosts(full || grew);
+  if (pinsChanged && !full && !grew && _cv.thread) _cvRenderThread();
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
     ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
   if (grew || full || readGrew) _cvMarkRead();
@@ -67409,8 +69829,12 @@ function _cvRenderHead(sel, d) {
         + 'data-key="' + esc(wkey) + '" onchange="_cvSetAvatar(this.dataset.key, this.files[0]); this.value=\'\'"></label>';
       return;
     }
+  } else if (sel.indexOf('d:') === 0) {
+    const w = sel.slice(2).split('|')[0];
+    meta.textContent = 'Direct message with ' + w + '. Only you and ' + w + ' can read this; messages here go to it.';
   } else {
-    meta.textContent = 'Direct message';
+    const ends = sel.slice(2).split('|');
+    meta.textContent = ends.length === 2 && ends[0] === ends[1] ? 'Your notes to yourself. Only you can read this.' : 'Direct message';
   }
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('');
@@ -67435,17 +69859,55 @@ function _cvBodyHtml(p) {
     const k = names[tok.replace(/\.$/, '').toLowerCase()];
     return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
   });
-  const imgs = [];
-  body.replace(/(?:^|[\s(\[>"'`,;=@])((?:~\/|\/)[^\s'"`<>()]+\.(?:png|jpe?g|gif|webp))(?=$|[\s,;:)\].])/gim, (m, path) => {
-    if (!imgs.includes(path) && imgs.length < 4) imgs.push(path);
-    return m;
-  });
+  const imgs = _cvImageRefs(body);
   if (imgs.length) {
-    h += '<div class="cv-thumbs">' + imgs.map(path => '<img class="cv-thumb" loading="lazy" alt="' + esc(path.split('/').pop())
-      + '" title="Open ' + esc(path) + '" data-path="' + esc(path) + '" src="'
-      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
+    h += '<div class="cv-thumbs">' + imgs.map(r => r.path
+      ? '<img class="cv-thumb" loading="lazy" alt="' + esc(r.name) + '" title="Open ' + esc(r.path) + '" data-path="' + esc(r.path) + '" src="'
+        + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(r.path))) + '" onclick="openFilePreview(this.dataset.path)" onerror="_cvThumbFailed(this)">'
+      : '<img class="cv-thumb" loading="lazy" referrerpolicy="no-referrer" alt="' + esc(r.name) + '" title="Open ' + esc(r.url) + '" data-url="' + esc(r.url)
+        + '" src="' + esc(r.url) + '" onclick="window.open(this.dataset.url,\'_blank\',\'noopener\')" onerror="_cvThumbFailed(this)">').join('') + '</div>';
   }
   return h;
+}
+// INLINE IMAGE PREVIEWS, like Slack (Ethan, 2026-11-06: "make sure any image
+// links have an inline preview", screenshot of an `@.../IMG_5708.tiff` post
+// shown as a bare link). A local image path (absolute or ~/, with or without
+// the @ an attachment rides on) previews through /api/file/raw; a web link to
+// an image previews from its URL, this server's /f/ links included. The list
+// used to stop at png/jpg/gif/webp, so a phone's .tiff or .heic never showed.
+const _CV_IMG_EXT = 'png|jpe?g|gif|webp|svg|bmp|avif|heic|heif|tiff?';
+function _cvImageRefs(body) {
+  const out = [], seen = new Set();
+  const add = r => { const k = r.path || r.url; if (!seen.has(k) && out.length < 4) { seen.add(k); out.push(r); } };
+  String(body || '').replace(new RegExp('(?:^|[\\s(\\[>"\'`,;=@])((?:~\\/|\\/)[^\\s\'"`<>()]+\\.(?:' + _CV_IMG_EXT + '))(?=$|[\\s,;:)\\].])', 'gim'), (m, path) => {
+    // A copied file link (`/f/<path>`, api/deep_links.rs) names the file on
+    // disk; the link itself redirects to the dashboard, so preview the file.
+    if (path.indexOf('/f/') === 0) path = path.slice(2);
+    add({ path, name: path.split('/').pop() }); return m;
+  });
+  String(body || '').replace(new RegExp('https?:\\/\\/[^\\s<>()"\']+\\.(?:' + _CV_IMG_EXT + ')(?:\\?[^\\s<>()"\']*[^\\s<>()"\'.,;:!?])?(?=$|[\\s,;:!?)\\].])', 'gim'), url => {
+    const name = url.split('?')[0].split('/').pop();
+    try {
+      const u = new URL(url);
+      if (typeof location !== 'undefined' && u.host === location.host && u.pathname.indexOf('/f/') === 0) {
+        add({ path: decodeURIComponent(u.pathname.slice(2)), name }); return url;
+      }
+    } catch (e) {}
+    add({ url, name }); return url;
+  });
+  return out;
+}
+// A browser that cannot draw the format (Chrome and Firefox have no TIFF or
+// HEIC; Safari and the amux apps do) gets a file chip that opens it instead of
+// a broken image.
+function _cvThumbFailed(img) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'cv-thumb-chip';
+  chip.textContent = '\u{1F5BC} ' + (img.alt || 'image') + ' (no preview in this browser; open)';
+  const path = img.dataset.path, url = img.dataset.url;
+  chip.onclick = () => path ? openFilePreview(path) : window.open(url, '_blank', 'noopener');
+  img.replaceWith(chip);
 }
 // PATHS IN A POST ARE LINKS (AA-51, Ethan 2026-10-28). _linkifyPaths needs a
 // file extension, so a folder such as /home/amux/wexus/runs/x/for-elliot was
@@ -67545,6 +70007,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const mine = p.author_key === _cvMeKey();
   const owner = _cvMeKey() === 'person:owner';
   const real = typeof p.id === 'number';
+  const pinned = real && _cvPinnedIds().has(p.id);
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
     : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
@@ -67558,6 +70021,8 @@ function _cvPostHtml(p, showConv, inThread) {
     + _CV_QUICK.slice(0, 3).map(e => '<button type="button" title="React ' + e + '" aria-label="React ' + e + '" onclick="_cvReact(' + p.id + ',\'' + e + '\')">' + e + '</button>').join('')
     + (!inThread ? '<button type="button" title="Reply in thread" aria-label="Reply in thread" onclick="_cvOpenThread(' + p.id + ')">&#x1F4AC;</button>' : '')
     + '<button type="button" title="Copy link" aria-label="Copy link" onclick="_cvCopyLink(' + p.id + ',' + (p.parent_id || 0) + ')">&#x1F517;</button>'
+    + (pinned ? '<button type="button" title="Unpin" aria-label="Unpin" onclick="_cvPin(' + p.id + ',false)">&#x1F4CC;&#xFE0E;</button>'
+      : '<button type="button" title="Pin to this conversation" aria-label="Pin" onclick="_cvPin(' + p.id + ',true)">&#x1F4CC;</button>')
     + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
     + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
     + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
@@ -67565,6 +70030,7 @@ function _cvPostHtml(p, showConv, inThread) {
     '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
     (p.edited_at && !p.deleted ? '<span class="cv-edited" title="' + esc(new Date(p.edited_at).toLocaleString()) + '">(edited)</span>' : '') +
+    (pinned && !p.deleted ? '<span class="cv-post-pinned" title="' + esc(_cvPinTitle(p.id)) + '">&#x1F4CC; Pinned</span>' : '') +
     (showConv ? '<span class="cv-post-conv" data-cv="' + esc(p.conv) + '" onclick="_cvOpenThreadOrScroll(this.dataset.cv,' + (p.parent_id || p.id) + ')">in ' + esc(_cvFindName(p.conv)) + (p.parent_id ? ' (thread)' : '') + '</span>' : '') +
     (p.pending ? '<span class="cv-post-tag">Queued: sends when you are back online</span>' : p.tag ? '<span class="cv-post-tag">' + esc(p.tag) + '</span>' : '') +
     '</div>' + body + (p.snippet ? '<div class="cv-snippet">' + esc(p.snippet).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>') + '</div>' : '')
@@ -67620,6 +70086,48 @@ async function _cvMore(btn) {
 }
 function _cvFindPost(id) {
   return _cv.posts.find(p => p.id === id) || (_cv.thread && (_cv.thread.posts || []).find(p => p.id === id));
+}
+// Pinned messages: the conversation's pins come with every page of posts
+// (`pins`), so a pin made in another tab or by someone else shows on the next
+// poll, and a page of older posts still knows which of its posts are pinned.
+function _cvPinnedIds() { return new Set(((_cv.info || {}).pins || []).map(x => x.id)); }
+function _cvPinTitle(id) {
+  const x = ((_cv.info || {}).pins || []).find(y => y.id === id);
+  return x ? 'Pinned by ' + String(x.pinned_by || '').replace(/^(person|worker):/, '') + ' ' + timeAgo(x.pinned_at / 1000) : 'Pinned';
+}
+function _cvRenderPinsBtn() {
+  const btn = document.getElementById('cv-pins-btn'); if (!btn) return;
+  const n = ((_cv.info || {}).pins || []).length;
+  btn.hidden = !n;
+  document.getElementById('cv-pins-n').textContent = n ? String(n) : '';
+}
+async function _cvPin(id, on) {
+  try {
+    const r = await fetch(API + '/api/conversations/posts/' + id + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: on }) });
+    const d = await r.json();
+    if (!r.ok) { showToast(d.error || 'Not saved', 'error'); return; }
+    (_cv.info = _cv.info || {}).pins = d.pins || [];
+    _cvRenderPinsBtn();
+    _cvRenderPosts(false); if (_cv.thread) _cvRenderThread();
+    showToast(on ? 'Pinned' : 'Unpinned');
+  } catch (e) { showToast('Not saved: ' + e.message, 'error'); }
+}
+// The pinned list opens from the 📌 count in the header (one control in the
+// header row, no new bar). Choosing one goes to it: in the list when it is a
+// top-level post, in its thread when it is a reply.
+async function _cvShowPins() {
+  const pins = (_cv.info || {}).pins || [];
+  if (!pins.length) return;
+  const html = '<div class="cv-pins-list">' + pins.map((x, i) => '<button type="button" class="btn cv-pin-item" data-i="' + i + '">'
+    + '<span class="cv-pin-who">' + esc(x.author_name) + ' <span class="cv-pin-when">' + esc(new Date(x.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></span>'
+    + '<span class="cv-pin-body">' + esc(String(x.body || '').replace(/\s+/g, ' ').slice(0, 200)) + '</span></button>').join('') + '</div>';
+  const chosen = new Promise(resolve => {
+    setTimeout(() => document.querySelectorAll('.cv-pin-item').forEach(el => el.onclick = () => { resolve(Number(el.dataset.i)); _modalClose(false); }), 0);
+    showFormModal('Pinned messages', html, 'Close').then(() => resolve(-1));
+  });
+  const i = await chosen;
+  const x = pins[i]; if (!x) return;
+  if (x.parent_id) _cvOpenThread(x.parent_id); else _cvOpenThreadOrScroll(_cv.sel, x.id);
 }
 async function _cvReact(id, emoji) {
   try {
@@ -67688,7 +70196,7 @@ function _cvOpenThread(root) {
   document.getElementById('messages-view').classList.add('cv-thread-open');
   document.getElementById('cv-thread-posts').innerHTML = '<div class="cv-empty">Loading…</div>';
   _cvLoadThread();
-  if (!_cvMobile()) setTimeout(() => document.getElementById('cv-thread-input').focus(), 50);
+  if (!_cvMobile()) _cvFocusSoon(document.getElementById('cv-thread-input'));
 }
 function _cvCloseThread() {
   _cv.thread = null;
@@ -67751,12 +70259,14 @@ async function _cvOpenThreadOrScroll(conv, id) {
 }
 // ── Older history: scrolling to the top loads the page before it ──
 async function _cvOnScroll(box) {
+  if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
-  const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
+  const sel = _cv.sel, gen = _cv.gen, first = _cv.posts[0].id, h0 = box.scrollHeight;
   try {
     const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?before=' + first + '&limit=100')).json();
-    if (sel !== _cv.sel) return;
+    // The same conversation reopened (A, B, A) is a fresh list: same sel, new gen.
+    if (sel !== _cv.sel || gen !== _cv.gen) return;
     _cv.posts = (d.posts || []).concat(_cv.posts);
     _cv.info.has_more = d.has_more;
     Object.assign(_cvProfiles, d.profiles || {});
@@ -67882,17 +70392,54 @@ function _cvRenderPosts(scroll) {
     .concat(_cv.pending.filter(q => q.conv === _cv.sel).map(q => ({ ...q, id: 'q' + q.ts, pending: true,
       author_key: _cvMeKey(), author_name: (_cv.list && _cv.list.me && _cv.list.me.name) || 'you', mentions: [], deliveries: [] })));
   if (!all.length) {
+    _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
-      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+      : sel.indexOf('p:') === 0 || sel.indexOf('d:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
-  for (const p of all) { const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; } html += _cvPostHtml(p, false); }
+  for (const p of all) {
+    const dl = _cvDayLabel(p.ts); if (dl !== day) { day = dl; html += '<div class="cv-day">' + esc(dl) + '</div>'; }
+    if (_cv.unreadFrom && p.id === _cv.unreadFrom) html += '<div class="cv-unread-line" role="separator"><span>New</span></div>';
+    html += _cvPostHtml(p, false);
+  }
   _cvEditBeforeRender();
   box.innerHTML = html;
   _cvEditAfterRender(box);
+  if (_cv.restoreScroll) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
   if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+}
+// WHERE YOU LEFT OFF (Ethan, 2026-10-29: "when i open messages it should scroll
+// to where i left off"). Opening a conversation goes, in order, to the first
+// message someone else sent since your last read (under a "New" line), else to
+// the post you were reading when you scrolled up and left, else the end. The
+// place is kept per conversation in this browser (amux_cv_pos).
+function _cvPositions() { try { return JSON.parse(localStorage.getItem('amux_cv_pos') || '{}'); } catch (e) { return {}; } }
+function _cvRestoreScroll(box) {
+  const pos = _cvPositions()[_cv.sel];
+  const at = id => box.querySelector('.cv-post[data-id="' + CSS.escape(String(id)) + '"]');
+  const unread = _cv.unreadFrom && at(_cv.unreadFrom);
+  if (unread) { box.scrollTop += unread.getBoundingClientRect().top - box.getBoundingClientRect().top - 48; return; }
+  const el = pos && !pos.bottom && at(pos.id);
+  if (el) { box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - (pos.off || 0); return; }
+  box.scrollTop = box.scrollHeight;
+}
+let _cvPosT = 0;
+function _cvSavePosition(box) {
+  clearTimeout(_cvPosT);
+  _cvPosT = setTimeout(() => {
+    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
+    const top = box.getBoundingClientRect().top;
+    const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+    const all = _cvPositions();
+    all[sel] = { id: el ? el.dataset.id : null, off: el ? Math.round(el.getBoundingClientRect().top - top) : 0,
+      bottom: box.scrollHeight - box.scrollTop - box.clientHeight < 80, at: Date.now() };
+    // Keep the 200 most recent conversations.
+    const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
+    for (const k of keys.slice(200)) delete all[k];
+    try { localStorage.setItem('amux_cv_pos', JSON.stringify(all)); } catch (e) {}
+  }, 300);
 }
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
@@ -67913,7 +70460,7 @@ function _cvRenderUnread() {
   document.getElementById('cv-title').textContent = 'Unread';
   document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
   const L = _cv.list || {};
-  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.direct || []).map(d => [d, d.worker]), ...(L.workers || []).map(w => [w, w.name])]
     .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
   document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
     : '<div class="cv-empty">You are all caught up.</div>';
@@ -68036,7 +70583,7 @@ function _cvOnLive(ev) {
   _cv.liveListT = setTimeout(_cvLoadList, 300);
   if (ev.op === 'created') _cvMaybeNotify(ev);
   if (_cvViewOn() && _cv.sel === ev.conv) {
-    if (ev.op === 'created' && !ev.parent_id) _cvPoll(false);
+    if ((ev.op === 'created' && !ev.parent_id) || ev.op === 'pinned' || ev.op === 'unpinned') _cvPoll(false);
     else _cvRefreshPost(ev.parent_id || ev.id);
   }
   if (_cv.thread && _cv.thread.conv === ev.conv && (ev.parent_id === _cv.thread.root || ev.id === _cv.thread.root)) _cvLoadThread();
@@ -68068,7 +70615,7 @@ async function _cvMaybeNotify(ev) {
   } catch (e) { return; }
   if (!p || p.author_key === _cvMeKey()) return;
   const me = _cvMeKey();
-  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || !!ev.parent_id;
+  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || ev.conv.indexOf('d:') === 0 || !!ev.parent_id;
   if (!addressed) return;
   _cvNotified.add(ev.id);
   const title = (p.author_name || 'Someone') + (ev.parent_id ? ' replied in ' : ' in ') + _cvFindName(ev.conv);
@@ -71737,12 +74284,13 @@ function _drawRtAfterDiskReload(text, etag) {
 // the kind of thing, active work, where you are, and what you open often.
 // Archived and discarded things stay out until "Show archived" is on.
 const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
-  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0, open: {}, openToken: '' };
 const _CMDK_SHOW = 8;
 const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
   worker: 'Worker', group: 'Group', card: 'Card', schedule: 'Schedule', view: 'Tab',
   action: 'Action', pin: 'Pin', secret: 'Vault', payment: 'Vault', connector: 'Connector', skill: 'Skill',
+  file: 'File',
 };
 // Families weighted so a worker or group outranks a card that matched as
 // well: an open card fresh today reaches 60 + 80 + 60 (+60 for a prefix) on
@@ -71926,7 +74474,8 @@ function _cmdkStartRows() {
     if (recent.length >= 5) break;
     const kind = k.split(':')[0], id = k.slice(kind.length + 1);
     if (kind === 'action') continue;
-    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id } : null);
+    const it = byKey.get(k) || ((kind === 'card' || kind === 'schedule') ? { kind, id, title: e[2] || id, sub: id }
+      : kind === 'file' ? { kind, id, title: e[2] || id.replace(/^.*\//, ''), sub: id.replace(/\/[^/]*$/, '').replace(/^\/Users\/[^/]+/, '~') } : null);
     if (it && !it.archived) recent.push({ ...it, section: 'Recent' });
   }
   const seen = new Set(recent.map(_cmdkKey));
@@ -71954,11 +74503,17 @@ function _cmdkCompute() {
       scored.push([{ ...it, tier: m.tier, match: m.match,
         snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, m.tier * 10000 + _cmdkBoost(it, m, u)]);
     }
+    // A file you pinned shows once, as the pin.
+    const pinned = new Set(scored.filter(([it]) => it.kind === 'pin' && it.body).map(([it]) => it.body));
     for (const h of (_cmdk.server || [])) {
+      if (h.kind === 'file' && pinned.has(h.id)) continue;
       // An older server answers without tier/boost: read the tier off its score.
       const tier = h.tier || (h.score >= 1000 ? 5 : h.score >= 200 ? 4 : 3);
-      const it = { kind: h.kind, id: h.id, title: h.title, status: h.status, session: h.session, archived: h.archived,
-        sub: [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : ''),
+      // A file's sub line is its folder; its status is the visit count.
+      const sub = h.kind === 'file' ? String(h.id).replace(/\/[^/]*$/, '').replace(/^\/Users\/[^/]+/, '~')
+        : [h.id, h.status, h.session].filter(Boolean).join(' · ') + (h.archived ? ' · archived' : '');
+      const it = { kind: h.kind, id: h.id, title: h.title, status: h.kind === 'file' ? '' : h.status, session: h.session, archived: h.archived,
+        sub,
         tier, match: h.match || '', snippet: h.snippet || '' };
       scored.push([it, tier * 10000 + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
     }
@@ -71983,6 +74538,31 @@ function _cmdkCompute() {
   if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
 }
 
+// Which workers and tabs are already open, by place ("peek=<worker>",
+// "view=<tab>"): 'here' for the one on this page, 'elsewhere' for another tab
+// or pane of the Mac app, which says so when asked (owner, 2026-11-07: "for
+// each worker in the list if its already open it says it"). Choosing one goes
+// to it rather than opening it again (_cmdkRun).
+function _cmdkPlace(r) {
+  return r.kind === 'worker' ? 'peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? 'view=' + _viewHashName(r.id) : '';
+}
+function _cmdkAskOpen() {
+  const open = {};
+  if (peekSession && document.getElementById('peek-overlay')?.classList.contains('active')) open['peek=' + peekSession] = 'here';
+  else if (typeof activeView !== 'undefined' && activeView && activeView !== 'sessions') open['view=' + _viewHashName(activeView)] = 'here';
+  _cmdk.open = open;
+  const h = _nativePaneBridge();
+  if (!h) return;
+  _cmdk.openToken = Math.random().toString(36).slice(2, 10);
+  try { h.postMessage({ op: 'places', token: _cmdk.openToken }); } catch (e) { console.warn('[amux] palette could not ask which places are open', e); }
+}
+function _cmdkPlacesAck(token, places) {
+  if (token !== _cmdk.openToken || !Array.isArray(places)) return;
+  places.forEach(p => { if (typeof p === 'string' && !_cmdk.open[p]) _cmdk.open[p] = 'elsewhere'; });
+  if (typeof amuxTrack === 'function') amuxTrack('palette_open_places', { n: places.length, measured: true, n_considered: places.length });
+  if (document.getElementById('cmdk-overlay')?.classList.contains('active')) _cmdkRender();
+}
+
 function _cmdkRowHtml(r, i, toks, q) {
   const meta = r.kind === 'more' || r.kind === 'hidden';
   const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
@@ -71991,8 +74571,11 @@ function _cmdkRowHtml(r, i, toks, q) {
   const fz = r.match === 'fuzzy' ? q : '';
   const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
     : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  const open = _cmdk.open[_cmdkPlace(r)];
+  const badge = open ? '<span class="status-badge background cmdk-open" title="' + (open === 'here' ? 'Showing on this page' : 'Open in another tab or pane: choosing it goes there') + '">'
+    + (open === 'here' ? 'Open here' : 'Open') + '</span>' : '';
   return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
-    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span>' + badge + '</div>';
 }
 
 function _cmdkRender() {
@@ -72036,10 +74619,18 @@ function _cmdkToggleHidden() {
   document.getElementById('cmdk-input')?.focus();
 }
 
-function _cmdkQueryServer() {
+// A stale answer came from the previous index while the server rebuilds it
+// behind the reply, so a card made a moment ago is missing until the next
+// keystroke. Ask again, a few times, until an answer comes from an index
+// built after the first stale one. "stale" alone is not the stop: on a busy
+// board the fingerprint moves during every 1-2 s rebuild, so even a 70 ms old
+// index reads stale (live, 2026-10-31), and any index built after the first
+// stale answer already holds what was made before the search.
+const CMDK_STALE_RETRIES = 6;
+function _cmdkQueryServer(retry = 0, firstStaleAt = 0) {
   clearTimeout(_cmdk.timer);
   const q = _cmdk.q.trim();
-  const seq = ++_cmdk.seq;
+  const seq = retry ? _cmdk.seq : ++_cmdk.seq;
   if (!q) { _cmdk.server = []; _cmdk.serverMeta = null; return; }
   _cmdk.timer = setTimeout(async () => {
     try {
@@ -72048,12 +74639,14 @@ function _cmdkQueryServer() {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = r.ok ? (d.hits || []) : [];
       _cmdk.serverMeta = r.ok ? d : { measured: false };
+      const rebuiltSince = firstStaleAt && typeof d.index_age_ms === 'number' && d.index_age_ms < Date.now() - firstStaleAt;
+      if (r.ok && d.stale && !rebuiltSince && retry < CMDK_STALE_RETRIES) { _cmdkRender(); _cmdkQueryServer(retry + 1, firstStaleAt || Date.now()); return; }
     } catch (e) {
       if (seq !== _cmdk.seq) return;
       _cmdk.server = []; _cmdk.serverMeta = { measured: false };
     }
     _cmdkRender();
-  }, 90);
+  }, retry ? 500 : 90);
 }
 
 function openCmdk() {
@@ -72081,6 +74674,7 @@ function openCmdk() {
   const inp = document.getElementById('cmdk-input');
   inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
   _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
+  _cmdkAskOpen();
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
@@ -72117,6 +74711,37 @@ function _cmdkRun(i) {
   // rank and tier let a sweep see people opening things far down the list,
   // which is what a ranking regression looks like from outside.
   try { amuxTrack('palette_open', { kind: r.kind, rank: i, tier: r.tier || 0, match: r.match || (_cmdk.q.trim() ? '' : 'start'), measured: true, n_considered: _cmdk.rows.length }); } catch (e) {}
+  // In the Mac app, a worker or a tab already open in another tab or pane is
+  // brought forward instead (owner, 2026-10-29, MSG-100765: "if i do cmd + k
+  // and select something for which a tab is already open it goes to that
+  // tab"). The app answers within a moment; with no answer (an older app) or
+  // no such tab, it opens here as before.
+  const place = _cmdkPlace(r) ? '#' + _cmdkPlace(r) : '';
+  if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
+  _cmdkOpen(r);
+}
+const _cmdkFocusWaits = {};
+function _cmdkFocusElsewhere(hash, otherwise) {
+  const h = typeof _nativePaneBridge === 'function' && _nativePaneBridge();
+  if (!h) return false;
+  const token = Math.random().toString(36).slice(2, 10);
+  const done = found => {
+    if (!_cmdkFocusWaits[token]) return;
+    clearTimeout(_cmdkFocusWaits[token]); delete _cmdkFocusWaits[token]; delete _cmdkFocusWaits[token + ':cb'];
+    try { amuxTrack('palette_focus', { found: found ? 1 : 0, measured: true, n_considered: 1 }); } catch (e) {}
+    if (!found) otherwise();
+  };
+  _cmdkFocusWaits[token] = setTimeout(() => done(false), 700);
+  _cmdkFocusWaits[token + ':cb'] = done;
+  try { h.postMessage({ op: 'focus', hash, token }); } catch (e) { done(false); }
+  return true;
+}
+function _cmdkFocusAck(token, found) {
+  const cb = _cmdkFocusWaits[token + ':cb'];
+  delete _cmdkFocusWaits[token + ':cb'];
+  if (cb) cb(!!found);
+}
+function _cmdkOpen(r) {
   switch (r.kind) {
     case 'worker': openPeek(r.id); break;
     case 'view': switchView(r.id); break;
@@ -72128,6 +74753,7 @@ function _cmdkRun(i) {
       break;
     case 'card': openBoardDetail(r.id); break;
     case 'schedule': switchView('scheduler'); _cmdkOpenSchedule(r.id, 0); break;
+    case 'file': openFilePreview(r.id); break;
     case 'pin':
       // The Mac app opens pins as its own floating panels.
       if (typeof _nativeTabs !== 'undefined' && _nativeTabs) location.href = 'amux://pin/' + r.id;
@@ -72188,6 +74814,7 @@ const _HK_BUILTIN = [
 const _HK_DEFAULTS = [
   { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
   { id: 'hk-dictate-keys', action: 'dictate', type: 'keys', trigger: 'Alt+Shift+M', enabled: true, remove: true, indicator: false },
+  { id: 'hk-dictate-globe', action: 'dictate', type: 'keys', trigger: 'Globe Globe', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
@@ -72255,7 +74882,7 @@ function _hkComboFromEvent(e) {
 }
 function _hkKeyChips(combo) {
   const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐' };
-  return '<span class="hk-keys">' + String(combo || '').split('+').filter(Boolean)
+  return '<span class="hk-keys">' + String(combo || '').split(/[+ ]/).filter(Boolean)
     .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
 }
 function _hkTriggerHtml(h) {
@@ -72271,7 +74898,7 @@ function _hkConflict(h, list) {
   } else {
     const parts = t.split('+');
     // 🌐 works alone or with a key (the Mac app hands it over: _hkNativeKey).
-    if (t !== 'Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
+    if (t !== 'Globe' && t !== 'Globe Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
       return 'A shortcut needs ⌘, ⌥, ⌃ or 🌐 (⇧ alone is how capitals are typed)';
     const b = _HK_BUILTIN.find(x => x.combo === t);
     if (b) return 'amux already uses this for ' + b.label;
@@ -72291,7 +74918,9 @@ function _hkTextField(el) {
 function _hkRun(h, el) {
   const a = _HK_ACTIONS[h.action];
   try {
-    if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
+    // The same hotkey finishes a take it started, like the popup's Done.
+    if (h.action === 'dictate' && _dictRecording) _dictStopRec();
+    else if (h.action === 'dictate') _hkDictate(el && document.contains(el) ? el : null);
     else if (h.action === 'new_task') {
       const text = el && el.value ? el.value.trim() : '';
       openBoardAdd();
@@ -72364,14 +74993,22 @@ document.addEventListener('keydown', e => {
 // THE GLOBE KEY (owner, 2026-10-29: "i want to use the globe button on my
 // keyboard as a hotkey too"). A page never sees 🌐: macOS keeps it from the
 // browser. The Mac app watches it and calls this with "Globe" (pressed and
-// released alone) or "Globe+R" (held with a key). A recording takes it like
-// any combination; otherwise the hotkey bound to it runs.
-window._hkNativeKey = function (combo) {
+// released alone), "Globe Globe" (tapped twice) or "Globe+R" (held with a
+// key). A recording takes it like any combination; otherwise the hotkey bound
+// to it runs. `info.mac_dictation` is true when macOS also starts its own
+// dictation on 🌐🌐, which the owner is told once.
+let _hkMacDictWarned = false;
+window._hkNativeKey = function (combo, info) {
   combo = String(combo || '');
-  if (!/^Globe(\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  if (!/^Globe( Globe|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
   if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
   const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
   if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }
+  if (combo === 'Globe Globe' && info && info.mac_dictation && !_hkMacDictWarned) {
+    _hkMacDictWarned = true;
+    showToast('macOS also starts its own dictation on 🌐🌐. To leave it to amux: System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.');
+    _hkBeacon('hotkey_globe_double_mac_dictation_on', { trigger: combo });
+  }
   _hkRun(h, _hkTextField(document.activeElement) ? document.activeElement : null);
   return 'ran';
 };

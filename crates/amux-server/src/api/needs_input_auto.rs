@@ -985,6 +985,19 @@ pub struct RealActions;
 /// board gate applies, then read back: a 2xx is not proof the board stored
 /// what was asked for.
 pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &str) -> Result<String, String> {
+    card_via_board_as(state, card, note, marker, APPROVER, POLICY_ACTOR).await
+}
+
+/// [`card_via_board`] under a named automation, so a board log never credits
+/// one policy with another's write.
+pub async fn card_via_board_as(
+    state: &AppState,
+    card: &str,
+    note: &str,
+    marker: &str,
+    approver: &str,
+    actor: &'static str,
+) -> Result<String, String> {
     use crate::db::board_store as bs;
     let read = |id: &str| {
         state
@@ -1007,7 +1020,7 @@ pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &s
     }
     if moving {
         patch.insert("status".into(), json!("todo"));
-        patch.insert("authorized_by".into(), json!(APPROVER));
+        patch.insert("authorized_by".into(), json!(approver));
     }
     if patch.is_empty() {
         return Ok(format!("{card} already recorded"));
@@ -1016,7 +1029,7 @@ pub async fn card_via_board(state: &AppState, card: &str, note: &str, marker: &s
         let resp = crate::api::board::patch_item(
             State(state.clone()),
             axum::extract::Path(card.to_string()),
-            crate::api::org::policy_headers(POLICY_ACTOR),
+            crate::api::org::policy_headers(actor),
             Json(Value::Object(patch)),
         )
         .await;
@@ -1561,12 +1574,19 @@ async fn read_view(state: &AppState, worker: String) -> Response {
     let home = crate::config::amux_home();
     let now = now_f64();
     let h2 = home.clone();
+    let store = state.store.clone();
+    // The queue comes from the shared read (needs_input::shared_queue, AF-1029),
+    // taken BEFORE the ledger read so no pooled connection is held while this
+    // call waits for another caller's build.
+    let items = tokio::task::spawn_blocking(move || needs_input::shared_queue(&store, &h2, now))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|q| q.items.clone())
+        .unwrap_or_default();
     let res = state
         .store
-        .read_async(move |conn| {
-            let items = needs_input::build(conn, &h2, now).map(|q| q.items).unwrap_or_default();
-            Ok((load_ledger(conn).unwrap_or_default(), items))
-        })
+        .read_async(move |conn| Ok((load_ledger(conn).unwrap_or_default(), items)))
         .await;
     match res {
         Ok((led, items)) => Json(crate::api::measured::measured(

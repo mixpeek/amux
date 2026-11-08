@@ -8,9 +8,9 @@ and the health classes below) gets an RCA bundle and one message to the
 escalation target, at most once per class per cooldown (6h by default). This
 page is what that lane does with the message.
 
-The whole tick runs inside one deadline, `AMUX_CLEANUP_TICK_BUDGET_S` (540s),
+The whole tick runs inside one deadline, `AMUX_CLEANUP_TICK_BUDGET_S` (450s),
 because the scheduler kills it at 600s. Each cleanup arm gets at most what is
-left after `AMUX_CLEANUP_TICK_RESERVE_S` (120s), which is kept for the verdicts
+left after `AMUX_CLEANUP_TICK_RESERVE_S` (90s), which is kept for the verdicts
 and the escalation. An arm with no time left prints `<arm> skipped: ...
 (verdict=tick_out_of_time)` and is named in the done line's `skipped=` field.
 A tick that skips arms on a loaded machine has still measured and escalated;
@@ -26,7 +26,7 @@ a `self ...` constraint, which escalates like any other class:
 |---|---|---|
 | runs in a row not ok (timed out, killed by a server restart, error) | 2 | `AMUX_CLEANUP_SELF_FAIL_STREAK` |
 | runs not ok in 24h | 4 | `AMUX_CLEANUP_SELF_FAIL_24H` |
-| slowest run over the tick's warning | 480s | `AMUX_CLEANUP_TICK_WARN_S` |
+| slowest run over the tick's warning | 540s | `AMUX_CLEANUP_TICK_WARN_S` |
 | runs that skipped arms for lack of time | 3 | `AMUX_CLEANUP_SELF_SKIP_24H` |
 | fires that met a running tick and did no work (recorded ok) | 2 | `AMUX_CLEANUP_SELF_COLLIDE_24H` |
 | times the launchd fallback had to run it | 3 | `AMUX_CLEANUP_SELF_FALLBACK_24H` |

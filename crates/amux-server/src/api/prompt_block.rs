@@ -28,11 +28,21 @@ use std::sync::Mutex;
 pub fn prompt_line(raw: &str) -> Option<String> {
     let clean = crate::backend::adapter::strip_ansi(raw);
     let lines: Vec<&str> = clean.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    let tail = &lines[lines.len().saturating_sub(10)..];
+    let tail = &lines[lines.len().saturating_sub(14)..];
     let i = tail.iter().rposition(|l| l.to_lowercase().starts_with("do you want to proceed"))?;
     let after = &tail[i + 1..];
     if !after.iter().any(|l| l.starts_with('\u{276f}') && l.contains("1.")) {
         return None;
+    }
+    // THE PROMPT'S OWN FOOTER WITH ONLY CHROME BELOW IT IS A LIVE PROMPT
+    // (mixpeek-dev, 2026-11-01, Claude Code
+    // 2.1.316): with background agents running, the worker's name rule sits
+    // below "Esc to cancel". Requiring the footer to be the last line read a
+    // live prompt as gone for 24 minutes, and the yolo auto-yes never fired.
+    let footer = after.iter().rposition(|l| l.to_lowercase().contains("esc to cancel"));
+    let chrome = |l: &&str| l.starts_with('\u{2500}') || l.contains("\u{23f5}\u{23f5}") || l.to_lowercase().contains("bypass permissions on");
+    if footer.is_some_and(|f| after[f + 1..].iter().all(chrome)) {
+        return Some(reason_line(tail, i));
     }
     if after.iter().any(|l| l.contains("\u{23f5}\u{23f5}") || l.to_lowercase().contains("bypass permissions on")) {
         return None;
@@ -50,6 +60,11 @@ pub fn prompt_line(raw: &str) -> Option<String> {
     if !(last.contains("esc to cancel") || is_option(&last)) {
         return None;
     }
+    Some(reason_line(tail, i))
+}
+
+/// The reason line above the question at `tail[i]`.
+fn reason_line(tail: &[&str], i: usize) -> String {
     // Claude Code may draw a countdown line above the question ("will
     // automatically deny this request in 1:59 ..."); it changes every second,
     // so it is never the reason line (gs12-extra-2, 2026-10-07: 50 warnings
@@ -59,7 +74,7 @@ pub fn prompt_line(raw: &str) -> Option<String> {
         j -= 1;
     }
     let reason = if j > 0 && !tail[j - 1].starts_with('\u{2502}') { tail[j - 1] } else { tail[i] };
-    Some(reason.chars().take(160).collect())
+    reason.chars().take(160).collect()
 }
 
 /// The command a yolo lane may have approved on its behalf: Some only when the
@@ -98,6 +113,12 @@ pub struct Seen {
 fn seen() -> &'static Mutex<HashMap<String, Seen>> {
     static S: std::sync::OnceLock<Mutex<HashMap<String, Seen>>> = std::sync::OnceLock::new();
     S.get_or_init(Default::default)
+}
+
+/// The prompt a lane is blocked on now, with when it was first seen.
+pub fn current(lane: &str) -> Option<(String, f64)> {
+    let map = seen().lock().unwrap_or_else(|e| e.into_inner());
+    map.get(lane).map(|s| (s.line.clone(), s.since))
 }
 
 /// Record what the pane shows now. Returns (prompt line, first seen) while the
@@ -208,6 +229,28 @@ mod tests {
    2. No
 
  Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+x ctrl+k twice to stop background agents";
+
+    /// The frame on mixpeek-dev, 2026-11-01: the worker's name rule under the
+    /// footer, background agents running.
+    const NAME_RULE_BELOW: &str = "\
+ \u{2502} VC_MODE=check bash vc_body.sh | head
+\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}\u{254c}
+This shell -c script runs rm and could not be checked
+Do you want to proceed?
+ \u{276f} 1. Yes
+   2. No
+ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+x ctrl+k twice to stop background agents
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} mixpeek-cicd \u{2500}";
+
+    #[test]
+    fn chrome_under_the_footer_does_not_hide_a_live_prompt() {
+        assert_eq!(prompt_line(NAME_RULE_BELOW).as_deref(), Some("This shell -c script runs rm and could not be checked"));
+        assert!(yolo_auto_yes_command(NAME_RULE_BELOW).is_some());
+        let with_bar = format!("{NAME_RULE_BELOW}\n\u{23f5}\u{23f5} bypass permissions on");
+        assert!(prompt_line(&with_bar).is_some(), "the footer outranks the bar");
+        let answered = format!("{NAME_RULE_BELOW}\n\u{276f} \n\u{2500}\u{2500}\u{2500}");
+        assert_eq!(prompt_line(&answered), None, "a composer below it means the prompt is history");
+    }
 
     const PLAIN_PROMPT: &str = "\
 \u{23fa} Bash(rm -rf build)

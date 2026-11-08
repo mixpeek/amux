@@ -1,1 +1,1 @@
-AI Coding Agent Dashboard
+Claude Code & Codex dashboard

@@ -40,6 +40,7 @@ cleanup() {
   [ -n "${BUILD_OUT:-}" ] && rm -f "$BUILD_OUT"
   [ -n "${INSTALL_TMP:-}" ] && rm -f "$INSTALL_TMP"
   [ -n "${LOCK_HELD:-}" ] && rm -rf "$LOCK"
+  [ -n "${HB_PID:-}" ] && { kill "$HB_PID" 2>/dev/null || true; }
   return 0   # a falsey last test must not make the trap itself fail under set -e
 }
 trap cleanup EXIT
@@ -61,6 +62,48 @@ w=float(sys.argv[1]); now=time.time()
 ids=[r.get("schedule_id","?") for r in rows if isinstance(r,dict) and r.get("status")=="running"
      and r.get("delivery") in ("shell", None) and now-(r.get("ran_at") or 0) < w]
 print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
+}
+
+# Wait for the server to report $1 live, for $2 seconds; sets $waited and
+# returns 0 once it does. The server holds adoption of a new binary while a
+# shell schedule run is in flight, for up to AMUX_ADOPT_SHELL_DEFER_MAX_S
+# (lib.rs SELF_ADOPT, default 900). Rolling back at $2 during that hold threw
+# away good builds: 6 rollbacks from 2026-10-30 to 11-02, c71df3ef9 among
+# them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
+# in flight, up to $2 plus the hold, and says so once.
+wait_live_identity() {
+  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs="" released=0
+  local grace="${AMUX_ADOPT_POST_HOLD_GRACE_S:-120}"
+  case "$hold" in ''|*[!0-9]*) hold=900 ;; esac
+  case "$grace" in ''|*[!0-9]*) grace=120 ;; esac
+  waited=0
+  while :; do
+    if measure_live_identity && [ -n "$live" ]; then
+      case "$sha" in "$live"*) return 0 ;; esac
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      [ "$waited" -lt $((limit + hold)) ] || return 1
+      if [ "$released" = 0 ]; then
+        # Re-read the scheduler every 15s, not every second.
+        if [ $(( (waited - limit) % 15 )) = 0 ]; then runs=$(shell_runs_in_flight $((limit + hold))); fi
+        if [ -z "$runs" ]; then
+          [ "$said" = 1 ] || return 1
+          # THE RUN THAT HELD ADOPTION HAS JUST ENDED. The server adopts on its
+          # next tick, so judging health in the same second called a good build
+          # unhealthy: e5cc110cb on 2026-11-04 was rolled back at 405s, the
+          # moment SCHED-706 finished, and the hold that followed pinned deploys
+          # for 31 hours. Give the adoption its tick, then judge.
+          released=1; limit=$waited; hold=$grace
+          echo "== ACTIVATION HOLD RELEASED sha=$sha: no shell run in flight after ${waited}s; allowing ${grace}s for adoption verdict=activation_wait_post_hold"
+        fi
+      fi
+      if [ "$said" = 0 ]; then
+        said=1
+        echo "== ACTIVATION WAIT EXTENDED sha=$sha: not live after ${limit}s while shell run(s) $runs hold adoption; waiting up to $((limit + hold))s verdict=activation_wait_shell_hold"
+      fi
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
 }
 
 # THE BASH CLI SHIPS WITH THE SERVER IT TALKS TO. This builder installs only
@@ -166,6 +209,42 @@ sync_observed_edits_hooks() {
       echo "== WORKER HELPER SYNC FAILED sha=$sha half=$half verdict=${verdict}_sync_failed" >> "$LOG"
     fi
     rm -f "$tmp"
+  done
+}
+
+# The repo's own git hooks follow the activated commit too (AF-1129). A landed
+# change to scripts/git-hooks/ reached nothing until someone reran
+# install-hooks.sh: .git/hooks/pre-push sat at its Oct 29 bytes while main moved
+# on, so the pre-push script-tests leg ran only in fixtures. Only hooks already
+# installed are replaced, and a tracked core.hooksPath dir is the repo owner's.
+# ~/.amux/hooks stays with install-hooks.sh.
+sync_repo_git_hooks() {
+  local sha="$1" common dir name dest tmp
+  [ -z "$(git -C "$REPO" config core.hooksPath 2>/dev/null || true)" ] || return 0
+  common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  dir="$common/hooks"
+  for name in pre-commit pre-push post-commit prepare-commit-msg amux-staged-guard append-only-push-guard; do
+    dest="$dir/$name"
+    [ -f "$dest" ] && [ ! -L "$dest" ] && [ -w "$dir" ] || continue
+    tmp="$(mktemp "$dir/.repo-hook.XXXXXX")" || continue
+    if ! git -C "$REPO" show "${sha}:scripts/git-hooks/${name}" > "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; continue
+    fi
+    if cmp -s "$tmp" "$dest"; then rm -f "$tmp"; continue; fi
+    if head -1 "$tmp" | grep -q python; then
+      python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$tmp" 2>/dev/null
+    else
+      bash -n "$tmp" 2>/dev/null
+    fi || {
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_source_invalid" >> "$LOG"
+      rm -f "$tmp"; continue
+    }
+    if chmod 0755 "$tmp" && mv -f "$tmp" "$dest"; then
+      echo "== REPO HOOK SYNCED sha=$sha hook=$name verdict=repo_hook_synced" >> "$LOG"
+    else
+      echo "== REPO HOOK SYNC FAILED sha=$sha hook=$name verdict=repo_hook_sync_failed" >> "$LOG"
+      rm -f "$tmp"
+    fi
   done
 }
 
@@ -289,6 +368,19 @@ fi
 mkdir -p "$(dirname "$LOCK")"
 if ! mkdir "$LOCK" 2>/dev/null; then
   owner=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  # An EMPTY pid file is a holder between its mkdir and its pid write (the
+  # prebuild writes the pid one step after mkdir), not a dead one: breaking
+  # it there ran two builds and let the disk guard's rm race a live build
+  # (implicit state machines inventory 2026-10-31, #22). Empty counts as
+  # stale only once the lock is over a minute old.
+  # GNU form first (AF-1125): on Linux `stat -f` is filesystem mode, prints a
+  # "File: ..." block into lock_mtime, and the arithmetic below then aborts on
+  # `File: unbound variable`. BSD `stat -c` fails with nothing on stdout.
+  lock_mtime=$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)
+  if [ -z "$owner" ] && [ $(( $(date +%s) - lock_mtime )) -lt 60 ]; then
+    echo "== $(date '+%F %T') SKIP $built_sha — lock just taken, its pid not written yet verdict=build_lock_young" >> "$LOG"
+    exit 0
+  fi
   if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
     # Log the contention rather than exiting silently: a skip that leaves no
     # trace is indistinguishable from a cycle that found nothing to do, and
@@ -319,6 +411,7 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
   sync_bash_cli "$built_sha"
   sync_authority_launcher "$built_sha"
   sync_observed_edits_hooks "$built_sha"
+  sync_repo_git_hooks "$built_sha"
   # ADOPTION COOLDOWN: batch rapid commits from multiple lanes into fewer
   # rebuilds. Each self-adoption kills all SSE connections (6-12s of
   # "Worker updates unavailable" on every client). With 28 lanes committing
@@ -542,6 +635,16 @@ fi
   # down again every 15 minutes, so it is held until the build inputs move.
   rolled_head=''
   [ -r "${STAMP}.rolled_back" ] && read -r rolled_head _ < "${STAMP}.rolled_back" || true
+  # A hold whose commit has the SAME build inputs as the binary that was put
+  # back (the stamp names the inputs of what is installed) protects nothing:
+  # the restored binary is that code. Such a hold only clears when crates/ next
+  # changes, which held deploys from 2026-11-04 05:53Z for 31 hours while every
+  # newer main commit touched only scripts and docs. Clear it, and say so.
+  if [ -n "$rolled_head" ] && [ "$rolled_head" = "$head" ] && [ "$last" = "$head" ]; then
+    rm -f "${STAMP}.rolled_back"
+    echo "== WARN activation_rollback_hold_cleared trigger=$head: the restored binary was built from the same inputs, so holding this commit protects nothing verdict=activation_rollback_hold_same_inputs"
+    rolled_head=''
+  fi
   if [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] && [ -n "$rolled_head" ] && [ "$rolled_head" = "$head" ]; then
     echo "== activation_rollback_hold trigger=$head: rolled back as unhealthy; waiting for a newer commit verdict=activation_rollback_hold"
     exit 0
@@ -804,6 +907,17 @@ fi
   DEPLOY_NICE="${AMUX_DEPLOY_NICE:-10}"
   DEPLOY_T0=$(date +%s)
   echo "== deploy build settings incremental=1 jobs=$DEPLOY_JOBS nice=$DEPLOY_NICE load=$(/usr/sbin/sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}' || cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+  # A HEARTBEAT WHILE CARGO RUNS (AMUX-6530). The build writes to $BUILD_OUT,
+  # so a long one left this log silent: on 2026-10-28 a 21-minute build under
+  # load 70 read as a dead builder (deploy.builder_is_ticking, 600 s budget),
+  # 1171 failures since 09-20. One line per AMUX_BUILD_HEARTBEAT_S while the
+  # build runs; the loop also exits on its own if this script is gone.
+  _builder_pid=$$
+  ( while sleep "${AMUX_BUILD_HEARTBEAT_S:-60}"; do
+      kill -0 "$_builder_pid" 2>/dev/null || exit 0
+      echo "== deploy build running elapsed_s=$(( $(date +%s) - DEPLOY_T0 )) verdict=deploy_build_running"
+    done ) &
+  HB_PID=$!
   BUILD_OK=0
   if [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
     if "$REPO/scripts/rust-remote-build.sh" "$WORK" \
@@ -827,11 +941,32 @@ fi
       BUILD_OK=1
     fi
   fi
+  # A STALE INCREMENTAL CACHE FAILS THE LINK, NOT THE COMPILE (AF-1012). On
+  # 2026-10-29 two green commits in a row (496d9cff6, ed0421bf3) failed to
+  # deploy with "ld: symbol(s) not found" for a function that compiles fine,
+  # and backoff retried the same cache every ~13 minutes: the server stayed
+  # 11 commits behind until the amux_server incremental trees were cleared by
+  # hand. Clear them through the target guard (it defers while another build
+  # holds the target) and build once more; dependency caches stay.
+  if [ "$BUILD_OK" = 0 ] && grep -aqE 'symbol\(s\) not found|Undefined symbols for architecture|undefined reference to' "$BUILD_OUT"; then
+    echo "== WARN deploy link failed on unresolved symbols; clearing the amux_server incremental trees and retrying once verdict=deploy_incremental_link_retry"
+    for _inc in "$HOME/.amux/rust-build-target/deploy/incremental"/amux_server-*; do
+      [ -d "$_inc" ] || continue
+      python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$HOME/.amux/rust-build-target" --path "$_inc" 2>&1 | sed 's/^/== /' || true
+    done
+    if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
+      BUILD_OK=1
+    fi
+    echo "== deploy_incremental_link_retry ok=$BUILD_OK"
+  fi
   # Explicit exit-code-derived flag, NOT a file-existence check: a stale
   # binary from an earlier successful build sitting at this same path would
   # make `[ -x ... ]` true even after a genuine failure, silently
   # re-installing old code and reporting success — the exact "wrong answer,
   # not wrong-looking" shape ethos rule 4 exists to catch.
+  # Under set -e: a heartbeat that already exited makes `kill` fail, and
+  # `wait` on a killed one returns 143. Either would abort the deploy itself.
+  kill "$HB_PID" 2>/dev/null || true; wait "$HB_PID" 2>/dev/null || true; HB_PID=
   DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_T0 ))
   echo "== deploy build elapsed_s=$DEPLOY_ELAPSED ok=$BUILD_OK jobs=$DEPLOY_JOBS"
   # A slow build is the regression this block exists to prevent, and nothing
@@ -923,7 +1058,7 @@ PYIDENTITY
     # AMUX_ACTIVATION_ROLLBACK=1 (amux Cloud, which deploys main's tip without
     # waiting for CI): keep what is live, so a build that installs but does not
     # come up healthy is put back below.
-    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ -f "$INSTALL" ]; then
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ -f "$INSTALL" ]; then
       cp -p "$INSTALL" "${INSTALL}.rollback" 2>/dev/null || rm -f "${INSTALL}.rollback"
       if [ -f "${INSTALL}.identity.json" ]; then cp -p "${INSTALL}.identity.json" "${INSTALL}.identity.json.rollback"; else rm -f "${INSTALL}.identity.json.rollback"; fi
     fi
@@ -962,26 +1097,33 @@ PYIDENTITY
     # failure branch below it is left alone, so it keeps naming the last good
     # build — which is exactly what that branch says is still running.
     echo "== installation action=$install_action; running server will verify identity before adoption"
-    if [ "${AMUX_ACTIVATION_ROLLBACK:-0}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
+    if [ "${AMUX_ACTIVATION_ROLLBACK:-1}" = 1 ] && [ "$install_action" = replaced ] && [ -f "${INSTALL}.rollback" ]; then
       limit="${AMUX_ACTIVATION_HEALTH_S:-300}"; waited=0; healthy=0
       case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
-      while [ "$waited" -lt "$limit" ]; do
-        if measure_live_identity && [ -n "$live" ]; then
-          case "$built_sha" in "$live"*) healthy=1; break ;; esac
-        fi
-        sleep 5; waited=$((waited + 5))
-      done
+      if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
-        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s verdict=activation_healthy"
+        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) verdict=activation_healthy"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.
         if [ -f "${INSTALL}.identity.json.rollback" ]; then mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"; else rm -f "${INSTALL}.identity.json"; fi
         mv -f "${INSTALL}.rollback" "$INSTALL"
         if [ -n "$last" ]; then echo "$last" > "$STAMP"; else rm -f "$STAMP"; fi
-        printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
-        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${limit}s" \
-             "(live: ${live:-unmeasured}); the previous binary is back and this commit is held until a newer one verdict=activation_rolled_back"
+        rb_next="this commit is held until a newer one"
+        if [ "$last" = "$head" ]; then
+          rb_next="this commit is retried after the ${retry_s}s build backoff, not held"
+          # Same build inputs as the binary just restored: the code is not what
+          # failed, so do not hold it until crates/ changes (see
+          # activation_rollback_hold_same_inputs). Retry on the bounded build
+          # backoff instead, so a server that never adopts is not rebuilt
+          # every tick.
+          printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.failed"
+          echo "== WARN activation_unadopted_same_inputs sha=$built_sha trigger=$head: not held; retried after the ${retry_s}s backoff, since the restored binary is the same code verdict=activation_unadopted_same_inputs"
+        else
+          printf '%s %s\n' "$head" "$(date +%s)" > "${STAMP}.rolled_back"
+        fi
+        echo "== !! ACTIVATION ROLLED BACK sha=$built_sha: the server did not report it healthy within ${waited}s" \
+             "(live: ${live:-unmeasured}); the previous binary is back and $rb_next verdict=activation_rolled_back"
       fi
     fi
   else

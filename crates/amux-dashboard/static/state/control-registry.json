@@ -24,6 +24,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyWorkerRenames": {
+      "kind": "command._applyWorkerRenames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -330,6 +336,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_boardLiveTick": {
+      "kind": "command._boardLiveTick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_boardOneSet": {
       "kind": "command._boardOneSet",
       "feedback_required": true,
@@ -350,6 +362,12 @@
     },
     "_boardSaveCurrentView": {
       "kind": "command._boardSaveCurrentView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_boardSetTriage": {
+      "kind": "command._boardSetTriage",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -798,6 +816,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chipPress": {
+      "kind": "command._chipPress",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,
@@ -870,6 +894,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkOpen": {
+      "kind": "command._cmdkOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cmdkPlacesAck": {
+      "kind": "command._cmdkPlacesAck",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkQueryServer": {
       "kind": "command._cmdkQueryServer",
       "feedback_required": true,
@@ -920,6 +956,12 @@
     },
     "_composerAcceptLocal": {
       "kind": "command._composerAcceptLocal",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_composerLockTake": {
+      "kind": "command._composerLockTake",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1164,6 +1206,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvPin": {
+      "kind": "command._cvPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvPoll": {
       "kind": "command._cvPoll",
       "feedback_required": true,
@@ -1220,6 +1268,48 @@
     },
     "_cvSetAvatar": {
       "kind": "command._cvSetAvatar",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvShowPins": {
+      "kind": "command._cvShowPins",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqKey": {
+      "kind": "command._cvSqKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqOpen": {
+      "kind": "command._cvSqOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRender": {
+      "kind": "command._cvSqRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqRun": {
+      "kind": "command._cvSqRun",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvSqSetTok": {
+      "kind": "command._cvSqSetTok",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvThumbFailed": {
+      "kind": "command._cvThumbFailed",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1296,6 +1386,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictLiveClear": {
+      "kind": "command._dictLiveClear",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictLoad": {
+      "kind": "command._dictLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictOpenPopup": {
       "kind": "command._dictOpenPopup",
       "feedback_required": true,
@@ -1320,8 +1422,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_dictOutboxSet": {
-      "kind": "command._dictOutboxSet",
+    "_dictPendingBadge": {
+      "kind": "command._dictPendingBadge",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1350,8 +1452,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictSendDirect": {
+      "kind": "command._dictSendDirect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictStartRec": {
       "kind": "command._dictStartRec",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictStoreHung": {
+      "kind": "command._dictStoreHung",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1370,6 +1484,12 @@
     },
     "_dictUndo": {
       "kind": "command._dictUndo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictUpdate": {
+      "kind": "command._dictUpdate",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1872,6 +1992,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileConflictResolve": {
+      "kind": "command._fileConflictResolve",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileCtxMenu": {
       "kind": "command._fileCtxMenu",
       "feedback_required": true,
@@ -1896,8 +2022,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileOpenInWorker": {
+      "kind": "command._fileOpenInWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filePinOverlay": {
       "kind": "command._filePinOverlay",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileReconcile": {
+      "kind": "command._fileReconcile",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2012,12 +2150,6 @@
     },
     "_filesToolbarCheck": {
       "kind": "command._filesToolbarCheck",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_filesUp": {
-      "kind": "command._filesUp",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2138,6 +2270,12 @@
     },
     "_forceSseReconnect": {
       "kind": "command._forceSseReconnect",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_frozenWorker": {
+      "kind": "command._frozenWorker",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2994,6 +3132,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxFollow": {
+      "kind": "command._mdxFollow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxHistoryAct": {
       "kind": "command._mdxHistoryAct",
       "feedback_required": true,
@@ -3036,8 +3180,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxToggleSplit": {
+      "kind": "command._mdxToggleSplit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxToggleTask": {
       "kind": "command._mdxToggleTask",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxView": {
+      "kind": "command._mdxView",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3116,6 +3272,24 @@
     },
     "_nativeRecorderPaint": {
       "kind": "command._nativeRecorderPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderPollSync": {
+      "kind": "command._nativeRecorderPollSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderPost": {
+      "kind": "command._nativeRecorderPost",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_nativeRecorderTrack": {
+      "kind": "command._nativeRecorderTrack",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3366,6 +3540,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxBlockedMessageDecision": {
+      "kind": "command._outboxBlockedMessageDecision",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxConfirmMessage": {
       "kind": "command._outboxConfirmMessage",
       "feedback_required": true,
@@ -3420,6 +3600,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outboxRearmUnreached": {
+      "kind": "command._outboxRearmUnreached",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outboxRemoveMessage": {
       "kind": "command._outboxRemoveMessage",
       "feedback_required": true,
@@ -3434,6 +3620,12 @@
     },
     "_outboxRetryNow": {
       "kind": "command._outboxRetryNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outboxSettleDecisions": {
+      "kind": "command._outboxSettleDecisions",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3518,6 +3710,12 @@
     },
     "_peekChatSet": {
       "kind": "command._peekChatSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekChatStateSync": {
+      "kind": "command._peekChatStateSync",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3930,6 +4128,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekUpdateTabCounts": {
+      "kind": "command._peekUpdateTabCounts",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekViewApply": {
       "kind": "command._peekViewApply",
       "feedback_required": true,
@@ -3978,6 +4182,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pmLoadPins": {
+      "kind": "command._pmLoadPins",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmPin": {
+      "kind": "command._pmPin",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pmResend": {
       "kind": "command._pmResend",
       "feedback_required": true,
@@ -3998,6 +4214,12 @@
     },
     "_pmSelToggle": {
       "kind": "command._pmSelToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pmShowPins": {
+      "kind": "command._pmShowPins",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -4200,6 +4422,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderBeacon": {
+      "kind": "command._recorderBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderDeleteLocal": {
       "kind": "command._recorderDeleteLocal",
       "feedback_required": true,
@@ -4242,6 +4470,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderPauseToggle": {
+      "kind": "command._recorderPauseToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderRender": {
       "kind": "command._recorderRender",
       "feedback_required": true,
@@ -4272,8 +4506,26 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_recorderSetInput": {
+      "kind": "command._recorderSetInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetMeeting": {
+      "kind": "command._recorderSetMeeting",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_recorderSetOption": {
       "kind": "command._recorderSetOption",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_recorderSetSystem": {
+      "kind": "command._recorderSetSystem",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5088,6 +5340,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_syncWorkerRenames": {
+      "kind": "command._syncWorkerRenames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_sysJobToggle": {
       "kind": "command._sysJobToggle",
       "feedback_required": true,
@@ -5316,6 +5574,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_upqCancel": {
+      "kind": "command._upqCancel",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_upqDrain": {
       "kind": "command._upqDrain",
       "feedback_required": true,
@@ -5324,6 +5588,36 @@
     },
     "_upqListBounded": {
       "kind": "command._upqListBounded",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqOpenRecordings": {
+      "kind": "command._upqOpenRecordings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqReadOk": {
+      "kind": "command._upqReadOk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqRemove": {
+      "kind": "command._upqRemove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqRenderBadge": {
+      "kind": "command._upqRenderBadge",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_upqTimeoutReport": {
+      "kind": "command._upqTimeoutReport",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6380,6 +6674,12 @@
     },
     "openTeamInvite": {
       "kind": "command.openTeamInvite",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "openUsage": {
+      "kind": "command.openUsage",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

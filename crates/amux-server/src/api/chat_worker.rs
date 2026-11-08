@@ -2607,8 +2607,11 @@ mod tests {
     fn codex_chat_uses_the_terminal_default_and_preserves_explicit_models() {
         for conv in ["", "thread-existing"] {
             let args = turn_args("codex", "", "", conv, conv.is_empty());
-            assert!(args.windows(2).any(|w| w == ["--model", "gpt-5.5"]),
-                "a ChatGPT account must not inherit a desktop-only global model: {args:?}");
+            // Chat and terminal workers share one default: the owner's Codex
+            // config model, else amux's (default_model_for_provider).
+            let default = crate::api::session_verbs::default_model_for_provider("codex");
+            assert!(args.windows(2).any(|w| w == ["--model", default.as_str()]),
+                "chat must use the terminal worker's default model: {args:?}");
             for flags in ["--model gpt-owner-choice", "--model=gpt-owner-choice", "-m gpt-owner-choice"] {
                 let explicit = turn_args("codex", flags, "", conv, conv.is_empty());
                 assert!(explicit.windows(2).any(|w| w == ["--model", "gpt-owner-choice"]),

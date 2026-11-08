@@ -24,7 +24,7 @@ fn fleet_home() -> &'static std::path::Path {
         let sessions = dir.path().join("sessions");
         std::fs::create_dir_all(&sessions).expect("sessions dir");
         for (n, g) in [("mg-a", "alpha"), ("mg-b", "beta"), ("mg-c", "beta"), ("mg-w", "alpha")] {
-            std::fs::write(sessions.join(format!("{n}.env")), format!("CC_DIR=/tmp\nCC_TAGS={g}\n")).expect("env");
+            std::fs::write(sessions.join(format!("{n}.env")), format!("CC_DIR=/tmp\nCC_TAGS={g}\nAMUX_BOARD_DEFAULT=on\n")).expect("env");
         }
         std::env::set_var("AMUX_HOME", dir.path());
         std::env::set_var("AMUX_APPROVAL_TYPES", "*");

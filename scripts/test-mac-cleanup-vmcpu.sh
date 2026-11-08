@@ -53,6 +53,30 @@ echo "3. the tick runs the arm by default"
 check "the default cap is 4"                        "4"   "$(AMUX_CLEANUP_LIB_ONLY=1 bash -c '. "$0" && echo $VM_CPU_CAP' "$TICK")"
 check "the main flow calls it, gated only by the probes switch" "1" "$(grep -cxF '[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"' "$TICK")"
 
+echo "4. a VM the tick caps is judged against that cap, in the same tick (hog RCA 20261101-004551)"
+check "the main flow caps before the health probes" "yes" "$(awk '/^\[ "\$HEALTH_PROBES" != off \] && tick_arm "vm cpu caps"/{c=NR} /^system_health "\$DRY"$/{h=NR} END{print (c && h && c < h) ? "yes" : "no"}' "$TICK")"
+S="$FIX/vm-state"; printf '0\n' > "$S"
+cat > "$D" <<F
+#!/bin/bash
+shift 2   # --context <ctx>
+case "\$1" in
+  ps) echo a ;;
+  stats) echo 'mixpeek-hikes 426%' ;;
+  inspect) if [ "\$2" = -f ]; then cat "$S"; else echo "/mixpeek-hikes \$(cat "$S")"; fi ;;
+  update) echo 4000000000 > "$S" ;;
+esac
+F
+VM_CPU_CAP_EXEMPT=""; STATE_DIR="$FIX/state"; mkdir -p "$STATE_DIR"
+AV=com.apple.Virtualization.VirtualMachine
+echo "4242 $AV" > "$STATE_DIR/cpu-hogs.prev"
+HEALTH_PS_CMD="echo 4242 1 $(id -u) 444.0 09:00:00 /x/$AV"
+owner_label_for_pid() { echo vm; }
+hogs() { HEALTH_VERDICTS=""; VM_BUDGET=""; echo "4242 $AV" > "$STATE_DIR/cpu-hogs.prev"; check_cpu_hogs 0 > "$FIX/hog.out"; printf '%s' "$HEALTH_VERDICTS"; }
+check "uncapped, the VM escalates"                  "yes" "$(has "$(hogs)" 'hog .*budget=0 uncapped=1')"
+cap_vm_container_cpus 0 >/dev/null
+check "capped by the arm, the same VM does not"     ""    "$(hogs)"
+check "and the tick says why"                       "yes" "$(has "$(cat "$FIX/hog.out")" 'verdict=vm_hog_within_caps')"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-vmcpu — all checks passed"; exit 0; fi
 echo "mac-cleanup-vmcpu: $fails check(s) FAILED"; exit 1

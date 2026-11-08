@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # amux Cloud deploys main's tip without waiting for CI (AMUX_DEPLOY_CI_GATE=0),
 # so a build that installs but does not come up healthy must not stay live:
-# with AMUX_ACTIVATION_ROLLBACK=1 the builder waits for /api/health to report
+# with AMUX_ACTIVATION_ROLLBACK on (the default since 2026-10-29, for the Mac too) the builder waits for /api/health to report
 # the new commit, else restores the previous binary and its identity and holds
 # that commit until a newer one (Ethan, 2026-10-27: every cloud instance gets
 # main as it comes out).
@@ -58,12 +58,14 @@ for _ in $(seq 1 50); do curl -s "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && br
 
 # Never the real amux on this machine: its in-flight schedule runs would defer
 # the activation (a test run on 2026-10-27 was held by a live SCHED-751).
+# Rollback is on by default since 2026-10-29, so `run` leaves the switch unset
+# and tests the default; case 4 passes AMUX_ACTIVATION_ROLLBACK=0.
 run() {
-  env -u AMUX_URL AMUX_RS_RUNS_URL="http://127.0.0.1:$PORT/runs" \
+  env -u AMUX_URL -u AMUX_ACTIVATION_ROLLBACK "$@" AMUX_RS_RUNS_URL="http://127.0.0.1:$PORT/runs" \
   HOME="$FAKE_HOME" AMUX_REPO="$REPO" AMUX_RS_INSTALL="$INSTALL" AMUX_RS_BUILD_STAMP="$TMP/stamp" \
   AMUX_RS_BUILD_LOG="$TMP/build.log" AMUX_RS_BUILD_LOCK="$TMP/build.lock" AMUX_RS_BUILD_PROVENANCE="$TMP/provenance.json" \
   AMUX_RS_ACTIVATION_REF=HEAD AMUX_BUILD_MIN_FREE_GB=0 AMUX_BUILD_DEBUG_MAX_GB=999999 \
-  AMUX_RS_HEALTH_URL="http://127.0.0.1:$PORT/api/health" AMUX_ACTIVATION_ROLLBACK=1 AMUX_ACTIVATION_HEALTH_S=6 AMUX_RS_BUILD_COOLDOWN=0 \
+  AMUX_RS_HEALTH_URL="http://127.0.0.1:$PORT/api/health" AMUX_ACTIVATION_HEALTH_S=6 AMUX_RS_BUILD_COOLDOWN=0 \
     bash "$BUILDER" >/dev/null 2>&1 || true
 }
 
@@ -90,6 +92,42 @@ run
 grep -q new-build "$INSTALL" && ok "a healthy build stays live" || bad "a healthy build was rolled back"
 grep -q "verdict=activation_healthy" "$TMP/build.log" && ok "its health is logged" || bad "no healthy verdict"
 [ ! -e "$TMP/stamp.rolled_back" ] && ok "the hold clears once a build is healthy" || bad "hold left in place"
+
+# 4. Opted out: an unhealthy build stays (what every Mac had before 2026-10-29).
+printf 'fixture 3\n' > "$REPO/crates/input.rs"
+(cd "$REPO" && git -c user.name=test -c user.email=test@example.com commit -qam third)
+printf '#!/bin/sh\nprintf old-build\\n\n' > "$INSTALL"; chmod 0755 "$INSTALL"
+echo "0000000000000000000000000000000000000000" > "$TMP/live"
+run AMUX_ACTIVATION_ROLLBACK=0
+grep -q new-build "$INSTALL" && ok "AMUX_ACTIVATION_ROLLBACK=0 keeps the new build without a health wait" || bad "opt-out still rolled back: $(cat "$INSTALL")"
+
+# 5. A commit with the SAME build inputs as the installed binary (a docs-only
+# commit after the last crates/ change) is never adopted: it is rolled back but
+# NOT held, since the restored binary is that code (e5cc110cb, 2026-11-04: such
+# a hold pinned deploys for 31 hours, because only a crates/ commit clears it).
+TRIGGER=$(git -C "$REPO" rev-parse HEAD)
+echo "$TRIGGER" > "$TMP/stamp"; rm -f "$TMP/stamp.rolled_back" "$TMP/stamp.failed"
+printf 'notes\n' > "$REPO/notes.md"
+(cd "$REPO" && git add notes.md && git -c user.name=test -c user.email=test@example.com commit -qm docs-only)
+echo "$TRIGGER" > "$TMP/live"
+# The live binary differs in bytes (each build embeds its commit), so it is replaced.
+printf '#!/bin/sh\nprintf old-build\n\n' > "$INSTALL"; chmod 0755 "$INSTALL"
+: > "$TMP/build.log"
+run
+grep -q "verdict=activation_rolled_back" "$TMP/build.log" && ok "an unadopted same-inputs build is still rolled back" || bad "no rollback for the same-inputs build"
+grep -q "verdict=activation_unadopted_same_inputs" "$TMP/build.log" && ok "it is named as same-inputs" || bad "no same-inputs verdict"
+! grep -q "held until a newer one" "$TMP/build.log" && ok "and the rollback line does not claim a hold" || bad "the rollback line claims a hold that was not written"
+[ ! -e "$TMP/stamp.rolled_back" ] && ok "a same-inputs rollback writes no hold" || bad "same-inputs rollback was held: $(cat "$TMP/stamp.rolled_back")"
+[ -s "$TMP/stamp.failed" ] && ok "it waits out the bounded build backoff instead" || bad "no backoff recorded"
+
+# 6. A hold already on disk for the installed binary's own inputs (the state
+# this Mac was left in) is cleared and logged, not obeyed forever.
+printf '%s %s\n' "$TRIGGER" "$(date +%s)" > "$TMP/stamp.rolled_back"
+echo "$TRIGGER" > "$TMP/stamp"; rm -f "$TMP/stamp.failed"
+: > "$TMP/build.log"
+run
+grep -q "verdict=activation_rollback_hold_same_inputs" "$TMP/build.log" && ok "a same-inputs hold is cleared, with a verdict" || bad "the same-inputs hold was not cleared"
+! grep -q "verdict=activation_rollback_hold$" "$TMP/build.log" && ok "and it no longer holds the commit" || bad "the commit is still held"
 
 echo "test-build-activation-rollback: $fails failed"
 exit "$fails"

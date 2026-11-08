@@ -31,6 +31,7 @@
 //! bridge_outbound_approved.
 
 pub mod adapters;
+pub mod whatsapp_app;
 
 use crate::api::AppState;
 use rusqlite::{params, OptionalExtension};
@@ -39,7 +40,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-pub const PLATFORMS: &[&str] = &["whatsapp", "slack", "telegram", "discord"];
+pub const PLATFORMS: &[&str] = &["whatsapp", "slack", "telegram", "discord", whatsapp_app::PLATFORM];
 const OUTBOUND_MAX_ATTEMPTS: i64 = 8;
 
 /// One message as an adapter hands it over.
@@ -88,7 +89,7 @@ pub fn is_owner(platform: &str, sender_id: &str) -> bool {
     if listed.split(',').map(str::trim).any(|e| e == format!("{platform}:{id}")) {
         return true;
     }
-    if platform == "whatsapp" {
+    if platform == "whatsapp" || platform == whatsapp_app::PLATFORM {
         let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
         if let Some(p) = setting("AMUX_OWNER_PHONE") {
             let (a, b) = (digits(&p), digits(id));
@@ -110,7 +111,7 @@ pub fn notify_outbound() {
 
 fn label(p: &str) -> &'static str {
     match p {
-        "whatsapp" => "WhatsApp",
+        "whatsapp" | whatsapp_app::PLATFORM => "WhatsApp",
         "slack" => "Slack",
         "telegram" => "Telegram",
         "discord" => "Discord",
@@ -337,17 +338,41 @@ fn pending(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Pending>> {
         let from_here: bool = conn.query_row(
             "SELECT 1 FROM bridge_inbound WHERE post_id=?1 AND platform=?2 AND conversation=?3",
             params![p.post_id, p.platform, p.conversation], |_| Ok(())).optional()?.is_some();
-        if !from_here {
+        if !from_here && (!threads_only(&p) || in_chat_thread(conn, &p)?) {
             out.push(p);
         }
     }
     Ok(out)
 }
 
+/// The owner's WhatsApp self chat sits on #general: only answers in the
+/// threads it started go back to it, never the channel's other posts.
+fn threads_only(p: &Pending) -> bool {
+    p.platform == whatsapp_app::PLATFORM && p.conv.starts_with("g:")
+}
+
+fn in_chat_thread(conn: &rusqlite::Connection, p: &Pending) -> rusqlite::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT 1 FROM conversation_posts c JOIN bridge_inbound b ON b.post_id = c.parent_id
+         WHERE c.id=?1 AND b.platform=?2 AND b.conversation=?3",
+        params![p.post_id, p.platform, p.conversation], |_| Ok(())).optional()?.is_some())
+}
+
+/// Attempts a send outcome costs: a wait (nothing was typed) costs none, a
+/// send that may have landed costs all of them, so it is never repeated.
+fn attempts_after(prev: i64, st: &str, err: Option<&str>) -> i64 {
+    match (st, err) {
+        ("failed", Some(e)) if e.starts_with("wait:") => prev,
+        ("failed", Some(e)) if e.starts_with("final:") => OUTBOUND_MAX_ATTEMPTS,
+        ("sent" | "failed", _) => prev + 1,
+        _ => prev,
+    }
+}
+
 async fn record(state: &AppState, p: &Pending, st: &str, err: Option<String>, pmid: Option<String>, card: Option<String>) {
     let q = p.clone();
     let st2 = st.to_string();
-    let attempts = p.attempts + i64::from(st == "sent" || st == "failed");
+    let attempts = attempts_after(p.attempts, st, err.as_deref());
     let _ = state.store.write_async(move |conn| {
         conn.execute(
             "INSERT INTO bridge_outbound (id, post_id, platform, conversation, state, attempts, error, platform_msg_id, card, created_at, sent_at)
@@ -361,6 +386,36 @@ async fn record(state: &AppState, p: &Pending, st: &str, err: Option<String>, pm
             params![q.post_id, q.platform, q.conversation])?;
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     }).await;
+}
+
+/// Take a post for sending: `sending` is written only from no row, `approved`
+/// or `failed`, so two passes (an old and a new server image overlapping
+/// during a deploy) cannot both send it into an outside chat (implicit state
+/// machines inventory 2026-10-31, #18). A row left `sending` by a crash is
+/// never resent automatically; `stuck_sending` reports it.
+async fn claim_send(state: &AppState, p: &Pending) -> bool {
+    let q = p.clone();
+    state.store.write_async(move |conn| {
+        let applied = claim_row(conn, &q)?;
+        Ok(crate::db::WriteOutcome { applied, events: vec![] })
+    }).await.map(|o| o.applied).unwrap_or(false)
+}
+
+fn claim_row(conn: &rusqlite::Connection, q: &Pending) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "INSERT INTO bridge_outbound (id, post_id, platform, conversation, state, attempts, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'sending', ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET state='sending' WHERE bridge_outbound.state IN ('approved', 'failed')",
+        params![q.id, q.post_id, q.platform, q.conversation, q.attempts, now_ms()],
+    )?;
+    Ok(n > 0)
+}
+
+/// Posts left `sending` for over ten minutes: a send that never recorded its
+/// outcome, so it may or may not have reached the chat.
+fn stuck_sending(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM bridge_outbound WHERE state='sending' AND created_at < ?1",
+        params![now_ms() - 600_000], |r| r.get(0)).unwrap_or(0)
 }
 
 /// What the chat shows: the author's name first, unless the chat is a
@@ -380,6 +435,13 @@ pub async fn outbound_once(state: &AppState) -> usize {
         Err(_) => return 0,
     };
     let n = work.len();
+    if let Ok(c) = state.store.read() {
+        let stuck = stuck_sending(&c);
+        if stuck > 0 {
+            tracing::warn!(n = stuck, measured = true, n_considered = stuck, verdict = "bridge_outbound_stuck_sending",
+                "bridge: posts were left mid-send; they are not resent automatically because they may already be in the chat");
+        }
+    }
     for p in work {
         let worker_post = p.author_key.starts_with("worker:");
         let is_shared = state.store.read().map(|c| shared(&c, &p.platform, &p.conversation)).unwrap_or(true);
@@ -390,11 +452,21 @@ pub async fn outbound_once(state: &AppState) -> usize {
                 "bridge: a worker's post into a chat with someone other than the owner waits for the owner's approval");
             continue;
         }
+        if !claim_send(state, &p).await {
+            tracing::info!(id = %p.id, platform = %p.platform, verdict = "bridge_outbound_claimed_elsewhere",
+                "bridge: another pass already took this post; not sent twice");
+            continue;
+        }
         match adapters::send(&p.platform, &p.conversation, p.is_group, &render(&p)).await {
             Ok(pmid) => {
                 record(state, &p, "sent", None, Some(pmid), None).await;
                 tracing::info!(id = %p.id, platform = %p.platform, measured = true, n_considered = 1, verdict = "bridge_outbound_sent",
                     "bridge: a Messages post was sent to the chat");
+            }
+            Err(e) if e.starts_with("wait:") => {
+                tracing::info!(id = %p.id, platform = %p.platform, reason = %e, measured = true, n_considered = 1,
+                    verdict = "bridge_outbound_waiting", "bridge: the chat cannot take a message right now; it goes when it can");
+                record(state, &p, "failed", Some(e.chars().take(500).collect()), None, None).await;
             }
             Err(e) => {
                 tracing::warn!(id = %p.id, platform = %p.platform, attempt = p.attempts + 1, error = %e, measured = true,
@@ -487,6 +559,65 @@ pub fn spawn(state: AppState) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #18: a post is taken for sending once; a failed or approved one can be
+    /// taken again, a sending or sent one cannot.
+    #[test]
+    fn a_post_is_claimed_for_sending_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("b.db")).unwrap();
+        let p = Pending { id: "7|telegram|42".into(), post_id: 7, author_key: "owner".into(), author_name: "E".into(),
+            body: "hi".into(), conv: "c".into(), platform: "telegram".into(), conversation: "42".into(),
+            is_group: false, attempts: 0, state: None };
+        let claim = |p: &Pending| { let p = p.clone(); store.write(move |c| { let a = claim_row(c, &p)?; Ok(crate::db::WriteOutcome { applied: a, events: vec![] }) }).unwrap().applied };
+        let set = |st: &str| { let st = st.to_string(); store.write(move |c| { c.execute("UPDATE bridge_outbound SET state=?1", [st])?; Ok(crate::db::WriteOutcome { applied: true, events: vec![] }) }).unwrap(); };
+        assert!(claim(&p), "a new post is taken");
+        assert!(!claim(&p), "a second pass does not take a post already sending");
+        set("failed");
+        assert!(claim(&p), "a failed post is retried");
+        set("sent");
+        assert!(!claim(&p), "a sent post is never sent again");
+        set("approved");
+        assert!(claim(&p), "an approved held post is sent");
+    }
+
+    /// A wait (locked Mac, nothing typed) costs no attempt; a send that may
+    /// have landed uses them all, so it is never typed twice.
+    #[test]
+    fn a_wait_costs_no_attempt_and_an_unconfirmed_send_is_not_retried() {
+        assert_eq!(attempts_after(2, "failed", Some("wait: this Mac is locked")), 2);
+        assert_eq!(attempts_after(2, "failed", Some("final: Return pressed")), OUTBOUND_MAX_ATTEMPTS);
+        assert_eq!(attempts_after(2, "failed", Some("HTTP 500")), 3);
+        assert_eq!(attempts_after(2, "sent", None), 3);
+        assert_eq!(attempts_after(2, "held", None), 2);
+    }
+
+    /// The WhatsApp self chat on #general gets the answers in the threads it
+    /// started and nothing else from the channel.
+    #[test]
+    fn the_self_chat_gets_only_its_own_threads_from_general() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("b.db")).unwrap();
+        store.write(|c| {
+            c.execute_batch(
+                "INSERT INTO bridge_links (platform, conversation, kind, conv, last_post_id, linked_by, linked_at)
+                   VALUES ('whatsapp-app', '9@lid', 'dm', 'g:general', 0, 't', 0);
+                 INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts) VALUES
+                   (1, 'g:general', 'person:owner', 'owner', '@amux status?', 0);
+                 INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts, parent_id) VALUES
+                   (2, 'g:general', 'worker:amux', 'amux', 'all green', 0, 1);
+                 INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts) VALUES
+                   (3, 'g:general', 'worker:ops', 'ops', 'unrelated channel post', 0);
+                 INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts, parent_id) VALUES
+                   (4, 'g:general', 'worker:ops', 'ops', 'reply in someone else''s thread', 0, 3);
+                 INSERT INTO bridge_inbound (post_id, platform, conversation, platform_msg_id, sender_id, sender_name, is_owner, received_at)
+                   VALUES (1, 'whatsapp-app', '9@lid', 'S1', '1410', 'owner', 1, 0);")?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let c = store.read().unwrap();
+        let ids: Vec<i64> = pending(&c).unwrap().iter().map(|p| p.post_id).collect();
+        assert_eq!(ids, vec![2], "only the answer in the chat's own thread goes back");
+    }
 
     #[test]
     fn only_listed_identities_are_the_owner() {

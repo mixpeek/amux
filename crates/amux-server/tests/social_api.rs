@@ -372,6 +372,32 @@ async fn a_queued_post_retries_then_fails_and_an_unanswered_one_is_never_resent(
     assert_eq!(code, StatusCode::OK);
     let pass = social_publish::publish_pass(&ctx, &st).await;
     assert_eq!(pass["posted"], 1, "{pass}");
+
+    // A publish THIS process started and never finished is reported
+    // uncertain after 30 minutes instead of staying `publishing` forever
+    // (implicit state machines inventory, #17). The claim is taken by a real
+    // pass, then aged, so the row carries this process's own claim id.
+    let (_, v) = call(&app, "POST", "/api/social/posts", Some(json!({"platform": "devto", "scheduled_at": "now", "caption": "body", "title": "T3"}))).await;
+    let id = v["queued"][0]["id"].as_i64().unwrap();
+    let me: String = {
+        // The dead-process row above was swept, so the posted row's claim is ours.
+        let c = st.store.read().unwrap();
+        c.query_row("SELECT claimed_by FROM social_queue WHERE status = 'posted' ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap()
+    };
+    st.store
+        .write_async(move |c| {
+            c.execute("UPDATE social_queue SET status = 'publishing', claimed_by = ?2, claimed_at = ?3 WHERE id = ?1",
+                rusqlite::params![id, me, chrono::Utc::now().timestamp() - 3600])?;
+            Ok(amux_server::db::WriteOutcome { applied: true, events: vec![] })
+        })
+        .await
+        .unwrap();
+    let sent_before = fake.lock().unwrap().devto_keys.len();
+    social_publish::publish_pass(&ctx, &st).await;
+    let r = queue_row(&app, id).await;
+    assert_eq!(r["status"], "uncertain", "a hung publish of this process is reported: {r}");
+    assert!(r["error"].as_str().unwrap_or("").contains("30 minutes"), "{r}");
+    assert_eq!(fake.lock().unwrap().devto_keys.len(), sent_before, "not re-sent");
 }
 
 #[test]

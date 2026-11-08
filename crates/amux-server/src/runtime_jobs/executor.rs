@@ -7,11 +7,52 @@ use std::{future::Future, sync::OnceLock};
 use tokio::{runtime::Handle, task::JoinHandle};
 
 static MAINTENANCE: OnceLock<Handle> = OnceLock::new();
+/// Its own threads for the jobs measured to hold a runtime thread for seconds
+/// (AF-1006). On 2026-10-29 sixteen jobs stopped ticking together, and on
+/// 2026-10-31 board-drive held a maintenance thread 2,265 times (avg 2.4 s, max
+/// 108 s): steering delivery, heartbeat and the rest share that pool, so its
+/// long ticks starved them. These jobs still block their own threads; they no
+/// longer block everyone else's.
+static HEAVY: OnceLock<Handle> = OnceLock::new();
+pub(crate) const HEAVY_JOBS: [&str; 2] = ["board-drive", "orchestrator-runtime"];
 
 pub(crate) fn install(handle: Handle) {
     MAINTENANCE
         .set(handle)
         .expect("maintenance runtime installed once");
+}
+
+pub(crate) fn install_heavy(handle: Handle) {
+    HEAVY.set(handle).expect("heavy-job runtime installed once");
+}
+
+/// The pool a job runs on, for spawning and for the log.
+pub(crate) fn pool_for(job: &str) -> &'static str {
+    if HEAVY.get().is_some() && HEAVY_JOBS.contains(&job) {
+        "heavy"
+    } else {
+        pool_name()
+    }
+}
+
+/// [`spawn`] for a named job: a job in [`HEAVY_JOBS`] gets its own threads.
+pub(super) fn spawn_for<F>(job: &str, future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    spawn_for_on(HEAVY.get(), MAINTENANCE.get(), job, future)
+}
+
+fn spawn_for_on<F>(heavy: Option<&Handle>, maintenance: Option<&Handle>, job: &str, future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match heavy {
+        Some(h) if HEAVY_JOBS.contains(&job) => h.spawn(future),
+        _ => spawn_on(maintenance, future),
+    }
 }
 
 pub(super) fn spawn<F>(future: F) -> JoinHandle<F::Output>
@@ -50,6 +91,30 @@ mod tests {
         sync::{atomic::AtomicBool, mpsc, Arc},
         time::{Duration, Instant},
     };
+
+    /// AF-1006: board-drive holding the shared maintenance pool stalled every
+    /// other job. A job in HEAVY_JOBS runs on its own runtime, so it ticks while
+    /// the maintenance pool's only thread is held, and any other job does not.
+    #[test]
+    fn a_heavy_job_runs_on_its_own_threads_while_the_maintenance_pool_is_held() {
+        let one = || tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let (maintenance, heavy) = (one(), one());
+        let (hold_tx, hold_rx) = mpsc::channel::<()>();
+        let (held_tx, held_rx) = mpsc::channel();
+        maintenance.spawn(async move {
+            held_tx.send(()).unwrap();
+            let _ = hold_rx.recv(); // a synchronous hold, as board-drive's lane loop did
+        });
+        held_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let tx = done_tx.clone();
+        let _h = spawn_for_on(Some(heavy.handle()), Some(maintenance.handle()), "board-drive", async move { tx.send("heavy").unwrap(); });
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).ok(), Some("heavy"), "the heavy job ran while maintenance was held");
+        let _o = spawn_for_on(Some(heavy.handle()), Some(maintenance.handle()), "steer-deliver", async move { done_tx.send("other").unwrap(); });
+        assert!(done_rx.recv_timeout(Duration::from_millis(300)).is_err(), "any other job stays on the maintenance pool");
+        hold_tx.send(()).unwrap();
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).ok(), Some("other"));
+    }
 
     #[test]
     fn blocked_maintenance_poll_does_not_delay_health_or_worker_api() {

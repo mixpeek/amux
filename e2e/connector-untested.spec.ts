@@ -20,7 +20,7 @@ test('a connector with no test endpoint reads untested, not failed', async ({ pa
       res = await route.fetch();
       body = await res.json();
     } catch (e) {
-      if (/disposed|aborted|closed/i.test(String(e))) return;
+      if (/disposed|aborted|closed|test ended/i.test(String(e))) return;
       throw e;
     }
     const devto = (body.connectors || []).find((c: any) => c.id === 'devto');
@@ -29,7 +29,7 @@ test('a connector with no test endpoint reads untested, not failed', async ({ pa
       env_keys: [{ name: 'DEVTO_API_KEY', set: true, masked: '****fixture' }],
       last_test: { ...untested, at: Date.now() / 1000 - 30 } });
     await route.fulfill({ response: res, json: body }).catch(e => {
-      if (!/disposed|aborted|closed|already handled/i.test(String(e))) throw e;
+      if (!/disposed|aborted|closed|already handled|test ended/i.test(String(e))) throw e;
     });
   });
   await page.route(/\/api\/connectors\/devto\/test$/, route => route.fulfill({ json: untested }));
@@ -50,4 +50,8 @@ test('a connector with no test endpoint reads untested, not failed', async ({ pa
   await expect(page.locator('.cx-drawer .cx-test')).toContainText('No live test for this connector');
   await expect(page.locator('.cx-drawer .cx-test')).not.toHaveClass(/bad/);
   await expect(page.locator('.cx-card').filter({ hasText: 'dev.to' })).not.toContainText('failed');
+  // The page keeps polling /api/connectors. A fetch still in flight when the
+  // test ends threw "route.fetch: Test ended" after it finished, which failed a
+  // whole CI shard as "1 error was not a part of any test" (run 40957301321).
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });

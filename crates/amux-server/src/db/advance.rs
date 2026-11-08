@@ -110,6 +110,26 @@ pub fn advance(
         return Ok(Err(AdvanceRefusal::ArchivedImmutable));
     }
 
+    // Terminal is terminal (amux_core::board::TaskStatus::is_terminal):
+    // verified, discarded and quarantined are left only by an attributed
+    // force, as core's `apply_transition` already requires. Before this the
+    // engine had no from-to check at all, so any caller could reopen a
+    // verified card (implicit state machines inventory 2026-10-31, #6).
+    if !opts.force {
+        if let Some(from) = bs::parse_status(&row.status).filter(|s| s.is_terminal()) {
+            if bs::parse_status(destination) != Some(from) {
+                tracing::warn!(card = %row.id, from = %row.status, to = %destination, actor = %actor,
+                    measured = true, n_considered = 1, verdict = "advance_terminal_exit_refused",
+                    "a terminal card is left only by a forced, attributed transition");
+                return Ok(Err(AdvanceRefusal::InvalidTransition {
+                    from: row.status.clone(),
+                    to: destination.to_string(),
+                    reason: "the card is terminal; leaving it needs force".into(),
+                }));
+            }
+        }
+    }
+
     // Orchestration contract (AH-374): the one transition engine holds rule 2
     // and 3 for every caller, not only the PATCH route. Before this, bulk
     // moves, /api/verify, the orchestrator runtime and capture reconcile could
@@ -165,6 +185,46 @@ pub fn advance(
         row,
         events: vec![event],
     }))
+}
+
+/// The harness closes a card it filed (or a stale one it owns the cleanup of).
+/// Goes through [`advance`] with force, so the lease is released, the attempt
+/// is recorded and the status-change event is emitted, which the raw
+/// `UPDATE issues SET status=...` these sites used did not do. `desc_note` is
+/// appended to the description after the move. A refusal (already terminal,
+/// archived, gone) is logged as `harness_close_refused` and returns None.
+pub fn harness_close(
+    conn: &Connection,
+    card: &str,
+    destination: &str,
+    actor: &str,
+    desc_note: Option<&str>,
+    log_line: &str,
+) -> Result<Option<AdvanceOutcome>, rusqlite::Error> {
+    let opts = AdvanceOpts {
+        force: true,
+        skip_continuation: true,
+        reason: Some(log_line.to_string()),
+        log_line: Some(log_line.to_string()),
+        ..Default::default()
+    };
+    match advance(conn, card, destination, actor, &opts)? {
+        Ok(out) => {
+            if let Some(note) = desc_note.filter(|n| !n.is_empty()) {
+                conn.execute(
+                    "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1 WHERE id = ?2",
+                    rusqlite::params![note, card],
+                )?;
+            }
+            Ok(Some(out))
+        }
+        Err(refusal) => {
+            tracing::warn!(card = %card, to = %destination, actor = %actor, refusal = ?refusal,
+                measured = true, n_considered = 1, verdict = "harness_close_refused",
+                "the harness could not close a card it owns");
+            Ok(None)
+        }
+    }
 }
 
 fn advance_typed(

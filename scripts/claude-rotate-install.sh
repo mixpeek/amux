@@ -30,6 +30,27 @@ else:
     print("statusLine set in", path)
 EOF
 
+# The usage probe opens a Claude CLI in an empty folder of its own. Trusting it here, as the
+# owner installing this, is what lets the probe run unattended; it never answers the prompt.
+probe_dir="${CLAUDE_ROTATE_PROBE_CWD:-$HOME/.amux/claude-rotate/probe}"
+mkdir -p "$probe_dir"
+python3 - "$probe_dir" <<'EOF2'
+import json, os, sys, tempfile
+d, path = sys.argv[1], os.path.expanduser("~/.claude.json")
+data = json.load(open(path)) if os.path.exists(path) else {}
+proj = data.setdefault("projects", {}).setdefault(d, {})
+if proj.get("hasTrustDialogAccepted"):
+    print("probe folder already trusted:", d)
+else:
+    proj["hasTrustDialogAccepted"] = True
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    print("probe folder trusted:", d)
+EOF2
+
 U="$(amux url)"
 if curl -sk "$U/api/schedules" | python3 -c "import json,sys; d=json.load(sys.stdin); d=d.get('schedules',d) if isinstance(d,dict) else d; sys.exit(0 if any(s.get('title')=='claude-rotate tick' for s in d) else 1)"; then
   echo "schedule already present"

@@ -169,20 +169,33 @@ pub(crate) async fn gate_after_account_change(store: &crate::db::SharedStore, la
     gate_with_account_state(store, lane, guard, text, true).await
 }
 
+/// Why work sent to `lane` now would be held, if it would: the lane is on its
+/// provider's usage limit, or its pane is gone (contract A5, rule 6 on). The
+/// one rule for every sender, so the board driver can ask BEFORE it claims a
+/// card: it used to claim, find the prompt held, and release, 248 times in 30
+/// days on two lanes at their usage limit (velocity, 2026-10-30).
+pub(crate) fn dispatch_hold(lane: &str, account_replaced: bool) -> Option<(&'static str, &'static str)> {
+    if !crate::api::contract::rule_on(&crate::config::amux_home(), lane, "6") {
+        return None;
+    }
+    [
+        (!account_replaced && provider_limited(lane), "provider_limit", "held: the lane is on its provider's usage limit (contract A5)"),
+        (!pane_alive(lane), "crash", "held: the lane's pane is gone (contract A5)"),
+    ]
+    .into_iter()
+    .find(|(held, _, _)| *held)
+    .map(|(_, why, reason)| (why, reason))
+}
+
 async fn gate_with_account_state(store: &crate::db::SharedStore, lane: &str, guard: &str, text: &str, account_replaced: bool) -> Result<(), &'static str> {
     let home = crate::config::amux_home();
     if !crate::api::contract::rule_on(&home, lane, "6") {
         return Ok(());
     }
-    for (held, why, reason) in [
-        (!account_replaced && provider_limited(lane), "provider_limit", "held: the lane is on its provider's usage limit (contract A5)"),
-        (!pane_alive(lane), "crash", "held: the lane's pane is gone (contract A5)"),
-    ] {
-        if held {
-            tracing::info!(session = lane, guard, cause = why, measured = true, n_considered = 1,
-                verdict = "contract_dispatch_held", "a nudge was held for capacity, not charged to the card");
-            return Err(reason);
-        }
+    if let Some((why, reason)) = dispatch_hold(lane, account_replaced) {
+        tracing::info!(session = lane, guard, cause = why, measured = true, n_considered = 1,
+            verdict = "contract_dispatch_held", "a nudge was held for capacity, not charged to the card");
+        return Err(reason);
     }
     let limits = Limits::for_lane(&home, lane);
     let (lane_s, hash, owner_lane) = (lane.to_string(), text_hash(text), orchestrator(&home, lane));
@@ -1541,6 +1554,26 @@ mod tests {
         assert!(ordinary.is_err_and(|why| why.contains("usage limit")), "an ordinary nudge retains the provider gate");
         let replaced = gate_after_account_change(&store, lane, "auto-resume:account:fixture", "continue").await;
         assert!(replaced.is_err_and(|why| why.contains("pane is gone")), "replacement releases old capacity only; it cannot bypass pane admission");
+    }
+
+    /// The board driver asks this before claiming a card, so a held lane gets
+    /// no claim to release (248 claim-and-release attempts in 30 days).
+    #[test]
+    fn dispatch_hold_names_a_lane_at_its_usage_limit_and_leaves_others_alone() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let lane = "runner-dispatch-hold-limited";
+        std::fs::write(home.path().join(format!("sessions/{lane}.env")), "AMUX_CONTRACT_DONE=1\n").unwrap();
+        crate::api::session_verbs::update_meta(lane, &[
+            ("rate_limited_since", serde_json::json!((crate::config::now_f64() as i64) - 60)),
+            ("rate_limited_until", serde_json::json!((crate::config::now_f64() as i64) + 3600)),
+            ("rate_limited_by", serde_json::json!("weekly-banner")),
+        ]);
+        assert_eq!(dispatch_hold(lane, false).map(|h| h.0), Some("provider_limit"), "a lane at its usage limit is held");
+        let free = "runner-dispatch-hold-no-contract";
+        std::fs::write(home.path().join(format!("sessions/{free}.env")), "").unwrap();
+        assert_eq!(dispatch_hold(free, false), None, "without the contract switch nothing is held");
     }
 
     #[test]

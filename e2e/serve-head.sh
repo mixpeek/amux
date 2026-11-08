@@ -168,105 +168,128 @@ SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
 # fallback is exact there; locally it is the old behaviour with a loud line
 # saying so. Degrading to the previous behaviour beats refusing to run.
 
-# SERIALIZE THE GIT OPS — this script now runs THREE TIMES CONCURRENTLY, once
-# per playwright project (AF-46 gave each target its own server and AMUX_HOME).
-# The worktree below is deliberately SHARED and stable, so three simultaneous
-# copies would `worktree add` / `checkout --detach` / in the worst case `rm -rf`
-# the same directory at the same moment. That race was already reachable — two
-# sessions running e2e at once on this shared checkout — it was just rare enough
-# to look like nothing.
+# ONE WORKTREE, MANY COMMITS: THE LOCK COVERS CHECKOUT, BUILD AND COPY.
+#
+# Three copies of this script start per playwright run (one server per project),
+# and every lane's land gate runs one from its own composed tree, each at a
+# different HEAD. They all share $WT. The lock used to cover only the git
+# checkout, and `cargo run` then built whatever $WT held by the time cargo read
+# it. So a second gate re-pointing $WT between our checkout and our build handed
+# us ITS server, with ITS dashboard embedded, and every spec for the code under
+# test failed while the older specs passed (2026-10-31: two gates for different
+# changes, four new specs red in each, all green when rerun alone). The script
+# also gave up waiting after 120s and proceeded unlocked.
+#
+# Now the holder checks out, builds and copies the binary to a per-commit path
+# under the lock, and exec's that copy. A later run for the same commit (the
+# other two projects, a retry) finds the copy and skips the lock entirely; a run
+# for another commit waits for the build. A copy, because the target dir's
+# binary is rewritten by the next build while this server still needs to start.
 #
 # mkdir, not flock: `flock(1)` is util-linux and is NOT on macOS, where most of
-# this fleet runs. mkdir is atomic on every POSIX filesystem.
-#
-# The lock covers ONLY the git operations. The cargo build stays outside it on
-# purpose: cargo has its own build lock, and CLAUDE.md's measurement is that a
-# second builder waits and then finds the work already done (1.48s alone, 1.65s
-# for two). Holding this lock across the build would serialize three cold builds
-# for no gain.
+# this fleet runs. mkdir is atomic on every POSIX filesystem. The holder touches
+# the lock while it builds, so a lock untouched for 5 minutes belongs to a run
+# that was killed and is reclaimed.
 LOCK="${WT}.lock"
+BIN_CACHE="${AMUX_E2E_HEAD_BIN_DIR:-$HOME/.amux/e2e-head-bin}"
+BIN="$BIN_CACHE/$SHA/amux-server"
+LOCK_WAIT_MAX="${AMUX_E2E_LOCK_WAIT_S:-1800}"
 acquire_lock() {
   local waited=0
   while ! mkdir "$LOCK" 2>/dev/null; do
-    # A run killed by playwright never reaches the release below, so a stale
-    # lock must expire rather than wedge every future run at this line.
+    [ -x "$BIN" ] && return 2
     if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +5 2>/dev/null)" ]; then
-      echo "[e2e] stale worktree lock (>5min), reclaiming: $LOCK"
+      echo "[e2e] stale worktree lock (untouched >5min), reclaiming: $LOCK ($(cat "$LOCK/holder" 2>/dev/null || echo 'no holder'))"
       rm -rf "$LOCK"
       continue
     fi
+    if [ $((waited % 30)) -eq 0 ]; then
+      echo "[e2e] waiting for the HEAD build lock, held by: $(cat "$LOCK/holder" 2>/dev/null || echo unknown) (${waited}s)"
+    fi
     sleep 1
     waited=$((waited + 1))
-    if [ "$waited" -ge 120 ]; then
-      # Proceed unlocked rather than refuse to boot: the common case is the
-      # same SHA, where the git ops are idempotent no-ops. Say so out loud —
-      # a silent degrade here is how a corrupt worktree gets blamed on cargo.
-      echo "[e2e] WARNING: worktree lock held >120s — proceeding WITHOUT it. Concurrent git ops possible."
-      return 1
+    if [ "$waited" -ge "$LOCK_WAIT_MAX" ]; then
+      # Building unlocked is the race this lock exists to stop, so refuse.
+      echo "[e2e] the HEAD build lock was held ${waited}s by a live run; refusing to build $SHA unlocked (verdict=e2e_head_lock_timeout)" >&2
+      exit 1
     fi
   done
+  echo "$$ $SHA $(date +%s) $REPO" > "$LOCK/holder"
   return 0
 }
 
-setup_worktree() {
+# Release only a lock this process holds, and disarm the trap that calls this:
+# a fallback path returns with the trap still set, and by the time the script
+# exits another run may hold the lock (land review F1).
+_unlock() {
+  trap - EXIT INT TERM
+  [ -n "${_toucher:-}" ] && kill "$_toucher" 2>/dev/null
+  _toucher=""
+  [ "$(cut -d' ' -f1 "$LOCK/holder" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"
+  return 0
+}
+
+# Build $SHA into $BIN under the lock. Returns non-zero only when no worktree
+# can be made, so the caller falls back to the working tree.
+build_head() {
   [ -n "$SHA" ] || return 1
-  local locked=0
-  acquire_lock && locked=1
-  # Release on ANY exit from this function, including the `return 1` paths —
-  # the caller falls back to the working tree there and must not leave the
-  # lock held for the next two servers booting one second behind it.
-  _unlock() { [ "$locked" = "1" ] && rmdir "$LOCK" 2>/dev/null; locked=0; }
+  local rc=0
+  acquire_lock || rc=$?
+  [ "$rc" -eq 2 ] && return 0
+  [ -x "$BIN" ] && { _unlock; return 0; }
+  trap '_unlock' EXIT INT TERM
+  ( while kill -0 $$ 2>/dev/null; do touch "$LOCK" 2>/dev/null; sleep 20; done ) </dev/null >/dev/null 2>&1 &
+  _toucher=$!
   if [ ! -e "$WT/.git" ]; then
     rm -rf "$WT"
     git -C "$REPO" worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || { _unlock; return 1; }
   else
-    # Already exists: move it to this HEAD. Concurrent e2e runs on this
-    # checkout share ONE HEAD, so they converge on the same sha rather than
-    # fighting over the directory.
     git -C "$WT" checkout --detach "$SHA" >/dev/null 2>&1 || {
       git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
       git -C "$REPO" worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || { _unlock; return 1; }
     }
   fi
-  _unlock
-  [ -f "$WT/Cargo.toml" ]
-}
-
-if setup_worktree; then
-  cd "$WT"
-  # SAY WHICH SOURCE THIS RUN ACTUALLY BUILT, ALWAYS (AF-182, third instance).
-  #
-  # The banner above prints only `if [ -n "$dirty" ]`, so a run against a clean
-  # tree announced NOTHING about its source — and this script has three of them:
-  # committed HEAD, the working tree via AMUX_E2E_WORKING_TREE=1, and the working
-  # tree via the fallback below. All three produce identical output in the common
-  # case, so "did I test HEAD or the tree?" is unanswerable from the run's own log.
-  #
-  # That is not hypothetical. AF-182's third instance is a run killed by a peer's
-  # UNCOMMITTED mid-edit, filed fifteen days after this script started building
-  # from HEAD, over an import (`crate::worker::WorkerId`) that `git log -S --all`
-  # shows was never committed. One of the two tree paths must have been taken and
-  # the record cannot say which, so the incident is unreconstructable today.
-  #
-  # Ethos rule 4: an output that can be in two states publishes which one it was,
-  # in the same place someone already looks.
-  echo "[e2e] SOURCE: committed HEAD $(git -C "$REPO" rev-parse --short HEAD) (worktree $WT)."
+  [ -f "$WT/Cargo.toml" ] || { _unlock; return 1; }
   # The worktree build gets its OWN target dir (AMUX-2961). Sharing the fleet's
   # dir looked like the rule — but cargo dep-info records ABSOLUTE source paths,
   # so after a worktree build, a `cargo build` from the repo compares mtimes of
   # the WORKTREE's files, sees them unchanged, and no-ops in 0.13s — silently
   # handing back HEAD's binary while the caller believes they built their tree.
-  # That manufactured three consecutive "my fix doesn't work" verdicts on
-  # 2026-08-12, and would make the auto-builder install a STALE binary for the
-  # next commit while reporting success. One extra bounded cache dir is the
-  # price of the two source trees never sharing fingerprints.
-  export CARGO_TARGET_DIR="${AMUX_E2E_HEAD_TARGET_DIR:-$HOME/.amux/rust-build-target-e2e-head}"
-else
-  echo "[e2e] WARNING: could not prepare a HEAD worktree at $WT — falling back to the WORKING TREE."
-  echo "[e2e] On CI the tree is HEAD so this is exact; on a shared checkout a peer mid-edit can fail this run."
-  # Same line as the success branch, deliberately — a reader grepping SOURCE finds
-  # one of the two in every run, rather than finding it only when things went well.
-  echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD."
-fi
+  # One extra bounded cache dir is the price of the two source trees never
+  # sharing fingerprints.
+  local target="${AMUX_E2E_HEAD_TARGET_DIR:-$HOME/.amux/rust-build-target-e2e-head}"
+  echo "[e2e] building $SHA in $WT"
+  ( cd "$WT" && CARGO_TARGET_DIR="$target" cargo build -p amux-server ) || { _unlock; echo "[e2e] cargo build of $SHA failed" >&2; exit 1; }
+  local built
+  built="$(git -C "$WT" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$built" != "$SHA" ]; then
+    _unlock
+    echo "[e2e] the worktree moved to ${built:-?} during the build of $SHA; refusing to serve it (verdict=e2e_head_build_moved)" >&2
+    exit 1
+  fi
+  mkdir -p "$BIN_CACHE/$SHA"
+  cp "$target/debug/amux-server" "$BIN.tmp.$$" && mv -f "$BIN.tmp.$$" "$BIN"
+  # Keep the eight newest commits' servers; each is one debug binary.
+  ls -1t "$BIN_CACHE" 2>/dev/null | tail -n +9 | while read -r old; do rm -rf "${BIN_CACHE:?}/$old"; done
+  _unlock
+  return 0
+}
 
+if build_head; then
+  # SAY WHICH SOURCE THIS RUN ACTUALLY BUILT, ALWAYS (AF-182, third instance).
+  # This script has three sources: committed HEAD, the working tree via
+  # AMUX_E2E_WORKING_TREE=1, and the working tree via the fallback below. All
+  # three look the same in the common case, so the run's own log has to say
+  # which one it took (ethos rule 4).
+  echo "[e2e] SOURCE: committed HEAD $(git -C "$REPO" rev-parse --short HEAD) (server $BIN, built in worktree $WT)."
+  # The server reads its working directory (self_update, fs), and it always ran
+  # from the worktree.
+  cd "$WT" 2>/dev/null || cd "$REPO"
+  exec "$BIN"
+fi
+echo "[e2e] WARNING: could not prepare a HEAD worktree at $WT — falling back to the WORKING TREE."
+echo "[e2e] On CI the tree is HEAD so this is exact; on a shared checkout a peer mid-edit can fail this run."
+# Same line as the success branch, deliberately — a reader grepping SOURCE finds
+# one of the two in every run, rather than finding it only when things went well.
+echo "[e2e] SOURCE: the WORKING TREE at $REPO — NOT committed HEAD."
 exec cargo run -p amux-server

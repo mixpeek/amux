@@ -186,15 +186,13 @@ pub async fn reconcile(store: &SharedStore, held: &[Held], threshold_s: f64, now
                 if still_held.contains(&r) {
                     continue;
                 }
-                conn.execute(
-                    "UPDATE issues SET \"desc\" = COALESCE(\"desc\",'') || ?1, status='done', updated=?2, \
-                     rev = COALESCE(rev,0) + 1 WHERE id=?3",
-                    rusqlite::params![
-                        format!("\n{}: resolved by the harness. The draft is gone and the queue is moving again.", fmt_ts(now)),
-                        now,
-                        card
-                    ],
-                )?;
+                let note = format!("\n{}: resolved by the harness. The draft is gone and the queue is moving again.", fmt_ts(now));
+                let Some(out) = crate::db::advance::harness_close(conn, &card, "done", "harness:draft-hold", Some(&note),
+                    "resolved by the harness: the draft is gone")?
+                else {
+                    continue;
+                };
+                events.extend(out.events);
                 rep.resolved.push(r.trim_start_matches("steer-draft:").to_string());
                 events.push(PendingEvent {
                     entity_type: amux_core::revision::EntityType::Task,

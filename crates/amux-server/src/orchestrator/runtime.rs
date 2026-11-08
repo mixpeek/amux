@@ -177,14 +177,14 @@ fn agent_accepts_boundary_delivery(
 /// Reports only when the tick is actually slow. A per-tick line at this
 /// frequency would be its own noise, and the sections of a fast tick are not a
 /// question anyone is asking.
-struct TickSections {
+pub(crate) struct TickSections {
     marks: Vec<(&'static str, std::time::Duration)>,
     last: std::time::Instant,
     started: std::time::Instant,
 }
 
 impl TickSections {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let now = std::time::Instant::now();
         Self {
             marks: Vec::new(),
@@ -193,7 +193,7 @@ impl TickSections {
         }
     }
 
-    fn mark(&mut self, name: &'static str) {
+    pub(crate) fn mark(&mut self, name: &'static str) {
         let now = std::time::Instant::now();
         self.marks.push((name, now.duration_since(self.last)));
         self.last = now;
@@ -226,7 +226,7 @@ impl TickSections {
         (worst, breakdown.join(" "))
     }
 
-    fn report(mut self, job: &'static str) {
+    pub(crate) fn report(mut self, job: &'static str) {
         let total = self.started.elapsed();
         if total.as_millis() < Self::slow_ms() {
             return;
@@ -429,9 +429,12 @@ impl Runtime {
                 let reply = self
                     .store
                     .write_async(move |conn| {
-                        let n = crate::db::queries::update_worker_state(
+                        // Only while still rate limited: a stop or error that
+                        // landed since the reading is kept (#3).
+                        let n = crate::db::queries::update_worker_state_from(
                             conn,
                             &worker_id,
+                            "rate_limited",
                             &amux_core::worker::WorkerState::Idle { since: state_at },
                             &updated_at,
                         )?;
@@ -875,9 +878,11 @@ impl Runtime {
     /// - the owner is `Stopped`: the planner still counts it as available
     ///   (`worker_available` accepts Stopped), so a command queues and waits
     ///   for a process that is not running. The bounded recovery is the
-    ///   bootstrap `todo_owner_autostart` sweep; this line is the trace that
-    ///   says the wait was real, and names the admission gate that can refuse
-    ///   the restart.
+    ///   bootstrap `todo_owner_autostart` sweep, which restarts a `Stopped`
+    ///   worker its owner did NOT stop; an owner stop (a `session.stopped` from
+    ///   `api-stop` with no start after it) is held on purpose, so the only way
+    ///   forward there is a start (`amux start`). This line is the trace that
+    ///   says the wait was real, and which of the two it is.
     ///
     /// A card owned by a name with no durable row is a FLEET lane, not this
     /// module's business (board_drive owns those), so it is deliberately not
@@ -926,9 +931,10 @@ impl Runtime {
             let (reason, detail) = match by_id.get(owner) {
                 Some(w) if matches!(w.state, WorkerState::Stopped) => (
                     "owner_stopped",
-                    "the owning worker is stopped: its command queues and waits for the \
-                     bootstrap todo_owner_autostart sweep, which the host-admission gate can \
-                     refuse",
+                    "the owning worker is stopped. If its owner stopped it on purpose \
+                     (session.stopped from api-stop, no start after it) the bootstrap sweep \
+                     leaves that decision alone: start it (amux start) to resume board work. \
+                     Otherwise the sweep restarts it, unless the host-admission gate refuses",
                 ),
                 Some(_) => continue,
                 None => match stopped_or_gone.get(&owner.to_string()) {
@@ -1195,6 +1201,12 @@ impl Runtime {
                     )?;
                     let mut events = Vec::new();
                     if n > 0 {
+                        // The next claim continues from here (0145).
+                        conn.execute(
+                            "INSERT INTO _amux_lease_generations (task_id, generation) VALUES (?1, ?2)
+                             ON CONFLICT(task_id) DO UPDATE SET generation = MAX(generation, excluded.generation)",
+                            params![task, generation],
+                        )?;
                         let measured_at = Utc::now();
                         let recovery_ms = measured_at
                             .signed_duration_since(expired_at)
@@ -1463,7 +1475,7 @@ impl Runtime {
                         "INSERT OR IGNORE INTO _amux_leases
                          (task_id, worker_id, acquired_at, expires_at, generation)
                          VALUES (?1, ?2, ?3, ?4,
-                                 COALESCE((SELECT generation + 1 FROM _amux_leases WHERE task_id = ?1), 0))",
+                                 COALESCE((SELECT generation + 1 FROM _amux_lease_generations WHERE task_id = ?1), 0))",
                         params![task, worker, acquired, expires],
                     )?;
                     let mut events = Vec::new();
@@ -2115,14 +2127,26 @@ impl Runtime {
                         }
                     }
                     let mid = msg_id.to_string();
-                    let delivered =
-                        serde_json::json!({"state": "delivered", "at": now.to_rfc3339()});
                     self.store
                         .write_async(move |conn| {
+                            // Through core's forward-only rule (advance_delivery),
+                            // and compare-and-swap on the stored value, instead of
+                            // hand-built JSON gated by `LIKE '%queued%'`
+                            // (implicit state machines inventory 2026-10-31, #12).
+                            let Some(mut msg) = crate::api::messages::message_by_id(conn, &mid)? else {
+                                return Ok(WriteOutcome { applied: false, events: vec![] });
+                            };
+                            let before: String = conn.query_row(
+                                "SELECT delivery FROM _amux_messages WHERE id = ?1", params![mid], |r| r.get(0))?;
+                            if let Err(e) = msg.advance_delivery(amux_core::message::DeliveryState::Delivered { at: now }) {
+                                tracing::info!(message = %mid, from = %e.from, verdict = "message_delivery_not_advanced",
+                                    "the message is already past queued; delivery left as it is");
+                                return Ok(WriteOutcome { applied: false, events: vec![] });
+                            }
+                            let after = serde_json::to_string(&msg.delivery).unwrap_or_default();
                             let n = conn.execute(
-                                "UPDATE _amux_messages SET delivery = ?2
-                                 WHERE id = ?1 AND delivery LIKE '%queued%'",
-                                params![mid, delivered.to_string()],
+                                "UPDATE _amux_messages SET delivery = ?2 WHERE id = ?1 AND delivery = ?3",
+                                params![mid, after, before],
                             )?;
                             Ok(WriteOutcome {
                                 applied: n > 0,
@@ -3265,6 +3289,12 @@ mod adherence_tests {
              the execution command and could never be sent"
         );
         assert_eq!(leases_for(&first_task), 1, "the verification turn is leased");
+        let generation: i64 = store
+            .read()
+            .unwrap()
+            .query_row("SELECT generation FROM _amux_leases WHERE task_id = ?1", params![first_task], |r| r.get(0))
+            .unwrap();
+        assert_eq!(generation, 1, "a lease claimed after a reclaim is the next generation, not 0 again");
 
         // The verification turn runs and leaves the card `done` (the worker
         // made no claim about it); its lease reaches expiry.
@@ -3524,6 +3554,11 @@ mod adherence_tests {
             1,
             "the source message remains durable when no task is minted"
         );
+        // Delivery advanced through core (#12): a parseable Delivered state.
+        let delivery: String = store.read().unwrap()
+            .query_row("SELECT delivery FROM _amux_messages", [], |r| r.get(0)).unwrap();
+        let parsed: amux_core::message::DeliveryState = serde_json::from_str(&delivery).unwrap();
+        assert!(matches!(parsed, amux_core::message::DeliveryState::Delivered { .. }), "{delivery}");
     }
 
     /// AMUX-2613 E2E regression: the ledger card minted from a delivered

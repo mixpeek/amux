@@ -70,6 +70,14 @@ async fn echo_app() -> u16 {
     port
 }
 
+/// The tests share one AMUX_HOME and one links file, and each test's loopback
+/// app stops when that test ends: a test that writes the file holds this
+/// until it is done, so another cannot point its apps at a dead port.
+async fn links_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static L: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    L.lock().await
+}
+
 fn write_links(port: u16) {
     let links = serde_json::json!({"links": [
         {"id": A, "kind": "internal", "port": port, "approved_by": "owner"},
@@ -107,6 +115,7 @@ async fn app_get(path: &str, cookie: Option<&str>) -> (StatusCode, String, Strin
 
 #[tokio::test]
 async fn an_app_opens_on_its_own_origin_only_from_pages_and_only_itself() {
+    let _links = links_lock().await;
     let port = echo_app().await;
     write_links(port);
 
@@ -187,6 +196,7 @@ async fn the_dashboard_no_longer_serves_proxy_links() {
 /// amux's file viewer, which is what it should hand over instead.
 #[tokio::test]
 async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
+    let _links = links_lock().await;
     let port = echo_app().await;
     write_links(port);
     let home_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap());
@@ -239,7 +249,7 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
     assert_eq!(res.status(), StatusCode::OK);
     let csp: Vec<String> = res.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect();
     assert!(res.headers().get(header::X_FRAME_OPTIONS).is_none(), "the Apps tab could not frame it");
-    assert!(csp.iter().any(|c| c.starts_with("frame-ancestors https://apps.test:")), "anyone may frame it: {csp:?}");
+    assert!(csp.iter().any(|c| c.starts_with("frame-ancestors ") && c.contains(" https://apps.test:")), "anyone may frame it: {csp:?}");
     let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
     assert!(body.contains("the deck"), "{body}");
     for p in ["build_deck.py", "../build_deck.py", "%2e%2e/build_deck.py"] {
@@ -249,4 +259,109 @@ async fn a_file_inside_amux_opens_from_pages_and_serves_only_itself() {
     // Without its session: nothing.
     let (st, _, _, body) = app_get(&format!("/app/{id}/"), None).await;
     assert!(st == StatusCode::FORBIDDEN && !body.contains("the deck"), "{st}");
+}
+
+async fn app_get_as(path: &str, cookie: Option<&str>, dest: &str) -> (StatusCode, String, String) {
+    let mut b = Request::builder().uri(path).header(header::HOST, "apps.test:8443").header("sec-fetch-dest", dest);
+    if let Some(c) = cookie {
+        b = b.header(header::COOKIE, c);
+    }
+    let res = apps_router().oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+    let st = res.status();
+    let loc = res.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (st, loc, String::from_utf8_lossy(&body).to_string())
+}
+
+/// A page the app opens in a tab of its own, or a page whose session lapsed
+/// in the viewer, used to land on "Open this app from the Apps tab" (owner,
+/// 2026-10-29: every Landing link in the GTM demos). A tab now goes to the
+/// Apps tab at that page; a page in the viewer asks the viewer to reopen it.
+#[tokio::test]
+async fn an_app_page_without_its_session_reopens_at_that_page() {
+    let _links = links_lock().await;
+    let port = echo_app().await;
+    write_links(port);
+    let (st, loc, _) = app_get_as(&format!("/app/{A}/landing/core.html?x=1"), None, "document").await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert!(loc.ends_with(&format!("/#view=apps&open={A}&at=/landing/core.html%3Fx%3D1")), "{loc}");
+    assert!(loc.starts_with("https://") && !loc.contains(":8443"), "the Apps tab is on the dashboard, not the apps origin: {loc}");
+    let (st, _, body) = app_get_as(&format!("/app/{A}/landing/core.html"), None, "iframe").await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert!(body.contains("amux_app_reopen") && body.contains("/landing/core.html"), "{body}");
+    // Every HTML page loads the viewer script, which the origin serves.
+    let res = dashboard().oneshot(Request::builder().method("POST").uri(format!("/api/page-links/{A}/open"))
+        .header(header::HOST, "sandbox.amux.io").header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::COOKIE, owner_cookie()).body(Body::empty()).unwrap()).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let path = v["url"].as_str().unwrap().trim_start_matches("https://apps.test:8443").to_string();
+    let (_, _, set, _) = app_get(&path, None).await;
+    let session = set.split(';').next().unwrap().to_string();
+    let (st, _, _, body) = app_get(&format!("/app/{A}/"), Some(&session)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(body.contains(&format!("<script src=\"/app/{A}/.amux-viewer.js\"></script>")), "{body}");
+    let (st, _, _, js) = app_get(&format!("/app/{A}/.amux-viewer.js"), None).await;
+    assert!(st == StatusCode::OK && js.contains("amux_app_nav"), "{st} {js}");
+}
+
+/// The Files tab shows an HTML file as part of its folder's website: sibling
+/// CSS and scripts load and links between pages work, without adding the
+/// folder to Apps (owner, 2026-10-29). Before this the preview's sibling
+/// requests carried no sign-in and the page rendered unstyled.
+#[tokio::test]
+async fn a_file_opens_as_its_folders_site_and_nothing_outside_it() {
+    home();
+    let home_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+    let base = tempfile::Builder::new().prefix("sitefiles-").tempdir_in(&home_dir).unwrap();
+    let site = base.path().join("demos");
+    for d in ["landing", "design", "shared"] {
+        std::fs::create_dir_all(site.join(d)).unwrap();
+    }
+    std::fs::write(base.path().join("outside.txt"), "OUTSIDE_SECRET").unwrap();
+    std::fs::write(site.join("index.html"), "<!doctype html><html><head><title>hub</title></head><body><a href=\"landing/core.html\">L</a></body></html>").unwrap();
+    std::fs::write(site.join("landing/core.html"), "<!doctype html><html><head><link rel=\"stylesheet\" href=\"../design/a.css\"></head><body>core page</body></html>").unwrap();
+    std::fs::write(site.join("design/a.css"), "body{color:red}").unwrap();
+    std::fs::write(site.join(".env"), "HIDDEN").unwrap();
+
+    let mint = |cookie: bool, path: &std::path::Path| {
+        let mut b = Request::builder().method("POST").uri("/api/page-links/site-view").header(header::HOST, "sandbox.amux.io")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}")).header(header::CONTENT_TYPE, "application/json");
+        if cookie {
+            b = b.header(header::COOKIE, owner_cookie());
+        }
+        b.body(Body::from(serde_json::json!({"path": path}).to_string())).unwrap()
+    };
+    let res = dashboard().oneshot(mint(false, &site.join("landing/core.html"))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "a worker's bearer got a site view");
+    // Opened from a page one folder down, the site is the folder its ../ links need.
+    let res = dashboard().oneshot(mint(true, &site.join("landing/core.html"))).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(v["root"].as_str(), Some(site.canonicalize().unwrap().to_str().unwrap()), "{v}");
+    let url = v["url"].as_str().unwrap();
+    assert!(url.ends_with("/landing/core.html"), "{url}");
+    let path = url.trim_start_matches("https://apps.test:8443").to_string();
+    let id = v["id"].as_str().unwrap().to_string();
+
+    let res = apps_router().oneshot(Request::builder().uri(&path).header(header::HOST, "apps.test:8443").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let csp: Vec<String> = res.headers().get_all(header::CONTENT_SECURITY_POLICY).iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect();
+    assert!(csp.iter().any(|c| c.starts_with("sandbox allow-scripts")) && !csp.iter().any(|c| c.contains("allow-same-origin")), "a site page is not sandboxed: {csp:?}");
+    assert!(csp.iter().any(|c| c.starts_with("frame-ancestors ") && c.contains(" https://apps.test:")), "{csp:?}");
+    let body = String::from_utf8_lossy(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).to_string();
+    assert!(body.contains("core page") && body.contains(&format!("/app/{id}/.amux-viewer.js")), "{body}");
+    let (st, _, _, css) = app_get(&format!("/app/{id}/design/a.css"), None).await;
+    assert!(st == StatusCode::OK && css.contains("color:red"), "the sibling stylesheet did not load: {st} {css}");
+    // As text/css: under nosniff a text/plain stylesheet is refused by the browser.
+    let res = apps_router().oneshot(Request::builder().uri(format!("/app/{id}/design/a.css")).header(header::HOST, "apps.test:8443").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()), Some("text/css; charset=utf-8"));
+    let (st, _, _, hub) = app_get(&format!("/app/{id}/"), None).await;
+    assert!(st == StatusCode::OK && hub.contains("<title>hub</title>"), "{st}");
+    for p in ["../outside.txt", "%2e%2e/outside.txt", ".env", "landing/../../outside.txt"] {
+        let (st, _, _, body) = app_get(&format!("/app/{id}/{p}"), None).await;
+        assert!(st != StatusCode::OK && !body.contains("OUTSIDE_SECRET") && !body.contains("HIDDEN"), "{p} was served: {st}");
+    }
+    // A view nobody minted asks the viewer to reopen it; it serves nothing.
+    let (st, _, body) = app_get_as(&format!("/app/{}/landing/core.html", "e".repeat(32)), None, "iframe").await;
+    assert!(st == StatusCode::FORBIDDEN && body.contains("amux_app_reopen") && !body.contains("core page"), "{st} {body}");
 }

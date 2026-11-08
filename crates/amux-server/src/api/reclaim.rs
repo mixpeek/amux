@@ -583,7 +583,7 @@ fn kind_of(name: &str) -> &'static str {
 /// wrongly refusing to clean something costs disk space, wrongly moving
 /// something costs the user's data or a broken machine. Everything here is a
 /// path a size-ranking heuristic would otherwise happily nominate.
-fn guard_path(p: &FsPath) -> Result<(), String> {
+pub(crate) fn guard_path(p: &FsPath) -> Result<(), String> {
     let home = home_dir();
     if !p.is_absolute() {
         return Err("path is not absolute".into());
@@ -2650,7 +2650,9 @@ async fn purge_quarantine(
         .store
         .write_async(move |c| {
             c.execute(
-                "UPDATE reclaim_quarantine_items SET status='purged' WHERE batch_id=?1",
+                // Only items still staged: a restored item is back in place
+                // and was not purged (implicit state machines inventory, tier 5).
+                "UPDATE reclaim_quarantine_items SET status='purged' WHERE batch_id=?1 AND status='staged'",
                 [&bid],
             )?;
             c.execute(

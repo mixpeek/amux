@@ -464,6 +464,28 @@ pub fn update_worker_state(
     )
 }
 
+/// Execution-state write that applies only while the stored state is still
+/// `from_tag` (the serialized `state` tag, e.g. "starting"). For writes that
+/// act on an earlier reading: a spawn finishing (starting -> idle) or a
+/// rate-limit resume (rate_limited -> idle) must not overwrite an Error or a
+/// Stop that landed in between (implicit state machines inventory 2026-10-31,
+/// #3). 0 rows means the state moved on; the caller logs it.
+pub fn update_worker_state_from(
+    conn: &Connection,
+    id: &str,
+    from_tag: &str,
+    state: &WorkerState,
+    now: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        &format!(
+            "UPDATE _amux_workers SET state = ?2, updated_at = ?3 \
+             WHERE id = ?1 AND {NOT_DELETED} AND json_extract(state, '$.state') = ?4"
+        ),
+        params![id, state_to_column(state), now, from_tag],
+    )
+}
+
 /// Transition lifecycle. Returns rows affected (0 = no such row, already in
 /// that lifecycle, or deleted). The `from` guard prevents accidental
 /// transitions from states the caller did not expect.
@@ -535,6 +557,26 @@ fn session_from_row(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
 }
 
 pub fn insert_session(conn: &Connection, row: &SessionRow) -> rusqlite::Result<()> {
+    // One live session per worker (implicit state machines inventory
+    // 2026-10-31, #5; enforced by the 0146 index). A start that finds one
+    // still live ends it as Replaced first, in the same transaction, instead
+    // of leaving two that readers break by "newest wins".
+    if row.ended_at.is_none() {
+        let replaced = conn.execute(
+            "UPDATE _amux_sessions SET ended_at = ?2, exit_reason = ?3 \
+             WHERE worker_id = ?1 AND ended_at IS NULL AND id <> ?4",
+            params![
+                row.worker_id,
+                row.started_at,
+                serde_json::to_string(&amux_core::session::ExitReason::Replaced).map_err(|e| json_col_err(7, e))?,
+                row.id
+            ],
+        )?;
+        if replaced > 0 {
+            tracing::warn!(worker = %row.worker_id, n = replaced, measured = true, n_considered = replaced,
+                verdict = "session_replaced_on_start", "a worker started a session while one was still live; the old one is ended as replaced");
+        }
+    }
     conn.execute(
         "INSERT INTO _amux_sessions (id, worker_id, backend, backend_ref, pid, started_at, \
          ended_at, exit_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -803,6 +845,30 @@ mod tests {
             .unwrap();
         let back: ExitReason = serde_json::from_str(&reason).unwrap();
         assert_eq!(back, ExitReason::Killed);
+    }
+
+    /// #5: a second live session for the same worker ends the first as
+    /// replaced; the index refuses two live rows written any other way.
+    #[test]
+    fn a_new_live_session_replaces_the_old_one() {
+        let conn = test_conn();
+        let w = insert_new(&conn, "w");
+        let mk = |t: &str| SessionRow {
+            id: SessionId::from_ulid(ulid::Ulid::new()).as_str().into(),
+            worker_id: w.id.clone(), backend: "herdr".into(), backend_ref: format!("amux-{}", w.id),
+            pid: None, started_at: t.into(), ended_at: None, exit_reason: None,
+        };
+        let (a, b) = (mk(T0), mk(T1));
+        insert_session(&conn, &a).unwrap();
+        insert_session(&conn, &b).unwrap();
+        assert_eq!(live_session_for(&conn, &w.id).unwrap().unwrap().id, b.id);
+        let reason: String = conn.query_row("SELECT exit_reason FROM _amux_sessions WHERE id = ?1", params![a.id], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<ExitReason>(&reason).unwrap(), ExitReason::Replaced);
+        let raw = conn.execute(
+            "INSERT INTO _amux_sessions (id, worker_id, backend, backend_ref, started_at) VALUES ('raw', ?1, 'herdr', 'x', ?2)",
+            params![w.id, T1],
+        );
+        assert!(raw.is_err(), "the index refuses a second live session");
     }
 
     #[test]

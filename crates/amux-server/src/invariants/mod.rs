@@ -184,6 +184,36 @@ impl InvariantResult {
         }
         self
     }
+
+    /// HOW MUCH is failing, as one number the check chooses (AF-1045): cards
+    /// stranded, rows behind, lanes down. Autofix files a still-failing
+    /// invariant again only when this has grown past its regrowth factor over
+    /// the magnitude its last card was filed at, so a discard judged against a
+    /// small condition does not silence a much larger one for the rest of an
+    /// unbroken episode. A check that declares nothing keeps the old behaviour.
+    pub fn magnitude(mut self, m: i64) -> Self {
+        match &mut self.evidence {
+            serde_json::Value::Object(map) => {
+                map.insert(EVIDENCE_MAGNITUDE.into(), json!(m));
+            }
+            serde_json::Value::Null => {
+                self.evidence = json!({ EVIDENCE_MAGNITUDE: m });
+            }
+            other => {
+                let prev = std::mem::replace(other, serde_json::Value::Null);
+                self.evidence = json!({ EVIDENCE_MAGNITUDE: m, "evidence": prev });
+            }
+        }
+        self
+    }
+}
+
+/// Evidence key for [`InvariantResult::magnitude`], read with [`magnitude_of`].
+const EVIDENCE_MAGNITUDE: &str = "magnitude";
+
+/// The declared magnitude of a failure, if the check declared one of at least 1.
+pub fn magnitude_of(evidence: &serde_json::Value) -> Option<i64> {
+    evidence.get(EVIDENCE_MAGNITUDE)?.as_i64().filter(|m| *m >= 1)
 }
 
 /// Evidence key for [`InvariantResult::heals_at`]. Private spelling, public

@@ -88,6 +88,26 @@ export const onSite = (c, site) => {
   return d === site || d.endsWith('.' + site);
 };
 
+// WHO a site is signed in as, where a cookie says so plainly. An automatic
+// sync into a profile that is already signed in as someone else would switch
+// that profile's account: on 2026-11-03 a CDP session in a Chrome profile
+// signed in to X as @amux_dev saved its x.com cookies over profile 'ethan',
+// whose X publisher posts as @ethansteininger (amux-gtm). Sites not listed
+// here have no identity check.
+const IDENTITY_COOKIES = { 'x.com': ['twid'], 'twitter.com': ['twid'], 'github.com': ['dotcom_user'] };
+export function identityOf(cookies, site) {
+  const names = IDENTITY_COOKIES[site];
+  if (!names) return null;
+  const v = cookies.filter(c => onSite(c, site) && names.includes(c.name)).map(c => `${c.name}=${c.value}`).sort().join(';');
+  return v || null;
+}
+// True when saving `incoming` would sign `existing` in as a different account.
+export function switchesIdentity(existing, incoming, site) {
+  const had = identityOf(existing, site);
+  const now = identityOf(incoming, site);
+  return !!(had && now && had !== now);
+}
+
 // The cookies a login changes: httpOnly or secure ones on the site.
 export function fingerprint(cookies, site) {
   return cookies
@@ -180,7 +200,7 @@ function cookieParam(c) {
   return p;
 }
 
-export async function importInto(CDPClass, profile, cap) {
+export async function importInto(CDPClass, profile, cap, { keepIdentity = false } = {}) {
   // Importing cookies is not something a route verb can do, so this asks for
   // the (logged, proxied) CDP port with that reason (cdp_proxy.rs).
   const reason = encodeURIComponent('profile-sync: importing Chrome cookies into an amux profile; no route verb sets cookies');
@@ -203,6 +223,9 @@ export async function importInto(CDPClass, profile, cap) {
     const cdp = new CDPClass();
     await cdp.connect(v.webSocketDebuggerUrl);
     try {
+      if (keepIdentity && switchesIdentity((await cdp.send('Storage.getCookies', {})).cookies, cap.cookies, cap.site)) {
+        return { cookies_sent: 0, cookies_landed: 0, local_storage_set: 0, identity_mismatch: true };
+      }
       const params = cap.cookies.map(cookieParam);
       if (params.length) await cdp.send('Storage.setCookies', { cookies: params });
       let localStorageSet = 0;
@@ -277,7 +300,17 @@ export async function syncSite(CDPClass, cdp, sessionId, { profile: explicit = '
   const cover = coveringProfile(cap.site, profiles);
   let profile = (explicit || cover?.name || cap.site.split('.')[0]).replace(/[^A-Za-z0-9._-]/g, '-');
   if (profile.toLowerCase() === 'default') profile = `${cap.site.split('.')[0]}-login`;
-  const res = await importInto(CDPClass, profile, cap);
+  // Only an explicit save may change which account a profile is signed in as.
+  const res = await importInto(CDPClass, profile, cap, { keepIdentity: reason !== 'explicit save-profile' });
+  if (res.identity_mismatch) {
+    const out = {
+      profile, site: cap.site, reason, skipped: 'signed in as a different account', verdict: 'cdp_sync_identity_mismatch_skipped',
+      sign_in_instead: `amux profile '${profile}' is signed in to ${cap.site} as a different account than this Chrome tab, so its login was left alone. ` +
+        `To replace it on purpose: save-profile ${profile}`,
+    };
+    log(out);
+    return out;
+  }
   const had = profiles.find(p => p.name === profile);
   const reg = api('POST', '/api/browser/save-profile', {
     name: profile,

@@ -714,8 +714,22 @@ fn snapshot_with(stranded: Vec<serde_json::Value>) -> serde_json::Value {
 }
 
 /// `GET /api/debug/legacy-port`.
+/// The `ps axeww` scan for the debug route, off the async runtime and bounded
+/// (AF-1027). It ran synchronously inside the handler, so a slow scan held a
+/// runtime worker; route_table's probe of this route timed out at 15 s under
+/// the land gate's load. Past the bound it reads as a scan that did not run.
+const DEBUG_SCAN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn scan_stranded_sessions_bounded() -> Option<Vec<serde_json::Value>> {
+    let ps = tokio::process::Command::new("ps").arg("axeww").kill_on_drop(true).output();
+    match tokio::time::timeout(DEBUG_SCAN_BUDGET, ps).await {
+        Ok(Ok(o)) if o.status.success() => Some(parse_stranded(&String::from_utf8_lossy(&o.stdout), RETIRED_PORTS)),
+        _ => None,
+    }
+}
+
 pub async fn debug() -> axum::Json<serde_json::Value> {
-    let scan = scan_stranded_sessions_checked();
+    let scan = scan_stranded_sessions_bounded().await;
     let body = snapshot_with(scan.clone().unwrap_or_default());
     // The population the retirement verdict is drawn from: every hit recorded
     // on a retired port. A zero with `measured: true` is the answer this whole

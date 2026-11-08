@@ -55,7 +55,7 @@ const proxy=http.createServer(async(req,res)=>{
     const fixture=messages.route(mode,req);
     if(fixture){res.writeHead(fixture.status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(fixture.body));return;}
     if(req.url==='/sw.js'){res.writeHead(404);res.end('Service worker disabled for isolated fault injection');return;}
-    if(['/app.js','/app.css','/state/kernel.js'].includes(req.url)) {res.setHeader('cache-control','no-store');res.setHeader('content-type',req.url.endsWith('.css')?'text/css':'text/javascript');res.end(await fs.readFile('crates/amux-dashboard/static'+req.url));return;}
+    if(['/app.js','/app.css','/state/kernel.js'].includes(req.url.split('?')[0])) {res.setHeader('cache-control','no-store');res.setHeader('content-type',req.url.split('?')[0].endsWith('.css')?'text/css':'text/javascript');res.end(await fs.readFile('crates/amux-dashboard/static'+req.url.split('?')[0]));return;}
     if(req.url.startsWith('/form')) {
       res.setHeader('content-type','text/html');res.end('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>iOS browser test</title><style>button,input{font-size:20px;margin:20px}body{height:2400px}</style><input id="text" aria-label="Test text"><button id="button" onclick="this.textContent=\'Clicked\'">Click me</button><a href="/form?next">Next page</a>');return;
     }

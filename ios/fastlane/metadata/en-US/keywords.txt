@@ -1,1 +1,1 @@
-claude code,codex,gemini,anthropic,vibe coding,developer tools,terminal,remote,fleet,monitor,llm
+gemini cli,iphone,ipad,ai agent,coding agent,anthropic,vibe coding,terminal,remote,monitor,mixpeek

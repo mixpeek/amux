@@ -507,6 +507,18 @@ SWAP_FREE_CRITICAL_PCT=${AMUX_CLEANUP_SWAP_FREE_CRITICAL_PCT:-0.10}
 SWAP_GROW_DISK_GB=${AMUX_CLEANUP_SWAP_GROW_DISK_GB:-20}
 CPU_SHARE=${AMUX_CLEANUP_CPU_SHARE:-0.9}
 CPU_IDLE_MAX_PCT=${AMUX_CLEANUP_CPU_IDLE_MAX_PCT:-25}   # high load only counts as CPU when idle is under this
+# CPU at nice >= NICED_MIN yields to every normal-priority process, so it is no
+# contention: the deploy builder runs at nice 10 on every core, and that alone
+# kept load15 near 28 of 28 and escalated "cpu" (RCA 20261106-090048, where
+# workers used 273% of 2800%). The 15-minute load is compared after removing
+# the niced share sampled now.
+NICED_PS_CMD=${AMUX_CLEANUP_NICED_PS_CMD:-ps -axo nice=,%cpu=}
+NICED_MIN=${AMUX_CLEANUP_NICED_MIN:-10}
+# The same holds for one process: a hog at nice >= NICED_MIN yields the CPU to
+# every worker, so it is reported, not escalated (hog RCAs 20261101-184920 and
+# 20261106-135859: a research lane's build_runs.py and backend's clf_screen.py,
+# both already at nice 10, each escalated for using idle cores).
+HOG_NICE_CMD=${AMUX_CLEANUP_HOG_NICE_CMD:-ps -o nice= -p}
 STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # ONE deadline for the whole tick. The scheduler kills a shell schedule at 600s and
 # the per-arm budgets alone add up past that, so under load every arm spent its full
@@ -518,7 +530,10 @@ STATE_DIR=${AMUX_CLEANUP_STATE_DIR:-$HOME/.amux/logs/mac-cleanup}
 # the 480s warning, so a run that kept every budget could still cross it (497s on
 # 2026-10-16 at load 36/28) and escalate itself. The clamp below enforces it.
 TICK_BUDGET_S=${AMUX_CLEANUP_TICK_BUDGET_S:-450}
-TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-120}
+# 90, not 120 (Mac self RCA 20261101-164758): verdicts took 0-39 s in the last 12
+# runs and 145 s at worst in 30, while 120 stopped the arms at 330 s and skipped
+# worktrees three times in 10 h on ticks that finished by 366 s of a 600 s limit.
+TICK_RESERVE_S=${AMUX_CLEANUP_TICK_RESERVE_S:-90}
 TICK_SKIPPED=""
 # The budgeted arms in the order they run, each with a weight (Mac self RCA
 # 20261020-005306). Capping an arm at "what the tick has left" let the first
@@ -599,7 +614,10 @@ SENDFAIL_CARD_AFTER=${AMUX_CLEANUP_SENDFAIL_CARD_AFTER:-2}
 # 600s", twice on 2026-09-26 once the disk-writer search switched on under load
 # 48). The budgets are sized to stay under it, and the done line prints elapsed
 # time with a WARN past TICK_WARN_S so the next regression announces itself.
-TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-480}
+# 540, not 480 (Mac self RCA 20261102-094847): the 90 s reserve puts a loaded tick's
+# worst case at 505 s (arms to 360, verdicts 145), so 480 fired on a healthy 492 s
+# run (368 + 124 at load 63), 108 s short of the kill. 540 is 90% of the kill.
+TICK_WARN_S=${AMUX_CLEANUP_TICK_WARN_S:-540}
 if [ "$TICK_BUDGET_S" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: tick budget ${TICK_BUDGET_S}s is not under the ${TICK_WARN_S}s warning; using $(( TICK_WARN_S - 30 ))s (verdict=tick_budget_clamped)"
   TICK_BUDGET_S=$(( TICK_WARN_S - 30 ))
@@ -1267,7 +1285,13 @@ check_cpu_hogs() { # <dry:0|1>
     else
       echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% for two ticks, reported, not touched ($(owner_label_for_pid "$pid"))"
       if awk -v c="$pcpu" -v t="$CPU_HOG_ESCALATE_PCT" 'BEGIN{exit !(c+0 >= t+0)}'; then
-        local guest=""
+        local guest="" pnice
+        pnice=$($HOG_NICE_CMD "$pid" 2>/dev/null | tr -d ' ' || true)
+        case "$pnice" in ''|*[!0-9-]*) pnice="" ;; esac
+        if [ -n "$pnice" ] && [ "$pnice" -ge "$NICED_MIN" ]; then
+          echo "mac-cleanup: cpu hog $name pid=$pid at ${pcpu}% runs at nice $pnice, so it yields to every worker: reported, not escalated (verdict=hog_niced_yields)"
+          continue
+        fi
         if in_list "$name" "$VM_PROC_NAMES"; then
           [ -n "$VM_BUDGET" ] || VM_BUDGET=$(vm_cpu_budget)
           guest=" (guest: $VM_BUDGET)"
@@ -1812,7 +1836,7 @@ self_coll_covered() { # <collision log> -> 0 if a tracked earlier run held the l
 }
 
 check_self_runs() {
-  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
+  local en rows st note ok=0 bad=0 streak=0 instreak=1 causes="" f line el slowest=0 slow_recent=0 slowest_age=0 fage n_logs=0 n_unfin=0 n_skip=0 n_skip_new=0 skip_esc=0 fstart=0 n_coll=0 n_coll_cov=0 bad_new=0 ran since fb sum
   if ! en=$(sqlite3 -readonly -cmd '.timeout 5000' "$SELF_DB" \
       "SELECT enabled FROM schedules WHERE id='$SELF_SCHED_ID' AND deleted IS NULL" 2>/dev/null); then
     echo "mac-cleanup: self: run history UNMEASURED ($SELF_DB unreadable), judged nothing about this check (verdict=self_unmeasured)"
@@ -1856,7 +1880,13 @@ check_self_runs() {
       if [ "$fage" -lt $(( SELF_SLOW_RECENT_MIN * 60 )) ] && [ "$el" -gt "$slow_recent" ]; then slow_recent=$el; fi ;;
     esac
     case "$line" in *" skipped=none "*) ;; *" skipped="*) n_skip=$((n_skip+1))
-      [ "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
+      # By when the run STARTED, which the log's name holds in ms (Mac self RCA
+      # 20261101-014559). Its mtime is when it finished, so the run that sent
+      # the escalation always read as newer than that escalation, and re-raised
+      # itself once the cooldown ran out.
+      fstart=$(basename "$f" .log); fstart=${fstart%???}
+      case "$fstart" in ''|*[!0-9]*) fstart=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0) ;; esac
+      [ "$fstart" -gt "$skip_esc" ] && n_skip_new=$((n_skip_new+1)) ;; esac
   done < <(find "$SELF_RUNS_DIR" -maxdepth 1 -type f -name '*.log' -mmin -1440 ! -mmin -10 2>/dev/null)
   since=$(date -v-24H '+%F %T' 2>/dev/null || date -d '24 hours ago' '+%F %T' 2>/dev/null)
   fb=$(awk -v s="$since" '/so launchd is$/ { if ($2" "$3 >= s) n++ } END { print n+0 }' "$SELF_FALLBACK_LOG" 2>/dev/null); fb=${fb:-0}
@@ -1877,8 +1907,13 @@ check_self_runs() {
   # Raised again only when a run NEWER than the last self escalation skipped
   # (Mac self RCA 20261020-005306): the 24h count keeps runs from before a fix
   # for a day, and re-escalated them every 6h with nothing new to look at.
-  if [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
-    self_verdict "$n_skip runs of $SELF_SCHED_ID in 24h skipped cleanup arms for lack of time"
+  # And the threshold counts only those new runs (Mac self RCA 20261101-064656):
+  # one skip at 02:42 raised six answered ones again as "7 runs", though a skipped
+  # arm runs next tick and one skip in 13 runs is not a constraint.
+  if [ "$n_skip_new" -ge "$SELF_SKIP_24H" ]; then
+    self_verdict "$n_skip_new runs of $SELF_SCHED_ID since the last self escalation skipped cleanup arms for lack of time ($n_skip in 24h)"
+  elif [ "$n_skip" -ge "$SELF_SKIP_24H" ] && [ "$n_skip_new" -gt 0 ]; then
+    echo "mac-cleanup: self: $n_skip_new run(s) skipped arms since the last self escalation, under the $SELF_SKIP_24H that make a constraint; the other $((n_skip-n_skip_new)) were already answered (verdict=self_skips_below_threshold)"
   elif [ "$n_skip" -ge "$SELF_SKIP_24H" ]; then
     echo "mac-cleanup: self: all $n_skip runs that skipped arms in 24h predate the last self escalation, which already answered them; not raised again until a new one (verdict=self_skips_already_escalated)"
   fi
@@ -2115,6 +2150,69 @@ reap_idle_cargo_targets() { # <roots> <idle_hours> <dry:0|1>
 #  - *.rcgu.o codegen units, which rustc deletes after a link it finishes, so
 #    one older than the age floor was left by a compile that was killed.
 # Never a file younger than the floor, and never one any process holds open.
+# OVER THE CARGO BUDGET, KEEP ONE FEWER (disk RCA 20261030-193722). The newest
+# 3 per stem is the healthy plateau of the shared target, 50-66 GiB, and
+# safe-cargo refuses every build above AMUX_CARGO_MAX_TARGET_GB (64): on
+# 2026-10-30 it read 65.9 GiB with nothing superseded to prune, so every lane's
+# build was refused and the only way through was a private target. When a kept
+# target measures over the cap, this pass keeps keep-1 per stem (never below
+# 1). A size probe that does not answer in time leaves keep as it is and says so.
+superseded_keep() { # <keep> <targets, colon separated> <cap_kb> -> sets SUPERSEDED_KEEP_EFFECTIVE
+  local keep=$1 targets=$2 cap_kb=$3 t kb over="" IFS_OLD=$IFS
+  SUPERSEDED_KEEP_EFFECTIVE=$keep
+  [ "${keep:-0}" -gt 1 ] && [ "${cap_kb:-0}" -gt 0 ] || return 0
+  IFS=':'
+  for t in $targets; do
+    IFS=$IFS_OLD
+    [ -n "$t" ] && [ -d "$t" ] || continue
+    kb=$(timeout "${SUPERSEDED_SIZE_PROBE_S:-90}" du -sk -- "$t" 2>/dev/null | cut -f1)
+    if [ -z "$kb" ]; then
+      echo "mac-cleanup: superseded artifacts: size of $t UNMEASURED within ${SUPERSEDED_SIZE_PROBE_S:-90}s; keeping $keep per stem (verdict=superseded_keep_cap_unmeasured)"
+      continue
+    fi
+    [ "$kb" -gt "$cap_kb" ] && over="$t ($((kb / 1048576)) GiB over the $((cap_kb / 1048576)) GiB cargo budget)"
+  done
+  IFS=$IFS_OLD
+  if [ -n "$over" ]; then
+    SUPERSEDED_KEEP_EFFECTIVE=$((keep - 1))
+    echo "mac-cleanup: superseded artifacts: $over; keeping $SUPERSEDED_KEEP_EFFECTIVE per stem this pass, not $keep (verdict=superseded_keep_lowered_over_cap)"
+  fi
+}
+
+# INCREMENTAL TREES IN THE SHARED TARGETS (disk RCA 20261030-193722). cargo
+# writes debug/incremental/<crate>-<hash>/ per fingerprint and never deletes the
+# old one; only the deploy builder pruned, and only its own profile. The shared
+# target's debug/incremental held 263 trees, 12.3 GiB, while safe-cargo refused
+# every lane's build over the 64 GiB budget. Same pruner, same guards (the two
+# newest trees per crate kept, nothing idle under 2 h, only crates rebuilt in
+# the last 2 h), read from origin/main like this tick, not the shared tree.
+prune_kept_incremental() { # <targets, colon separated> <dry:0|1> [pruner script]
+  local targets=$1 dry=${2:-0} script=${3:-} t d out IFS_OLD=$IFS tmp=""
+  if [ -z "$script" ]; then
+    tmp=$(mktemp "${TMPDIR:-/tmp}/prune-incr.XXXXXX")
+    if ! git show origin/main:scripts/prune-superseded-incremental.sh > "$tmp" 2>/dev/null || ! bash -n "$tmp" 2>/dev/null; then
+      echo "mac-cleanup: incremental: pruner unavailable from origin/main here; nothing pruned (verdict=incremental_pruner_unavailable)"
+      rm -f -- "${tmp:?}"; return 0
+    fi
+    script=$tmp
+  fi
+  IFS=':'
+  for t in $targets; do
+    IFS=$IFS_OLD
+    for d in "$t"/debug/incremental; do
+      [ -d "$d" ] || continue
+      if [ "$dry" = 1 ]; then echo "mac-cleanup: incremental: would prune superseded trees in $d (dry run)"; continue; fi
+      # since = the pruner's own idle floor: a crate rebuilt in that window
+      # sheds its older trees; nothing touched inside it is removed.
+      out=$(bash "$script" "$d" "$(( $(date +%s) - ${AMUX_INCREMENTAL_IDLE_H:-2} * 3600 ))" 2>&1) || true
+      echo "mac-cleanup: $out"
+    done
+  done
+  IFS=$IFS_OLD
+  [ -n "$tmp" ] && rm -f -- "${tmp:?}"
+  return 0
+}
+
 prune_superseded_artifacts() { # <roots> <keep_n> <min_age_min> <dry:0|1> [budget_s]
   # One pass per stage, never a process per file (self RCA 20261018-103045): the
   # first version ran has_open_handle (sed + a regex grep over the whole lsof
@@ -2565,6 +2663,12 @@ swap_burn_note() { # <burn_gbh> <swap_total_prev_mb> <swap_total_now_mb> <hours_
   }'
 }
 
+niced_cpu_pct() { # -> the CPU percent held at nice >= NICED_MIN right now, or -1 unmeasured
+  $NICED_PS_CMD 2>/dev/null | awk -v m="$NICED_MIN" 'NF>=2 {n++; if ($1+0 >= m) s+=$2} END{ if (n) printf "%.0f", s+0; else print -1 }'
+}
+cpu_over_after_niced() { # <load15> <ncpu> <niced_pct>: true while the load less the niced share is still over CPU_SHARE
+  awk -v l="$1" -v n="$2" -v p="$3" -v cs="$CPU_SHARE" 'BEGIN{ if (p < 0) exit 0; exit !(n > 0 && (l - p/100)/n > cs) }'
+}
 classify_constraints() { # <disk_free_gb> <burn> <hours_to_full> <pressure> <swap_free_mb> <load15> <ncpu> <family_exceeds:0|1> <swap_total_mb> [cpu_idle_pct]
   awk -v df="$1" -v b="$2" -v h="$3" -v pr="$4" -v sw="$5" -v l="$6" -v n="$7" -v fam="$8" -v swt="$9" -v idle="${10:--1}" -v imax="$CPU_IDLE_MAX_PCT" \
       -v floor="$DISK_FLOOR_GB" -v htf="$HOURS_TO_FULL" -v swf="$SWAP_FREE_FLOOR_MB" -v cs="$CPU_SHARE" -v swcp="$SWAP_FREE_CRITICAL_PCT" -v sgd="$SWAP_GROW_DISK_GB" -v famd="${FAMILY_DESC:-}" 'BEGIN{
@@ -2724,9 +2828,27 @@ state_put() { # <file> <key=value>...
 }
 # 0 if <class> may escalate now: never escalated, or the last one is older than the cooldown.
 escalation_due() { # <state_file> <class> <now> <cooldown_h>
-  local last; last=$(state_get "$1" "esc_$2")
+  local last cleared; last=$(state_get "$1" "esc_$2")
   [ -z "$last" ] && return 0
+  # The cooldown is per INCIDENT: a class that measured clear after its last
+  # escalation is a new incident now, and escalates at once. A flat cooldown
+  # suppressed a fresh incident that began inside it (implicit state machines
+  # inventory 2026-10-31, #27).
+  cleared=$(state_get "$1" "esc_$2_cleared")
+  [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && return 0
   [ $(( $3 - last )) -ge $(( $4 * 3600 )) ]
+}
+
+# Record, for every class escalated before, the first tick it measures clear.
+note_cleared_classes() { # <state_file> <verdict lines> <now>
+  local cls last cleared
+  for cls in $(sed -n 's/^esc_\([a-z0-9]*\)=[0-9][0-9]*$/\1/p' "$1" 2>/dev/null); do
+    printf '%s\n' "$2" | awk -v c="$cls" '$1==c{f=1} END{exit !f}' && continue
+    last=$(state_get "$1" "esc_$cls"); cleared=$(state_get "$1" "esc_${cls}_cleared")
+    [ -n "$cleared" ] && [ "$cleared" -gt "$last" ] 2>/dev/null && continue
+    state_put "$1" "esc_${cls}_cleared=$3"
+    echo "mac-cleanup: $cls measures clear since its last escalation; a new $cls incident will escalate at once verdict=escalation_class_cleared"
+  done
 }
 
 # The amux lane a process belongs to: walk its parent chain to a tmux PANE and
@@ -2986,8 +3108,15 @@ keep_docker_context() { # <profile>
 #  - A plain file under LANE_TMP_KEEP_FILE_KB is kept. Those are hand-written
 #    scripts and configs; the space this reaper exists for (101 GB on
 #    2026-10-04) was build trees and extracts, never small files.
+#  - A directory holding a .amux-keep file at its top is kept (backend,
+#    2026-11-03): ~/.amux/tmp/backend/evalset2 held the only copy of 340 hand
+#    labels beside multi-MB embeddings, idled past the floor and was removed.
+#    The tick logged only a count, so backend could not tell what removed it.
+#    Every removal is now one line with path, size and idle floor, in the run's
+#    output and appended to $STATE_DIR/lane-tmp-removed.log.
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 ledger=""
+  [ -n "${STATE_DIR:-}" ] && ledger="$STATE_DIR/lane-tmp-removed.log"
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   # A directory of a few small files is kept like a small file (mxp-gs12,
   # 2026-10-17): ~/.amux/tmp/mxp-gs12/mvs-drill/standby_ok, a 1 KB manual gate a
@@ -3035,6 +3164,7 @@ reap_lane_tmp() { # <dry:0|1>
     if [ "$rc" = 142 ]; then n_unk=$((n_unk+1)); continue; fi
     [ -n "$out" ] && continue
     if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
+    if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.amux-keep" ]; then n_marked=$((n_marked+1)); continue; fi
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
@@ -3048,13 +3178,25 @@ reap_lane_tmp() { # <dry:0|1>
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
     k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
-    if [ "$dry" = 1 ]; then n=$((n+1)); kb=$((kb+${k:-0})); continue; fi
-    rm -rf -- "${e:?}" 2>/dev/null && { n=$((n+1)); kb=$((kb+${k:-0})); }
+    if [ "$dry" = 1 ]; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp would remove $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min)"
+      continue
+    fi
+    if rm -rf -- "${e:?}" 2>/dev/null; then
+      n=$((n+1)); kb=$((kb+${k:-0}))
+      echo "mac-cleanup:   lane tmp removed $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min) (verdict=lane_tmp_entry_removed)"
+      if [ -n "$ledger" ]; then
+        mkdir -p "$STATE_DIR" && printf '%s\t%s\t%s\t%s\tidle_min=%s\n' "$(date '+%F %T %z')" "${e#"$root"/}" "${k:-0}" "$e" "$LANE_TMP_IDLE_MIN" >> "$ledger"
+      fi
+    else
+      echo "mac-cleanup:   lane tmp WARN could not remove $e (verdict=lane_tmp_entry_remove_failed)"
+    fi
   done
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K)$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
@@ -3238,6 +3380,21 @@ EOF
 }
 
 # Stop every idle running VM. Sets VMS_STOPPED. Records each stop.
+# The pressure the idle-VM arm acts on: the worse of the tick's first reading and
+# this one. Purge runs in between and relieves pressure for a moment, so the
+# later reading alone skipped this arm with swap at 98% (Mac cpu RCA
+# 20261102-114812: 2 at the start, 1 here, no "idle VMs" line in the run).
+vm_arm_pressure() { # <start> <now>
+  local start=$1 now=$2
+  case "$start" in ''|*[!0-9]*) start=-1 ;; esac
+  if [ "$start" -gt "$now" ]; then
+    echo "mac-cleanup: idle VMs judged on pressure $start from the tick's start, $now after purge (verdict=vm_arm_start_pressure)" >&2
+    echo "$start"
+  else
+    echo "$now"
+  fi
+}
+
 stop_idle_vms() { # <dry:0|1> <why>
   local dry=$1 why=$2 p rc n_busy=0 n_unk=0 profiles cmd
   VMS_STOPPED=0
@@ -3493,6 +3650,11 @@ echo "mac-cleanup: shell-snapshots found=${stale_found} killed=${stale_killed} k
 
 # ── act: stop orphaned sqlite .backup copies of amux's databases ─────────────
 reap_orphan_sqlite_backups "$DRY"
+# Caps BEFORE the health probes (Mac hog RCA 20261101-004551): the hog check
+# reads each container's cap, so a cap applied after it escalated a VM this same
+# tick had just brought within its caps.
+[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
+tick_mark "health"
 system_health "$DRY"
 
 # ── report: the consumers this script must not touch ─────────────────────────
@@ -3521,14 +3683,15 @@ if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then
   echo "mac-cleanup: disk tight (${tgt_free}G free, under ${TARGET_TIGHT_FREE_GB}G): build output idle ${tgt_idle}h is reclaimable this tick, not ${TARGET_IDLE_H}h"
 fi
 tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S && reap_idle_cargo_targets "$TARGET_ROOTS" "$tgt_idle" "$DRY"
-tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S"
+tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S && superseded_keep "$SUPERSEDED_KEEP" "$TARGET_KEEP" "$(( ${AMUX_CARGO_MAX_TARGET_GB:-64} * 1048576 ))" \
+  && prune_superseded_artifacts "$TARGET_ROOTS" "$SUPERSEDED_KEEP_EFFECTIVE" "$SUPERSEDED_MIN_AGE_MIN" "$DRY" "$TARGET_BUDGET_S" \
+  && prune_kept_incremental "$TARGET_KEEP" "$DRY"
 VMS_PRUNED=0
 # Images BEFORE the trim (Mac disk RCA 20261010-162636): the trim is what hands
 # freed VM blocks back to the host, and with images swept after it, the 2-4
 # superseded 9.84 GB builds a tick removed stayed allocated on the host until
 # the next hourly trim.
 [ "${AMUX_CLEANUP_VM_IMAGE_PRUNE:-1}" = 1 ] && tick_arm "vm images" && prune_vm_images "$DRY"
-[ "$HEALTH_PROBES" != off ] && tick_arm "vm cpu caps" && cap_vm_container_cpus "$DRY"
 if tick_arm "vm trim"; then
   if [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then prune_vm_build_caches "$DRY" "$tgt_free"; else trim_vms "$DRY"; fi
 fi
@@ -3550,6 +3713,7 @@ fi
 [ "${AMUX_CLEANUP_LANE_TMP:-1}" = 1 ] && tick_arm "lane tmp" LANE_TMP_BUDGET_S && reap_lane_tmp "$DRY"
 VMS_STOPPED=0
 vm_level=$($PRESSURE_CMD 2>/dev/null); case "$vm_level" in ''|*[!0-9]*) vm_level=-1 ;; esac
+vm_level=$(vm_arm_pressure "${level:-}" "$vm_level")
 if [ "$vm_level" -ge 2 ]; then stop_idle_vms "$DRY" "memory pressure $vm_level"; stop_idle_docker_desktop "$DRY" "memory pressure $vm_level"
 elif [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then stop_idle_vms "$DRY" "disk under ${TARGET_TIGHT_FREE_GB}G"; fi
 tick_arm "worktrees" WORKTREE_BUDGET_S && reap_idle_worktrees "$WORKTREE_ROOTS" "$WORKTREE_IDLE_H" "$DRY"
@@ -3744,6 +3908,14 @@ fi
 if awk -v l="$load15" -v n="$ncpu" -v cs="$CPU_SHARE" -v i="$cpu_idle" -v m="$CPU_IDLE_MAX_PCT" 'BEGIN{exit !(l>=0 && n>0 && l/n>cs && i>=m)}'; then
   echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but the CPU is ${cpu_idle}% idle: threads blocked on IO, not CPU (verdict=load_not_cpu)"
 fi
+# A load carried by niced work (the deploy builder) is not contention.
+if printf '%s\n' "$verdicts" | grep -q '^cpu '; then
+  niced_pct=$(niced_cpu_pct)
+  if ! cpu_over_after_niced "$load15" "$ncpu" "$niced_pct"; then
+    verdicts=$(printf '%s\n' "$verdicts" | grep -v '^cpu ' || true)
+    echo "mac-cleanup: load15=${load15}/${ncpu} is over ${CPU_SHARE} of cores but ${niced_pct}% of CPU runs at nice ${NICED_MIN} or lower priority, which yields to every worker: not contention (verdict=load_is_niced_work)"
+  fi
+fi
 # Say so when a low swap reading was let through because swap can still grow,
 # so a sweep can tell "judged growable" from "never measured".
 if [ "$level_now" = 1 ] && printf '%s' "$swap_free_now" | grep -qE '^[0-9.]+$' && \
@@ -3840,6 +4012,7 @@ else
     echo; echo "## Full tick output"; echo "~/.amux/logs/mac-cleanup-tick.last"
   } > "$bundle"
   grep -a 'verdict=vm_container_writer\|verdict=open_file_writer' "$bundle" | sed 's/^- /mac-cleanup: disk writer /'
+  [ "$DRY" = "1" ] || note_cleared_classes "$STATE" "$verdicts" "$now"
   while IFS= read -r v; do
     cls=${v%% *}
     if [ "$DRY" = "1" ]; then echo "mac-cleanup: constraint $v — would escalate (dry run)"; continue; fi

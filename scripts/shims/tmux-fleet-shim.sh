@@ -19,6 +19,17 @@
 set -u
 shimdir=$(cd "$(dirname "$0")" && pwd -P)
 
+# ANOTHER COPY OF AN AMUX SHIM IS NOT THE REAL BINARY (cpu RCA 20261030-065821).
+# Skipping only this directory let two copies on one PATH (~/.amux/shims and a
+# demo home's shims) each take the other for the real binary and exec it back
+# and forth: one `pgrep` ran that way for 7h44m and the Mac allocated ~875
+# pids a second. A candidate that is a script mentioning amux is a shim copy,
+# whatever its age; real binaries are not scripts.
+_amux_shim_copy() { # <path>
+  local first=""
+  IFS= read -r first < "$1" 2>/dev/null || return 1
+  case "$first" in '#!'*) grep -qs 'amux' "$1" ;; *) return 1 ;; esac
+}
 # The real binary is the first tmux on PATH that is not in this directory.
 real=""
 IFS=: read -r -a dirs <<< "${PATH:-}"
@@ -26,7 +37,7 @@ for d in "${dirs[@]}"; do
   [ -n "$d" ] || continue
   dd=$(cd "$d" 2>/dev/null && pwd -P) || continue
   [ "$dd" = "$shimdir" ] && continue
-  if [ -x "$d/tmux" ]; then real="$d/tmux"; break; fi
+  if [ -x "$d/tmux" ] && ! _amux_shim_copy "$d/tmux"; then real="$d/tmux"; break; fi
 done
 if [ -z "$real" ]; then
   echo "amux tmux-fleet shim: no real tmux found on PATH" >&2

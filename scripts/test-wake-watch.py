@@ -300,7 +300,9 @@ class WakeWatch(unittest.TestCase):
         self.assertIn("attempt 2 completed success", out)
 
     def test_a_sha_with_no_runs_yet_is_pending_never_success(self):
-        q = "/repos/o/r/actions/runs?head_sha=abc123&per_page=100"
+        full = "abc123" + "0" * 34
+        FakeGitHub.runs["/repos/o/r/commits/abc123"] = {"sha": full}
+        q = "/repos/o/r/actions/runs?head_sha=%s&per_page=100" % full
         FakeGitHub.runs[q] = {"workflow_runs": []}
         self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--sha", "abc123")[0], 0)
         self.assertEqual(self.check(advance=61)[0], 0)
@@ -314,6 +316,79 @@ class WakeWatch(unittest.TestCase):
         rc, out, _ = self.check(advance=61)
         self.assertEqual(rc, 10)
         self.assertIn("checks success u2", out)
+
+    def test_a_short_sha_is_resolved_so_the_watch_can_fire(self):
+        # AF-1063: head_sha= matches only the full sha. W-1cbd60 on "695628d9b"
+        # saw 0 runs for 3 h while its rust run succeeded, then expired unfired.
+        full = "695628d9b8" + "1" * 30
+        FakeGitHub.runs["/repos/o/r/commits/695628d9b"] = {"sha": full}
+        FakeGitHub.runs["/repos/o/r/actions/runs?head_sha=%s&per_page=100" % full] = {"workflow_runs": [
+            {"id": 9, "name": "rust", "status": "completed", "conclusion": "success", "html_url": "u9"}]}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--sha", "695628d9b", "--workflow", "rust")[0], 0)
+        self.assertEqual(self.status()["lanes"]["lane-a"][0]["target"], "ci o/r sha %s workflow rust" % full)
+        rc, out, _ = self.check(advance=61)
+        self.assertEqual(rc, 10, "the watch fires on the run of the commit it named")
+        self.assertIn("rust success u9", out)
+
+    def test_a_workflow_display_name_is_resolved_so_the_watch_can_fire(self):
+        # W-fa25ca on "rust" hit /actions/workflows/rust/runs, a 404, on every
+        # poll for 3 h while two rust runs completed, then expired unfired.
+        FakeGitHub.runs["/repos/o/r/actions/workflows"] = {"workflows": [
+            {"id": 7, "name": "rust", "path": ".github/workflows/rust.yml"},
+            {"id": 8, "name": "checks", "path": ".github/workflows/checks.yml"}]}
+        FakeGitHub.runs["/repos/o/r/actions/workflows/rust.yml/runs"] = {"workflow_runs": [
+            {"id": 11, "name": "rust", "status": "completed", "conclusion": "failure", "html_url": "u11",
+             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(T0 + 30))}]}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--workflow", "rust")[0], 0)
+        self.assertEqual(self.status()["lanes"]["lane-a"][0]["target"], "ci o/r next run of workflow rust.yml")
+        rc, out, _ = self.check(advance=61)
+        self.assertEqual(rc, 10, "the watch fires on the workflow's next run: " + out)
+        self.assertIn("rust failure u11", out)
+
+    def test_a_watch_saved_with_a_display_name_still_fires(self):
+        # Watches registered before the fix hold "rust" on disk.
+        FakeGitHub.runs["/repos/o/r/actions/workflows"] = {"workflows": [
+            {"id": 7, "name": "rust", "path": ".github/workflows/rust.yml"}]}
+        FakeGitHub.runs["/repos/o/r/actions/workflows/rust.yml/runs"] = {"workflow_runs": [
+            {"id": 12, "name": "rust", "status": "completed", "conclusion": "success", "html_url": "u12",
+             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(T0 + 30))}]}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--workflow", "rust")[0], 0)
+        lane_dir = os.path.join(self.home, "wake-watch", "lane-a")
+        path = [os.path.join(lane_dir, n) for n in os.listdir(lane_dir) if n.endswith(".json")][0]
+        with open(path) as f:
+            w = json.load(f)
+        w["workflow"] = "rust"
+        with open(path, "w") as f:
+            json.dump(w, f)
+        rc, out, _ = self.check(advance=61)
+        self.assertEqual(rc, 10, out)
+        self.assertIn("rust success u12", out)
+
+    def test_a_workflow_github_does_not_have_is_refused(self):
+        FakeGitHub.runs["/repos/o/r/actions/workflows"] = {"workflows": [
+            {"id": 7, "name": "rust", "path": ".github/workflows/rust.yml"}]}
+        rc, _, err = self.run_ww("add", "ci", "--repo", "o/r", "--workflow", "rusty")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("no workflow named rusty", err)
+
+    def test_a_blind_watch_says_why_when_it_expires(self):
+        # A pre-fix watch holding a name nothing resolves: it must not expire
+        # reading like a quiet wait.
+        FakeGitHub.runs["/repos/o/r/actions/workflows"] = {"workflows": [
+            {"id": 7, "name": "rust", "path": ".github/workflows/rust.yml"}]}
+        self.assertEqual(self.run_ww("add", "ci", "--repo", "o/r", "--workflow", "rust", "--expires", "2m")[0], 0)
+        FakeGitHub.runs["/repos/o/r/actions/workflows"] = {"workflows": []}
+        self.assertEqual(self.check(advance=61)[0], 0)
+        FakeGitHub.runs["/repos/o/r/actions/workflows/rust.yml/runs"] = None
+        rc, out, _ = self.check(advance=61)
+        self.assertEqual(rc, 10)
+        self.assertIn("EXPIRED unfired", out)
+        self.assertIn("UNMEASURED at its last poll", out)
+
+    def test_a_sha_github_cannot_resolve_is_refused(self):
+        rc, _, err = self.run_ww("add", "ci", "--repo", "o/r", "--sha", "deadbee")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("could never fire", err)
 
     def test_github_unreadable_is_unmeasured_not_concluded(self):
         FakeGitHub.status_code = 401

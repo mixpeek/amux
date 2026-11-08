@@ -39,6 +39,15 @@ test('a worker tagged in a markdown file is a link in Preview, and opens the wor
   await expect(page.locator('#file-body code')).toHaveText('@' + W);
   await links.first().click();
   await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', W);
+  // The worker shows: the file closed rather than covering it (owner,
+  // 2026-10-29: "when i @ a worker and click it it should open that worker").
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+  await expect(page.locator('#peek-overlay')).toBeVisible();
+  // And Back returns to the file.
+  await expect.poll(() => page.evaluate(() => (globalThis as any).eval('_nav.list[_nav.pos] && _nav.list[_nav.pos].k'))).toBe('peek');
+  await page.evaluate(() => (window as any).navBack());
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/);
+  await expect(page.locator('#file-body')).toContainText('Ask');
 });
 
 test('Edit and Raw show the tag as text, and Edit offers workers after @', async ({ page }) => {
@@ -67,4 +76,51 @@ test('Edit and Raw show the tag as text, and Edit offers workers after @', async
     w.setFileViewMode('preview');
   });
   await expect(page.locator('#file-body .md-worker-link')).toHaveCount(2);
+});
+
+// Owner, 2026-10-29 (MSG-100765): "this should autocomplete dropdown the
+// worker". Typed partway down the editor, the list opened under the whole
+// box, behind the status bar. It opens at the caret, on top, and Enter takes it.
+test('the worker list opens at the caret in the editor, on top, and Enter takes it', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => (window as any).setFileViewMode('edit'));
+  const ta = page.locator('#file-edit-ta');
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(8, 8); });
+  await page.keyboard.type(' contract, comments @md-t');
+  const list = page.locator('#file-edit-wrap .ac-list.open');
+  await expect(list).toBeVisible();
+  const r = await page.evaluate(() => {
+    const l = document.querySelector('#file-edit-wrap .ac-list.open') as HTMLElement;
+    const b = l.getBoundingClientRect(), t = document.getElementById('file-edit-ta')!.getBoundingClientRect();
+    const hit = document.elementFromPoint(b.left + 10, b.top + 10);
+    return { onTop: !!hit && l.contains(hit), inside: b.top >= t.top && b.bottom <= t.bottom + 1, nearTop: b.top - t.top < 120 };
+  });
+  expect(r.onTop, 'nothing covers the list').toBe(true);
+  expect(r.inside, 'inside the editor').toBe(true);
+  expect(r.nearTop, 'by the caret (line 3), not at the bottom').toBe(true);
+  await page.screenshot({ path: test.info().outputPath('md-at-caret.png') });
+  await page.keyboard.press('Enter');
+  await expect(ta).toHaveValue(new RegExp('comments @' + W + ' '));
+});
+
+// Owner, 2026-10-29: "when i refresh an open md file it goes to the worker
+// view". A file opened over a worker takes the address, so a reload reopens
+// the file; closing it gives the worker's address back.
+test('a file opened over a worker reopens on reload, and closing it gives the worker back its address', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => (window as any).closeFilePreview());
+  await page.evaluate(w => (window as any).openPeek(w), W);
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('peek=');
+  await page.evaluate(p => (window as any).openFilePreview(p), FILE);
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('#path=');
+  await page.reload();
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 15000 });
+  await expect(page.locator('#file-body')).toContainText('Ask');
+  // Closing a file opened over a worker puts the worker's address back.
+  await page.evaluate(() => (window as any).closeFilePreview());
+  await page.evaluate(w => (window as any).openPeek(w), W);
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('peek=');
+  await page.evaluate(p => (window as any).openFilePreview(p), FILE);
+  await page.evaluate(() => (window as any).closeFilePreview());
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('peek=');
 });

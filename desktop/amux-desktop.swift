@@ -30,15 +30,20 @@ struct Connection: Codable {
 
 /// Which server a page is on, as a color for its tab (Ethan, 2026-10-25: "put
 /// a color code based on the location/connection (so if its localhost/desktop
-/// vs sandbox, etc.) in the tabs"). This Mac is green, amux cloud (a sandbox
-/// on *.amux.io) blue, and any other server keeps one color of its own, picked
-/// from its host so it never changes between launches.
+/// vs sandbox, etc.) in the tabs"). This Mac is green, and every other server has
+/// a color of its own (amux-tabcolors.swift), saved so it never changes between
+/// launches. 2026-10-31: every *.amux.io server was blue, so sandbox and
+/// mixpeek-dev tabs looked the same.
 struct ConnectionBadge {
     let color: NSColor
     let name: String
     let host: String
 
     private static var cache: [String: ConnectionBadge] = [:]
+    private static let tabColorsKey = "amux.tabColors"
+    /// tabColorNames' colors, in the same order.
+    private static let tabNSColors: [NSColor] = [.systemBlue, .systemOrange, .systemPurple, .systemPink, .systemTeal,
+                                                 .systemYellow, .systemIndigo, .systemRed, .systemBrown, .systemMint, .systemCyan]
 
     static func of(_ url: URL?) -> ConnectionBadge? {
         guard let url = url, let host = url.host, url.scheme == "https" || url.scheme == "http" else { return nil }
@@ -52,13 +57,12 @@ struct ConnectionBadge {
         let color: NSColor
         if local {
             color = .systemGreen
-        } else if host == "amux.io" || host.hasSuffix(".amux.io") {
-            color = .systemBlue
         } else {
-            let palette: [NSColor] = [.systemOrange, .systemPurple, .systemPink, .systemTeal, .systemYellow, .systemIndigo, .systemBrown]
-            var h: UInt32 = 5381
-            for b in host.utf8 { h = (h &* 33) ^ UInt32(b) }
-            color = palette[Int(h % UInt32(palette.count))]
+            let saved = (UserDefaults.standard.dictionary(forKey: tabColorsKey) as? [String: Int]) ?? [:]
+            let pick = tabColorIndex(for: key, assigned: saved)
+            if pick.assigned != saved { UserDefaults.standard.set(pick.assigned, forKey: tabColorsKey) }
+            color = tabNSColors[pick.index]
+            dlog("verdict=tab_color server=\(key) color=\(tabColorNames[pick.index]) servers_colored=\(pick.assigned.count)")
         }
         let badge = ConnectionBadge(color: color, name: named ?? (local ? "This Mac" : host), host: host)
         cache[key] = badge
@@ -130,6 +134,10 @@ struct Config: Codable {
     var cleanExit: Bool?
     // View > Zoom All Windows (2026-10-28). Unset means on.
     var zoomAllWindows: Bool?
+    // Workspaces > Freeze Workspace (2026-11-03): the workspaces whose tabs,
+    // names and workers are locked, by name; "" is the unsaved one open when no
+    // workspace is (amux-workspace.swift).
+    var frozenWorkspaces: [String]?
 }
 
 /// One line in the app's log: NSLog, which reaches the file below too.
@@ -442,6 +450,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             cfg.websiteDataStore = .default()
             cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
             cfg.mediaTypesRequiringUserActionForPlayback = []
+            // The word suggestions macOS shows as you type (Ethan, 2026-11-07:
+            // "add spellcheck/autocorrect/ suggestions into the inputs").
+            if #available(macOS 14.0, *) { cfg.allowsInlinePredictions = true }
         }
         // A configuration handed over by window.open already carries the
         // script from the window that opened it.
@@ -457,7 +468,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         webView.allowsMagnification = true
         webView.allowsBackForwardNavigationGestures = true
 
-        let window = NSWindow(
+        let window = AmuxWindow(
             contentRect: frame ?? DashboardWindowController.defaultFrame(),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
@@ -529,6 +540,24 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         }
         if message.name == "amuxPane" {
             let d = message.body as? [String: Any]
+            // ⌘K on a place already open in another tab or pane: that one
+            // comes forward instead of this page opening it again (owner,
+            // 2026-10-29, MSG-100765). The page waits for the answer.
+            if (d?["op"] as? String) == "focus", let hash = d?["hash"] as? String, let token = d?["token"] as? String {
+                let found = app?.focusOpenPage(hash: hash, asker: self) ?? false
+                let t = token.filter { $0.isLetter || $0.isNumber }
+                webView.evaluateJavaScript("typeof _cmdkFocusAck === 'function' && _cmdkFocusAck('\(t)', \(found))", completionHandler: nil)
+                return
+            }
+            // ⌘K asks which places the other tabs and panes show, to mark
+            // those rows Open (owner, 2026-11-07).
+            if (d?["op"] as? String) == "places", let token = d?["token"] as? String {
+                let places = app?.openPlaces(except: self) ?? []
+                let t = token.filter { $0.isLetter || $0.isNumber }
+                let json = (try? JSONSerialization.data(withJSONObject: places)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+                webView.evaluateJavaScript("typeof _cmdkPlacesAck === 'function' && _cmdkPlacesAck('\(t)', \(json))", completionHandler: nil)
+                return
+            }
             guard (d?["op"] as? String) == "split" else { return }
             // Only a page on this tab's own server; anything else splits the
             // page this tab is showing.
@@ -566,6 +595,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     }
 
     func rename(_ name: String?) {
+        if app?.frozen("rename") == true { return }
         let n = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         customName = (n?.isEmpty ?? true) ? nil : n
         dlog("verdict=tab_renamed named=\(customName == nil ? 0 : 1) view=\(viewHash)")
@@ -576,6 +606,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// Renames the tab in the window's tab bar: the whole tab when the
     /// window is split into panes, else its page.
     func renameTab(_ name: String?) {
+        if app?.frozen("rename") == true { return }
         guard grid != nil else { rename(name); return }
         let n = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         windowName = (n?.isEmpty ?? true) ? nil : n
@@ -604,6 +635,8 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func updateTitle() {
         window?.title = pageTitle
+        // A frozen workspace says so under every window's title (amux-workspace.swift).
+        if paneHost == nil { window?.subtitle = (app?.isFrozen ?? false) ? "Frozen" : "" }
         // The tab's dot says which server this page is on.
         if let w = window, let badge = ConnectionBadge.of(webView.url ?? lastServerURL),
            w.tab.accessoryView?.identifier?.rawValue != "amux-connection-" + badge.host {
@@ -654,6 +687,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// ⌘W in a window split into panes closes the focused pane's tab
     /// (amux-panes.swift); the window's close button still closes the window.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if app?.frozen("close_tab") == true { return false }
         if let top = grid, let app = app, top.all.count > 1, NSApp.currentEvent?.type == .keyDown {
             // The innermost focused pane's tab, inside a split tab included.
             let g = app.deepestFocused(top)
@@ -700,6 +734,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // fall back to the default server (Ethan, 2026-10-26).
         if let u = webView.url, u.scheme == "https" || u.scheme == "http" { lastServerURL = u }
         app?.loadNextDeferred(after: self)
+        applyFreeze()
         // The first dashboard page carries the token the server's copy of the
         // workspaces needs; until one sync reaches it, each page load tries again.
         if let a = app, a.workspacesSync == .never, a.workspacesKey != nil, webView.url.map(a.isServerURL) ?? false {
@@ -850,6 +885,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url, let app = app {
             if app.isServerURL(url) {
+                if app.frozen("page_new_window") { return nil }
                 dlog("verdict=page_opened_window url=\(url.absoluteString) from=\(webView.url?.absoluteString ?? "-")")
                 let c = app.openWindow(url: nil, frame: nil, configuration: configuration)
                 return c.webView
@@ -985,6 +1021,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tabDragMonitor: Any?
     var globeMonitor: Any?
     var globeDown = false, globeUsed = false
+    var lastGlobeTap: TimeInterval = 0
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]
     var lastTabPlaced = Date.distantPast
@@ -1032,6 +1069,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         routeStderrToLogFile()
+        registerTextCheckingDefaults()
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenuBar(self)
         NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
@@ -1105,6 +1143,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// connection (like sandbox) it should open the tab in that"); only a tab on
     /// no server falls back to the default connection.
     func newTab(nextTo c: DashboardWindowController, hash: String = "#view=sessions") {
+        if frozen("new_tab") { return }
         let n = DashboardWindowController(app: self, frame: c.window?.frame, configuration: nil)
         controllers.append(n)
         let u = url(withHash: hash, on: c.serverOrigin)
@@ -1742,6 +1781,47 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         dlog("verdict=notification_opened where=new_tab why=\(why) hash=\(hash)")
     }
 
+    /// The place a page address names: "peek=<worker>" or "view=<tab>",
+    /// without the rest (which tab of a worker, scroll and so on).
+    static func placeKey(_ fragment: String) -> String {
+        let f = fragment.hasPrefix("#") ? String(fragment.dropFirst()) : fragment
+        return String(f.split(separator: "&").first ?? "")
+    }
+    /// The places ("peek=<worker>", "view=<tab>") every tab and pane other
+    /// than `asker` shows, once each.
+    func openPlaces(except asker: DashboardWindowController) -> [String] {
+        var seen = Set<String>()
+        return controllers.compactMap { c -> String? in
+            guard c !== asker else { return nil }
+            let k = AppDelegate.placeKey(c.webView.url?.fragment ?? "")
+            guard k.hasPrefix("peek=") || k.hasPrefix("view="), seen.insert(k).inserted else { return nil }
+            return k
+        }
+    }
+    /// Brings forward the tab or pane, other than `asker`, already showing the
+    /// place `hash` names, selecting it in its pane and its window in its tab
+    /// group. False when no page shows it.
+    func focusOpenPage(hash: String, asker: DashboardWindowController) -> Bool {
+        let want = AppDelegate.placeKey(hash)
+        guard want.hasPrefix("peek=") || want.hasPrefix("view=") else { return false }
+        guard let c = controllers.first(where: { $0 !== asker && AppDelegate.placeKey($0.webView.url?.fragment ?? "") == want }) else {
+            dlog("verdict=palette_focus_none place=\(want)")
+            return false
+        }
+        let root = c.rootHost
+        if let g = c.paneHost?.grid, let id = g.id(of: c) {
+            g.select(c, in: id)
+            g.focus(id)
+        }
+        if let w = root.window {
+            if w.isMiniaturized { w.deminiaturize(nil) }
+            w.tabGroup?.selectedWindow = w
+            w.makeKeyAndOrderFront(nil)
+        }
+        dlog("verdict=palette_focus_existing place=\(want) pane=\(c.paneHost != nil ? 1 : 0)")
+        return true
+    }
+
     /// Open a dashboard hash in the key window, or a new one.
     func openHash(_ hash: String) {
         let safe = hash.allSatisfy { $0.isLetter || $0.isNumber || "#=&:-_.%|@".contains($0) }
@@ -1782,7 +1862,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     // ── Menu actions ──
-    @objc func newWindow(_ sender: Any?) { openWindow(url: nil, frame: nil) }
+    @objc func newWindow(_ sender: Any?) { if !frozen("new_window") { openWindow(url: nil, frame: nil) } }
 
     @objc func newTabAction(_ sender: Any?) {
         // A window split into panes: a tab in the focused pane (amux-panes.swift).
@@ -1792,6 +1872,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     /// The current worker or tab in its own window.
     @objc func openCurrentInNewWindow(_ sender: Any?) {
+        if frozen("new_window") { return }
         guard let c = keyPage else { openWindow(url: nil, frame: nil); return }
         c.webView.evaluateJavaScript(currentViewJS) { [weak self] result, _ in
             guard let self = self else { return }
@@ -1805,6 +1886,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func reload(_ sender: Any?) { keyPage?.webView.reload() }
+    /// ⌘⇧R: the active pane only, past every cache (owner, 2026-10-29: "make it
+    /// so cmd shift r works to clear cache of a particular pane thats active").
+    /// The dashboard's service worker serves its assets from Cache Storage, so
+    /// a plain reload, even from origin, can show the old page: its caches go
+    /// first, then WebKit's memory and disk cache, then the pane reloads from
+    /// the server. The caches belong to the server's address, so the other
+    /// panes on it fetch fresh on their next load; only this pane reloads now.
+    @objc func reloadIgnoringCache(_ sender: Any?) {
+        guard let page = keyPage else { return }
+        let wv = page.webView
+        let js = "(async () => { let n = 0; if (window.caches) { for (const k of await caches.keys()) { if (await caches.delete(k)) n++; } } return n; })()"
+        wv.callAsyncJavaScript("return await \(js)", arguments: [:], in: nil, in: .page) { result in
+            let cleared = (try? result.get()) as? NSNumber
+            let store = wv.configuration.websiteDataStore
+            let types: Set<String> = [WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeDiskCache]
+            store.removeData(ofTypes: types, modifiedSince: .distantPast) {
+                dlog("verdict=pane_reload_ignoring_cache sw_caches_cleared=\(cleared?.intValue ?? -1) url=\(wv.url?.absoluteString.prefix(120) ?? "")")
+                wv.reloadFromOrigin()
+            }
+        }
+    }
     // Zoom goes through the dashboard's own zoom (root font size on WebKit).
     // WKWebView.pageZoom shrank the page's CSS viewport without the dashboard
     // re-measuring it, so the file viewer kept its old height and its bottom
@@ -1935,6 +2037,30 @@ extension Config {
 }
 
 // ── Standard menu bar ──
+/// Spelling in every text box (Ethan, 2026-11-07: "add spellcheck/autocorrect/
+/// suggestions into the inputs"). The page asks for it (spellcheck="true",
+/// autocorrect="on"), but in a WKWebView the app decides: WebKit reads these
+/// keys from the app's defaults, and none were set, so nothing was checked or
+/// corrected. Registered defaults lose to a choice made in Edit > Spelling and
+/// Grammar or Edit > Substitutions, which WebKit saves under the same keys.
+/// Smart quotes and dashes stay off: a curly quote breaks a command sent to a
+/// worker.
+func registerTextCheckingDefaults() {
+    UserDefaults.standard.register(defaults: [
+        "WebContinuousSpellCheckingEnabled": true,
+        "WebAutomaticSpellingCorrectionEnabled": true,
+        "WebAutomaticTextReplacementEnabled": true,
+        "WebGrammarCheckingEnabled": false,
+        "WebAutomaticQuoteSubstitutionEnabled": false,
+        "WebAutomaticDashSubstitutionEnabled": false,
+    ])
+    let d = UserDefaults.standard
+    NSLog("amux-desktop: verdict=text_checking_defaults spelling=%d autocorrect=%d replacement=%d",
+          d.bool(forKey: "WebContinuousSpellCheckingEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticSpellingCorrectionEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticTextReplacementEnabled") ? 1 : 0)
+}
+
 func buildMenuBar(_ d: AppDelegate) {
     let mainMenu = NSMenu()
     func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String,
@@ -1984,12 +2110,29 @@ func buildMenuBar(_ d: AppDelegate) {
     add(edit, "Copy", #selector(NSText.copy(_:)), "c")
     add(edit, "Paste", #selector(NSText.paste(_:)), "v")
     add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+    edit.addItem(.separator())
+    // The standard spelling menus. The focused WKWebView answers each action
+    // and shows its checkmark.
+    let spelling = NSMenu(title: "Spelling and Grammar")
+    add(spelling, "Show Spelling and Grammar", #selector(NSText.showGuessPanel(_:)), ":")
+    add(spelling, "Check Document Now", #selector(NSText.checkSpelling(_:)), ";")
+    spelling.addItem(.separator())
+    add(spelling, "Check Spelling While Typing", #selector(NSTextView.toggleContinuousSpellChecking(_:)), "", [])
+    add(spelling, "Check Grammar With Spelling", #selector(NSTextView.toggleGrammarChecking(_:)), "", [])
+    add(spelling, "Correct Spelling Automatically", #selector(NSTextView.toggleAutomaticSpellingCorrection(_:)), "", [])
+    edit.addItem(withTitle: "Spelling and Grammar", action: nil, keyEquivalent: "").submenu = spelling
+    let subs = NSMenu(title: "Substitutions")
+    add(subs, "Smart Quotes", #selector(NSTextView.toggleAutomaticQuoteSubstitution(_:)), "", [])
+    add(subs, "Smart Dashes", #selector(NSTextView.toggleAutomaticDashSubstitution(_:)), "", [])
+    add(subs, "Text Replacement", #selector(NSTextView.toggleAutomaticTextReplacement(_:)), "", [])
+    edit.addItem(withTitle: "Substitutions", action: nil, keyEquivalent: "").submenu = subs
     editItem.submenu = edit
     mainMenu.addItem(editItem)
 
     let viewItem = NSMenuItem()
     let view = NSMenu(title: "View")
     add(view, "Reload", #selector(AppDelegate.reload(_:)), "r", target: d)
+    add(view, "Reload Pane Ignoring Cache", #selector(AppDelegate.reloadIgnoringCache(_:)), "r", [.command, .shift], target: d)
     view.addItem(.separator())
     add(view, "Zoom In", #selector(AppDelegate.zoomIn(_:)), "+", target: d)
     add(view, "Zoom Out", #selector(AppDelegate.zoomOut(_:)), "-", target: d)

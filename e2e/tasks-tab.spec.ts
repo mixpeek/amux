@@ -221,8 +221,15 @@ test("a worker's Tasks tab lists its tasks newest first, with links, never its m
 
   await page.evaluate((w) => (window as any).openPeek(w), worker);
   await expect(page.locator('#peek-overlay')).toBeVisible();
-  await page.locator('#peek-tab-tasks').click();
-  await expect(page.locator('#peek-tab-tasks')).toHaveClass(/active/);
+  // The tab sits in a row that scrolls sideways. On WebKit the row can still be
+  // settling after Playwright scrolls the tab into view, and the tap lands
+  // beside it: "click action done" with no tab chosen (ios-safari on 19e1e55ca,
+  // both attempts). Tap again until it takes; a handler that never works still fails.
+  const tasksTab = page.locator('#peek-tab-tasks');
+  await expect(async () => {
+    await tasksTab.click();
+    await expect(tasksTab).toHaveClass(/active/, { timeout: 1000 });
+  }).toPass({ timeout: 15_000 });
   const panel = page.locator('#peek-tasks-panel');
   await expect(panel.locator('.tasks-about summary')).toHaveAttribute('aria-label', /not board issues/);
   const items = panel.locator('.task-item');

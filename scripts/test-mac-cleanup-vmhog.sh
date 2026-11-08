@@ -69,6 +69,17 @@ HEALTH_PS_CMD="echo 777 1 0 400.0 01:00:00 /usr/bin/burner"
 check_cpu_hogs 0 >/dev/null; check_cpu_hogs 0 >/dev/null
 check "a plain process over 300% escalates"          "yes" "$(has "$HEALTH_VERDICTS" 'hog burner pid 777 at 400.0% CPU on two ticks in a row (over 300%)$')"
 
+echo "6. a hog already at nice 10 yields to every worker: reported, not escalated (hog RCA 20261106-135859)"
+printf '#!/bin/sh\necho " 10"\n' > "$FIX/nice10"; chmod +x "$FIX/nice10"
+HEALTH_VERDICTS=""; rm -f -- "${STATE_DIR:?}/cpu-hogs.prev"
+out=$(HOG_NICE_CMD="$FIX/nice10"; check_cpu_hogs 0 >/dev/null; check_cpu_hogs 0; echo "VERDICT $HEALTH_VERDICTS")
+check "a niced hog is not escalated"                 "no"  "$(has "$out" 'hog burner pid 777 at 400.0%')"
+check "it says why"                                  "yes" "$(has "$out" 'runs at nice 10.*verdict=hog_niced_yields')"
+printf '#!/bin/sh\necho " 0"\n' > "$FIX/nice0"; chmod +x "$FIX/nice0"
+HEALTH_VERDICTS=""; rm -f -- "${STATE_DIR:?}/cpu-hogs.prev"
+out=$(HOG_NICE_CMD="$FIX/nice0"; check_cpu_hogs 0 >/dev/null; check_cpu_hogs 0 >/dev/null; echo "VERDICT $HEALTH_VERDICTS")
+check "control: the same hog at nice 0 escalates"    "yes" "$(has "$out" 'hog burner pid 777 at 400.0%')"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "PASS: mac-cleanup-vmhog — all checks passed"; exit 0; fi
 echo "mac-cleanup-vmhog: $fails check(s) FAILED"; exit 1

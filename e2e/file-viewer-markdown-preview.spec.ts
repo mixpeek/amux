@@ -70,6 +70,8 @@ test('markdown preview is compact: no blank line between blocks, no rule under h
     await page.evaluate(() => (window as any).setFileViewMode('raw'));
     await expect(page.locator('#mdx')).toHaveAttribute('data-mode', /edit|split/);
     await expect(page.locator('#file-edit-ta')).toHaveValue(/item 1\n/);
-    expect(await page.locator('#mdx-hl .ln').count()).toBeGreaterThan(3);
+    // Wide screens show it highlighted; a phone edits in the plain textarea (no second layer).
+    if ((page.viewportSize()?.width || 1280) > 700) expect(await page.locator('#mdx-hl .ln').count()).toBeGreaterThan(3);
+    else await expect(page.locator('#file-edit-wrap')).toHaveClass(/mdx-phone/);
   } finally { await cleanup('remove fixture note', () => fs.rmSync(file, { force: true })); }
 });

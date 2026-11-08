@@ -307,7 +307,7 @@ impl RequestLogger {
 
 /// `AMUX_REQLOG_RETAIN_DAYS`: process env wins, then server.env, then 14 —
 /// the same precedence config.rs gives every other knob.
-fn retain_days_config() -> f64 {
+pub(crate) fn retain_days_config() -> f64 {
     if let Some(d) = std::env::var("AMUX_REQLOG_RETAIN_DAYS")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
@@ -983,14 +983,33 @@ async fn get_logs(
         Ok(c) => c,
         Err(e) => return internal(e),
     };
-    let total: i64 = match conn.query_row(
+    // THE COUNT IS BOUNDED IN TIME, NOT IN ROWS (AF-1044). `total_matched` is
+    // the exact pre-LIMIT count the log sweep reads for volume, so a row cap
+    // would change its meaning. But it scans every matching row in the window
+    // (1.58M in 24h on 2026-10-30), and under load one `?session=` read took
+    // 154s on a pooled read connection while /health went 503 with the store
+    // "hung". Past the budget the count is interrupted and says so: `null`
+    // with the reason, never a number that is not the count.
+    let budget = count_budget();
+    let total: Option<i64> = match count_within(
+        &conn,
         &format!("SELECT COUNT(*) FROM _amux_request_log{where_sql}"),
-        rusqlite::params_from_iter(params.iter()),
-        |r| r.get(0),
+        &params,
+        budget,
     ) {
         Ok(n) => n,
         Err(e) => return internal(e),
     };
+    if total.is_none() {
+        tracing::warn!(
+            verdict = "logs_count_budget_exceeded",
+            budget_ms = budget.as_millis() as u64,
+            filter = %where_sql,
+            "[/api/logs AF-1044] total_matched not counted: the count ran past its budget \
+             and was interrupted so it could not hold a read connection. The page below is \
+             still served. Narrow `since`, or read volume from /api/logs/stats."
+        );
+    }
     let sql = format!(
         "SELECT ts, method, path, family, status, latency_ms, client_ip, user_agent, \
                 amux_session, worker, req_bytes, resp_bytes, answered_by, error_body, req_meta, client \
@@ -1014,7 +1033,8 @@ async fn get_logs(
     // this is the same admission on the endpoint that lacked it, so the next
     // capped read announces itself in the payload the caller already opens
     // instead of being inferred by whoever happens to compare two numbers.
-    let truncated = events.len() as i64 == limit && total > events.len() as i64;
+    // An uncounted window is truncated whenever the page is full: the rows may go on.
+    let truncated = events.len() as i64 == limit && total.is_none_or(|t| t > events.len() as i64);
     let span_h = match (events.first(), events.last()) {
         (Some(a), Some(b)) => {
             let (hi, lo) = (
@@ -1041,17 +1061,22 @@ async fn get_logs(
         tracing::warn!(
             ignored = ?ignored_params,
             recognised = ?RECOGNISED_LOG_PARAMS,
-            total_matched = total,
+            total_matched = ?total,
             "[/api/logs AF-521] query param(s) DROPPED — the rows returned are a \
              SUPERSET of what was asked for, not an answer to it. Filter on a \
              recognised key, or read `ignored_params` in the body."
         );
     }
-    Json(crate::api::measured::measured(
-        json!({
+    let body = json!({
         "events": events,
         "count": events.len(),
         "total_matched": total,
+        // Present only when the count was cut off (AF-1044), saying why it is null.
+        "total_matched_unmeasured": total.is_none().then(|| format!(
+            "the count ran past its {}ms budget and was interrupted (AMUX_LOGS_COUNT_BUDGET_MS); \
+             this is not zero. Narrow `since`, or read volume from /api/logs/stats.",
+            budget.as_millis()
+        )),
         "ignored_params": ignored_params,
         // True = you are holding the newest `limit` rows, NOT the window you
         // asked for. Page backward with `until=<oldest ts you got>`.
@@ -1064,10 +1089,58 @@ async fn get_logs(
              Page backward with `until=<the oldest ts in this page>`, or read \
              `total_matched` for volume. Do not describe this page as the window."
         } else { "" },
-        }),
-        total.max(0) as usize,
-    ))
+    });
+    // An interrupted count does not know its population, so it says so rather
+    // than offering the page size as n_considered (land review F1, AF-1044).
+    Json(match total {
+        Some(t) => crate::api::measured::measured(body, t.max(0) as usize),
+        None => crate::api::measured::measured_unknown_population(
+            body,
+            "the count ran past its budget and was interrupted (total_matched_unmeasured)",
+        ),
+    })
     .into_response()
+}
+
+/// How long `/api/logs` may spend counting `total_matched` (AF-1044).
+fn count_budget() -> std::time::Duration {
+    std::time::Duration::from_millis(
+        std::env::var("AMUX_LOGS_COUNT_BUDGET_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000),
+    )
+}
+
+/// Run a single-value COUNT, interrupting it past `budget`. `Ok(None)` means it
+/// was interrupted; any other error is returned as is.
+///
+/// The timer is JOINED before this returns, so it can fire only during the
+/// count or while the connection runs nothing (where an interrupt is a no-op).
+/// A detached timer would outlive the count and abort the page query that
+/// follows on the same pooled connection.
+pub(crate) fn count_within(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[rusqlite::types::Value],
+    budget: std::time::Duration,
+) -> rusqlite::Result<Option<i64>> {
+    use std::sync::mpsc;
+    let (done, wait) = mpsc::channel::<()>();
+    let handle = conn.get_interrupt_handle();
+    let timer = std::thread::spawn(move || {
+        if let Err(mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(budget) {
+            handle.interrupt();
+        }
+    });
+    let got = conn.query_row(sql, rusqlite::params_from_iter(params.iter()), |r| r.get(0));
+    let _ = done.send(());
+    let _ = timer.join();
+    match got {
+        Ok(n) => Ok(Some(n)),
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::OperationInterrupted => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// One DB row -> one Python-ring-shaped event (+ additive fields).
@@ -1390,6 +1463,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/debug/sse",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/board-groom/staleness",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/board-groom/{lane}",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/debug/send-profile",
         methods: &["GET"],
     },
     RouteEntry {
@@ -2112,7 +2197,43 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "DELETE"],
     },
     RouteEntry {
+        path: "/api/tiering",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/tiering/config",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/tiering/folders",
+        methods: &["POST", "PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/tiering/move",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/tiering/run",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/usage",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity/optimize",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity/{worker}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/velocity/{worker}/projection",
         methods: &["GET"],
     },
     RouteEntry {
@@ -2295,6 +2416,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/page-links/{id}/open",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/site-view",
         methods: &["POST"],
     },
     // People's pictures (avatars.rs).
@@ -2913,6 +3038,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/task-history",
         methods: &["GET"],
     },
+    // -- retired worker names and the worker each became (session_verbs::session_renames)
+    RouteEntry {
+        path: "/api/session-renames",
+        methods: &["GET"],
+    },
     // -- a worker's plan window and limit-killed agents (agent_limit_resume::worker_quota)
     RouteEntry {
         path: "/api/sessions/{name}/quota",
@@ -2927,6 +3057,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/task-history/at", methods: &["GET"] },
     // -- one task's commits, closed requests and handoff (sessions_legacy::task_links)
     RouteEntry { path: "/api/task-history/links", methods: &["GET"] },
+    RouteEntry { path: "/api/task-history/requests", methods: &["GET"] },
     // -- Converse tab: voice conversations with a worker (api/converse.rs)
     RouteEntry { path: "/api/converse/config", methods: &["GET"] },
     RouteEntry { path: "/api/converse/sweep", methods: &["POST"] },
@@ -2943,6 +3074,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/conversations/{conv}/typing", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/posts/{id}", methods: &["PATCH", "DELETE"] },
     RouteEntry { path: "/api/conversations/posts/{id}/reactions", methods: &["POST"] },
+    RouteEntry { path: "/api/conversations/posts/{id}/pin", methods: &["POST"] },
     RouteEntry { path: "/api/conversations/unfurl", methods: &["GET"] },
     RouteEntry { path: "/api/conversations/channels", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/conversations/channels/{name}", methods: &["PATCH"] },
@@ -3176,6 +3308,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/needs-input/auto/sweep",
         methods: &["POST"],
+    },
+    // Z15 daily decision digest.
+    RouteEntry {
+        path: "/api/decision-digest",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/veto",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/decision-digest/recommendation",
+        methods: &["PUT"],
     },
     RouteEntry {
         path: "/api/connectors",
@@ -3639,7 +3784,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     // route.callers_have_routes census read the TABLE and reported them unrouted.
     // Caught by tests/route_table.rs's completeness scan (both were named).
     RouteEntry {
+        path: "/api/history/pins",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/history/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/history/{id}/pin",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/history/{id}/reply",
         methods: &["GET"],
     },
     RouteEntry {
@@ -5517,6 +5674,29 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use axum::http::StatusCode; // lib no longer needs it; these tests do
+
+    /// AF-1044: a count past its budget is interrupted and reported as None,
+    /// a quick one is exact, and the interrupt never reaches the next statement
+    /// on the same connection (the page query that follows in /api/logs).
+    #[test]
+    fn a_count_past_its_budget_is_interrupted_and_does_not_leak() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let endless = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) \
+                       SELECT COUNT(*) FROM (SELECT x FROM c LIMIT 1000000000000)";
+        let t0 = std::time::Instant::now();
+        let got = count_within(&conn, endless, &[], std::time::Duration::from_millis(100)).unwrap();
+        assert_eq!(got, None, "an interrupted count is not a number");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the budget bounds it: {:?}", t0.elapsed());
+        let quick = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 1000) SELECT COUNT(*) FROM c";
+        assert_eq!(count_within(&conn, quick, &[], std::time::Duration::from_millis(300)).unwrap(), Some(1000));
+        // The statement after runs longer than that 300ms budget. A timer left
+        // running past the quick count would fire inside it and abort it.
+        let long = "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 20000000) SELECT COUNT(*) FROM c";
+        let t1 = std::time::Instant::now();
+        let after: i64 = conn.query_row(long, [], |r| r.get(0)).expect("the next statement is not interrupted");
+        assert_eq!(after, 20_000_000);
+        assert!(t1.elapsed() > std::time::Duration::from_millis(300), "the after-statement must outlast the budget to test anything: {:?}", t1.elapsed());
+    }
     use std::sync::Arc;
     use tower::ServiceExt;
 

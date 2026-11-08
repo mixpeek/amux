@@ -283,15 +283,20 @@ pub fn due(conn: &Connection, now: i64) -> rusqlite::Result<Vec<DurableSchedule>
     Ok(out)
 }
 
-/// Record a check's verdict and the decision on the row.
+/// Record a check's verdict and the decision on the row. Only if the schedule
+/// has not fired since the check started (`run_count` unchanged): a fire
+/// during the check set `pending` for a check of ITS run, and the older
+/// verdict overwrote that (implicit state machines inventory 2026-10-31, #14).
+/// Returns whether the verdict was recorded.
 fn record(
     conn: &Connection,
     id: &str,
     old_state: &str,
+    run_count: i64,
     decision: &Decision,
     result: &CheckResult,
     now: i64,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<bool> {
     let (state, next_at, attempts): (&str, Option<i64>, Option<i64>) = match decision {
         Decision::Pass => ("pass", None, Some(0)),
         // The re-fire's own run moves it to `pending`; until then the sweep
@@ -302,16 +307,16 @@ fn record(
         Decision::Unrunnable => ("unrunnable", None, None),
     };
     let detail: String = result.detail().chars().take(2000).collect();
-    conn.execute(
+    let n = conn.execute(
         "UPDATE schedules SET pass_state=?1, pass_next_at=?2, pass_attempts=COALESCE(?3, pass_attempts),
                 pass_checked_at=?4, pass_detail=?5
-         WHERE id=?6",
-        rusqlite::params![state, next_at, attempts, now, detail, id],
+         WHERE id=?6 AND COALESCE(run_count,0)=?7",
+        rusqlite::params![state, next_at, attempts, now, detail, id, run_count],
     )?;
-    if old_state != state {
+    if n > 0 && old_state != state {
         insert_audit(conn, id, "pass_state", old_state, state, CHECK_SOURCE, BY)?;
     }
-    Ok(())
+    Ok(n > 0)
 }
 
 /// The text a tmux worker receives on a reconcile re-fire.
@@ -377,16 +382,25 @@ pub async fn check_one(store: &SharedStore, deliverer: &Arc<dyn Deliverer>, sche
     let max = max_attempts();
     let decision = decide(&old_state, &result.verdict, sched.i64_field("pass_attempts", 0), max, now, cooldown_s());
     let (id_w, old_w, dec_w, res_w) = (id.clone(), old_state.clone(), decision.clone(), result.clone());
+    let runs = sched.i64_field("run_count", 0);
     let wrote = store
         .write_async(move |conn| {
-            record(conn, &id_w, &old_w, &dec_w, &res_w, now)?;
-            Ok(WriteOutcome { applied: true, events: vec![] })
+            let applied = record(conn, &id_w, &old_w, runs, &dec_w, &res_w, now)?;
+            Ok(WriteOutcome { applied, events: vec![] })
         })
         .await;
-    if let Err(e) = wrote {
-        tracing::warn!(schedule = %id, error = %e, verdict = "schedule_check_record_error", measured = true,
-            n_considered = 1, "could not record a pass check; the next sweep retries it");
-        return;
+    match wrote {
+        Err(e) => {
+            tracing::warn!(schedule = %id, error = %e, verdict = "schedule_check_record_error", measured = true,
+                n_considered = 1, "could not record a pass check; the next sweep retries it");
+            return;
+        }
+        Ok(o) if !o.applied => {
+            tracing::info!(schedule = %id, verdict = "schedule_check_superseded", measured = true, n_considered = 1,
+                "the schedule fired while its check ran; that fire's own check decides, this verdict is dropped");
+            return;
+        }
+        Ok(_) => {}
     }
     let detail = result.detail();
     match decision {
@@ -541,6 +555,30 @@ mod tests {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .unwrap()
+    }
+
+    /// #14: a fire while the check ran leaves `pending` for that fire's check;
+    /// the older verdict is dropped instead of overwriting it.
+    #[tokio::test]
+    async fn a_fire_during_the_check_keeps_its_own_pending_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_schedule(dir.path(), &dir.path().join("m")).await;
+        let pass = CheckResult { verdict: Verdict::Pass, exit_code: Some(0), timed_out: false, tail: String::new() };
+        // The check started at run_count 0; a fire then bumped it to 1.
+        store.write(|c| { c.execute("UPDATE schedules SET run_count=1 WHERE id='SCHED-1'", [])?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+        let p1 = pass.clone();
+        let stale = store.write(move |c| {
+            let applied = record(c, "SCHED-1", "pending", 0, &Decision::Pass, &p1, 100)?;
+            Ok(WriteOutcome { applied, events: vec![] })
+        }).unwrap();
+        assert!(!stale.applied, "a verdict from before the fire is dropped");
+        assert_eq!(row(&store).0, "pending");
+        let live = store.write(move |c| {
+            let applied = record(c, "SCHED-1", "pending", 1, &Decision::Pass, &pass, 100)?;
+            Ok(WriteOutcome { applied, events: vec![] })
+        }).unwrap();
+        assert!(live.applied);
+        assert_eq!(row(&store).0, "pass");
     }
 
     #[tokio::test]
