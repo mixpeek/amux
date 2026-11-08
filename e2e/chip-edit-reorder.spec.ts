@@ -101,6 +101,25 @@ test('edit mode: a press does not send, a drag reorders what is shown and the se
   expect(await saved(page)).toEqual(['bb', 'cc', 'dd', 'aa']);
 });
 
+test('a refresh of the bar while a button is held does not cancel the drag', async ({ page }) => {
+  // CI, 2026-11-08: the bar was rebuilt between the press and the move and the
+  // drag never started (beacon drag_not_started).
+  const srv: Server = { chips: JSON.stringify(START), offered: '["sendnow"]', failPosts: false, posts: [], sends: 0 };
+  await boot(page, srv, { chips: START });
+  await page.locator('#peek-chips .chip-edit-toggle').click();
+  const a = (await page.locator('#peek-chips .chip[data-chip-idx]', { hasText: 'DD' }).boundingBox())!;
+  const b = (await page.locator('#peek-chips .chip[data-chip-idx]', { hasText: 'AA' }).boundingBox())!;
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => (0, eval)('refreshAllChipBars()'));
+  await page.mouse.move(a.x + a.width / 2 + 8, a.y + a.height / 2, { steps: 3 });
+  await page.mouse.move(b.x + b.width * 0.15, b.y + b.height / 2, { steps: 12 });
+  await page.waitForTimeout(150);
+  await page.mouse.up();
+  await expect.poll(() => shown(page)).toEqual(['DD', 'AA', 'BB', 'CC']);
+  await expect.poll(() => saved(page)).toEqual(['dd', 'aa', 'bb', 'cc']);
+});
+
 test('a save the server refused stays pending, wins the next boot, and is sent again', async ({ page }) => {
   const srv: Server = { chips: JSON.stringify(START), offered: '["sendnow"]', failPosts: true, posts: [], sends: 0 };
   await boot(page, srv, { chips: START });

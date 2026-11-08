@@ -25525,6 +25525,18 @@ function _chipPress(el, sessionName, isPeek) {
 }
 
 function renderChips(container, sessionName, isPeek) {
+  // While a button is held for a drag (Sortable marks it chosen on the press)
+  // no chip bar is rebuilt: replacing the held one cancels the drag, and
+  // re-creating another bar's Sortable resets the drag Sortable shares across
+  // instances. CI caught it as drag_not_started after a refresh landed
+  // mid-press. Render again once the button is let go.
+  if (document.querySelector('.chips .tab-drag-chosen')) {
+    if (container._chipRenderDeferred) return;
+    container._chipRenderDeferred = true;
+    _chipsBeacon('chips_render_deferred', {});
+    setTimeout(() => { container._chipRenderDeferred = false; renderChips(container, sessionName, isPeek); }, 200);
+    return;
+  }
   const chips = _getChips();
   // Keystroke chips drive a terminal; a worker whose renderer is not a
   // terminal (chat) has nothing for them to press. Indexes stay the originals.
