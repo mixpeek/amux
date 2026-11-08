@@ -114,3 +114,17 @@ the new commit (`served_commit_measured source="receipt"`):
 
 A re-stamp with nothing holding adoption is live in about 20 s. The 900 s
 shell-run hold still applies, so a long shell schedule can delay one.
+
+**Dashboard commits, 2026-11-08.** rust-embed compiles `static/` into the
+binary, so a dashboard commit compiled: 89c3d6149 reported
+`push_to_live_s=430`. When the dashboard is the only compile input that
+changed, the builder now copies that commit's `static/` to
+`~/.amux/dashboard-snapshots/<git tree id>` (`AMUX_RS_DASHBOARD_SNAPSHOTS`)
+and names it in the receipt as `dashboard_dir`. The server serves that
+directory in place of its embedded copy (`amux_dashboard::use_snapshot`,
+log `dashboard_snapshot_served`). `/health` reports `dashboard_source` and
+`dashboard_version`. A server that cannot serve the snapshot logs
+`dashboard_snapshot_refused` and reports its compiled commit, so the builder
+restores the receipt and compiles in the same run. The builder keeps the
+served snapshot and three others. `scripts/test-build-restamp.sh` covers the
+dashboard-only, dashboard-plus-Rust, unsupported-server and refused cases.

@@ -31,6 +31,9 @@ pub struct Served {
     /// "receipt": the builder's receipt names these exact bytes. "compiled":
     /// the stamp build.rs compiled in.
     pub source: &'static str,
+    /// The dashboard snapshot the receipt names (`dashboard_dir`), served in
+    /// place of the embedded copy. Only a receipt for these bytes names one.
+    pub dashboard_dir: Option<PathBuf>,
 }
 
 /// A commit whose compile inputs equal the installed build's needs no compile
@@ -39,7 +42,12 @@ pub struct Served {
 /// names it, and is believed only when its `build` is this process's own hash:
 /// a receipt for other bytes says nothing about these.
 pub fn served_from(receipt: Option<&[u8]>, running_build: &str, compiled_full: &str, compiled_short: &str) -> Served {
-    let compiled = Served { full: compiled_full.to_owned(), short: compiled_short.to_owned(), source: "compiled" };
+    let compiled = Served {
+        full: compiled_full.to_owned(),
+        short: compiled_short.to_owned(),
+        source: "compiled",
+        dashboard_dir: None,
+    };
     let Some(bytes) = receipt else { return compiled };
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else { return compiled };
     match (v["sha"].as_str(), v["build"].as_str()) {
@@ -47,6 +55,7 @@ pub fn served_from(receipt: Option<&[u8]>, running_build: &str, compiled_full: &
             full: sha.to_owned(),
             short: sha[..12].to_owned(),
             source: "receipt",
+            dashboard_dir: v["dashboard_dir"].as_str().filter(|d| !d.is_empty()).map(PathBuf::from),
         },
         _ => compiled,
     }
@@ -62,8 +71,25 @@ pub fn served() -> &'static Served {
         // the first call can be inside a handler, and a binary with no receipt
         // (a test, a hand build) must not pay for reading itself there.
         let running = if receipt.is_some() { crate::build_hash() } else { String::new() };
-        let served = served_from(receipt.as_deref(), &running,
+        let mut served = served_from(receipt.as_deref(), &running,
             env!("AMUX_BUILD_COMMIT_FULL"), env!("AMUX_BUILD_COMMIT"));
+        // A receipt that names a dashboard snapshot claims its commit only if
+        // the snapshot is what this process serves. Otherwise it serves the
+        // embedded copy and says the compiled commit, so the builder sees the
+        // re-stamp was not adopted, restores the receipt and compiles.
+        if let Some(dir) = served.dashboard_dir.clone() {
+            match amux_dashboard::use_snapshot(&dir) {
+                Ok(o) => tracing::info!(verdict = "dashboard_snapshot_served", dir = %dir.display(),
+                    version = %o.version, embedded_version = amux_dashboard::ASSET_VER, commit = %served.full,
+                    measured = true, n_considered = 1, "dashboard assets served from the deployed snapshot"),
+                Err(error) => {
+                    tracing::warn!(verdict = "dashboard_snapshot_refused", dir = %dir.display(), %error,
+                        receipt_commit = %served.full, measured = true, n_considered = 1,
+                        "the receipt's dashboard snapshot cannot be served; serving the embedded copy as the compiled commit");
+                    served = served_from(None, "", env!("AMUX_BUILD_COMMIT_FULL"), env!("AMUX_BUILD_COMMIT"));
+                }
+            }
+        }
         tracing::info!(verdict = "served_commit_measured", commit = %served.full, source = served.source,
             build_commit = env!("AMUX_BUILD_COMMIT_FULL"), measured = true,
             "this process serves this commit");
@@ -187,5 +213,11 @@ mod tests {
             let s = served_from(bytes, build, "deadbeef", "deadbeef");
             assert_eq!((s.full.as_str(), s.source), ("deadbeef", "compiled"));
         }
+        assert_eq!(served.dashboard_dir, None);
+        let with_dir = serde_json::json!({"sha":sha,"build":"0123456789abcdef","dashboard_dir":"/snap/x"}).to_string();
+        let s = served_from(Some(with_dir.as_bytes()), "0123456789abcdef", "deadbeef", "deadbeef");
+        assert_eq!(s.dashboard_dir.as_deref(), Some(Path::new("/snap/x")));
+        let s = served_from(Some(with_dir.as_bytes()), "fedcba9876543210", "deadbeef", "deadbeef");
+        assert_eq!(s.dashboard_dir, None, "a receipt for other bytes names no snapshot");
     }
 }

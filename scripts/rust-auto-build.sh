@@ -346,8 +346,33 @@ except Exception:
 # receipts (no `build_commit` in /health) or runs other bytes, an unreadable
 # include list, or an earlier restamp of this commit that was not adopted.
 # AMUX_RS_RESTAMP=0 turns it off.
+#
+# The dashboard (crates/amux-dashboard/static/) is compiled in by rust-embed,
+# but nothing else the compile reads depends on it. When it is the only
+# compile input that changed, its files at this commit are copied to a
+# snapshot directory (AMUX_RS_DASHBOARD_SNAPSHOTS, one per git tree) and the
+# receipt names it as `dashboard_dir`; the server serves that directory
+# instead of its embedded copy. This needs a server that reports
+# `dashboard_source` in /health, and a server that cannot read the snapshot
+# reports its compiled commit, which reads here as not adopted: the receipt is
+# restored and the same run compiles.
+DASH_STATIC=crates/amux-dashboard/static
+# Keep the snapshot being served and the three newest others (a rollback
+# target); a snapshot is about 12 MB.
+prune_dashboard_snapshots() {
+  local keep="$1" d n=0
+  [ -d "$DASH_SNAPSHOTS" ] || return 0
+  for d in $(ls -1t "$DASH_SNAPSHOTS" 2>/dev/null); do
+    [ "$DASH_SNAPSHOTS/$d" = "$keep" ] && continue
+    n=$((n + 1))
+    [ "$n" -le 3 ] && continue
+    rm -rf "${DASH_SNAPSHOTS:?}/${d:?}"
+    echo "== DASHBOARD SNAPSHOT PRUNED $d verdict=dashboard_snapshot_pruned"
+  done
+}
+DASH_SNAPSHOTS="${AMUX_RS_DASHBOARD_SNAPSHOTS:-$HOME/.amux/dashboard-snapshots}"
 restamp_without_compile() {
-  local sha="$1" body compiled extra changed
+  local sha="$1" stamped body compiled dash_cap extra changed others dash_tree="" dash_dir="" tmp_snap
   local paths=()
   [ "${AMUX_RS_RESTAMP:-1}" = 1 ] || { echo "== RESTAMP OFF sha=$sha (AMUX_RS_RESTAMP=0) verdict=restamp_off"; return 1; }
   if [ -f "${STAMP}.restamp_failed" ] && [ "$(cat "${STAMP}.restamp_failed" 2>/dev/null)" = "$sha" ]; then
@@ -370,9 +395,10 @@ if 'build_commit' not in h: raise SystemExit('the running server does not read r
 if h.get('build')!=build: raise SystemExit('the running server is not the installed binary')
 c=d.get('compiled_at') or d.get('sha','')
 if not re.fullmatch(r'[0-9a-f]{40}',c): raise SystemExit('the receipt names no compiled commit')
-print(c)
+print(c, 'dash' if 'dashboard_source' in h else 'nodash')
 PYRESTAMP
 ) || { echo "== RESTAMP NOT APPLICABLE sha=$sha: $compiled verdict=restamp_not_applicable"; return 1; }
+  dash_cap=${compiled#* }; compiled=${compiled%% *}
   extra=$(cd "$REPO" && node scripts/ci-rust-key.mjs --json --rustc none 2>/dev/null | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
@@ -386,26 +412,55 @@ EOF
     echo "== RESTAMP NOT APPLICABLE sha=$sha: compiled commit $compiled is not in $REPO verdict=restamp_not_applicable"; return 1; }
   changed=$(git -C "$REPO" diff --name-only "$compiled" "$sha" -- crates Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml .cargo ${paths[@]+"${paths[@]}"} 2>&1) || {
     echo "== RESTAMP NOT APPLICABLE sha=$sha: diff failed verdict=restamp_not_applicable"; return 1; }
-  if [ -n "$changed" ]; then
-    echo "== RESTAMP NOT APPLICABLE sha=$sha: compile inputs changed since $compiled ($(printf '%s' "$changed" | head -3 | tr '\n' ' ')) verdict=restamp_inputs_changed"
+  others=$(printf '%s\n' "$changed" | grep -v "^$DASH_STATIC/" | grep -v '^$' || true)
+  if [ -n "$others" ]; then
+    echo "== RESTAMP NOT APPLICABLE sha=$sha: compile inputs changed since $compiled ($(printf '%s' "$others" | head -3 | tr '\n' ' ')) verdict=restamp_inputs_changed"
     return 1
   fi
-  PROV_JSON=$(python3 - "${INSTALL}.identity.json" "$PROV_JSON" "$head" "$compiled" <<'PYSTAMP'
+  # The dashboard at this commit, when it is not the one compiled in.
+  dash_tree=$(git -C "$REPO" rev-parse -q --verify "$sha:$DASH_STATIC" 2>/dev/null || true)
+  if [ -n "$dash_tree" ] && [ "$dash_tree" != "$(git -C "$REPO" rev-parse -q --verify "$compiled:$DASH_STATIC" 2>/dev/null)" ]; then
+    case "$dash_cap" in
+      dash) ;;
+      *) echo "== RESTAMP NOT APPLICABLE sha=$sha: the dashboard changed and the running server cannot serve a snapshot (no dashboard_source in /health) verdict=restamp_dashboard_unsupported"; return 1 ;;
+    esac
+    dash_dir="$DASH_SNAPSHOTS/$dash_tree"
+    if [ ! -d "$dash_dir" ]; then
+      tmp_snap="$DASH_SNAPSHOTS/.tmp.$$"
+      rm -rf "${tmp_snap:?}"; mkdir -p "$tmp_snap"
+      if ! git -C "$REPO" archive "$sha" "$DASH_STATIC" | tar -x -C "$tmp_snap" \
+         || ! mv "$tmp_snap/$DASH_STATIC" "$dash_dir"; then
+        rm -rf "${tmp_snap:?}"
+        echo "== RESTAMP NOT APPLICABLE sha=$sha: the dashboard snapshot could not be written to $dash_dir verdict=restamp_dashboard_unwritable"; return 1
+      fi
+      rm -rf "${tmp_snap:?}"
+    fi
+  fi
+  # Local until it is live: a re-stamp that is not adopted must not leave its
+  # fields (dashboard_dir, restamped) in the receipt the compile writes next.
+  stamped=$(python3 - "${INSTALL}.identity.json" "$PROV_JSON" "$head" "$compiled" "$dash_dir" <<'PYSTAMP'
 import json,sys
 old=json.load(open(sys.argv[1])); new=json.loads(sys.argv[2])
 new.update(build=old['build'], trigger=sys.argv[3], compiled_at=sys.argv[4], restamped=True)
+if sys.argv[5]: new['dashboard_dir']=sys.argv[5]
 print(json.dumps(new))
 PYSTAMP
 ) || return 1
   cp -p "${INSTALL}.identity.json" "${INSTALL}.identity.json.rollback"
-  printf '%s\n' "$PROV_JSON" > "${INSTALL}.identity.json.new.$$"
+  printf '%s\n' "$stamped" > "${INSTALL}.identity.json.new.$$"
   mv -f "${INSTALL}.identity.json.new.$$" "${INSTALL}.identity.json"
-  echo "== ACTIVATION RESTAMPED identity=$PROV_JSON: no compile input changed since $compiled (${#paths[@]} includes outside crates/ checked) verdict=activation_restamped"
+  if [ -n "$dash_dir" ]; then
+    echo "== ACTIVATION RESTAMPED identity=$stamped: only the dashboard changed since $compiled; serving snapshot $dash_dir (${#paths[@]} includes outside crates/ checked) verdict=activation_restamped dashboard=snapshot"
+  else
+    echo "== ACTIVATION RESTAMPED identity=$stamped: no compile input changed since $compiled (${#paths[@]} includes outside crates/ checked) verdict=activation_restamped"
+  fi
   if wait_live_identity "$sha" "${AMUX_ACTIVATION_HEALTH_S:-300}"; then
     echo "$head" > "$STAMP"
     date +%s > "${STAMP}.adopted_at"
+    PROV_JSON=$stamped
     printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
     rm -f "${INSTALL}.identity.json.rollback"
+    prune_dashboard_snapshots "$dash_dir"
     echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) restamped=1 verdict=activation_healthy"
     return 0
   fi
@@ -694,6 +749,10 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" = "1" ]; then
 fi
 
 # Every gate above has run (authority, cooldown, shell defer, overlap).
+# A crates/ commit can still be one that only changed the dashboard. A
+# disk-clear diagnostic run never installs anything, so it never re-stamps.
+[ "$head" != "$last" ] && RESTAMP_CANDIDATE=1
+[ "${AMUX_RS_DISK_CLEAR_ONLY:-}" = 1 ] && RESTAMP_CANDIDATE=0
 if [ "${RESTAMP_CANDIDATE:-0}" = 1 ] && restamp_without_compile "$built_sha" >> "$LOG" 2>&1; then
   exit 0
 fi

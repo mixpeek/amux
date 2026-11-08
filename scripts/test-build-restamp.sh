@@ -6,7 +6,9 @@
 # A docs commit must re-stamp the receipt and compile nothing; a change to a
 # file the server compiles in (an include_str! target outside crates/) must
 # compile; so must a server that does not read receipts, and a restamp that is
-# never adopted, which also has to put the old receipt back.
+# never adopted, which also has to put the old receipt back. A commit that
+# changes only the dashboard re-stamps with a snapshot of it; with server code
+# too, or for a server that cannot serve a snapshot, it compiles.
 set -euo pipefail
 export AMUX_RS_RUNS_URL=http://127.0.0.1:9/none
 export AMUX_ACTIVATION_ROLLBACK=0
@@ -39,6 +41,8 @@ printf '[workspace]\n' > "$REPO/Cargo.toml"
 printf 'const BAKED: &str = include_str!("../../../scripts/baked.sh");\n' > "$REPO/crates/srv/src/lib.rs"
 printf 'echo baked v1\n' > "$REPO/scripts/baked.sh"
 printf 'notes\n' > "$REPO/docs/notes.md"
+mkdir -p "$REPO/crates/amux-dashboard/static"
+printf 'app v1\n' > "$REPO/crates/amux-dashboard/static/app.js"
 cp "$ROOT/scripts/ci-rust-key.mjs" "$REPO/scripts/ci-rust-key.mjs"
 cat > "$REPO/scripts/safe-cargo.sh" <<'EOF'
 #!/bin/sh
@@ -73,8 +77,14 @@ except (OSError,ValueError): raise SystemExit
 try: h=json.load(open(health))
 except (OSError,ValueError): h={}
 if mode != 'ignore' or not h:
-    h={'commit_full':d['sha'],'commit':d['sha'][:12],'build':d['build']}
+    sha=d['sha']
+    # Like the real server: a snapshot it cannot (or will not) serve means
+    # it serves the compiled commit.
+    if d.get('dashboard_dir') and (mode == 'refuse-dash' or not os.path.isdir(d['dashboard_dir'])):
+        sha=d.get('compiled_at', sha)
+    h={'commit_full':sha,'commit':sha[:12],'build':d['build']}
     if mode != 'old': h['build_commit']=d.get('compiled_at', d['sha'])
+    if mode not in ('old','nodash'): h['dashboard_source']='dir' if sha==d['sha'] and d.get('dashboard_dir') else 'embedded'
 tmp=health+'.tmp'; json.dump(h,open(tmp,'w')); os.replace(tmp,health)
 PY
     sleep 0.2
@@ -86,7 +96,7 @@ run_builder() {
   env HOME="$FAKE_HOME" AMUX_REPO="$REPO" AMUX_RS_INSTALL="$INSTALL" AMUX_RS_BUILD_STAMP="$STAMP" \
   AMUX_RS_BUILD_LOCK="$TMP/lock" AMUX_RS_BUILD_LOG="$LOG" AMUX_RS_BUILD_PROVENANCE="$TMP/provenance.json" \
   AMUX_RS_HEALTH_URL="file://$HEALTH" AMUX_BUILD_MIN_FREE_GB=0 AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB=999999 \
-  AMUX_RS_BUILD_COOLDOWN=0 AMUX_ACTIVATION_HEALTH_S=3 "$@" bash "$BUILDER" >/dev/null
+  AMUX_RS_BUILD_COOLDOWN=0 AMUX_ACTIVATION_HEALTH_S=3 AMUX_RS_DASHBOARD_SNAPSHOTS="$TMP/snaps" "$@" bash "$BUILDER" >/dev/null
 }
 receipt() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "${INSTALL}.identity.json" "$1"; }
 live() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit_full"])' "$HEALTH"; }
@@ -148,6 +158,50 @@ OFF=$(printf 'off\n' >> "$REPO/docs/notes.md"; commit off)
 run_builder AMUX_RS_RESTAMP=0
 expect grep -q "RESTAMP OFF sha=$OFF" "$LOG"
 expect test "$(builds)" = 6
+
+# 7. Only the dashboard changed: no compile, a snapshot of it is served.
+COMPILED=$(receipt compiled_at)
+DASH=$(printf 'app v2\n' > "$REPO/crates/amux-dashboard/static/app.js"; commit dash)
+TREE=$(git -C "$REPO" rev-parse "$DASH:crates/amux-dashboard/static")
+run_builder
+expect test "$(builds)" = 6
+expect grep -q "only the dashboard changed since $COMPILED; serving snapshot $TMP/snaps/$TREE .*dashboard=snapshot" "$LOG"
+expect test "$(receipt dashboard_dir)" = "$TMP/snaps/$TREE"
+expect test "$(cat "$TMP/snaps/$TREE/app.js")" = "app v2"
+expect test "$(live)" = "$DASH"
+# ...a docs commit after it keeps serving the same snapshot.
+DOCS2=$(printf 'after dash\n' >> "$REPO/docs/notes.md"; commit docs-after-dash)
+run_builder
+expect test "$(builds)" = 6
+expect test "$(receipt dashboard_dir)" = "$TMP/snaps/$TREE"
+expect test "$(live)" = "$DOCS2"
+
+# 8. The dashboard and server code changed together: compile, no snapshot.
+BOTH=$(printf 'app v3\n' > "$REPO/crates/amux-dashboard/static/app.js"; printf '// v3\n' >> "$REPO/crates/srv/src/lib.rs"; commit both)
+run_builder
+expect grep -q "sha=$BOTH: compile inputs changed since .*(crates/srv/src/lib.rs) verdict=restamp_inputs_changed" "$LOG"
+expect test "$(builds)" = 7
+expect test -z "$(receipt dashboard_dir)"
+expect wait_live "$BOTH"
+
+# 9. A server that cannot serve a snapshot: compile.
+printf 'nodash\n' > "$MODE"; sleep 0.5
+ND=$(printf 'app v4\n' > "$REPO/crates/amux-dashboard/static/app.js"; commit nodash)
+run_builder
+expect grep -q "sha=$ND: the dashboard changed and the running server cannot serve a snapshot .*verdict=restamp_dashboard_unsupported" "$LOG"
+expect test "$(builds)" = 8
+printf 'adopt\n' > "$MODE"; expect wait_live "$ND"
+
+# 10. A server that refuses the snapshot keeps its compiled commit, so the
+# re-stamp reads as not adopted: the receipt is restored and it compiles.
+printf 'refuse-dash\n' > "$MODE"; sleep 0.5
+RF=$(printf 'app v5\n' > "$REPO/crates/amux-dashboard/static/app.js"; commit refused)
+run_builder
+expect grep -q "ACTIVATION RESTAMP UNADOPTED sha=$RF" "$LOG"
+expect test "$(builds)" = 9
+expect test "$(tail -1 "$TRACE")" = "build $RF"
+expect test -z "$(receipt dashboard_dir)"
+printf 'adopt\n' > "$MODE"; expect wait_live "$RF"
 
 echo "test-build-restamp: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

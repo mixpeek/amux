@@ -63,6 +63,12 @@ pub struct Health {
     pub commit: &'static str,
     pub commit_full: &'static str,
     pub build_commit: &'static str,
+    /// Where the dashboard bytes come from: "embedded" (compiled in) or
+    /// "dir" (a deployed snapshot or `AMUX_DASHBOARD_DIR`), and their version.
+    /// The builder re-stamps a dashboard-only commit only for a server that
+    /// reports this.
+    pub dashboard_source: &'static str,
+    pub dashboard_version: &'static str,
     pub uptime_s: u64,
     pub rev: Option<u64>,
     pub store: &'static str,
@@ -890,6 +896,8 @@ pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>)
             commit: crate::activation::served().short.as_str(),
             commit_full: crate::activation::served().full.as_str(),
             build_commit: env!("AMUX_BUILD_COMMIT_FULL"),
+            dashboard_source: if amux_dashboard::dir_override().is_some() { "dir" } else { "embedded" },
+            dashboard_version: amux_dashboard::asset_version(),
             uptime_s: state.started.elapsed().as_secs(),
             rev,
             store,

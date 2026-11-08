@@ -27,6 +27,13 @@
 //! the PR's dashboard files. Production never sets it; the embed is the
 //! default. An unreadable directory panics on first use rather than quietly
 //! serving the embed, because a fallback there would test the wrong bytes.
+//!
+//! # Serving a deployed snapshot ([`use_snapshot`])
+//!
+//! A commit that changes only `static/` needs no compile: the builder copies
+//! that commit's `static/` into a snapshot directory and names it in the
+//! receipt beside the binary, and the server passes it here before it serves
+//! anything. The environment override still wins, so CI is unaffected.
 
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
@@ -51,8 +58,32 @@ pub const ASSET_VER_PLACEHOLDER: &str = "__AMUX_ASSET_VER__";
 /// The environment variable that points the server at a dashboard directory.
 pub const DASHBOARD_DIR_ENV: &str = "AMUX_DASHBOARD_DIR";
 
-/// An active `AMUX_DASHBOARD_DIR` override: the directory and its hash.
-#[derive(Debug)]
+static OVERRIDE: std::sync::OnceLock<Option<DirOverride>> = std::sync::OnceLock::new();
+static SNAPSHOT: std::sync::OnceLock<Option<DirOverride>> = std::sync::OnceLock::new();
+
+/// Serve the dashboard from a deployed snapshot directory. Call it before
+/// the first asset is served; the source is fixed for the life of the
+/// process. Refused when the directory cannot be hashed, when
+/// `AMUX_DASHBOARD_DIR` is set, or when the source was already chosen, so the
+/// caller can say which bytes it serves instead.
+pub fn use_snapshot(dir: &Path) -> Result<&'static DirOverride, String> {
+    if std::env::var_os(DASHBOARD_DIR_ENV).is_some_and(|v| !v.is_empty()) {
+        return Err(format!("{DASHBOARD_DIR_ENV} is set and wins over a snapshot"));
+    }
+    if OVERRIDE.get().is_some() {
+        return Err("the dashboard source was already chosen".into());
+    }
+    let version =
+        dir_asset_version(dir).map_err(|e| format!("{} cannot be served ({e})", dir.display()))?;
+    SNAPSHOT
+        .set(Some(DirOverride { dir: dir.to_path_buf(), version }))
+        .map_err(|_| "a snapshot was already chosen".to_string())?;
+    dir_override().ok_or_else(|| "the snapshot was not taken".to_string())
+}
+
+/// An active `AMUX_DASHBOARD_DIR` override or deployed snapshot: the
+/// directory and its hash.
+#[derive(Debug, Clone)]
 pub struct DirOverride {
     pub dir: PathBuf,
     pub version: String,
@@ -61,10 +92,11 @@ pub struct DirOverride {
 /// The active override, resolved once per process. `None` (the default and
 /// the production state) means the embedded copy is served.
 pub fn dir_override() -> Option<&'static DirOverride> {
-    static OVERRIDE: std::sync::OnceLock<Option<DirOverride>> = std::sync::OnceLock::new();
     OVERRIDE
         .get_or_init(|| {
-            let raw = std::env::var_os(DASHBOARD_DIR_ENV).filter(|v| !v.is_empty())?;
+            let Some(raw) = std::env::var_os(DASHBOARD_DIR_ENV).filter(|v| !v.is_empty()) else {
+                return SNAPSHOT.get().cloned().flatten();
+            };
             let dir = PathBuf::from(raw);
             let version = dir_asset_version(&dir).unwrap_or_else(|e| {
                 panic!(
