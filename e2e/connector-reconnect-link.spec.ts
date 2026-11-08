@@ -9,7 +9,13 @@ const ACCOUNT = 'broken@example.org';
 
 test('a reconnect link asks once, then starts the grant for that account', async ({ page }) => {
   const starts: string[] = [];
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  // A remembered last worker, as on the owner's own browser: restoring it at
+  // boot ran over the prompt the first time this link was opened live.
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.setItem('amux_peek_state', JSON.stringify({ session: 'restored-w', ts: Date.now() }));
+    sessionStorage.setItem('peekState', JSON.stringify({ session: 'restored-w', ts: Date.now() }));
+  });
   await page.route(/\/api\/connectors\/google\/auth\?/, (r) => {
     starts.push(new URL(r.request().url()).searchParams.get('account') || '');
     return r.fulfill({ json: { ok: true, auth: 'oauth2', authorize_url: '/#consent-opened', redirect_uri_registered: true } });
@@ -18,6 +24,10 @@ test('a reconnect link asks once, then starts the grant for that account', async
   const modal = page.locator('#modal-backdrop.open');
   await expect(modal).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('#modal-msg')).toContainText(ACCOUNT);
+  // Still up once the boot restore has had its turn.
+  await page.waitForTimeout(1500);
+  await expect(modal).toBeVisible();
+  await expect(page.locator('#peek-overlay.active')).toHaveCount(0);
   await expect(page.locator('#tab-connectors')).toHaveClass(/active/);
   expect(starts).toHaveLength(0);
   // Big enough to tap on a phone (the dialog's shared buttons).

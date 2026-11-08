@@ -58116,6 +58116,11 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
+// The hashes that name where to land. Restoring the last screen must not run
+// over any of them (both checks below read this one list). reconnect joined it
+// on 2026-11-08: a connector alert's link opened Connectors and its prompt,
+// then the restore reopened the last worker over them.
+const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
 function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
@@ -58132,7 +58137,7 @@ function _restoreScreen(bootHash) {
   // peek over the view the link named. In the Mac app, where every window
   // shares localStorage, that peek was another window's worker (2026-10-21).
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
-  const _hasDeeplink = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(_bootHash)
+  const _hasDeeplink = _DEEPLINK_HASH_RE.test(_bootHash)
                      || /[?&]view=/.test(location.search);
   // 1. Restore the tab.
   if (!_hasDeeplink) {
@@ -58179,7 +58184,7 @@ function _restoreScreen(bootHash) {
     const restoreGeneration = _peekOpenGeneration;
     setTimeout(() => {
       if (peekSession || _peekOpenGeneration !== restoreGeneration
-          || /^#(?:peek|issue|menu|view|path|edit|browser|bq|task)=/.test(location.hash)) {
+          || _DEEPLINK_HASH_RE.test(location.hash)) {
         amuxTrack('peek_restore_superseded', {session:_ps.session, measured:true, n_considered:1});
         return;
       }
