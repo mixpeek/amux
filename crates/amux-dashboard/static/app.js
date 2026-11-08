@@ -19866,7 +19866,7 @@ function ansiToHtml(text) {
 // Split out from ansiToHtml so the href policy is one readable place. Two
 // refusals are deliberate:
 //
-//  * ONLY http/https/file are linked. A terminal can emit any scheme it likes
+//  * ONLY http/https (and a local file://, as a file-viewer link) are linked. A terminal can emit any scheme it likes
 //    and this href lands in the DOM, so `javascript:`, `data:` and friends are
 //    an injection surface. An unknown scheme keeps the LABEL as plain text —
 //    exactly what the terminal itself shows — rather than guessing.
@@ -19883,7 +19883,8 @@ function _osc8Resolve(html, urls) {
     // Localhost URLs go through the same rewrite as every other link in the
     // peek: to the app's Apps entry, so an OSC-8 link works from a phone or the cloud.
     const s = rewriteLocalhostUrls(String(u == null ? '' : u).trim());
-    if (!/^(?:https?|file):\/\//i.test(s)) return null;
+    // file:// is handled by filePath below; one naming another host stays text.
+    if (!/^https?:\/\//i.test(s)) return null;
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
             .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   };
@@ -19902,10 +19903,32 @@ function _osc8Resolve(html, urls) {
     .map(seg => (!seg || /^<\/?span/i.test(seg)) ? seg
       : '<a href="' + h + '" target="_blank" rel="noopener noreferrer">' + seg + '</a>')
     .join('');
+  // A file:// link names a path on the machine amux runs on, which is often not
+  // the one showing this page. Handed to the browser it did nothing, and the Mac
+  // app passed it to Finder, which failed on a path it does not have ("The
+  // application can't be opened. -50", owner 2026-11-08). It opens like any
+  // path in worker output instead: in amux's file viewer, resolved on the server.
+  const filePath = u => {
+    try {
+      const url = new URL(String(u == null ? '' : u).trim());
+      if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost')) return null;
+      return decodeURIComponent(url.pathname);
+    } catch (e) { return null; }
+  };
+  const ea = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const wrapFile = (label, p) => label
+    .split(/(<\/?span[^>]*>)/)
+    .map(seg => (!seg || /^<\/?span/i.test(seg)) ? seg
+      : '<span class="' + (/\.md$/i.test(p) ? 'md-link' : 'file-link') + '" data-path="' + ea(p) + '" title="Open: ' + ea(p)
+        + '" onclick="_openLinkedPath(this,event)">' + seg + '</span>')
+    .join('');
   return html
     .replace(/\uE000(\d+)\uE001([\s\S]*?)\uE002/g, (_m, idx, label) => {
+      if (/<a\s/i.test(label)) return label;
+      const fp = filePath(urls[+idx]);
+      if (fp) return wrapFile(label, fp);
       const h = href(urls[+idx]);
-      if (!h || /<a\s/i.test(label)) return label;
+      if (!h) return label;
       return wrap(label, h);
     })
     // Unpaired sentinels: peek captures a rolling window, so a link routinely
