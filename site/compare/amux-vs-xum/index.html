@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Xum (2026): Xum (formerly Mux) Alternative for Coding Agents | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Xum (formerly Mux, from Coder) compared: interface, agents, phone access, where agents run, team use and price. Xum is a free AGPL desktop app with its own agent loop on your API keys; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.">
+  <meta name="keywords" content="amux vs xum, xum alternative, coder mux alternative, amux vs mux, coding agent multiplexer, run parallel coding agents">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-xum/">
+  <meta property="og:title" content="amux vs Xum (2026): Xum (formerly Mux) Alternative for Coding Agents">
+  <meta property="og:description" content="amux vs Xum (formerly Mux, from Coder) compared: interface, agents, phone access, where agents run, team use and price. Xum is a free AGPL desktop app with its own agent loop on your API keys; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-xum/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Xum (2026): Xum (formerly Mux) Alternative for Coding Agents">
+  <meta name="twitter:description" content="amux vs Xum (formerly Mux, from Coder) compared: interface, agents, phone access, where agents run, team use and price. Xum is a free AGPL desktop app with its own agent loop on your API keys; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Xum", "item": "https://amux.io/compare/amux-vs-xum/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Xum: Which Should Run Your Coding Agents?", "description": "amux vs Xum (formerly Mux, from Coder) compared: interface, agents, phone access, where agents run, team use and price. Xum is a free AGPL desktop app with its own agent loop on your API keys; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.", "datePublished": "2026-11-08", "dateModified": "2026-11-08", "author": {"@type": "Organization", "name": "amux"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "mainEntityOfPage": "https://amux.io/compare/amux-vs-xum/"}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a Xum alternative?", "acceptedAnswer": {"@type": "Answer", "text": "For running parallel coding agents, yes. Xum is a free desktop app with its own agent loop on your API keys and strong workspace isolation. amux runs Claude Code, Codex and Gemini CLI on a shared task board from any browser or its iPhone app, and amux Cloud runs it on a dedicated always-on server."}}, {"@type": "Question", "name": "Is Xum the same as Mux?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Coder renamed its Mux coding agent multiplexer to Xum after a trademark concern from Mux.com. amux is a separate product from a different team."}}, {"@type": "Question", "name": "Is Xum free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Xum is free under AGPL-3.0, and you pay your model providers. amux is free to self-host with every feature, and amux Cloud starts at $39 a month per server."}}, {"@type": "Question", "name": "Does Xum run Claude Code?", "acceptedAnswer": {"@type": "Answer", "text": "Xum has its own agent loop, with a user experience inspired by Claude Code, and calls Claude models through an API key or a provider route. amux runs the Claude Code CLI itself on your subscription or key."}}, {"@type": "Question", "name": "Does Xum have a phone app?", "acceptedAnswer": {"@type": "Answer", "text": "Its docs list a responsive web UI in server mode and no native app. amux has a native iPhone and iPad app."}}]}</script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Xum</span></div>
+
+    <h1>amux vs Xum: Which Should Run Your Coding Agents?</h1>
+    <p class="subtitle">Xum, called Mux until a recent rename, and amux both run parallel coding agents in isolated workspaces. Compared on interface, agents, phone access, where agents run, team use and price. Updated November 2026.</p>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from any browser or your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo, with no per-token markup.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-xum">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-xum" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, one shared server your agents and teammates reach from any device, at a flat price per server instead of per seat.</p>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> pick <a href="#xum">Xum</a> if you want a free desktop app from Coder with its own agent loop, per-workspace runtimes including SSH and Docker, per-workspace cost tracking, and any model you have an API key for. Pick <a href="#amux">amux</a> if you want to run Claude Code, Codex and Gemini CLI themselves on your own subscriptions: agents on a shared kanban board that resume after usage limits on their own, a scheduler, a native iPhone app, and an always-on server we can run for you at one flat price.
+    </div>
+
+    <h2 id="what">What are amux and Xum?</h2>
+    <p><strong>amux</strong> is a self-hosted control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex or Gemini CLI sessions, with a built-in kanban board, notes, CRM, email, browser automation and a scheduler. It is one Rust binary plus SQLite, source-available under MIT + Commons Clause, and you can self-host it or rent an always-on server from amux Cloud.</p>
+    <p><strong><a href="https://xum.coder.com/" target="_blank" rel="noopener">Xum</a></strong> is a coding agent multiplexer from Coder, renamed from Mux after a trademark concern from Mux.com. It runs parallel agents in isolated workspaces from a desktop app or a browser, on macOS, Linux and Windows (alpha). Xum has its own agent loop, with Plan and Exec modes inspired by Claude Code, and it connects to models through provider API keys, GitHub Copilot, OpenRouter, Ollama or a Coder AI Gateway. It is free under AGPL-3.0, with about 2k GitHub stars.</p>
+
+    <h2 id="table">amux vs Xum comparison table</h2>
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:150px;"></th><th>amux</th><th>Xum</th></tr></thead>
+        <tbody>
+          <tr><td>Best for</td><td>Running a team of agents on shared work, from a dashboard or your phone</td><td>Parallel agent work on your own API keys, with strong workspace isolation</td></tr>
+          <tr><td>Interface</td><td>Web dashboard, iPhone and iPad app, Mac app; Android through the installable web app</td><td>Desktop app; browser through server mode, with a responsive layout for phones; VS Code extension</td></tr>
+          <tr><td>Platforms</td><td>Server on macOS or Linux; clients in any browser, iPhone, iPad, Mac</td><td>macOS, Linux, Windows (alpha)</td></tr>
+          <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Xum's own agent loop on the model you pick</td></tr>
+          <tr><td>Coordinating many agents</td><td>Kanban board with task claiming, inter-agent messages, shared memory</td><td>Sidebar of workspaces with agent status and git divergence; custom subagents; Best of N for several answers to one ask</td></tr>
+          <tr><td>Model billing</td><td>Your own Claude, ChatGPT or Gemini subscription or API key; amux adds no usage charge</td><td>Provider API keys, GitHub Copilot, OpenRouter, local Ollama or a Coder gateway; no Xum usage charge</td></tr>
+          <tr><td>Phone access</td><td>Native iPhone and iPad app; Cloud servers are reachable at yourname.amux.io</td><td>Responsive web UI when you run server mode</td></tr>
+          <tr><td>Workspace isolation</td><td>One workspace per worker on your server; worktrees available</td><td>Local, Worktree, SSH, Docker and Dev Container runtimes per workspace</td></tr>
+          <tr><td>Cost tracking</td><td>Token and spend tracking per worker</td><td>Costs tab per workspace, plus analytics</td></tr>
+          <tr><td>Where agents run</td><td>Your machine, or a dedicated amux Cloud server that stays on</td><td>Your machine, an SSH host, or containers you run</td></tr>
+          <tr><td>Team use</td><td>One shared server and board; invite teammates by email on Cloud</td><td>Login with a Coder deployment for AI Gateway models; session controls for server mode</td></tr>
+          <tr><td>License</td><td>MIT + Commons Clause, self-hostable</td><td>AGPL-3.0</td></tr>
+          <tr><td>Price</td><td>Free to self-host; Cloud Solo $39, Team $69, Max $129 per month per server</td><td>Free; you pay your model providers</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="interface">How do you drive each one?</h2>
+    <p>Xum is a focused desktop app. You open a project, create a workspace per task, choose a runtime and a model, and work with its agent in Plan or Exec mode, with vim-style input, slash commands and keyboard shortcuts. A VS Code extension jumps into workspaces from the editor.</p>
+    <p>amux starts in the browser. Each agent is a worker card on the dashboard with its live terminal, and the same view works on a phone, in the iPhone and iPad app, or in the Mac app.</p>
+
+    <h2 id="agents">What actually runs: Claude Code or another agent?</h2>
+    <p>This is the main difference. Xum runs its own agent loop and calls models with API keys or through GitHub Copilot, OpenRouter, Ollama or a Coder gateway. You can swap models freely, and you pay per token unless a provider route covers it.</p>
+    <p>amux runs the real Claude Code, Codex and Gemini CLI, signed in with your own subscription or API key. If you already pay for a Claude or ChatGPT plan, those agents work on that plan, with their own skills, hooks and updates.</p>
+
+    <h2 id="team">Which is better for running many agents at once?</h2>
+    <p>Xum keeps agents apart well. Each workspace can be a worktree, an SSH host, a Docker container or a Dev Container, with a central view of git divergence, and its SSH runtime treats the remote host as untrusted by default. Best of N runs several independent attempts at one ask.</p>
+    <p>amux organises the fleet around shared work. Tasks live on a kanban board that agents claim from, agents message each other and share memory, usage limits pause delivery until the provider resets, and stall alerts fire when a worker stops making progress.</p>
+
+    <h2 id="phone">Which is better from a phone?</h2>
+    <p>Xum has a server mode with a responsive UI for phones, on a machine you run and expose yourself. There is no native mobile app listed in its docs.</p>
+    <p>amux has a native iPhone and iPad app and an installable web app. On amux Cloud the server has its own HTTPS address at yourname.amux.io, so the phone talks to a machine that is always on.</p>
+
+    <h2 id="cost">How much do amux and Xum cost?</h2>
+    <p>Xum is free under AGPL-3.0, and model use is billed by whichever provider you connect. Its Costs tab shows the spend per workspace.</p>
+    <p>amux is free to self-host with every feature. amux Cloud costs $39/mo for Solo, $69/mo for Team and $129/mo for Max. The price covers the server itself, models are billed by your own provider plan, and the cost does not grow with the number of agents or teammates on the box.</p>
+    <p>For freelancers and agencies running agents across several client repos, <a href="/start/?plan=team&amp;source=amux-vs-xum">Cloud Team</a> gives the agents enough memory to work on several projects in parallel on one board every teammate can open.</p>
+
+    <h2 id="choose">When should you choose amux or Xum?</h2>
+    <h3 id="xum">Choose Xum if</h3>
+    <ul>
+      <li>You want one free desktop app with its own agent and any model you hold an API key for.</li>
+      <li>You want each workspace isolated in SSH, Docker or a Dev Container.</li>
+      <li>You want per-workspace cost figures.</li>
+      <li>Your company already runs Coder and its AI Gateway.</li>
+    </ul>
+    <h3 id="amux">Choose amux if</h3>
+    <ul>
+      <li>You want the real Claude Code, Codex and Gemini CLI, on the subscriptions you already pay for.</li>
+      <li>You want agents on one board, claiming tasks and resuming after usage limits on their own.</li>
+      <li>You want a native iPhone app, a scheduler, CRM, email and browser automation.</li>
+      <li>You want a dedicated always-on server your team shares at one flat price: <a href="/start/?source=amux-vs-xum">amux Cloud</a> from $39/mo.</li>
+    </ul>
+    <p>Related: <a href="/compare/amux-vs-orca/">amux vs Orca</a>, <a href="/compare/amux-vs-emdash/">amux vs Emdash</a>, <a href="/compare/amux-vs-cmux/">amux vs cmux</a>, <a href="/compare/amux-vs-dmux/">amux vs dmux</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers</a>.</p>
+
+    <p style="font-size:0.82rem;color:var(--fg-mute);">Xum details from its <a href="https://xum.coder.com/" target="_blank" rel="noopener">docs</a>, including <a href="https://mux.coder.com/install" target="_blank" rel="noopener">install</a>, <a href="https://mux.coder.com/runtime" target="_blank" rel="noopener">runtimes</a> and <a href="https://mux.coder.com/config/providers" target="_blank" rel="noopener">providers</a>, and its <a href="https://github.com/coder/xum" target="_blank" rel="noopener">GitHub repository</a>, checked November 8, 2026.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <h3>Is amux a Xum alternative?</h3>
+    <p>For running parallel coding agents, yes. Xum is a free desktop app with its own agent loop on your API keys and strong workspace isolation. amux runs Claude Code, Codex and Gemini CLI on a shared task board from any browser or its iPhone app, and amux Cloud runs it on a dedicated always-on server.</p>
+    <h3>Is Xum the same as Mux?</h3>
+    <p>Yes. Coder renamed its Mux coding agent multiplexer to Xum after a trademark concern from Mux.com. amux is a separate product from a different team.</p>
+    <h3>Is Xum free?</h3>
+    <p>Yes. Xum is free under AGPL-3.0, and you pay your model providers. amux is free to self-host with every feature, and amux Cloud starts at $39 a month per server.</p>
+    <h3>Does Xum run Claude Code?</h3>
+    <p>Xum has its own agent loop, with a user experience inspired by Claude Code, and calls Claude models through an API key or a provider route. amux runs the Claude Code CLI itself on your subscription or key.</p>
+    <h3>Does Xum have a phone app?</h3>
+    <p>Its docs list a responsive web UI in server mode and no native app. amux has a native iPhone and iPad app.</p>
+  </main>
+
+
+
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>
+        <a href="/">amux</a> &middot;
+        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
+        <a href="/docs/">Docs</a> &middot;
+        <a href="/guides/">Guides</a> &middot;
+        <a href="/demos/">Demos</a> &middot;
+        <a href="/compare/">Compare</a> &middot;
+        <a href="/blog/">Blog</a> &middot;
+        <a href="/pricing/">Pricing</a> &middot;
+        <a href="/privacy/">Privacy</a>
+      </p>
+    </div>
+  </footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>
