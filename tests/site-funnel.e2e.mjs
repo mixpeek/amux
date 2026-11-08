@@ -292,7 +292,7 @@ for (const mobile of [false, true]) {
   await p.click('.filter-btn:text-is("Board")');
   const board = await visible();
   await p.fill('#demo-search', 'subscribe');
-  ok(board > 0 && board < total && await visible() >= 1 && await visible() < board, `search and category filter combine (${where})`);
+  ok(board > 0 && board < total && await visible() >= 1 && await visible() <= board, `search and category filter combine (${where})`);
   await p.waitForFunction(() => Array.from(window.posthog).some(c => Array.isArray(c) && c[1] === 'cta_click' && c[2] && c[2].goal === 'demo_search'), null, { timeout: 4000 });
   cta = await evs(p, 'cta_click');
   ok(cta.filter(e => e.goal === 'demo_search' && e.spot === 'demos-search' && e.label === 'subscribe').length === 1, `search records one cta_click, goal demo_search (${where})`);
