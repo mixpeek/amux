@@ -17,7 +17,11 @@ Each run takes one snapshot and compares it with a baseline the first run record
   firewall   the macOS application firewall state. A change is an anomaly.
   egress     processes holding connections to public addresses. A process name
              not seen before is an anomaly. This is a point-in-time sample: it
-             misses short-lived connections and sees no DNS.
+             misses short-lived connections and sees no DNS. A shell or raw
+             socket tool (bash, nc, socat, ...) is never accepted by name: each
+             new destination is its own anomaly, since that is what a reverse
+             shell looks like. GitHub's range is exempt for them because git's
+             helpers hand their socket to the calling shell.
 
 Auto-fix (--fix, which the schedule passes) is limited to one class that is
 always wrong on this host and never load-bearing: an ad-hoc static file server
@@ -68,7 +72,9 @@ AMUX = os.environ.get("NETWORK_WATCH_AMUX", "amux")
 # makes thousands.
 AUTH_FAIL_BURST = int(os.environ.get("NETWORK_WATCH_AUTH_BURST", "60"))
 # Listener command names whose ports are chosen at random per run (e2e servers).
-DYNAMIC_PORT_COMMANDS = {"amux-serv", "rapportd", "Spotify", "ControlCe", "identitys"}
+# Matched as prefixes: lsof prints the full name here (amux-server,
+# ControlCenter) and the old exact match on 9-character names never fired.
+DYNAMIC_PORT_COMMANDS = ("amux-serv", "rapportd", "Spotify", "ControlCe", "identitys")
 FILE_SERVER = re.compile(
     r"(-m\s+(http\.server|SimpleHTTPServer)\b|\bhttp-server\b|\bnpx\s+serve\b|\bserve\s+-[ls]\b)"
 )
@@ -108,6 +114,20 @@ def is_private(addr: str) -> bool:
     return False
 
 
+# A reverse shell holds its socket in one of these. They are judged per
+# destination and never accepted by name.
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
+          "telnet", "perl", "ruby", "php",
+          # Launchers: `env X=1 git ...` and friends hold the socket the same way.
+          "env", "xargs", "nohup", "timeout", "sudo"}
+
+
+def is_github(addr: str) -> bool:
+    # 140.82.112.0/20, GitHub's git and API front ends (api.github.com/meta).
+    m = re.match(r"140\.82\.(\d+)\.\d+$", addr.strip("[]"))
+    return bool(m) and 112 <= int(m.group(1)) <= 127
+
+
 def split_hostport(s: str) -> tuple[str, str]:
     host, _, port = s.rpartition(":")
     return host, port
@@ -141,6 +161,31 @@ def cmdline(pid: int) -> str:
         return ""
 
 
+def cwd_of(pid: int) -> str:
+    # The working directory names the lane that started a process (its
+    # ~/.amux/tmp/<worker> scratch or its worktree), which is gone once the
+    # process is stopped.
+    try:
+        out = run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], timeout=10)
+    except CouldNotRun:
+        return ""
+    return next((x[1:] for x in out.splitlines() if x.startswith("n")), "")
+
+
+APP_PREFIXES = ("/Applications/", "/System/", "/usr/libexec/", "/usr/sbin/")
+
+
+def exe_path(pid: int) -> str:
+    try:
+        return run(["ps", "-o", "comm=", "-p", str(pid)], timeout=10).strip()
+    except CouldNotRun:
+        return ""
+
+
+def is_app_bundle(path: str) -> bool:
+    return path.startswith(APP_PREFIXES) and (".app/" in path or not path.startswith("/Applications/"))
+
+
 def collect() -> dict:
     listen = parse_lsof(run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"]))
     if not listen:
@@ -153,10 +198,18 @@ def collect() -> dict:
             wide.append({**r, "host": host, "port": port})
     est = parse_lsof(run(["lsof", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]))
     egress: dict[str, set[str]] = {}
+    paths: dict[int, str] = {}
     for r in est:
         _, _, remote = r["name"].partition("->")
         host, _ = split_hostport(remote)
         if remote and not is_private(host):
+            if r["pid"] not in paths:
+                paths[r["pid"]] = exe_path(r["pid"])
+            # Installed app bundles and the OS reach the internet by design and
+            # alerted on first sight with nothing to act on (Obsidian, Spotify).
+            # A hijacked agent runs command-line tools, which still alert.
+            if is_app_bundle(paths[r["pid"]]):
+                continue
             egress.setdefault(r["command"], set()).add(host)
     try:
         ts = json.loads(run([TAILSCALE, "status", "--json"]))
@@ -209,7 +262,7 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
     for w in snap["wide"]:
         port = w["port"]
         known = (w["command"], port) in allowed or (
-            w["command"] in DYNAMIC_PORT_COMMANDS and w["command"] in allowed_cmds
+            w["command"].startswith(DYNAMIC_PORT_COMMANDS) and w["command"] in allowed_cmds
         )
         if FILE_SERVER.search(w.get("cmdline", "")):
             out.append({"key": f"fileserver:{w['pid']}:{port}", "kind": "FILE-SERVER", "w": w})
@@ -229,6 +282,12 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         out.append({"key": f"firewall:{snap['firewall']}", "kind": "FIREWALL", "state": snap["firewall"]})
     known_egress = set(base.get("egress", []))
     for cmd in sorted(snap["egress"]):
+        if cmd in SHELLS:
+            for addr in sorted(snap["egress"][cmd]):
+                if not is_github(addr):
+                    out.append({"key": f"egress:{cmd}:{addr}", "kind": "NEW-EGRESS",
+                                "cmd": cmd, "n": 1, "to": [addr]})
+            continue
         if cmd not in known_egress:
             out.append({"key": f"egress:{cmd}", "kind": "NEW-EGRESS", "cmd": cmd,
                         "n": len(snap["egress"][cmd]), "to": sorted(snap["egress"][cmd])[:3]})
@@ -247,7 +306,8 @@ def line(r: dict) -> str:
     if "w" in r:
         w = r["w"]
         s = f"{k} {clean(w['command'])} pid {w['pid']} on {clean(w['host'])}:{clean(w['port'])}"
-        return s + (" (stopped)" if r.get("stopped") else "")
+        s += " (stopped)" if r.get("stopped") else ""
+        return s + (f" started in {clean(r['cwd'], 120)}" if r.get("cwd") else "")
     if "p" in r:
         return f"{k} {clean(r['p']['host'])} {clean(r['p']['ip'])}"
     if k == "NEW-EGRESS":
@@ -264,6 +324,7 @@ def fix(rows: list[dict]) -> None:
     for r in rows:
         if r["kind"] != "FILE-SERVER":
             continue
+        r["cwd"] = cwd_of(r["w"]["pid"])
         try:
             os.kill(r["w"]["pid"], signal.SIGTERM)
             r["stopped"] = True
@@ -294,11 +355,27 @@ def baseline_of(snap: dict) -> dict:
     }
 
 
+# An alerted key stays quiet this long after it was last present, so a dev
+# server restarted every few minutes on the same wide port alerts once a day
+# instead of on every return. Keys that carry a pid (file servers) still alert
+# for each new process.
+SEEN_TTL = int(os.environ.get("NETWORK_WATCH_SEEN_TTL", str(24 * 3600)))
+
+
+def remember(seen, keys, now: float) -> dict:
+    """Seen keys still inside the TTL, with the present ones stamped now."""
+    if isinstance(seen, list):  # older state: a bare list of keys
+        seen = {k: now for k in seen}
+    kept = {k: t for k, t in seen.items() if now - t < SEEN_TTL}
+    kept.update({k: now for k in keys})
+    return kept
+
+
 def main() -> int:
     dry, do_fix = "--dry-run" in sys.argv, "--fix" in sys.argv
     try:
         base = load("baseline.json", None)
-        seen = set(load("seen.json", []))
+        seen = remember(load("seen.json", {}), [], time.time())
         cursor = load("cursor.json", {}).get("ts", time.time() - 6 * 3600)
         snap = collect()
         for w in snap["wide"]:
@@ -345,7 +422,7 @@ def main() -> int:
     if not dry:
         if first:
             save("baseline.json", base)
-        save("seen.json", sorted({r["key"] for r in rows}))
+        save("seen.json", remember(seen, [r["key"] for r in rows], time.time()))
         save("cursor.json", {"ts": reqs["newest"]})
     return 0
 

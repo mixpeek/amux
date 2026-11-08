@@ -101,5 +101,33 @@ echo "0000000000000000000000000000000000000000" > "$TMP/live"
 run AMUX_ACTIVATION_ROLLBACK=0
 grep -q new-build "$INSTALL" && ok "AMUX_ACTIVATION_ROLLBACK=0 keeps the new build without a health wait" || bad "opt-out still rolled back: $(cat "$INSTALL")"
 
+# 5. A commit with the SAME build inputs as the installed binary (a docs-only
+# commit after the last crates/ change) is never adopted: it is rolled back but
+# NOT held, since the restored binary is that code (e5cc110cb, 2026-11-04: such
+# a hold pinned deploys for 31 hours, because only a crates/ commit clears it).
+TRIGGER=$(git -C "$REPO" rev-parse HEAD)
+echo "$TRIGGER" > "$TMP/stamp"; rm -f "$TMP/stamp.rolled_back" "$TMP/stamp.failed"
+printf 'notes\n' > "$REPO/notes.md"
+(cd "$REPO" && git add notes.md && git -c user.name=test -c user.email=test@example.com commit -qm docs-only)
+echo "$TRIGGER" > "$TMP/live"
+# The live binary differs in bytes (each build embeds its commit), so it is replaced.
+printf '#!/bin/sh\nprintf old-build\n\n' > "$INSTALL"; chmod 0755 "$INSTALL"
+: > "$TMP/build.log"
+run
+grep -q "verdict=activation_rolled_back" "$TMP/build.log" && ok "an unadopted same-inputs build is still rolled back" || bad "no rollback for the same-inputs build"
+grep -q "verdict=activation_unadopted_same_inputs" "$TMP/build.log" && ok "it is named as same-inputs" || bad "no same-inputs verdict"
+! grep -q "held until a newer one" "$TMP/build.log" && ok "and the rollback line does not claim a hold" || bad "the rollback line claims a hold that was not written"
+[ ! -e "$TMP/stamp.rolled_back" ] && ok "a same-inputs rollback writes no hold" || bad "same-inputs rollback was held: $(cat "$TMP/stamp.rolled_back")"
+[ -s "$TMP/stamp.failed" ] && ok "it waits out the bounded build backoff instead" || bad "no backoff recorded"
+
+# 6. A hold already on disk for the installed binary's own inputs (the state
+# this Mac was left in) is cleared and logged, not obeyed forever.
+printf '%s %s\n' "$TRIGGER" "$(date +%s)" > "$TMP/stamp.rolled_back"
+echo "$TRIGGER" > "$TMP/stamp"; rm -f "$TMP/stamp.failed"
+: > "$TMP/build.log"
+run
+grep -q "verdict=activation_rollback_hold_same_inputs" "$TMP/build.log" && ok "a same-inputs hold is cleared, with a verdict" || bad "the same-inputs hold was not cleared"
+! grep -q "verdict=activation_rollback_hold$" "$TMP/build.log" && ok "and it no longer holds the commit" || bad "the commit is still held"
+
 echo "test-build-activation-rollback: $fails failed"
 exit "$fails"

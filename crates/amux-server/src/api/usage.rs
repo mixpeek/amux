@@ -1578,11 +1578,11 @@ struct AttributionQuery {
 const PROMPT_SOURCE_SRC: &str = "\
  src AS (SELECT lg.*, \
    (SELECT h.ts/1000 FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_ts, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain','voided','lost') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_ts, \
    (SELECT COALESCE(h.type,'') FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_type, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain','voided','lost') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_type, \
    (SELECT COALESCE(h.origin,'') FROM cmd_history h \
-      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_origin, \
+      WHERE h.session = lg.session AND h.ts <= lg.ts * 1000 + 999 AND COALESCE(h.delivery,'') NOT IN ('refused','uncertain','voided','lost') AND (COALESCE(h.delivery,'') <> 'queued' OR h.delivered_at IS NOT NULL) ORDER BY h.ts DESC LIMIT 1) AS c_origin, \
    (SELECT s.delivered_at FROM steering_history s \
       WHERE s.session = lg.session AND s.delivered_at <= lg.ts AND (s.outcome LIKE 'sent%' OR s.outcome = 'delivered') ORDER BY s.delivered_at DESC LIMIT 1) AS s_ts, \
    (SELECT COALESCE(NULLIF(s.guard,''),'steering') FROM steering_history s \
@@ -1744,6 +1744,9 @@ mod tests {
             conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('owner','user','lane',?1,'direct')",[(now-100)*1000])?;
             conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('queued peer','session','lane',?1,'queued')",[(now-80)*1000])?;
             conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('refused peer','session','lane',?1,'refused')",[(now-60)*1000])?;
+            // Never delivered either (2026-11-06): a voided and a lost receipt.
+            conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('voided peer','session','lane',?1,'voided')",[(now-58)*1000])?;
+            conn.execute("INSERT INTO cmd_history(text,type,session,ts,delivery) VALUES('lost peer','session','lane',?1,'lost')",[(now-55)*1000])?;
             conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) VALUES('denied','lane','refused',?1,?1,'refused:worker_group_boundary','board-progress','outside')",[now-50])?;
             conn.execute("INSERT INTO token_ledger(ts,session,conversation,model,input,cache_read,cache_write,output,cost_usd,task) VALUES(?1,'lane','c','opus',1,0,0,1,1.0,'')",[now-40])?;
             conn.execute("INSERT INTO steering_history(id,session,text,queued_at,delivered_at,outcome,guard,sender) VALUES('accepted','lane','actual callback',?1,?1,'sent (queued while generating)','task-callback:C','peer')",[now-30])?;

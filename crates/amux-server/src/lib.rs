@@ -180,6 +180,10 @@ fn worker_stack_bytes() -> usize {
 }
 
 pub fn run() {
+    // Before any thread or child exists: a handed-over listener arrives with
+    // close-on-exec cleared, and every process spawned before adopt_or_bind
+    // (gh, bash, pgrep from boot jobs) would otherwise hold port 8824.
+    listener_handoff::seal_inherited();
     let stack = worker_stack_bytes();
     let maintenance = tokio::runtime::Builder::new_multi_thread()
         .thread_name("amux-maintenance")
@@ -715,6 +719,8 @@ async fn async_main() {
     // channel reads. WhatsApp and Slack arrive by webhook (api/bridge.rs).
     drop(bridge::spawn(state.clone()));
     drop(bridge::adapters::spawn_discord(state.clone()));
+    // The owner's WhatsApp self chat, read from the WhatsApp app on this Mac.
+    drop(bridge::whatsapp_app::spawn(state.clone()));
     // Auto-relay: send session replies back to Telegram when linked sessions respond
     // to Telegram-routed messages. Works for all workers without per-session configuration.
     drop(runtime_jobs::telegram_relay::spawn(state.clone()));

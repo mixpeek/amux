@@ -396,6 +396,10 @@ pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] = &[
     // Ethan, 2026-11-03: "an amux-wide skill that sets up the scaffolding ...
     // for any large goal".
     ("big-goal", include_str!("../../../../skills/big-goal.md")),
+    // Ethan, 2026-11-05: "amux tools are the default for any sort of
+    // publishing of apps/pages". A skill reaches isolated workers too, which
+    // get no launch rules and so never see worker_links_guide.
+    ("amux-publish", include_str!("../../../../skills/amux-publish.md")),
 ];
 
 /// The frontmatter line that lets amux keep a shipped command current. A user
@@ -771,11 +775,15 @@ mod write_tests {
     #[test]
     fn the_core_skills_ship() {
         let names: Vec<&str> = SHIPPED_COMMANDS.iter().map(|(n, _)| *n).collect();
-        for want in ["slop", "iterate", "codex", "muse", "imessage", "pr-merge", "e2e-test", "worker-audit", "big-goal"] {
+        for want in ["slop", "iterate", "codex", "muse", "imessage", "pr-merge", "e2e-test", "worker-audit", "big-goal", "amux-publish"] {
             assert!(names.contains(&want), "{want} is not shipped: {names:?}");
         }
         let audit = SHIPPED_COMMANDS.iter().find(|(n, _)| *n == "worker-audit").unwrap().1;
         assert!(audit.contains("workers=") && audit.contains("READ-ONLY"), "worker-audit takes workers= and stays read-only");
+        let publish = SHIPPED_COMMANDS.iter().find(|(n, _)| *n == "amux-publish").unwrap().1;
+        let desc = frontmatter_fields(publish).0;
+        assert!(desc.contains("Netlify") && desc.contains("amux publish"),
+            "the description is what makes a worker load it before an outside host: {desc}");
     }
 
     /// The shipped copy carries the marker and a description, or it would be

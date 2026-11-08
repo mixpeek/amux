@@ -450,6 +450,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             cfg.websiteDataStore = .default()
             cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
             cfg.mediaTypesRequiringUserActionForPlayback = []
+            // The word suggestions macOS shows as you type (Ethan, 2026-11-07:
+            // "add spellcheck/autocorrect/ suggestions into the inputs").
+            if #available(macOS 14.0, *) { cfg.allowsInlinePredictions = true }
         }
         // A configuration handed over by window.open already carries the
         // script from the window that opened it.
@@ -544,6 +547,15 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 let found = app?.focusOpenPage(hash: hash, asker: self) ?? false
                 let t = token.filter { $0.isLetter || $0.isNumber }
                 webView.evaluateJavaScript("typeof _cmdkFocusAck === 'function' && _cmdkFocusAck('\(t)', \(found))", completionHandler: nil)
+                return
+            }
+            // ⌘K asks which places the other tabs and panes show, to mark
+            // those rows Open (owner, 2026-11-07).
+            if (d?["op"] as? String) == "places", let token = d?["token"] as? String {
+                let places = app?.openPlaces(except: self) ?? []
+                let t = token.filter { $0.isLetter || $0.isNumber }
+                let json = (try? JSONSerialization.data(withJSONObject: places)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+                webView.evaluateJavaScript("typeof _cmdkPlacesAck === 'function' && _cmdkPlacesAck('\(t)', \(json))", completionHandler: nil)
                 return
             }
             guard (d?["op"] as? String) == "split" else { return }
@@ -1057,6 +1069,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         routeStderrToLogFile()
+        registerTextCheckingDefaults()
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenuBar(self)
         NotificationCenter.default.addObserver(forName: .amuxOverlayClosed, object: nil, queue: .main) { [weak self] n in
@@ -1774,6 +1787,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let f = fragment.hasPrefix("#") ? String(fragment.dropFirst()) : fragment
         return String(f.split(separator: "&").first ?? "")
     }
+    /// The places ("peek=<worker>", "view=<tab>") every tab and pane other
+    /// than `asker` shows, once each.
+    func openPlaces(except asker: DashboardWindowController) -> [String] {
+        var seen = Set<String>()
+        return controllers.compactMap { c -> String? in
+            guard c !== asker else { return nil }
+            let k = AppDelegate.placeKey(c.webView.url?.fragment ?? "")
+            guard k.hasPrefix("peek=") || k.hasPrefix("view="), seen.insert(k).inserted else { return nil }
+            return k
+        }
+    }
     /// Brings forward the tab or pane, other than `asker`, already showing the
     /// place `hash` names, selecting it in its pane and its window in its tab
     /// group. False when no page shows it.
@@ -2013,6 +2037,30 @@ extension Config {
 }
 
 // ── Standard menu bar ──
+/// Spelling in every text box (Ethan, 2026-11-07: "add spellcheck/autocorrect/
+/// suggestions into the inputs"). The page asks for it (spellcheck="true",
+/// autocorrect="on"), but in a WKWebView the app decides: WebKit reads these
+/// keys from the app's defaults, and none were set, so nothing was checked or
+/// corrected. Registered defaults lose to a choice made in Edit > Spelling and
+/// Grammar or Edit > Substitutions, which WebKit saves under the same keys.
+/// Smart quotes and dashes stay off: a curly quote breaks a command sent to a
+/// worker.
+func registerTextCheckingDefaults() {
+    UserDefaults.standard.register(defaults: [
+        "WebContinuousSpellCheckingEnabled": true,
+        "WebAutomaticSpellingCorrectionEnabled": true,
+        "WebAutomaticTextReplacementEnabled": true,
+        "WebGrammarCheckingEnabled": false,
+        "WebAutomaticQuoteSubstitutionEnabled": false,
+        "WebAutomaticDashSubstitutionEnabled": false,
+    ])
+    let d = UserDefaults.standard
+    NSLog("amux-desktop: verdict=text_checking_defaults spelling=%d autocorrect=%d replacement=%d",
+          d.bool(forKey: "WebContinuousSpellCheckingEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticSpellingCorrectionEnabled") ? 1 : 0,
+          d.bool(forKey: "WebAutomaticTextReplacementEnabled") ? 1 : 0)
+}
+
 func buildMenuBar(_ d: AppDelegate) {
     let mainMenu = NSMenu()
     func add(_ menu: NSMenu, _ title: String, _ action: Selector?, _ key: String,
@@ -2062,6 +2110,22 @@ func buildMenuBar(_ d: AppDelegate) {
     add(edit, "Copy", #selector(NSText.copy(_:)), "c")
     add(edit, "Paste", #selector(NSText.paste(_:)), "v")
     add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+    edit.addItem(.separator())
+    // The standard spelling menus. The focused WKWebView answers each action
+    // and shows its checkmark.
+    let spelling = NSMenu(title: "Spelling and Grammar")
+    add(spelling, "Show Spelling and Grammar", #selector(NSText.showGuessPanel(_:)), ":")
+    add(spelling, "Check Document Now", #selector(NSText.checkSpelling(_:)), ";")
+    spelling.addItem(.separator())
+    add(spelling, "Check Spelling While Typing", #selector(NSTextView.toggleContinuousSpellChecking(_:)), "", [])
+    add(spelling, "Check Grammar With Spelling", #selector(NSTextView.toggleGrammarChecking(_:)), "", [])
+    add(spelling, "Correct Spelling Automatically", #selector(NSTextView.toggleAutomaticSpellingCorrection(_:)), "", [])
+    edit.addItem(withTitle: "Spelling and Grammar", action: nil, keyEquivalent: "").submenu = spelling
+    let subs = NSMenu(title: "Substitutions")
+    add(subs, "Smart Quotes", #selector(NSTextView.toggleAutomaticQuoteSubstitution(_:)), "", [])
+    add(subs, "Smart Dashes", #selector(NSTextView.toggleAutomaticDashSubstitution(_:)), "", [])
+    add(subs, "Text Replacement", #selector(NSTextView.toggleAutomaticTextReplacement(_:)), "", [])
+    edit.addItem(withTitle: "Substitutions", action: nil, keyEquivalent: "").submenu = subs
     editItem.submenu = edit
     mainMenu.addItem(editItem)
 

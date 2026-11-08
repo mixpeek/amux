@@ -75,7 +75,7 @@
       {"@type":"Question","name":"Which GitHub Copilot alternative has the best code quality?","acceptedAnswer":{"@type":"Answer","text":"Claude Code with Claude Opus 4.7 leads SWE-bench Verified at approximately 82%, making it the highest-scoring AI coding tool on real-world software engineering tasks. Cursor and Windsurf also support Opus 4.7 as a model option. Codex CLI scores around 72-75% with OpenAI's o3 model. Devin uses a proprietary model fine-tuned for autonomous coding. For open-source flexibility, Aider and OpenCode let you choose any model, so you can use the best-scoring model with any tool."}},
       {"@type":"Question","name":"What happened to Codeium / Windsurf?","acceptedAnswer":{"@type":"Answer","text":"Codeium rebranded to Windsurf and shifted from a Copilot-style autocomplete tool to a full AI IDE with agent capabilities. In late 2025, Windsurf was acquired by Cognition (the company behind Devin). Windsurf continues to operate as a standalone AI IDE at windsurf.com, while Cognition integrates its technology into Devin's autonomous coding platform. The acquisition consolidated two of the most ambitious AI coding companies under one roof."}},
       {"@type":"Question","name":"Can I run GitHub Copilot alternatives locally for privacy?","acceptedAnswer":{"@type":"Answer","text":"Yes. Continue is fully open-source and works with local models via Ollama — your code never leaves your machine. OpenCode supports 75+ providers including Ollama and LM Studio for local inference. Aider works with any OpenAI-compatible API endpoint, including local servers. Tabby (by TabbyML) is a self-hosted alternative that runs entirely on your infrastructure. For enterprise privacy requirements, Amazon Q Developer and Tabnine both offer on-premises deployment options."}},
-      {"@type":"Question","name":"How much do GitHub Copilot alternatives cost?","acceptedAnswer":{"@type":"Answer","text":"Pricing varies widely. Free options: Gemini CLI (1,000 req/day), Continue (open-source, BYO keys), Amazon Q Developer free tier. Subscription options: GitHub Copilot ($10-19/mo), Cursor ($20/mo), Claude Code via Max ($100-200/mo), Windsurf ($15/mo). Usage-based: Claude Code via API (~$30-100/mo typical), Codex CLI (OpenAI API pricing). Autonomous agents: Devin ($500/mo per seat). Orchestration: amux is free and open-source (MIT + Commons Clause), but you pay for the underlying agents it manages."}}
+      {"@type":"Question","name":"How much do GitHub Copilot alternatives cost?","acceptedAnswer":{"@type":"Answer","text":"Pricing varies widely. Free options: Gemini CLI (1,000 req/day), Continue (open-source, BYO keys), Amazon Q Developer free tier. Subscription options: GitHub Copilot ($10-19/mo), Cursor ($20/mo), Claude Code via Max ($100-200/mo), Windsurf ($15/mo). Usage-based: Claude Code via API (~$30-100/mo typical), Codex CLI (OpenAI API pricing). Autonomous agents: Devin ($500/mo per seat). Orchestration: amux is free to self-host (MIT + Commons Clause), but you pay for the underlying agents it manages."}}
     ]
   }</script>
 
@@ -138,13 +138,26 @@
       .evo-arrow{transform:rotate(90deg)}
     }
   </style>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>

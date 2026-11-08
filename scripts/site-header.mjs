@@ -6,8 +6,14 @@
 //   node scripts/site-header.mjs          report pages that drift (exit 1 if any)
 //   node scripts/site-header.mjs --fix    rewrite them from the source
 //
-// The homepage is the one allowed variant: its Get started link is the
-// in-page #get, and it renders the star count inside .nav-stars.
+// /nav.css and /site.js are referenced with ?v=<scripts/site-asset-version.txt>.
+// The CDN in front of amux.io keeps those two files for hours, so a header that
+// needs new CSS or JS would otherwise reach visitors before its styles do. Bump
+// the version whenever nav.css or site.js changes, then run --fix.
+//
+// The homepage is the one allowed variant: it renders the star count inside
+// .nav-stars. Pages in NO_GET_STARTED drop the Get started link and keep the
+// rest of the header.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,12 +22,22 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = path.join(ROOT, 'site');
 export const CANONICAL = fs.readFileSync(path.join(ROOT, 'scripts/site-header.html'), 'utf8').trim();
 const HEADER_RE = /<header class="site-header">[\s\S]*?<\/header>|<header class="site">[\s\S]*?<\/header>/;
+export const ASSET_V = fs.readFileSync(path.join(ROOT, 'scripts/site-asset-version.txt'), 'utf8').trim();
+export const NAV_CSS = `<link rel="stylesheet" href="/nav.css?v=${ASSET_V}">`;
+export const SITE_JS = `<script src="/site.js?v=${ASSET_V}"></script>`;
 const FONT = '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">';
 
+// Pages whose header has no Get started link, each for a reason of its own.
+export const NO_GET_STARTED = new Map([
+  ['index.html', "the hero's own buttons cover it (homepage redesign, 2026-11-03)"],
+  ['start/index.html', 'no exits above the signup form (EXP-157)'],
+]);
+const GET_STARTED = /\n\s*<a href="\/#get" class="nav-cta nav-cta-primary">Get started<\/a>/;
+
 export function expectedHeader(rel) {
-  if (rel !== 'index.html') return CANONICAL;
-  return CANONICAL
-    .replace('href="/#get"', 'href="#get"')
+  const base = NO_GET_STARTED.has(rel) ? CANONICAL.replace(GET_STARTED, '') : CANONICAL;
+  if (rel !== 'index.html') return base;
+  return base
     .replace('<span class="gh-stars" id="gh-stars">★</span>', '<span class="nav-stars">★ <span class="gh-stars">539</span></span>');
 }
 
@@ -49,8 +65,10 @@ export function problems(rel, html) {
     if (norm(got) !== norm(want)) out.push('header differs from scripts/site-header.html');
   }
   const head = html.split('</head>')[0];
-  if (!head.includes('href="/nav.css"')) out.push('missing /nav.css in <head>');
-  if (!head.includes('src="/site.js"')) out.push('/site.js not loaded in <head>');
+  if (!head.includes('href="/nav.css')) out.push('missing /nav.css in <head>');
+  else if (!head.includes(NAV_CSS)) out.push(`/nav.css not at ?v=${ASSET_V}`);
+  if (!head.includes('src="/site.js')) out.push('/site.js not loaded in <head>');
+  else if (!head.includes(SITE_JS)) out.push(`/site.js not at ?v=${ASSET_V}`);
   if (/<html[^>]*\sdata-theme=/.test(html)) out.push('<html> hardcodes data-theme (site.js decides)');
   return out;
 }
@@ -60,11 +78,12 @@ export function fix(rel, html) {
   if (m) html = html.replace(m[0], expectedHeader(rel));
   else html = html.replace(/<body([^>]*)>/, `<body$1>\n  ${expectedHeader(rel)}`);
   html = html.replace(/(<html[^>]*?)\sdata-theme="[^"]*"/, '$1');
-  html = html.replace(/[ \t]*<script src="\/site\.js"><\/script>\n?/g, '');
+  html = html.replace(/[ \t]*<script src="\/site\.js(\?v=[^"]*)?"><\/script>\n?/g, '');
+  html = html.replace(/<link rel="stylesheet" href="\/nav\.css(\?v=[^"]*)?">/g, NAV_CSS);
   const add = [];
   if (!html.split('</head>')[0].includes('JetBrains+Mono')) add.push(FONT);
-  add.push('<script src="/site.js"></script>');
-  if (!html.split('</head>')[0].includes('href="/nav.css"')) add.push('<link rel="stylesheet" href="/nav.css">');
+  add.push(SITE_JS);
+  if (!html.split('</head>')[0].includes('href="/nav.css')) add.push(NAV_CSS);
   return html.replace('</head>', add.map(l => '  ' + l).join('\n') + '\n</head>');
 }
 

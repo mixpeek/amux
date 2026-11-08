@@ -22,13 +22,26 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Press Kit","item":"https://amux.io/press/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What problem does amux solve?","acceptedAnswer":{"@type":"Answer","text":"Developers using AI coding agents like Claude Code face three problems: agents crash overnight from context exhaustion, there is no way to run more than one agent at a time without writing custom scripts, and there is no dashboard to monitor what multiple agents are doing. amux solves all three: agents resume on their own after usage limits and stall detection alerts you, parallel session management runs 10-50 agents simultaneously, and a web dashboard (plus native iOS app) gives real-time visibility into every session's output and token spend."}},{"@type":"Question","name":"Who built amux?","acceptedAnswer":{"@type":"Answer","text":"amux is built by Mixpeek, a developer tools company founded by Ethan Steininger. The project is source-available (MIT + Commons Clause) and actively maintained. Commercial support and managed deployment are available via the amux Concierge service at amux.io/concierge/."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux itself is free and source-available under MIT + Commons Clause. You pay only for the API tokens consumed by your AI agents (Claude Code, OpenAI Codex, or Gemini CLI). There is no subscription fee, no per-seat charge, and no usage cap on the self-hosted version. Commercial resale of amux as a managed service requires a separate license."}},{"@type":"Question","name":"What makes amux different from Cursor or Devin?","acceptedAnswer":{"@type":"Answer","text":"Cursor is an IDE — a single-developer coding assistant inside an editor. Devin is a cloud-based autonomous agent. amux is neither: it is an orchestration layer that runs on your own machine and manages a fleet of AI coding agents (Claude Code, Codex, Gemini CLI) working in parallel on different tasks. Where Cursor helps one developer write code faster, amux lets one developer run 10-50 coding agents simultaneously — effectively multiplying their output by running agents overnight while they sleep."}}]}</script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>

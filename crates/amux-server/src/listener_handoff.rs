@@ -62,6 +62,27 @@ pub fn exec_failed() {
     }
 }
 
+/// Set close-on-exec on a handed-over listener the moment the new image
+/// starts. [`adopt`] does it too, but only once the server binds, and boot
+/// spawns jobs (and their child processes) long before that. Each child spawned
+/// in between inherited the listening socket: the network watch saw gh, bash
+/// and pgrep listening on 8824 after every deploy, and any of them that
+/// outlived the boot kept the port bound if the server died.
+pub fn seal_inherited() {
+    seal(std::env::var(FD_ENV).ok(), std::env::var(PID_ENV).ok());
+}
+
+fn seal(fd: Option<String>, pid: Option<String>) {
+    if pid != Some(std::process::id().to_string()) {
+        return;
+    }
+    if let Some(fd) = fd.and_then(|v| v.parse::<RawFd>().ok()) {
+        if is_stream_socket(fd) {
+            set_cloexec(fd, true);
+        }
+    }
+}
+
 fn adopt(port: u16) -> Option<TcpListener> {
     let raw = std::env::var(FD_ENV).ok()?;
     let reject = |reason: &str| {
@@ -154,6 +175,17 @@ mod tests {
         assert!(is_stream_socket(l.as_raw_fd()));
         let f = std::fs::File::open("/dev/null").unwrap();
         assert!(!is_stream_socket(f.as_raw_fd()));
+    }
+
+    #[test]
+    fn a_handed_over_listener_is_sealed_before_boot_spawns_anything() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fd = l.as_raw_fd();
+        assert!(set_cloexec(fd, false));
+        seal(Some(fd.to_string()), Some("1".into()));
+        assert!(!cloexec(fd), "another process's handoff is not ours to touch");
+        seal(Some(fd.to_string()), Some(std::process::id().to_string()));
+        assert!(cloexec(fd), "a child spawned during boot would inherit the listener");
     }
 
     #[test]

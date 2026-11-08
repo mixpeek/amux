@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>AI automation for dental practices, done for you | amux Concierge</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux Concierge automates insurance eligibility checks, predeterminations, denial follow-up and multi-location reporting for dental practices, on your own computer with a BAA.">
+  <link rel="canonical" href="https://amux.io/solutions/dental-practices/">
+  <meta property="og:title" content="AI automation for dental practices, done for you | amux Concierge">
+  <meta property="og:description" content="amux Concierge automates insurance eligibility checks, predeterminations, denial follow-up and multi-location reporting for dental practices, on your own computer with a BAA.">
+  <meta property="og:url" content="https://amux.io/solutions/dental-practices/">
+  <meta property="og:image" content="https://amux.io/concierge/og-concierge.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <link rel="stylesheet" href="/concierge/kit.css">
+  <script src="/site.js?v=20261106"></script>
+  <style>
+    .sol main { max-width: 860px; }
+    .sol-eyebrow { font-size: .78rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); margin: 0 0 .75rem; }
+    .sol h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.1; letter-spacing: -.03em; margin: 0 0 1rem; }
+    .sol-lede { font-size: 1.12rem; line-height: 1.65; color: var(--fg-dim); max-width: 640px; margin: 0 0 1.75rem; }
+    .sol-btn { display: inline-flex; align-items: center; gap: .5rem; min-height: 48px; padding: 0 1.4rem; border-radius: 999px; background: var(--fg); color: var(--bg); font-weight: 600; text-decoration: none; }
+    .sol-btn:hover { opacity: .88; }
+    .sol-note { font-size: .85rem; color: var(--fg-mute); margin-top: .75rem; }
+    .sol h2 { font-size: 1.45rem; letter-spacing: -.02em; margin: 3.5rem 0 1.25rem; border: 0; padding: 0; }
+    .sol-outcomes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    .sol-outcome { border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem 1.35rem; background: var(--bg-2); }
+    .sol-outcome strong { display: block; font-size: 1.08rem; line-height: 1.35; margin-bottom: .4rem; color: var(--fg); }
+    .sol-outcome span { color: var(--fg-dim); font-size: .95rem; line-height: 1.55; }
+    .sol-flows { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+    .sol-flows li { padding: 1rem 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    .sol-flows .w { color: var(--fg); font-weight: 600; line-height: 1.45; }
+    .sol-flows .o { color: var(--fg-dim); line-height: 1.5; }
+    .sol-flows .o::before { content: "\2192\00a0"; color: var(--accent); }
+    .sol-tools { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; margin: 0; list-style: none; }
+    .sol-tools li { border: 1px solid var(--line-2); border-radius: 999px; padding: .35rem .85rem; font-size: .88rem; color: var(--fg-dim); }
+    .sol-steps { counter-reset: s; list-style: none; padding: 0; margin: 0; display: grid; gap: .9rem; }
+    .sol-steps li { counter-increment: s; display: grid; grid-template-columns: 2rem 1fr; gap: .75rem; color: var(--fg-dim); line-height: 1.55; }
+    .sol-steps li::before { content: counter(s); font-weight: 700; color: var(--accent); }
+    .sol-steps b { color: var(--fg); }
+    .sol-price { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    .sol-price > div { border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.25rem; }
+    .sol-price .n { font-size: 1.6rem; font-weight: 700; letter-spacing: -.02em; color: var(--fg); }
+    .sol-price .n small { font-size: .9rem; font-weight: 400; color: var(--fg-mute); }
+    .sol-price .l { font-size: .88rem; color: var(--fg-dim); margin-top: .25rem; line-height: 1.45; }
+    .sol p.sol-body { color: var(--fg-dim); line-height: 1.65; margin-top: 1rem; }
+    .sol details { border-bottom: 1px solid var(--line); padding: .9rem 0; }
+    .sol summary { cursor: pointer; font-weight: 600; color: var(--fg); min-height: 28px; }
+    .sol details p { color: var(--fg-dim); line-height: 1.6; margin: .6rem 0 0; }
+    .sol-end { margin: 4rem 0 1rem; padding: 2rem; border-radius: 18px; background: var(--bg-2); border: 1px solid var(--line); text-align: center; }
+    .sol-end h2 { margin: 0 0 .6rem; }
+    .sol-end p { color: var(--fg-dim); margin: 0 0 1.25rem; }
+    .sol-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    .sol-card { display: block; border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem 1.35rem; text-decoration: none; background: var(--bg-2); }
+    .sol-card:hover { border-color: var(--accent); }
+    .sol-card strong { display: block; color: var(--fg); font-size: 1.08rem; margin-bottom: .35rem; }
+    .sol-card span { color: var(--fg-dim); font-size: .95rem; line-height: 1.5; }
+    .sol-flows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; border: 0; }
+    .sol-flows li { grid-template-columns: 1fr; gap: .2rem; padding: .85rem 0; }
+    .sol-flows .o { font-size: .93rem; }
+    .sol-control { display: flex; gap: 14px; align-items: flex-start; margin-top: 2.5rem; padding: 1.1rem 1.25rem; border-radius: 14px; border: 1px solid var(--line); background: color-mix(in oklab, var(--accent) 6%, var(--bg-2)); color: var(--fg-dim); line-height: 1.55; }
+    .sol-control strong { color: var(--fg); }
+    .sol-control .oc-ic { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--accent); }
+    .sol-control .oc-ic svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    @media (max-width: 640px) {
+      .sol-flows { grid-template-columns: 1fr; }
+      .sol-outcomes, .sol-price, .sol-cards { grid-template-columns: 1fr; }
+      .sol-flows li { grid-template-columns: 1fr; gap: .35rem; }
+      .sol-btn { width: 100%; justify-content: center; }
+    }
+  </style>
+  <script type="application/ld+json">[{"@context": "https://schema.org", "@type": "Service", "name": "amux Concierge for Dental practices", "serviceType": "Done-for-you workflow automation", "provider": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "audience": {"@type": "BusinessAudience", "name": "Dental practices"}, "url": "https://amux.io/solutions/dental-practices/", "description": "amux Concierge automates insurance eligibility checks, predeterminations, denial follow-up and multi-location reporting for dental practices, on your own computer with a BAA.", "offers": [{"@type": "Offer", "name": "Onboarding", "price": "5000", "priceCurrency": "USD"}, {"@type": "Offer", "name": "Monthly support and new automations", "priceCurrency": "USD", "priceSpecification": {"@type": "UnitPriceSpecification", "price": "5000", "priceCurrency": "USD", "unitText": "MONTH"}}]}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is patient data safe?", "acceptedAnswer": {"@type": "Answer", "text": "amux runs on a computer in your practice, under your own logins. When AI reads a document, it goes to a HIPAA-eligible provider under a Business Associate Agreement, and we sign a BAA before touching any protected health information."}}, {"@type": "Question", "name": "Does it work with our practice software?", "acceptedAnswer": {"@type": "Answer", "text": "It works with the systems your team already uses, through the same logins and screens, so your vendor does not need to offer an integration."}}, {"@type": "Question", "name": "Who should take the first call?", "acceptedAnswer": {"@type": "Answer", "text": "The practice owner or office manager."}}]}, {"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Solutions", "item": "https://amux.io/solutions/"}, {"@type": "ListItem", "position": 3, "name": "Dental practices", "item": "https://amux.io/solutions/dental-practices/"}]}]</script>
+</head>
+<body class="sol">
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">›</span> <a href="/solutions/">Solutions</a> <span class="sep">›</span> <span>Dental practices</span></div>
+    <p class="sol-eyebrow">amux Concierge for dental practices</p>
+    <h1>Get insurance answers before the patient sits down.</h1>
+    <p class="sol-lede">Benefits checks and predetermination packets eat your front office&#x27;s week. We automate them and hand your team finished work to review.</p>
+    <div data-cta-loc="sol-top"><a class="sol-btn" href="/concierge/?source=solutions-dental-practices">Talk to us about Concierge &rarr;</a></div>
+    <p class="sol-note">We build it, run it and maintain it. You approve what matters from your phone.</p>
+
+    <h2>What changes for your business</h2>
+    <div class="ocards">
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span><strong>Front office hours back every week</strong><span>Eligibility checks and predetermination packets that used to take hours are assembled and submitted for your team to approve.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span><strong>Fewer surprises at checkout</strong><span>Patients hear what is covered before treatment, so fewer bills get disputed later.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></span><strong>Denials reworked quickly</strong><span>Denials are flagged early, and the resubmission or appeal is prepared for review.</span></div>
+      <div><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 16V9M12 16V5M17 16v-4"/></svg></span><strong>Every location in one view</strong><span>Production, claims status and backlog across locations, on your phone.</span></div>
+    </div>
+    <p class="sol-note">Practices commonly report 10 to 20 or more hours a week per location on benefits and predeterminations, and roughly 1 in 5 claims denied on first pass. Your numbers will vary by payer and plan.</p>
+    <h2>What we automate, and what you get</h2>
+    <ul class="sol-flows">
+      <li><span class="w">Eligibility and benefits</span><span class="o">Pulls real-time eligibility before the appointment.</span></li>
+      <li><span class="w">Predetermination packets</span><span class="o">Assembles radiographs, perio charting, notes and codes, drafts the narrative for review, and submits through your clearinghouse or payer portal.</span></li>
+      <li><span class="w">Status tracking</span><span class="o">Checks status so nobody babysits a fax, and posts the estimate back to the patient record.</span></li>
+      <li><span class="w">Denials and appeals</span><span class="o">Flags denials early and prepares the resubmission.</span></li>
+      <li><span class="w">Treatment letters</span><span class="o">Drafts patient treatment letters for the dentist to review.</span></li>
+      <li><span class="w">Multi-location reporting</span><span class="o">One owner summary across offices, daily.</span></li>
+    </ul>
+
+    <h2>Works with the software you already use</h2>
+    <ul class="lchips" aria-label="Software we work in">
+      <li><img src="/concierge/logos/dentrix.png" alt="Dentrix" width="20" height="20" loading="lazy"><span aria-hidden="true">Dentrix</span></li>
+      <li><img src="/concierge/logos/eaglesoft.png" alt="Eaglesoft" width="20" height="20" loading="lazy"><span aria-hidden="true">Eaglesoft</span></li>
+      <li><img src="/concierge/logos/opendental.png" alt="Open Dental" width="20" height="20" loading="lazy"><span aria-hidden="true">Open Dental</span></li>
+      <li><img src="/concierge/logos/curve.png" alt="Curve" width="20" height="20" loading="lazy"><span aria-hidden="true">Curve</span></li>
+      <li><img src="/concierge/logos/dentalxchange.png" alt="DentalXChange" width="20" height="20" loading="lazy"><span aria-hidden="true">DentalXChange</span></li>
+      <li><img src="/concierge/logos/vyne.png" alt="Vyne" width="20" height="20" loading="lazy"><span aria-hidden="true">Vyne</span></li>
+      <li><img src="/concierge/logos/changehealthcare.png" alt="Change Healthcare" width="20" height="20" loading="lazy"><span aria-hidden="true">Change Healthcare</span></li>
+    </ul>
+    <p class="sol-note">amux works under your own logins, the way your staff would. No vendor integration needed.</p>
+
+    <div class="sol-control"><span class="oc-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="m9 12 2 2 4-4"/></svg></span><div><strong>You stay in charge.</strong> amux never decides coverage, and a predetermination is only an estimate. Your team reviews every submission before it goes out.</div></div>
+
+    <h2>How Concierge works</h2>
+    <ol class="cflow" aria-label="How Concierge works, step by step">
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></span><b>Talk to us</b><small>One call to pick the workflow that costs you most.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span><b>We set it up</b><small>amux on a computer you own, under your logins.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span><b>We build your first workflow</b><small>Running on your real work within weeks.</small></li>
+      <li class="cf-you"><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="m9 12 2 2 4-4"/></svg></span><b>You approve from your phone</b><small>It does the work. You sign off on what matters.</small></li>
+      <li><span class="cf-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></span><b>We keep it running</b><small>Support, upkeep and new automations, every month.</small></li>
+    </ol>
+
+    <h2>What it costs</h2>
+    <div class="sol-price">
+      <div><div class="n">$5,000</div><div class="l">One-time onboarding. We scope, install and ship your first working workflow.</div></div>
+      <div><div class="n">$5,000<small>/mo</small></div><div class="l">Support, maintenance and new automations we build with you as you grow.</div></div>
+      <div><div class="n">~$200<small>/mo</small></div><div class="l">AI usage, passed through at cost. Most businesses stay near this.</div></div>
+    </div>
+    <p class="sol-note">Want proof first? A fixed-price paid pilot puts one workflow live within two weeks, credited toward onboarding.</p>
+
+    <h2>Questions</h2>
+    <details><summary>Is patient data safe?</summary><p>amux runs on a computer in your practice, under your own logins. When AI reads a document, it goes to a HIPAA-eligible provider under a Business Associate Agreement, and we sign a BAA before touching any protected health information.</p></details>
+    <details><summary>Does it work with our practice software?</summary><p>It works with the systems your team already uses, through the same logins and screens, so your vendor does not need to offer an integration.</p></details>
+    <details><summary>Who should take the first call?</summary><p>The practice owner or office manager.</p></details>
+
+    <div class="sol-end" data-cta-loc="sol-end">
+      <h2>Hand the paperwork to amux.</h2>
+      <p>Bring the workflow that eats your week. We will tell you on the call whether it is a fit.</p>
+      <a class="sol-btn" href="/concierge/?source=solutions-dental-practices">Talk to us about Concierge &rarr;</a>
+    </div>
+  </main>
+  <footer class="sub-footer">
+    <div class="footer-inner">
+      <div class="footer-top">
+        <div class="footer-brand-col">
+          <a href="/" class="footer-logo">amux</a>
+          <p>Self-hosted control plane for AI agents.</p>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Resources</div>
+          <ul>
+            <li><a href="/guides/">Guides</a></li>
+            <li><a href="/blog/">Blog</a></li>
+            <li><a href="/demos/">Demos</a></li>
+            <li><a href="/glossary/">Glossary</a></li>
+            <li><a href="/faq/">FAQ</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">Compare</div>
+          <ul>
+            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
+            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
+            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
+            <li><a href="/compare/">All comparisons</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <div class="footer-col-label">More</div>
+          <ul>
+            <li><a href="/use-cases/">Use Cases</a></li>
+            <li><a href="/solutions/">Solutions</a></li>
+            <li><a href="/for/">For your stack</a></li>
+            <li><a href="/changelog/">Changelog</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
+        <div class="footer-bottom-links">
+          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
+          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
+          <a href="/security/">Security</a>
+          <a href="/privacy/">Privacy</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
+</body>
+</html>

@@ -99,13 +99,26 @@
     ]
   }
   </script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
@@ -138,7 +151,7 @@
 
     <p><strong>n8n</strong> is a visual workflow automation platform. You connect nodes in a drag-and-drop editor — "when a Stripe webhook fires, look up the customer in HubSpot, update their status, and post a Slack message." n8n handles triggers (webhooks, schedules, polling), transformations (code nodes, built-in data manipulation), and destinations (500+ integrations). The target user is often a non-developer who needs to automate repetitive data flows between SaaS tools without writing a full application. n8n is self-hostable and open source (fair-code license); n8n cloud is a hosted version. It has ~90k GitHub stars and strong adoption among operations teams, RevOps, and no-code/low-code practitioners.</p>
 
-    <p><strong>amux</strong> is a control plane for AI coding agents. You register software projects, start Claude Code (or Codex, Gemini CLI) sessions that write and commit code, monitor their progress from a web dashboard or phone, and let stall detection flag agents that get stuck. amux's built-in kanban, notes, CRM, email (Gmail API), browser automation, and scheduler are coordination primitives for a team of AI agents — not a visual pipeline editor. The target user is a developer or engineering team that wants to run multiple AI coding sessions in parallel without babysitting each one. amux is fully open source (MIT + Commons Clause), a single Rust binary, and zero external dependencies.</p>
+    <p><strong>amux</strong> is a control plane for AI coding agents. You register software projects, start Claude Code (or Codex, Gemini CLI) sessions that write and commit code, monitor their progress from a web dashboard or phone, and let stall detection flag agents that get stuck. amux's built-in kanban, notes, CRM, email (Gmail API), browser automation, and scheduler are coordination primitives for a team of AI agents — not a visual pipeline editor. The target user is a developer or engineering team that wants to run multiple AI coding sessions in parallel without babysitting each one. amux is free to self-host (MIT + Commons Clause), a single Rust binary, and zero external dependencies.</p>
 
     <h2>Side-by-Side Comparison</h2>
     <div style="overflow-x:auto;margin:1.5rem 0;">

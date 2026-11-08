@@ -13,7 +13,7 @@ const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{AMUX_ISOLA
 try{
  for(const name of ['pool-hub','pool-worker']){
   const r=await amux.req('POST','/api/sessions',{name,dir:amux.root,start:false});check('worker created '+name,r.status===201,r.body);
-  fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_ISOLATED=0\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=pool-hub\nAMUX_CONTRACT_RULES_OFF=1,2,4,5,6,7,10,A1\n${name==='pool-worker'?'CC_STANDING_ORDERS=1\nCC_AUTO_PICKUP=1\nCC_AUTO_CONTINUE=0\nAMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_A2_POOL_TITLE_REGEX=^GS12 proof\n':''}`);
+  fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_ISOLATED=0\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=pool-hub\nAMUX_CONTRACT_RULES_OFF=1,2,4,5,6,7,10,A1\n${name==='pool-worker'?'CC_STANDING_ORDERS=1\nCC_AUTO_PICKUP=1\nAMUX_BOARD_STEERS=1\nCC_AUTO_CONTINUE=0\nAMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_A2_POOL_TITLE_REGEX=^GS12 proof\n':''}`);
  }
  const root=await amux.req('POST','/api/board',{title:'Measure the root readiness',desc:'Run echo readiness-proved and record its output. This concrete prerequisite unblocks the proof population.',next_action:'Run echo readiness-proved',type:'chore',status:'backlog',session:'pool-hub'});check('root created',root.status<300,root.body);
  const parents=[];

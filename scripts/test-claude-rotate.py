@@ -243,6 +243,22 @@ expect(t5 == "try", "an old unproven mark expires")
 t6, _ = rot.decide("join", [row("join", 0, 50), row("mixpeek", 0, 97)], {"switched_at": 0})
 expect(t6 is None, "a working account is not left for one at 97%")
 
+# A held account is not ranked until its hold passes (2026-11-04: this Mac
+# moved onto the one account the mixpeek-dev VM could still use).
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_fut = (rot.now() + rot.dt.timedelta(days=2)).isoformat()
+_past = (rot.now() - rot.dt.timedelta(minutes=1)).isoformat()
+rot.save(rot.ACCOUNTS, {"accounts": {
+    "held@x": {"seven_day": {"used_percentage": 2}, "hold_until": _fut},
+    "free@x": {"seven_day": {"used_percentage": 40}},
+    "lapsed@x": {"seven_day": {"used_percentage": 10}, "hold_until": _past}}})
+_ranked = [r["email"] for r in rot.rank()]
+expect("held@x" not in _ranked and "free@x" in _ranked, f"a held account is not ranked: {_ranked}")
+expect("lapsed@x" in _ranked, "a hold that has passed no longer applies")
+_t7, _w7 = rot.decide("held@x", rot.rank(), {"switched_at": 0})
+expect(_t7 in ("free@x", "lapsed@x"), f"holding the current account moves off it, got {(_t7, _w7)}")
+rot.save(rot.ACCOUNTS, _saved_accounts)
+
 # Nothing under the preempt line: the roomiest account wins over the
 # soonest-resetting nearly full one.
 rows = [row("a", 99, 26, "2026-10-17T21:00:00-04:00"), row("b", 53, 95, "2026-10-23T03:00:00-04:00"),
@@ -317,6 +333,105 @@ expect(rot.forgive_recovered_mailboxes(st, set(), at_s=500.0) == ["h@x"], "recov
 expect(st["switch_failures"]["h@x"] == [350.0], f"only failures from while dead are dropped, got {st['switch_failures']}")
 expect(st["switch_failures"]["o@x"] == [150.0], "an account that was never dead keeps its failures")
 expect("h@x" not in st["mailbox_dead_seen"], "the dead record is consumed")
+
+# The weekly reset as the CLI prints it now (mixpeek-dev, 2026-11-05): a comma
+# and no "at", in the zone in the parentheses. Before this parsed, every weekly
+# reset was None and a full account was never tried again.
+_at = rot.dt.datetime(2026, 11, 5, 10, 0, tzinfo=rot.dt.timezone(rot.dt.timedelta(hours=-5)))
+_r = rot.parse_reset("Resets Nov 7, 6am (UTC)", _at)
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 11, 7, 6, 0, tzinfo=rot.dt.timezone.utc),
+       f"'Resets Nov 7, 6am (UTC)' is 06:00 UTC on Nov 7, got {_r}")
+_r = rot.parse_reset("Resets Oct 16 at 3am (America/New_York)", rot.dt.datetime(2026, 10, 14, 9, 0, tzinfo=rot.dt.timezone.utc))
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 10, 16, 7, 0, tzinfo=rot.dt.timezone.utc),
+       f"the 'at' form still parses, in its own zone, got {_r}")
+_r = rot.parse_reset("Resets 4:20pm (UTC)", _at)
+expect(_r is not None and rot.dt.datetime.fromisoformat(_r) == rot.dt.datetime(2026, 11, 5, 16, 20, tzinfo=rot.dt.timezone.utc),
+       f"a time-only reset is read in its zone, got {_r}")
+_screen = "Current week (all models)\n████ 100% used\nResets Nov 7, 6am (UTC)\n"
+_wk = rot.parse_usage(_screen, _at).get("seven_day") or {}
+expect(_wk.get("used_percentage") == 100 and _wk.get("resets_at"), f"the /usage screen keeps the weekly reset, got {_wk}")
+
+# A stale reading heals itself: a full account with no reset, or one whose
+# week has ended, is re-read through trial_login at most once per HEAL_EVERY_S.
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_saved_state = rot.load(rot.STATE, {})
+_past = (rot.now() - rot.dt.timedelta(hours=1)).isoformat()
+_fut = (rot.now() + rot.dt.timedelta(days=2)).isoformat()
+rot.save(rot.ACCOUNTS, {"accounts": {
+    "full@x": {"seven_day": {"used_percentage": 100, "resets_at": None}},
+    "ended@x": {"seven_day": {"used_percentage": 100, "resets_at": _past}},
+    "fine@x": {"seven_day": {"used_percentage": 100, "resets_at": _fut}},
+    "low@x": {"seven_day": {"used_percentage": 40, "resets_at": None}},
+    "me@x": {"seven_day": {"used_percentage": 100, "resets_at": None}}}})
+rot.save(rot.STATE, {})
+_stale = dict(rot.stale_accounts("me@x", {}))
+expect(_stale == {"full@x": "full_no_reset", "ended@x": "weekly_reset_passed"},
+       f"only a full account with no reset and an ended week are stale, got {_stale}")
+_trials = []
+_real_trial, _real_candidates = rot.trial_login, rot.login_candidates
+rot.login_candidates = lambda e: [("stored_login", {"claudeAiOauth": {"refreshToken": e}})]
+rot.trial_login = lambda e, s: _trials.append(e) or {"claudeAiOauth": {}}
+expect(len(rot.heal_stale("me@x")) == 1 and len(_trials) == 1, f"one trial per tick, got {_trials}")
+rot.heal_stale("me@x")
+expect(sorted(_trials) == ["ended@x", "full@x"], f"the next tick takes the other one, got {_trials}")
+rot.heal_stale("me@x")
+expect(len(_trials) == 2, f"neither is tried again inside HEAL_EVERY_S, got {_trials}")
+_old = rot.load(rot.STATE, {})
+_old["heal_tried"] = {e: t - rot.HEAL_EVERY_S - 5 for e, t in _old["heal_tried"].items()}
+rot.save(rot.STATE, _old)
+rot.heal_stale("me@x")
+expect(len(_trials) == 3, f"and is tried again after it, got {_trials}")
+rot.trial_login, rot.login_candidates = _real_trial, _real_candidates
+rot.save(rot.ACCOUNTS, _saved_accounts)
+rot.save(rot.STATE, _saved_state)
+
+# A refused subscription (2026-11-07: hello@amux.io, payment past due) is caught
+# on screen, in the trial and in tick, and the account is held off.
+_ref = ("\x1b[38;5;220m⏺\x1b[39m \x1b[38;5;220mClaude\x1b[39m \x1b[38;5;220mCode\x1b[39m "
+        "\x1b[38;5;220mcan't\x1b[39m \x1b[38;5;220muse\x1b[39m \x1b[38;5;220myour\x1b[39m "
+        "\x1b[38;5;220mClaude\x1b[39m \x1b[38;5;220msubscription,\x1b[39m usually because a payment is past due")
+expect(rot.refused_text(_ref), "the refusal is read through the per-word colour codes")
+expect(rot.auth_lost(_ref + "\n❯\n"), "a worker stopped on the refusal is resumed after a switch")
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_saved_state = rot.load(rot.STATE, {})
+rot.save(rot.ACCOUNTS, {"accounts": {"cur@x": {"seven_day": {"used_percentage": 3}},
+                                     "other@x": {"seven_day": {"used_percentage": 40}}}})
+rot.save(rot.STATE, {})
+_real_probe, _real_check = rot.probe, rot.prompt_check
+rot.probe = lambda config_dir=None: {"rate_limited": True}
+rot.prompt_check = lambda config_dir=None: "refused"
+expect(rot.trial_login("other@x", {"claudeAiOauth": {"refreshToken": "o"}}) is None,
+       "a trial whose /usage is rate limited and whose prompt is refused fails")
+expect(rot.held(rot.load(rot.ACCOUNTS, {})["accounts"]["other@x"], rot.now()), "and holds the account off")
+rot.prompt_check = lambda config_dir=None: "ok"
+expect(rot.trial_login("cur@x", {"claudeAiOauth": {"refreshToken": "c"}}) is not None,
+       "a rate-limited /usage with a prompt that answers still passes")
+_panes = {"w1": _ref + "\n❯\n", "w2": "working\n❯\n"}
+_real_amux = rot._amux
+rot._amux = lambda path, body=None: (
+    [{"name": n, "running": True} for n in _panes] if path == "/api/sessions"
+    else {"output": _panes[path.split("/")[3]]})
+rot.prompt_check = lambda config_dir=None: "ok"
+expect(rot.check_refusal("cur@x", {}) is False, "a refusal on screen with a shared login that answers holds nothing")
+expect(not rot.held(rot.load(rot.ACCOUNTS, {})["accounts"]["cur@x"], rot.now()), "cur@x is not held")
+rot.prompt_check = lambda config_dir=None: "refused"
+_st = {}
+expect(rot.check_refusal("cur@x", _st) is True, "a refused shared login is held")
+expect("cur@x" not in [r["email"] for r in rot.rank()], "and drops out of the ranking, so decide() moves off it")
+expect(rot.check_refusal("cur@x", _st) is False, "the check runs at most once per REFUSAL_CHECK_GAP_S")
+# A target the trial held as refused gets no browser sign-in.
+_browser = []
+_real_stored, _real_relay, _real_cli, _real_unreach = rot.stored_switch, rot.relay_upstream, rot.cli_email, rot.browser_unreachable
+rot.stored_switch = lambda *a: None
+rot.relay_upstream = lambda: _browser.append(1) or "awaiting_approval"
+rot.browser_unreachable = lambda *a: 1
+rot.cli_email = lambda: "cur@x"
+expect(rot._switch("other@x", "current_exhausted") == 1 and _browser == [],
+       f"a held target stops the switch before the browser, got browser calls {_browser}")
+rot.stored_switch, rot.relay_upstream, rot.cli_email, rot.browser_unreachable = _real_stored, _real_relay, _real_cli, _real_unreach
+rot._amux, rot.probe, rot.prompt_check = _real_amux, _real_probe, _real_check
+rot.save(rot.ACCOUNTS, _saved_accounts)
+rot.save(rot.STATE, _saved_state)
 
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

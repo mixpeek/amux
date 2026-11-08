@@ -11246,6 +11246,33 @@ pub(crate) fn owner_text_parks_at_dialog(text: &str, pane: &str) -> bool {
     !answers_visible_picker(text, pane)
 }
 
+/// AskUserQuestion's free-text row ("❯ 4. Type something.") is highlighted.
+/// In that state keystrokes type into the row and Enter submits them as the
+/// answer, while Enter on the EMPTY row declines the whole question ("User
+/// declined to answer questions", reproduced on Claude Code 2.1.318). Parking
+/// the owner's text there left them only the empty Enter, so the one answer
+/// they could give from the dashboard was the decline.
+pub(crate) fn free_text_answer_slot_highlighted(pane: &str) -> bool {
+    strip_ansi(pane).lines().any(|line| {
+        let Some(rest) = line.trim().strip_prefix('\u{276f}') else {
+            return false;
+        };
+        let Some((num, label)) = rest.trim().split_once(". ") else {
+            return false;
+        };
+        (1..=2).contains(&num.len())
+            && num.chars().all(|c| c.is_ascii_digit())
+            && label.trim().trim_end_matches('.').eq_ignore_ascii_case("type something")
+    })
+}
+
+/// A free-text answer is typed as keystrokes, so it must be one line: a
+/// newline would submit early and a Tab switches to the next question.
+pub(crate) fn fits_free_text_answer(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty() && !t.contains(['\n', '\r', '\t'])
+}
+
 pub(crate) fn answers_visible_picker(text: &str, pane: &str) -> bool {
     let t = text.trim().to_lowercase();
     if t.is_empty() || t.chars().count() > 120 {
@@ -14642,6 +14669,25 @@ async fn send_text_inner_bound_body(
     // say so; steering delivers it once the dialog resolves.
     if waiting && !defer_if_busy && !from_steering {
         let pane = tmux_capture(name, 30).await;
+        // The owner highlighted AskUserQuestion's "Type something." row and
+        // sent their answer: type it INTO the row, then Enter. Same pane lock
+        // as the normal path so no other Enter lands mid-answer.
+        if fits_free_text_answer(&text) && free_text_answer_slot_highlighted(&pane) {
+            let send_lock = session_send_lock(name);
+            let _send_guard = send_lock.lock().await;
+            if let Err(why) = send_literal(name, text.trim()).await {
+                tracing::warn!(session = %name, error = %why, measured = true, n_considered = 1,
+                    verdict = "free_text_answer_type_failed",
+                    "could not type the owner's answer into the question's free-text row");
+                return (false, format!("could not type the answer into the question: {why}"));
+            }
+            sleep_ms(150).await;
+            send_key(name, "Enter").await;
+            tracing::info!(session = %name, chars = text.trim().chars().count(), measured = true,
+                n_considered = 1, verdict = "free_text_answer_typed",
+                "typed the owner's answer into the question's free-text row and pressed Enter; effect unverified");
+            return (true, "typed into the question's free-text answer and pressed Enter".into());
+        }
         if owner_text_parks_at_dialog(&text, &pane) {
             tracing::warn!(
                 session = %name,
@@ -19428,7 +19474,12 @@ pub(crate) fn apply_archive_status_move(
         // overwrite the original status with `discarded`, which would make the
         // second archive the lossy one.
         conn.execute(
-            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1 \
+            // The lease goes with the status, as `apply_lease_transition` does
+            // on every other door: no non-doing card carries one (2026-11-06,
+            // a lane archive left discarded cards still leased).
+            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1, \
+               lease_generation = lease_generation + (lease_owner IS NOT NULL), \
+               lease_owner = NULL, lease_acquired_at = NULL, lease_heartbeat_at = NULL, lease_expires_at = NULL \
              WHERE session = ?2 AND deleted IS NULL \
                AND status NOT IN ('done','verified','discarded','quarantined','cancelled') \
                AND pre_archive_status IS NULL",
@@ -26537,7 +26588,138 @@ async fn session_verb_handler(
     dispatch(state, name, verb, method, headers, q, body).await
 }
 
+// A RENAMED WORKER'S OLD NAME STILL REACHES IT (2026-11-06). `workflows` was
+// renamed to `wexus`; a phone that still had `workflows` open sent two messages
+// to /api/sessions/workflows/send, both answered "session not found", and its
+// outbox showed "the worker did not accept it" with a Send again that retried
+// the same dead name. The rename journal (`session.renamed` {old,new}) already
+// records every rename durably, so an address that names no worker but names a
+// retired one is followed to the worker it became. A real worker always wins:
+// the follow runs only when no worker holds the name. Changes to the worker
+// itself (delete, archive, rename, config) are NOT followed; they answer 404
+// with `renamed_to`, so nothing destructive lands on a worker by an old name.
 async fn dispatch(
+    state: AppState,
+    name: String,
+    verb: String,
+    method: Method,
+    headers: HeaderMap,
+    q: Option<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let Some(current) = renamed_target(&state, &name).await else {
+        return dispatch_named(state, name, verb, method, headers, q, body_bytes).await;
+    };
+    let action = verb.split('/').next().unwrap_or("");
+    if rename_follow_refused(&method, action) {
+        tracing::info!(old = %name, new = %current, %action, method = %method.as_str(),
+            measured = true, n_considered = 1, verdict = "renamed_name_not_followed",
+            "a change to a worker addressed by its old name was refused; the caller must use the current name");
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": format!("worker '{name}' was renamed to '{current}'; address it by its current name"),
+                   "renamed_to": current}),
+        );
+    }
+    tracing::info!(old = %name, new = %current, %action, method = %method.as_str(),
+        measured = true, n_considered = 1, verdict = "renamed_name_followed",
+        "a request to a renamed worker's old name was served by the worker it became");
+    let mut resp = dispatch_named(state, current.clone(), verb, method, headers, q, body_bytes).await;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&current) {
+        resp.headers_mut().insert("x-amux-renamed-to", v);
+    }
+    resp
+}
+
+/// Requests that change the worker itself, rather than talk to it or read it.
+fn rename_follow_refused(method: &Method, action: &str) -> bool {
+    *method == Method::DELETE
+        || *method == Method::PATCH
+        || matches!(action, "delete" | "archive" | "unarchive" | "rename" | "duplicate" | "restore")
+}
+
+/// The worker a retired name now belongs to, when no worker holds that name.
+pub(crate) async fn renamed_target(state: &AppState, name: &str) -> Option<String> {
+    if name.is_empty()
+        || env_path(name).exists()
+        || super::chat_worker::companion_parent(name).is_some()
+    {
+        return None;
+    }
+    let wanted = name.to_string();
+    state
+        .store
+        .read_async(move |conn| {
+            Ok(rename_successors(conn, &|n: &str| env_path(n).exists()).remove(&wanted))
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Every retired worker name mapped to the worker it became, from the rename
+/// journal. A chain (a -> b -> c) resolves to its end; a name a worker holds
+/// today is never in the map (a real worker wins); a chain that ends at no
+/// worker (deleted since) is dropped rather than pointing at nothing.
+pub(crate) fn rename_successors(
+    conn: &rusqlite::Connection,
+    exists: &dyn Fn(&str) -> bool,
+) -> BTreeMap<String, String> {
+    let mut next: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT data FROM session_events WHERE type='session.renamed' ORDER BY id")
+    {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, Option<String>>(0)) {
+            for data in rows.flatten().flatten() {
+                let Ok(v) = serde_json::from_str::<Value>(&data) else { continue };
+                let (Some(old), Some(new)) = (
+                    v.get("old").and_then(Value::as_str),
+                    v.get("new").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                if !old.is_empty() && !new.is_empty() && old != new {
+                    next.insert(old.to_string(), new.to_string());
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for old in next.keys() {
+        if exists(old) {
+            continue;
+        }
+        let mut cur = old.as_str();
+        let mut seen = std::collections::HashSet::from([cur]);
+        while let Some(n) = next.get(cur) {
+            if !seen.insert(n.as_str()) {
+                break;
+            }
+            cur = n.as_str();
+            if exists(cur) {
+                break;
+            }
+        }
+        if cur != old && exists(cur) {
+            out.insert(old.clone(), cur.to_string());
+        }
+    }
+    out
+}
+
+/// GET /api/session-renames: every retired worker name and the worker it
+/// became, so a client can rewrite the names it stored (open view, outbox,
+/// drafts, orders) instead of addressing a worker that is gone.
+pub async fn session_renames(State(state): State<AppState>) -> Response {
+    let map = state
+        .store
+        .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+        .await
+        .unwrap_or_default();
+    j200(json!({"renames": map, "measured": true, "n_considered": map.len()}))
+}
+
+async fn dispatch_named(
     state: AppState,
     name: String,
     verb: String,
@@ -45184,6 +45366,36 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let src = include_str!("session_verbs.rs");
         let site = src.find("if owner_text_parks_at_dialog(&text, &pane) {").expect("call site");
         assert!(src[site..site + 900].contains("steer_enqueue("), "a parked owner send must be queued");
+        assert!(!free_text_answer_slot_highlighted(pane), "a permission dialog has no free-text row");
+    }
+
+    #[test]
+    fn an_owner_answer_at_a_highlighted_free_text_row_is_typed_not_queued() {
+        // Live AskUserQuestion pane, Claude Code 2.1.318, after Down x3.
+        let highlighted = " \u{2610} Fruit\nPick a fruit\n  1. Mango\n     Mango\n  2. Banana\n     Banana\n  \
+                           3. Cherry\n     Cherry\n\u{276f} 4. Type something.\n\u{2500}\u{2500}\u{2500}\n  \
+                           5. Chat about this\nEnter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel";
+        assert!(free_text_answer_slot_highlighted(highlighted));
+        // The same picker with Mango highlighted: free text is not an answer.
+        let on_mango = highlighted
+            .replace("  1. Mango", "\u{276f} 1. Mango")
+            .replace("\u{276f} 4. Type something.", "  4. Type something.");
+        assert!(!free_text_answer_slot_highlighted(&on_mango));
+        assert!(owner_text_parks_at_dialog("kiwi please", &on_mango));
+        // A transcript line that merely mentions the label is not the row.
+        assert!(!free_text_answer_slot_highlighted("\u{276f} pick 4. Type something. for me"));
+        assert!(fits_free_text_answer("  kiwi  "));
+        for bad in ["", "   ", "two\nlines", "tab\there", "cr\rhere"] {
+            assert!(!fits_free_text_answer(bad), "{bad:?} must not be typed into the row");
+        }
+        // The typed branch runs BEFORE the park, under the pane lock, as keystrokes.
+        let src = include_str!("session_verbs.rs");
+        let typed = src.find("if fits_free_text_answer(&text) && free_text_answer_slot_highlighted(&pane) {").expect("typed branch");
+        let park = src.find("if owner_text_parks_at_dialog(&text, &pane) {").expect("park");
+        assert!(typed < park, "the free-text answer must be typed before the park decision");
+        let branch = &src[typed..park];
+        assert!(branch.contains("session_send_lock(name)") && branch.contains("send_literal(name, text.trim())"));
+        assert!(branch.contains("verdict = \"free_text_answer_typed\""));
     }
 
     /// AMUX-3054: an empty send is the user pressing "Enter" at a picker. The
@@ -48822,6 +49034,84 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let (st, _) = call(&app, "PUT", "/api/sessions/sib/config", Some(json!({}))).await;
         assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
     }
+    /// A RENAMED WORKER'S OLD NAME STILL REACHES IT (2026-11-06: a phone with
+    /// `workflows` open sent to it after it became `wexus`, and both sends were
+    /// refused as "session not found"). Talking to the old name is followed and
+    /// says where it went; changing the worker by its old name is refused with
+    /// `renamed_to`; and a new worker that takes the old name wins.
+    #[tokio::test]
+    async fn a_renamed_workers_old_name_follows_to_the_worker_it_became() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        std::fs::write(env_path("fo-old"), "CC_DESC=\"lane\"\n").unwrap();
+        let app: Router = routes().with_state(state.clone());
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"rename": "fo-mid"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-mid/config",
+            Some(json!({"rename": "fo-new"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+
+        // The journal resolves a chain to its end.
+        let map = state
+            .store
+            .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+            .await
+            .unwrap();
+        assert_eq!(map.get("fo-old").map(String::as_str), Some("fo-new"), "{map:?}");
+        assert_eq!(map.get("fo-mid").map(String::as_str), Some("fo-new"), "{map:?}");
+
+        // Talking to the old name lands on the renamed worker and says so.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions/fo-old/steer")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"text": "sent to the old name"}).to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let renamed_to = res
+            .headers()
+            .get("x-amux-renamed-to")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
+        assert!(res.status().is_success(), "steer to the old name: {}", res.status());
+        assert_eq!(renamed_to.as_deref(), Some("fo-new"));
+        let queued: Vec<String> = state
+            .store
+            .read_async(|conn| {
+                let mut stmt = conn.prepare("SELECT session FROM steering_queue")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                Ok(rows.filter_map(Result::ok).collect())
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued, vec!["fo-new".to_string()]);
+
+        // Changing the worker by its old name is refused, naming the new one.
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"desc": "x"}))).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(v["renamed_to"], json!("fo-new"));
+        let (st, v) = call(&app, "POST", "/api/sessions/fo-old/delete", None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert!(env_path("fo-new").exists());
+
+        // A new worker that takes the old name is that worker, not an alias.
+        std::fs::write(env_path("fo-old"), "CC_DESC=\"fresh\"\n").unwrap();
+        let map = state
+            .store
+            .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+            .await
+            .unwrap();
+        assert!(!map.contains_key("fo-old"), "{map:?}");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"desc": "fresh lane"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(parse_env("fo-new").get("CC_DESC") != Some("fresh lane"));
+    }
+
     /// The owner-addendum rename matrix: noop, happy-path cascade with
     /// attached rows, retry-after-partial convergence, target collision.
     #[tokio::test]
@@ -55410,9 +55700,17 @@ mod roster_tests {
         add("A-TODO", "gone-lane", "todo");
         add("A-DONE", "gone-lane", "done");
         add("B-DOING", "other-lane", "doing");
+        conn.execute("UPDATE issues SET lease_owner='gone-lane', lease_expires_at=999 WHERE id IN ('A-DOING','B-DOING')", [])
+            .expect("lease");
+        let leased = |id: &str| -> Option<String> {
+            conn.query_row("SELECT lease_owner FROM issues WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
 
         // ARCHIVE. Live cards go terminal and remember what they were.
         super::apply_archive_status_move(&conn, "gone-lane", 1, 100).expect("archive");
+        // ...and give up their lease, as every other door does (2026-11-06).
+        assert_eq!(leased("A-DOING"), None, "a discarded card carries no lease");
+        assert_eq!(leased("B-DOING").as_deref(), Some("gone-lane"), "another lane's card keeps its lease");
         assert_eq!(
             status("A-DOING"),
             "discarded",

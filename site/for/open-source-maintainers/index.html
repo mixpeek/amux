@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#1e2330">
   <title>amux for Open-Source Maintainers — AI Agents for Issue Triage, PR Reviews &amp; Changelogs (2026)</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Open-source maintainers use amux to run AI agents overnight — triaging GitHub issues, reviewing contributor PRs, generating changelogs, and keeping documentation current. Runs on your laptop. Free and open-source.">
+  <meta name="description" content="Open-source maintainers use amux to run AI agents overnight — triaging GitHub issues, reviewing contributor PRs, generating changelogs, and keeping documentation current. Runs on your laptop. Free to self-host.">
   <meta name="keywords" content="AI tools for open source maintainers 2026, automate GitHub issue triage AI, open source maintainer tools, AI agent for pull request review, automate changelog generation AI, AI coding agent open source projects, amux for open source, open source contributor automation">
   <link rel="canonical" href="https://amux.io/for/open-source-maintainers/">
   <meta property="og:title" content="amux for Open-Source Maintainers — AI Agents for Issue Triage, PR Reviews &amp; Changelogs">
-  <meta property="og:description" content="Run AI agents overnight to triage issues, review contributor PRs, generate release notes, and keep documentation current — all from one dashboard. Free and open-source.">
+  <meta property="og:description" content="Run AI agents overnight to triage issues, review contributor PRs, generate release notes, and keep documentation current — all from one dashboard. Free to self-host.">
   <meta property="og:url" content="https://amux.io/for/open-source-maintainers/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta property="og:type" content="article">
@@ -91,19 +91,32 @@
         "name": "What is the cost for open-source maintainers?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "amux itself is free and open-source (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. For issue triage and PR review, costs are typically low because the tasks are read-heavy: reading 50 issues and drafting responses costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs. Many maintainers find the ROI immediate — hours of triage work replaced by minutes of review."
+          "text": "amux itself is free to self-host (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. For issue triage and PR review, costs are typically low because the tasks are read-heavy: reading 50 issues and drafting responses costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs. Many maintainers find the ROI immediate — hours of triage work replaced by minutes of review."
         }
       }
     ]
   }
   </script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
@@ -293,10 +306,10 @@ amux board add "Triage all open issues — categorize, label, draft responses pe
     <p>Yes — you can run one agent per batch of issues overnight. For a backlog of 200 open issues, queue them in batches of 20–30 per agent session. Agents read in parallel and draft responses independently, sharing a kanban board so no issue is touched twice. A 200-issue triage backlog that would take a maintainer 3 days can often be drafted in one overnight run.</p>
 
     <h3>What is the cost for open-source maintainers?</h3>
-    <p>amux itself is free and open-source (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. Issue triage and PR review are read-heavy tasks: triaging 50 issues typically costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs.</p>
+    <p>amux itself is free to self-host (MIT + Commons Clause). You run it on your own machine — no SaaS fee, no per-seat charge. You pay only for AI model tokens. Issue triage and PR review are read-heavy tasks: triaging 50 issues typically costs a few dollars in API tokens. Claude Max ($200/month flat) gives unlimited Claude Code usage for maintainers with large backlogs.</p>
 
     <div class="cta-box">
-      <h3>Run an AI engineering team tonight — free and open-source</h3>
+      <h3>Run an AI engineering team tonight — free to self-host</h3>
       <p>Install amux, write a CLAUDE.md with your project context, and queue your first overnight triage run.</p>
       <pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux register myproject --dir ~/Dev/myproject --yolo

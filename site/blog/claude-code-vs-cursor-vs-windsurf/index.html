@@ -120,13 +120,26 @@
       .axis-grid{grid-template-columns:1fr}
     }
   </style>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>
@@ -150,7 +163,7 @@
 
     <!-- EXP-082: top-of-page CTA — compare blog, September 2026 refresh, started 2026-09-07 -->
     <div style="background:var(--green,#2e7d32);color:var(--bg);border-radius:8px;padding:0.85rem 1.25rem;margin:1.25rem 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem">
-      <span style="font-weight:600">Run 50 Claude Code agents while you code in Cursor or Windsurf. Open source, single Rust binary, 394+ stars.</span>
+      <span style="font-weight:600">Run 50 Claude Code agents while you code in Cursor or Windsurf. Free to self-host, single Rust binary, 394+ stars.</span>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="background:#000;color:#fff;padding:0.45rem 1rem;border-radius:6px;font-weight:600;text-decoration:none;white-space:nowrap;font-size:0.9rem" onclick="posthog&&posthog.capture('exp082_compare_blog_topofpage_cta_click')">View amux on GitHub ★</a>
     </div>
 
@@ -728,7 +741,7 @@ amux serve  <span class="dim"># → https://localhost:8824</span></code></pre>
     <!-- ───────── CTA ───────── -->
     <div style="background:var(--accent-dim);border:1px solid var(--amber);border-radius:8px;padding:1.4rem 1.6rem;margin:3rem 0 2rem;text-align:center;">
       <p style="font-size:1rem;font-weight:600;margin:0 0 0.5rem;">Run 50 Claude Code agents while you use Cursor.</p>
-      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1rem;">amux orchestrates the fleet. Open source, single Rust binary, installs in one command.</p>
+      <p style="font-size:0.88rem;color:var(--dim);margin:0 0 1rem;">amux orchestrates the fleet. Free to self-host, single Rust binary, installs in one command.</p>
       <a href="/guides/getting-started/" style="display:inline-block;background:var(--amber);color:var(--bg);padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.88rem;">Get Started</a>
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" style="display:inline-block;background:var(--surface);color:var(--text);padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-weight:600;font-size:0.88rem;margin-left:0.6rem;border:1px solid var(--border);">View on GitHub</a>
     </div>

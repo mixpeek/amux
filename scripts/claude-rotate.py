@@ -473,6 +473,17 @@ def window(w, at):
     return (0.0 if reset and reset <= at else float(used)), reset
 
 
+def held(a, at):
+    """An account held off until `hold_until` (`hold <email> <until>`). Two
+    machines share some accounts, and each machine's rotator sees only its own
+    readings: 2026-11-04 this Mac moved onto ethan@mixpeekvectors.com, the
+    only account the mixpeek-dev VM could still use, so both drew one weekly
+    window. A held account is no target, and holding the current one moves
+    this machine off it on the next tick."""
+    until = _reset(a.get("hold_until"))
+    return bool(until) and until > at
+
+
 def rank(at=None):
     at = at or now()
     rows = []
@@ -487,7 +498,7 @@ def rank(at=None):
             if side and not _expired(side["claudeAiOauth"]):
                 accounts[email] = {}
     for email, a in accounts.items():
-        if a.get("disabled"):
+        if a.get("disabled") or held(a, at):
             continue
         u5, r5 = window(a.get("five_hour"), at)
         u7, r7 = window(a.get("seven_day"), at)
@@ -692,14 +703,28 @@ MONTHS = {m: i for i, m in enumerate(
 
 
 def parse_reset(text, at=None):
-    """'Resets 4:20pm (America/New_York)' or 'Resets Oct 16 at 3am (...)'."""
+    """'Resets 4:20pm (America/New_York)', 'Resets Oct 16 at 3am (...)' or
+    'Resets Nov 7, 6am (UTC)'. The time is read in the zone in parentheses.
+
+    2026-11-05, mixpeek-dev: the CLI moved to the comma form, every weekly
+    reset parsed as None, and six of eight accounts sat at 100% with no reset,
+    so the rotator never tried them again after their week ended."""
     at = at or now()
-    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)", text)
+    m = re.search(r"Resets\s+(?:([A-Z][a-z]{2})\s+(\d{1,2})(?:\s*,\s*|\s+at\s+))?"
+                  r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?", text)
     if not m:
         return None
-    mon, day, hour, minute, ampm = m.groups()
+    mon, day, hour, minute, ampm, zone = m.groups()
+    tz = None
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = dt.timezone.utc if zone.strip().upper() in ("UTC", "GMT") else ZoneInfo(zone.strip())
+        except Exception:
+            log("claude_rotate_reset_zone_unknown", zone=zone, note="read in this machine's zone")
+    local = at.astimezone(tz) if tz else at
     hour = int(hour) % 12 + (12 if ampm == "pm" else 0)
-    when = at.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
+    when = local.replace(hour=hour, minute=int(minute or 0), second=0, microsecond=0)
     if mon:
         when = when.replace(month=MONTHS[mon], day=int(day))
         if when < at - dt.timedelta(days=1):
@@ -820,6 +845,61 @@ def install_drift():
     return fields
 
 
+# A reading that can no longer heal by itself: readings only come from the
+# logged-in account, so a full account with no reset, or one whose week has
+# ended, keeps its old number until something reads it again. 2026-11-05,
+# mixpeek-dev: six of eight accounts read 100% with no reset for days.
+STALE_AT = float(os.environ.get("CLAUDE_ROTATE_STALE_AT", "90"))
+HEAL_EVERY_S = int(os.environ.get("CLAUDE_ROTATE_HEAL_EVERY_S", str(3 * 3600)))
+
+
+def stale_accounts(current, state, at=None):
+    """Accounts (not the logged-in one) whose saved reading needs a fresh
+    /usage: a window at STALE_AT or more with no known reset, or a weekly
+    reset that has passed. Each is tried at most once per HEAL_EVERY_S.
+    Returns [(email, why)], oldest attempt first."""
+    at = at or now()
+    tried = state.get("heal_tried") or {}
+    out = []
+    for email, a in load(ACCOUNTS, {"accounts": {}})["accounts"].items():
+        if email == current or a.get("disabled") or held(a, at):
+            continue
+        why = None
+        for key in ("seven_day", "five_hour"):
+            w = a.get(key) or {}
+            if w.get("used_percentage") is not None and not _reset(w.get("resets_at")) \
+                    and float(w["used_percentage"]) >= STALE_AT:
+                why = "full_no_reset"
+        week = _reset((a.get("seven_day") or {}).get("resets_at"))
+        if why is None and week is not None and week <= at:
+            why = "weekly_reset_passed"
+        if why and at.timestamp() - float(tried.get(email) or 0) >= HEAL_EVERY_S:
+            out.append((email, why))
+    return sorted(out, key=lambda e: float(tried.get(e[0]) or 0))
+
+
+def heal_stale(current, limit=1):
+    """Re-read up to `limit` stale accounts through trial_login: the /usage
+    screen in a scratch folder, so no quota is spent, the shared credential is
+    untouched and a refreshed token is kept. One per tick keeps the tick short
+    and the usage endpoint under its rate limit."""
+    state = load(STATE, {})
+    healed = []
+    for email, why in stale_accounts(current, state)[:limit]:
+        state = load(STATE, {})
+        state.setdefault("heal_tried", {})[email] = time.time()
+        save(STATE, state)
+        saved = next((s for _via, s in login_candidates(email) if not _expired(s.get("claudeAiOauth") or {})), None)
+        if saved is None:
+            log("claude_rotate_heal_skipped", measured=False, account=email, why=why,
+                why_unmeasured="no saved login that has not expired")
+            continue
+        ok = trial_login(email, saved) is not None
+        log("claude_rotate_heal", measured=ok, n_considered=1, account=email, why=why, read=ok)
+        healed.append(email)
+    return healed
+
+
 ENABLED_FILE = os.path.join(DIR, "enabled")
 
 
@@ -853,6 +933,14 @@ def cmd_tick():
             capture_login()
         except Exception as e:
             log("claude_rotate_capture_failed", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            heal_stale(current_email())
+        except Exception as e:
+            log("claude_rotate_heal", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            check_refusal(current_email(), load(STATE, {}))
+        except Exception as e:
+            log("claude_rotate_refusal_check", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
@@ -1001,6 +1089,93 @@ def resume_stranded(force=False):
 # 2026-11-03: "Login expired · Please run /login" did not match this, and
 # mixpeek-meta-worker stayed stopped through two later switches.
 AUTH_LOST = re.compile(r"(Not logged in|Login expired).{0,40}/login")
+# A subscription Anthropic will not serve, usually a payment past due. 2026-11-07
+# 06:00: the rotator moved this Mac onto hello@amux.io, whose /usage answered
+# only "rate limited" (which the trial takes as a working login), and every
+# prompt on it read "Claude Code can't use your Claude subscription, usually
+# because a payment is past due". The rotator held there four hours as
+# current_is_best on a 3% reading copied from another account's status lines.
+SUBSCRIPTION_REFUSED = re.compile(r"can.t use your Claude subscription")
+REFUSED_HOLD_S = int(os.environ.get("CLAUDE_ROTATE_REFUSED_HOLD_S", str(24 * 3600)))
+REFUSAL_CHECK_GAP_S = int(os.environ.get("CLAUDE_ROTATE_REFUSAL_CHECK_GAP_S", "900"))
+CHECK_MODEL = os.environ.get("CLAUDE_ROTATE_CHECK_MODEL", "claude-haiku-5-5")
+
+
+def refused_text(text):
+    return bool(SUBSCRIPTION_REFUSED.search(ANSI.sub("", text or "")))
+
+
+def prompt_check(config_dir=None):
+    """Send one one-word prompt on the shared login, or on `config_dir`'s.
+    'refused' when Anthropic declines the subscription, 'ok' when it answers,
+    None when the check itself could not run. /usage cannot tell a refused
+    subscription from a rate-limited endpoint; a prompt can, and a refused one
+    spends nothing."""
+    env = dict(os.environ)
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    try:
+        r = subprocess.run([CLAUDE, "-p", "reply with the single word ok", "--model", CHECK_MODEL],
+                           cwd=PROBE_CWD, env=env, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log("claude_rotate_prompt_check", measured=False, why_unmeasured=str(e)[:200])
+        return None
+    if refused_text(r.stdout + r.stderr):
+        return "refused"
+    return "ok" if r.returncode == 0 else None
+
+
+def mark_refused(email, via, workers=()):
+    """Hold a refused account off for REFUSED_HOLD_S. Paying the bill is the
+    owner's; the rotator only stops choosing the account."""
+    until = (now() + dt.timedelta(seconds=REFUSED_HOLD_S)).isoformat(timespec="seconds")
+    with locked(ACCOUNTS + ".lock"):
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        acct["hold_until"], acct["hold_why"] = until, "subscription_refused (%s)" % via
+        save(ACCOUNTS, data)
+    print(log("claude_rotate_subscription_refused", measured=True, n_considered=1, account=email, via=via,
+              workers=sorted(workers), held_until=until,
+              fix="pay or renew at https://claude.ai/settings/billing, then: claude-rotate.py hold %s now" % email))
+
+
+def refused_workers(sessions=None):
+    """Running, non-isolated workers whose last lines are the refusal."""
+    sessions = sessions if sessions is not None else (_amux("/api/sessions") or [])
+    out = []
+    for s in sessions:
+        if not s.get("running") or s.get("isolated"):
+            continue
+        peek = _amux(f"/api/sessions/{urllib.parse.quote(s['name'])}/peek?lines=12") or {}
+        lines = [l for l in (peek.get("output") or "").splitlines() if l.strip()][-10:]
+        if any(refused_text(l) for l in lines):
+            out.append(s["name"])
+    return out
+
+
+def check_refusal(current, state):
+    """When a worker's screen ends on the refusal, check the shared login with
+    one prompt. Refused: hold the account, so the next decide() moves off it.
+    Answered: the worker's process is on an older login, which is logged, since
+    switching would not help it. Returns True when the current account was held."""
+    if not current:
+        return False
+    workers = refused_workers()
+    if not workers:
+        return False
+    checked = state.setdefault("refusal_checked", {})
+    if time.time() - float(checked.get(current) or 0) < REFUSAL_CHECK_GAP_S:
+        return False
+    checked[current] = time.time()
+    save(STATE, state)
+    verdict = prompt_check()
+    if verdict == "refused":
+        mark_refused(current, "worker_screen", workers)
+        return True
+    log("claude_rotate_refusal_not_current", measured=verdict is not None, n_considered=len(workers),
+        current=current, workers=workers, check=verdict,
+        note="the shared login answers; these workers hold an older login until their next restart")
+    return False
 
 
 class LoginGapProbe:
@@ -1052,7 +1227,7 @@ def auth_lost(screen):
     """True when Claude's not-logged-in error is among the last lines on screen,
     which is where a turn that died on it leaves it."""
     lines = [l for l in (screen or "").splitlines() if l.strip()][-10:]
-    return any(AUTH_LOST.search(l) for l in lines)
+    return any(AUTH_LOST.search(l) or refused_text(l) for l in lines)
 
 
 def resume_auth_lost():
@@ -1345,6 +1520,12 @@ def _kc_write(service, account, value):
     return p.returncode == 0 and "error" not in (p.stderr or "").lower()
 
 
+def _kc_delete(service, account):
+    if not USE_KEYCHAIN:
+        return
+    subprocess.run(["security", "delete-generic-password", "-s", service, "-a", account], capture_output=True)
+
+
 # Per-account config folders, each signed in on its own with CLAUDE_CONFIG_DIR
 # set. The CLI keeps such a login in the keychain under CRED_SVC plus "-" and
 # the first 8 hex digits of sha256(folder path). 2026-10-20: all seven of
@@ -1501,6 +1682,9 @@ def trial_login(target, saved):
             log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
             return None
         windows = probe(config_dir=folder)
+        if windows == {"rate_limited": True} and prompt_check(folder) == "refused":
+            mark_refused(target, "trial")
+            windows = None
         # The CLI may have refreshed the token in the folder, which ends the saved
         # one. Keep the newest whatever the probe said, before the folder goes.
         raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
@@ -1525,7 +1709,7 @@ def trial_login(target, saved):
         return fresh
     finally:
         if USE_KEYCHAIN:
-            subprocess.run(["security", "delete-generic-password", "-s", svc, "-a", CRED_ACCT], capture_output=True)
+            _kc_delete(svc, CRED_ACCT)
         shutil.rmtree(folder, ignore_errors=True)
 
 
@@ -1660,6 +1844,12 @@ def _switch(target, reason):
     rc = stored_switch(target, before, reason, started)
     if rc is not None:
         return rc
+    # A trial that found the subscription refused held the target; a browser
+    # sign-in would only reach the same refusal after minutes under the lock.
+    if held(load(ACCOUNTS, {"accounts": {}})["accounts"].get(target) or {}, now()):
+        print(log("claude_rotate_switch_skipped_held", measured=True, n_considered=1, target=target, reason=reason,
+                  still=before, why="the target is held (a refused subscription or an owner hold); no browser sign-in"))
+        return 1
     upstream = relay_upstream()
     if upstream is not None and upstream != "connected":
         return browser_unreachable(target, reason, upstream)
@@ -1831,6 +2021,23 @@ def main(argv):
         elif os.path.exists(ENABLED_FILE):
             os.remove(ENABLED_FILE)
         print(log("claude_rotate_" + ("enabled" if cmd == "on" else "disabled"), measured=True, n_considered=1, file=ENABLED_FILE))
+        return 0
+    if cmd == "hold" and len(argv) in (4, 5):
+        # hold <email> <until ISO-8601> [why]   ("now" as <until> lifts it)
+        email, until = argv[2].lower(), argv[3]
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        if until == "now":
+            acct.pop("hold_until", None)
+            acct.pop("hold_why", None)
+        else:
+            if _reset(until) is None or _reset(until).tzinfo is None:
+                print("hold: <until> must be ISO-8601 with a zone, e.g. 2026-11-07T06:00:00+00:00", file=sys.stderr)
+                return 2
+            acct["hold_until"], acct["hold_why"] = until, (argv[4] if len(argv) == 5 else "")
+        save(ACCOUNTS, data)
+        print(log("claude_rotate_hold_set" if until != "now" else "claude_rotate_hold_lifted", measured=True,
+                  n_considered=1, account=email, until=acct.get("hold_until"), why=acct.get("hold_why")))
         return 0
     if cmd == "probe":
         return 0 if probe() else 1

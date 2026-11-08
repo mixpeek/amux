@@ -16,7 +16,7 @@ and who uses it. Requested in MSG-104254.
 | exposure | `tailscale serve status --json` | any serve or funnel config |
 | requests | the server's `_amux_request_log`, read-only | a client that is neither loopback nor a tailnet node; 60 or more 401/403 from one client in one window |
 | firewall | `socketfilterfw --getglobalstate` | the state changed from the baseline |
-| egress | `lsof -iTCP -sTCP:ESTABLISHED` | a process name with public connections not seen before |
+| egress | `lsof -iTCP -sTCP:ESTABLISHED` | a process name with public connections not seen before; a shell or raw-socket tool (bash, nc, socat, ...) alerts per new destination outside GitHub's range and is never accepted by name |
 
 The first run records the baseline. Standing exposure (a foreign or shared node,
 a serve config, a wide file server) is reported even on that run. After an
