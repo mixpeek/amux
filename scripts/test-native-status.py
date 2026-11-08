@@ -216,4 +216,21 @@ class NativeStatus(unittest.TestCase):
         self.assertEqual(timeouts, {installer.HOOK_TIMEOUT_S})
         self.assertGreaterEqual(installer.HOOK_TIMEOUT_S, 10)
 
+    def test_cloud_install_wires_the_boundary_guard_once_with_the_canonical_matcher(self):
+        # 2026-11-06: cloud servers get hooks from this installer, not install.sh, so the
+        # boundary guard (and its scheduling boundary) never ran on them.
+        old={'hooks':{'PreToolUse':[{'matcher':'^Bash$','hooks':[{'type':'command','command':'python3 /old/boundary-guard.py'}]},
+                                    {'matcher':'.*','hooks':[{'type':'command','command':'python3 /x/mine.py'}]}]}}
+        data=installer.merge(old, 'claude', Path('/h/.amux/native-status.py'))
+        data=installer.wire_boundary_guard(data, Path('/h/.amux/hooks/boundary-guard.py'))
+        data=installer.wire_boundary_guard(data, Path('/h/.amux/hooks/boundary-guard.py'))
+        pre=data['hooks']['PreToolUse']
+        guards=[g for g in pre if any('boundary-guard.py' in h['command'] for h in g['hooks'])]
+        self.assertEqual(len(guards), 1, 'replaced, not stacked, on every run')
+        self.assertIn('/h/.amux/hooks/boundary-guard.py', guards[0]['hooks'][0]['command'])
+        for tool in ('ScheduleWakeup', 'CronCreate', 'Bash', 'AskUserQuestion'):
+            self.assertRegex(tool, guards[0]['matcher'])
+        self.assertNotRegex('Monitor', guards[0]['matcher'])
+        self.assertTrue(any('/x/mine.py' in h['command'] for g in pre for h in g['hooks']), 'other hooks kept')
+
 if __name__=='__main__': unittest.main()
