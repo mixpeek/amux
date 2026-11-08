@@ -80,6 +80,14 @@ fn app() -> (Router, Arc<Store>, tempfile::TempDir) {
             post(|| async { (StatusCode::ACCEPTED, Json(json!({"ok":true}))) }),
         )
         .route("/api/read", get(|| async { Json(json!({"ok":true})) }))
+        .route(
+            "/api/sessions/{name}/steer",
+            post(|| async { Json(json!({"applied":true})) }),
+        )
+        .route(
+            "/api/sessions/{name}/send",
+            post(|| async { Json(json!({"applied":true})) }),
+        )
         .merge(api::interactions::routes())
         .with_state(state)
         .layer(axum::middleware::from_fn_with_state(
@@ -189,6 +197,63 @@ async fn correlation_identity_cannot_be_reused_for_a_different_command() {
     let (_, effects) = send(&app, "GET", "/api/interactions/int_shared/effects", None).await;
     assert_eq!(effects["n_considered"], 0);
     assert_eq!(send(&app, "POST", "/api/test", Some("bad id")).await.0, 400);
+}
+
+#[tokio::test]
+async fn a_retry_addressed_to_the_renamed_worker_keeps_its_receipt() {
+    let (app, store, _dir) = app();
+    let path = |name: &str| format!("/api/sessions/{name}/steer");
+    assert_eq!(
+        send(&app, "POST", &path("rn-old"), Some("int_rn")).await.0,
+        200
+    );
+    // Before the journal links the names, a new address is a different command.
+    assert_eq!(
+        send(&app, "POST", &path("rn-new"), Some("int_rn")).await.0,
+        409
+    );
+    store
+        .write(|conn| {
+            conn.execute(
+                "INSERT INTO session_events (ts,session,type,data) VALUES (0,'rn-new','session.renamed','{\"old\":\"rn-old\",\"new\":\"rn-new\"}')",
+                [],
+            )?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        })
+        .unwrap();
+    assert_eq!(
+        send(&app, "POST", &path("rn-new"), Some("int_rn")).await.0,
+        200
+    );
+    let (_, receipt) = send(&app, "GET", "/api/interactions/int_rn", None).await;
+    assert!(
+        receipt.to_string().contains("/api/sessions/rn-new/steer"),
+        "{receipt}"
+    );
+    // Another worker, or another verb on the new name, is still a different command.
+    assert_eq!(
+        send(&app, "POST", &path("someone-else"), Some("int_rn"))
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        send(&app, "POST", "/api/sessions/rn-new/send", Some("int_rn"))
+            .await
+            .0,
+        409
+    );
+    // A renamed worker with a different verb is a different command too.
+    assert_eq!(
+        send(&app, "POST", "/api/sessions/rn-old/send", Some("int_rn2"))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        send(&app, "POST", &path("rn-new"), Some("int_rn2")).await.0,
+        409
+    );
 }
 
 #[tokio::test]

@@ -56,6 +56,29 @@ fn primitive(path: &str) -> (&str, &str) {
     (kind, parts.next().unwrap_or(domain))
 }
 
+// A RETRY ADDRESSED TO A RENAMED WORKER IS THE SAME COMMAND (2026-11-08). The
+// outbox queued a steer to `rn-old`, its first attempt was refused while the
+// rename was landing, and the app then rewrote the queued URL to `rn-new` and
+// retried under the same interaction id. The identity check saw a different
+// path and refused it 409, so the message was never delivered
+// (e2e/worker-rename-follows.spec.ts, desktop, run 42440884078). Only the
+// worker segment may differ, and the rename journal must lead from the old
+// name to the new one.
+fn renamed_path(conn: &rusqlite::Connection, before: &str, after: &str) -> bool {
+    let split = |p: &str| -> Option<(String, String)> {
+        let rest = p.strip_prefix("/api/sessions/")?;
+        let (name, tail) = rest.split_once('/').unwrap_or((rest, ""));
+        Some((name.to_string(), tail.to_string()))
+    };
+    let (Some((old, tail_a)), Some((new, tail_b))) = (split(before), split(after)) else {
+        return false;
+    };
+    tail_a == tail_b
+        && old != new
+        && super::session_verbs::rename_successors(conn, &|n: &str| n == new).get(&old)
+            == Some(&new)
+}
+
 pub async fn middleware(
     State(store): State<SharedStore>,
     mut req: Request,
@@ -103,8 +126,17 @@ pub async fn middleware(
             "SELECT method,path,actor FROM _amux_interactions WHERE id=?1", [&record_id],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         if let Some(existing) = existing {
-            if existing != (record_method,record_path,record_actor) {
+            let followed = existing.0 == record_method && existing.2 == record_actor
+                && existing.1 != record_path && renamed_path(conn, &existing.1, &record_path);
+            if existing != (record_method.clone(),record_path.clone(),record_actor) && !followed {
                 return Err(rusqlite::Error::InvalidParameterName("interaction_identity_conflict".into()));
+            }
+            if followed {
+                tracing::info!(verdict="interaction_followed_rename", interaction_id=%record_id,
+                    from=%existing.1, to=%record_path, measured=true, n_considered=1,
+                    "a retried command addressed to a renamed worker's new name kept its receipt");
+                conn.execute("UPDATE _amux_interactions SET path=?2, target_id=?3 WHERE id=?1",
+                    rusqlite::params![record_id, record_path, target_id])?;
             }
             conn.execute("UPDATE _amux_interactions SET phase='sending', updated_at=?2, attempts=attempts+1 WHERE id=?1", rusqlite::params![record_id, now])?;
         } else {
