@@ -4172,7 +4172,13 @@ impl FleetSignals {
         // flipping a lane to WORKING because someone is typing into it is the
         // error the other half of this card is about. A subagent count cannot be
         // typed.
-        let subagents_reported_live = self.reported_subagent_count(name).is_some_and(|c| c > 0);
+        // Believed only while its report is current, the same rule
+        // subagents_working applies: a lost SubagentStop leaves a positive
+        // count in every later report, and the structured-children rule below
+        // read it raw, so mixpeek-general stayed WORKING after the fix to
+        // subagents_working went live (2026-11-08).
+        let subagents_reported_live = self.reported_subagent_count(name).is_some_and(|c| c > 0)
+            && self.subagent_count_current(name);
         if status == "idle"
             && (idle_gate_open || subagents_reported_live)
             && self.subagents_working(name)
@@ -10920,6 +10926,14 @@ Claude usage limit reached. Your limit will reset at 3pm.
         s.reports[lane]["ts"] = json!(s.now - 129_000.0);
         s.subagent_activity.insert(lane.into(), s.now - 410_000.0);
         assert!(!s.subagents_working(lane), "a day-old count over silent transcripts is a leak");
+        // The whole derivation agrees: a fresh idle report over an old leaked
+        // count reads idle, not structured_live_children.
+        s.reports[lane]["ts"] = json!(s.now - 9.0);
+        s.reports[lane]["subagents"]["ts"] = json!(s.now - 129_000.0);
+        s.panes.insert(lane.into(), IDLE_WITH_AGENTS.into());
+        let (status, ex) = s.derive_status_explain(lane, true);
+        assert_ne!(ex["decided_by"], json!("structured_live_children"), "{ex}");
+        assert_eq!(status, "idle", "{ex}");
         // A subagent still writing its transcript keeps the lane working anyway.
         s.subagent_activity.insert(lane.into(), s.now - 30.0);
         assert!(s.subagents_working(lane));
