@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs CloudCLI", "item": "https://amux.io/compare/amux-vs-cloudcli/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs CloudCLI: Which Should Run Your Coding Agents?", "description": "amux vs CloudCLI (Claude Code UI) compared: hosting, phone access, managing many agents, team plans and price. CloudCLI is an open-source web UI for Claude Code, Cursor CLI and Codex with hosted containers from 7 EUR a month; amux runs a team of agents on a dedicated always-on server.", "url": "https://amux.io/compare/amux-vs-cloudcli/", "datePublished": "2026-10-29", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "CloudCLI", "alternateName": "Claude Code UI", "url": "https://cloudcli.ai/", "applicationCategory": "DeveloperApplication", "operatingSystem": "Web, macOS, Windows, Linux"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a CloudCLI alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both let you run Claude Code, Codex and other coding agents from a browser or your phone, self-hosted for free or on a hosted plan. CloudCLI (formerly Claude Code UI) is a web IDE around your agent sessions: chat, file explorer, Git, shell and MCP settings. amux runs a team of agents on a shared task board with usage-limit and reboot recovery, a scheduler and business tools, and amux Cloud gives you a dedicated always-on server."}}, {"@type": "Question", "name": "Is CloudCLI the same as Claude Code UI?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The open-source project siteboon/claudecodeui was renamed CloudCLI UI. It is AGPL-3.0 licensed, installs with npx @cloudcli-ai/cloudcli, and is the UI layer behind the hosted CloudCLI Cloud."}}, {"@type": "Question", "name": "Which is cheaper, CloudCLI Cloud or amux Cloud?", "acceptedAnswer": {"@type": "Answer", "text": "CloudCLI Cloud. Its Hobby plan is 7 EUR a month for one container with 2 CPU cores and 4 GB RAM, Growth is 20 EUR for five, and Team is 39 EUR for five members. amux Cloud starts at $39 a month for a whole dedicated server with 4 vCPU and 8 GB RAM, running every agent on one board, and Team is $69 for 8 vCPU and 16 GB."}}, {"@type": "Question", "name": "Do both keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "On their hosted plans, yes. Self-hosted, only if the machine stays on: CloudCLI's own comparison table says the npm and Docker sandbox options need the machine to stay on. amux self-hosted is the same, and amux Cloud runs the server for you at yourname.amux.io."}}, {"@type": "Question", "name": "Does CloudCLI have a phone app?", "acceptedAnswer": {"@type": "Answer", "text": "Not a native one yet. Its README says the web UI is responsive and works in any phone browser, and a native app is in the works. amux has a native iPhone and iPad app plus an installable web app."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -166,21 +166,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

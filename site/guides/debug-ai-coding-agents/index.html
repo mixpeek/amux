@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Debug AI Coding Agents: Activity Logs, Stall Detection, and Root-Cause Workflows (2026)","description":"How to diagnose and fix AI coding agent failures using Activity logs, stall detection, context failure analysis, and watch-card monitoring. Covers the full debugging workflow for Claude Code, Codex, and Gemini CLI agents.","url":"https://amux.io/guides/debug-ai-coding-agents/","datePublished":"2026-08-04","dateModified":"2026-08-04","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Debug an AI Coding Agent","description":"Step-by-step workflow for diagnosing AI coding agent failures — from first symptoms to root cause and fix.","step":[{"@type":"HowToStep","name":"Check the session status","text":"In the amux dashboard, find the session and look at its status badge. Stalled (⚠) means the agent has been idle for longer than expected. Needs You means it is waiting for human input. Rate Limited means it hit a provider limit. Each status has a different fix."},{"@type":"HowToStep","name":"Read the Activity log","text":"Open Sessions → [agent name] → Activity tab. Every tool call the agent made is listed with its full request payload (what the agent asked for) and response payload (what it received). Search for the symptom — the wrong value, the missing function, the file that should not have been read."},{"@type":"HowToStep","name":"Identify the context surface that failed","text":"Map the failure to a context surface: wrong output = missing or incorrect CLAUDE.md rule; violated a constraint = move the rule to a hook; agent did not know about a resource = create a skill; context filled too fast = use a subagent for exploration; same mistake repeated = save feedback to memory; wrong task = ambiguous spec."},{"@type":"HowToStep","name":"Fix the surface, not the symptom","text":"Do not re-prompt the agent with the correction. Fix the root cause: add the rule to CLAUDE.md, create the hook, write the skill, or update the spec. The fix must survive to the next agent that runs the same task."},{"@type":"HowToStep","name":"Set a watch card to monitor recurrence","text":"If the failure was a recurring pattern, create a watch card on the board (type: watch, trigger condition: the symptom). amux monitors the condition on a schedule and fires a steering message to the relevant session if the trigger is met — so you do not have to check manually."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Why is my AI coding agent producing wrong output?","acceptedAnswer":{"@type":"Answer","text":"Wrong output almost always traces to a context surface failure — not a model failure. The most common causes: (1) missing CLAUDE.md rule the agent needed, (2) soft CLAUDE.md rule that should have been a hard hook, (3) reference doc not available (should be a skill), (4) context window filled with noise from wide tool calls (subagent opportunity), (5) ambiguous task spec. Read the Activity log to see exactly what the agent saw when it went wrong, then fix the surface."}},{"@type":"Question","name":"How do I read AI agent logs in amux?","acceptedAnswer":{"@type":"Answer","text":"Go to Sessions tab, click the session name, then click the Activity tab. You will see every tool call the agent made with its full request and response payload. Use the search box to find specific strings — the wrong value, the file that should not have been read, the command that ran when it should not have. The API endpoint is GET /api/sessions/{name}/activity."}},{"@type":"Question","name":"What does the stalled badge mean for an AI agent?","acceptedAnswer":{"@type":"Answer","text":"The stalled badge (⚠) appears when an agent has been idle for longer than the expected turn duration — typically when a session has not produced output in 5+ minutes during an active task. The most common causes are: the agent is waiting at a prompt (like the Claude Code resume dialog), it hit a thinking block corruption, or it is stuck in a tool-approval loop. amux flags the stall and, when board work stops moving, fires an owner alert; it does not answer prompts or restart the session for you."}},{"@type":"Question","name":"How do I debug why an agent crashed overnight?","acceptedAnswer":{"@type":"Answer","text":"Check the session's Activity log for the last tool call before the crash. Look at the session output (Sessions → Peek) to see the terminal state. Common overnight crash causes: (1) context window filled and the resume dialog appeared but no one answered it, (2) thinking block corruption from a malformed tool response, (3) rate limit menu left unanswered. For (1), start Claude Code with --continue or clear the project history before the run. For (2), restart the session; restarting a crashed agent is not built into the amux server, though on macOS the optional scripts/tmux-watchdog.sh (not installed by default) restarts crashed Claude Code workers. For (3), set AMUX_RATE_LIMIT_ACTION=wait in server.env so amux holds delivery and resumes at the provider's reset."}},{"@type":"Question","name":"How do I monitor an AI agent to catch failures as they happen?","acceptedAnswer":{"@type":"Answer","text":"Use amux watch cards on the board. A watch card defines a trigger condition — a string to watch for in session output, a status to detect, or an API endpoint to poll — and fires a steering message to the relevant session when triggered. This replaces manual polling. For overnight runs, amux stall detection also surfaces stalled sessions in the dashboard and sends an owner alert for anything requiring human input."}},{"@type":"Question","name":"Why does my Claude Code agent ignore my CLAUDE.md instructions?","acceptedAnswer":{"@type":"Answer","text":"CLAUDE.md compliance is approximately 70% — not 100%. The agent follows instructions most of the time but can deviate, especially late in a long session when the context window fills and earlier instructions get pushed out. Solutions: (1) move critical rules to a PreToolUse hook (100% enforcement), (2) trim CLAUDE.md so instructions stay visible throughout the session, (3) use the context-size monitor to detect when the window is filling and trigger a mid-session reminder via steering."}},{"@type":"Question","name":"What is the difference between the Activity log and session output (peek)?","acceptedAnswer":{"@type":"Answer","text":"Session output (peek) shows the rendered terminal view — what a developer would see if they were watching the agent work. The Activity log shows the raw API-level record — every tool call, its arguments, and its response, in order. Peek is for situational awareness ('what is the agent doing now?'). Activity log is for debugging ('what exactly did the agent see when it produced the wrong output?')."}},{"@type":"Question","name":"How do I prevent an AI agent from making the same mistake again?","acceptedAnswer":{"@type":"Answer","text":"Fix the context surface, not just the current run. If the agent used the wrong API: add the correct API to a skill so all future agents load it. If the agent violated a code standard: move the rule from CLAUDE.md to a PreToolUse hook. If the agent repeated a mistake from a prior session: save the correction to agent memory. The goal is that the next agent on the same task sees the right context from the start."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -445,53 +445,24 @@ OWNER_DIGEST_CHANNELS="push,sms"    # push = in-app, sms = iMessage</code></pre>
 amux register myproject --dir ~/Dev/myproject --yolo
 amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a></div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

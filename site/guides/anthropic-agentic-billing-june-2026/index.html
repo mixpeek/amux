@@ -66,8 +66,8 @@
   [data-theme="light"] .cmp-table th,
   [data-theme="light"] .cmp-table td { border-bottom-color: var(--border); }
   </style>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -427,34 +427,24 @@ for s in sessions:
     </ul>
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-col">
-        <strong>amux</strong>
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-        <a href="/docs/">Documentation</a>
-        <a href="/guides/">Guides</a>
-        <a href="/demos/">Demos</a>
-        <a href="/blog/">Blog</a>
-        <a href="/pricing/">Pricing</a>
-      </div>
-      <div class="footer-col">
-        <strong>Guides</strong>
-        <a href="/guides/getting-started/">Getting Started</a>
-        <a href="/guides/claude-code-tutorial/">Claude Code Tutorial</a>
-        <a href="/guides/ai-coding-agent-costs/">Cost Guide</a>
-        <a href="/guides/running-10-plus-agents/">Running 10+ Agents</a>
-      </div>
-      <div class="footer-col">
-        <strong>Compare</strong>
-        <a href="/compare/">All Comparisons</a>
-        <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>
-        <a href="/compare/amux-vs-codex/">amux vs Codex CLI</a>
-        <a href="/compare/amux-vs-goose/">amux vs Goose</a>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-    <p class="footer-copy">&copy; 2026 <a href="https://mixpeek.com" target="_blank" rel="noopener">Mixpeek, Inc.</a> &mdash; amux is source-available (MIT + Commons Clause). <a href="/privacy/">Privacy</a> &middot; <a href="/terms/">Terms</a></p>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     fetch('https://api.github.com/repos/mixpeek/amux').then(r=>r.json()).then(d=>{

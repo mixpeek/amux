@@ -18,13 +18,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <link rel="stylesheet" href="/nav.css?v=20261108">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
 {"@type":"Question","name":"Can amux see my code or prompts?","acceptedAnswer":{"@type":"Answer","text":"No. Self-hosted amux runs on your machine and sends nothing to amux. On amux Cloud, your workers, files, prompts and model keys live on your own dedicated server, and none of it passes through an amux service. The only thing our signup service reads from your server is an hourly usage report made of counts and yes/no answers."}},
 {"@type":"Question","name":"Is my amux Cloud server shared with other customers?","acceptedAnswer":{"@type":"Answer","text":"No. Every amux Cloud customer gets their own Hetzner server at yourname.amux.io, in Germany or Finland. Nothing on it is shared with anyone else."}},
 {"@type":"Question","name":"What can the amux team technically reach?","acceptedAnswer":{"@type":"Answer","text":"As the Hetzner account holder we can use Hetzner's console, rescue mode and snapshots for any Cloud server. Our signup service can make two-minute sign-in links for a server, used for Sign in with Apple in the iOS app. We keep no SSH key on customer servers."}},
 {"@type":"Question","name":"What happens to my data when I cancel or delete my account?","acceptedAnswer":{"@type":"Answer","text":"Canceling keeps a final snapshot for 30 days so you can come back, then deletes it. Deleting your account erases the server, its address, backups and snapshots right away and ends the subscription."}}]}</script>
-  <script src="/site.js?v=20261106"></script>
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -112,19 +112,24 @@
     <h2>Reporting a vulnerability</h2>
     <p>Email <a href="mailto:info@mixpeek.com">info@mixpeek.com</a> or open a <a href="https://github.com/mixpeek/amux/security/advisories/new">GitHub security advisory</a>, as the <a href="https://github.com/mixpeek/amux/blob/main/SECURITY.md">security policy</a> describes. Please do not open a public issue for a vulnerability.</p>
   </main>
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="/demos/">Demos</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/privacy/">Privacy</a>
-          <a href="/terms/">Terms</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
   
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

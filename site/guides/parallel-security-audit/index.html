@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Parallel Security Audit","item":"https://amux.io/guides/parallel-security-audit/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"How to Run a Parallel Security Audit with Claude Code Agents","description":"Run 10 Claude Code agents in parallel, each auditing a different module for security vulnerabilities. Step-by-step setup, CLAUDE.md security prompts, triage workflow, and comparison with traditional scanners.","url":"https://amux.io/guides/parallel-security-audit/","datePublished":"2026-04-18","dateModified":"2026-04-18","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can Claude Code find real security vulnerabilities?","acceptedAnswer":{"@type":"Answer","text":"Yes. In April 2026, Claude Code (Opus 4.6) discovered a 23-year-old exploitable vulnerability in the Linux kernel that had survived decades of manual code review and traditional static analysis. AI agents find bugs that pattern-matching scanners miss because they reason about code semantics — understanding what the code does, not just what it looks like."}},{"@type":"Question","name":"How is a parallel security audit different from running /security-review?","acceptedAnswer":{"@type":"Answer","text":"The /security-review command runs a single agent against your entire codebase in one pass. A parallel audit decomposes the codebase by module or service boundary and assigns a dedicated agent to each. Each agent gets full context window depth on its module rather than shallow coverage of everything. Cross-module findings are aggregated on a shared board. The result is deeper coverage with fewer false negatives."}},{"@type":"Question","name":"How many agents should I run for a security audit?","acceptedAnswer":{"@type":"Answer","text":"One agent per module or service boundary. For a typical web application: one for auth, one for API endpoints, one for database queries, one for file handling, one for third-party integrations, one for frontend/XSS, one for infrastructure/config. A microservices architecture might use one agent per service. More agents means deeper per-module analysis, but diminishing returns beyond 15-20 for most codebases."}},{"@type":"Question","name":"What types of vulnerabilities can AI agents find that traditional scanners miss?","acceptedAnswer":{"@type":"Answer","text":"AI agents excel at logic bugs, authorization bypasses, race conditions, business logic flaws, and subtle injection vectors that require understanding program semantics. Traditional scanners (Semgrep, CodeQL, Snyk) are better at known CVE patterns, dependency vulnerabilities, and SAST rules. The two approaches are complementary — use both."}},{"@type":"Question","name":"How much does a parallel security audit cost in tokens?","acceptedAnswer":{"@type":"Answer","text":"A typical 8-agent audit of a medium-sized codebase (50k-200k lines) costs $15-40 in API tokens and takes 30-60 minutes. On a Max subscription, it uses roughly a day's worth of quota. The cost scales linearly with agent count and codebase size. Use amux's per-session cost tracking to monitor spend in real time."}},{"@type":"Question","name":"Is this a replacement for professional penetration testing?","acceptedAnswer":{"@type":"Answer","text":"No. AI-powered security audits are a complement, not a replacement. They are excellent for continuous, automated scanning between formal pentests — catching regressions, reviewing new code, and maintaining security posture. Professional pentesting still provides adversarial creativity, physical and social engineering vectors, and compliance-grade reporting that AI audits do not."}},{"@type":"Question","name":"Can I schedule recurring security audits?","acceptedAnswer":{"@type":"Answer","text":"Yes. With amux's cron scheduler, you can run a full parallel security audit on any schedule — nightly, weekly, or on every merge to main. Each run produces findings on the board, so you get a continuous security dashboard that updates automatically."}},{"@type":"Question","name":"How do I reduce false positives?","acceptedAnswer":{"@type":"Answer","text":"Three techniques: (1) Include a CLAUDE.md section that describes your auth model, trust boundaries, and intentional design decisions so agents don't flag expected behavior. (2) Use severity-rated prompts that focus agents on high-impact findings rather than style issues. (3) Have a dedicated triage agent that reviews all findings from the audit agents and filters out false positives before they reach your board."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -470,47 +470,24 @@ $ amux cron add weekly-security-audit "0 22 * * 0" \
 
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
-        </div>
-        <div class="footer-link-cols">
-          <div class="footer-col">
-            <strong>Product</strong>
-            <a href="/guides/getting-started/">Getting Started</a>
-            <a href="/guides/rest-api-reference/">API Reference</a>
-            <a href="https://cloud.amux.io">Cloud</a>
-            <a href="/pricing/">Pricing</a>
-            <a href="/changelog/">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <strong>Resources</strong>
-            <a href="/guides/">Guides</a>
-            <a href="/blog/">Blog</a>
-            <a href="/faq/">FAQ</a>
-            <a href="/glossary/">Glossary</a>
-            <a href="/demos/">Demos</a>
-          </div>
-          <div class="footer-col">
-            <strong>Compare</strong>
-            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
-            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
-            <a href="/compare/amux-vs-devin/">vs Devin</a>
-            <a href="/compare/">All comparisons</a>
-          </div>
-          <div class="footer-col">
-            <strong>More</strong>
-            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-            <a href="/llms.txt">llms.txt</a>
-          </div>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
   
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

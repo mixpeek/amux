@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs dmux","item":"https://amux.io/compare/amux-vs-dmux/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs dmux: The Complete Comparison for Parallel AI Coding Agents","description":"Head-to-head comparison of amux and dmux — two parallel AI coding agent orchestrators. Feature matrix, architecture, workflows, migration tips.","url":"https://amux.io/compare/amux-vs-dmux/","datePublished":"2026-04-07","dateModified":"2026-08-12","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and dmux?","acceptedAnswer":{"@type":"Answer","text":"dmux is a worktree-focused tool that automates git worktree creation and lets you run multiple AI CLIs (Claude, Codex, Gemini, Aider) side by side. amux is a full orchestration platform — it adds a web dashboard, mobile PWA, usage-limit and reboot recovery, kanban task board, token cost tracking, and a REST API on top of the same parallel-agent pattern. dmux excels at the local 'spin up worktrees fast' use case. amux excels at unattended, monitored fleets you can run from your phone."}},{"@type":"Question","name":"Should I use amux or dmux?","acceptedAnswer":{"@type":"Answer","text":"Choose dmux if your workflow is interactive (you'll be at your desk), you want zero-config worktree management, and you mix multiple AI CLIs. Choose amux if you want to run agents unattended (overnight, while away from your desk), need a web dashboard accessible from your phone, want token cost visibility, or need a REST API to build custom automation."}},{"@type":"Question","name":"Can I use amux and dmux together?","acceptedAnswer":{"@type":"Answer","text":"Technically yes — they both use tmux underneath and don't conflict at the OS level. But there's no integration layer, so you'd be running two parallel orchestrators. Most people pick one. If you're moving from dmux to amux, the migration is straightforward: amux can register existing worktrees as sessions without recreating them."}},{"@type":"Question","name":"Does dmux have a web dashboard?","acceptedAnswer":{"@type":"Answer","text":"No. dmux is terminal-only. You manage agents through tmux panes and dmux's TUI. amux provides a full web dashboard at https://localhost:8824 with live status, token tracking, send bar, kanban board, and mobile PWA support."}},{"@type":"Question","name":"Does amux support Codex CLI and Gemini CLI like dmux does?","acceptedAnswer":{"@type":"Answer","text":"amux is primarily designed for Claude Code, but because each session is a tmux pane running an arbitrary command, you can register a Codex CLI or Gemini CLI session. Status detection and token tracking are Claude Code-specific. dmux has first-class support for multiple AI CLIs out of the box."}},{"@type":"Question","name":"Is dmux open source?","acceptedAnswer":{"@type":"Answer","text":"Yes, both amux and dmux are open source (MIT + Commons Clause). amux is a single Rust binary (amux-server-rs). dmux is a TypeScript/Node CLI with auto-generated git worktree management."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -437,53 +437,24 @@ amux register myproject --dir ~/Dev/myproject --yolo
 amux start myproject
 amux serve  # → https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

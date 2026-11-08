@@ -168,8 +168,8 @@
     .dash  { color: var(--muted, #9ca3af); }
     .ascii-graph { font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; line-height: 1.65; background: var(--surface-2, var(--panel)); border: 1px solid var(--border, var(--rule)); border-radius: 8px; padding: 1.25rem 1.5rem; overflow-x: auto; color: light-dark(oklch(0.40 0.012 250), #e5e7eb); white-space: pre; }
   </style>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -501,10 +501,23 @@ WORKER ──reads/writes──▶ NOTE             (context; shared durable kno
     </ul>
 
   </main>
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <a href="/">amux</a> &mdash; <a href="https://github.com/mixpeek/amux">open source</a> &mdash; <a href="/docs/">docs</a> &mdash; <a href="/demos/">Demos</a> &mdash; <a href="/blog/">blog</a> &mdash; <a href="/privacy/">privacy</a>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 </body>
 </html>

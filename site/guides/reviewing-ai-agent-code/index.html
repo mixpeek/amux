@@ -57,8 +57,8 @@
       .workflow-num{min-width:auto}
     }
   </style>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -465,15 +465,24 @@
     </div>
 
   </main>
-  <footer class="sub-footer">
-    <div class="footer-grid">
-      <div><strong>Product</strong><br><a href="/docs/">Docs</a><br><a href="/guides/">Guides</a><br><a href="/demos/">Demos</a><br><a href="/pricing/">Pricing</a></div>
-      <div><strong>Compare</strong><br><a href="/compare/">All comparisons</a><br><a href="/compare/amux-vs-claude-squad/">vs Claude Squad</a><br><a href="/compare/amux-vs-cursor/">vs Cursor</a><br><a href="/compare/amux-vs-devin/">vs Devin</a></div>
-      <div><strong>Resources</strong><br><a href="/blog/">Blog</a><br><a href="/changelog/">Changelog</a><br><a href="/faq/">FAQ</a><br><a href="/glossary/">Glossary</a></div>
-      <div><strong>Community</strong><br><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><br><a href="/blog/rss.xml">RSS</a></div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-    <p style="text-align:center;color:var(--muted);font-size:0.75rem;margin-top:2rem;">amux &mdash; the agent multiplexer. Source-available under MIT + Commons Clause.</p>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
   <script>
     fetch('https://api.github.com/repos/mixpeek/amux')
       .then(r=>r.json())

@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for QA Engineers","description":"QA engineers use amux to run parallel Claude Code agents for test generation, regression suites, coverage gap analysis, and automated code review at codebase scale.","url":"https://amux.io/for/qa-engineers/","datePublished":"2026-07-30","dateModified":"2026-10-13","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Parallel Test Generation with amux","description":"Use amux to run multiple Claude Code agents simultaneously, each generating tests for a different module or coverage gap.","step":[{"@type":"HowToStep","name":"Register your project","text":"Run amux register myproject --dir ~/Dev/myproject --yolo to register the project directory."},{"@type":"HowToStep","name":"Queue test generation tasks","text":"Add one task per module or coverage gap to the amux kanban board: 'Write unit tests for src/auth.py covering edge cases and error paths'."},{"@type":"HowToStep","name":"Start parallel agents","text":"Launch 10 Claude Code sessions: amux start myproject (repeat for each session). All sessions claim tasks from the shared board automatically."},{"@type":"HowToStep","name":"Monitor from your phone","text":"Open the amux iOS app or PWA to watch agents generate tests in real time. Stall detection flags any stalled session and alerts you."},{"@type":"HowToStep","name":"Review and merge","text":"Each completed task leaves a git diff or PR. Review the generated tests, run your CI pipeline, and merge the ones that pass."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents write reliable unit tests?","acceptedAnswer":{"@type":"Answer","text":"Yes, for well-defined modules with clear inputs and outputs. Claude Code generates tests that exercise public APIs, expected behaviors, and error paths. The tests should be reviewed and run against your CI pipeline before merging — treat them like code from a junior developer: useful, but needs review. amux's quality gates can enforce running tests before closing a task."}},{"@type":"Question","name":"How does amux help QA engineers differently from GitHub Copilot?","acceptedAnswer":{"@type":"Answer","text":"GitHub Copilot assists you while you write tests interactively in your IDE. amux runs agents that generate tests autonomously, in parallel, overnight — without you being present. For large codebases with poor test coverage, amux can run 20 agents simultaneously, each targeting a different module, and produce comprehensive test suites while you sleep."}},{"@type":"Question","name":"What kinds of tests can AI agents generate?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents like Claude Code generate unit tests (pytest, Jest, JUnit, RSpec), integration tests, API endpoint tests, snapshot tests for UI components, and edge case coverage for specific functions. They can also analyze existing tests to find gaps and generate tests that specifically cover uncovered branches."}},{"@type":"Question","name":"How do I ensure generated tests are correct?","acceptedAnswer":{"@type":"Answer","text":"Define acceptance criteria in the task description: 'all tests must pass on the current codebase', 'coverage must increase by at least 10%'. Configure amux quality gates to run pytest or npm test before marking a task done. The agent will see test failures and fix the tests before completing. This loop typically converges within 2-3 iterations per module."}},{"@type":"Question","name":"How many parallel agents can I run for test generation?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-10 agents comfortably. On a cloud VM or dedicated machine: 20-50. The bottleneck is usually Claude API rate limits, not local compute. amux staggers task claiming naturally — agents start tasks at different times as they claim from the shared board, which distributes API load over time."}},{"@type":"Question","name":"Can agents do code review for QA as well as test generation?","acceptedAnswer":{"@type":"Answer","text":"Yes. You can run a dedicated code-review agent per PR: 'Review PR #42, checking for missing error handling, race conditions, and boundary conditions not covered by existing tests.' Multiple review dimensions can run in parallel — one agent checking security, another checking logic, another checking performance — with findings collected in the amux board."}},{"@type":"Question","name":"Is amux open source?","acceptedAnswer":{"@type":"Answer","text":"amux is source-available (MIT + Commons Clause), self-hostable on any Mac or Linux machine, and free to use. You pay only for Claude API tokens consumed by your sessions — typically $0.50–$5 per test generation session depending on module size."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -218,53 +218,24 @@ amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">For your stack</div>
-          <ul>
-            <li><a href="/for/engineering-managers/">Engineering Managers</a></li>
-            <li><a href="/for/agencies/">Agencies</a></li>
-            <li><a href="/for/startup-founders/">Startup Founders</a></li>
-            <li><a href="/for/">All roles</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/compare/">Compare</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

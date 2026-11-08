@@ -27,8 +27,8 @@
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a Cursor alternative?","acceptedAnswer":{"@type":"Answer","text":"amux is not a direct replacement for Cursor — they solve different problems. Cursor is an AI-powered IDE for interactive coding (completions, chat, single-agent refactoring). amux is a headless orchestrator for running 10–50 AI coding agents in parallel, overnight, unattended. Most developers who use amux also use an IDE like Cursor for interactive work."}},{"@type":"Question","name":"Can Cursor run multiple agents in parallel?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent runs one autonomous agent per window. To run 10 agents in parallel, you would need 10 open Cursor windows with no shared coordination. amux is purpose-built for parallel agents: it launches dozens of Claude Code, Codex CLI, or Gemini CLI sessions simultaneously, with a shared kanban board for task coordination and usage-limit resume and stall alerts that keep them running overnight."}},{"@type":"Question","name":"Does amux work with Cursor?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux and Cursor complement each other. Many developers use Cursor for interactive coding during the day (Tab completions, Cursor Chat, quick agent fixes) and amux for overnight batch work (running 10–50 agents to generate tests, refactor modules, or review PRs across a large codebase). They operate at different moments in the development workflow."}},{"@type":"Question","name":"What is the difference between amux and Cursor Agent?","acceptedAnswer":{"@type":"Answer","text":"Cursor Agent is a single autonomous agent per Cursor window. It can plan, edit files, and run terminal commands, but it requires Cursor to be open and running, supports only one agent at a time, and has no recovery layer — if the agent crashes overnight, it stays crashed until you restart it manually. amux runs agents as persistent tmux sessions — 10, 20, or 50 simultaneously — that resume after usage limits, come back in their own conversation after a macOS reboot, and raise stall alerts, so they keep running while you sleep."}},{"@type":"Question","name":"Which is better for overnight batch coding jobs?","acceptedAnswer":{"@type":"Answer","text":"amux. Its core use case is running AI coding agents overnight while you sleep. When a usage limit hits, amux holds delivery and resumes at the provider's reset, and stall alerts tell you when a session stops. Cursor Agent is not designed for unattended overnight operation — it requires the IDE to be open and running. amux lets you queue 50 tasks, close your laptop, and wake up to finished pull requests."}}]}</script>
 
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -615,53 +615,24 @@ amux serve  # → https://localhost:8824</code></pre>
 
   </main>
 
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

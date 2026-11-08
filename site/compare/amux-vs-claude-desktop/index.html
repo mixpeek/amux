@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Claude Desktop","item":"https://amux.io/compare/amux-vs-claude-desktop/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Claude Desktop","description":"Claude Desktop is for conversations and MCP tool connections. amux runs Claude Code agents in parallel for autonomous coding at scale.","datePublished":"2026-03-06","dateModified":"2026-09-26","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"url":"https://amux.io/compare/amux-vs-claude-desktop/"}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between amux and Claude Desktop?","acceptedAnswer":{"@type":"Answer","text":"Claude Desktop is Anthropic's GUI app for conversational use of Claude — chat, document analysis, Projects, and MCP server connections. amux runs Claude Code (the coding-specialized CLI) in parallel terminal sessions with a web dashboard and agent orchestration layer. Claude Desktop is the right tool when you want to have a conversation. amux is the right tool when you want Claude to autonomously execute code changes in a repository, in parallel, without supervision."}},{"@type":"Question","name":"Can I use Claude Desktop and amux together?","acceptedAnswer":{"@type":"Answer","text":"Yes — they are complementary, not competing. A common workflow: use Claude Desktop (or Claude.ai) to plan a feature, generate the CLAUDE.md spec, and think through architecture. Then use amux to hand off the implementation to 5-10 parallel Claude Code sessions that each tackle one sub-task. Claude Desktop handles strategy and ideation; amux handles execution at scale."}},{"@type":"Question","name":"Does Claude Desktop replace Claude Code?","acceptedAnswer":{"@type":"Answer","text":"No. Claude Desktop uses the same Claude model but in a conversational interface. Claude Code is a separate CLI tool with direct filesystem access, shell execution, and long-horizon coding capabilities. Claude Desktop can use MCP filesystem tools to read files, but it is not designed for autonomous code execution across a large repository — that is Claude Code's domain."}},{"@type":"Question","name":"What is amux and how does it relate to Claude Code?","acceptedAnswer":{"@type":"Answer","text":"amux is the orchestration layer for Claude Code. Claude Code is a single coding agent. amux multiplies that into a fleet: it manages 10-50 parallel Claude Code sessions, coordinates their tasks via a shared kanban board, resumes them after usage limits and macOS reboots, and provides a web dashboard for monitoring. You install amux once, configure sessions for your project, and queue tasks for the fleet to execute."}},{"@type":"Question","name":"Does amux work with Claude Desktop MCP servers?","acceptedAnswer":{"@type":"Answer","text":"MCP servers configured in Claude Desktop's settings are separate from the MCP servers used by Claude Code. amux ships with a centralized mcp.json that configures MCP servers for all Claude Code sessions in the fleet — filesystem, memory, github, browser automation. You configure them once in amux and all sessions inherit them; you don't need to configure each session individually."}},{"@type":"Question","name":"Which is better for coding projects — Claude Desktop or amux?","acceptedAnswer":{"@type":"Answer","text":"For active coding on a real repository (adding features, fixing bugs, writing tests, refactoring), amux with Claude Code wins on every dimension: it makes file changes, runs tests, commits code, and operates overnight without supervision. Claude Desktop is better for discussing code, reviewing architecture, generating specs, and tasks that don't require direct filesystem writes."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -142,53 +142,24 @@ amux start myproject
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Spec-Driven Development with AI Coding Agents: The Complete Guide (2026)","description":"The practitioner's guide to spec-driven development — writing specs that make AI coding agents produce predictable, reviewable output, especially when running many agents in parallel.","url":"https://amux.io/guides/spec-driven-development/","datePublished":"2026-04-10","dateModified":"2026-10-29","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Use Spec-Driven Development with AI Coding Agents","description":"Step-by-step guide to writing specs, decomposing them into agent tasks, and running parallel implementation.","step":[{"@type":"HowToStep","name":"Write the spec","text":"Create a markdown file with goal, requirements, constraints, and acceptance criteria. Spend 5-10 minutes per spec. The spec should be complete enough that a competent developer (human or AI) can implement it without asking clarifying questions."},{"@type":"HowToStep","name":"Decompose into independent tasks","text":"Split the spec into tasks that can be implemented in parallel without touching overlapping files. Each task should be completable in 15-45 minutes by one agent."},{"@type":"HowToStep","name":"Push tasks to the board","text":"Create board items linking to each task spec. Each item gets claimed by one agent."},{"@type":"HowToStep","name":"Launch agents in parallel","text":"Start one agent per task, each in its own git worktree. The agent reads the spec and implements against the acceptance criteria."},{"@type":"HowToStep","name":"Review against the spec","text":"Review each agent's output against the spec's acceptance criteria, not against your mental model. If the output meets the criteria, ship it. If not, the spec was incomplete — fix the spec, not the prompt."}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is spec-driven development?", "acceptedAnswer": {"@type": "Answer", "text": "Spec-driven development (SDD) is a workflow where you write a structured specification before any code is written — by you or by an AI agent. The spec defines the goal, requirements, constraints, and acceptance criteria. The agent implements against the spec, and you review against the spec. It replaces the traditional prompt-and-pray approach with a planning-first workflow that produces predictable, reviewable output."}}, {"@type": "Question", "name": "How is spec-driven development different from prompt engineering?", "acceptedAnswer": {"@type": "Answer", "text": "A prompt is a one-shot instruction: 'add pagination to the users API.' A spec is a structured document: goal, requirements (cursor-based, keyed on created_at, default 50), constraints (no schema changes, no new dependencies), and acceptance criteria (specific curl commands that must work). Prompts rely on the agent inferring your intent. Specs eliminate inference. The difference in output quality is dramatic."}}, {"@type": "Question", "name": "How long should a spec be?", "acceptedAnswer": {"@type": "Answer", "text": "10-30 lines for a typical task. Under 10 lines means you probably left out constraints (and the agent will fill the gaps with guesses). Over 50 lines means you are over-specifying implementation details — let the agent make tactical decisions. The sweet spot: 5-10 minutes of writing that saves 30-60 minutes of back-and-forth and rework."}}, {"@type": "Question", "name": "What format should specs use?", "acceptedAnswer": {"@type": "Answer", "text": "Markdown with four sections: Goal (one sentence), Requirements (numbered list of what must be true when done), Constraints (what the agent must NOT do), and Acceptance Criteria (specific commands or tests that prove correctness). Some teams add a fifth section — Context — with pointers to relevant files or docs. The format matters less than completeness."}}, {"@type": "Question", "name": "Why is spec-driven development important for parallel AI agents?", "acceptedAnswer": {"@type": "Answer", "text": "Without specs, each agent needs human guidance during implementation — questions, clarifications, course corrections. That does not scale to 10 agents. Specs make agents autonomous: each agent gets a complete description of what to build, works independently in its own git worktree, and produces output you can review against objective criteria. Specs are what make the jump from 1 agent to 10 agents possible."}}, {"@type": "Question", "name": "Should I write specs for small tasks?", "acceptedAnswer": {"@type": "Answer", "text": "If the task takes less than 10 minutes for a single agent, a spec is overhead. Just describe it in a prompt. Specs pay off when a task is complex enough that the agent might go in the wrong direction — roughly anything that takes more than 15 minutes or touches more than 2-3 files. For parallel fleets, always write specs because unattended agents cannot ask you questions."}}, {"@type": "Question", "name": "What tools support spec-driven development?", "acceptedAnswer": {"@type": "Answer", "text": "Any AI coding agent can consume specs — they are just markdown files. Specialized tools include cc-sdd (spec-driven commands for Claude Code), Kiro (spec-driven IDE), and amux (push specs to a kanban board, launch parallel agents, each claims a spec and implements it). The spec format is tool-agnostic; the orchestration layer is where tools differ."}}, {"@type": "Question", "name": "Where should a fleet of spec-driven agents run?", "acceptedAnswer": {"@type": "Answer", "text": "On a machine that stays on. Specs exist so agents can work without you, and that only pays off if they keep running after you close your laptop. A home server, a VPS or a cloud VM all work if you maintain it. amux self-hosts on any of them, and amux Cloud gives you a dedicated always-on server at yourname.amux.io from $39/mo with the board, the agents and the phone app already set up."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -598,53 +598,24 @@ amux board add "add-cursor-pagination" --desc "$(cat specs/add-cursor-pagination
     </div>
 
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs cmux","item":"https://amux.io/compare/amux-vs-cmux/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs cmux: The Complete Comparison for AI Agent Multiplexers","description":"Head-to-head comparison of amux and cmux: two AI agent multiplexers for running parallel coding sessions. Feature matrix, architecture, platform support, workflows.","url":"https://amux.io/compare/amux-vs-cmux/","datePublished":"2026-04-29","dateModified":"2026-10-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and cmux?","acceptedAnswer":{"@type":"Answer","text":"cmux is a native macOS terminal application built with Swift and libghostty that replaces your existing terminal: it is the terminal. amux is one Rust binary with SQLite that serves a web dashboard that runs alongside your existing terminal and manages tmux sessions via a REST API. cmux is a desktop app you look at. amux is a platform you access from any browser, including your phone."}},{"@type":"Question","name":"Does cmux work on Linux?","acceptedAnswer":{"@type":"Answer","text":"No. cmux is macOS-only (Swift + AppKit). Community forks like wmux (Windows) and cmux-linux exist but are not officially supported. amux runs anywhere tmux runs: macOS, Linux, cloud VMs, and WSL on Windows, or hosted on amux Cloud."}},{"@type":"Question","name":"Can I access cmux from my phone?","acceptedAnswer":{"@type":"Answer","text":"Not currently. cmux is a desktop application with no web interface. An iOS companion app is listed on the Founder's Edition roadmap but is not yet available. amux has a full web dashboard that works as a mobile PWA: install it on your phone home screen and monitor agents from anywhere."}},{"@type":"Question","name":"Does cmux have a REST API?","acceptedAnswer":{"@type":"Answer","text":"cmux has a Unix socket API at /tmp/cmux.sock for local programmatic control, but no REST API. This means external tools, cron jobs, and remote scripts cannot talk to cmux over the network. amux exposes a full HTTPS REST API for sessions, board, notes, browser automation, email, and more: accessible from any device on the network."}},{"@type":"Question","name":"Which supports more AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Both support any terminal-based AI coding agent (Claude Code, Codex, Gemini CLI, Aider, Goose, etc.). cmux provides first-class support via its embedded browser's agent-aware features. amux's status detection and token tracking are Claude Code-specific, though other agents run fine as regular sessions."}},{"@type":"Question","name":"Is cmux free?","acceptedAnswer":{"@type":"Answer","text":"cmux's core is GPL-3.0 open source and free. A paid Founder's Edition subscription adds priority support, early access to cmux AI, iOS app sync, cloud VMs, and voice mode. amux is source-available under MIT + Commons Clause and free to self-host with every feature. The optional paid tier is amux Cloud, your own always-on hosted amux server from $39/month."}},{"@type":"Question","name":"Which is better for overnight agent runs?","acceptedAnswer":{"@type":"Answer","text":"amux. When a usage limit hits, it holds delivery and resumes at the provider's reset; on macOS every worker comes back in its own conversation after a reboot; and stall detection alerts you when a session stops. Restarting a crashed agent process is not built into the amux server today; an optional macOS script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. cmux has none of these: no usage-limit handling and no stall alerts, so an agent that crashes at 2am stays dead and unnoticed. cmux also does not restore live terminal processes across app restarts (layout only)."}},{"@type":"Question","name":"Can I use amux and cmux together?","acceptedAnswer":{"@type":"Answer","text":"Not in a meaningful way. cmux is a standalone terminal application that manages its own panes. amux manages tmux sessions. They operate in separate worlds. Most developers pick one based on whether they prioritize the desktop experience (cmux) or the platform experience (amux)."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -582,53 +582,24 @@ amux serve  # → https://localhost:8824
     </div>
 
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for running an AI engineering team from one dashboard or your phone.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

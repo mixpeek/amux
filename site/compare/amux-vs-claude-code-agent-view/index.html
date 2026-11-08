@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Claude Code Agent View", "item": "https://amux.io/compare/amux-vs-claude-code-agent-view/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Claude Code Agent View: Which Should Run Your Agents?", "description": "amux vs Claude Code agent view (claude agents) compared: where sessions run, phone access, other agent CLIs, task boards and price. Agent view is Claude Code's built-in screen for background sessions on your machine; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.", "url": "https://amux.io/compare/amux-vs-claude-code-agent-view/", "datePublished": "2026-10-30", "dateModified": "2026-10-30", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Claude Code agent view", "url": "https://code.claude.com/docs/en/agent-view", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, Windows"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is Claude Code agent view?", "acceptedAnswer": {"@type": "Answer", "text": "Agent view is a built-in Claude Code screen, opened with claude agents, that lists every background Claude Code session you started on your machine across all projects, grouped by state: working, needs input, completed and so on. You can dispatch new sessions from it, peek at one and reply, or attach to the full conversation. A supervisor process keeps the sessions running without a terminal. It is in research preview."}}, {"@type": "Question", "name": "Is amux an alternative to Claude Code agent view?", "acceptedAnswer": {"@type": "Answer", "text": "For some jobs. Agent view is the simplest way to run several Claude Code sessions in parallel on one machine from a terminal, and it costs nothing beyond your Claude plan. amux is for running a team: Claude Code, Codex and Gemini CLI agents on one shared kanban board, a scheduler, CRM, email and browser automation, a native iPhone app, and an optional always-on server with amux Cloud. Many people use both."}}, {"@type": "Question", "name": "Do agent view sessions keep running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "They survive sleep and resume on wake, but they run on your machine, so they stop if it shuts down, and they make no progress while it sleeps. To keep agents working with the lid closed you need a machine that stays on, such as a server you self-host amux on, amux Cloud, or Anthropic's cloud sessions."}}, {"@type": "Question", "name": "Can I use agent view from my phone?", "acceptedAnswer": {"@type": "Answer", "text": "Agent view itself is a terminal screen. From a phone, Anthropic offers Remote Control to continue a local session in the Claude app, and Projects, a public beta on Pro and Max that runs parallel cloud sessions you can steer from your phone. amux has a native iPhone and iPad app that shows every agent, its live terminal and the task board."}}, {"@type": "Question", "name": "Does agent view work with Codex or Gemini CLI?", "acceptedAnswer": {"@type": "Answer", "text": "No. Agent view lists Claude Code background sessions only. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents side by side on one dashboard."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -166,21 +166,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

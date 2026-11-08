@@ -28,8 +28,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Configure AI Agent Standing Approvals","description":"Set up standing approvals in amux so AI coding agents can answer their own permission prompts during overnight and unattended runs.","step":[{"@type":"HowToStep","position":1,"name":"Open Settings > Approvals","text":"In the amux dashboard, go to Settings and select the Approvals tab. This is where all standing approvals for your fleet are defined and managed."},{"@type":"HowToStep","position":2,"name":"Create your first approval rule","text":"Click 'Add approval'. Give it a title (e.g. 'Run tests and linters'), choose a category (budget, customer_outbound, prod_data, credential, access, or decision), and write a plain-language sentence describing what is allowed."},{"@type":"HowToStep","position":3,"name":"Set limits and caps","text":"Add free-text limits (shown to agents verbatim when the rule fires), a max_per_day cap to limit how often the rule can fire in 24 hours, and a max_amount_usd cap if the rule covers spending. Add require_terms if the ask must contain specific words before the rule fires."},{"@type":"HowToStep","position":4,"name":"Set scope","text":"Choose global (all workers), group:<name> (workers in a specific group), or worker:<name> (one session only). Narrower scope means fewer agents can invoke the rule."},{"@type":"HowToStep","position":5,"name":"Monitor usage","text":"The Approvals tab shows a live feed of every time a standing approval fired, which agent asked, what they asked for, and whether the cap was still available. Review this after overnight runs to see what was auto-approved."}]}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What are AI agent standing approvals?","acceptedAnswer":{"@type":"Answer","text":"Standing approvals are pre-defined permission rules you set once in the amux dashboard. When an AI coding agent hits a request that matches a rule (running tests, creating a branch, calling a specific API), amux answers it automatically with your pre-set answer instead of pausing to ask you. Requests that do not match any rule still surface to you as normal."}},{"@type":"Question","name":"How do standing approvals differ from --yolo mode?","acceptedAnswer":{"@type":"Answer","text":"The --yolo flag (Claude Code's --dangerously-skip-permissions) grants unlimited permission to everything with no tracking and no caps. Standing approvals are categorical and bounded: you define exactly which classes of action are pre-approved, set per-day limits, dollar caps, and scope them to specific workers or groups. Agents operate within those defined boundaries; requests outside them still require your attention."}},{"@type":"Question","name":"What categories of actions can I pre-approve?","acceptedAnswer":{"@type":"Answer","text":"amux standing approvals cover six categories: budget (spending, API calls with cost), customer_outbound (emails, messages, external notifications), prod_data (reading or writing production data), credential (using stored API keys or secrets), access (file system, network, or service access), and decision (judgment calls about approach or scope). Each category is treated separately so you can pre-approve low-risk categories without touching high-risk ones."}},{"@type":"Question","name":"Can I limit how often a standing approval fires?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each standing approval has a max_per_day field that caps how many times it can fire in a rolling 24-hour window. Once the cap is spent, the rule no longer auto-answers and the request surfaces to you as normal. This prevents runaway agents from invoking a broad rule hundreds of times in one session."}},{"@type":"Question","name":"Do standing approvals work with all AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Standing approvals work with any agent that routes escalations through amux's alert or needsyou channels — Claude Code, OpenAI Codex CLI, Antigravity CLI (formerly Gemini CLI), and any custom agent that calls the amux alert API. Agents that never surface requests to amux (purely autonomous --yolo sessions) do not interact with the approvals system."}},{"@type":"Question","name":"Can I scope a standing approval to just one agent?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each approval has a scope field: global (all workers), group:<name> (a named agent group), or worker:<name> (a single named session). Scoping to a worker is useful when one agent handles a sensitive task that requires broader permissions than you would grant fleet-wide — for example, a dedicated deployment agent that is allowed to trigger CI/CD while other agents are not."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -328,33 +328,23 @@ Scope:    worker:prod-diagnostics</code></pre>
     </ul>
   </main>
 
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <a href="/guides/">Guides</a>
-          <a href="/demos/">Demos</a>
-          <a href="/compare/">Compare</a>
-          <a href="/blog/">Blog</a>
-          <a href="/changelog/">Changelog</a>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Product</div>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/docs/">Docs</a>
-          <a href="/concierge/">Concierge</a>
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>amux &copy; 2026 &mdash; MIT + Commons Clause. <a href="/privacy/">Privacy</a></span>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 </body>
 </html>

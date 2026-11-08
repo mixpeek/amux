@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Automated Code Review with AI Agents","description":"Use parallel Claude Code agents via amux to review PRs for security vulnerabilities, logic bugs, performance issues, and missing test coverage — automatically at scale.","url":"https://amux.io/use-cases/automated-code-review/","datePublished":"2026-02-26","dateModified":"2026-07-30","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Automated AI Code Review with amux","description":"Configure amux to run Claude Code agents that review every PR across multiple quality dimensions in parallel.","step":[{"@type":"HowToStep","name":"Register a reviewer agent","text":"Run amux register reviewer --dir ~/Dev/myproject --yolo to register a dedicated code review session."},{"@type":"HowToStep","name":"Create a review task","text":"Queue a review task: amux send reviewer 'Review PR #42: check security, error handling, race conditions, and test coverage gaps. Report findings with file:line references.'"},{"@type":"HowToStep","name":"Run dimension-parallel reviews","text":"Launch multiple agents each reviewing a different dimension of the same PR: one for security, one for performance, one for logic correctness."},{"@type":"HowToStep","name":"Collect findings on the board","text":"Have each agent post its findings to the amux kanban board so they are collected in one place for the human reviewer."},{"@type":"HowToStep","name":"Merge high-confidence findings","text":"The human reviewer triages the findings, asks follow-up questions via amux send, and merges the PR once all critical issues are resolved."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is automated code review with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Automated code review with AI agents means running a coding agent like Claude Code against a pull request diff to identify bugs, security vulnerabilities, missing error handling, race conditions, and test coverage gaps — without requiring a human reviewer to do the first pass. The agent reads the diff, understands the surrounding codebase context, and produces a structured report of findings with file and line references."}},{"@type":"Question","name":"How is AI code review different from static analysis tools?","acceptedAnswer":{"@type":"Answer","text":"Static analysis tools (ESLint, Bandit, Semgrep) apply pattern-matching rules to find known issues. AI agents understand code semantics and context: they can reason about whether an error case is actually reachable, whether a race condition is exploitable in practice, or whether a missing test covers a path that matters for the business logic. AI review catches issues that require understanding intent, not just pattern matching."}},{"@type":"Question","name":"Can amux run code review agents on every PR automatically?","acceptedAnswer":{"@type":"Answer","text":"Yes, with a CI/CD webhook. When a PR is opened, a webhook triggers an amux task that runs a Claude Code review agent on the diff. The agent's findings are posted back as PR comments or to the amux board. This gives every PR a first-pass AI review before a human reviewer looks at it."}},{"@type":"Question","name":"What review dimensions can an AI agent check?","acceptedAnswer":{"@type":"Answer","text":"An AI review agent can check: security vulnerabilities (injection, XSS, insecure dependencies), error handling gaps (uncaught exceptions, missing null checks), race conditions in concurrent code, logic errors and off-by-one bugs, missing test coverage, performance issues (N+1 queries, unnecessary re-renders), API contract violations, and adherence to team conventions in CLAUDE.md."}},{"@type":"Question","name":"Does automated AI review replace human code review?","acceptedAnswer":{"@type":"Answer","text":"No — it augments it. AI review catches routine issues (missing error handling, obvious security flaws, style violations) so human reviewers can focus on architecture, business logic, and design decisions. The best setup is AI review first pass, then human review that focuses on the things AI flagged plus higher-level concerns."}},{"@type":"Question","name":"How accurate is AI code review?","acceptedAnswer":{"@type":"Answer","text":"AI code review has a meaningful false positive rate — it flags issues that turn out to not be problems in context. Treat AI findings like suggestions from a smart intern: worth reading, worth verifying, not to be merged blindly. For security-critical code, always have a human expert review AI findings before closing the PR."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -183,53 +183,24 @@ amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Use Cases</div>
-          <ul>
-            <li><a href="/use-cases/test-generation-at-scale/">Test generation</a></li>
-            <li><a href="/use-cases/security-audit/">Security audit</a></li>
-            <li><a href="/use-cases/large-scale-refactoring/">Refactoring</a></li>
-            <li><a href="/use-cases/">All use cases</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/compare/">Compare</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

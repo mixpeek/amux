@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs sandboxed.sh (Open Agent)","item":"https://amux.io/compare/amux-vs-sandboxed-sh/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs sandboxed.sh (Open Agent) — Self-Hosted AI Agent Orchestration Compared","description":"Compare amux and sandboxed.sh for self-hosted AI agent orchestration. amux runs Claude Code directly on your machine with a phone dashboard, usage-limit resume, and built-in kanban board.","url":"https://amux.io/compare/amux-vs-sandboxed-sh/","datePublished":"2026-06-01","dateModified":"2026-10-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the main difference between amux and sandboxed.sh?","acceptedAnswer":{"@type":"Answer","text":"amux runs AI agents (Claude Code, Codex, Gemini CLI) as tmux sessions directly on your own machine, with usage-limit resume, a phone dashboard, and a built-in kanban board. sandboxed.sh (Open Agent) runs agents inside isolated Linux workspaces — more like a cloud environment provisioned on demand. amux is zero-infrastructure: one install command, one Rust binary, your existing API keys."}},{"@type":"Question","name":"Which is better for running agents overnight unattended?","acceptedAnswer":{"@type":"Answer","text":"amux is designed for overnight unattended runs. Stall detection alerts you when an agent stops making progress, amux rotates across a pool of verified Claude Code accounts when one hits its usage limit, and the iOS app shows live status so you can check progress from anywhere. sandboxed.sh has its own reliability story inside its sandboxed environment."}},{"@type":"Question","name":"Does amux have workspace isolation like sandboxed.sh?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux has opt-in workspace isolation (AMUX_WORKSPACE_ISOLATION=1) that gives each worker its own git worktree and temporary directory. This is lighter-weight than sandboxed.sh's full Linux workspace containers — workers share the host machine but get isolated file trees and scratch space."}},{"@type":"Question","name":"Can I use amux and sandboxed.sh for the same project?","acceptedAnswer":{"@type":"Answer","text":"In principle yes. They target different workflow shapes. sandboxed.sh is strong for tasks where you want strict execution isolation (untrusted code, security-sensitive workloads). amux is strong for running a team of trusted coding agents on your existing codebase with low overhead."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"The core amux server is source-available (MIT + Commons Clause) and free forever. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io. Everything else is free and self-hosted."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -176,53 +176,24 @@ amux start myproject
       <li><a href="/compare/">All AI agent comparisons</a></li>
     </ul>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

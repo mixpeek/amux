@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs Devin","item":"https://amux.io/compare/amux-vs-devin/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs Devin 2026","description":"Full comparison of amux self-hosted AI agent fleet and Devin managed autonomous engineer — cost, control, parallelism, and use cases.","datePublished":"2026-07-29","dateModified":"2026-10-07","author":{"@type":"Organization","name":"amux"},"about":{"@type":"SoftwareApplication","name":"amux","url":"https://amux.io/","applicationCategory":"DeveloperApplication"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux cheaper than Devin?","acceptedAnswer":{"@type":"Answer","text":"Yes, significantly. Devin costs $500/month for the Teams plan (250 Agent Compute Units). amux is free to self-host — you pay only for the underlying API tokens (Claude Code, Codex, or Gemini CLI). Heavy parallel use typically costs $10–50/month in API tokens. For the same $500 Devin budget, amux users run 50–200 agent-sessions per month."}},{"@type":"Question","name":"What is the open-source alternative to Devin?","acceptedAnswer":{"@type":"Answer","text":"amux is the leading self-hosted alternative for teams that want autonomous AI engineering at scale. Instead of one managed agent in a cloud sandbox, amux runs a fleet of 10–50 Claude Code, Codex, or Gemini CLI sessions simultaneously on your own machine — with a shared kanban board, usage-limit and reboot recovery, and iOS app for phone management. MIT + Commons Clause, single Rust binary, zero external dependencies."}},{"@type":"Question","name":"Can amux run as many tasks as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux runs significantly more tasks in parallel than Devin. Devin handles one task at a time per session. amux runs 10–50 parallel agent sessions simultaneously — each an independent coding agent working on a different task from the shared kanban board. With amux, a solo developer can wake up to 20-50 completed tasks instead of one."}},{"@type":"Question","name":"Does amux have the same level of autonomy as Devin?","acceptedAnswer":{"@type":"Answer","text":"amux provides comparable autonomy through Claude Code, Codex, or Gemini CLI agents — which are themselves state-of-the-art autonomous coding systems. The key difference is that amux adds fleet orchestration, recovery (usage-limit resume, macOS reboot recovery, NEEDS INPUT and stall alerts), and overnight operation on top of these agents. Devin provides a more turnkey managed experience with built-in Slack/Jira integrations. For raw coding autonomy, Claude Code via amux matches or exceeds Devin on most benchmark tasks."}},{"@type":"Question","name":"Can I use amux and Devin together?","acceptedAnswer":{"@type":"Answer","text":"Yes. A common pattern: use Devin for high-stakes, client-facing tasks where you want a fully managed, auditable record with Slack notifications. Run amux with 20 background agents simultaneously on the rest of your backlog — feature work, tests, documentation, refactors. Both can share a GitHub repo. The fleet output from amux often exceeds what Devin produces in the same time window, at a fraction of the cost."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -338,53 +338,24 @@ amux serve  # → https://localhost:8824</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">⭐ Star amux on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

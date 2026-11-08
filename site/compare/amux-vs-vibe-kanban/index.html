@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Vibe Kanban", "item": "https://amux.io/compare/amux-vs-vibe-kanban/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Vibe Kanban: A Vibe Kanban Alternative After the Shutdown", "description": "Vibe Kanban's company shut down in April 2026 and the project is now community maintained and local only. amux vs Vibe Kanban compared (October 2026): agents, boards, isolation, review, phone access, hosting and price, plus how to choose.", "url": "https://amux.io/compare/amux-vs-vibe-kanban/", "datePublished": "2026-10-19", "dateModified": "2026-10-19", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is Vibe Kanban shut down?", "acceptedAnswer": {"@type": "Answer", "text": "bloop, the company behind Vibe Kanban, shut down on April 10, 2026. The project continues as open source and community maintained. Its remote services (cloud kanban issues, comments, projects and organisations) were removed after 30 days, and Vibe Kanban moved to a fully local architecture. Local workspaces keep working."}}, {"@type": "Question", "name": "What is the best Vibe Kanban alternative?", "acceptedAnswer": {"@type": "Answer", "text": "It depends on what you used it for. If you mostly ran one agent per task and reviewed its diff, the community edition of Vibe Kanban still does that locally, and Conductor is a Mac app with a similar flow. If you want a board your agents work from on their own, with atomic task claiming, agent-to-agent messages, schedules, usage-limit resume and phone access, amux is built for that, on macOS or Linux, self-hosted for free or on amux Cloud."}}, {"@type": "Question", "name": "What is the difference between amux and Vibe Kanban?", "acceptedAnswer": {"@type": "Answer", "text": "Vibe Kanban is a planning and review interface: you create kanban issues, start a coding agent in a workspace for each one, review the diff with inline comments, preview the app and open a pull request. amux is a control plane for an AI engineering team: agents claim cards from a shared board themselves, message each other, run on schedules, resume after usage limits, and you supervise from a web dashboard or your phone."}}, {"@type": "Question", "name": "Does amux import Vibe Kanban data?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux does not have a Vibe Kanban importer. Vibe Kanban's latest version includes a data export, and amux board cards can be created from the CLI or the REST API, so a short script can recreate open issues as cards."}}, {"@type": "Question", "name": "Is amux free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux is source-available (MIT + Commons Clause) and free to self-host with every feature: curl -fsSL https://amux.io/install.sh | bash. amux Cloud, your own always-on amux server at yourname.amux.io, starts at $39 per month for teams that want agents running when laptops are closed."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -151,53 +151,24 @@
       <li><a href="/guides/best-ai-agent-multiplexers-2026/">Best AI agent multiplexers (2026)</a></li>
     </ul>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

@@ -30,8 +30,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Review AI Agents Offline with amux","description":"Review your Claude Code, Codex, and Gemini CLI agents without an internet connection using amux's offline scrollback cache.","step":[{"@type":"HowToStep","position":1,"name":"Install amux and open the PWA","text":"Install amux (curl -fsSL https://amux.io/install.sh | bash) and open the dashboard in your mobile browser. Add it to your home screen as a PWA (Share → Add to Home Screen on iOS, Install App on Android Chrome)."},{"@type":"HowToStep","position":2,"name":"Start your sessions while online","text":"While connected to wifi or cellular, start your coding sessions normally. amux automatically begins caching the scrollback for every running session in the background using IndexedDB — no configuration needed."},{"@type":"HowToStep","position":3,"name":"Cache updates as agents run","text":"Every time you open a session's Peek panel while online, the latest scrollback is written to local IndexedDB. The cache survives browser restarts and app backgrounding on iOS."},{"@type":"HowToStep","position":4,"name":"Go offline — the dashboard stays readable","text":"On a plane, subway, or in a dead zone, open the amux PWA. All sessions show their last-cached scrollback. You can read the full terminal output, check the kanban board, and review notes — all without a server connection."},{"@type":"HowToStep","position":5,"name":"Queue actions for when you reconnect","text":"Need to steer a session? Use the offline outbox: type your message and hit Send. The message is held in IndexedDB and automatically delivered to the server the moment you reconnect — no copy-pasting required."}]}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can I check my AI agents without internet?","acceptedAnswer":{"@type":"Answer","text":"Yes — amux v0.9.200 caches every running session's scrollback locally in your browser's IndexedDB. When you open the amux PWA offline, you see the last-cached output for each session. You can read terminal output, check the task board, and review notes without any server connection."}},{"@type":"Question","name":"How does amux cache session scrollback?","acceptedAnswer":{"@type":"Answer","text":"amux uses IndexedDB (the browser's persistent local storage) to cache each session's terminal scrollback. Every time you view a session's Peek panel while online, the current output is written to IndexedDB. On iOS, this cache survives app backgrounding and device restarts. The cache is scoped to your local device — nothing is stored on a third-party server."}},{"@type":"Question","name":"What can I do offline with amux?","acceptedAnswer":{"@type":"Answer","text":"While offline you can: read full terminal scrollback for all sessions, check the kanban board and task statuses, read notes and reference material, review the session message log, and queue new messages for delivery when you reconnect. You cannot start/stop sessions, run commands, or receive live updates — those require a server connection."}},{"@type":"Question","name":"What can I not do when offline?","acceptedAnswer":{"@type":"Answer","text":"Actions that require a live server connection are not available offline: starting or stopping sessions, receiving live terminal updates, triggering new agent tasks, and viewing the real-time output stream. When you reconnect, the dashboard syncs immediately and live updates resume from where they left off."}},{"@type":"Question","name":"Does the offline cache work on iPhone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux iOS app and the installable PWA (Add to Home Screen in Safari) both use IndexedDB for offline scrollback storage. iOS WebKit fully supports IndexedDB and persists it across background eviction cycles. If Safari evicts the PWA from memory (common on low-storage devices), the IndexedDB data is retained — you re-open the app to the same cached state."}},{"@type":"Question","name":"How fresh is the offline cache?","acceptedAnswer":{"@type":"Answer","text":"The cache is as fresh as the last time you viewed that session's Peek panel while online. amux does not run a background sync while the app is closed — it writes to IndexedDB on demand as you browse sessions. For long trips, a quick session-by-session review before boarding ensures the most current scrollback is cached."}},{"@type":"Question","name":"Can I send messages to agents while offline?","acceptedAnswer":{"@type":"Answer","text":"Yes — through the offline outbox. Type your message in any session's composer and press Send. The message is queued in IndexedDB and automatically delivered to the session the moment your device reconnects. This pairs with the offline scrollback cache: you read what the agent did, you write a correction or next step, and the instruction lands as soon as signal returns."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -356,21 +356,24 @@ amux serve   <span class="comment"># → dashboard at https://localhost:8824</sp
 
   </main>
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &mdash;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     fetch('https://api.github.com/repos/mixpeek/amux')

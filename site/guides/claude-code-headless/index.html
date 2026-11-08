@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Headless Mode: The Complete Self-Hosting Guide (2026)","description":"Run Claude Code without the interactive terminal. Full guide to headless flags, auth options, CI/CD patterns, parallel fleets, cost tracking, and self-hosting.","url":"https://amux.io/guides/claude-code-headless/","datePublished":"2026-04-16","dateModified":"2026-10-24","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Run Claude Code in Headless Mode","description":"Step-by-step guide to running Claude Code non-interactively for automation, CI/CD, and parallel agent workflows.","step":[{"@type":"HowToStep","name":"Install Claude Code","text":"Install the Claude Code CLI via npm: npm install -g @anthropic-ai/claude-code"},{"@type":"HowToStep","name":"Choose an auth method","text":"Either authenticate your Max subscription via claude login, or set ANTHROPIC_API_KEY for per-token billing."},{"@type":"HowToStep","name":"Run with --print flag","text":"Use claude --print \"your prompt\" to get a single non-interactive response written to stdout."},{"@type":"HowToStep","name":"Enable auto-approval","text":"Add --dangerously-skip-permissions for fully unattended runs, or configure a permission policy file for selective approval."},{"@type":"HowToStep","name":"Capture structured output","text":"Use --output-format json to get machine-readable responses including token usage and cost."},{"@type":"HowToStep","name":"Wrap in a supervisor","text":"For production use, wrap headless runs in a supervisor: systemd for process restarts, and amux for usage-limit resume, stall alerts, and cost monitoring."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Claude Code headless mode?","acceptedAnswer":{"@type":"Answer","text":"Headless mode runs Claude Code non-interactively — without the TUI prompt loop. You pass a task, it completes the task, it writes output to stdout or a file, and exits. This is how you use Claude Code inside CI/CD pipelines, cron jobs, parallel agent fleets, or any automated workflow where there is no human to watch the terminal."}},{"@type":"Question","name":"How do I run Claude Code non-interactively?","acceptedAnswer":{"@type":"Answer","text":"Use the --print flag (or -p): claude --print \"your task here\". Claude Code will execute the task and write the response to stdout without entering the interactive prompt loop. Combine with --output-format json to get structured output, and --dangerously-skip-permissions to auto-approve tool calls for fully unattended operation."}},{"@type":"Question","name":"Can I use Claude Code headless with my Max subscription?","acceptedAnswer":{"@type":"Answer","text":"Yes. Headless mode uses the same authentication as interactive mode. If you've logged in with claude login, your Max subscription covers headless usage under the same quota. The headless flag only changes how the interface behaves, not how billing works."}},{"@type":"Question","name":"Should I use my Max subscription or an API key for headless runs?","acceptedAnswer":{"@type":"Answer","text":"It depends on volume. Max subscriptions are flat-rate but rate-limited on a weekly window — good for predictable workloads under the cap. API keys (ANTHROPIC_API_KEY) are pay-per-token with no rate cap — good for bursty or team-shared workloads. Heavy overnight runs that burst above the Max ceiling typically benefit from API keys, while steady solo usage is cheaper on Max."}},{"@type":"Question","name":"How do I run Claude Code in Docker or on a server?","acceptedAnswer":{"@type":"Answer","text":"Install Node.js and the Claude Code CLI in your container image, mount your project as a volume, set ANTHROPIC_API_KEY as an env var, and invoke claude --print in your entrypoint. For persistent background operation, use a supervisor like tmux, systemd, or amux — Claude Code itself is not a daemon and will exit after each headless invocation."}},{"@type":"Question","name":"How do I track cost for headless Claude Code runs?","acceptedAnswer":{"@type":"Answer","text":"Use --output-format json to get per-invocation token counts in the response. For ongoing session tracking, parse the JSONL transcript file that Claude Code writes to ~/.claude/projects/. Each message includes input_tokens, output_tokens, and cache stats. A control plane like amux aggregates these into per-session and per-day dashboards automatically."}},{"@type":"Question","name":"Can I run multiple Claude Code agents in parallel headlessly?","acceptedAnswer":{"@type":"Answer","text":"Yes. Each headless invocation is a separate process with its own conversation directory. You can run dozens in parallel by launching them in separate tmux panes, subprocess children, or container instances. The main practical limits are system memory, API rate limits, and the coordination overhead of knowing what each agent is doing — which is what an agent control plane solves."}},{"@type":"Question","name":"Is it safe to use --dangerously-skip-permissions?","acceptedAnswer":{"@type":"Answer","text":"Only in isolated environments. The flag auto-approves all tool calls including file writes, shell commands, and network requests. Use it in ephemeral containers, worktrees, or VMs where damage is contained. Never use it on your main development machine with access to production credentials. For safer unattended operation, write a permission policy file that allows specific tools and denies others."}},{"@type":"Question","name":"What is the Claude Code resume dialog and how do I handle it in headless mode?","acceptedAnswer":{"@type":"Answer","text":"When Claude Code starts in a directory that contains a previous session, it shows an interactive prompt: 'Would you like to resume this session? 1. Yes / 2. No'. In headless automation this dialog silently stalls the process with no timeout and no error. A quick workaround is to pre-pipe the answer: echo '1' | claude --print 'your task'. amux does not answer the dialog for you; it shows the session as waiting on the dashboard and phone, and stall detection alerts you."}},{"@type":"Question","name":"How do I check on a headless agent from my phone?","acceptedAnswer":{"@type":"Answer","text":"If you use amux, open the iOS app or the PWA and tap the Simple tab on any worker card. It shows a plain-English summary of what the agent is currently working on, synthesised from its last conversation turn. You can also use the voice orchestration feature in the + menu to dispatch new tasks or steering prompts by voice, and the Messages tab groups conversation history by day so you can jump to any overnight window without scrolling."}},{"@type":"Question","name":"Where should I run headless Claude Code so it keeps working overnight?","acceptedAnswer":{"@type":"Answer","text":"On a machine that stays on: your own VPS or Mac mini under a supervisor such as systemd or amux, or amux Cloud, which gives you a dedicated always-on server at yourname.amux.io from $39/mo with usage-limit resume and phone control included. A laptop stops the agents when it sleeps, and CI runners have job time limits."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -786,47 +786,24 @@ $ amux serve  <span class="comment"># → https://localhost:8824</span></code></
 
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
-        </div>
-        <div class="footer-link-cols">
-          <div class="footer-col">
-            <strong>Product</strong>
-            <a href="/guides/getting-started/">Getting Started</a>
-            <a href="/guides/rest-api-reference/">API Reference</a>
-            <a href="https://cloud.amux.io">Cloud</a>
-            <a href="/pricing/">Pricing</a>
-            <a href="/changelog/">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <strong>Resources</strong>
-            <a href="/guides/">Guides</a>
-            <a href="/blog/">Blog</a>
-            <a href="/faq/">FAQ</a>
-            <a href="/glossary/">Glossary</a>
-            <a href="/demos/">Demos</a>
-          </div>
-          <div class="footer-col">
-            <strong>Compare</strong>
-            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
-            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
-            <a href="/compare/amux-vs-devin/">vs Devin</a>
-            <a href="/compare/">All comparisons</a>
-          </div>
-          <div class="footer-col">
-            <strong>More</strong>
-            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-            <a href="/llms.txt">llms.txt</a>
-          </div>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
   
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

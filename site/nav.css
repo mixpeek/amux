@@ -189,3 +189,37 @@ html:not([data-theme-pref]) .theme-btn .ti-system { display: block; }
   .site-header a.logo span, .site-header a.logo { font-size: 14px; }
   .site-header nav a.nav-cta { padding: 0 9px; }
 }
+
+/* Site footer, the same on every page (scripts/site-footer.html, enforced by
+   scripts/site-header.mjs). Like the header it carries its own palette and
+   type, and `footer.site-foot` outranks the pages' own `footer { }` rules, so
+   it renders identically over style.css, the homepage and concierge. */
+footer.site-foot {
+  margin: 64px 0 0; padding: 40px 28px 44px; border-top: 1px solid var(--hdr-line);
+  padding-left: max(28px, env(safe-area-inset-left)); padding-right: max(28px, env(safe-area-inset-right));
+  padding-bottom: max(44px, env(safe-area-inset-bottom));
+  background: none; color: var(--hdr-dim);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5;
+  box-sizing: border-box; text-align: left;
+}
+footer.site-foot a { color: var(--hdr-dim); text-decoration: none; }
+footer.site-foot a:hover { color: var(--hdr-fg); }
+.site-foot-inner { max-width: 1120px; margin: 0 auto; display: flex; gap: 48px; flex-wrap: wrap; }
+.site-foot-brand { flex: 0 1 240px; }
+footer.site-foot .site-foot-logo { color: var(--hdr-fg); font-weight: 700; font-size: 15px; }
+.site-foot-brand p { margin: 8px 0 0; font-size: 12.5px; }
+/* A 480px basis, so the links wrap below the brand instead of squeezing
+   beside it: their columns can shrink to nothing, so the row never wrapped
+   and the text spilled 44px past a phone's edge. */
+.site-foot-cols { flex: 1 1 480px; display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 24px; }
+.site-foot-cols div { display: flex; flex-direction: column; gap: 6px; }
+.site-foot-cols b { color: var(--hdr-fg); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 2px; }
+.site-foot-bottom { max-width: 1120px; margin: 28px auto 0; padding-top: 16px; border-top: 1px solid var(--hdr-line);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.site-foot-links { display: flex; gap: 18px; }
+@media (max-width: 720px) {
+  footer.site-foot { margin-top: 48px; padding-top: 32px; }
+  .site-foot-inner { flex-direction: column; gap: 28px; }
+  .site-foot-brand, .site-foot-cols { flex: none; }
+  .site-foot-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

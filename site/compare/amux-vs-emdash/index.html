@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Emdash", "item": "https://amux.io/compare/amux-vs-emdash/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Emdash: Which Should Run Your Coding Agents?", "description": "amux vs Emdash compared: desktop app or web and phone dashboard, running many agents, recovery, hosting and price. Emdash is a free Apache-2.0 desktop app that runs coding agents in parallel git worktrees; amux runs a team of agents on a shared board, self-hosted or on a dedicated always-on server.", "url": "https://amux.io/compare/amux-vs-emdash/", "datePublished": "2026-11-02", "dateModified": "2026-11-02", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Emdash", "url": "https://emdash.com/", "applicationCategory": "DeveloperApplication"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an Emdash alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, for running many coding agents at once. Emdash is a desktop app where each task gets its own git worktree, and you review diffs, open pull requests and merge from the app. amux is a web and phone dashboard that runs a team of agents on a shared task board with usage-limit and reboot recovery, a scheduler and business tools, and amux Cloud gives you a dedicated always-on server."}}, {"@type": "Question", "name": "Is Emdash free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Emdash's site says it is open source and free to use, under the Apache-2.0 license, and you bring your own API key or subscription for each agent. Its Emdash 2.0 waitlist describes a version built for teams and lists no price yet. amux is also free to self-host, and amux Cloud starts at $39 a month if you want the server run for you."}}, {"@type": "Question", "name": "Can I control Emdash from my phone?", "acceptedAnswer": {"@type": "Answer", "text": "Not in the current release, which is a desktop app for macOS, Windows and Linux. The Emdash 2.0 early access page says agents will be run and managed from desktop, web, mobile or Slack. amux has a native iPhone and iPad app today, plus an installable web app that shows every agent's live terminal and the task board."}}, {"@type": "Question", "name": "Do Emdash agents keep running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Only if they run on another machine. Emdash connects to your own machines over SSH, and optional tmux keeps sessions alive when you close the app or lose the connection. Remote automations do not need the desktop connected, but the machine has to stay on, and tmux does not survive a host reboot. amux self-hosted also needs a machine that stays on, and amux Cloud runs an always-on server for you at yourname.amux.io."}}, {"@type": "Question", "name": "Does amux review diffs and open pull requests like Emdash?", "acceptedAnswer": {"@type": "Answer", "text": "Emdash is stronger here: diffs, pull requests, CI checks and merging sit in the app beside each task, and it pulls issues from Linear, Jira, GitHub, GitLab and others. In amux, each agent works from a terminal you can watch, and agents commit and open pull requests through the git and GitHub tools you give them, with tasks tracked on the board."}}, {"@type": "Question", "name": "Which is better for a freelancer or small agency?", "acceptedAnswer": {"@type": "Answer", "text": "If you sit at one computer and want to review every agent's diff before it merges, Emdash is a strong free choice. If you want agents for several client projects on one board that you check from your phone, with nobody keeping a machine awake, amux Cloud Team is $69 a month for 8 vCPU and 16 GB RAM."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -165,21 +165,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

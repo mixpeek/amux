@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Running AI Coding Agents Overnight","description":"Step-by-step guide to running AI coding agents unattended while you sleep. Task queues, guardrails, monitoring, and morning review workflows.","url":"https://amux.io/guides/ai-coding-agents-overnight/","datePublished":"2026-04-03","dateModified":"2026-09-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Run AI Coding Agents Overnight","description":"Set up a fleet of AI coding agents that work while you sleep, with guardrails and monitoring.","step":[{"@type":"HowToStep","name":"Decompose tasks","text":"Break work into atomic, verifiable tasks that agents can complete independently."},{"@type":"HowToStep","name":"Configure your fleet","text":"Register sessions, assign directories, and set model preferences per task complexity."},{"@type":"HowToStep","name":"Set guardrails","text":"Configure CLAUDE.md rules, git hooks, file permissions, and cost caps."},{"@type":"HowToStep","name":"Set up owner alerts","text":"Configure amux to send push notifications and email when any agent needs attention. Use amux alert or the built-in owner-alert channel."},{"@type":"HowToStep","name":"Launch and monitor","text":"Start all agents, verify initial progress, then let stall detection and owner alerts flag anything that stops."},{"@type":"HowToStep","name":"Morning review","text":"Triage overnight output, review PRs, and merge completed work."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is it safe to run AI coding agents overnight on production codebases?","acceptedAnswer":{"@type":"Answer","text":"Yes, with proper guardrails. Use separate git branches per agent, restrict file access via CLAUDE.md, enforce pre-commit hooks with linting and tests, and set cost caps. Never give overnight agents access to deployment pipelines, auth systems, or payment code."}},{"@type":"Question","name":"How many AI coding agents can I run overnight?","acceptedAnswer":{"@type":"Answer","text":"On a laptop: 5-7 agents comfortably (constrained by RAM and API rate limits). On a cloud VM (4+ cores, 16GB RAM): 20-50 agents. The bottleneck is usually API rate limits, not local compute. Stagger agent starts by 10-30 seconds to avoid hitting limits simultaneously."}},{"@type":"Question","name":"What tasks should I NOT give to overnight AI agents?","acceptedAnswer":{"@type":"Answer","text":"Avoid tasks that touch authentication, payment processing, infrastructure/deployment, database migrations on production, or anything requiring human judgment about business logic. Also avoid open-ended tasks like 'refactor the codebase' — agents need specific, bounded scope to work unattended."}},{"@type":"Question","name":"How much does it cost to run AI agents overnight?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code on the Max plan ($200/month), you get unlimited usage — running 10 agents for 8 hours costs the same flat rate. On API pricing, expect $5-15 per agent-hour for Opus, $0.50-2 per agent-hour for Sonnet. A typical 8-hour overnight run with 10 agents on mixed models costs $50-100 on API pricing."}},{"@type":"Question","name":"What happens if an agent gets stuck or crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"amux holds delivery when a usage limit hits and resumes the agent at the provider's reset. Restarting a crashed agent process is not built into the amux server today; on macOS an optional script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does do is make the stop visible: stall detection flags board work that stops moving and stuck orchestrators, and owner alerts reach your phone. Claude Code compacts its own context, and amux lets you set the compaction threshold."}},{"@type":"Question","name":"How do I get notified when an overnight AI agent needs attention?","acceptedAnswer":{"@type":"Answer","text":"amux has a built-in owner-alert channel that sends push notifications and email when agents page you. Agents call amux alert from their CLAUDE.md instructions for situations that warrant waking you up: a blocker, an unexpected error, or a finished queue. Alerts go to your phone via push and email simultaneously. The health invariant alert.channel_can_deliver verifies delivery works before your next overnight run."}},{"@type":"Question","name":"How do I stop AI agents from pausing overnight to ask for permission?","acceptedAnswer":{"@type":"Answer","text":"Use standing approvals (AMUX-5270). You pre-authorize specific action categories — filesystem writes, git commits, test runners, API calls — before the overnight run starts. Agents proceed without interruption. Each category has a per-day cap and an optional dollar limit, so you retain meaningful control. When a cap is hit, the agent sends you an alert instead of silently stalling."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -690,53 +690,24 @@ amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

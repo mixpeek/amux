@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Subagents: The Complete Guide (2026)","description":"A practical, opinionated guide to Claude Code subagents — definitions, configuration, real examples, anti-patterns, and how they relate to running multiple parallel Claude sessions.","url":"https://amux.io/guides/claude-code-subagents/","datePublished":"2026-04-08","dateModified":"2026-04-08","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Create a Claude Code Subagent","description":"Step-by-step guide to creating, configuring, and invoking a Claude Code subagent.","step":[{"@type":"HowToStep","name":"Create the subagent file","text":"Add a new markdown file under .claude/agents/ in your project (or ~/.claude/agents/ for a personal global subagent)."},{"@type":"HowToStep","name":"Write YAML frontmatter","text":"Define name, description, allowed tools, and (optionally) model. The description is what Claude reads when deciding whether to delegate."},{"@type":"HowToStep","name":"Write the system prompt","text":"Below the frontmatter, write the system prompt that will be loaded into the subagent's fresh context window when it runs."},{"@type":"HowToStep","name":"Invoke the subagent","text":"Either let Claude auto-delegate based on the description, or explicitly call it with the Task tool by name."},{"@type":"HowToStep","name":"Iterate on results","text":"Subagents return a single text reply to the parent. Refine the description and prompt until delegation behavior is reliable."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a Claude Code subagent?","acceptedAnswer":{"@type":"Answer","text":"A Claude Code subagent is a specialized AI assistant defined as a markdown file in .claude/agents/ that runs in its own isolated context window with a specific system prompt and a restricted set of tools. The parent Claude session can delegate work to a subagent via the Task tool, get a single summarized reply back, and continue without polluting its own context with the subagent's intermediate steps."}},{"@type":"Question","name":"How are subagents different from running multiple Claude Code sessions in parallel?","acceptedAnswer":{"@type":"Answer","text":"Subagents are inside one Claude session — they share the same terminal, the same working directory, and run sequentially under one parent agent's coordination. Multiple parallel Claude Code sessions (the amux model) run as separate processes, each in its own git worktree, each with its own dashboard pane, each able to run for hours without a parent. Subagents are best for context-window hygiene; parallel sessions are best for true throughput multiplication."}},{"@type":"Question","name":"When should I use a subagent instead of just doing the work directly?","acceptedAnswer":{"@type":"Answer","text":"Use a subagent when (1) the task generates a lot of intermediate output you do not want polluting the main context, (2) it benefits from a specialized system prompt you do not want loaded in your main session, or (3) you want to run multiple lookups concurrently without serializing them. Do not use a subagent for trivial reads or single-file edits — the delegation overhead exceeds the benefit."}},{"@type":"Question","name":"Can subagents run in parallel?","acceptedAnswer":{"@type":"Answer","text":"Yes. Within a single Claude Code session, a parent can spawn multiple subagents in parallel by issuing several Task tool calls in the same response. They all execute concurrently and return their results to the parent. This is parallelism within one session — distinct from running multiple top-level Claude Code sessions in parallel via amux."}},{"@type":"Question","name":"Do subagents share memory with the parent?","acceptedAnswer":{"@type":"Answer","text":"No. Each subagent invocation starts with a fresh context window seeded only by its system prompt and the prompt the parent passes in. Subagents cannot see the parent's prior tool results, other subagents' output, or any conversation history. They return one final message to the parent and then terminate."}},{"@type":"Question","name":"What tools can subagents use?","acceptedAnswer":{"@type":"Answer","text":"Whatever tools you list in the subagent's YAML frontmatter under the tools field. By default, subagents inherit the parent's full toolset. You can restrict a subagent to a narrower set (e.g., only Read and Grep for a researcher) or grant it specialized tools the parent does not have. Restricting tools is a form of safety — a research subagent cannot accidentally write files."}},{"@type":"Question","name":"Where do I save subagent files?","acceptedAnswer":{"@type":"Answer","text":"Two locations: project-level at .claude/agents/ in your repo (checked into git, shared with the team), or user-level at ~/.claude/agents/ (personal, available across all projects). Project-level subagents take precedence when names collide."}},{"@type":"Question","name":"Should I use subagents or amux for parallel coding?","acceptedAnswer":{"@type":"Answer","text":"Use both — they solve different problems. Use subagents inside a session to keep context clean and run fast lookups concurrently. Use amux to run multiple top-level Claude Code sessions in parallel across git worktrees so you can knock out 10 tickets in the time one ticket would normally take. Subagents multiply context efficiency; amux multiplies wall-clock throughput."}}]}</script>
-    <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+    <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -365,53 +365,24 @@ amux start myproject
 amux serve  # &rarr; https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
 
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

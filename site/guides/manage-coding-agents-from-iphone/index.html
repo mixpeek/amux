@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "Manage AI Coding Agents from Your iPhone or iPad (and Mac)", "description": "Steer, approve and answer Claude Code, Codex and Gemini CLI agents from the amux iPhone and iPad app or the Mac app. Connect to your self-hosted server over Tailscale or to amux Cloud.", "url": "https://amux.io/guides/manage-coding-agents-from-iphone/", "datePublished": "2026-10-29", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "amux", "alternateName": "amux agent multiplexer", "description": "The agent control plane: run and steer Claude Code, Codex, Gemini CLI, OpenCode and Ollama coding agents on your own server, from the iPhone and iPad app, the Mac app or the browser.", "applicationCategory": "DeveloperApplication", "operatingSystem": ["iOS", "iPadOS", "macOS"], "url": "https://amux.io/guides/manage-coding-agents-from-iphone/", "downloadUrl": ["https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435", "https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux-macOS.dmg"], "installUrl": "https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435", "softwareRequirements": "An amux server on macOS or Linux, or an amux Cloud server", "license": "https://github.com/mixpeek/amux/blob/main/LICENSE", "sameAs": ["https://amux.io/", "https://github.com/mixpeek/amux", "https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435"], "publisher": {"@type": "Organization", "name": "Mixpeek", "url": "https://mixpeek.com"}}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is there an iPhone app for managing Claude Code and Codex agents?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux has a native app for iPhone and iPad on the App Store (one app for both). It connects to your own amux server, which runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agents side by side."}}, {"@type": "Question", "name": "Do the agents run on my phone?", "acceptedAnswer": {"@type": "Answer", "text": "No. The agents run as CLI sessions in tmux on your amux server: your own Mac or Linux machine, or an amux Cloud server. The phone is the control surface, so agents keep working when the phone is locked or offline."}}, {"@type": "Question", "name": "How does the iPhone app reach my server?", "acceptedAnswer": {"@type": "Answer", "text": "Over Tailscale for a self-hosted server: install Tailscale on the server and the phone, issue a certificate with tailscale cert, and add https://<host>.<tailnet>.ts.net:8824 in the app. An amux Cloud server has its own HTTPS address at yourname.amux.io. Never expose port 8824 to the public internet."}}, {"@type": "Question", "name": "Is there a Mac app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The Mac app runs on macOS 12 or later on Apple silicon and Intel. It opens several windows and tabs, shows a menu bar readout and a Dock badge when agents need you, and connects to the same server as the phone. It is not notarized yet, so the first open needs Open Anyway in System Settings, Privacy & Security."}}, {"@type": "Question", "name": "What about Android?", "acceptedAnswer": {"@type": "Answer", "text": "There is no native Android app. Open your dashboard URL in Chrome and choose Install app or Add to Home Screen to install the PWA."}}, {"@type": "Question", "name": "Does it cost anything?", "acceptedAnswer": {"@type": "Answer", "text": "Self-hosting amux is free under MIT + Commons Clause, including at work. amux Cloud, a dedicated always-on server, starts at $39 a month. You bring your own Claude, ChatGPT or Gemini account, or an API key."}}]}</script>
-    <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+    <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -133,53 +133,24 @@
 <div class="cta-box"><h3>Get started with amux</h3><p>Run Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents from one dashboard or your phone. One Rust binary with SQLite. Self-host free under MIT + Commons Clause, or use <a href="https://amux.io/start/">amux Cloud</a>.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 # then open https://localhost:8824</code></pre><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a></div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

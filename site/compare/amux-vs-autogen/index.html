@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs AutoGen","item":"https://amux.io/compare/amux-vs-autogen/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs AutoGen (Microsoft) — 2026 Comparison","description":"AutoGen programs multi-agent reasoning pipelines. amux operates AI coding agent teams with usage-limit and reboot recovery, kanban, and mobile management. Here's when to use each — and how they compose.","url":"https://amux.io/compare/amux-vs-autogen/","datePublished":"2026-07-25","dateModified":"2026-09-28","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the difference between amux and AutoGen?","acceptedAnswer":{"@type":"Answer","text":"AutoGen (by Microsoft Research, 59,000+ GitHub stars) is a Python framework for programming multi-agent conversation systems — you write code to define how agents talk to each other, what tools they can call, and how they collaborate. amux is an operational control plane for running AI coding agent teams (Claude Code, Codex, Gemini CLI) in parallel with usage-limit and reboot recovery, a web dashboard, shared kanban, and mobile monitoring. The key distinction: AutoGen builds the reasoning architecture; amux operates the execution environment. Many teams use both — AutoGen to orchestrate complex agent logic, amux to run and monitor the resulting agent sessions."}},{"@type":"Question","name":"Can AutoGen replace amux for running Claude Code agents?","acceptedAnswer":{"@type":"Answer","text":"Not directly. AutoGen is designed to orchestrate LLM agents via Python — you define agents, conversation patterns, and group chats in code. amux is a runtime for tmux-backed Claude Code sessions with a web UI, usage-limit and reboot recovery, SQLite kanban, token tracking, and mobile management. AutoGen can trigger Claude Code as a sub-process or tool, but it doesn't provide the persistent session management, usage-limit resume, or operational dashboard that amux offers. If you want to run Claude Code agents overnight with monitoring, amux is the right layer."}},{"@type":"Question","name":"Does AutoGen work with Claude (Anthropic)?","acceptedAnswer":{"@type":"Answer","text":"Yes. AutoGen supports Anthropic's Claude models through its LiteLLM integration. You can configure an AutoGen agent to use claude-sonnet-5, claude-opus-5, or any other Anthropic model by setting the model_client to use the Anthropic provider. amux also supports Anthropic's Claude Code natively as its primary runtime, along with OpenAI Codex CLI and Gemini CLI."}},{"@type":"Question","name":"When should I use AutoGen vs amux?","acceptedAnswer":{"@type":"Answer","text":"Use AutoGen when you're building a custom multi-agent application — research pipelines, automated reasoning systems, group chat orchestration, or any workflow where you need to program agent conversation patterns in Python. Use amux when you want to operate an AI coding agent team right now — run Claude Code, Codex, or Gemini CLI sessions in parallel, with usage-limit and reboot recovery, mobile monitoring, a shared task board, and cost tracking. The clearest signal: if you're writing Python to define agent behavior, AutoGen is your tool. If you're running agents to write code in your repos, amux is your tool."}},{"@type":"Question","name":"Can AutoGen and amux be used together?","acceptedAnswer":{"@type":"Answer","text":"Yes, and this is the recommended pattern for teams that need both high-level orchestration and reliable execution. The most common composition: use an AutoGen GroupChat or ConversationPattern to orchestrate the overall workflow, and have the AutoGen agents call amux's REST API to launch, monitor, and steer the Claude Code sessions doing the actual coding work. amux exposes a full REST API at /api/sessions, /api/board, /api/notes, and more — AutoGen agents can POST to /api/sessions to start a coding agent and GET /api/sessions/:name/peek to read its output."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -308,53 +308,24 @@ amux serve  # → https://localhost:8824</code></pre>
     </nav>
 
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-langraph/">vs LangGraph</a></li>
-            <li><a href="/compare/amux-vs-crewai/">vs CrewAI</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

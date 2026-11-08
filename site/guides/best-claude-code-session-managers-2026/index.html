@@ -30,8 +30,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best Claude Code Session Managers 2026","description":"The 8 best tools for managing parallel Claude Code sessions in 2026, ranked by features and use case fit.","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://amux.io/","description":"Self-hosted web-based control plane for parallel Claude Code sessions with usage-limit resume, stall alerts, kanban board, mobile PWA, and inter-agent messaging."},{"@type":"ListItem","position":2,"name":"Claude Squad","url":"https://github.com/smtg-ai/claude-squad","description":"Terminal-native TUI for managing multiple Claude Code and Codex agents with git worktree isolation."},{"@type":"ListItem","position":3,"name":"Nimbalyst","url":"https://nimbalyst.com/","description":"Native macOS app for managing Claude Code and Codex sessions with a split-pane terminal UI."},{"@type":"ListItem","position":4,"name":"Opcode","url":"https://opcode.sh/","description":"Free AGPL desktop GUI for Claude Code (formerly Claudia) with custom background agents, checkpoints and a usage dashboard."},{"@type":"ListItem","position":5,"name":"Claude Code Agent Teams","url":"https://docs.anthropic.com/en/docs/claude-code/agent-teams","description":"Anthropic's experimental built-in multi-agent feature for spawning coordinated sub-agents from within a Claude Code session."},{"@type":"ListItem","position":6,"name":"DIY tmux Scripts","url":"https://github.com/tmux/tmux","description":"Custom shell scripts using tmux for low-overhead, full-control Claude Code session management."},{"@type":"ListItem","position":7,"name":"Agent Deck","url":"https://github.com/asheshgoplani/agent-deck","description":"Free MIT terminal session manager on tmux for many agent types, with Docker sandboxes, a cost dashboard and a conductor session."},{"@type":"ListItem","position":8,"name":"CCManager","url":"https://github.com/kbwo/ccmanager","description":"Free MIT terminal app with no tmux dependency that runs eight coding assistants across git worktrees."}]}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a Claude Code session manager?","acceptedAnswer":{"@type":"Answer","text":"A Claude Code session manager is a tool that runs and monitors multiple Claude Code instances simultaneously. Claude Code itself runs one agent per terminal; session managers add the orchestration layer: starting and stopping agents, tracking their output, distributing tasks, preventing duplicate work, managing costs, and surfacing what each agent is doing — all in one place."}},{"@type":"Question","name":"How many Claude Code sessions can I run in parallel?","acceptedAnswer":{"@type":"Answer","text":"Claude Code imposes no hard limit — each session is an independent OS process. Practically, a modern MacBook Pro can run 10–20 sessions before memory pressure causes slowdowns. Developers routinely run 5–15 sessions. The constraint is not Claude Code — it is your machine's RAM (each tmux session uses ~50–150 MB) and your Claude Max plan or API token budget."}},{"@type":"Question","name":"Do I need a session manager or is DIY tmux enough?","acceptedAnswer":{"@type":"Answer","text":"DIY tmux works for 2–3 agents but breaks down at scale. Without a session manager you lose: cost visibility (which agent is burning tokens?), recovery (who notices the agent that stopped at 2am?), task coordination (how do two agents avoid working on the same file?), and mobile access. Session managers add the control plane layer that tmux alone cannot provide."}},{"@type":"Question","name":"What is the difference between amux and Claude Squad?","acceptedAnswer":{"@type":"Answer","text":"amux is a full control plane: web dashboard, REST API, kanban board with atomic task claiming, usage-limit resume, stall alerts, mobile PWA, inter-agent messaging, notes, CRM, email integration, and scheduler. Claude Squad is a focused TUI (terminal UI) for running and switching between multiple agents with worktree isolation — simpler, lighter, terminal-only. amux is for teams and overnight runs; Claude Squad is for a single developer who prefers staying in the terminal."}},{"@type":"Question","name":"Which Claude Code session manager is best for solo developers?","acceptedAnswer":{"@type":"Answer","text":"Claude Squad is the lightest option for solo developers who want to stay in the terminal. amux is better if you want a web dashboard, mobile access to check progress from your phone, or plan to scale beyond 5 agents. DIY tmux works if you are comfortable with shell scripting and only need basic session switching."}},{"@type":"Question","name":"Which Claude Code session manager is best for teams?","acceptedAnswer":{"@type":"Answer","text":"amux is the only session manager with team features: shared kanban board, inter-session messaging (agents can coordinate), cost tracking per session, mobile dashboard, and a REST API for custom integrations. It is self-hosted (no cloud dependency), source-available under MIT + Commons Clause, and supports unlimited sessions. For teams running overnight batch workflows or parallel sprint work, amux is the clear leader."}},{"@type":"Question","name":"Does running parallel Claude Code sessions cost more?","acceptedAnswer":{"@type":"Answer","text":"Yes — parallel sessions consume tokens proportionally. If one session averages 50K tokens per hour, 10 parallel sessions will consume 500K tokens per hour. Anthropic's enterprise data shows an average of $13 per developer per active day for single-session use. Parallel agent workloads scale that cost accordingly. Claude Code Max plan users (subscribers) may find multi-session work exceeds their included usage. amux's per-session token tracking lets you identify expensive agents and set kill thresholds."}},{"@type":"Question","name":"What is Claude Code Agent Teams?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Agent Teams is Anthropic's experimental built-in feature (enabled via CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 in settings.json, available in v2.1.32+) that lets a parent agent spawn and coordinate child agents. It handles worktree isolation and spawning but does not provide a dashboard, cost tracking, inter-session messaging, or a task board. Agent Teams is the runtime layer; tools like amux provide the orchestration layer on top."}},{"@type":"Question","name":"Can I use amux with other coding agents besides Claude Code?","acceptedAnswer":{"@type":"Answer","text":"amux is built around Claude Code via tmux sessions but its architecture is agent-agnostic. The web dashboard, kanban board, REST API, notes, and CRM work with any session. amux officially supports Claude Code, OpenAI Codex CLI, and Gemini CLI — all three major coding runtimes. Register a Codex or Gemini project the same way you'd register a Claude Code project."}},{"@type":"Question","name":"Is amux free?","acceptedAnswer":{"@type":"Answer","text":"amux is source-available under MIT + Commons Clause, free to self-host with no feature limits. amux Cloud runs the same server for you at yourname.amux.io from $39/month, for people who want it always on without managing a machine. The GitHub repo is at github.com/mixpeek/amux."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -582,21 +582,24 @@ tmux ls</code></pre>
 
   </main>
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &mdash;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

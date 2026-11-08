@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs CCManager", "item": "https://amux.io/compare/amux-vs-ccmanager/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs CCManager: Which Should Run Your Coding Agents?", "description": "amux vs CCManager compared: terminal app or web and phone dashboard, running many agents, recovery, hosting and price. CCManager is a free MIT session manager for Claude Code, Codex, Gemini CLI and more across git worktrees; amux runs a team of agents on a shared board, self-hosted or on a dedicated always-on server.", "url": "https://amux.io/compare/amux-vs-ccmanager/", "datePublished": "2026-11-01", "dateModified": "2026-11-01", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "CCManager", "url": "https://github.com/kbwo/ccmanager", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, Windows"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a CCManager alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both manage many Claude Code, Codex, Gemini CLI and other coding agent sessions. CCManager is a self-contained terminal app, with no tmux needed, that runs sessions across git worktrees and shows each one as busy, waiting or idle. amux is a web and phone dashboard that runs a team of agents on a shared task board with usage-limit and reboot recovery, a scheduler and business tools, and amux Cloud gives you a dedicated always-on server."}}, {"@type": "Question", "name": "Is CCManager free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. CCManager is MIT licensed and free, and installs with npm install -g ccmanager or runs with npx ccmanager. It has no hosted plan, so it runs on your own machine. amux is also free to self-host, and amux Cloud starts at $39 a month if you want the server run for you."}}, {"@type": "Question", "name": "Does CCManager need tmux?", "acceptedAnswer": {"@type": "Answer", "text": "No. CCManager is self-contained and its README lists having no tmux dependency as a main reason to pick it over Claude Squad. amux runs its workers in tmux, so self-hosting needs tmux installed and the installer checks for it. You work in the dashboard either way, and on amux Cloud the server is set up for you."}}, {"@type": "Question", "name": "Can I control CCManager from my phone?", "acceptedAnswer": {"@type": "Answer", "text": "CCManager's README documents a terminal app and no web or phone interface. Its status hooks can run a command when a session starts waiting, which is one way to send yourself a notification. amux has a native iPhone and iPad app plus an installable web app that shows every agent's live terminal and the task board."}}, {"@type": "Question", "name": "Do both keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Only if they run on a machine that stays on. CCManager runs in a terminal on the machine you start it on, and it can reopen the sessions from its last run after a restart, though the conversation inside the assistant is not restored. amux self-hosted also needs a machine that stays on, and amux Cloud runs an always-on server for you at yourname.amux.io."}}, {"@type": "Question", "name": "Which is better for a freelancer or small agency?", "acceptedAnswer": {"@type": "Answer", "text": "If you work in one terminal and want a few agents on separate worktrees, CCManager is a strong free choice. If you want agents for several client projects on one board that you check from your phone, with nobody keeping a machine awake, amux Cloud Team is $69 a month for 8 vCPU and 16 GB RAM."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -165,21 +165,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

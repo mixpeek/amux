@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Quality Gates: From Vibe Coding to Production-Ready Code","description":"How to build a multi-agent validation pipeline that catches the bugs vibe coding creates. Quality gates, automated review chains, test generation, and security scanning.","datePublished":"2026-04-22","dateModified":"2026-04-22","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon-512.png"}},"image":"https://amux.io/og-image.png","mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/guides/vibe-coding-quality-gates/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Vibe Coding Quality Gates","item":"https://amux.io/guides/vibe-coding-quality-gates/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is vibe coding and why does it need quality gates?","acceptedAnswer":{"@type":"Answer","text":"Vibe coding is the practice of describing what you want in natural language and letting an AI agent write the code. It's fast — enterprise adoption grew 340% in 2026 — but studies show AI-generated code has 35-40% higher defect rates than human-written code. Quality gates are automated validation steps that catch these defects before they reach production: code review, test generation, security scanning, and integration testing."}},{"@type":"Question","name":"How many quality gate agents do I need?","acceptedAnswer":{"@type":"Answer","text":"A minimal pipeline uses three agents: one writes code, one reviews it, and one generates tests. A production pipeline adds a fourth for security scanning. You can run all four in parallel using an orchestrator like amux — the review agent peeks at the implementation agent's output, the test agent watches for new code, and the security agent runs scans concurrently."}},{"@type":"Question","name":"Does AI reviewing AI-generated code actually work?","acceptedAnswer":{"@type":"Answer","text":"Yes, but with caveats. Single-model self-review suffers from sycophancy — the reviewer tends to approve code from the same model family. Cross-model review (e.g., Claude writes, GPT reviews) eliminates this bias. Studies show cross-model review catches 60-70% of the defects that self-review misses. The key is using different model families for writing and reviewing."}},{"@type":"Question","name":"What's the safe threshold for AI-generated code in a codebase?","acceptedAnswer":{"@type":"Answer","text":"Research from 2026 suggests 25-40% AI-generated code is the sweet spot for productivity gains without quality degradation. Above 50%, defect rates increase sharply and teams need aggressive quality gates. Above 70%, incident rates can increase by 30% or more. The threshold is higher if you have strong automated testing and review pipelines in place."}},{"@type":"Question","name":"How much does a quality gate pipeline cost to run?","acceptedAnswer":{"@type":"Answer","text":"With Claude Code Max subscription ($100-200/mo), the marginal cost of review and test agents is zero beyond the subscription. With API keys, expect 15-30% overhead on top of your implementation costs — a review agent uses roughly 20% of the tokens the implementation agent uses, and test generation uses about 10%. The cost of catching a bug in development vs. production makes this a 10-50x ROI."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -406,53 +406,24 @@ amux serve  # &rarr; https://localhost:8824</code></pre>
   </div>
 </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

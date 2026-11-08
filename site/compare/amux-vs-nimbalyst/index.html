@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Nimbalyst", "item": "https://amux.io/compare/amux-vs-nimbalyst/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Nimbalyst: Which Should Run Your Coding Agents?", "description": "amux vs Nimbalyst compared: where Claude Code and Codex agents run, phone access, managing many agents and price. Nimbalyst (formerly Crystal) is a free visual desktop workspace; amux runs a team of agents with an always-on Cloud option.", "url": "https://amux.io/compare/amux-vs-nimbalyst/", "datePublished": "2026-10-27", "dateModified": "2026-10-27", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a Nimbalyst alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both run Claude Code, Codex and other coding agents in parallel, each in its own working copy, and both track sessions on a kanban board. Nimbalyst is a desktop workspace for editing the agents' work visually: markdown, mockups, diagrams and code with red and green diffs. amux runs a team of agents that resume after usage limits, with phone apps and business tools, and offers an always-on amux Cloud server."}}, {"@type": "Question", "name": "Is Nimbalyst the same as Crystal?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Crystal, the desktop app for running Claude Code and Codex sessions in parallel git worktrees, is now Nimbalyst. The Crystal repository says so in its description and points to nimbalyst.com."}}, {"@type": "Question", "name": "Does Nimbalyst have a phone app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Nimbalyst has an iOS companion app that shows which agents need you, lets you reply by text or voice, swipe through diffs and queue the next task, and sends a push when an agent is waiting. The agents themselves run in the desktop app. amux has a native iPhone and iPad app and an installable web app for Android and any browser."}}, {"@type": "Question", "name": "Can Nimbalyst keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Nimbalyst is a desktop app for macOS, Windows and Linux, and it does not offer hosting for your agents. amux Cloud gives you a dedicated always-on server at yourname.amux.io from $39/mo, so agents keep working while your laptop sleeps."}}, {"@type": "Question", "name": "Is Nimbalyst free and open source?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. The Nimbalyst app is MIT licensed and free for individuals, with no feature limits, and you bring your own Claude Code or Codex subscription or API key. Wiki Teams, a shared wiki for a team, is a paid plan at $20 per user per month, free during its beta. amux is free to self-host under MIT + Commons Clause; amux Cloud starts at $39/mo."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -165,21 +165,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

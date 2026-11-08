@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs DIY tmux Scripts","item":"https://amux.io/compare/amux-vs-diy-tmux/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs DIY tmux Scripts — Why Not Just Use tmux for Claude Code? (2026)","description":"amux vs rolling your own tmux scripts for Claude Code in 2026. Usage-limit and reboot recovery, web dashboard, approval memory, mobile access vs bash scripts.","url":"https://amux.io/compare/amux-vs-diy-tmux/","datePublished":"2026-04-01","dateModified":"2026-09-29","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Why use amux instead of DIY tmux scripts for Claude Code?","acceptedAnswer":{"@type":"Answer","text":"DIY tmux works for 1-2 agents in an interactive session. amux adds what scripts cannot: recovery (usage-limit resume, macOS reboot recovery, stall detection and alerts), a web dashboard with live peek output, a native iOS app for remote control, atomic SQLite task claiming across agents, approval memory that persists across sessions, and token spend tracking. The maintenance cost of custom scripts grows with each agent you add; amux's cost is constant."}},{"@type":"Question","name":"Can I run Claude Code in tmux without amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. tmux new-session -d -s myagent 'claude' starts a session, tmux send-keys sends prompts, tmux capture-pane reads output. This works for 1-2 interactive sessions. Problems emerge at scale: sessions crash and nobody is told, you can't monitor from your phone, agents race on the same task, context overflows silently, and every approval interruption wakes you even if you approved the same action last week."}},{"@type":"Question","name":"How does amux install compared to custom tmux scripts?","acceptedAnswer":{"@type":"Answer","text":"amux installs in one command: curl -fsSL https://amux.io/install.sh | bash. Custom tmux scripts require writing and maintaining bash, wiring up restart logic, building a status parser for Claude Code's ANSI output, and debugging race conditions. amux ships all of that as a tested binary under MIT + Commons Clause."}},{"@type":"Question","name":"Does amux still use tmux under the hood?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux manages tmux sessions as its terminal backend. The Rust server controls tmux panes, sends prompts, captures output, and parses ANSI state. You get all of tmux's reliability as the terminal layer, with amux's fleet coordination, dashboard, and recovery layer on top."}},{"@type":"Question","name":"What is the hardest part of rolling your own Claude Code session manager?","acceptedAnswer":{"@type":"Answer","text":"Recovery is the hardest part. Claude Code sessions fail in at least four ways: context overflow (the session exits to a shell prompt silently), usage limit (the session waits for you to press Enter), stuck prompts (Claude is waiting for confirmation you never saw), and crashes (the process exits). Writing reliable detection and recovery for all four, across 10+ concurrent sessions, is weeks of work. amux ships usage-limit resume, macOS reboot recovery and stall alerts tested and maintained; restarting a crashed agent process is not built into the amux server today (an optional macOS script, scripts/tmux-watchdog.sh, not installed by default, restarts crashed Claude Code workers)."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -201,53 +201,24 @@ amux serve  # → https://localhost:8824</code></pre>
       <a class="btn" href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener" style="margin-left:0.5rem">Download iOS App</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

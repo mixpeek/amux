@@ -28,8 +28,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Build an Autonomous AI Engineering Team","description":"Set up amux so your AI coding agents self-assign tasks from a shared backlog, resume after usage limits, flag stalled work, and alert you on Telegram when they need attention.","totalTime":"PT30M","step":[{"@type":"HowToStep","position":1,"name":"Set up the shared board backlog","text":"Create task cards in the amux board's todo column. Each card becomes a unit of work an agent can claim. Write cards as self-contained prompts: the agent that picks one up should have everything it needs in the card title and description."},{"@type":"HowToStep","position":2,"name":"Enable auto-drain on each session","text":"In the amux dashboard, open each worker session's settings and toggle on 'Auto-drain from backlog'. When a session finishes its current task and has no more cards, it automatically claims the next open card from the todo column. Scope drain to a group to keep frontend agents on frontend tasks."},{"@type":"HowToStep","position":3,"name":"Understand recovery and stall detection","text":"amux holds delivery when a usage limit hits and resumes the agent at the provider's reset. Claude Code compacts its own context, and amux lets you set the compaction threshold. Stall detection flags board work that stops moving (AMUX_GOAL_STALL_H sets the window) and stuck orchestrators, and an owner alert fires. Restarting a crashed agent process is not built into the amux server."},{"@type":"HowToStep","position":4,"name":"Set up Telegram alerts","text":"Connect your Telegram account by adding your bot token to server.env and linking a chat with /start. Each session can then send you a message when it finishes a task or gets stuck. In group chats, use @lane mentions to route messages to specific sessions."},{"@type":"HowToStep","position":5,"name":"Run overnight and review in the morning","text":"Leave the dashboard. Your agents work through the backlog, resume after usage limits, and ping you on Telegram if something genuinely needs attention. In the morning, check the board: done cards show completed work, and any card still in-progress has a timestamp showing how long it ran."}]}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an autonomous AI engineering team?","acceptedAnswer":{"@type":"Answer","text":"An autonomous AI engineering team is a set of AI coding agents that self-assign tasks from a shared backlog, resume after usage limits and flag stalled work, and run continuously without anyone watching each terminal. The key capabilities are: a shared task queue agents claim atomically (no two agents take the same task), a recovery layer that resumes agents after usage limits and flags stalled work, and a notification channel (like Telegram) that only surfaces issues that genuinely require human attention. amux provides all three in a single self-hosted control plane."}},{"@type":"Question","name":"How does auto-drain work in amux?","acceptedAnswer":{"@type":"Answer","text":"Auto-drain is a per-session toggle. When enabled, a session that finishes its current task and has no more assigned cards automatically claims the next open card from the board's todo column. The claim is atomic — SQLite row-level locking ensures no two sessions take the same card. You can scope drain to a group (e.g., only frontend sessions drain from the frontend backlog) or leave it global. The feature shipped in AMUX-4055 on 2026-09-02."}},{"@type":"Question","name":"What happens when an agent crashes overnight?","acceptedAnswer":{"@type":"Answer","text":"Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script (scripts/tmux-watchdog.sh, not installed by default) restarts crashed Claude Code workers. What amux does do is make the stop visible: stall detection flags a card that stops moving and any stuck orchestrator, and an owner alert fires so you can restart the session from the dashboard or your phone. If the stop was a usage limit, amux holds delivery and resumes the agent at the provider's reset. After a macOS reboot, a login job brings every non-archived worker back in its own conversation."}},{"@type":"Question","name":"Can agents steal each other's tasks?","acceptedAnswer":{"@type":"Answer","text":"No. The board uses atomic claiming backed by SQLite transactions. When a session claims a card, it transitions from todo to doing in a single transaction. Any concurrent claim attempt by another session fails and that session moves to the next available card. This prevents duplicate work even when dozens of sessions drain the same backlog simultaneously."}},{"@type":"Question","name":"How do I get notified when an agent finishes?","acceptedAnswer":{"@type":"Answer","text":"Connect your amux instance to Telegram by adding a bot token and linking a chat. Each session can then send you a message when it completes a task or encounters a problem. amux supports both private Telegram chats (one-to-one session routing) and group chats where @lane mentions route messages to a specific session. You can also use the iOS app or mobile PWA to check board status from your phone without enabling Telegram."}},{"@type":"Question","name":"Is it safe to leave agents running unattended overnight?","acceptedAnswer":{"@type":"Answer","text":"Yes, with standard precautions. amux itself is safe to leave running: launchd or systemd restarts the server process, agents resume after usage limits, auto-drain keeps agents busy, and the board's atomic claiming prevents duplicate work. For the agents themselves, use the board's quality gates (require peer review before a card moves to done) and keep destructive operations behind approval steps. The practical baseline: agents that write and test code can run fully unattended. Agents that deploy to production or send external communications should have a human review gate before irreversible steps."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -369,17 +369,23 @@ for i in done: print(' ', i['title'][:60])
     </div>
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-links">
-      <a href="/guides/">Guides</a>
-      <a href="/demos/">Demos</a>
-      <a href="/compare/">Compare</a>
-      <a href="/blog/">Blog</a>
-      <a href="/changelog/">Changelog</a>
-      <a href="/press/">Press</a>
-      <a href="https://github.com/mixpeek/amux">GitHub</a>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-    <p class="footer-copy">&copy; 2026 amux. MIT + Commons Clause.</p>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 </body>
 </html>

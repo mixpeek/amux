@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best MCP Servers 2026 — 40+ Model Context Protocol Servers Ranked by Category","description":"The curated guide to the best MCP servers in 2026. 40+ servers across 9 categories — code, databases, web search, cloud, productivity, design, monitoring, AI/ML, and security — ranked by stars, verified, with install commands.","url":"https://amux.io/guides/best-mcp-servers-2026/","datePublished":"2026-05-27","dateModified":"2026-05-27","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best MCP Servers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"Anthropic Reference Servers (filesystem, git, fetch, memory, SQLite)","url":"https://github.com/modelcontextprotocol/servers"},{"@type":"ListItem","position":2,"name":"GitHub MCP Server","url":"https://github.com/github/github-mcp-server"},{"@type":"ListItem","position":3,"name":"Context7 by Upstash","url":"https://github.com/upstash/context7"},{"@type":"ListItem","position":4,"name":"Playwright MCP by Microsoft","url":"https://github.com/microsoft/playwright-mcp"},{"@type":"ListItem","position":5,"name":"AWS MCP Servers","url":"https://github.com/awslabs/mcp"},{"@type":"ListItem","position":6,"name":"Firecrawl MCP Server","url":"https://github.com/firecrawl/firecrawl-mcp-server"},{"@type":"ListItem","position":7,"name":"Framelink Figma MCP","url":"https://github.com/GLips/Figma-Context-MCP"},{"@type":"ListItem","position":8,"name":"Notion MCP Server","url":"https://github.com/makenotion/notion-mcp-server"},{"@type":"ListItem","position":9,"name":"Cloudflare MCP Server","url":"https://github.com/cloudflare/mcp-server-cloudflare"},{"@type":"ListItem","position":10,"name":"Grafana MCP Server","url":"https://github.com/grafana/mcp-grafana"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an MCP server?","acceptedAnswer":{"@type":"Answer","text":"An MCP (Model Context Protocol) server is a program that exposes tools, resources, and prompts to AI assistants like Claude Code, Cursor, GitHub Copilot, and Windsurf via a standardized protocol. Instead of each AI tool building its own integrations, MCP provides a universal interface — one server works across all compatible clients. Think of it as a USB-C port for AI tools: any MCP server plugs into any MCP client."}},{"@type":"Question","name":"How do I install an MCP server?","acceptedAnswer":{"@type":"Answer","text":"Most MCP servers install via npx (Node.js) or uvx (Python). Add the server to your AI tool's MCP config file: claude_desktop_config.json for Claude Desktop, mcp.json for Claude Code, or the MCP settings panel in Cursor/Windsurf. Each server's GitHub README has the exact config snippet. Example: to add the filesystem server, add {\"mcpServers\": {\"filesystem\": {\"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/path/to/dir\"]}}} to your config."}},{"@type":"Question","name":"Which MCP clients support MCP servers?","acceptedAnswer":{"@type":"Answer","text":"As of May 2026, over 300 MCP clients exist. The major ones: Claude Desktop, Claude Code, Cursor, GitHub Copilot (VS Code), Windsurf, Zed, Cody by Sourcegraph, Replit, Amazon Q Developer, and VS Code (via the MCP extension). Claude Desktop and Claude Code have the most mature MCP support, followed by Cursor and Copilot."}},{"@type":"Question","name":"How many MCP servers exist?","acceptedAnswer":{"@type":"Answer","text":"Over 10,000 public MCP servers exist as of May 2026, up from roughly 1,200 a year ago. The MCP SDK hit 97 million monthly downloads in March 2026. The official Anthropic reference servers monorepo has 86,000+ GitHub stars. The ecosystem spans code, databases, cloud services, productivity tools, design tools, monitoring, AI/ML, and security."}},{"@type":"Question","name":"Are MCP servers safe to use?","acceptedAnswer":{"@type":"Answer","text":"MCP servers run locally with the permissions of your user account, so trust matters. Stick to official servers published by the tool vendor (e.g., GitHub's own MCP server, Sentry's own MCP server) or well-starred community servers with active maintenance. Audit the server's tool list before enabling it — a server that exposes write_file or execute_command tools has more risk surface than one that only reads data. Some servers support read-only modes. Security research from BlueRock found SSRF vulnerabilities in 36.7% of surveyed MCP servers, so vetting is important."}},{"@type":"Question","name":"Can I use multiple MCP servers at once?","acceptedAnswer":{"@type":"Answer","text":"Yes. Most MCP clients support multiple concurrent servers. A typical setup might include a filesystem server, a GitHub server, a database server, and a search server — all active simultaneously. The AI assistant sees tools from all connected servers and can use them together in a single task. With amux, you can configure different MCP server sets per session, so your database agent gets the Postgres server while your frontend agent gets the Figma server."}},{"@type":"Question","name":"What is the difference between MCP and A2A?","acceptedAnswer":{"@type":"Answer","text":"MCP (Model Context Protocol) connects AI agents to tools and data sources — it answers 'what can this agent do?' A2A (Agent-to-Agent Protocol by Google) connects agents to each other — it answers 'how do agents collaborate?' They are complementary, not competing. An agent uses MCP to access a database, and A2A to delegate a subtask to another agent. See our guide on A2A + MCP for details."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -652,47 +652,24 @@ $ amux start api frontend database security
 
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control — in one file.</p>
-        </div>
-        <div class="footer-link-cols">
-          <div class="footer-col">
-            <strong>Product</strong>
-            <a href="/guides/getting-started/">Getting Started</a>
-            <a href="/guides/rest-api-reference/">API Reference</a>
-            <a href="https://cloud.amux.io">Cloud</a>
-            <a href="/pricing/">Pricing</a>
-            <a href="/changelog/">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <strong>Resources</strong>
-            <a href="/guides/">Guides</a>
-            <a href="/blog/">Blog</a>
-            <a href="/faq/">FAQ</a>
-            <a href="/glossary/">Glossary</a>
-            <a href="/demos/">Demos</a>
-          </div>
-          <div class="footer-col">
-            <strong>Compare</strong>
-            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
-            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
-            <a href="/compare/amux-vs-devin/">vs Devin</a>
-            <a href="/compare/">All comparisons</a>
-          </div>
-          <div class="footer-col">
-            <strong>More</strong>
-            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-            <a href="/llms.txt">llms.txt</a>
-          </div>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

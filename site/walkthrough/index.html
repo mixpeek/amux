@@ -70,10 +70,10 @@
 .wt-transcript p{margin:.35rem 0;color:var(--text-dim,#c4c8d0)}
 @media (max-width:600px){.wt-shorts{grid-template-columns:1fr}}
 </style>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
   <link rel="stylesheet" href="/demos/video/facade.css">
   <script defer src="/demos/video/facade.js"></script>
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
 <header class="site-header">
@@ -126,6 +126,7 @@
 </section>
 <h2>On your phone</h2><p class="desc">A narrated tour of amux on a phone: start an agent, answer only what needs you, have one worker brief another with an @mention, chat or talk to a worker, watch the board drain, and keep going offline.</p><div class="wt-phone"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-mobile.jpg" title="amux on your phone: run and approve coding agents from anywhere"><source src="amux-walkthrough-mobile.mp4" type="video/mp4"></video></div>
 <h2>Short cuts</h2><div class="wt-shorts"><figure class="wt-short"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-desktop-short.jpg" title="amux in one minute"><source src="amux-walkthrough-desktop-short.mp4" type="video/mp4"></video><figcaption>amux in one minute</figcaption></figure><figure class="wt-short wt-tall"><video class="wt-video" controls preload="metadata" playsinline poster="amux-walkthrough-mobile-short.jpg" title="amux on your phone in 30 seconds"><source src="amux-walkthrough-mobile-short.mp4" type="video/mp4"></video><figcaption>amux on your phone in 30 seconds</figcaption></figure></div>
+<section class="wt-demos" data-cta-loc="walkthrough-demos"><h2>Feature demos</h2><p class="desc">Short recordings of one feature at a time: the board, gates, multiplayer, the browser, the phone and more. <a href="/demos/">Browse all demos &rarr;</a></p></section>
 <h2>Transcript</h2>
 <div class="wt-transcript">
 <h3>Your first agent</h3>
@@ -164,53 +165,24 @@
 <p>Run amux free on your own machine with one command, or let amux Cloud run it for you around the clock. Same amux either way. Links are below.</p>
 </div>
 </div>
-<footer>
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted agent multiplexer for Claude Code.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://github.com/mixpeek/amux/issues">Issues</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+<footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"Business Owners","item":"https://amux.io/for/business-owners/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for Business Owners — Run and Grow Your Business with AI Agents (2026)","description":"How business owners use amux to run AI coding agents, automate browser tasks, manage email and CRM, run scheduled routines, and monitor everything from an iPhone — without a dedicated dev team.","url":"https://amux.io/for/business-owners/","datePublished":"2026-08-04","dateModified":"2026-10-11","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can non-technical business owners use amux?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux is primarily used by developers and technical founders, but non-technical business owners use it through the web dashboard and iOS app to monitor AI agents set up by a developer or a managed service. The dashboard shows agent status, completed tasks, and pending items — no command line required. The amux Concierge service also handles the initial setup for business owners who want the system running without configuring it themselves."}},{"@type":"Question","name":"What kinds of business tasks can AI agents automate?","acceptedAnswer":{"@type":"Answer","text":"AI coding agents (Claude Code, Codex) build software, fix bugs, generate reports, and manage codebases. Browser automation agents handle repetitive web tasks: pulling reports from SaaS dashboards, filling out forms, reconciling data between two systems, checking competitor prices, monitoring status pages. The scheduler triggers these tasks on a cron-style schedule so they run without manual intervention."}},{"@type":"Question","name":"How do I monitor AI agents when I'm not at my desk?","acceptedAnswer":{"@type":"Answer","text":"The amux iOS app (on the App Store) and installable PWA give you a full dashboard on your phone. You can see which agents are running, what they are working on, approve pending decisions, and send steering messages — all from your iPhone. Push notifications alert you when an agent needs your input."}},{"@type":"Question","name":"Can AI agents handle email and CRM for my business?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux includes a built-in CRM (contacts, company, email, phone, LinkedIn, interaction logs, tags, follow-up tracking) and a Gmail API integration for sending and reading email from Claude Code or Codex sessions. Agents can draft email responses, log customer interactions, update CRM records, and trigger follow-up sequences — all from the agent's context without external integrations."}},{"@type":"Question","name":"What does amux cost?","acceptedAnswer":{"@type":"Answer","text":"amux itself is free to self-host and source-available (MIT + Commons Clause). The cost is the AI model API usage — typically $10-200/month depending on how many agents you run and how long. Claude Code Max plan ($100-200/month) covers a team of agents with no per-token billing. The amux Concierge service (setup + ongoing management) is available for business owners who want a done-for-you solution."}},{"@type":"Question","name":"What is the amux Concierge service?","acceptedAnswer":{"@type":"Answer","text":"The amux Concierge is a done-for-you service where the amux team sets up your agent fleet, configures it for your business workflows, integrates your tools (CRM, email, browser automations, scheduler), and provides ongoing management. Designed for business owners who want the capability of a full AI engineering team without hiring developers or configuring the system themselves."}},{"@type":"Question","name":"Can I run AI agents overnight without watching them?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux holds delivery when a usage limit hits and resumes agents at the provider's reset, brings every worker back after a macOS reboot, and alerts you when work stalls. Restarting a crashed agent process is not built in. You set the tasks before bed, agents work overnight, and you wake up to a morning summary pushed to your phone — completed work, anything that needs your decision, and the day's first scheduled automations already running."}},{"@type":"Question","name":"What is the difference between amux and Zapier for business automation?","acceptedAnswer":{"@type":"Answer","text":"Zapier connects apps via pre-built triggers and actions. amux uses AI agents that follow plain-English instructions and adapt to what they find — handling UI changes, edge cases, and multi-step judgment calls that rigid automations cannot. amux also includes a full coding agent stack (building software, not just connecting apps). Zapier is simpler for simple linear workflows; amux handles complex, judgment-intensive, multi-step business tasks."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -300,53 +300,24 @@
     <div class="cta-box"><h3>Run your business with AI agents</h3><p>amux is the self-hosted control plane for AI engineering teams. Free, MIT + Commons Clause, single Rust binary. Or let the Concierge set it up for you.</p><pre><code>curl -fsSL https://amux.io/install.sh | bash
 amux serve  # &rarr; https://localhost:8824</code></pre><div style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem;"><a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub ★</a><a class="btn" href="/concierge/" style="background:rgba(110,231,183,.12);border:1px solid rgba(110,231,183,.3);color:var(--c-green);">Get the Concierge &rarr;</a></div></div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-n8n/">vs n8n</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/concierge/">Concierge</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

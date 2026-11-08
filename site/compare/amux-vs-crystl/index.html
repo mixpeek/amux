@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs crystl", "item": "https://amux.io/compare/amux-vs-crystl/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs crystl: Which Should Run Your Coding Agents?", "description": "amux vs crystl compared: interface, running many agents, phone access, where agents run, team use and price. crystl is a macOS terminal app for Claude Code, Codex and other CLI agents with a free tier and a $170/year Guild plan; amux runs a team of agents on a shared board from a browser or phone, self-hosted or on an always-on server.", "url": "https://amux.io/compare/amux-vs-crystl/", "datePublished": "2026-11-05", "dateModified": "2026-11-05", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "crystl", "url": "https://crystl.dev/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a crystl alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both run many Claude Code, Codex and other coding agent sessions in parallel, each in its own git worktree if you want. crystl is a native macOS terminal app with floating approval cards, session history, an orchestrator agent and an iPhone app. amux is a self-hosted server you steer from any browser, its iPhone app or its Mac app, with a shared task board, usage-limit recovery and a scheduler, and amux Cloud runs it on a dedicated always-on server."}}, {"@type": "Question", "name": "Is crystl free?", "acceptedAnswer": {"@type": "Answer", "text": "crystl has a free tier that covers parallel isolated sessions, approval cards, history, token tracking, remote SSH, up to 3 schedules and the iPhone app over Wi-Fi. The Guild plan is $170 a year, or billed monthly, and adds agent orchestration, unlimited schedules, sequence automation and phone access from anywhere. amux is free to self-host with every feature; amux Cloud starts at $39 a month."}}, {"@type": "Question", "name": "Does crystl run on Windows or Linux?", "acceptedAnswer": {"@type": "Answer", "text": "No. crystl is a macOS app, with an iPhone companion. It can run agents on a Linux machine over SSH, but the app itself needs a Mac. amux installs on macOS or Linux and is used from any browser, so it works from Windows, Android or a Chromebook too."}}, {"@type": "Question", "name": "Can I use crystl from my phone?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, with its iPhone app: see which agents need input, approve access, answer questions and spawn agents. It is free over the same Wi-Fi as your Mac, and works from anywhere through an encrypted relay on Guild. Your Mac must stay on. amux has a native iPhone and iPad app, and an amux Cloud server stays reachable at yourname.amux.io whether your laptop is open or not."}}, {"@type": "Question", "name": "Do both keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Only on a machine that stays on. crystl runs agents on your Mac or on a host you reach over SSH. amux self-hosted is the same, and amux Cloud runs an always-on server for you, from $39 a month, or $69 for the Team plan with 8 vCPU and 16 GB."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -159,21 +159,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

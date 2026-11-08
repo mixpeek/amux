@@ -26,8 +26,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs CoWork (cowork.ai) 2026: Self-Hosted AI Agent Fleet vs Cloud SaaS Platform","description":"CoWork (cowork.ai) is a cloud SaaS multi-agent AI platform for business teams. amux is a self-hosted control plane for engineering teams running parallel Claude Code, Codex, and Gemini CLI agents. Here is when to use each.","url":"https://amux.io/compare/amux-vs-cowork/","datePublished":"2026-08-14","dateModified":"2026-08-14","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
 
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is amux a CoWork alternative?","acceptedAnswer":{"@type":"Answer","text":"It depends on your use case. CoWork (cowork.ai) is a cloud SaaS platform designed for business teams assigning work to AI agents. amux is a self-hosted, source-available tool designed for engineering teams running parallel Claude Code, Codex CLI, and Gemini CLI agents on their own machines. If you are an engineering team that wants full control over your AI agent runtime, your own API keys, and no SaaS subscription, amux is the direct alternative. If you want a managed cloud platform with a business-oriented UI, CoWork is the intended product."}},{"@type":"Question","name":"Can I use amux instead of CoWork for my engineering team?","acceptedAnswer":{"@type":"Answer","text":"Yes, for coding-focused work. amux gives engineering teams a self-hosted control plane for Claude Code, Codex CLI, and Gemini CLI agents running in parallel on your own machine. You get a shared kanban board with atomic task claiming, usage-limit resume and stall alerts for overnight runs, an iOS app and PWA for mobile monitoring, and full control over which models run on which tasks. There are no per-seat fees and no SaaS subscription: you pay only for the API tokens your agents consume."}},{"@type":"Question","name":"What does amux offer that CoWork does not?","acceptedAnswer":{"@type":"Answer","text":"Several engineering-focused capabilities: (1) multi-runtime support — Claude Code, OpenAI Codex CLI, and Gemini CLI all managed from the same dashboard; (2) self-hosted deployment on your own machine with your own API keys; (3) recovery that holds delivery through usage limits and resumes at the provider's reset, brings every worker back after a macOS reboot, and alerts you when a session stalls; (4) a native iOS app and installable PWA for mobile monitoring; (5) EnvSpec — save your entire AI team configuration as a YAML file and restore it on any machine; (6) named agent groups for organizing large fleets by team or project. amux is licensed MIT + Commons Clause and runs as a single binary with no Docker or containers required."}},{"@type":"Question","name":"Is amux free compared to CoWork?","acceptedAnswer":{"@type":"Answer","text":"amux is free, source-available software (MIT + Commons Clause). You install it on your own machine and pay only for the LLM API tokens your agents consume: Claude API tokens, Codex API tokens, or Gemini API tokens. There is no per-seat fee, no monthly subscription, and no usage cap. CoWork (cowork.ai) is a SaaS product with its own pricing model; check cowork.ai for current plan details."}},{"@type":"Question","name":"Which should I use, amux or CoWork?","acceptedAnswer":{"@type":"Answer","text":"Choose amux if you are an engineering team who wants to run parallel Claude Code, Codex, or Gemini CLI agents on your own machine, keep your data and API keys under your own control, run overnight unattended fleet operations, and avoid a SaaS subscription. Choose CoWork if you want a managed cloud platform with a business-oriented UI, do not want to manage your own server, and your primary use case is assigning tasks to AI agents through a web interface rather than running a parallel coding fleet."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -269,53 +269,24 @@ amux serve  # web dashboard at https://localhost:8824</code></pre>
     <p style="margin-top:2rem">Also see: <a href="/compare/">all comparisons</a>, <a href="/compare/amux-vs-cursor/">amux vs Cursor</a>, <a href="/compare/amux-vs-devin/">amux vs Devin</a>, <a href="/guides/best-ai-agent-multiplexers-2026/">best AI agent multiplexers 2026</a></p>
   </main>
 
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

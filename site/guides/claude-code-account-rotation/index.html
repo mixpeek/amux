@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Account Rotation: Never Hit a Rate Limit Again (2026)","description":"Claude Code's 5-hour usage window kills overnight runs. Account rotation keeps your fleet moving by automatically switching to a fresh verified account when one hits its limit.","url":"https://amux.io/guides/claude-code-account-rotation/","datePublished":"2026-10-15","dateModified":"2026-10-15","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"Set Up Claude Code Account Rotation with amux","description":"Step-by-step guide to building a pool of verified Claude Code accounts so your agent fleet never stalls on a rate limit.","step":[{"@type":"HowToStep","name":"Verify additional Claude Code accounts","text":"Log in to each account with 'claude login' and complete OAuth. Each account needs a valid Claude Max subscription. amux stores the verified credential for each account."},{"@type":"HowToStep","name":"Register each account in amux","text":"Use 'amux accounts add <name>' for each account. amux stores credentials in its secure vault, never in env vars or config files."},{"@type":"HowToStep","name":"Configure rotation policy","text":"Set rotation_policy in your amux server.env: enabled=true, resume_limited=true, allow_unknown=false. The reserve_percent setting controls how much headroom to keep before triggering rotation."},{"@type":"HowToStep","name":"Enable usage window tracking","text":"amux tracks each account's 5-hour and 7-day usage windows with percentages and reset times. Enable with AMUX_ACCOUNT_ROTATION=1."},{"@type":"HowToStep","name":"Let amux rotate automatically","text":"When an account's usage crosses the rotation threshold, amux automatically switches all sessions on that account to the next available one. No manual intervention, no stalled overnight runs."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the Claude Code 5-hour usage limit?","acceptedAnswer":{"@type":"Answer","text":"Claude Code Max plan subscribers have a rate limit that resets on a rolling 5-hour window. When you exhaust the window, Claude Code prints a message and stops accepting prompts until the window resets. The exact token ceiling is not published, but heavy usage (multiple parallel agents, large context sessions, all-day batch runs) hits it within a few hours. There is also a 7-day window that resets weekly."}},{"@type":"Question","name":"How does Claude Code account rotation work?","acceptedAnswer":{"@type":"Answer","text":"Account rotation means keeping a pool of verified Claude Code accounts and automatically switching to a fresh one when the active account hits its usage limit. amux tracks the 5-hour and 7-day usage windows for each account, shows current usage as a percentage with reset times, and rotates sessions to the next available account when one hits its ceiling. The rotation is transparent to the agent — it continues its current task on the new account without any interruption."}},{"@type":"Question","name":"Is it allowed to use multiple Claude Code accounts?","acceptedAnswer":{"@type":"Answer","text":"Each account must have its own valid Claude Max subscription. Sharing a single subscription across multiple logical users violates Anthropic's terms. Using multiple accounts — each with their own subscription, each belonging to a different user — is standard enterprise usage. The key distinction is that each account in the pool is a legitimate subscriber, not a shared credential."}},{"@type":"Question","name":"What happens to a running agent when rotation kicks in?","acceptedAnswer":{"@type":"Answer","text":"The agent continues its current task without interruption. amux rotates the underlying authentication credential for the session, so the agent's conversation context, file access, and tool permissions remain unchanged. From the agent's perspective, nothing happened. From the rate-limit window's perspective, usage is now accruing against the fresh account."}},{"@type":"Question","name":"How do I know which account is active and how much headroom remains?","acceptedAnswer":{"@type":"Answer","text":"The amux dashboard shows a real-time view of each account in the pool: current usage percentage for the 5-hour window, time until reset, 7-day window status, and which sessions are assigned to which account. The iOS app and PWA show the same view, so you can check headroom from your phone before queueing a large overnight batch."}},{"@type":"Question","name":"What is the reserve_percent setting?","acceptedAnswer":{"@type":"Answer","text":"reserve_percent controls how much headroom to keep on each account before triggering rotation. A value of 10 means amux rotates to the next account when the active account reaches 90% of its usage ceiling, rather than waiting until it actually hits the limit. This prevents a mid-task stall for jobs that would exhaust the remaining 10% partway through a long context window."}},{"@type":"Question","name":"Can I use API keys instead of account rotation?","acceptedAnswer":{"@type":"Answer","text":"Yes. API keys (ANTHROPIC_API_KEY) have no 5-hour window — they are pay-per-token with no rolling rate cap. If you have one or two heavy agents, an API key is simpler than managing an account pool. Account rotation makes more sense when you have multiple Max subscriptions already (a team) and want to pool their combined headroom without switching to per-token billing."}},{"@type":"Question","name":"What is the difference between rotation_policy enabled and resume_limited?","acceptedAnswer":{"@type":"Answer","text":"enabled=true turns on rotation globally. resume_limited means that when an account is limited, any session that was using it gets resumed on a fresh account as soon as one is available — rather than waiting until the limited account resets. These two flags work together: enabled lets the system rotate, resume_limited ensures stalled sessions recover as fast as possible rather than queuing behind the reset window."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -316,47 +316,24 @@ AMUX_ROTATION_RESERVE_PERCENT=10</code></pre>
 
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control &mdash; in one file.</p>
-        </div>
-        <div class="footer-link-cols">
-          <div class="footer-col">
-            <strong>Product</strong>
-            <a href="/guides/getting-started/">Getting Started</a>
-            <a href="/guides/rest-api-reference/">API Reference</a>
-            <a href="https://cloud.amux.io">Cloud</a>
-            <a href="/pricing/">Pricing</a>
-            <a href="/changelog/">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <strong>Resources</strong>
-            <a href="/guides/">Guides</a>
-            <a href="/blog/">Blog</a>
-            <a href="/faq/">FAQ</a>
-            <a href="/glossary/">Glossary</a>
-            <a href="/demos/">Demos</a>
-          </div>
-          <div class="footer-col">
-            <strong>Compare</strong>
-            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
-            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
-            <a href="/compare/amux-vs-devin/">vs Devin</a>
-            <a href="/compare/">All comparisons</a>
-          </div>
-          <div class="footer-col">
-            <strong>More</strong>
-            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-            <a href="/llms.txt">llms.txt</a>
-          </div>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

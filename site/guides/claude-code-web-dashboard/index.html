@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Claude Code Web Dashboard: Monitor and Control Agents from Your Browser","description":"Add a web dashboard to Claude Code. Monitor agent status, review output, manage tasks, and send commands from any browser or phone.","url":"https://amux.io/guides/claude-code-web-dashboard/","datePublished":"2026-09-10","dateModified":"2026-09-10","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Add a Web Dashboard to Claude Code","description":"Set up a browser-based dashboard to monitor and control multiple Claude Code agents without a terminal.","step":[{"@type":"HowToStep","name":"Install amux","text":"Run: curl -fsSL https://amux.io/install.sh | bash"},{"@type":"HowToStep","name":"Register your Claude Code session","text":"Run: amux register myproject --dir ~/Dev/myproject --yolo"},{"@type":"HowToStep","name":"Start the web server","text":"Run: amux serve (starts the dashboard on localhost:8824)"},{"@type":"HowToStep","name":"Open the dashboard","text":"Navigate to http://localhost:8824 in any browser. On mobile, install as a PWA for full-screen access."},{"@type":"HowToStep","name":"Launch agents","text":"Run: amux start myproject. Claude Code starts in a managed session and appears immediately in the dashboard."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Does Claude Code have a built-in web dashboard?","acceptedAnswer":{"@type":"Answer","text":"Claude Code itself is a terminal tool with no built-in web UI. amux adds a web dashboard by running a local server alongside Claude Code sessions. You get a browser UI for monitoring, task management, and control while Claude Code handles the actual coding."}},{"@type":"Question","name":"Can I monitor Claude Code from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes, via the amux PWA. Install amux, run 'amux serve', then open your local amux URL on your phone and install it as a Progressive Web App. You can see agent status, read terminal output (including incremental streaming since September 2026), and send messages to any session."}},{"@type":"Question","name":"What can I do from the Claude Code web dashboard?","acceptedAnswer":{"@type":"Answer","text":"With the amux dashboard, you can: see live status for all running Claude Code sessions; read terminal output with incremental streaming; add, assign, and track tasks on a shared kanban board; send messages or prompts to any agent; view token spend and cost per session; receive owner alerts (push, email) when agents need attention; and review morning output from overnight runs."}},{"@type":"Question","name":"Does the web dashboard work with multiple Claude Code agents?","acceptedAnswer":{"@type":"Answer","text":"Yes, managing multiple agents simultaneously is the primary use case. Each Claude Code session appears as a row in the dashboard with live status, current task, and token spend. You can switch between agent outputs, send commands to specific agents, and assign tasks via the shared kanban board, all from one browser tab."}},{"@type":"Question","name":"Is there a hosted version of the Claude Code web dashboard?","acceptedAnswer":{"@type":"Answer","text":"amux is self-hosted on your own machine. The web server runs locally (port 8824 by default). For remote access from other devices, use Tailscale to reach your local network, or set up a cloud VM with amux installed. There is no hosted cloud version. Your code and agents stay on your infrastructure."}},{"@type":"Question","name":"How is this different from community Claude Code web UIs on GitHub?","acceptedAnswer":{"@type":"Answer","text":"Community repos like claude-code-webui provide read-only terminal mirroring. amux is a full control plane: you can issue commands, manage the task board, route work between agents, configure owner alerts, and use the iOS app alongside the browser dashboard. It is also actively maintained and has a native iOS app in the App Store."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -199,46 +199,23 @@ amux serve</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View amux on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/compare/">Compare</a></li>
-            <li><a href="/lists/">Lists</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Product</div>
-          <ul>
-            <li><a href="/changelog/">Changelog</a></li>
-            <li><a href="/docs/">Docs</a></li>
-            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></li>
-            <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-langraph/">amux vs LangGraph</a></li>
-            <li><a href="/compare/amux-vs-autogen/">amux vs AutoGen</a></li>
-            <li><a href="/compare/amux-vs-codex/">amux vs Codex</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>amux is source-available (MIT + Commons Clause). Built for AI engineering teams.</span>
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 </body>
 </html>

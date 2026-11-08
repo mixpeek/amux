@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// One header for every amux.io page. scripts/site-header.html is the source;
-// /nav.css styles it; /site.js runs the theme picker and must load in <head>
-// so the theme is set before first paint.
+// One header and one footer for every amux.io page. scripts/site-header.html
+// and scripts/site-footer.html are the sources; /nav.css styles both; /site.js
+// runs the theme picker and must load in <head> so the theme is set before
+// first paint. (The footer joined 2026-11-08: "Make sure the header and footer
+// is the same for every page"; 426 pages carried 89 different footers.)
 //
 //   node scripts/site-header.mjs          report pages that drift (exit 1 if any)
 //   node scripts/site-header.mjs --fix    rewrite them from the source
@@ -21,6 +23,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = path.join(ROOT, 'site');
 export const CANONICAL = fs.readFileSync(path.join(ROOT, 'scripts/site-header.html'), 'utf8').trim();
+export const FOOTER = fs.readFileSync(path.join(ROOT, 'scripts/site-footer.html'), 'utf8').trim();
+// Each page has exactly one <footer>, the site's own.
+const FOOTER_RE = /<footer[\s>][\s\S]*?<\/footer>/;
 const HEADER_RE = /<header class="site-header">[\s\S]*?<\/header>|<header class="site">[\s\S]*?<\/header>/;
 export const ASSET_V = fs.readFileSync(path.join(ROOT, 'scripts/site-asset-version.txt'), 'utf8').trim();
 // A page that alone depends on a newer nav.css or site.js moves first, so the
@@ -68,6 +73,9 @@ export function problems(rel, html) {
     const got = rel === 'index.html' && starsOf(m[0]) ? m[0].replace(starsOf(m[0]), '539') : m[0];
     if (norm(got) !== norm(want)) out.push('header differs from scripts/site-header.html');
   }
+  const foot = html.match(FOOTER_RE);
+  if (!foot) out.push('no site footer');
+  else if (norm(foot[0]) !== norm(FOOTER)) out.push('footer differs from scripts/site-footer.html');
   const head = html.split('</head>')[0];
   if (!head.includes('href="/nav.css')) out.push('missing /nav.css in <head>');
   else if (!head.includes(navCss(rel))) out.push(`/nav.css not at ?v=${assetV(rel)}`);
@@ -81,6 +89,9 @@ export function fix(rel, html) {
   const m = html.match(HEADER_RE);
   if (m) html = html.replace(m[0], expectedHeader(rel));
   else html = html.replace(/<body([^>]*)>/, `<body$1>\n  ${expectedHeader(rel)}`);
+  const foot = html.match(FOOTER_RE);
+  if (foot) html = html.replace(foot[0], FOOTER);
+  else html = html.replace('</body>', `${FOOTER}\n</body>`);
   html = html.replace(/(<html[^>]*?)\sdata-theme="[^"]*"/, '$1');
   html = html.replace(/[ \t]*<script src="\/site\.js(\?v=[^"]*)?"><\/script>\n?/g, '');
   html = html.replace(/<link rel="stylesheet" href="\/nav\.css(\?v=[^"]*)?">/g, navCss(rel));
@@ -108,6 +119,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     } else console.log(`${rel}: ${p.join('; ')}`);
   }
   const total = pages().length;
-  console.log(`${bad} of ${total} pages ${doFix ? 'rewritten' : 'drift from the standard header'}`);
+  console.log(`${bad} of ${total} pages ${doFix ? 'rewritten' : 'drift from the standard header or footer'}`);
   if (!doFix && bad) { console.log('fix: node scripts/site-header.mjs --fix'); process.exit(1); }
 }

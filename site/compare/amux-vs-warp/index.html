@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Warp", "item": "https://amux.io/compare/amux-vs-warp/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Warp: Which Should Run Your Coding Agents?", "description": "amux vs Warp compared: interface, running many agents, phone access, where agents run, team use and price. Warp is a terminal with its own agent and Warp-hosted cloud agents, from free to $200/mo or $50 per seat; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board from a browser or phone, self-hosted or on an always-on server.", "url": "https://amux.io/compare/amux-vs-warp/", "datePublished": "2026-11-06", "dateModified": "2026-11-06", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Warp", "url": "https://www.warp.dev/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, Windows"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a Warp alternative?", "acceptedAnswer": {"@type": "Answer", "text": "For running coding agents, yes. Warp is a terminal with its own agent that also hosts Claude Code, Codex and Gemini CLI, and sells cloud agents for teams. amux is a self-hosted server you steer from any browser, its iPhone app or its Mac app, with a shared task board, usage-limit recovery and a scheduler, and amux Cloud runs it on a dedicated always-on server."}}, {"@type": "Question", "name": "Is Warp free?", "acceptedAnswer": {"@type": "Answer", "text": "The Warp Terminal has a free plan with limited cloud agent access and pay-as-you-go agent usage. Build is $20 a month, Max $200 and Business $50 per user per month. amux is free to self-host with every feature; amux Cloud starts at $39 a month per server."}}, {"@type": "Question", "name": "Is Warp open source?", "acceptedAnswer": {"@type": "Answer", "text": "Warp's client code is public on GitHub under AGPL v3, with its UI framework under MIT. Its cloud agents and factories are hosted services. amux is source-available under MIT + Commons Clause and self-hosts in one command."}}, {"@type": "Question", "name": "Can Warp run Claude Code?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Claude Code, Codex, OpenCode and Gemini CLI all run inside the Warp Terminal, and its cloud agents can use Claude Code or Codex as the harness. amux runs Claude Code, Codex, Gemini CLI and OpenCode as workers on a shared board."}}, {"@type": "Question", "name": "Do both keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Warp does through its hosted cloud agents, billed on usage. amux self-hosted needs a machine that stays on, and amux Cloud runs an always-on server for you, from $39 a month, or $69 for the Team plan with 8 vCPU and 16 GB."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -161,21 +161,24 @@
 
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

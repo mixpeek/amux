@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agents for Business Automation Beyond Coding (2026)","description":"amux turns AI agents into a complete business operations stack — CRM, Gmail API email (with attachments), browser automation, notes, and scheduled tasks, all running unattended.","url":"https://amux.io/use-cases/ai-agent-business-automation/","datePublished":"2026-07-14","dateModified":"2026-08-19","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Automate Your Business Operations with AI Agents","description":"Use amux to run CRM, email, browser automation, notes, and scheduled tasks through AI agents — your full business ops stack, unattended.","step":[{"@type":"HowToStep","name":"Install amux","text":"Install via curl -fsSL https://amux.io/install.sh | bash. Start the dashboard at https://localhost:8824."},{"@type":"HowToStep","name":"Register a business operations session","text":"Run: amux register biz-ops --dir ~/Dev/ops --yolo. This creates a dedicated session for business automation tasks separate from your coding agents."},{"@type":"HowToStep","name":"Connect your Gmail account","text":"Connect Gmail via the amux email API — agents can then send, reply, search, and read email through the Gmail API with full threading and your account signature."},{"@type":"HowToStep","name":"Add tasks to the board","text":"Create board tasks for business automation: 'Follow up with leads from last week', 'Draft investor update', 'Research 5 competitors'. Agents claim and execute tasks from the shared kanban board."},{"@type":"HowToStep","name":"Launch and monitor from your phone","text":"Start agents with amux start biz-ops. Monitor progress from the iOS app — see live output, check the board, and steer agents via the Messages tab without sitting at your desk."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Can AI agents automate business tasks beyond coding?","acceptedAnswer":{"@type":"Answer","text":"Yes. amux includes built-in APIs for CRM contact management, Gmail API email (send, reply, search, read), browser automation via Playwright, notes/documents, and a scheduler for recurring tasks. AI agents running in amux sessions can access all of these capabilities through the REST API at $AMUX_URL, making them effective for sales follow-ups, investor updates, lead research, and document drafting — not just software development."}},{"@type":"Question","name":"How does amux handle email automation for AI agents?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Gmail API integration at /api/email/*. Agents can send new emails, reply in-thread (with correct In-Reply-To/References headers), search by query, and read individual messages. The Gmail API backend auto-appends your account signature. Connected accounts (ethan@mixpeek.com, info@mixpeek.com) use the Gmail API directly — robust threading, no Mail.app fragility. Connect a new account with GET /api/gmail/auth?account=<email>."}},{"@type":"Question","name":"What is the amux CRM and how do AI agents use it?","acceptedAnswer":{"@type":"Answer","text":"amux includes a lightweight CRM at /api/crm/contacts with auto-assigned PPL-N IDs. AI agents can add contacts (name, company, email, phone, LinkedIn), update fields, log interactions (call, email, meeting, DM), and check pending follow-ups. Agents use this for tasks like 'add all speakers from last week's conference as CRM contacts' or 'log a follow-up interaction with every lead we emailed this month.'"}},{"@type":"Question","name":"How do AI agents do browser automation in amux?","acceptedAnswer":{"@type":"Answer","text":"amux includes a Playwright-based browser API at /api/browser/*. Agents start a browser session with a saved auth profile (no re-login needed), navigate to URLs, take screenshots, click, type, scroll, and evaluate JavaScript. The browser API uses persistent auth profiles from ~/.amux/playwright-auth/, so agents can access sites where you're already logged in — LinkedIn, Stripe, GitHub, internal tools."}},{"@type":"Question","name":"Can I schedule AI agents to run business tasks automatically?","acceptedAnswer":{"@type":"Answer","text":"Yes. The amux scheduler at /api/schedules runs tasks on a cron or natural-language schedule ('daily at 9am', 'every weekday at 8:30am'). Each schedule specifies which amux session receives the prompt and what it says. Example: daily at 9am, send 'Check the inbox, reply to any leads from the last 24 hours, and update CRM' to the biz-ops session."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -326,7 +326,24 @@ curl $AMUX_URL/api/schedules -X POST \
     </div>
 
   </main>
-  <footer class="site-footer"><div class="footer-inner"><p>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a>. MIT + Commons Clause. <a href="/demos/">Demos</a> &middot; <a href="/security/">Security</a> &middot; <a href="/privacy/">Privacy</a></p></div></footer>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
+    </div>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

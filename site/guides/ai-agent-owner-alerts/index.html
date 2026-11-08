@@ -24,8 +24,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"AI Agent Owner Alerts: Push, Email and iMessage Notifications","description":"Configure amux so your AI agents can page you when they need attention — push notifications, email, and iMessage delivered simultaneously, with a health invariant to verify the channel works before every overnight run.","url":"https://amux.io/guides/ai-agent-owner-alerts/","datePublished":"2026-08-16","dateModified":"2026-08-16","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Owner Alerts for AI Coding Agents","description":"Configure push notifications and email alerts so your AI agents can page you when they need attention, and verify the channel works before every overnight run.","step":[{"@type":"HowToStep","name":"Configure server.env","text":"Add AMUX_OWNER_EMAIL=you@example.com to ~/.amux/server.env. Optionally add AMUX_ALERT_EMAIL_FROM=alerts@yourdomain.com for a custom sender. Restart the server to pick up the changes."},{"@type":"HowToStep","name":"Install the amux PWA for push notifications","text":"Open https://localhost:8824 in your phone browser. Tap Share and choose Add to Home Screen. Open the installed app and accept the push notification permission prompt."},{"@type":"HowToStep","name":"Write alert triggers in CLAUDE.md","text":"Tell each agent when to call amux alert. For example: if you hit a blocker for more than 30 minutes, call amux alert with the message and a short reason. Repeat for queue-empty and unexpected-error cases."},{"@type":"HowToStep","name":"Verify the health invariant","text":"Call GET /api/health/invariants and confirm alert.channel_can_deliver is passing. If it fails, the response names the misconfigured channel and what to fix."},{"@type":"HowToStep","name":"Send a test alert","text":"Run: amux alert \"Test alert\" \"pre-run check\". Confirm a push notification arrives on your phone and an email lands in your inbox within 30 seconds."}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an AI agent owner alert?","acceptedAnswer":{"@type":"Answer","text":"An owner alert is a push notification and email sent to the owner of an AI agent fleet when an agent needs human attention. In amux, the agent calls 'amux alert' with a message and a reason. The server delivers the alert via push notification to the owner's phone and via email simultaneously. On Apple devices, the push notification also triggers iMessage."}},{"@type":"Question","name":"What notification channels does amux support for agent alerts?","acceptedAnswer":{"@type":"Answer","text":"amux delivers owner alerts to three channels simultaneously: push notifications via the installed PWA on your phone, email via Gmail API or configured SMTP, and iMessage on Apple devices when push is enabled. A single amux alert call reaches all three."}},{"@type":"Question","name":"How do I set up email alerts for AI coding agents?","acceptedAnswer":{"@type":"Answer","text":"Add AMUX_OWNER_EMAIL=you@example.com and AMUX_ALERT_EMAIL_FROM=alerts@yourdomain.com to ~/.amux/server.env, then restart the amux server. Verify with GET /api/health/invariants: the alert.channel_can_deliver invariant confirms the email channel is working. Send a test alert with: amux alert \"Test\" \"setup check\""}},{"@type":"Question","name":"What situations should trigger an AI agent owner alert?","acceptedAnswer":{"@type":"Answer","text":"Three situations reliably warrant an alert: a blocker that will stall progress for more than 30 minutes, an unexpected error in a protected area such as auth or payments, and a completed queue where the agent wants new tasks. Routine progress does not warrant an alert; the amux board and dashboard cover that. Write the trigger conditions in CLAUDE.md so every agent on your fleet follows the same rules."}},{"@type":"Question","name":"How do I verify that agent alerts are working before an overnight run?","acceptedAnswer":{"@type":"Answer","text":"Check GET /api/health/invariants and confirm alert.channel_can_deliver is passing. Then send a test alert: amux alert \"Test\" \"pre-run check\". Confirm the push notification arrives on your phone and email lands in your inbox. The invariant runs continuously; if it fails later, the dashboard marks it red."}},{"@type":"Question","name":"Can I use polling instead of alerts to monitor AI agents?","acceptedAnswer":{"@type":"Answer","text":"Polling via the amux dashboard works for checking agent status when you are already looking. Owner alerts handle the case where you are not looking: sleeping, in a meeting, or away from your machine. The two complement each other. Polling tells you the state when you check; alerts tell you when something needs you without you checking."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -268,52 +268,24 @@ amux alert "Setup complete" "first alert"</code></pre>
       <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View amux on GitHub</a>
     </div>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Related guides</div>
-          <ul>
-            <li><a href="/guides/ai-coding-agents-overnight/">Overnight agent runs</a></li>
-            <li><a href="/guides/getting-started/">Getting started</a></li>
-            <li><a href="/guides/remote-access-tailscale/">Remote access</a></li>
-            <li><a href="/guides/">All guides</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/compare/">Compare</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>

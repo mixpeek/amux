@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Agent Control Plane","item":"https://amux.io/guides/agent-control-plane/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"What Is an Agent Control Plane? The Missing Infrastructure Layer for AI Agents (2026)","description":"An agent control plane manages the lifecycle of AI agents: starting, monitoring, governing, and stopping them. The developer's guide to the missing infrastructure layer.","url":"https://amux.io/guides/agent-control-plane/","datePublished":"2026-04-15","dateModified":"2026-09-03","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"An agent control plane is infrastructure that manages the lifecycle of AI agents: starting, stopping, monitoring, governing, and coordinating them. It sits between the human operator and the agent runtimes, providing observability into what agents are doing, cost controls to prevent runaway spending, orchestration for multi-agent coordination, and fault tolerance for unattended operation. Think of it as what Kubernetes is to containers, but for AI agents."}},{"@type":"Question","name":"How is an agent control plane different from an agent framework?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) defines agent logic: what tools they can use, how they reason, how they chain actions. An agent runtime (Claude Code, Cursor, Codex) executes those definitions. An agent control plane manages fleets of runtimes: how many are running, what each is doing, how much each is costing, and when to intervene. You need all three layers, and they are independent. You can swap frameworks without changing your control plane, and vice versa."}},{"@type":"Question","name":"Do I need an agent control plane if I only run one agent?","acceptedAnswer":{"@type":"Answer","text":"No. A control plane becomes necessary when you cross the threshold from interactive to unattended operation — typically around 3-5 concurrent agents. At that point, you cannot manually monitor each agent's terminal, and the failure modes multiply: agents crash, context windows overflow, costs spike, and tasks get duplicated. A control plane automates the responses to these failure modes."}},{"@type":"Question","name":"What is the difference between agent observability and agent governance?","acceptedAnswer":{"@type":"Answer","text":"Observability answers 'what is happening?' — dashboards, logs, token tracking, session replay. Governance answers 'what is allowed to happen?' — budget caps, kill switches, concurrency limits, approval gates. A complete control plane provides both. Most tools today focus on observability (Langfuse, Helicone) or governance (Microsoft Agent Governance Toolkit) but not both together."}},{"@type":"Question","name":"Is an agent control plane the same as an orchestration framework?","acceptedAnswer":{"@type":"Answer","text":"No. Orchestration frameworks like LangGraph and CrewAI define workflows: agent A does X, then agent B does Y. A control plane manages the operational reality: agent A hit a usage limit, resume it at the reset. Agent B is burning $50/hour, throttle it. Agent C finished early, assign it new work. Orchestration is design-time; control plane is runtime. You can use both together — orchestration defines what should happen, the control plane ensures it actually happens."}},{"@type":"Question","name":"What are the core components of an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Five core components: (1) Agent lifecycle management — start, stop, restart agents programmatically. (2) Observability — real-time status, output streaming, token/cost tracking. (3) Fault tolerance — recovery after usage limits and restarts, context compaction, stuck-agent detection. (4) Orchestration — task assignment, inter-agent messaging, work queues with atomic claiming. (5) Governance — budget limits, concurrency caps, kill switches, audit logs."}},{"@type":"Question","name":"Can I build my own agent control plane?","acceptedAnswer":{"@type":"Answer","text":"Yes, and many teams start with shell scripts and tmux. The typical progression: (1) bash scripts that start/stop agents, (2) a shared task file agents read from, (3) a simple dashboard to see what's running, (4) automatic crash recovery. By stage 3, you've rebuilt half of what dedicated tools provide. The question is whether you want to maintain that infrastructure yourself. Open-source options like amux provide all five control plane layers as a single Rust binary with zero dependencies."}},{"@type":"Question","name":"How does amux implement an agent control plane?","acceptedAnswer":{"@type":"Answer","text":"amux implements all five control plane layers as a single Rust binary with zero external dependencies: lifecycle management via tmux sessions, observability via a real-time web dashboard with SSE, fault tolerance that resumes agents after usage limits, brings workers back after a macOS reboot, and alerts on stalled work, orchestration via a REST API with a SQLite-backed kanban board for atomic task claiming, and governance via session-level controls and cost tracking. Manage the whole fleet from a browser or the iOS app. No Docker, no cloud, no config files."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -499,47 +499,24 @@ $ amux serve
 
   </main>
 
-  <footer class="site-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" style="font-size:0.92rem;font-weight:700;color:var(--text);text-decoration:none;">amux</a>
-          <p>Self-hosted control plane for AI agents. Runtime, observability, orchestration, and cost control — in one file.</p>
-        </div>
-        <div class="footer-link-cols">
-          <div class="footer-col">
-            <strong>Product</strong>
-            <a href="/guides/getting-started/">Getting Started</a>
-            <a href="/guides/rest-api-reference/">API Reference</a>
-            <a href="https://cloud.amux.io">Cloud</a>
-            <a href="/pricing/">Pricing</a>
-            <a href="/changelog/">Changelog</a>
-          </div>
-          <div class="footer-col">
-            <strong>Resources</strong>
-            <a href="/guides/">Guides</a>
-            <a href="/blog/">Blog</a>
-            <a href="/faq/">FAQ</a>
-            <a href="/glossary/">Glossary</a>
-            <a href="/demos/">Demos</a>
-          </div>
-          <div class="footer-col">
-            <strong>Compare</strong>
-            <a href="/compare/amux-vs-claude-managed-agents/">vs Managed Agents</a>
-            <a href="/compare/amux-vs-cursor/">vs Cursor</a>
-            <a href="/compare/amux-vs-devin/">vs Devin</a>
-            <a href="/compare/">All comparisons</a>
-          </div>
-          <div class="footer-col">
-            <strong>More</strong>
-            <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-            <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-            <a href="/llms.txt">llms.txt</a>
-          </div>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
   
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>

@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Xum", "item": "https://amux.io/compare/amux-vs-xum/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Xum: Which Should Run Your Coding Agents?", "description": "amux vs Xum (formerly Mux, from Coder) compared: interface, agents, phone access, where agents run, team use and price. Xum is a free AGPL desktop app with its own agent loop on your API keys; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server.", "datePublished": "2026-11-08", "dateModified": "2026-11-08", "author": {"@type": "Organization", "name": "amux"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "mainEntityOfPage": "https://amux.io/compare/amux-vs-xum/"}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux a Xum alternative?", "acceptedAnswer": {"@type": "Answer", "text": "For running parallel coding agents, yes. Xum is a free desktop app with its own agent loop on your API keys and strong workspace isolation. amux runs Claude Code, Codex and Gemini CLI on a shared task board from any browser or its iPhone app, and amux Cloud runs it on a dedicated always-on server."}}, {"@type": "Question", "name": "Is Xum the same as Mux?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Coder renamed its Mux coding agent multiplexer to Xum after a trademark concern from Mux.com. amux is a separate product from a different team."}}, {"@type": "Question", "name": "Is Xum free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Xum is free under AGPL-3.0, and you pay your model providers. amux is free to self-host with every feature, and amux Cloud starts at $39 a month per server."}}, {"@type": "Question", "name": "Does Xum run Claude Code?", "acceptedAnswer": {"@type": "Answer", "text": "Xum has its own agent loop, with a user experience inspired by Claude Code, and calls Claude models through an API key or a provider route. amux runs the Claude Code CLI itself on your subscription or key."}}, {"@type": "Question", "name": "Does Xum have a phone app?", "acceptedAnswer": {"@type": "Answer", "text": "Its docs list a responsive web UI in server mode and no native app. amux has a native iPhone and iPad app."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -162,21 +162,24 @@
 
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Omnara", "item": "https://amux.io/compare/amux-vs-omnara/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Omnara: AI Team Control Plane vs Open-Source Managed Agent Platform", "description": "Omnara is an open-source managed agent platform (Apache 2.0) for running agents you define in YAML through an API. amux runs an AI engineering team of Claude Code, Codex and Gemini CLI agents from a dashboard or your phone. Compared (October 2026): what each runs, interface, coordination, hosting, pricing, license.", "url": "https://amux.io/compare/amux-vs-omnara/", "datePublished": "2026-10-21", "dateModified": "2026-10-21", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is Omnara?", "acceptedAnswer": {"@type": "Answer", "text": "Omnara is an open-source managed agent platform, written in Go and licensed Apache 2.0, positioned as a self-hostable alternative to Claude Managed Agents and the OpenAI Agents API. You define an agent in a small YAML config (instruction, model, tools, machines) and run it through a REST API, TypeScript SDK, CLI or web dashboard. It self-hosts with Docker Compose, and Omnara Cloud has no platform fee and charges for Omnara-managed models and machines as you use them."}}, {"@type": "Question", "name": "What is the difference between amux and Omnara?", "acceptedAnswer": {"@type": "Answer", "text": "Omnara is infrastructure for building your own agents: you write the agent config and call it from your code, Slack bot or product. amux runs the coding agents you already use (Claude Code, Codex, Gemini CLI, OpenCode, Ollama) as an AI engineering team, with a shared task board agents claim work from, messages between agents, schedules, usage-limit resume, and a dashboard and phone app to supervise them."}}, {"@type": "Question", "name": "Should I use Omnara or amux to run Claude Code agents?", "acceptedAnswer": {"@type": "Answer", "text": "Use amux if you want Claude Code, Codex or Gemini CLI sessions working through a backlog on your machine or an always-on server, supervised from your phone. Use Omnara if you are building an agent into a product or internal tool and want an API, SDK and per-agent permissions around a model you choose."}}, {"@type": "Question", "name": "Can I self-host both?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Omnara self-hosts with Docker Compose under Apache 2.0. amux self-hosts as one Rust binary plus SQLite on macOS or Linux under MIT plus the Commons Clause: curl -fsSL https://amux.io/install.sh | bash. Each also has a hosted option: Omnara Cloud, and amux Cloud, your own always-on amux server at yourname.amux.io from $39 per month."}}, {"@type": "Question", "name": "Is amux free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. amux is source-available (MIT + Commons Clause) and free to self-host with every feature. amux Cloud starts at $39 per month."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -139,53 +139,24 @@
       <li><a href="/compare/amux-vs-claude-squad/">amux vs Claude Squad</a></li>
     </ul>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

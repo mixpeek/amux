@@ -18,8 +18,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Secure Secrets for AI Coding Agents","description":"Step-by-step guide to managing API keys and credentials for parallel AI coding agent fleets.","step":[{"@type":"HowToStep","name":"Audit your current secret exposure","text":"Check where your secrets currently live. Look for .env files in working directories agents can access, secrets in CLAUDE.md or system prompts, hardcoded values in config files, and keys in conversation history. Any of these are readable by an agent."},{"@type":"HowToStep","name":"Move secrets out of agent-readable files","text":"Remove secrets from .env files and config files in project directories where agents work. Use .gitignore to exclude them at minimum, but prefer moving them to a dedicated secrets store."},{"@type":"HowToStep","name":"Configure vault-level injection","text":"In amux, use 'amux vault set KEY=value --scope [global|group:name|worker:name]' to store encrypted secrets. On next session launch, amux injects them as environment variables scoped to matching sessions."},{"@type":"HowToStep","name":"Verify injection without exposing values","text":"Confirm the agent can use the secret without you exposing the value: ask the agent to call the API using the environment variable name (e.g. os.environ['OPENAI_API_KEY']) and verify it works. Never ask the agent to print or log the secret value."},{"@type":"HowToStep","name":"Apply least-privilege scoping","text":"Narrow each secret's scope to the minimum set of agents that need it. A payment API key should be worker-scoped to the billing agent, not globally available to all 20 workers in your fleet."}]}</script>
   <script src="/site.js" defer></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
 
@@ -253,21 +253,22 @@ amux start my-agent</code></pre>
   <p>Three key differences: (1) amux vault secrets are encrypted at rest in the amux database, not stored as plain text in your project directory; (2) they're scoped — you control which agents get which secrets; (3) they're injected at session launch as process environment variables, not loaded from a file the agent can read. A .env file in your project is a file your agent can discover and read as part of exploring the codebase.</p>
 </main>
 
-<footer class="site-footer">
-  <div class="footer-inner">
-    <div class="footer-brand">
-      <img src="/icon.svg" alt="amux" width="20" height="20">
-      <span>amux</span>
+<footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-    <nav class="footer-links">
-      <a href="/docs/">Docs</a>
-      <a href="/guides/">Guides</a>
-      <a href="/demos/">Demos</a>
-      <a href="/compare/">Compare</a>
-      <a href="/changelog/">Changelog</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-      <a href="/privacy/">Privacy</a>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
     </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
   </div>
 </footer>
 

@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs AI Maestro", "item": "https://amux.io/compare/amux-vs-ai-maestro/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs AI Maestro: Two Dashboards for a Standing Team of Agents", "description": "amux vs AI Maestro compared on iPhone and Mac apps, web, self-hosting, Tailscale, supported agents, boards, license and price. AI Maestro is a free MIT agent orchestration dashboard with a multi-machine peer mesh; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.", "url": "https://amux.io/compare/amux-vs-ai-maestro/", "datePublished": "2026-10-29", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS, iPadOS, Web", "description": "The agent control plane: run Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents in parallel on a shared task board, from a web dashboard, PWA, iPhone and iPad app or Mac app, self-hosted or on amux Cloud.", "license": "https://github.com/mixpeek/amux/blob/main/LICENSE", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "AI Maestro", "url": "https://fluidmind.ai/products/ai-maestro/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, Windows (WSL2), Web", "license": "https://github.com/23blocks-OS/ai-maestro/blob/main/LICENSE"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an AI Maestro alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both run many coding agents as a coordinated team from one dashboard, with a Kanban board and agent-to-agent messages. AI Maestro centers on a peer mesh across several machines with agent memory and a code graph. amux centers on a shared board with atomic claiming, native iPhone, iPad and Mac apps, and an optional always-on amux Cloud server."}}, {"@type": "Question", "name": "Does AI Maestro have an iPhone app?", "acceptedAnswer": {"@type": "Answer", "text": "A native iOS app is not stated on its site. Its site describes a mobile-optimized web dashboard with touch controls. amux has a native iPhone and iPad app on the App Store."}}, {"@type": "Question", "name": "Do AI Maestro and amux work over Tailscale?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. AI Maestro's site lists Tailscale for encrypted links between machines and for steering agents from anywhere. amux serves a browser-trusted certificate from tailscale cert at https://host.tailnet.ts.net:8824 and can optionally sign in your own devices or tailnet members by Tailscale identity."}}, {"@type": "Question", "name": "Which agents does AI Maestro support?", "acceptedAnswer": {"@type": "Answer", "text": "Claude Code, Codex and Grok Build get launch, chat, status and approval cards. Pi, OpenClaw, GitHub Copilot CLI and any other terminal agent run in a terminal tab. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models."}}, {"@type": "Question", "name": "Is AI Maestro free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is MIT licensed with no seats, usage fees or paid tier, and there is no hosted version yet. amux is free to self-host, and amux Cloud starts at $39/mo."}}, {"@type": "Question", "name": "What license is amux under?", "acceptedAnswer": {"@type": "Answer", "text": "MIT + Commons Clause. You can use, modify and self-host amux for free, including at work and for commercial work you build with it. The Commons Clause forbids selling amux itself, meaning offering to others for a fee a product or service whose value comes entirely or substantially from amux. By the OSI definition, that makes amux source-available software. AI Maestro uses the MIT license, which has no such restriction."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -175,21 +175,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

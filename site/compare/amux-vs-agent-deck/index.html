@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Agent Deck", "item": "https://amux.io/compare/amux-vs-agent-deck/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Agent Deck: Which Should Run Your Coding Agents?", "description": "amux vs Agent Deck compared: terminal TUI or web and phone dashboard, running many agents, recovery, hosting and price. Agent Deck is a free MIT terminal session manager for Claude Code, Codex, Gemini CLI and more; amux runs a team of agents on a shared board, self-hosted or on a dedicated always-on server.", "url": "https://amux.io/compare/amux-vs-agent-deck/", "datePublished": "2026-10-31", "dateModified": "2026-10-31", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS", "description": "Self-hosted control plane for AI agent teams: run dozens of parallel coding agents from your phone or browser with usage-limit and reboot recovery, kanban, CRM and email built in.", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Agent Deck", "url": "https://github.com/asheshgoplani/agent-deck", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, Windows (WSL)"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an Agent Deck alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Both manage many Claude Code, Codex, Gemini CLI and other coding agent sessions in one place. Agent Deck is a terminal TUI on top of tmux, with a web mode, Docker sandboxes, an MCP manager, a cost dashboard and a conductor session you can reach over Telegram or Slack. amux is a web and phone dashboard that runs a team of agents on a shared task board with usage-limit and reboot recovery, a scheduler and business tools, and amux Cloud gives you a dedicated always-on server."}}, {"@type": "Question", "name": "Is Agent Deck free?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Agent Deck is MIT licensed and free, installs with one curl command or Homebrew, and runs on macOS, Linux and Windows through WSL. It has no hosted plan, so you run it on your own machine or on servers you reach over SSH. amux is also free to self-host, and amux Cloud starts at $39 a month if you want the server run for you."}}, {"@type": "Question", "name": "Can I control Agent Deck from my phone?", "acceptedAnswer": {"@type": "Answer", "text": "Indirectly. Agent Deck's web mode serves a browser UI with push notifications, and its conductor session can answer and escalate through a Telegram or Slack bot. It has no native phone app. amux has a native iPhone and iPad app plus an installable web app that shows every agent's live terminal and the task board."}}, {"@type": "Question", "name": "Do both keep agents running when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "Only if they run on a machine that stays on. Agent Deck runs on the machine you install it on, and its remote mode manages agent-deck instances on SSH servers you provide. amux self-hosted is the same, and amux Cloud runs an always-on server for you at yourname.amux.io."}}, {"@type": "Question", "name": "Which is better for a freelancer or small agency?", "acceptedAnswer": {"@type": "Answer", "text": "If you live in the terminal and run agents on your own boxes, Agent Deck is a strong free choice. If you want agents for several client projects on one board that you check from your phone, with nobody keeping a machine awake, amux Cloud Team is $69 a month for 8 vCPU and 16 GB RAM."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -163,21 +163,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

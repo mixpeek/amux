@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Compare","item":"https://amux.io/compare/"},{"@type":"ListItem","position":3,"name":"amux vs OpenAI Agents SDK","item":"https://amux.io/compare/amux-vs-openai-agents-sdk/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux vs OpenAI Agents SDK","datePublished":"2026-10-13","dateModified":"2026-10-13","author":{"@type":"Organization","name":"amux"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io"},"description":"Comparison of amux (Claude Code fleet dashboard) and OpenAI Agents SDK (Python agent development framework) for teams building with AI coding agents in 2026."}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the OpenAI Agents SDK?","acceptedAnswer":{"@type":"Answer","text":"The OpenAI Agents SDK (open-sourced March 2026) is a Python library for building structured multi-agent AI applications. It provides primitives for tool calling, agent handoffs, guardrails, and tracing — all on top of OpenAI's API. Originally called Swarm, it was redesigned and released as the official Python SDK for building production AI agent workflows. It is a development framework: you write Python code that uses it."}},{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is a self-hosted operations layer for running AI coding sessions — Claude Code, Codex CLI, and Gemini CLI — in parallel from a single dashboard. It is not a programming framework. It is infrastructure: process management, usage-limit resume, a shared kanban board, vault secrets, workspace isolation, and mobile oversight. You run amux on a server and connect to it from a browser or the iOS app."}},{"@type":"Question","name":"Are amux and OpenAI Agents SDK solving the same problem?","acceptedAnswer":{"@type":"Answer","text":"No. OpenAI Agents SDK is a framework for writing the logic of an agent — what tools it has, how it hands off to other agents, how it validates its output. amux is infrastructure for running the resulting agent sessions — spawning them, keeping them alive overnight, giving you visibility from your phone, and letting multiple agents coordinate on a shared task board. A team could use the Agents SDK to write the agent logic and amux to run and monitor those agents as long-running processes."}},{"@type":"Question","name":"Does OpenAI Agents SDK work with Claude Code?","acceptedAnswer":{"@type":"Answer","text":"Not directly. The Agents SDK is built around OpenAI's API (GPT-4o, o1, etc.) and the OpenAI tool-calling contract. Claude Code is a terminal-based coding agent from Anthropic. They occupy different layers: the Agents SDK is for building conversational agent workflows in Python; Claude Code is a coding agent you run in a terminal. amux, by contrast, is built specifically to manage Claude Code sessions."}},{"@type":"Question","name":"Which is easier to get started with for a team running parallel coding agents?","acceptedAnswer":{"@type":"Answer","text":"amux. It is a single Rust binary — run install.sh, point your terminal at it, and you have a fleet dashboard in 5 minutes. No Python environment, no API wrapper code to write. The OpenAI Agents SDK requires writing Python code that defines agent logic, tools, and handoffs — meaningful engineering work before the first agent runs. For teams that already have coding agents (Claude Code sessions) and want observability and coordination, amux is the direct path."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -218,58 +218,24 @@
       <a href="/compare/">All comparisons</a>
     </p>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-col">
-          <div class="footer-col-label">amux</div>
-          <ul>
-            <li><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a></li>
-            <li><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-            <li><a href="/concierge/">Concierge Setup</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Compare</div>
-          <ul>
-            <li><a href="/compare/amux-vs-cursor/">vs Cursor</a></li>
-            <li><a href="/compare/amux-vs-devin/">vs Devin</a></li>
-            <li><a href="/compare/amux-vs-cline/">vs Cline</a></li>
-            <li><a href="/compare/">All comparisons</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/solutions/">Solutions</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='&#x2605; '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

@@ -25,8 +25,8 @@
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Orquesta", "item": "https://amux.io/compare/amux-vs-orquesta/"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Orquesta: Running Agents on Your Own Machines", "description": "amux vs Orquesta compared on iPhone and Mac apps, web, self-hosting, Tailscale, supported agents, license and price. Orquesta OSS is an MIT self-hosted prompt orchestration server, with a paid Orquesta Cloud; amux is the agent control plane with native iOS and Mac apps and an optional Cloud server.", "url": "https://amux.io/compare/amux-vs-orquesta/", "datePublished": "2026-10-29", "dateModified": "2026-10-29", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "about": [{"@type": "SoftwareApplication", "name": "amux", "url": "https://amux.io/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS, Linux, iOS, iPadOS, Web", "description": "The agent control plane: run Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents in parallel on a shared task board, from a web dashboard, PWA, iPhone and iPad app or Mac app, self-hosted or on amux Cloud.", "license": "https://github.com/mixpeek/amux/blob/main/LICENSE", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}, {"@type": "SoftwareApplication", "name": "Orquesta", "url": "https://getorquesta.com/", "applicationCategory": "DeveloperApplication", "operatingSystem": "Web, Windows, macOS, Linux, iOS, Android", "license": "https://github.com/Getorquesta/orquesta-oss/blob/main/LICENSE"}]}</script>
   <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Is amux an Orquesta alternative?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, for running agents on machines you control. Orquesta OSS is a self-hosted prompt orchestration server whose agents run Claude CLI, and Orquesta Cloud is a paid hosted product with more agents and integrations. amux is one self-hosted server for Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents on a shared task board, with native iPhone, iPad and Mac apps and an optional amux Cloud server."}}, {"@type": "Question", "name": "Does Orquesta have an iPhone app?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Orquesta's site shows iOS and Android apps that sign in to an existing Orquesta organization. Whether they work with a self-hosted Orquesta OSS server is not stated on its site. amux's iPhone and iPad app connects to your own amux server or your amux Cloud address."}}, {"@type": "Question", "name": "Do Orquesta and amux work over Tailscale?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. Orquesta OSS recommends Tailscale for agents on remote machines. amux serves a browser-trusted certificate from tailscale cert at https://host.tailnet.ts.net:8824 and can optionally sign in your own devices or tailnet members by Tailscale identity."}}, {"@type": "Question", "name": "Which agents does Orquesta support?", "acceptedAnswer": {"@type": "Answer", "text": "Orquesta OSS runs prompts through Claude CLI with your own Anthropic key. Orquesta's main site lists Claude Code, Cursor, Kiro, Kimi and the Orquesta CLI and says it works with any agent. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed local models."}}, {"@type": "Question", "name": "How much does Orquesta cost?", "acceptedAnswer": {"@type": "Answer", "text": "Orquesta OSS is free under MIT. Orquesta Cloud has a Free plan, Pro at $5 per user per month, Max at $12 per user per month and a custom Enterprise plan. amux is free to self-host, and amux Cloud is $39, $69 or $129 per month for Solo, Team or Max."}}, {"@type": "Question", "name": "What license is amux under?", "acceptedAnswer": {"@type": "Answer", "text": "MIT + Commons Clause. You can use, modify and self-host amux for free, including at work and for commercial work you build with it. The Commons Clause forbids selling amux itself, meaning offering to others for a fee a product or service whose value comes entirely or substantially from amux. By the OSI definition, that makes amux source-available software. Orquesta OSS uses the MIT license, which has no such restriction."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -174,21 +174,24 @@
   </main>
 
 
-  <footer class="site-footer">
-    <div class="container">
-      <p>
-        <a href="/">amux</a> &middot;
-        <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a> &middot;
-        <a href="/docs/">Docs</a> &middot;
-        <a href="/guides/">Guides</a> &middot;
-        <a href="/demos/">Demos</a> &middot;
-        <a href="/compare/">Compare</a> &middot;
-        <a href="/blog/">Blog</a> &middot;
-        <a href="/pricing/">Pricing</a> &middot;
-        <a href="/privacy/">Privacy</a>
-      </p>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 
   <script>
     // GitHub stars

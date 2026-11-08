@@ -23,8 +23,8 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"For","item":"https://amux.io/for/"},{"@type":"ListItem","position":3,"name":"Data Scientists","item":"https://amux.io/for/data-scientists/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"amux for Data Scientists — Parallel AI Agents for EDA, Modeling & Pipeline Automation (2026)","description":"Data scientists use amux to run parallel Claude Code, Codex, and Gemini CLI agents for exploratory data analysis, model training, notebook automation, and data pipeline generation — with usage-limit resume and phone-first monitoring.","url":"https://amux.io/for/data-scientists/","datePublished":"2026-08-01","dateModified":"2026-09-28","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How do data scientists use amux?","acceptedAnswer":{"@type":"Answer","text":"Data scientists use amux to run multiple Claude Code agents simultaneously on different parts of a data workflow. One agent handles exploratory data analysis on dataset A while another writes model training code for experiment B, a third converts a notebook to a production Python script, and a fourth generates documentation. All four run in parallel, resume after usage limits, and report to a shared kanban board monitored from a web browser or iPhone. This multiplies effective output without multiplying headcount."}},{"@type":"Question","name":"Can Claude Code work with Jupyter notebooks?","acceptedAnswer":{"@type":"Answer","text":"Yes. Claude Code can read, modify, and generate Jupyter notebooks (.ipynb) as text files, and can run Python scripts that exercise notebook logic. The standard pattern is to give an amux agent a notebook path and ask it to analyze the code, fix issues, or convert cells to a production script. For interactive work, the agent edits the notebook file and you reload it; for automated runs, the agent generates a .py equivalent that runs headlessly. amux runs the agent in tmux, so it keeps running even if the notebook session drops."}},{"@type":"Question","name":"How can I automate EDA with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Assign one Claude Code agent per dataset or analysis question via amux's kanban board. Each agent receives a task like 'run EDA on sales_q3.csv — describe distributions, flag outliers, suggest feature engineering' and produces a markdown report or a new notebook. With amux's parallel session management, you can run 5–10 EDA agents simultaneously, each on a different dataset or hypothesis, and review their outputs from your phone when they finish. The board tracks which analysis is done, in progress, and blocked."}},{"@type":"Question","name":"How do I run data pipeline code overnight with AI agents?","acceptedAnswer":{"@type":"Answer","text":"Create a workspace with your pipeline code and use amux's scheduler to trigger an agent at a set time. The agent runs the pipeline, writes a summary to the amux board, and resumes on its own if it hits a usage limit. You can monitor progress from the iOS app or mobile PWA — no laptop required. If the pipeline fails overnight, the board shows the failed card with the error output so you can diagnose it in the morning. Use amux's CLAUDE.md to give the agent domain-specific instructions (column conventions, naming rules, acceptable data quality thresholds)."}},{"@type":"Question","name":"Can AI agents help with model training code?","acceptedAnswer":{"@type":"Answer","text":"Yes. The standard amux pattern is to run one agent per experiment: each agent implements a model variant (different architecture, hyperparameters, feature set) in parallel, writes training code, and produces evaluation metrics. A coordinator agent can synthesize the results. Because agents run in isolated tmux sessions with separate working directories, experiments don't interfere. amux's kanban board shows which experiments are running, which finished, and which need human review — useful for managing a grid search across many combinations."}},{"@type":"Question","name":"What is the difference between amux and a Jupyter kernel for data science?","acceptedAnswer":{"@type":"Answer","text":"A Jupyter kernel is single-session and interactive. amux manages a fleet of long-running, unattended AI agents. They complement each other: use Jupyter for interactive exploration, then hand off to amux when you need the same analysis repeated on 20 datasets, or when you want an agent to work overnight without your laptop staying open. amux runs the agent in tmux, so it keeps going even if the network drops or the terminal disconnects — Jupyter's kernel dies when the connection closes."}},{"@type":"Question","name":"Is amux free for data scientists?","acceptedAnswer":{"@type":"Answer","text":"The amux orchestration layer is free to self-host and source-available (MIT + Commons Clause). You pay only for the AI API tokens your agents consume — Claude Code Max ($100/month for unlimited Opus usage), Codex API by the token, or Gemini CLI via Gemini API. amux itself has no seat fees, usage caps, or subscription. amux Cloud (from $39/month) runs the same amux for you on a dedicated always-on server at yourname.amux.io."}}]}</script>
-  <link rel="stylesheet" href="/nav.css?v=20261106">
-  <script src="/site.js?v=20261106"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
 </head>
 <body>
   <header class="site-header">
@@ -255,53 +255,24 @@ amux serve</code></pre>
       <p>Yes. amux is multi-runtime: it manages Claude Code, OpenAI Codex CLI, and Gemini CLI sessions in the same dashboard. You can run a Claude Code agent for analysis tasks (better at reasoning and code review) and a Codex agent for boilerplate generation in parallel, distributing work across providers. This also distributes API rate limits — if Claude's rate limit is hit on one session, other sessions using different providers keep running.</p>
     </details>
   </main>
-  <footer class="sub-footer">
-    <div class="footer-inner">
-      <div class="footer-top">
-        <div class="footer-brand-col">
-          <a href="/" class="footer-logo">amux</a>
-          <p>Self-hosted control plane for AI agents.</p>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">Resources</div>
-          <ul>
-            <li><a href="/guides/">Guides</a></li>
-            <li><a href="/blog/">Blog</a></li>
-            <li><a href="/demos/">Demos</a></li>
-            <li><a href="/glossary/">Glossary</a></li>
-            <li><a href="/faq/">FAQ</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">For</div>
-          <ul>
-            <li><a href="/for/solopreneurs/">Solopreneurs</a></li>
-            <li><a href="/for/startup-founders/">Startup Founders</a></li>
-            <li><a href="/for/engineering-managers/">Eng Managers</a></li>
-            <li><a href="/for/">All roles</a></li>
-          </ul>
-        </div>
-        <div class="footer-col">
-          <div class="footer-col-label">More</div>
-          <ul>
-            <li><a href="/use-cases/">Use Cases</a></li>
-            <li><a href="/compare/">Compare</a></li>
-            <li><a href="/for/">For your stack</a></li>
-            <li><a href="/changelog/">Changelog</a></li>
-          </ul>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <span>MIT + Commons Clause. Built by <a href="https://mixpeek.com">Mixpeek</a></span>
-        <div class="footer-bottom-links">
-          <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS App</a>
-          <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a>
-          <a href="/security/">Security</a>
-          <a href="/privacy/">Privacy</a>
-        </div>
-      </div>
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
-  </footer>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
 <script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='★ '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>
