@@ -1310,8 +1310,14 @@
     line-height: 1.6; white-space: pre; }
   .file-overlay-body.file-code .hljs-pre { margin: 0; padding: var(--space-3) var(--space-3-5); overflow: visible;
     flex: 1 1 auto; min-width: 0; }
+  /* The code body is ALWAYS dark (term-bg, in light mode too: see the
+     #file-overlay rules near the top), so plain tokens take the TERMINAL text
+     colour. They took --text, which light mode makes #1f2328: identifiers,
+     numbers and operators were dark grey on #1c2128 while keywords and strings,
+     coloured by the theme, stood out (Ethan, 2026-11-08: "Fix how code is
+     rendered"). */
   .file-overlay-body.file-code code.hljs { display: block; background: transparent; padding: 0;
-    color: color-mix(in srgb, var(--text) 69%, var(--dim));
+    color: color-mix(in srgb, var(--term-text) 92%, var(--term-dim));
     font-family: var(--font-mono); font-size: var(--fs-md);
     line-height: 1.6; tab-size: 2; white-space: pre; }
   /* github-dark ships NO .hljs-punctuation rule, and hljs 11.9 emits exactly three
@@ -1323,7 +1329,7 @@
      classes against the theme's selectors.
      Dimmed deliberately rather than brightened: punctuation is scaffolding, so it
      should recede while staying legible. */
-  .file-overlay-body.file-code .hljs-punctuation { color: var(--dim); }
+  .file-overlay-body.file-code .hljs-punctuation { color: var(--term-dim); }
   /* github-dark's own `.hljs-section` is #1f6feb, which MEASURES 3.49:1 against
      this viewer's light-mode body (#1c2128) and 4.0:1 against its dark one
      (#010409) — both under WCAG AA's 4.5:1 floor for body text. It is the
