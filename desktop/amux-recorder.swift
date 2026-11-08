@@ -44,6 +44,49 @@ extension AppDelegate {
         set { UserDefaults.standard.set(newValue, forKey: "amuxRecorderSystem") }
     }
 
+    /// The apps capturing audio right now, other than this one, by bundle id
+    /// (macOS 14.2 and later; nil before, and the device-level guess is used).
+    /// A browser captures in a helper process (com.google.Chrome.helper,
+    /// Safari's com.apple.WebKit.GPU), so the ids are matched by prefix.
+    func appsCapturingAudio() -> [String]? {
+        guard #available(macOS 14.2, *) else { return nil }
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                              mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { return nil }
+        var procs = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &procs) == noErr else { return nil }
+        let me = getpid()
+        var out: [String] = []
+        for p in procs {
+            var running: UInt32 = 0
+            var n = UInt32(MemoryLayout<UInt32>.size)
+            var a = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningInput,
+                                               mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(p, &a, 0, nil, &n, &running) == noErr, running != 0 else { continue }
+            var pid: pid_t = 0
+            n = UInt32(MemoryLayout<pid_t>.size)
+            a.mSelector = kAudioProcessPropertyPID
+            if AudioObjectGetPropertyData(p, &a, 0, nil, &n, &pid) == noErr, pid == me { continue }
+            var bid: CFString = "" as CFString
+            n = UInt32(MemoryLayout<CFString>.size)
+            a.mSelector = kAudioProcessPropertyBundleID
+            if AudioObjectGetPropertyData(p, &a, 0, nil, &n, &bid) == noErr { out.append(bid as String) }
+        }
+        return out
+    }
+
+    static func isMeetingApp(_ bundleId: String) -> Bool {
+        let id = bundleId.lowercased()
+        return AppDelegate.meetingApps.contains { id == $0.lowercased() || id.hasPrefix($0.lowercased() + ".") } || id == "com.apple.webkit.gpu"
+    }
+
+    /// The meeting app capturing audio now, if any: the call this recorder listens to.
+    func meetingAppOnMic() -> String?? {
+        guard let apps = appsCapturingAudio() else { return nil }
+        return .some(apps.first(where: AppDelegate.isMeetingApp))
+    }
+
     func micInUseElsewhere() -> Bool {
         var dev = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -62,8 +105,15 @@ extension AppDelegate {
         let mode = meetingMode
         guard mode != "off" else { meetingSince = nil; return }
         if r.isActive {
-            // Auto-started and the call ended a minute ago: stop.
-            if meetingAutoStarted, !micInUseElsewhereIgnoringSelf() {
+            // Auto-started and the call ended a minute ago: stop. Where macOS
+            // names the apps on the microphone, the call is over when no
+            // meeting app is on it. Before, "a conferencing app is running"
+            // stood in: a Meet recording stopped a minute into the call where
+            // no such app ran, and never stopped where Zoom or Slack sat open
+            // (2026-11-08).
+            let callGoing: Bool
+            if case .some(let app) = meetingAppOnMic() { callGoing = app != nil } else { callGoing = micInUseElsewhereIgnoringSelf() }
+            if meetingAutoStarted, !callGoing {
                 meetingEndedAt = meetingEndedAt ?? Date()
                 if Date().timeIntervalSince(meetingEndedAt!) > 60 {
                     NSLog("amux-desktop: verdict=recorder_meeting_ended_stop")
@@ -73,14 +123,22 @@ extension AppDelegate {
             } else { meetingEndedAt = nil }
             return
         }
-        let apps = NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
-        let inCall = micInUseElsewhere() && apps.contains(where: { AppDelegate.meetingApps.contains($0) })
+        // A call: a meeting app capturing audio (macOS 14.2+, whichever
+        // microphone it uses), else the default microphone busy while one runs.
+        let onMic = meetingAppOnMic()
+        let inCall: Bool
+        if case .some(let app) = onMic { inCall = app != nil } else {
+            let apps = NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
+            inCall = micInUseElsewhere() && apps.contains(where: { AppDelegate.meetingApps.contains($0) })
+        }
         if !inCall { meetingSince = nil; meetingNotified = false; return }
         meetingSince = meetingSince ?? Date()
         // Ten seconds of a live microphone, so a short voice memo is not a meeting.
         guard Date().timeIntervalSince(meetingSince!) >= 10, !meetingNotified else { return }
         meetingNotified = true
-        NSLog("amux-desktop: verdict=recorder_meeting_detected mode=%@", mode)
+        let via: String
+        if case .some(.some(let app)) = onMic { via = app } else { via = onMic == nil ? "default_input_busy" : "-" }
+        NSLog("amux-desktop: verdict=recorder_meeting_detected mode=%@ app=%@", mode, via)
         if mode == "auto" {
             if r.start(sources: meetingSystemAudio ? ["mic", "system"] : ["mic"]) == nil { meetingAutoStarted = true }
             recorderChanged()

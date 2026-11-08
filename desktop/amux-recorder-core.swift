@@ -503,12 +503,23 @@ final class SystemAudioSource: NSObject, RecSource, SCStreamOutput, SCStreamDele
     init(writer: TrackWriter) { self.writer = writer }
 
     func start() throws {
+        // Without the permission ScreenCaptureKit lists no display, which read
+        // as "no display to capture system audio from" (2026-11-08).
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+            throw NSError(domain: "amux.recorder", code: 5, userInfo: [NSLocalizedDescriptionKey:
+                "the other side of a call is recorded with Screen Recording: allow amux in System Settings, Privacy & Security, Screen & System Audio Recording, then record again"])
+        }
         let done = DispatchSemaphore(value: 0)
         var failure: Error?
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, err in
             defer { done.signal() }
             guard let content = content, let display = content.displays.first else {
-                failure = err ?? NSError(domain: "amux.recorder", code: 2, userInfo: [NSLocalizedDescriptionKey: "no display to capture system audio from"])
+                // No display and no error is what a missing Screen Recording
+                // permission returns when the preflight above could not tell
+                // (an app started by another process is judged by that one).
+                failure = err ?? NSError(domain: "amux.recorder", code: 2, userInfo: [NSLocalizedDescriptionKey:
+                    "macOS lists no display to capture the call's sound from, which is what a missing Screen Recording permission looks like: allow amux in System Settings, Privacy & Security, Screen & System Audio Recording, then record again"])
                 return
             }
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
@@ -674,10 +685,17 @@ final class NativeRecorder {
             return lastError ?? "no source started"
         }
         sources = started_ok
+        // A source that failed to start is not a track of this recording: it
+        // said tracks=mic,system while the system track had failed (2026-11-08).
+        let live = started_ok.map { $0.track }
+        if live.count != tracks.count {
+            manifestQueue.sync { manifest?.tracks = live }
+            saveManifest()
+        }
         state = "recording"
         pausedTotal = 0
         watchSleep()
-        NSLog("amux-recorder: verdict=recorder_started id=%@ tracks=%@", id, tracks.joined(separator: ","))
+        NSLog("amux-recorder: verdict=recorder_started id=%@ tracks=%@ asked=%@", id, live.joined(separator: ","), tracks.joined(separator: ","))
         changed()
         return nil
     }

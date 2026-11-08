@@ -279,7 +279,9 @@ fn speaker(track: &str) -> &'static str {
 pub(crate) fn merged(tracks: &Map<String, Value>, field: &str) -> Vec<Segment> {
     let labelled = tracks.len() > 1;
     let mut all: Vec<Segment> = tracks.iter().flat_map(|(t, v)| {
-        segs_of(&v[field]).into_iter().map(move |mut s| {
+        // A window with no words (a quiet room) is not a line: a meeting with
+        // a silent microphone filed fifteen "[mm:ss] You" lines (2026-11-08).
+        segs_of(&v[field]).into_iter().filter(|s| !s.text.trim().is_empty()).map(move |mut s| {
             if labelled {
                 s.text = format!("{}: {}", speaker(t), s.text);
             }
@@ -1043,12 +1045,13 @@ mod tests {
     #[test]
     fn two_tracks_merge_on_one_timeline_labelled_by_side() {
         let tracks = json!({
-            "mic": {"segments": [{"from_ms": 0, "to_ms": 2000, "text": "hello"}, {"from_ms": 9000, "to_ms": 9500, "text": "bye"}]},
-            "system": {"segments": [{"from_ms": 4000, "to_ms": 6000, "text": "hi there"}]},
+            "mic": {"segments": [{"from_ms": 0, "to_ms": 2000, "text": "hello"}, {"from_ms": 2000, "to_ms": 4000, "text": "  "},
+                                 {"from_ms": 9000, "to_ms": 9500, "text": "bye"}]},
+            "system": {"segments": [{"from_ms": 4000, "to_ms": 6000, "text": "hi there"}, {"from_ms": 6000, "to_ms": 8000, "text": ""}]},
         });
         let m = merged(tracks.as_object().unwrap(), "segments");
         let texts: Vec<&str> = m.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(texts, ["You: hello", "Them: hi there", "You: bye"]);
+        assert_eq!(texts, ["You: hello", "Them: hi there", "You: bye"], "a window with no words is no line");
         let one = json!({"mic": {"segments": [{"from_ms": 0, "to_ms": 1, "text": "solo"}]}});
         assert_eq!(merged(one.as_object().unwrap(), "segments")[0].text, "solo", "one track has no labels");
     }
