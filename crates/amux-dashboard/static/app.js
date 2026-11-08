@@ -69285,7 +69285,7 @@ document.addEventListener('keydown', e => {
 // ── Messages: conversations (server: api/conversations.rs) ──────────────────
 // Channels are groups; People are direct messages; Workers are each worker's
 // shared thread. "All messages" is the original message log, unchanged.
-const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null, pending: [], history: [],
+const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null, pending: [], history: [], pin: null,
   listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
 function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
 function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
@@ -69658,6 +69658,7 @@ function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
   if (_cv.sel !== sel) _cv.editing = null;
+  if (_cv.sel && _cv.sel !== sel) _cvSavePosition(document.getElementById('cv-posts'), true);
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
   if (!auto) _cv.picked = true;
   if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
@@ -69674,7 +69675,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
-  _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.restoreScroll = true; _cv.unreadFrom = null; _cv.pin = null;
   _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
   _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
@@ -69995,7 +69996,12 @@ async function _cvPollOnce(full) {
   _cv.readId = Math.max(_cv.readId || 0, latest);
   _cvRenderHead(sel, d);
   _cvRenderPinsBtn();
-  if (full || grew || pending.length || pinsChanged) _cvRenderPosts(full || grew);
+  // A new post from someone else no longer pulls you down from where you are
+  // reading; one you sent still goes to the end (_cvRenderPosts keeps the end
+  // when you were already there). A full page merged into posts already on
+  // screen (the same conversation opened twice) keeps the place it restored.
+  const mineLast = grew && ((_cv.posts[_cv.posts.length - 1] || {}).author_key === _cvMeKey());
+  if (full || grew || pending.length || pinsChanged) _cvRenderPosts((full && !hadPosts) || mineLast);
   if (pinsChanged && !full && !grew && _cv.thread) _cvRenderThread();
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
     ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
@@ -70448,13 +70454,15 @@ async function _cvOpenThreadOrScroll(conv, id) {
   const top = _cv.posts.find(p => p.id === id);
   if (top && !top.reply_count) {
     const el = document.querySelector('#cv-posts .cv-post[data-id="' + id + '"]');
-    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('cv-flash'); setTimeout(() => el.classList.remove('cv-flash'), 1600); }
+    if (el) { _cv.pin = null; el.scrollIntoView({ block: 'center' }); el.classList.add('cv-flash'); setTimeout(() => el.classList.remove('cv-flash'), 1600); }
     return;
   }
   _cvOpenThread(id);
 }
 // ── Older history: scrolling to the top loads the page before it ──
 async function _cvOnScroll(box) {
+  // Any scroll the hold did not make is yours, and ends the hold.
+  if (_cv.pin && Math.abs(box.scrollTop - (_cv.pin.top ?? box.scrollTop)) > 2) _cv.pin = null;
   if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
@@ -70575,7 +70583,7 @@ async function _cvLoadWorkerHistory(sel) {
       author_name: h.author_name || (h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner'))),
       tag: h.type === 'schedule' ? 'scheduled' : h.type === 'session' ? 'from a worker' : 'sent from its page',
       mentions: [], deliveries: [] }));
-    _cvRenderPosts(true);
+    _cvRenderPosts(false);
   } catch (e) {}
 }
 function _cvRenderPosts(scroll) {
@@ -70600,11 +70608,17 @@ function _cvRenderPosts(scroll) {
     if (_cv.unreadFrom && p.id === _cv.unreadFrom) html += '<div class="cv-unread-line" role="separator"><span>New</span></div>';
     html += _cvPostHtml(p, false);
   }
+  // The post at the top of the view before this render, so a re-render (a
+  // reaction, an edit, a preview arriving) leaves you on the same post.
+  const keep = !scroll && !nearBottom && !_cv.restoreScroll ? _cvTopPost(box) : null;
   _cvEditBeforeRender();
   box.innerHTML = html;
   _cvEditAfterRender(box);
-  if (_cv.restoreScroll) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
-  if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+  // The place is chosen once the conversation's page is in (_cv.info): a
+  // worker's history can arrive first and would spend it on half the posts.
+  if (_cv.restoreScroll && _cv.info) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
+  if (scroll || nearBottom) _cvPinTo(box, { bottom: true });
+  else if (keep) _cvPinTo(box, keep);
 }
 // WHERE YOU LEFT OFF (Ethan, 2026-10-29: "when i open messages it should scroll
 // to where i left off"). Opening a conversation goes, in order, to the first
@@ -70615,28 +70629,72 @@ function _cvPositions() { try { return JSON.parse(localStorage.getItem('amux_cv_
 function _cvRestoreScroll(box) {
   const pos = _cvPositions()[_cv.sel];
   const at = id => box.querySelector('.cv-post[data-id="' + CSS.escape(String(id)) + '"]');
-  const unread = _cv.unreadFrom && at(_cv.unreadFrom);
-  if (unread) { box.scrollTop += unread.getBoundingClientRect().top - box.getBoundingClientRect().top - 48; return; }
-  const el = pos && !pos.bottom && at(pos.id);
-  if (el) { box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - (pos.off || 0); return; }
-  box.scrollTop = box.scrollHeight;
+  let verdict;
+  if (_cv.unreadFrom && at(_cv.unreadFrom)) { verdict = 'unread'; _cvPinTo(box, { id: String(_cv.unreadFrom), off: 48 }); }
+  else if (pos && !pos.bottom && pos.id && at(pos.id)) { verdict = 'anchor'; _cvPinTo(box, { id: String(pos.id), off: pos.off || 0 }); }
+  else { verdict = pos && !pos.bottom ? 'anchor_missing' : 'bottom'; _cvPinTo(box, { bottom: true }); }
+  if (typeof window._clientDebug === 'function') window._clientDebug('messages-scroll-restored', { verdict, conv: String(_cv.sel || '').slice(0, 2), saved: !!pos, measured: true, n_considered: 1 });
+}
+// The first post whose bottom is inside the view, and how far its top sits
+// below the view's top: a place that survives posts landing above or below.
+function _cvTopPost(box) {
+  const top = box.getBoundingClientRect().top;
+  const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+  return el ? { id: el.dataset.id, off: Math.round(el.getBoundingClientRect().top - top) } : null;
+}
+// HELD WHILE IT SETTLES (Ethan, 2026-11-08: "it just scrolls to the bottom and
+// cuts off some shit"). Image previews and link cards get their height after
+// the posts are placed, so a conversation opened at its end showed the last
+// post half hidden behind the composer, and one opened at a saved post
+// drifted. The place chosen (the end, or a post at an offset) is put back each
+// time an image loads or the view resizes, until you scroll or 8 s pass.
+function _cvApplyPin(box) {
+  const p = _cv.pin; if (!p) return;
+  if (p.bottom) box.scrollTop = box.scrollHeight;
+  else {
+    const el = box.querySelector('.cv-post[data-id="' + CSS.escape(p.id) + '"]');
+    if (!el) { _cv.pin = null; return; }
+    box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - p.off;
+  }
+  p.top = box.scrollTop;
+}
+function _cvPinTo(box, pin) {
+  _cv.pin = { ...pin, until: Date.now() + 8000 };
+  _cvApplyPin(box);
+  if (box._cvPinWired) return;
+  box._cvPinWired = true;
+  const release = () => { _cv.pin = null; };
+  ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(t => box.addEventListener(t, release, { passive: true }));
+  // A frame later, so an image that failed has become its file chip first.
+  const hold = () => requestAnimationFrame(() => { if (_cv.pin && Date.now() < _cv.pin.until) _cvApplyPin(box); else _cv.pin = null; });
+  ['load', 'error', 'loadedmetadata'].forEach(t => box.addEventListener(t, e => { if (e.target !== box) hold(); }, true));
+  if (window.ResizeObserver) new ResizeObserver(hold).observe(box);
 }
 let _cvPosT = 0;
-function _cvSavePosition(box) {
+// `now` writes at once: leaving a conversation, or the page going away. The
+// conversation is read when the save is asked for, not when the timer fires:
+// a timer from the one you left used to store its place under the one you
+// opened. A hidden view has no geometry and is never saved.
+function _cvSavePosition(box, now) {
   clearTimeout(_cvPosT);
-  _cvPosT = setTimeout(() => {
-    const sel = _cv.sel; if (!sel || sel[0] === '@') return;
-    const top = box.getBoundingClientRect().top;
-    const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+  const sel = _cv.sel;
+  const write = () => {
+    if (!box || !sel || sel[0] === '@' || sel !== _cv.sel && !now || _cv.restoreScroll || !box.clientHeight) return;
+    const t = _cvTopPost(box);
     const all = _cvPositions();
-    all[sel] = { id: el ? el.dataset.id : null, off: el ? Math.round(el.getBoundingClientRect().top - top) : 0,
+    all[sel] = { id: t ? t.id : null, off: t ? t.off : 0,
       bottom: box.scrollHeight - box.scrollTop - box.clientHeight < 80, at: Date.now() };
     // Keep the 200 most recent conversations.
     const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
     for (const k of keys.slice(200)) delete all[k];
     try { localStorage.setItem('amux_cv_pos', JSON.stringify(all)); } catch (e) {}
-  }, 300);
+  };
+  if (now) write(); else _cvPosT = setTimeout(write, 300);
 }
+['pagehide', 'visibilitychange'].forEach(ev => (ev === 'pagehide' ? window : document).addEventListener(ev, () => {
+  if (ev === 'visibilitychange' && document.visibilityState !== 'hidden') return;
+  if (_cvViewOn()) _cvSavePosition(document.getElementById('cv-posts'), true);
+}));
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
   try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: Math.max(_cv.lastId, _cv.readId || 0) }) }); } catch (e) {}
