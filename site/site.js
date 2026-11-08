@@ -125,20 +125,32 @@
   });
 
 
-  // GitHub star count for the header, cached an hour (the unauthenticated
-  // API allows 60 requests an hour per IP). Fills any count still empty.
+  // GitHub star count, every place a page shows it: the header's #gh-stars
+  // ("★ 555") and any .gh-stars (the homepage's header and buttons, number
+  // only). A cached count, else STARS_FALLBACK, shows at once; GitHub is asked
+  // at most once an hour (the unauthenticated API allows 60 requests an hour
+  // per IP) and its answer replaces whatever is shown. It used to fill only an
+  // EMPTY #gh-stars and the homepage kept a baked 539 when its own uncached
+  // fetch failed, so the counts read low or blank (2026-11-08: 539 shown, 555
+  // real). Bump STARS_FALLBACK with scripts/site-header.mjs's STARS.
+  var STARS_FALLBACK = 555;
   document.addEventListener('DOMContentLoaded', function () {
-    var el = document.getElementById('gh-stars');
-    if (!el) return;
-    function show(n) { if (n && !/\d/.test(el.textContent)) el.textContent = '\u2605 ' + n; }
+    var els = document.querySelectorAll('#gh-stars, .gh-stars');
+    if (!els.length) return;
+    function show(n) {
+      if (!n) return;
+      var txt = Number(n).toLocaleString('en-US');
+      els.forEach(function (el) { el.textContent = el.id === 'gh-stars' ? '\u2605 ' + txt : txt; });
+    }
     var cached = null;
-    try { cached = JSON.parse(localStorage.getItem('amux-gh-stars') || 'null'); } catch (e) {}
-    if (cached && Date.now() - cached.t < 3600000) { show(cached.n); return; }
+    try { cached = JSON.parse(localStorage.getItem('amux-gh-stars') || 'null'); } catch (e) { cached = null; }
+    show(cached && cached.n > STARS_FALLBACK ? cached.n : STARS_FALLBACK);
+    if (cached && Date.now() - cached.t < 3600000) return;
     fetch('https://api.github.com/repos/mixpeek/amux').then(function (r) { return r.json(); }).then(function (d) {
       if (!d.stargazers_count) return;
-      try { localStorage.setItem('amux-gh-stars', JSON.stringify({ n: d.stargazers_count, t: Date.now() })); } catch (e) {}
+      try { localStorage.setItem('amux-gh-stars', JSON.stringify({ n: d.stargazers_count, t: Date.now() })); } catch (e) { /* private mode: still shown */ }
       show(d.stargazers_count);
-    }).catch(function () { if (cached) show(cached.n); });
+    }).catch(function () { /* the cached or baked count stays */ });
   });
 
   // EXP-141: a copy button on the one-line install command (getting-started,

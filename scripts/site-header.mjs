@@ -43,11 +43,15 @@ export const NO_GET_STARTED = new Map([
 ]);
 const GET_STARTED = /\n\s*<a href="\/#get" class="nav-cta nav-cta-primary">Get started<\/a>/;
 
+// The homepage header's star count as baked into the page, before site.js
+// replaces it with GitHub's live count. Keep equal to site.js STARS_FALLBACK.
+export const STARS = '555';
+
 export function expectedHeader(rel) {
   const base = NO_GET_STARTED.has(rel) ? CANONICAL.replace(GET_STARTED, '') : CANONICAL;
   if (rel !== 'index.html') return base;
   return base
-    .replace('<span class="gh-stars" id="gh-stars">★</span>', '<span class="nav-stars">★ <span class="gh-stars">539</span></span>');
+    .replace('<span class="gh-stars" id="gh-stars">★</span>', `<span class="nav-stars">★ <span class="gh-stars">${STARS}</span></span>`);
 }
 
 export function pages(dir = SITE) {
@@ -70,7 +74,7 @@ export function problems(rel, html) {
   if (!m) out.push('no site header');
   else {
     // the homepage's static star count is a fallback the page script updates
-    const got = rel === 'index.html' && starsOf(m[0]) ? m[0].replace(starsOf(m[0]), '539') : m[0];
+    const got = rel === 'index.html' && starsOf(m[0]) ? m[0].replace(starsOf(m[0]), STARS) : m[0];
     if (norm(got) !== norm(want)) out.push('header differs from scripts/site-header.html');
   }
   const foot = html.match(FOOTER_RE);
