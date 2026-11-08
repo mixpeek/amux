@@ -158,6 +158,7 @@ OFF=$(printf 'off\n' >> "$REPO/docs/notes.md"; commit off)
 run_builder AMUX_RS_RESTAMP=0
 expect grep -q "RESTAMP OFF sha=$OFF" "$LOG"
 expect test "$(builds)" = 6
+expect wait_live "$OFF"
 
 # 7. Only the dashboard changed: no compile, a snapshot of it is served.
 COMPILED=$(receipt compiled_at)
@@ -204,4 +205,9 @@ expect test -z "$(receipt dashboard_dir)"
 printf 'adopt\n' > "$MODE"; expect wait_live "$RF"
 
 echo "test-build-restamp: $PASS passed, $FAIL failed"
+# A red run on a CI runner is unreadable without the builder's own verdicts.
+if [ "$FAIL" != 0 ]; then
+  echo "--- builder verdicts (build.log) ---"
+  grep -a '^== ' "$LOG" | tail -60 || true
+fi
 [ "$FAIL" = 0 ]
