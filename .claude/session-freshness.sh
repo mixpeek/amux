@@ -328,7 +328,11 @@ if [ -f "$REPO/amux" ]; then
     [ -f "$cand" ] || continue
     case " $seen_cli " in *" $cand "*) continue ;; esac
     seen_cli="$seen_cli $cand"
-    diff -q "$REPO/amux" "$cand" >/dev/null 2>&1 && continue
+    # install-cli.sh stamps CC_VERSION with the checkout's `git describe`, so an
+    # up-to-date install differs from the source in that one line. Compare with
+    # it put back to the placeholder, or every install would read as stale.
+    sed 's/^CC_VERSION="[^"]*"$/CC_VERSION="__AMUX_CLI_VERSION__"/' "$cand" 2>/dev/null \
+      | diff -q "$REPO/amux" - >/dev/null 2>&1 && continue
     # Installation must validate a snapshot before publishing it (ATE-136).
     # A symlink would publish every mid-edit and merge conflict to the fleet.
     # Difference alone does not authorize publishing this checkout's drafts.

@@ -65,7 +65,9 @@ fi
 export HOME="$TMP/home4"
 mkdir -p "$HOME"
 out="$(bash "$CLI" version 2>&1)"; rc=$?
-if [[ "$rc" -eq 0 ]] && [[ "$out" == *"amux v"* ]]; then
+# The version is the checkout's `git describe`: `v...` with a release tag, a
+# bare sha on CI's tagless checkout, or "(version unknown)" outside a checkout.
+if [[ "$rc" -eq 0 ]] && [[ "$out" =~ ^amux\ (v[0-9]|[0-9a-f]{7}|\(version\ unknown\)) ]]; then
   pass "D: direct execution ('amux version') still dispatches normally"
 else
   fail "D: direct execution regressed -- rc=$rc out=$out"
