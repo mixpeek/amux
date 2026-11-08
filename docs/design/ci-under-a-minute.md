@@ -101,3 +101,16 @@ go live in about `gate` plus one builder tick plus a re-exec.
 - Commits that change only the dashboard: it is compiled into the binary.
   Serving it from a deployed snapshot (`AMUX_DASHBOARD_DIR`, already supported)
   would put those 44 commits a week on the re-stamp path. That is the next step.
+
+**Measured after fa39bb928 (2026-11-08).** The first two non-Rust commits both
+re-stamped (`verdict=activation_restamped`, 31 includes outside crates/
+checked). Times run from the `gate` run's `created_at` until the server served
+the new commit (`served_commit_measured source="receipt"`):
+
+| commit | gate | builder pickup | adoption | push to live |
+|---|---|---|---|---|
+| d36f6d0b1 (scripts) | 78 s | 10 s | 121 s, held by a running shell schedule (`adoption_deferred_shell_run`, SCHED-465) | 209 s |
+| 69abc30b6 (e2e spec) | 13 s | 5 s | 2 s | 20 s |
+
+A re-stamp with nothing holding adoption is live in about 20 s. The 900 s
+shell-run hold still applies, so a long shell schedule can delay one.
