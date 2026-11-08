@@ -24,6 +24,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_applyWorkerRenames": {
+      "kind": "command._applyWorkerRenames",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_applyYoloDefault": {
       "kind": "command._applyYoloDefault",
       "feedback_required": true,
@@ -894,6 +900,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkPlacesAck": {
+      "kind": "command._cmdkPlacesAck",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkQueryServer": {
       "kind": "command._cmdkQueryServer",
       "feedback_required": true,
@@ -944,6 +956,12 @@
     },
     "_composerAcceptLocal": {
       "kind": "command._composerAcceptLocal",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_composerLockTake": {
+      "kind": "command._composerLockTake",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1286,6 +1304,12 @@
     },
     "_cvSqSetTok": {
       "kind": "command._cvSqSetTok",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_cvThumbFailed": {
+      "kind": "command._cvThumbFailed",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5312,6 +5336,12 @@
     },
     "_syncUrlHash": {
       "kind": "command._syncUrlHash",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_syncWorkerRenames": {
+      "kind": "command._syncWorkerRenames",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

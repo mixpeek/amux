@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var isLoading = false
     @State private var canGoBack = false
     @State private var canGoForward = false
+    @State private var offDashboard = false
     @State private var showSettings = false
     @State private var webViewRef: WKWebView?
     @State private var loadError: String?
@@ -20,11 +21,35 @@ struct ContentView: View {
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
                     loadError: $loadError,
+                    offDashboard: $offDashboard,
+                    onWebView: { webViewRef = $0 },
                     onNavigationAction: handleNavigation,
                     onLongPress: { showSettings = true }
                 )
                 .id(webViewId)
                 .ignoresSafeArea()
+            }
+
+            // A page opened from the dashboard (a public app, a shared file,
+            // another site) replaces it in this web view and has no amux
+            // controls of its own. A password-protected app left the owner
+            // with no way out but quitting (2026-11-05), so any page that is
+            // not the dashboard gets a way back to it.
+            if offDashboard && loadError == nil {
+                HStack {
+                    Button(action: backToDashboard) {
+                        Label("amux", systemImage: "chevron.left")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                    .accessibilityLabel("Back to amux")
+                    .accessibilityIdentifier("back-to-dashboard")
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
             }
 
             if isLoading {
@@ -78,6 +103,18 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environmentObject(serverManager)
+        }
+    }
+
+    /// Back to the newest dashboard page in this web view's history, which
+    /// keeps the view the owner left from. A page opened from a deep link has
+    /// none behind it, so that loads the dashboard instead.
+    private func backToDashboard() {
+        guard let server = serverManager.serverURL, let web = webViewRef else { return }
+        if let item = web.backForwardList.backList.last(where: { DashboardPage.isDashboard($0.url, server: server) }) {
+            web.go(to: item)
+        } else {
+            web.load(URLRequest(url: DashboardPage.root(of: server)))
         }
     }
 

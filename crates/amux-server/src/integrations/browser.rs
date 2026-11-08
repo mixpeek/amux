@@ -4440,6 +4440,11 @@ pub struct Join {
     /// owner's tab: measured 2026-10-17, a joined session navigated and then
     /// closed a tab it never opened while its own stayed on about:blank.
     pub tab: String,
+    /// The pid of the browser joined. A join belongs to THAT browser: after it
+    /// stops (or dies) a later start of the same profile is someone else's
+    /// browser, and the stale join used to route the joiner into it and open a
+    /// tab there (2026-11-06). 0 in old test fixtures matches any pid.
+    pub pid: u32,
 }
 
 /// session -> its join.
@@ -4447,9 +4452,17 @@ pub static JOINED: LazyLock<Mutex<std::collections::HashMap<String, Join>>> =
     LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 fn joined_port(g: &std::collections::HashMap<String, RunningBrowser>, session: &str) -> Option<(u16, String)> {
-    let profile = JOINED.lock().expect("joined registry poisoned").get(session).map(|j| j.profile.clone())?;
-    g.values().find(|r| r.profile == profile).map(|r| (r.cdp_port, r.profile.clone()))
+    let (profile, pid) = JOINED.lock().expect("joined registry poisoned").get(session).map(|j| (j.profile.clone(), j.pid))?;
+    let r = g.values().find(|r| r.profile == profile)?;
+    if pid != 0 && r.pid != pid {
+        JOINED.lock().expect("joined registry poisoned").remove(session);
+        tracing::warn!(session, profile = %profile, joined_pid = pid, running_pid = r.pid, measured = true, n_considered = 1,
+            verdict = "browser_join_stale_dropped", "the browser this session joined stopped; a later start of the profile is not its join");
+        return None;
+    }
+    Some((r.cdp_port, r.profile.clone()))
 }
+
 
 /// Open a fresh tab for `session` in the browser already running `profile`
 /// and bind the session to it. Errors when that profile is not running.
@@ -4457,11 +4470,11 @@ pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<Dri
     if session.trim().is_empty() {
         return Err(DriverError::Cdp(anyhow::anyhow!("joining a running browser needs an explicit session")));
     }
-    let port = {
+    let found = {
         let g = RUNNING.lock().expect("browser registry poisoned");
-        g.values().find(|r| r.profile == profile).map(|r| r.cdp_port)
+        g.values().find(|r| r.profile == profile).map(|r| (r.cdp_port, r.pid))
     };
-    let Some(port) = port else { return Err(DriverError::NotRunning) };
+    let Some((port, browser_pid)) = found else { return Err(DriverError::NotRunning) };
     let t = cdp_new_tab(port, if url.is_empty() { "about:blank" } else { url })
         .await
         .map_err(DriverError::Cdp)?;
@@ -4471,7 +4484,7 @@ pub async fn join_running(session: &str, profile: &str, url: &str) -> Result<Dri
         return Err(DriverError::Cdp(anyhow::anyhow!("CDP /json/new returned no target: {t}")));
     }
     JOINED.lock().expect("joined registry poisoned")
-        .insert(session.to_string(), Join { profile: profile.to_string(), tab: target_id.clone() });
+        .insert(session.to_string(), Join { profile: profile.to_string(), tab: target_id.clone(), pid: browser_pid });
     // Joining IS a verb. Without this stamp a browser adopted long ago and joined
     // a moment ago still carried its old activity clock (2026-10-26: reaped 90s
     // after a join).
@@ -4510,7 +4523,7 @@ pub fn joined_tab(session: &str) -> Option<String> {
 /// Release a joined session: close ONLY its own tab and forget the join. The
 /// browser and its owner's tabs keep running. Returns (profile, closed tab).
 pub async fn leave_joined(session: &str) -> Option<(String, Option<String>)> {
-    let Join { profile, tab } = JOINED.lock().expect("joined registry poisoned").remove(session)?;
+    let Join { profile, tab, .. } = JOINED.lock().expect("joined registry poisoned").remove(session)?;
     NATIVE_TARGETS.lock().expect("native targets poisoned").remove(session);
     let target = Some(tab);
     let port = {
@@ -4655,7 +4668,7 @@ mod multi_browser_tests {
         test_clear_running();
         test_seed_running_port("shared", "owner-lane", 501, 9201);
         test_seed_running_port("other", "someone-else", 502, 9202);
-        JOINED.lock().unwrap().insert("joiner-lane".into(), Join { profile: "shared".into(), tab: "T1".into() });
+        JOINED.lock().unwrap().insert("joiner-lane".into(), Join { profile: "shared".into(), tab: "T1".into(), pid: 0 });
         assert_eq!(joiners_of("shared"), vec!["joiner-lane".to_string()]);
         assert!(joiners_of("other").is_empty(), "joiners are per profile");
         touch_verb_for_session("joiner-lane");
@@ -4663,6 +4676,23 @@ mod multi_browser_tests {
         assert!(stamp("shared") > 0, "the joined browser must carry the joiner's verb");
         assert_eq!(stamp("other"), 0, "an unrelated browser must not be stamped");
         JOINED.lock().unwrap().remove("joiner-lane");
+        test_clear_running();
+    }
+
+    /// A join belongs to the browser it joined. After that browser stops and
+    /// the profile starts again as someone else's browser, the stale join used
+    /// to route the joiner into the new one (2026-11-06).
+    #[test]
+    fn a_join_does_not_follow_its_profile_into_a_new_browser() {
+        let _reg = TEST_REGISTRY.blocking_lock();
+        test_clear_running();
+        test_seed_running_port("shared-j", "owner-lane", 601, 9301);
+        JOINED.lock().unwrap().insert("joiner-j".into(), Join { profile: "shared-j".into(), tab: "T1".into(), pid: 601 });
+        let port = |s: &str| joined_port(&RUNNING.lock().unwrap(), s);
+        assert_eq!(port("joiner-j"), Some((9301, "shared-j".to_string())), "the joined browser routes");
+        test_seed_running_port("shared-j", "next-owner", 777, 9302);
+        assert_eq!(port("joiner-j"), None, "a new browser of the profile is not the join");
+        assert!(joined_profile("joiner-j").is_none(), "the stale join is dropped");
         test_clear_running();
     }
 

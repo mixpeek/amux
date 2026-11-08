@@ -1,0 +1,79 @@
+/* Concierge kit: the visual pieces /concierge/ and the /solutions/<industry>/
+   pages share. It takes its colours from the page underneath (style.css on
+   the solutions pages, the inline palette on /concierge/), so one file
+   renders in both, in light and dark. */
+
+.cflow, .lchips, .ocards {
+  --k-fg:     var(--fg, var(--ink, #1b1813));
+  --k-dim:    var(--fg-dim, var(--ink-3, #6b6558));
+  --k-line:   var(--line, #e6e0d3);
+  --k-card:   var(--bg-2, var(--bg-soft, #f4efe4));
+  --k-accent: var(--accent, #c75b2e);
+  --k-on:     var(--bg, #fff);
+}
+.on-dark .cflow { --k-fg: var(--cream, #f4efe4); --k-dim: var(--cream-dim, #c3b9a3); --k-line: #3a3428; --k-card: var(--dark-3, #2a2519); --k-on: #fff; }
+
+/* How Concierge works: five connected steps. Left to right on a wide
+   screen, top to bottom on a phone. It is an ordered list underneath. */
+.cflow {
+  list-style: none; margin: 28px 0 0; padding: 0;
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px;
+  counter-reset: cf;
+}
+.cflow li { position: relative; text-align: center; padding: 0 4px; counter-increment: cf; }
+.cflow .cf-ic {
+  position: relative; z-index: 1;
+  display: grid; place-items: center; width: 56px; height: 56px; margin: 0 auto 12px;
+  border-radius: 16px; border: 1px solid var(--k-line); background: var(--k-card); color: var(--k-accent);
+}
+.cflow .cf-ic svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.cflow .cf-ic::after {
+  content: counter(cf); position: absolute; top: -7px; right: -7px;
+  display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--k-accent); color: var(--k-on); font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.cflow b { display: block; color: var(--k-fg); font-size: 15px; line-height: 1.3; margin-bottom: 4px; }
+.cflow small { display: block; color: var(--k-dim); font-size: 13.5px; line-height: 1.45; }
+.cflow li:not(:last-child)::after {
+  content: ""; position: absolute; top: 27px; height: 2px;
+  left: calc(50% + 36px); right: calc(-50% + 30px);
+  background: linear-gradient(90deg, var(--k-line), var(--k-accent));
+}
+.cflow li:not(:first-child)::before {
+  content: ""; position: absolute; top: 23px; left: calc(50% - 41px);
+  width: 8px; height: 8px; border-top: 2px solid var(--k-accent); border-right: 2px solid var(--k-accent);
+  transform: rotate(45deg);
+}
+.cflow li.cf-you .cf-ic { background: var(--k-accent); color: var(--k-on); border-color: var(--k-accent); }
+.cflow li.cf-you .cf-ic::after { background: var(--k-fg); color: var(--k-card); }
+@media (max-width: 760px) {
+  .cflow { grid-template-columns: 1fr; gap: 22px; }
+  .cflow li { display: grid; grid-template-columns: 56px 1fr; column-gap: 16px; align-items: center; text-align: left; padding: 0; }
+  .cflow .cf-ic { grid-row: span 2; margin: 0; }
+  .cflow b { margin: 0; align-self: end; }
+  .cflow small { align-self: start; }
+  .cflow li:not(:last-child)::after { top: 58px; bottom: -22px; left: 27px; right: auto; width: 2px; height: auto; background: linear-gradient(180deg, var(--k-line), var(--k-accent)); }
+  .cflow li:not(:first-child)::before { top: -13px; left: 24px; transform: rotate(135deg); }
+}
+
+/* Software we work in, as a row of logos. */
+.lchips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.lchips li, .lchips .lchip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px 6px 8px; border: 1px solid var(--k-line); border-radius: 999px;
+  background: var(--k-card); color: var(--k-fg); font-size: 14px; font-weight: 500; line-height: 1.2;
+}
+.lchips img { width: 20px; height: 20px; object-fit: contain; border-radius: 4px; flex: none; }
+.lchips .lc-text { padding-left: 12px; color: var(--k-dim); background: transparent; border-style: dashed; }
+
+/* Outcome cards with an icon. */
+.ocards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ocards > div {
+  display: grid; grid-template-columns: 40px 1fr; gap: 4px 14px; align-items: start;
+  border: 1px solid var(--k-line); border-radius: 14px; padding: 16px 18px; background: var(--k-card);
+}
+.ocards .oc-ic { grid-row: span 2; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; background: color-mix(in oklab, var(--k-accent) 14%, transparent); color: var(--k-accent); }
+.ocards .oc-ic svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ocards strong { color: var(--k-fg); font-size: 16px; line-height: 1.35; }
+.ocards span:not(.oc-ic) { color: var(--k-dim); font-size: 14.5px; line-height: 1.5; }
+@media (max-width: 640px) { .ocards { grid-template-columns: 1fr; } }

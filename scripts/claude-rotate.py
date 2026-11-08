@@ -937,6 +937,10 @@ def cmd_tick():
             heal_stale(current_email())
         except Exception as e:
             log("claude_rotate_heal", measured=False, why_unmeasured=str(e)[:200])
+        try:
+            check_refusal(current_email(), load(STATE, {}))
+        except Exception as e:
+            log("claude_rotate_refusal_check", measured=False, why_unmeasured=str(e)[:200])
     current = current_email()
     rows = rank()
     state = load(STATE, {})
@@ -1085,6 +1089,93 @@ def resume_stranded(force=False):
 # 2026-11-03: "Login expired · Please run /login" did not match this, and
 # mixpeek-meta-worker stayed stopped through two later switches.
 AUTH_LOST = re.compile(r"(Not logged in|Login expired).{0,40}/login")
+# A subscription Anthropic will not serve, usually a payment past due. 2026-11-07
+# 06:00: the rotator moved this Mac onto hello@amux.io, whose /usage answered
+# only "rate limited" (which the trial takes as a working login), and every
+# prompt on it read "Claude Code can't use your Claude subscription, usually
+# because a payment is past due". The rotator held there four hours as
+# current_is_best on a 3% reading copied from another account's status lines.
+SUBSCRIPTION_REFUSED = re.compile(r"can.t use your Claude subscription")
+REFUSED_HOLD_S = int(os.environ.get("CLAUDE_ROTATE_REFUSED_HOLD_S", str(24 * 3600)))
+REFUSAL_CHECK_GAP_S = int(os.environ.get("CLAUDE_ROTATE_REFUSAL_CHECK_GAP_S", "900"))
+CHECK_MODEL = os.environ.get("CLAUDE_ROTATE_CHECK_MODEL", "claude-haiku-5-5")
+
+
+def refused_text(text):
+    return bool(SUBSCRIPTION_REFUSED.search(ANSI.sub("", text or "")))
+
+
+def prompt_check(config_dir=None):
+    """Send one one-word prompt on the shared login, or on `config_dir`'s.
+    'refused' when Anthropic declines the subscription, 'ok' when it answers,
+    None when the check itself could not run. /usage cannot tell a refused
+    subscription from a rate-limited endpoint; a prompt can, and a refused one
+    spends nothing."""
+    env = dict(os.environ)
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    try:
+        r = subprocess.run([CLAUDE, "-p", "reply with the single word ok", "--model", CHECK_MODEL],
+                           cwd=PROBE_CWD, env=env, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log("claude_rotate_prompt_check", measured=False, why_unmeasured=str(e)[:200])
+        return None
+    if refused_text(r.stdout + r.stderr):
+        return "refused"
+    return "ok" if r.returncode == 0 else None
+
+
+def mark_refused(email, via, workers=()):
+    """Hold a refused account off for REFUSED_HOLD_S. Paying the bill is the
+    owner's; the rotator only stops choosing the account."""
+    until = (now() + dt.timedelta(seconds=REFUSED_HOLD_S)).isoformat(timespec="seconds")
+    with locked(ACCOUNTS + ".lock"):
+        data = load(ACCOUNTS, {"accounts": {}})
+        acct = data["accounts"].setdefault(email, {})
+        acct["hold_until"], acct["hold_why"] = until, "subscription_refused (%s)" % via
+        save(ACCOUNTS, data)
+    print(log("claude_rotate_subscription_refused", measured=True, n_considered=1, account=email, via=via,
+              workers=sorted(workers), held_until=until,
+              fix="pay or renew at https://claude.ai/settings/billing, then: claude-rotate.py hold %s now" % email))
+
+
+def refused_workers(sessions=None):
+    """Running, non-isolated workers whose last lines are the refusal."""
+    sessions = sessions if sessions is not None else (_amux("/api/sessions") or [])
+    out = []
+    for s in sessions:
+        if not s.get("running") or s.get("isolated"):
+            continue
+        peek = _amux(f"/api/sessions/{urllib.parse.quote(s['name'])}/peek?lines=12") or {}
+        lines = [l for l in (peek.get("output") or "").splitlines() if l.strip()][-10:]
+        if any(refused_text(l) for l in lines):
+            out.append(s["name"])
+    return out
+
+
+def check_refusal(current, state):
+    """When a worker's screen ends on the refusal, check the shared login with
+    one prompt. Refused: hold the account, so the next decide() moves off it.
+    Answered: the worker's process is on an older login, which is logged, since
+    switching would not help it. Returns True when the current account was held."""
+    if not current:
+        return False
+    workers = refused_workers()
+    if not workers:
+        return False
+    checked = state.setdefault("refusal_checked", {})
+    if time.time() - float(checked.get(current) or 0) < REFUSAL_CHECK_GAP_S:
+        return False
+    checked[current] = time.time()
+    save(STATE, state)
+    verdict = prompt_check()
+    if verdict == "refused":
+        mark_refused(current, "worker_screen", workers)
+        return True
+    log("claude_rotate_refusal_not_current", measured=verdict is not None, n_considered=len(workers),
+        current=current, workers=workers, check=verdict,
+        note="the shared login answers; these workers hold an older login until their next restart")
+    return False
 
 
 class LoginGapProbe:
@@ -1136,7 +1227,7 @@ def auth_lost(screen):
     """True when Claude's not-logged-in error is among the last lines on screen,
     which is where a turn that died on it leaves it."""
     lines = [l for l in (screen or "").splitlines() if l.strip()][-10:]
-    return any(AUTH_LOST.search(l) for l in lines)
+    return any(AUTH_LOST.search(l) or refused_text(l) for l in lines)
 
 
 def resume_auth_lost():
@@ -1591,6 +1682,9 @@ def trial_login(target, saved):
             log("claude_rotate_trial_failed", measured=False, target=target, why_unmeasured="scratch credential write failed")
             return None
         windows = probe(config_dir=folder)
+        if windows == {"rate_limited": True} and prompt_check(folder) == "refused":
+            mark_refused(target, "trial")
+            windows = None
         # The CLI may have refreshed the token in the folder, which ends the saved
         # one. Keep the newest whatever the probe said, before the folder goes.
         raw = _kc_read(svc, CRED_ACCT) if USE_KEYCHAIN else _file_read(_cli_cred_file(folder))
@@ -1750,6 +1844,12 @@ def _switch(target, reason):
     rc = stored_switch(target, before, reason, started)
     if rc is not None:
         return rc
+    # A trial that found the subscription refused held the target; a browser
+    # sign-in would only reach the same refusal after minutes under the lock.
+    if held(load(ACCOUNTS, {"accounts": {}})["accounts"].get(target) or {}, now()):
+        print(log("claude_rotate_switch_skipped_held", measured=True, n_considered=1, target=target, reason=reason,
+                  still=before, why="the target is held (a refused subscription or an owner hold); no browser sign-in"))
+        return 1
     upstream = relay_upstream()
     if upstream is not None and upstream != "connected":
         return browser_unreachable(target, reason, upstream)

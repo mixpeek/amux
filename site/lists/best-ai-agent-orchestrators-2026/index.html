@@ -21,13 +21,26 @@
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Lists","item":"https://amux.io/lists/"},{"@type":"ListItem","position":3,"name":"Best AI Agent Orchestrators 2026","item":"https://amux.io/lists/best-ai-agent-orchestrators-2026/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is the best open-source AI agent orchestrator in 2026?","acceptedAnswer":{"@type":"Answer","text":"For coding-specific agent fleets (Claude Code, Codex, Gemini CLI), amux is the best self-hosted orchestrator — usage-limit resume, kanban board, web dashboard, mobile app, zero external dependencies. For general-purpose multi-agent workflows in Python, LangGraph is the most robust framework with the largest ecosystem. For autonomous coding agents with a browser sandbox, OpenHands is the leading open-source option."}},{"@type":"Question","name":"What is the difference between an agent framework and an agent orchestrator?","acceptedAnswer":{"@type":"Answer","text":"An agent framework (LangGraph, CrewAI, AutoGen) provides programming primitives for building custom multi-agent systems — you write code to define agents, tools, and workflows. An agent orchestrator (amux, Claude Managed Agents) manages pre-built agents — you configure and run them without writing agent logic. Frameworks give more flexibility; orchestrators give faster time-to-value for standard patterns."}},{"@type":"Question","name":"How does amux compare to LangGraph?","acceptedAnswer":{"@type":"Answer","text":"Different layers. LangGraph is a Python framework for building custom agent graphs — you define nodes, edges, and state machines in code. amux is an orchestration platform for running terminal-based coding agents (Claude Code, Codex) — you configure sessions and tasks without writing agent code. They are complementary: a developer could use LangGraph to build a custom agent and amux to run and monitor multiple instances of it."}}]}</script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>

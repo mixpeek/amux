@@ -428,6 +428,52 @@ pub fn consume(home: &Path, id: &str) -> Consume {
     Consume::Ready(doc)
 }
 
+/// A consumed approval whose send did not happen goes back to pending, with
+/// the failure recorded on it, so the approver can release it again.
+///
+/// `consume` renames to `.approved.json` BEFORE the send is tried, and the
+/// handler can still fail after it (an attachment that will not parse, an
+/// unknown endpoint, Gmail refusing). Left `.approved.json`, `fate` called the
+/// draft RELEASED and a retry with the `approval_id` the error handed back got
+/// Gone: an unsent email read as sent (implicit state machines, 2026-11-06).
+/// Returns false when there was no consumed file to reopen.
+pub fn reopen_after_failed_send(home: &Path, id: &str, error: &str) -> bool {
+    if !valid_id(id) {
+        return false;
+    }
+    let dir = approvals_dir(home);
+    let consumed = dir.join(format!("{id}.approved.json"));
+    let Ok(raw) = std::fs::read_to_string(&consumed) else {
+        return false;
+    };
+    let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    if let Some(obj) = doc.as_object_mut() {
+        let failures = obj.entry("failed_releases").or_insert_with(|| json!([]));
+        if let Some(list) = failures.as_array_mut() {
+            list.push(json!({ "at": now_f64(), "error": error.chars().take(400).collect::<String>() }));
+        }
+    }
+    // Write the pending file whole, then drop the consumed one: a crash between
+    // the two leaves both, and `consume` reads the pending one first.
+    let tmp = dir.join(format!(".{id}.reopen.tmp"));
+    if std::fs::write(&tmp, doc.to_string()).is_err()
+        || std::fs::rename(&tmp, dir.join(format!("{id}.json"))).is_err()
+    {
+        tracing::warn!(approval = %id, measured = false, verdict = "email_approval_reopen_failed",
+            "[email] a failed release could not be put back to pending; it reads as released");
+        return false;
+    }
+    if let Err(e) = std::fs::remove_file(&consumed) {
+        tracing::warn!(approval = %id, error = %e, "[email] reopened approval kept its consumed file");
+    }
+    tracing::warn!(approval = %id, measured = true, n_considered = 1,
+        verdict = "email_approval_reopened_after_failed_send",
+        "[email] the release failed before anything was sent; the approval is pending again");
+    true
+}
+
 /// What actually became of an approval id, read off the directory.
 ///
 /// `consume` renames rather than deletes precisely so "what happened to apr_X"
@@ -731,6 +777,15 @@ mod tests {
             .join("email-approvals")
             .join(format!("{id}.approved.json"))
             .exists());
+        // A release whose send failed goes back to pending with the failure on
+        // it, and the next approval consumes it again (2026-11-06).
+        assert!(reopen_after_failed_send(home, &id, "gmail said 400"));
+        assert!(!fate(home, &id).contains("RELEASED"), "{}", fate(home, &id));
+        match consume(home, &id) {
+            Consume::Ready(doc) => assert_eq!(doc["failed_releases"][0]["error"], "gmail said 400"),
+            _ => panic!("a reopened approval is consumable again"),
+        }
+        assert!(!reopen_after_failed_send(home, "apr_..", "x"));
         assert!(list_pending(home).is_empty());
         // Expiry still applies to a NON-email kind: backdate past the TTL.
         let id2 = create_approval(home, "s", "grant", json!({}), json!({})).unwrap();

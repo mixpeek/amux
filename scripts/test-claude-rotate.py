@@ -368,6 +368,7 @@ _stale = dict(rot.stale_accounts("me@x", {}))
 expect(_stale == {"full@x": "full_no_reset", "ended@x": "weekly_reset_passed"},
        f"only a full account with no reset and an ended week are stale, got {_stale}")
 _trials = []
+_real_trial, _real_candidates = rot.trial_login, rot.login_candidates
 rot.login_candidates = lambda e: [("stored_login", {"claudeAiOauth": {"refreshToken": e}})]
 rot.trial_login = lambda e, s: _trials.append(e) or {"claudeAiOauth": {}}
 expect(len(rot.heal_stale("me@x")) == 1 and len(_trials) == 1, f"one trial per tick, got {_trials}")
@@ -380,6 +381,55 @@ _old["heal_tried"] = {e: t - rot.HEAL_EVERY_S - 5 for e, t in _old["heal_tried"]
 rot.save(rot.STATE, _old)
 rot.heal_stale("me@x")
 expect(len(_trials) == 3, f"and is tried again after it, got {_trials}")
+rot.trial_login, rot.login_candidates = _real_trial, _real_candidates
+rot.save(rot.ACCOUNTS, _saved_accounts)
+rot.save(rot.STATE, _saved_state)
+
+# A refused subscription (2026-11-07: hello@amux.io, payment past due) is caught
+# on screen, in the trial and in tick, and the account is held off.
+_ref = ("\x1b[38;5;220m⏺\x1b[39m \x1b[38;5;220mClaude\x1b[39m \x1b[38;5;220mCode\x1b[39m "
+        "\x1b[38;5;220mcan't\x1b[39m \x1b[38;5;220muse\x1b[39m \x1b[38;5;220myour\x1b[39m "
+        "\x1b[38;5;220mClaude\x1b[39m \x1b[38;5;220msubscription,\x1b[39m usually because a payment is past due")
+expect(rot.refused_text(_ref), "the refusal is read through the per-word colour codes")
+expect(rot.auth_lost(_ref + "\n❯\n"), "a worker stopped on the refusal is resumed after a switch")
+_saved_accounts = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_saved_state = rot.load(rot.STATE, {})
+rot.save(rot.ACCOUNTS, {"accounts": {"cur@x": {"seven_day": {"used_percentage": 3}},
+                                     "other@x": {"seven_day": {"used_percentage": 40}}}})
+rot.save(rot.STATE, {})
+_real_probe, _real_check = rot.probe, rot.prompt_check
+rot.probe = lambda config_dir=None: {"rate_limited": True}
+rot.prompt_check = lambda config_dir=None: "refused"
+expect(rot.trial_login("other@x", {"claudeAiOauth": {"refreshToken": "o"}}) is None,
+       "a trial whose /usage is rate limited and whose prompt is refused fails")
+expect(rot.held(rot.load(rot.ACCOUNTS, {})["accounts"]["other@x"], rot.now()), "and holds the account off")
+rot.prompt_check = lambda config_dir=None: "ok"
+expect(rot.trial_login("cur@x", {"claudeAiOauth": {"refreshToken": "c"}}) is not None,
+       "a rate-limited /usage with a prompt that answers still passes")
+_panes = {"w1": _ref + "\n❯\n", "w2": "working\n❯\n"}
+_real_amux = rot._amux
+rot._amux = lambda path, body=None: (
+    [{"name": n, "running": True} for n in _panes] if path == "/api/sessions"
+    else {"output": _panes[path.split("/")[3]]})
+rot.prompt_check = lambda config_dir=None: "ok"
+expect(rot.check_refusal("cur@x", {}) is False, "a refusal on screen with a shared login that answers holds nothing")
+expect(not rot.held(rot.load(rot.ACCOUNTS, {})["accounts"]["cur@x"], rot.now()), "cur@x is not held")
+rot.prompt_check = lambda config_dir=None: "refused"
+_st = {}
+expect(rot.check_refusal("cur@x", _st) is True, "a refused shared login is held")
+expect("cur@x" not in [r["email"] for r in rot.rank()], "and drops out of the ranking, so decide() moves off it")
+expect(rot.check_refusal("cur@x", _st) is False, "the check runs at most once per REFUSAL_CHECK_GAP_S")
+# A target the trial held as refused gets no browser sign-in.
+_browser = []
+_real_stored, _real_relay, _real_cli, _real_unreach = rot.stored_switch, rot.relay_upstream, rot.cli_email, rot.browser_unreachable
+rot.stored_switch = lambda *a: None
+rot.relay_upstream = lambda: _browser.append(1) or "awaiting_approval"
+rot.browser_unreachable = lambda *a: 1
+rot.cli_email = lambda: "cur@x"
+expect(rot._switch("other@x", "current_exhausted") == 1 and _browser == [],
+       f"a held target stops the switch before the browser, got browser calls {_browser}")
+rot.stored_switch, rot.relay_upstream, rot.cli_email, rot.browser_unreachable = _real_stored, _real_relay, _real_cli, _real_unreach
+rot._amux, rot.probe, rot.prompt_check = _real_amux, _real_probe, _real_check
 rot.save(rot.ACCOUNTS, _saved_accounts)
 rot.save(rot.STATE, _saved_state)
 

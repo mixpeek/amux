@@ -196,3 +196,49 @@ with `scripts/mutate.sh`) and a log verdict.
 | 37 | Column collapse | Fixed 8ba9e7196: a corrupt saved value is dropped |
 | T5 | Media jobs; reclaim purge | Fixed c13122717: media writes require their claim; purge relabels only staged items |
 | T5 | Email approval fate; ChatGPT revoke | Deliberate as written (fate derives state from the sentence a person reads; a replayed code always revokes) |
+
+## Second pass (owner: "find all of the implicit state machines in my app, and then fix them all", 2026-11-06)
+
+Three read-only sweeps of `origin/main` at 30f82aa31 (board and workers; every
+other server subsystem; the dashboard and the CLI) looked for holes left after
+the fixes above and for machines the first pass did not list. Ranked by harm.
+
+### Fixed in this pass
+
+| # | Machine | Hole | Fix |
+|---|---|---|---|
+| 38 | Email approval release | `consume` renames to `.approved.json` before the send; a failed attachment parse, unknown endpoint or Gmail refusal left it "RELEASED", and a retry got Gone. An unsent email read as sent | The approval returns to pending with the failure recorded (`email_approval_reopened_after_failed_send`). A transport error that may have sent stays released (`email_approval_send_outcome_unknown`) |
+| 39 | Board PATCH out of a terminal status | A pair with no named transition (verified->doing, discarded->todo) became an implicit Force, skipping core's terminal check | A worker needs `force` with a reason (409 `terminal_requires_force`, `patch_terminal_exit_refused`). The owner's dashboard, which cannot send force, still reopens by moving |
+| 40 | Deleting a status column | needsyou, blocked, armed, quarantined have no `statuses` row: deleting one force-moved every card in it to todo and answered ok | Every status the board knows is built in; only an existing custom column moves cards; otherwise 404 (`status_delete_not_custom`) |
+| 41 | Composer send lock (#36 follow-up) | Keyed by worker: after the 20 s watch released it and a second send began, the first send's late finish unlocked the composer under the second | Keyed by a per-send token; a stale release is ignored (`composer_stale_release_ignored`) |
+| 42 | Queue mode freshness (#36 follow-up) | "Fresh" read `_lastDataTime`, which every SSE ping moves, so a minutes-old worker list counted as fresh | Freshness is the time the worker list was last read (`_sessionsReadAt`) |
+| 43 | Ask panel | An answer arriving after a switch of worker, a new thread or a second question was pushed into the thread on screen | One generation per panel; a stale answer is dropped (`ask_answer_dropped`) |
+| 44 | Needs-input Approve all | Closing the overlay did not stop the batch, which kept approving, outbound sends included | Closing ends the batch; the log and toast say it stopped |
+| 45 | Service worker reload (#34 follow-up) | `controllerchange` reloaded every tab at once, hidden ones included; its draft rescue wrote a field nothing read | A hidden tab reloads when shown (`sw_reload_deferred_until_shown`); the draft goes to the draft store |
+| 46 | File viewer | Closing did not invalidate an in-flight load, which then set `_fileData` on a closed overlay | Close bumps the load generation |
+| 47 | Escape in the steering delay picker | One Escape closed the picker and the worker view under it | The picker's Escape stops there |
+| 48 | Messages pager | A full refresh replaced the list (older pages and unsent posts lost); an older page from an earlier open of the same conversation was prepended; the poll kept running after Back | A refresh merges; a per-open generation; Back stops the poll |
+| 57 | Browser joined tabs | Stopping a profile never cleared `JOINED`; a later start of the profile routed the joiner into the new owner's browser | A join records the browser's pid; a join of a stopped browser is dropped when next resolved (`browser_join_stale_dropped`). Not cleared at stop, because the reaper tells joiners after it stops |
+| 60 | Usage attribution | `voided` and `lost` messages could be credited as a turn's prompt | Excluded with `refused` and `uncertain` |
+| 49 | `amux ci wait` poller lock | A lock left with no pid (killed between mkdir and the pid write) was never broken; `kill -0` passed on a reused pid | An empty lock over 30 s is broken (`ci_wait_lock_empty_broken`); the holder's start time is checked |
+
+### Open, ranked
+
+| # | Machine | Hole | Severity |
+|---|---|---|---|
+| 50 | Lane archive (`session_verbs.rs` ~19431) | Raw SQL sets cards `discarded` without releasing the lease, recording an attempt or emitting an event | medium |
+| 51 | Worker lifecycle | Archiving a paused worker leaves the row `paused` with both env flags set; each caller passes its own allowed-from set | medium |
+| 52 | Schedule run `queued` | Steering expiry, peer refusal and the stale-resume drop delete the item without moving the run, which stays queued; `last_delivery` never sees queued->delivered | medium |
+| 53 | Schedule pass-check | An owner edit of `pass_check` during a check is overwritten by the old command's verdict (run_count unchanged) | medium |
+| 54 | Contract review state | `superseded` and `pending` resets with no state or generation check; readers of `state='superseded'` with no writer | medium |
+| 55 | Reclaim quarantine batch | Restore and purge update the batch row with no state guard; a purged batch can be relabelled restored | medium |
+| 56 | Bridge outbound | An approved post that fails once is re-held and the owner asked again | medium |
+| 58 | Rate-limit stamp | Four non-atomic meta writes per tick; three readers disagree on what "rate limited" means | medium |
+| 59 | Goal-loop park | `restore_tick` clears the park before knowing the restore was delivered. Keeping it alone changes nothing: the restore's one-time claim is spent, so the next tick clears it anyway. Needs a retry design (bounded attempts in the claim key) | medium |
+| 61 | Capture/intake | `capture_pending` cleared without `intake_result.state` at five sites | low |
+| 62 | Card and worker composers | `@mention` routing, expansion and the error text differ between the card and the worker view | medium |
+| 63 | SSE lifecycle (#32 follow-up) | Every focus resets the retry count; onerror timers are not kept | medium |
+| 64 | Peek poller | A focus during an in-flight tick starts a second refresh | low |
+| 65 | Saved-peek split restore | Not re-checked against the open worker | low |
+| 66 | Tunnel, connector status, planning nodes, task artifacts, decision digest, pages asks | Spelling drift, missing from-state checks | low |
+| 67 | Dead columns | `issues.execution_state`, `email_events.status` | low |

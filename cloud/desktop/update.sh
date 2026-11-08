@@ -101,6 +101,13 @@ if [[ -f "$SRC/cloud/desktop/door.py" ]] && ! cmp -s "$SRC/cloud/desktop/door.py
   systemctl restart amux-door && say "door.py updated from the checkout"
 fi
 
+# An installed claude-rotate follows the checkout too; it is a copy, so the pull alone leaves it
+# behind (2026-11-05: mixpeek-dev ran a day-old rotator).
+REFRESH="$SRC/scripts/claude-rotate-refresh.sh"
+if [[ -f "$REFRESH" ]]; then
+  say "$(as_user bash "$REFRESH" "$SRC/scripts/claude-rotate.py" "$HOME_DIR/.amux/claude-rotate/claude-rotate.py" 2>&1 | tail -1)"
+fi
+
 # Claude status hooks, as install.sh registers them on a local install. Without them no Claude
 # worker reports its state and its lane reads "unknown" (codex e2e round 3: the first worker never
 # got its start prompt). Idempotent: the installer replaces only amux's own entries. Codex hooks are

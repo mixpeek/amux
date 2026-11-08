@@ -882,8 +882,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | div | `openConnect` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | div | `openConnectIterm2` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
 | index.html | div | `openCreate` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| app.js | ).join() + | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | : | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openFilePreview` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1104,6 +1104,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ${isExp && (displayTaskName \|\| s.task_override)  | `` | onclick |
 | app.js | ${s.enabled ?  | `` | onclick |
 | app.js | ${t.id} | `` | onclick |
+| app.js | ).join() + | `` | onclick |
 | app.js | + | `` | onclick |
 | app.js | + | `` | onclick |
 | app.js | + | `` | onclick |

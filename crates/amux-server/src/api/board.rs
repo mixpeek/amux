@@ -2165,7 +2165,11 @@ async fn delete_status(
         "verified",
         "discarded",
     ];
-    if BUILTINS.contains(&sid.as_str()) {
+    // Every status the board itself knows is built in, not only the seven
+    // seeded columns: needsyou, blocked, armed and quarantined have no row in
+    // `statuses`, so deleting one force-moved every card in it to todo and then
+    // deleted nothing, answering ok (2026-11-06).
+    if BUILTINS.contains(&sid.as_str()) || bs::parse_status(&sid).is_some() {
         return err(
             StatusCode::BAD_REQUEST,
             json!({ "error": "cannot delete built-in status" }),
@@ -2183,6 +2187,17 @@ async fn delete_status(
     let write = state
         .store
         .write_async(move |conn| {
+            // Only a custom column that exists moves its cards.
+            let custom: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM statuses WHERE id = ?1 AND is_builtin = 0",
+                [&sid_w],
+                |r| r.get(0),
+            )?;
+            if custom == 0 {
+                tracing::warn!(status = %sid_w, measured = true, n_considered = 0,
+                    verdict = "status_delete_not_custom", "no custom column by that id; no card moved");
+                return Ok(WriteOutcome { applied: false, events: Vec::new() });
+            }
             let moved: Vec<String> = conn
                 .prepare("SELECT id FROM issues WHERE status = ?1 AND deleted IS NULL")?
                 .query_map([&sid_w], |r| r.get::<_, String>(0))?
@@ -2223,11 +2238,12 @@ async fn delete_status(
     if let Err(e) = write {
         return internal(e);
     }
-    let moved = out
-        .lock()
-        .expect("status slot poisoned")
-        .take()
-        .unwrap_or_default();
+    let Some(moved) = out.lock().expect("status slot poisoned").take() else {
+        return err(
+            StatusCode::NOT_FOUND,
+            json!({ "error": format!("no custom status column {sid:?}; nothing moved") }),
+        );
+    };
     Json(json!({
         "ok": true,
         "moved": moved.len(),
@@ -14235,6 +14251,25 @@ pub async fn patch_item(
                         }
                     }
 
+                    // Terminal is terminal for a WORKER on this door too. A pair
+                    // with no named transition (verified->doing, discarded->todo)
+                    // used to become an implicit Force, which skips core's
+                    // terminal check: a lane's PATCH reopened what `advance()`
+                    // refuses (2026-11-06). The owner's dashboard (no worker
+                    // origin, which cannot send `force`) keeps reopening a card
+                    // by moving it, recorded below as a direct set.
+                    if !force && from.is_terminal() && from != target && !caller_lane.is_empty() {
+                        tracing::warn!(card = %row.id, from = %bs::db_status_spelling(from),
+                            to = %target_raw, actor = %actor_name, measured = true, n_considered = 1,
+                            verdict = "patch_terminal_exit_refused",
+                            "a terminal card is left only by a forced, attributed transition");
+                        return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT, json!({
+                            "error": format!("{} is {}, a terminal status; leaving it needs force (with a reason)",
+                                row.id, bs::db_status_spelling(from)),
+                            "code": "terminal_requires_force",
+                            "item": row.id,
+                        })), no_write());
+                    }
                     let now = chrono::Utc::now();
                     let tx = if force {
                         BoardTransition::Force {

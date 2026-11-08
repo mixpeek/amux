@@ -121,6 +121,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/task-history", "fleet-wide task list for the Tasks tab (api/sessions_legacy.rs task_list)"),
     ("/api/sessions", "python-SHAPE session list (rust-derived) + per-name verbs — peek/send/config/start/stop/… native over the fleet substrate (api/session_verbs.rs, AMUX-2598)"),
     ("/api/identity", "cloud user + auth-config introspection over server.env/.claude.json (mod.rs)"),
+    ("/api/session-renames", "old worker name -> the name it became, so a client holding the old name follows a rename (api/session_verbs.rs session_renames)"),
     ("/api/sessions-git", "bulk {session: {branch, repo}} map for the session cards — REUSES the session list's branch (one answer, not two) and adds repo, one rev-parse per DISTINCT dir, 30s TTL (api/sessions_git.rs, AMUX-2599)"),
     ("/api/offline-origin", "which origin can run a service worker — answers from the TLS dir we ACTUALLY serve, and gives no cert advice on a proxied origin (api/offline_origin.rs, AMUX-2599)"),
     ("/api/git", "POST /api/git/staged-guard — the shared-checkout staged-state guard the installed .git/hooks/amux-staged-guard calls on every commit. UNROUTED from the cutover until 2026-08-09 (405 x ~1,147/hr, swallowed by the hook's fail-open), so the guard was silently off fleet-wide (api/git_guard.rs, AMUX-1730)"),
