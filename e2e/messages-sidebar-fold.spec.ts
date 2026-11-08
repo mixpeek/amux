@@ -60,6 +60,15 @@ test('the sidebar folds to a rail on wide screens; phones have no rail', async (
   await expect(page.locator('#cv-search')).toBeHidden();
   const tb = (await toggle.boundingBox())!;
   expect(tb.width).toBeGreaterThanOrEqual(32);
+  // The picture and the button both fit inside the rail (they sat side by
+  // side and the rail clipped half of each).
+  const rail = (await page.locator('#cv-side').boundingBox())!;
+  for (const sel of ['#cv-me', '#cv-side-toggle']) {
+    const b = (await page.locator(sel).boundingBox())!;
+    expect(b.width, sel + ' has a size').toBeGreaterThan(0);
+    expect(b.x, sel + ' left edge inside the rail').toBeGreaterThanOrEqual(rail.x);
+    expect(b.x + b.width, sel + ' right edge inside the rail').toBeLessThanOrEqual(rail.x + rail.width + 0.5);
+  }
   await toggle.click();
   await expect.poll(async () => Math.round((await page.locator('#cv-side').boundingBox())!.width)).toBe(Math.round(before));
   await expect(page.locator('#cv-search')).toBeVisible();

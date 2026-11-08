@@ -9044,7 +9044,10 @@ button.cv-sec:hover { color:var(--text); }
   #messages-view.cv-side-folded #cv-side { width:44px; flex-basis:44px; padding-left:var(--space-1); padding-right:var(--space-1); overflow:hidden; }
   #messages-view.cv-side-folded #cv-side > :not(.cv-side-head) { display:none; }
   #messages-view.cv-side-folded .cv-side-title { display:none; }
-  #messages-view.cv-side-folded .cv-side-head { padding:var(--space-0-5) 0 var(--space-2); justify-content:center; }
+  /* The rail is 36px inside, too narrow for the picture and the button side by
+     side (both were clipped), so they stack. */
+  #messages-view.cv-side-folded .cv-side-head { padding:var(--space-0-5) 0 var(--space-2); flex-direction:column; gap:var(--space-1-5); }
+  #messages-view.cv-side-folded .cv-me { margin-right:0; }
   #messages-view.cv-side-folded .cv-side-toggle { margin:0; }
 }
 .cv-item { display:flex; align-items:center; gap:var(--space-2); width:100%; min-height:36px; padding:var(--space-1-5) var(--space-2-5);
