@@ -269,6 +269,37 @@ cta = await evs(p, 'cta_click');
 ok(cta.some(e => e.goal === 'walkthrough' && e.spot === 'home-walkthrough'), 'homepage walkthrough link -> goal walkthrough, spot home-walkthrough');
 await p.context().close();
 
+// /demos/ search: filters from the markup, says when nothing matches, loads no clip it does not show.
+for (const mobile of [false, true]) {
+  const where = mobile ? 'phone' : 'desktop';
+  p = await page({ mobile });
+  await p.goto(B + '/demos/');
+  await p.waitForLoadState('load');
+  const visible = () => p.evaluate(() => [...document.querySelectorAll('.demo-card')].filter(c => !c.classList.contains('hidden')).length);
+  const total = await p.evaluate(() => document.querySelectorAll('.demo-card').length);
+  ok(total > 20 && await visible() === total, `every demo shows before searching (${where})`);
+  ok(await p.evaluate(() => [...document.querySelectorAll('.demo-thumb video')].every(v => v.preload === 'none' && !v.autoplay)), `clips wait until they are on screen (${where})`);
+  ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `no sideways overflow on /demos/ (${where})`);
+  await p.focus('#demo-search');
+  await p.keyboard.type('subscribe');
+  ok(await visible() === 1, `searching a tag finds the calendar demo (${where})`);
+  await p.keyboard.press('Escape');
+  ok(await visible() === total, `Escape clears the search (${where})`);
+  await p.keyboard.type('zzzz');
+  ok(await p.isVisible('#demo-empty') && await visible() === 0, `no match says so (${where})`);
+  await p.click('#demo-clear');
+  ok(await visible() === total && !await p.isVisible('#demo-empty'), `Clear search brings them back (${where})`);
+  await p.click('.filter-btn:text-is("Board")');
+  const board = await visible();
+  await p.fill('#demo-search', 'subscribe');
+  ok(board > 0 && board < total && await visible() >= 1 && await visible() < board, `search and category filter combine (${where})`);
+  await p.waitForFunction(() => Array.from(window.posthog).some(c => Array.isArray(c) && c[1] === 'cta_click' && c[2] && c[2].goal === 'demo_search'), null, { timeout: 4000 });
+  cta = await evs(p, 'cta_click');
+  ok(cta.filter(e => e.goal === 'demo_search' && e.spot === 'demos-search' && e.label === 'subscribe').length === 1, `search records one cta_click, goal demo_search (${where})`);
+  ok(p.errs.length === 0, `no JS errors on /demos/ (${where})`);
+  await p.context().close();
+}
+
 await b.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

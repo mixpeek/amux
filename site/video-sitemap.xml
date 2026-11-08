@@ -57,17 +57,6 @@
     </video:video>
   </url>
   <url>
-    <loc>https://amux.io/demos/workspace-tiled-view/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/workspace-tiled-view/demo.gif</video:thumbnail_loc>
-      <video:title>Workspace Tiled View — amux Demo</video:title>
-      <video:description>Multi-pane layout showing all agent terminals simultaneously.</video:description>
-      <video:content_loc>https://amux.io/demos/workspace-tiled-view/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
     <loc>https://amux.io/demos/agent-orchestration/</loc>
     <video:video>
       <video:thumbnail_loc>https://amux.io/demos/agent-orchestration/demo.gif</video:thumbnail_loc>
@@ -283,17 +272,6 @@
       <video:title>Agent Coordination via REST — amux Demo</video:title>
       <video:description>Orchestrate agents with POST /api/sessions/NAME/send — no tmux hacks.</video:description>
       <video:content_loc>https://amux.io/demos/agent-coordination/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/single-file-architecture/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/single-file-architecture/demo.gif</video:thumbnail_loc>
-      <video:title>Single-File Architecture — amux Demo</video:title>
-      <video:description>Entire server and dashboard in one Rust binary — zero config.</video:description>
-      <video:content_loc>https://amux.io/demos/single-file-architecture/demo.mp4</video:content_loc>
       <video:publication_date>2026-02-26</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>

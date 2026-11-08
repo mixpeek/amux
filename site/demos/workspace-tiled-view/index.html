@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta name="robots" content="noindex">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Workspace — Tiled Multi-Agent View — amux</title>
+  <title>Workspace tiled view: retired demo | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="Watch multiple Claude Code agents work side by side in a tiled layout. Each pane has its own send bar. Save profiles for quick recall.">
   <meta name="keywords" content="multi-agent workspace, claude code tiled view, watch multiple AI agents, amux workspace layout">
@@ -12,10 +13,8 @@
   <meta property="og:title" content="Workspace — Tiled Multi-Agent View — amux">
   <meta property="og:description" content="Watch multiple Claude Code agents work side by side in a tiled layout. Each pane has its own send bar. Save profiles for quick recall.">
   <meta property="og:url" content="https://amux.io/demos/workspace-tiled-view/">
-  <meta property="og:image" content="https://amux.io/demos/workspace-tiled-view/demo.mp4">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/workspace-tiled-view/demo.mp4">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -55,48 +54,12 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
-  <main>
-    <div class="breadcrumb">
-      <a href="/">amux</a> <span class="sep">›</span>
-      <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Workspace — Tiled Multi-Agent View</span>
-    </div>
-    <h1>Workspace — Tiled Multi-Agent View</h1>
-    <p class="subtitle">Watch multiple Claude Code agents work side by side in a tiled layout. Each pane has its own send bar. Save profiles for quick recall.</p>
-
-    <video src="demo.mp4" autoplay loop muted playsinline title="Workspace — Tiled Multi-Agent View demo"></video>
-
-    <h2>How it works</h2>
-<ol class="step-list">
-  <li>Open the Workspace tab — all your sessions appear as chips</li>
-  <li>Click a session chip to add it as a pane in the tiled layout</li>
-  <li>Each pane shows live output + a send bar for that agent</li>
-  <li>Click Save to name and persist the layout — reopen anytime</li>
-</ol>
-    <h2>When to use this</h2>
-<ul>
-  <li>Monitoring 4+ agents doing related work (frontend, backend, tests, docs)</li>
-  <li>Watching an orchestrator and its workers in real time</li>
-  <li>Demo-ing your agent fleet to a team</li>
-</ul>
-    
-    <h2>Related demos</h2>
-<div class="related">
-  <a href="/demos/session-cards-overview/">Session cards overview</a>
-  <a href="/demos/agent-orchestration/">Agent orchestration</a>
-  <a href="/demos/send-command-dashboard/">Send commands from dashboard</a>
+<div class="wrap">
+<h1>Workspace tiled view</h1>
+<p class="desc">This demo has been retired. The Workspace tab was removed from the amux dashboard in October 2026. Open any worker from <a href="/demos/session-cards-overview/">its card</a> to see it live.</p>
+<div class="cta"><a class="btn btn-secondary" href="/demos/">All demos</a></div>
 </div>
-    <div class="cta-box">
-  <h3>Try amux</h3>
-  <p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Free to self-host.</p>
-  <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8824</code></pre>
-  <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
-  <a class="btn" href="/guides/getting-started/">Getting started →</a>
-</div>
-  </main>
-  <footer class="site-foot">
+<footer class="site-foot">
   <div class="site-foot-inner">
     <div class="site-foot-brand">
       <a href="/" class="site-foot-logo">amux</a>
