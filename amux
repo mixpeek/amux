@@ -66,7 +66,31 @@ set -euo pipefail
 # append. `scripts/test-cli-offset-safe.sh` fails if the shape is broken.
 {
 
-CC_VERSION="0.3.0"
+# The CLI's version is the source it came from, never a literal someone has to
+# remember to bump (this read "0.3.0" from v0.3 through v0.9.108 and beyond).
+# `scripts/install-cli.sh` stamps the placeholder below with the checkout's
+# `git describe` (e.g. v0.9.108-7734-gd4ce6631). Unstamped, `amux_version`
+# asks git only when this file sits at the top of its own checkout, so a copy
+# inside some other repo (a dotfiles ~/.local/bin) never borrows its version;
+# anything else reports that the version is unknown rather than guessing.
+CC_VERSION="__AMUX_CLI_VERSION__"
+amux_version() {
+  if [[ "$CC_VERSION" != __*__ ]]; then printf '%s' "$CC_VERSION"; return; fi
+  local src="${BASH_SOURCE[0]}" dir top described
+  while [[ -L "$src" ]]; do
+    local target; target="$(readlink "$src")"
+    case "$target" in /*) src="$target" ;; *) src="$(dirname -- "$src")/$target" ;; esac
+  done
+  dir="$(cd -- "$(dirname -- "$src")" && pwd -P)"
+  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || top=""
+  if [[ -n "$top" && "$(cd -- "$top" && pwd -P)" == "$dir" ]] &&
+     described="$(git -C "$dir" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null)" &&
+     [[ -n "$described" ]]; then
+    printf '%s' "$described"
+  else
+    printf '(version unknown)'
+  fi
+}
 
 # ── Migration from cc/cmux → amux ───────────────────────────────────────────
 # Migrate legacy dirs to ~/.amux if new one doesn't exist
@@ -2491,7 +2515,7 @@ cmd_dashboard() {
   need_tmux
   clear
 
-  echo "${BOLD}${BLUE}  amux${RESET} ${DIM}v${CC_VERSION}${RESET}"
+  echo "${BOLD}${BLUE}  amux${RESET} ${DIM}$(amux_version)${RESET}"
   echo ""
   cmd_ls
   echo ""
@@ -6679,7 +6703,7 @@ EOF
 
 cmd_help() {
   cat <<EOF
-${BOLD}amux${RESET} — phone-friendly Claude Code worker manager ${DIM}v${CC_VERSION}${RESET}
+${BOLD}amux${RESET} — phone-friendly Claude Code worker manager ${DIM}$(amux_version)${RESET}
 ${DIM}Legacy bash CLI: an HTTP client of the Rust server, kept until \`amux-rs\` reaches
 verb parity. New verbs land in amux-rs (crates/amux-cli).${RESET}
 
@@ -12514,7 +12538,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     help|--help|-h)
       # `amux help computer` is how the access-ladder rule names this verb.
       if [[ "${2:-}" == "computer" || "${2:-}" == "cu" ]]; then cmd_computer help; else cmd_help; fi ;;
-    version|--version|-v) echo "amux v${CC_VERSION}" ;;
+    version|--version|-v) echo "amux $(amux_version)" ;;
     "")               cmd_dashboard ;;
     *)
       # Try as session name shortcut
