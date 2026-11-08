@@ -2748,6 +2748,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/file/preview-image",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/file/archive",
+        methods: ANY,
+    },
+    RouteEntry {
+        path: "/api/file/sqlite",
+        methods: ANY,
+    },
+    RouteEntry {
         path: "/api/file/transcode",
         methods: ANY,
     },

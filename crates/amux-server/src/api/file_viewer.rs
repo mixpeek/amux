@@ -72,6 +72,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+mod preview;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         // Python routes on (method, path) pairs and falls through to its
@@ -86,6 +88,10 @@ pub fn routes() -> Router<AppState> {
         .route("/prepare", any(prepare))
         .route("/transcode", any(transcode))
         .route("/history", any(history))
+        // Previews of files a browser cannot show itself (file_viewer/preview.rs).
+        .route("/preview-image", any(preview::image))
+        .route("/archive", any(preview::archive))
+        .route("/sqlite", any(preview::sqlite))
         .route("/{*rest}", any(not_found))
         // Python has no body cap on PUT /api/file; axum's 2MB default would
         // 413 a large markdown save the python origin accepts.
@@ -612,9 +618,12 @@ async fn view(req: Request) -> Response {
                 }
             }
             if sample[..got].contains(&0) {
+                // Which previewer fits, so no binary is only a Download button.
+                let kind = preview::magic_kind(&sample[..got]);
                 return j(
                     200,
-                    json!({"path": pystr(&p), "is_binary": true, "size": meta.len(), "ext": ext}),
+                    json!({"path": pystr(&p), "is_binary": true, "size": meta.len(), "ext": ext,
+                           "kind": kind, "preview": preview::preview_for(&ext, kind)}),
                 );
             }
         }

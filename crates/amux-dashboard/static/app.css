@@ -11013,3 +11013,24 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 #email-approvals-banner .appr-sched-failed {
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
+
+/* Binary previews (app.js _renderBinaryPreview): one header row, then the preview. */
+.file-overlay-body.file-binprev { display: flex; flex-direction: column; white-space: normal; padding: 0; background: var(--bg); font-family: inherit; }
+.binprev-head { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.binprev-meta { color: var(--dim); font-size: var(--fs-md); margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.binprev-head .btn { min-height: 44px; }
+@media (min-width: 601px) { .binprev-head .btn { min-height: 0; } }
+.binprev-main { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+.binprev-main > .img-zoom-wrap { flex: 1 1 auto; min-height: 0; }
+.binprev-note { color: var(--dim); font-size: var(--fs-sm); }
+.binprev-hex, .binprev-text { font-family: var(--font-mono); font-size: var(--fs-sm); margin: 0; white-space: pre; overflow-x: auto; }
+.binprev-text { white-space: pre-wrap; }
+.binprev-num { text-align: right; white-space: nowrap; }
+.binprev-null { color: var(--dim); font-style: italic; }
+.binprev-table summary { cursor: pointer; padding: var(--space-1) 0; }
+.binprev-font > div { margin-bottom: var(--space-3); overflow-wrap: anywhere; }
+.binprev-font-s1 { font-size: var(--fs-7xl); }
+.binprev-font-s2 { font-size: var(--fs-4xl); }
+.binprev-font-s3 { font-size: var(--fs-xl); }
+.binprev-font-s4 { font-size: var(--fs-md); }
+.binprev-font-chars { font-size: var(--fs-2xl); }

@@ -126,6 +126,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # be a silent capability regression for every customer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git tmux procps ripgrep ffmpeg \
+      imagemagick libheif-examples \
       python3 python3-pip python3-venv \
       openssh-client less jq unzip \
       chromium fonts-liberation xdg-utils \

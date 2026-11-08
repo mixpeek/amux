@@ -300,6 +300,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_binPrevBeacon": {
+      "kind": "command._binPrevBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_bindMdFileLinks": {
       "kind": "command._bindMdFileLinks",
       "feedback_required": true,
@@ -4664,6 +4670,12 @@
     },
     "_removeQueuedOperation": {
       "kind": "command._removeQueuedOperation",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_renderBinaryPreview": {
+      "kind": "command._renderBinaryPreview",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

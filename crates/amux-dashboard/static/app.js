@@ -30606,6 +30606,118 @@ function _officeFlash(el) {
   el.classList.remove('office-flash'); void el.offsetWidth; el.classList.add('office-flash');
 }
 
+// A preview for every binary the browser cannot show by itself (owner,
+// 2026-11-08: "native previews of every file type", over a TIFF that opened as
+// a box and a Download button). The server names the previewer
+// (file_viewer/preview.rs): an image it converts, an archive's entries, a
+// font's specimen, a database's tables, or the first bytes in hex. Download
+// stays in the header of each one.
+let _binPrevGen = 0;
+function _binPrevUrl(route, data) {
+  return API + '/api/file/' + route + '?path=' + encodeURIComponent(data.path) + (peekSessionDir ? '&cwd=' + encodeURIComponent(peekSessionDir) : '');
+}
+function _binPrevBeacon(fields) {
+  fetch(API + '/api/client-debug', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+    body: JSON.stringify(Object.assign({ kind: 'file-preview', measured: true, n_considered: 1, ver: APP_VER }, fields)) })
+    .catch(e => console.warn('file-preview beacon not sent', e));
+}
+async function _renderBinaryPreview(data, body) {
+  const gen = ++_binPrevGen;
+  const fname = data.path.split('/').pop();
+  const rawUrl = _binPrevUrl('raw', data);
+  body.className = 'file-overlay-body file-binprev';
+  body.innerHTML = '<div class="binprev-head"><span class="binprev-meta">' + esc(data.kind || (data.ext || '').replace(/^\./, '').toUpperCase() + ' file')
+    + (data.size ? ' &middot; ' + esc(_fmtBytes(data.size)) : '') + '</span>'
+    + '<a class="btn" href="' + esc(_authUrl(rawUrl)) + '" download="' + esc(fname) + '">Download</a></div><div class="binprev-main"><div class="pdf-note">Loading preview&hellip;</div></div>';
+  const main = body.querySelector('.binprev-main');
+  const live = () => gen === _binPrevGen && main.isConnected;
+  const getJson = async (route) => {
+    const r = await fetch(_authUrl(_binPrevUrl(route, data)), { cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  };
+  const kind = data.preview;
+  try {
+    if (kind === 'image' || kind === 'quicklook') {
+      await new Promise((ok, fail) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'img-zoom-wrap';
+        const img = document.createElement('img');
+        img.className = 'img-zoomable';
+        img.alt = fname;
+        img.onload = () => { if (!live()) return ok(); main.replaceChildren(wrap); _attachImageZoom(wrap, img); ok(); };
+        img.onerror = () => fail(new Error(kind === 'quicklook' ? 'Quick Look could not draw it' : 'no tool here could convert it'));
+        wrap.appendChild(img);
+        img.src = _authUrl(_binPrevUrl('preview-image', data));
+      });
+    } else if (kind === 'archive') {
+      const d = await getJson('archive');
+      if (!live()) return;
+      if (typeof d.text === 'string') {
+        main.innerHTML = '<div class="binprev-note">Unpacked from gzip:</div><pre class="binprev-text">' + esc(d.text) + '</pre>';
+      } else {
+        const rows = (d.entries || []).map(e => '<tr><td>' + (e.dir ? '&#x1F4C1; ' : '') + esc(e.name) + '</td><td class="binprev-num">' + (e.dir ? '' : esc(_fmtBytes(e.size || 0))) + '</td></tr>').join('');
+        main.innerHTML = '<div class="binprev-note">' + (d.total || 0) + ' entr' + (d.total === 1 ? 'y' : 'ies') + (d.truncated ? ', first ' + (d.entries || []).length + ' shown' : '') + '</div>'
+          + '<div class="xlsx-scroll"><table class="xlsx-table"><thead><tr><th>Name</th><th>Size</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+      }
+    } else if (kind === 'sqlite') {
+      const d = await getJson('sqlite');
+      if (!live()) return;
+      const cellHtml = v => v === null ? '<span class="binprev-null">NULL</span>' : esc(String(v));
+      main.innerHTML = '<div class="binprev-note">' + (d.total_tables || 0) + ' table' + (d.total_tables === 1 ? '' : 's') + ' and views, opened read-only</div>'
+        + (d.tables || []).map(t => '<details class="binprev-table"' + ((d.tables || []).length <= 3 ? ' open' : '') + '><summary><b>' + esc(t.name) + '</b> <span class="binprev-note">'
+          + esc(t.type || 'table') + (t.count != null ? ' &middot; ' + t.count + ' row' + (t.count === 1 ? '' : 's') : '') + '</span></summary>'
+          + (t.error ? '<div class="binprev-note">' + esc(t.error) + '</div>'
+            : '<div class="xlsx-scroll"><table class="xlsx-table"><thead><tr>' + (t.columns || []).map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
+              + (t.rows || []).map(r => '<tr>' + r.map(v => '<td>' + cellHtml(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>')
+          + '</details>').join('');
+    } else if (kind === 'font') {
+      const fam = 'amux-prev-' + gen;
+      const face = new FontFace(fam, 'url(' + JSON.stringify(_authUrl(rawUrl)) + ')');
+      await face.load();
+      if (!live()) return;
+      document.fonts.add(face);
+      const sample = 'The quick brown fox jumps over the lazy dog';
+      main.innerHTML = '<div class="binprev-font">'
+        + ['s1', 's2', 's3', 's4'].map(c => '<div class="binprev-font-' + c + '">' + sample + '</div>').join('')
+        + '<div class="binprev-font-chars">ABCDEFGHIJKLMNOPQRSTUVWXYZ<br>abcdefghijklmnopqrstuvwxyz<br>0123456789 !?&amp;@#%()[]{}</div></div>';
+      // The loaded face, by its generated name.
+      main.querySelector('.binprev-font').style.fontFamily = "'" + fam + "'";
+    } else {
+      await _binPrevHex(data, main, rawUrl, live);
+    }
+    _binPrevBeacon({ verdict: 'file_preview_shown', preview: kind, ext: data.ext || '' });
+  } catch (e) {
+    if (!live()) return;
+    // Whatever the previewer, the bytes themselves still show.
+    _binPrevBeacon({ verdict: 'file_preview_fell_back_to_hex', preview: kind, ext: data.ext || '', error: String(e && e.message || e) });
+    main.innerHTML = '';
+    const note = document.createElement('div');
+    note.className = 'binprev-note';
+    note.textContent = 'No ' + (kind === 'quicklook' ? 'Quick Look' : kind) + ' preview: ' + (e && e.message || e) + '. Its first bytes:';
+    main.appendChild(note);
+    const box = document.createElement('div');
+    main.appendChild(box);
+    try { await _binPrevHex(data, box, rawUrl, live); } catch (e2) { box.textContent = 'Could not read the file: ' + (e2.message || e2); }
+  }
+}
+// The first 4 KB as offset, hex and printable text.
+async function _binPrevHex(data, el, rawUrl, live) {
+  const r = await fetch(_authUrl(rawUrl), { headers: { Range: 'bytes=0-4095' }, cache: 'no-store' });
+  if (!r.ok && r.status !== 206) throw new Error('HTTP ' + r.status);
+  const b = new Uint8Array(await r.arrayBuffer()).slice(0, 4096);
+  if (!live()) return;
+  const lines = [];
+  for (let o = 0; o < b.length; o += 16) {
+    const row = b.slice(o, o + 16);
+    const hex = Array.from(row, x => x.toString(16).padStart(2, '0')).join(' ').padEnd(47, ' ');
+    const txt = Array.from(row, x => x >= 32 && x < 127 ? String.fromCharCode(x) : '.').join('');
+    lines.push(o.toString(16).padStart(8, '0') + '  ' + hex + '  ' + txt);
+  }
+  el.innerHTML = '<pre class="binprev-hex">' + esc(lines.join('\n')) + '</pre>'
+    + (data.size > 4096 ? '<div class="binprev-note">First 4 KB of ' + esc(_fmtBytes(data.size)) + '.</div>' : '');
+}
 async function _renderOffice(data, body) {
   const gen = ++_officeGen;
   const isDoc = /\.(docx|docm|dotx)$/i.test(data.path);
@@ -30930,6 +31042,10 @@ function _renderFileBody(data, mode) {
   }
   if (data.is_binary && !data.is_ebook && _OFFICE_RE.test(data.path || '')) {
     _renderOffice(data, body);
+    return;
+  }
+  if (data.is_binary && !data.is_ebook && data.preview) {
+    _renderBinaryPreview(data, body);
     return;
   }
   if (data.is_binary) {
