@@ -99,6 +99,18 @@ fn env_secs(name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+/// Once per lane per server process: a reported live-subagent count was too
+/// old to believe and the lane fell back to transcript activity. Counting these
+/// in server-rs.log is how a lost SubagentStop shows up.
+fn warn_subagent_count_expired(name: &str, count: i64) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    if SEEN.get_or_init(Default::default).lock().map(|mut s| s.insert(name.to_string())).unwrap_or(false) {
+        tracing::warn!(session = name, reported_live = count, measured = true, n_considered = 1,
+            verdict = "subagent_count_expired",
+            "a lane's reported live-subagent count is older than the trust window; its subagent transcripts decide");
+    }
+}
+
 /// Is a stored self-report authoritative RIGHT NOW? The ONE trust rule, so the
 /// DISPLAY and the MECHANISMS that act on a report cannot disagree about the
 /// same row (AMUX-3756).
@@ -3383,13 +3395,35 @@ impl FleetSignals {
         // WORKING, never a lane stuck idle); `subagents_live` is published in
         // the sessions payload and in every status-history row so the leak is
         // countable rather than mysterious.
+        //
+        // A COUNT NOBODY HAS REPORTED IN A DAY IS A LEAK, NOT A LIVE AGENT
+        // (Ethan, 2026-11-08: "This status is wrong" on mixpeek-general, WORKING
+        // with an AGENTS badge over a finished turn). Three SubagentStop events
+        // were lost, its last report said count=3, and that report was 36h old
+        // while the three transcripts had not been written for 114h. A live
+        // subagent keeps its lane reporting (its tool calls fire hooks), so a
+        // positive count is believed only while the report that carries it is
+        // inside the idle trust window; past it, the transcripts decide.
+        let mtime = || self.subagent_activity.get(name).is_some_and(|m| self.now - m < window);
         match self.reported_subagent_count(name) {
+            Some(c) if c > 0 && !self.subagent_count_current(name) => {
+                warn_subagent_count_expired(name, c);
+                mtime()
+            }
             Some(c) => c > 0,
-            None => self
-                .subagent_activity
-                .get(name)
-                .is_some_and(|m| self.now - m < window),
+            None => mtime(),
         }
+    }
+
+    /// Is the report carrying the live-subagent count young enough to believe?
+    fn subagent_count_current(&self, name: &str) -> bool {
+        // The count's own stamp when the lane sent one, else its report's.
+        let ts = self
+            .reports
+            .get(name)
+            .and_then(|r| r["subagents"]["ts"].as_f64().or_else(|| r["ts"].as_f64()))
+            .unwrap_or(0.0);
+        self.now - ts < env_secs("AMUX_HOOKS_LIVE_IDLE_S", 86400.0)
     }
 
     /// The raw event-driven live-subagent count a lane last reported (AMUX-3048),
@@ -10872,6 +10906,25 @@ Claude usage limit reached. Your limit will reset at 3pm.
     /// a lane actually looks like once the main loop stops generating. The
     /// reported count is the only evidence, and it must not have to wait out
     /// the 60s window.
+    /// mixpeek-general, 2026-11-08 ("This status is wrong"): three lost
+    /// SubagentStop events left a reported count of 3 in a report 36h old,
+    /// over transcripts silent for 114h, and the lane read WORKING with an
+    /// AGENTS badge indefinitely. A count is believed while its report is
+    /// inside the idle trust window; past it the transcripts decide.
+    #[test]
+    fn a_subagent_count_nobody_renewed_in_a_day_does_not_keep_a_lane_working() {
+        let lane = "t-subagent-leak";
+        let mut s = fresh_idle_lane(lane, 9.0);
+        s.reports[lane]["subagents"] = json!({"count": 3, "live_ids": ["a", "b", "c"]});
+        assert!(s.subagents_working(lane), "a fresh report's count is believed");
+        s.reports[lane]["ts"] = json!(s.now - 129_000.0);
+        s.subagent_activity.insert(lane.into(), s.now - 410_000.0);
+        assert!(!s.subagents_working(lane), "a day-old count over silent transcripts is a leak");
+        // A subagent still writing its transcript keeps the lane working anyway.
+        s.subagent_activity.insert(lane.into(), s.now - 30.0);
+        assert!(s.subagents_working(lane));
+    }
+
     #[test]
     fn a_reported_live_subagent_beats_a_fresh_idle_claim() {
         let lane = "t4024-bg";
