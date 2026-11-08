@@ -63,6 +63,31 @@ check "and the arms still end inside the verdict reserve" yes "$([ "$used" -le 3
 out=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; SECONDS=25; TARGET_SCAN_S=90; tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S')
 check "a binding share is said, with its verdict"     yes  "$(has "$out" 'cargo targets capped at [0-9]+s of the 335s left.*verdict=tick_arm_share')"
 
+echo "1c. a slow health check still leaves worktrees and the fseventsd census their time (Mac self RCA 20261108-050521)"
+# Replays the 03:01 tick of 2026-11-08: vm cpu caps 21s and health 106s before the
+# first arm, every budgeted arm spending its whole share, the unbudgeted ones their
+# measured seconds. The census was not in the plan, so it got nothing and was skipped.
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=127; t=127
+  spend() { t=$(( t + $1 )); SECONDS=$t; }
+  tick_arm "cargo targets" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  tick_arm "superseded artifacts" TARGET_SCAN_S TARGET_BUDGET_S >/dev/null && spend $(( TARGET_SCAN_S + TARGET_BUDGET_S ))
+  tick_arm "vm images" >/dev/null && spend 4
+  tick_arm "vm trim" >/dev/null && spend 11
+  tick_arm "claude tmp" >/dev/null && spend "$TICK_ARM_SHARE"
+  tick_arm "user tmp" >/dev/null && spend 13
+  tick_arm "lane tmp" LANE_TMP_BUDGET_S >/dev/null && spend "$LANE_TMP_BUDGET_S"
+  tick_arm "worktrees" WORKTREE_BUDGET_S >/dev/null && spend "$WORKTREE_BUDGET_S"
+  wt=$WORKTREE_BUDGET_S
+  tick_arm "fseventsd churn census" CHURN_BUDGET_S >/dev/null; rc=$?
+  printf "%s|%s|%s|%s" "$rc" "${TICK_SKIPPED:-none}" "$wt" "$CHURN_BUDGET_S"')
+IFS='|' read -r rc skipped wt churn <<<"$got"
+check "the census runs"                               0    "$rc"
+check "no arm is skipped"                             none "$skipped"
+check "worktrees keeps a working budget (3-13s)"      yes  "$([ "$wt" -ge 8 ] && echo yes || echo no)"
+check "the census keeps a working budget (3-23s)"     yes  "$([ "$churn" -ge 5 ] && echo yes || echo no)"
+
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
   AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"

@@ -545,7 +545,13 @@ TICK_SKIPPED=""
 # superseded 56-85s, claude tmp 63-110s, worktrees 3-13s); lane tmp resumes
 # from a cursor, so it gets less than the 90s it will always spend. The declared
 # budgets are ceilings and add up to ~800s, so they cannot be the weights.
-TICK_ARM_PLAN=${AMUX_CLEANUP_TICK_ARM_PLAN:-"cargo_targets:75 superseded_artifacts:75 claude_tmp:100 lane_tmp:30 worktrees:20"}
+# The fseventsd churn census runs after worktrees whenever fseventsd is hot, and
+# it was not in this list, so no arm kept time for it: with health at 106-114s
+# under load it got nothing and was skipped by 3 ticks in 3h on 2026-11-08
+# (Mac self RCA 20261108-050521), once taking worktrees with it. Its weight is
+# what it took on those ticks (3-23s). When fseventsd is quiet the census does
+# not run and its share goes back to whatever runs after.
+TICK_ARM_PLAN=${AMUX_CLEANUP_TICK_ARM_PLAN:-"cargo_targets:75 superseded_artifacts:75 claude_tmp:100 lane_tmp:30 worktrees:20 fseventsd_churn_census:20"}
 TICK_ARM_SHARE=0     # the running arm's cap, for an arm that sizes its own phases
 
 # Claude Code session temp dirs (DESKT-77). Claude Code gives every session
