@@ -10981,3 +10981,26 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .ask-best-row { display: block; width: 100%; text-align: left; white-space: normal; font-size: var(--fs-xs);
   padding: var(--space-1-5) var(--space-2); margin-bottom: var(--space-1); min-height: 44px; }
 .ask-best-snippet { color: var(--dim); }
+
+/* Schedule a held outbound email (email approval banner, 2026-11-08). The
+   banner's own buttons are still inline-styled; these match them. */
+#email-approvals-banner .appr-btn-outline {
+  background: transparent; color: var(--on-solid);
+  border: 1px solid color-mix(in srgb, var(--on-solid) 45%, transparent);
+  border-radius: var(--radius-md); padding: var(--space-2) var(--space-3-5);
+  font-size: var(--fs-md); cursor: pointer; min-height: 34px; min-width: 44px;
+}
+#email-approvals-banner .appr-sched-form {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-1-5) 0;
+}
+#email-approvals-banner .appr-sched-label { opacity: 0.8; }
+#email-approvals-banner .appr-sched-at { min-height: 44px; flex: 1 1 200px; max-width: 260px; }
+#email-approvals-banner .appr-sched-confirm {
+  background: color-mix(in srgb, var(--green) 84%, var(--shade)); color: var(--on-solid); border: none;
+  border-radius: var(--radius-md); padding: var(--space-2) var(--space-3-5);
+  font-size: var(--fs-md); cursor: pointer; min-height: 44px;
+}
+#email-approvals-banner .appr-sched-cancel { min-height: 44px; }
+#email-approvals-banner .appr-sched-failed {
+  font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
+}

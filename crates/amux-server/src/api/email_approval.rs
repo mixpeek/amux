@@ -450,6 +450,19 @@ pub fn reopen_after_failed_send(home: &Path, id: &str, error: &str) -> bool {
         return false;
     };
     if let Some(obj) = doc.as_object_mut() {
+        // A scheduled release that failed waits for a human again: left
+        // scheduled, the job would retry it every tick.
+        // The approver's edit becomes the draft, so Send now sends their words
+        // rather than the original (land review, 2026-11-08).
+        if let Some(mut sched) = obj.remove("scheduled") {
+            if let Some(Value::String(b)) = sched.as_object_mut().and_then(|m| m.remove("body")) {
+                if let Some(payload) = obj.get_mut("payload").and_then(Value::as_object_mut) {
+                    payload.insert("body".into(), json!(b));
+                }
+                sched["edit_kept"] = json!(true);
+            }
+            obj.insert("schedule_failed".into(), sched);
+        }
         let failures = obj.entry("failed_releases").or_insert_with(|| json!([]));
         if let Some(list) = failures.as_array_mut() {
             list.push(json!({ "at": now_f64(), "error": error.chars().take(400).collect::<String>() }));
@@ -567,8 +580,137 @@ pub fn discard(home: &Path, id: &str, by: &str) -> Option<Value> {
     Some(doc)
 }
 
+/// The latest send time a schedule may name: a year out. Further than that is
+/// a typo, not a plan.
+pub const SCHEDULE_MAX_AHEAD_S: f64 = 366.0 * 86400.0;
+
+/// Schedule a pending approval to send at `send_at` (unix seconds) instead of
+/// now (Ethan, 2026-11-08: "when i approve outbound email there should be
+/// another button to schedule for a date/time").
+///
+/// The human's decision is recorded on the pending doc as `scheduled`
+/// (`send_at`, the approver, when, and the edited body if any) and the draft
+/// STAYS pending: the release itself is the same one-shot `consume` that
+/// Approve uses, run by the scheduled-send job when the time comes, so a
+/// scheduled email can never go out twice. Approve still sends it at once,
+/// Discard still drops it, and a second schedule replaces the first.
+/// The doc is rewritten whole through a temp file and a rename, so a crash
+/// leaves either the old doc or the new one.
+pub fn schedule(
+    home: &Path,
+    id: &str,
+    send_at: f64,
+    approver: &str,
+    body: Option<&str>,
+) -> Result<Value, String> {
+    let now = now_f64();
+    if !send_at.is_finite() || send_at <= now {
+        return Err("send_at must be in the future".into());
+    }
+    if send_at > now + SCHEDULE_MAX_AHEAD_S {
+        return Err("send_at is more than a year away".into());
+    }
+    if !valid_id(id) {
+        return Err(fate(home, id));
+    }
+    // CLAIM THE DRAFT BY RENAMING IT, the same one-shot primitive `consume`
+    // uses. A read-then-replace let a release that consumed the file in
+    // between be followed by this rename, which put the sent draft back as
+    // pending and the job sent it a second time (land review, 2026-11-08).
+    // While the claim is held, a racing Approve or Discard finds no live file
+    // and loses cleanly; a claim left by a crash is put back by
+    // `recover_schedule_claims`.
+    let dir = approvals_dir(home);
+    let live = dir.join(format!("{id}.json"));
+    let claim = dir.join(format!("{id}.scheduling.json"));
+    if std::fs::rename(&live, &claim).is_err() {
+        return Err(fate(home, id));
+    }
+    let restore = |e: String| {
+        fs_logged("restore_schedule_claim", id, std::fs::rename(&claim, &live));
+        e
+    };
+    let raw = std::fs::read_to_string(&claim).map_err(|e| restore(e.to_string()))?;
+    let mut doc: Value = serde_json::from_str(&raw).map_err(|e| restore(e.to_string()))?;
+    let mut sched = json!({ "send_at": send_at, "approver": approver, "at": now });
+    if let Some(b) = body {
+        sched["body"] = json!(b);
+    }
+    if let Some(o) = doc.as_object_mut() {
+        o.insert("scheduled".into(), sched);
+    }
+    let tmp = dir.join(format!(".{id}.schedule.tmp"));
+    if let Err(e) = std::fs::write(&tmp, doc.to_string()).and_then(|_| std::fs::rename(&tmp, &live)) {
+        fs_logged("remove_schedule_tmp", id, std::fs::remove_file(&tmp));
+        return Err(restore(e.to_string()));
+    }
+    fs_logged("remove_schedule_claim", id, std::fs::remove_file(&claim));
+    tracing::info!(approval = %id, send_at, measured = true, n_considered = 1,
+        verdict = "email_approval_scheduled", "[email] a held send was scheduled by its approver");
+    Ok(doc)
+}
+
+/// A file step of scheduling that failed, logged rather than dropped: the
+/// caller can carry on, but a stuck claim or temp file must be findable.
+fn fs_logged(op: &'static str, id: &str, r: std::io::Result<()>) {
+    if let Err(e) = r {
+        tracing::warn!(approval = %id, op, error = %e, measured = true, n_considered = 1,
+            verdict = "email_schedule_file_step_failed", "[email] a scheduling file step failed");
+    }
+}
+
+/// Put back a draft whose schedule claim a crash left behind: the claim holds
+/// the pending doc, and with no live file the draft would vanish from the
+/// queue. A claim beside a live file is the leftover of a finished schedule.
+pub fn recover_schedule_claims(home: &Path) {
+    let dir = approvals_dir(home);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".scheduling.json") else { continue };
+        if !valid_id(id) {
+            continue;
+        }
+        let live = dir.join(format!("{id}.json"));
+        if live.exists() {
+            fs_logged("remove_stale_schedule_claim", id, std::fs::remove_file(e.path()));
+        } else if std::fs::rename(e.path(), &live).is_ok() {
+            tracing::warn!(approval = %id, measured = true, n_considered = 1,
+                verdict = "email_schedule_claim_recovered",
+                "[email] a schedule interrupted mid-write was put back to pending");
+        }
+    }
+}
+
+/// Pending approvals whose scheduled time has come, with the approver and the
+/// edited body the human scheduled them with.
+pub fn due_scheduled(home: &Path, now: f64) -> Vec<(String, String, Option<String>)> {
+    let mut out = Vec::new();
+    recover_schedule_claims(home);
+    let Ok(entries) = std::fs::read_dir(approvals_dir(home)) else { return out };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else { continue };
+        if !valid_id(id) {
+            continue;
+        }
+        let Some(doc) = peek(home, id) else { continue };
+        let Some(s) = doc.get("scheduled") else { continue };
+        if s.get("send_at").and_then(Value::as_f64).is_some_and(|t| t <= now) {
+            out.push((
+                id.to_string(),
+                s.get("approver").and_then(Value::as_str).unwrap_or("").to_string(),
+                s.get("body").and_then(Value::as_str).map(str::to_string),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Pending approvals, oldest first, for the dashboard / a human's curl.
 pub fn list_pending(home: &Path) -> Vec<Value> {
+    recover_schedule_claims(home);
     let dir = approvals_dir(home);
     let mut out: Vec<Value> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -635,6 +777,19 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
                     }
                 }
                 obj.remove("payload");
+                // A scheduled draft shows the words that will go out: the
+                // approver's edit when they made one. The edit itself stays
+                // out of `scheduled`, which says only whether there was one.
+                for key in ["scheduled", "schedule_failed"] {
+                    let Some(sched) = obj.get_mut(key).and_then(Value::as_object_mut) else { continue };
+                    let edit = sched.remove("body");
+                    sched.insert("edited".into(), json!(edit.is_some()));
+                    if let (Some(Value::String(b)), true) = (edit, key == "scheduled") {
+                        if let Some(review) = obj.get_mut("review").and_then(Value::as_object_mut) {
+                            review.insert("body".into(), json!(b));
+                        }
+                    }
+                }
             }
             out.push(doc);
         }
@@ -650,6 +805,26 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A schedule never resurrects a released draft, and a schedule a crash
+    /// interrupted is put back to pending (land review, 2026-11-08).
+    #[test]
+    fn schedule_claims_the_draft_and_a_crashed_claim_is_recovered() {
+        let home = tempfile::tempdir().unwrap();
+        let later = now_f64() + 600.0;
+        let id = create_approval(home.path(), "lane", "send", json!({ "body": "b" }), json!({})).unwrap();
+        assert!(matches!(consume(home.path(), &id), Consume::Ready(_)));
+        assert!(schedule(home.path(), &id, later, "dashboard", None).is_err());
+        assert!(!approvals_dir(home.path()).join(format!("{id}.json")).exists(), "the released draft stays released");
+
+        let id2 = create_approval(home.path(), "lane", "send", json!({ "body": "b2" }), json!({})).unwrap();
+        let dir = approvals_dir(home.path());
+        std::fs::rename(dir.join(format!("{id2}.json")), dir.join(format!("{id2}.scheduling.json"))).unwrap();
+        assert!(list_pending(home.path()).iter().any(|d| d["id"] == json!(id2)), "a crashed claim is put back");
+        assert!(schedule(home.path(), &id2, later, "dashboard", None).is_ok());
+        assert!(!dir.join(format!("{id2}.scheduling.json")).exists());
+        assert_eq!(due_scheduled(home.path(), later + 1.0).len(), 1);
+    }
 
     #[test]
     fn pending_business_review_uses_full_body_and_announces_unreviewed_attachments() {

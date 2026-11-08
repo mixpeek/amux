@@ -1232,6 +1232,40 @@ pub async fn approve(
             );
         }
     }
+    // SCHEDULE INSTEAD OF SEND (Ethan, 2026-11-08: "when i approve outbound
+    // email there should be another button to schedule for a date/time"). The
+    // same checks above apply; the draft stays pending with the human's
+    // decision on it, and the scheduled-send job releases it through this
+    // endpoint when the time comes.
+    let send_at = body.as_ref().and_then(|Json(v)| v.get("send_at").and_then(Value::as_f64));
+    if let Some(send_at) = send_at {
+        let edit = body
+            .as_ref()
+            .and_then(|Json(v)| v.get("body").and_then(Value::as_str))
+            .filter(|b| !b.trim().is_empty());
+        return match crate::api::email_approval::schedule(&home, &id, send_at, &approver, edit) {
+            Ok(doc) => {
+                email_log(
+                    ctx.client.home(),
+                    json!({
+                        "endpoint": "approve", "scheduled": true, "approval_id": id,
+                        "send_at": send_at, "approved_by": approver, "approver_verified": false,
+                        "approver_edited": edit.is_some(),
+                        "session": doc.get("session").cloned().unwrap_or(Value::Null),
+                    }),
+                );
+                Json(json!({
+                    "ok": true, "scheduled": true, "delivered": false, "approval_id": id,
+                    "send_at": send_at,
+                    "sent_for_session": doc.get("session").cloned().unwrap_or(Value::Null),
+                }))
+                .into_response()
+            }
+            Err(e) => err(StatusCode::BAD_REQUEST, json!({ "error": e, "approval_id": id })),
+        };
+    }
+    let scheduled_for = crate::api::email_approval::peek(&home, &id)
+        .and_then(|d| d.get("scheduled").and_then(|s| s.get("send_at")).and_then(Value::as_f64));
     let doc = match crate::api::email_approval::consume(&home, &id) {
         crate::api::email_approval::Consume::Ready(d) => d,
         crate::api::email_approval::Consume::Expired => {
@@ -1401,6 +1435,7 @@ pub async fn approve(
                     // tell what actually left; without this the body_preview
                     // below would attribute the approver's words to the lane.
                     "approver_edited": approver_edited,
+                    "scheduled_for": scheduled_for,
                     "from": p("from"),
                     "to": resolved_envelope(&res, "to", &p("to")),
                     "cc": resolved_envelope(&res, "cc", &p("cc")),
@@ -3386,6 +3421,113 @@ mod tests {
             "an origin-less caller claiming to be the dashboard still succeeds — that IS the \
              open residual, and asserting it stops this test reading as a boundary: {ok}"
         );
+    }
+
+    /// Schedule instead of send (Ethan, 2026-11-08). The human's Schedule keeps
+    /// the draft pending and sends nothing; the job releases it once, at its
+    /// time, with the approver and the edit it was scheduled with.
+    #[tokio::test]
+    async fn a_scheduled_approval_sends_once_at_its_time_with_its_edit() {
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "sch1", "threadId": "ts1" })),
+        ]);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let ctx = Arc::new(EmailCtx {
+            client: Arc::new(GmailClient::new(http.clone(), home.path().to_path_buf())),
+            registry: Arc::new(IntegrationRegistry::new()),
+        });
+        let (st, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                         "from": ACCT, "force_new_thread": true })),
+            &[("x-amux-session", "autodesk")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        let apr = res["approval_id"].as_str().unwrap().to_string();
+        let now = crate::config::now_f64();
+        let path = format!("/api/email/approve/{apr}");
+
+        // A worker cannot schedule, and a time in the past is refused.
+        let (st, e) = send_req(&app, "POST", &path, Some(json!({ "send_at": now + 600.0 })),
+            &[("x-amux-session", "autodesk")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        assert_eq!(e["code"], json!("worker_cannot_approve"));
+        let (st, _) = send_req(&app, "POST", &path, Some(json!({ "send_at": now - 5.0 })),
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+
+        let (st, ok) = send_req(&app, "POST", &path,
+            Some(json!({ "send_at": now + 3600.0, "body": "edited words" })),
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        assert_eq!(ok["scheduled"], json!(true));
+        assert_eq!(ok["delivered"], json!(false));
+        let sends = |h: &MockHttp| h.calls.lock().unwrap().iter().filter(|c| c.1.contains("/messages/send")).count();
+        assert_eq!(sends(&http), 0, "scheduling sends nothing");
+
+        // Still pending, marked scheduled, showing the words that will go out.
+        let list = crate::api::email_approval::list_pending(home.path());
+        let row = list.iter().find(|r| r["id"] == json!(apr)).expect("still pending");
+        assert_eq!(row["scheduled"]["send_at"].as_f64(), Some(now + 3600.0));
+        assert_eq!(row["scheduled"]["edited"], json!(true));
+        assert!(row["scheduled"].get("body").is_none(), "the edit stays out of `scheduled`");
+        assert_eq!(row["review"]["body"], json!("edited words"));
+
+        // Not due yet: nothing goes out.
+        assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 60.0).await, 0);
+        assert_eq!(sends(&http), 0);
+
+        // Due: it goes out once, with the edit, attributed to the approver.
+        assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 3601.0).await, 1);
+        assert_eq!(sends(&http), 1);
+        assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 3700.0).await, 0,
+            "one-shot: a released schedule never fires again");
+        assert_eq!(sends(&http), 1);
+        assert!(crate::api::email_approval::list_pending(home.path()).iter().all(|r| r["id"] != json!(apr)));
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 50, "");
+        let sent = log["log"].as_array().unwrap().iter()
+            .find(|x| x.get("approved") == Some(&json!(true))).expect("a send row");
+        assert_eq!(sent["approved_by"], json!("dashboard"));
+        assert_eq!(sent["approver_edited"], json!(true));
+        assert_eq!(sent["body_preview"], json!("edited words"));
+        assert_eq!(sent["scheduled_for"].as_f64(), Some(now + 3600.0));
+        assert_eq!(sent["session"], json!("autodesk"));
+        assert!(log["log"].as_array().unwrap().iter().any(|x| x.get("scheduled") == Some(&json!(true))),
+            "the schedule itself is a ledger row");
+    }
+
+    /// A scheduled release that fails goes back to plain pending: left
+    /// scheduled, the job would retry it every tick.
+    #[tokio::test]
+    async fn a_failed_scheduled_release_waits_for_a_human_again() {
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 400, json!({ "error": { "message": "Invalid To header" } })),
+        ]);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let ctx = Arc::new(EmailCtx {
+            client: Arc::new(GmailClient::new(http.clone(), home.path().to_path_buf())),
+            registry: Arc::new(IntegrationRegistry::new()),
+        });
+        let (_, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                         "from": ACCT, "force_new_thread": true })),
+            &[("x-amux-session", "autodesk")]).await;
+        let apr = res["approval_id"].as_str().unwrap().to_string();
+        let now = crate::config::now_f64();
+        let (st, _) = send_req(&app, "POST", &format!("/api/email/approve/{apr}"),
+            Some(json!({ "send_at": now + 60.0, "body": "kept words" })), &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 61.0).await, 0);
+        let list = crate::api::email_approval::list_pending(home.path());
+        let row = list.iter().find(|r| r["id"] == json!(apr)).expect("pending again after the failure");
+        assert!(row.get("scheduled").is_none(), "no longer scheduled: {row}");
+        assert!(row.get("schedule_failed").is_some());
+        // The approver's edit survives the failure: it is now the draft.
+        assert_eq!(row["review"]["body"], json!("kept words"));
+        assert_eq!(row["schedule_failed"]["edit_kept"], json!(true));
+        assert!(crate::api::email_approval::due_scheduled(home.path(), now + 9999.0).is_empty());
     }
 
     #[tokio::test]

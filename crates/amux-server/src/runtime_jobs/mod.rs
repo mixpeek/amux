@@ -68,6 +68,7 @@ pub mod deploy_wake;
 pub mod disk_watch;
 pub mod decision_digest;
 pub mod email_approval_digest;
+pub mod email_scheduled_send;
 pub mod needs_input_auto;
 pub(crate) mod executor;
 pub mod gemini_ledger;

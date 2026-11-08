@@ -146,6 +146,7 @@ pub mod ids {
     pub const WORKER_RESOURCES: &str = "worker-resources";
     pub const CAPTURE_RECONCILE: &str = "capture-reconcile";
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
+    pub const EMAIL_SCHEDULED_SEND: &str = "email-scheduled-send";
     pub const DECISION_DIGEST: &str = "decision-digest";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
@@ -214,6 +215,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::MODEL_CATALOG_REFRESH,
     ids::CAPTURE_RECONCILE,
     ids::EMAIL_APPROVAL_DIGEST,
+    ids::EMAIL_SCHEDULED_SEND,
     ids::DECISION_DIGEST,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
@@ -1091,6 +1093,27 @@ pub const CATALOG: &[Doc] = &[
             },
             EnvControl {
                 var: "AMUX_EMAIL_APPROVAL_DIGEST_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/email/approvals"),
+    },
+    Doc {
+        id: ids::EMAIL_SCHEDULED_SEND,
+        name: "Scheduled email send",
+        purpose: "Every 30 seconds, sends each held outbound email whose approver scheduled it \
+                  for a time that has come, through the same release as the Approve button \
+                  (one-shot, audited). A failed release goes back to pending for a human.",
+        env: &[
+            EnvControl {
+                var: "AMUX_EMAIL_SCHEDULED_SEND_TICK_S",
+                effect: "seconds between checks (default 30)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_EMAIL_SCHEDULED_SEND_SECS",
                 effect: "0 disables the job",
                 off: Some("0"),
             },

@@ -72,6 +72,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_apprSchedule": {
+      "kind": "command._apprSchedule",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprScheduleClose": {
+      "kind": "command._apprScheduleClose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_apprScheduleConfirm": {
+      "kind": "command._apprScheduleConfirm",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_apprToggle": {
       "kind": "command._apprToggle",
       "feedback_required": true,

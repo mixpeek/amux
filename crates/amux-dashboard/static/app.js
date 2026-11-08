@@ -25050,7 +25050,9 @@ async function _approvalsRefresh() {
       // show how long the draft has waited and how often it was re-requested.
       const _ageM = Math.max(1, Math.round((p.age_s || 0) / 60));
       const _waited = _ageM < 120 ? _ageM + 'm' : (_ageM < 2880 ? Math.round(_ageM / 60) + 'h' : Math.round(_ageM / 1440) + 'd');
-      const apprWhen = (p.expires_in_s == null)
+      const _sched = p.scheduled && p.scheduled.send_at ? p.scheduled : null;
+      const apprWhen = _sched ? 'sends ' + _apprWhenText(_sched.send_at)
+        : (p.expires_in_s == null)
         ? 'waiting ' + _waited + ((p.requests || 1) > 1 ? ', asked ' + p.requests + 'x' : '')
         : 'expires in ' + Math.max(1, Math.round(p.expires_in_s / 60)) + 'm';
       // OPEN BY DEFAULT (Ethan: "i should be able to see the draft email").
@@ -25065,7 +25067,13 @@ async function _approvalsRefresh() {
         + '<span style="opacity:0.7;font-size:var(--fs-sm);">' + esc(apprWhen) + '</span>'
         + '<button onclick="event.preventDefault();_apprApprove(\'' + esc(p.id) + '\',this)" '
         + 'style="background:color-mix(in srgb, var(--green) 84%, var(--shade));color:var(--on-solid);border:none;border-radius:var(--radius-md);'
-        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">Approve</button>'
+        + 'padding:var(--space-2) var(--space-3-5);font-size:var(--fs-md);cursor:pointer;min-height:34px;">' + (_sched ? 'Send now' : 'Approve') + '</button>'
+        // SCHEDULE (Ethan, 2026-11-08: "when i approve outbound email there
+        // should be another button to schedule for a date/time"). Opens a date
+        // and time row under the draft; the server holds the draft and sends
+        // it then (runtime_jobs/email_scheduled_send.rs).
+        + '<button class="appr-schedule appr-btn-outline" onclick="event.preventDefault();_apprSchedule(\'' + esc(p.id) + '\')">'
+        + (_sched ? 'Reschedule' : 'Schedule') + '</button>'
         // EDIT (Ethan, 2026-09-23: "just make it Approve, Discard and Edit. and
         // then make edit enter edit mode where i can edit it manually"). The
         // preview becomes a textarea in place; Approve then sends what is in it.
@@ -25097,6 +25105,9 @@ async function _approvalsRefresh() {
         + 'style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
         + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
+        + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
+        + (p.schedule_failed ? '<div class="appr-sched-failed">'
+          + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
         + (_full ? '' : '<div style="font-size:var(--fs-sm);color:color-mix(in srgb, var(--yellow) 47%, var(--on-solid));margin:0 0 var(--space-1-5);">Showing only the first '
           + _bodyText.length + ' characters of this draft. Approve sends the complete stored message.</div>')
         + '</details>';
@@ -25244,6 +25255,69 @@ async function _apprApprove(id, btn) {
     else showToast('Approve failed: ' + (d.error || r.status));
   } catch (e) { showToast('Approve failed: ' + e); }
   _approvalsRefresh();
+}
+// "today 3:00 PM", "tomorrow 9:00 AM", "Tue, Nov 11, 9:00 AM": when a scheduled
+// draft goes out, in this device's time.
+function _apprWhenText(sec) {
+  const d = new Date(sec * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  // Calendar days, not milliseconds: a daylight-saving day is 23 or 25 hours.
+  const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (same(d, now)) return 'today ' + time;
+  if (same(d, next)) return 'tomorrow ' + time;
+  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + time;
+}
+// A <input type="datetime-local"> value for a Date, in local time.
+function _apprLocalInput(d) {
+  const z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + 'T' + z(d.getHours()) + ':' + z(d.getMinutes());
+}
+// Open (or close) the date and time row under a draft. The native picker is
+// the control on a phone. The poll pauses while it is open, like an edit.
+function _apprSchedule(id) {
+  const row = document.getElementById('appr-sched-' + id);
+  if (!row) return;
+  if (!row.hidden) { _apprScheduleClose(id); return; }
+  const at = parseFloat(row.dataset.sendAt);
+  let when = at > 0 ? new Date(at * 1000) : new Date();
+  if (!(at > 0)) { when.setDate(when.getDate() + 1); when.setHours(9, 0, 0, 0); }   // tomorrow 9 AM
+  _apprEditing.add('sched:' + id);
+  row.innerHTML = '<label class="appr-sched-form"><span class="appr-sched-label">Send at</span>'
+    + '<input type="datetime-local" class="input appr-sched-at" id="appr-sched-at-' + esc(id) + '" value="' + _apprLocalInput(when) + '" min="' + _apprLocalInput(new Date()) + '">'
+    + '<button class="appr-sched-confirm" onclick="event.preventDefault();_apprScheduleConfirm(\'' + esc(id) + '\',this)">Schedule send</button>'
+    + '<button class="appr-btn-outline appr-sched-cancel" onclick="event.preventDefault();_apprScheduleClose(\'' + esc(id) + '\')">Cancel</button>'
+    + '</label>';
+  row.hidden = false;
+}
+function _apprScheduleClose(id) {
+  _apprEditing.delete('sched:' + id);
+  const row = document.getElementById('appr-sched-' + id);
+  if (row) { row.hidden = true; row.innerHTML = ''; }
+  _approvalsRefresh();
+}
+async function _apprScheduleConfirm(id, btn) {
+  const inp = document.getElementById('appr-sched-at-' + id);
+  const when = inp && inp.value ? new Date(inp.value) : null;
+  if (!when || isNaN(when) || when.getTime() <= Date.now()) { showToast('Pick a time in the future'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Scheduling…'; }
+  try {
+    // Same approver marker as Approve; a send time makes it a schedule. An
+    // open edit goes with it, so what is on screen is what will send.
+    const body = { send_at: when.getTime() / 1000 };
+    const ta = document.getElementById('appr-edit-' + id);
+    if (ta) body.body = ta.value;
+    const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), {
+      method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.scheduled) {
+      _apprEditing.delete(id);
+      showToast('Scheduled: sends ' + _apprWhenText(d.send_at));
+    } else { showToast('Schedule failed: ' + (d.error || r.status)); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
+  } catch (e) { showToast('Schedule failed: ' + e); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
+  _apprScheduleClose(id);
 }
 function _approvalsBoot() { _approvalsRefresh(); setInterval(_approvalsRefresh, 60_000); }
 if (document.body) _approvalsBoot();
