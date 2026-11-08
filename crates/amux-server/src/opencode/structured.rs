@@ -324,6 +324,11 @@ pub trait ConversationSink: Send + Sync {
     fn forget(&self, worker: &WorkerId);
 }
 
+/// The instruction-entry key a serve session carries its scoped context
+/// under. ONE key, so a recomposition REPLACES the entry instead of
+/// accumulating one per launch.
+const SCOPED_CONTEXT_KEY: &str = "amux-scoped";
+
 /// Per-worker spawn configuration, registered once per worker.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -1191,6 +1196,19 @@ impl StructuredCliProtocol {
                 sink.forget(&shared.worker);
             }
         }
+        // THE WORKER'S SCOPED CONTEXT rides the SESSION: `OPENCODE_CONFIG_CONTENT`
+        // is a per-process launch env, so a shared serve — whose config was
+        // loaded before this worker existed — cannot receive it that way (the
+        // 2026-10-16 measurement that forced `--standalone` onto TUI lanes).
+        // opencode exposes per-session instruction entries and a live probe on
+        // 2.2.5 (2026-11-08) showed the model answering from one.
+        deliver_scoped_context(
+            &session,
+            shared.worker.as_str(),
+            &crate::api::session_verbs::compose_worker_context(shared.worker.as_str(), false),
+            opened.resumed,
+        )
+        .await;
         // Continuity, same shape as the ACP arm: the session id IS the ref.
         *shared.conversation.lock().unwrap() = Some(opened.session_id.clone());
         if let Some(sink) = &shared.sink {
@@ -1457,6 +1475,55 @@ fn serve_turn_timeout() -> std::time::Duration {
 /// [`serve_turn_timeout`]; on expiry the turn is reported `failed`, never left
 /// `Working` forever — a worker that looks permanently busy is a diagnosis
 /// nobody can make (ethos rule 4).
+/// Give one serve session its worker's scoped context, or clear it when the
+/// scope is empty.
+///
+/// Split out so it is testable WITHOUT reading the real home: the caller
+/// composes the text, this decides what the session does with it.
+async fn deliver_scoped_context(
+    session: &serve::ServeSession,
+    worker: &str,
+    scoped: &str,
+    resumed: bool,
+) {
+    let (delivered, chars) = if scoped.trim().is_empty() {
+        // Scope removed: drop the entry so a stale context cannot keep steering
+        // the model (the `ses_` ref and its history survive).
+        match session.clear_instructions(SCOPED_CONTEXT_KEY).await {
+            Ok(()) => (false, 0),
+            Err(e) => {
+                tracing::warn!(worker, error = %e,
+                    verdict = "opencode_scoped_context_clear_failed",
+                    "could not clear the session's scoped context");
+                (false, 0)
+            }
+        }
+    } else {
+        let chars = scoped.chars().count();
+        match session.set_instructions(SCOPED_CONTEXT_KEY, scoped).await {
+            Ok(()) => (true, chars),
+            Err(e) => {
+                // Say so, and name the consequence: the worker runs with the
+                // model's own defaults, not the owner's rules.
+                tracing::warn!(worker, error = %e,
+                    verdict = "opencode_scoped_context_not_delivered",
+                    "the shared serve would not take this session's scoped context; \
+                     the worker runs without its rules");
+                (false, 0)
+            }
+        }
+    };
+    tracing::info!(
+        worker,
+        session = session.session_id(),
+        resumed,
+        delivered,
+        chars,
+        verdict = if delivered { "opencode_scoped_context_delivered" } else { "opencode_scoped_context_absent" },
+        "serve session scoped context"
+    );
+}
+
 fn spawn_serve_turn_watcher(
     shared: Arc<WorkerShared>,
     session: Arc<serve::ServeSession>,
@@ -3909,6 +3976,78 @@ mod tests {
     /// Before M6 nothing polled at all, so the ask would have hung the turn to
     /// its timeout; and before it, no boundary applied to an opencode worker at
     /// all (it has no PreToolUse hooks).
+    /// A serve worker keeps its own scoped context on a SHARED server: the
+    /// entry is written to the session, and an empty scope removes it. This is
+    /// the piece that makes one `opencode serve` usable by the whole fleet —
+    /// without it a worker on the shared server runs on the model's defaults.
+    #[tokio::test]
+    async fn a_serve_session_carries_the_workers_scoped_context() {
+        use axum::response::IntoResponse;
+        use serde_json::{json, Value};
+
+        const PW: &str = "test-password-43-chars-test-password-43";
+        let puts: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        let deletes: Arc<std::sync::atomic::AtomicU32> =
+            Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        {
+            let puts = Arc::clone(&puts);
+            let deletes = Arc::clone(&deletes);
+            let app = axum::Router::new()
+                .route(
+                    "/api/session",
+                    axum::routing::post(|| async {
+                        axum::Json(json!({"data": {"id": "ses_scoped"}})).into_response()
+                    }),
+                )
+                .route(
+                    "/api/experimental/session/{id}/instructions/entries/{key}",
+                    axum::routing::put(
+                        move |axum::extract::Path((id, key)): axum::extract::Path<(String, String)>,
+                              axum::Json(body): axum::Json<Value>| {
+                            let puts = Arc::clone(&puts);
+                            async move {
+                                puts.lock().unwrap().push((format!("{id}/{key}"), body));
+                                axum::http::StatusCode::NO_CONTENT.into_response()
+                            }
+                        },
+                    )
+                    .delete(move || {
+                        let deletes = Arc::clone(&deletes);
+                        async move {
+                            deletes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            axum::http::StatusCode::NO_CONTENT.into_response()
+                        }
+                    }),
+                )
+                .with_state(());
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+        }
+
+        let client = serve::ServeClient::connect(format!("http://{addr}"), PW).unwrap();
+        let (session, _) = serve::ServeSession::open(client, std::path::Path::new("/tmp"), None, None)
+            .await
+            .unwrap();
+
+        deliver_scoped_context(&session, "wrk_test", "# the owner's rules\n", false).await;
+        {
+            let p = puts.lock().unwrap();
+            assert_eq!(p.len(), 1, "one entry, not one per launch: {p:?}");
+            assert_eq!(p[0].0, "ses_scoped/amux-scoped");
+            assert_eq!(p[0].1["value"], json!("# the owner's rules\n"));
+        }
+
+        // Scope removed: the entry is deleted, and the session (its `ses_` ref
+        // and history) is untouched.
+        deliver_scoped_context(&session, "wrk_test", "   \n", false).await;
+        assert_eq!(deletes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(puts.lock().unwrap().len(), 1, "nothing re-PUT for an empty scope");
+    }
+
     #[tokio::test]
     async fn a_running_serve_turn_refuses_a_boundary_path_on_the_wire() {
         use axum::response::IntoResponse;
