@@ -118,8 +118,57 @@ html:not([data-theme-pref]) .theme-btn .ti-system { display: block; }
 .theme-menu button[aria-checked="true"] { color: var(--hdr-fg); font-weight: 600; }
 .theme-menu button[aria-checked="true"]::after { content: "✓"; margin-left: auto; color: var(--hdr-star); }
 
+/* Solutions menu: a <details> disclosure, so it opens by click, tap, Enter or
+   Space with no script at all. site.js adds Escape, outside click and
+   aria-expanded. On phones the summary becomes a menu button and the menu
+   also carries the links the phone header hides. */
+.nav-drop { position: relative; display: flex; }
+.nav-drop > summary {
+  display: inline-flex; align-items: center; gap: 4px;
+  list-style: none; cursor: pointer; user-select: none;
+  font-size: 13px; line-height: 1.2; color: var(--hdr-dim);
+}
+.nav-drop > summary::-webkit-details-marker { display: none; }
+.nav-drop > summary::marker { content: ""; }
+.nav-drop > summary:hover, .nav-drop[open] > summary { color: var(--hdr-fg); }
+.nav-drop > summary:focus-visible { outline: 2px solid var(--hdr-accent); outline-offset: 2px; border-radius: 3px; }
+.nav-drop .nd-caret { width: 13px; height: 13px; transition: transform .15s; }
+.nav-drop[open] .nd-caret { transform: rotate(180deg); }
+.nav-drop .nd-burger, .nav-drop .nd-sr { display: none; }
+.nav-drop-menu {
+  position: absolute; top: calc(100% + 18px); left: -14px; z-index: 110;
+  min-width: 248px; padding: 6px;
+  border: 1px solid var(--hdr-border); border-radius: 8px;
+  background: var(--hdr-surface); box-shadow: var(--hdr-shadow);
+}
+.nav-drop-menu .nd-head {
+  padding: 8px 10px 6px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--hdr-dim);
+}
+.site-header nav .nav-drop-menu a {
+  display: flex; align-items: center; min-height: 36px; padding: 0 10px; border-radius: 5px;
+  font-size: 13px; color: var(--hdr-fg); white-space: nowrap;
+}
+.site-header nav .nav-drop-menu a:hover { background: color-mix(in oklab, var(--hdr-fg) 8%, transparent); }
+.site-header nav .nav-drop-menu a.nd-all { color: var(--hdr-dim); border-top: 1px solid var(--hdr-line); border-radius: 0 0 5px 5px; margin-top: 4px; }
+.nav-drop-menu .nd-more { display: none; }
+
 @media (max-width: 760px) {
   .site-header nav a.hide-mobile { display: none; }
+  .nav-drop > summary {
+    justify-content: center; width: 44px; height: 44px;
+    border: 1px solid var(--hdr-border); border-radius: 4px;
+    background: var(--hdr-surface); color: var(--hdr-fg);
+  }
+  .nav-drop .nd-label, .nav-drop .nd-caret { display: none; }
+  .nav-drop .nd-burger { display: block; width: 18px; height: 18px; }
+  .nav-drop .nd-sr { display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .nav-drop-menu {
+    position: fixed; top: 64px; left: 12px; right: 12px; min-width: 0;
+    max-height: calc(100vh - 80px); overflow-y: auto;
+  }
+  .site-header nav .nav-drop-menu a { min-height: 44px; font-size: 14px; }
+  .nav-drop-menu .nd-more { display: flex; gap: 4px; border-top: 1px solid var(--hdr-line); margin-top: 4px; padding-top: 4px; }
+  .site-header nav .nav-drop-menu .nd-more a { flex: 1; justify-content: center; color: var(--hdr-dim); }
 }
 @media (max-width: 600px) {
   .site-header { height: 56px; padding: 0 16px; padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
@@ -128,6 +177,13 @@ html:not([data-theme-pref]) .theme-btn .ti-system { display: block; }
   .theme-btn { width: 44px; height: 44px; }
   .theme-menu button { min-height: 44px; }
   .site-header .gh-label { display: none; }
+  .nav-drop-menu { top: 60px; }
+}
+@media (max-width: 420px) {
+  /* Room for the menu button: next to Get started, the star button shows
+     only the star. The homepage, which has no Get started, keeps its count. */
+  .site-header nav .nav-cta-primary ~ .nav-gh .gh-stars { font-size: 0; }
+  .site-header nav .nav-cta-primary ~ .nav-gh .gh-stars::before { content: "\2605"; font-size: 11px; }
 }
 @media (max-width: 350px) {
   .site-header a.logo span, .site-header a.logo { font-size: 14px; }

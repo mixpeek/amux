@@ -246,6 +246,7 @@ pub fn router_with_connector_transport(
         )
         .route("/api/models", axum::routing::get(workers::model_catalog))
         .route("/api/peek/steps", axum::routing::get(session_verbs::peek_steps))
+        .route("/api/session-renames", axum::routing::get(session_verbs::session_renames))
         .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
         .route("/api/sessions/{name}/quota", axum::routing::get(agent_limit_resume::worker_quota))
         .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))

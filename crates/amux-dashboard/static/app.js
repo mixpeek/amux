@@ -231,6 +231,134 @@ function _amuxClientIdentity() {
   };
 })();
 
+// ── A renamed worker's old name follows to the new one (2026-11-06) ──
+//
+// `workflows` became `wexus`; a phone that still had `workflows` open kept
+// sending to it, and its outbox said "the worker did not accept it" with a
+// Send again that retried the same dead name. The server now serves an old
+// name as the worker it became (and says so in `x-amux-renamed-to`), and
+// GET /api/session-renames lists every retired name. This rewrites the names
+// this app stored (the open worker, queued sends, the split panes, the grid
+// order) so the app stops asking for a worker that is gone. Runs at load and
+// whenever an answer says a name was renamed or not found.
+function _workerRenameRewrite(value, map) {
+  const urlRe = /(\/api\/(?:sessions|workers)\/)([^/?#]+)/g;
+  let changed = false;
+  const walk = v => {
+    if (typeof v === 'string') {
+      if (Object.prototype.hasOwnProperty.call(map, v)) { changed = true; return map[v]; }
+      if (v.indexOf('/api/') < 0 && v.indexOf('#peek=') < 0) return v;
+      const out = v.replace(urlRe, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      }).replace(/(#peek=)([^&]+)/, (m, pre, n) => {
+        const name = decodeURIComponent(n);
+        if (!Object.prototype.hasOwnProperty.call(map, name)) return m;
+        changed = true;
+        return pre + encodeURIComponent(map[name]);
+      });
+      return out;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      const o = {};
+      for (const [k, x] of Object.entries(v)) {
+        const key = Object.prototype.hasOwnProperty.call(map, k) ? (changed = true, map[k]) : k;
+        o[key] = walk(x);
+      }
+      return o;
+    }
+    return v;
+  };
+  const out = walk(value);
+  return {value: out, changed};
+}
+// Stored values that hold worker names. Board, history and pins live on the
+// server, which the rename already carried.
+const _WORKER_NAME_KEYS = ['amux_offline_queue', 'amux_peek_state', 'amux_peek_split_panes', 'amux_card_order'];
+async function _applyWorkerRenames(map) {
+  if (!map || typeof map !== 'object' || !Object.keys(map).length) return 0;
+  let rewritten = 0;
+  for (const [store, keys] of [[localStorage, _WORKER_NAME_KEYS], [sessionStorage, ['peekState']]]) {
+    for (const key of keys) {
+      if (key === 'amux_offline_queue') continue;
+      try {
+        const raw = store.getItem(key);
+        if (raw === null) continue;
+        const r = _workerRenameRewrite(JSON.parse(raw), map);
+        if (r.changed) { store.setItem(key, JSON.stringify(r.value)); rewritten++; }
+      } catch (e) { console.warn('[rename] could not rewrite a stored name', e); }
+    }
+  }
+  // The outbox goes through its own lock, so a delivery in flight is not raced.
+  try {
+    if (typeof _mutateQueue === 'function') {
+      await _mutateQueue(current => {
+        let n = 0;
+        for (let i = 0; i < current.length; i++) {
+          const r = _workerRenameRewrite(current[i], map);
+          if (r.changed) {
+            // A send refused only because its name was gone is sendable again.
+            const q = r.value;
+            if (q.state === 'blocked' || q.needs_decision) Object.assign(q, {state: 'pending', needs_decision: '', error: '', attempts: 0});
+            current[i] = q; n++;
+          }
+        }
+        if (n) rewritten++;
+      });
+    }
+  } catch (e) { console.warn('[rename] could not rewrite the outbox', e); }
+  try { if (typeof cardOrder !== 'undefined' && Array.isArray(cardOrder)) cardOrder = cardOrder.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the card order', e); }
+  try { if (typeof _peekSplitPanes !== 'undefined' && Array.isArray(_peekSplitPanes)) _peekSplitPanes = _peekSplitPanes.map(n => map[n] || n); } catch (e) { console.warn('[rename] could not rewrite the split panes', e); }
+  let reopened = '';
+  try {
+    if (typeof peekSession !== 'undefined' && peekSession && map[peekSession] && typeof openPeek === 'function') {
+      reopened = map[peekSession];
+      openPeek(reopened, typeof _peekTab === 'string' && _peekTab ? {tab: _peekTab} : undefined);
+    } else {
+      const h = _workerRenameRewrite(location.hash, map);
+      if (h.changed) history.replaceState(history.state, '', location.pathname + location.search + h.value);
+    }
+  } catch (e) { console.warn('[rename] could not reopen the renamed worker', e); }
+  try { amuxTrack('worker_renames_applied', {measured: true, n_considered: Object.keys(map).length, rewritten, reopened, verdict: rewritten || reopened ? 'renamed_names_rewritten' : 'renamed_names_none_stored'}); } catch (e) { console.warn('[rename] rename beacon failed', e); }
+  try { if (typeof _peekMessagesRender === 'function') _peekMessagesRender(); } catch (e) { console.warn('[rename] could not redraw messages after a rename', e); }
+  return rewritten;
+}
+let _workerRenamesInFlight = null;
+function _syncWorkerRenames() {
+  if (_workerRenamesInFlight) return _workerRenamesInFlight;
+  _workerRenamesInFlight = (async () => {
+    try {
+      const r = await fetch('/api/session-renames', {cache: 'no-store'});
+      if (!r.ok) return 0;
+      const d = await r.json();
+      return await _applyWorkerRenames(d && d.renames);
+    } catch (_) { return 0; } finally { setTimeout(() => { _workerRenamesInFlight = null; }, 2000); }
+  })();
+  return _workerRenamesInFlight;
+}
+window._workerRenameRewrite = _workerRenameRewrite;
+window._applyWorkerRenames = _applyWorkerRenames;
+window._syncWorkerRenames = _syncWorkerRenames;
+(function installRenamedWorkerWatch() {
+  const _origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    const p = _origFetch.call(this, input, init);
+    try {
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input || ''));
+      if (!/\/api\/(sessions|workers)\/[^/?]+/.test(url)) return p;
+      p.then(r => {
+        if (r && (r.headers.get('x-amux-renamed-to') || r.status === 404)) _syncWorkerRenames();
+      }, () => {});
+    } catch (e) { console.warn('[rename] rename watch could not read a fetch URL', e); }
+    return p;
+  };
+  const start = () => setTimeout(() => _syncWorkerRenames(), 1500);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+
 // ── A 200 is not proof the edit was applied (AMUX-2673, after AC-323) ──
 //
 // The API names unapplied request fields in `ignored_fields` (AC-263). Nothing
@@ -992,6 +1120,7 @@ async function _upgradeCheckout(billing) {
 }
 
 let sessions = [];
+let _sessionsReadAt = 0;   // when the worker list was last read from the server (_waitingNow)
 // A stream update and a poll response are two snapshots of the same runtime
 // truth. A request begun before an SSE update must not finish later and put the
 // old task attribution back on screen.
@@ -7133,6 +7262,7 @@ async function _fetchSessionsOnce() {
     const firstLoad = _initialLoad;
     _initialLoad = false;
     _sessionReadRecovered();
+    _sessionsReadAt = Date.now();
     if (firstLoad) render();
     if (!online) setOnline(true);
     const j = JSON.stringify(data);
@@ -7352,8 +7482,12 @@ async function openNeedsInput() {
   ov.querySelector('.ni-close').focus();
   _niFetch();
 }
+// Closing the overlay ends an Approve all in progress: the owner approved the
+// batch they could see, and some of its items send outside (2026-11-06).
+let _niBatchGen = 0;
 function closeNeedsInput() {
   _niOpen = false;
+  _niBatchGen++;
   const ov = document.getElementById('ni-overlay');
   if (ov) ov.remove();
   document.body.classList.remove('ni-open');
@@ -7734,8 +7868,10 @@ async function _niApproveAllRun() {
   if (_niBusy) return;
   _niAllArmed = false;
   const skip = new Set();
-  let ok = 0, refused = 0;
+  const gen = _niBatchGen;
+  let ok = 0, refused = 0, stopped = false;
   for (let guard = 0; guard < 200; guard++) {
+    if (!_niOpen || gen !== _niBatchGen) { stopped = true; break; }
     const list = _niItems(_niShowOlder);
     const next = list.findIndex(i => !skip.has(i.key) && _niApprovable().some(a => a.key === i.key));
     if (next < 0) break;
@@ -7744,8 +7880,10 @@ async function _niApproveAllRun() {
     await _niAct('approve');
     if (_niItems(_niShowOlder).some(i => i.key === key)) { skip.add(key); refused++; } else ok++;
   }
-  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, refused ? (ok ? 'partial' : 'refused') : 'ok', ok + ' approved, ' + refused + ' refused');
-  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : ''));
+  _niLog('approve_all', { key: 'batch', card: '', worker: '' }, stopped ? 'stopped' : refused ? (ok ? 'partial' : 'refused') : 'ok',
+    ok + ' approved, ' + refused + ' refused' + (stopped ? ', stopped when the overlay closed' : ''));
+  showToast('Approved ' + ok + (refused ? '; ' + refused + ' refused and left in the queue' : '') + (stopped ? '; stopped when you closed it' : ''));
+  if (!_niOpen) return;
   _niIdx = 0; _niRender();
 }
 
@@ -12861,7 +12999,10 @@ async function doKeys(name, keys) {
 
 const _fieldSizingSupported = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content');
 function autoGrow(el) {
-  if (_fieldSizingSupported) return;
+  // A hand-sized box keeps its height while its draft lasts; its text scrolls
+  // (see _composerSetHeight). An empty box sizes to its content again.
+  if (el.classList.contains('user-sized') && !el.value) _composerSetHeight(el, 0);
+  if (_fieldSizingSupported || el.classList.contains('user-sized')) return;
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, parseFloat(getComputedStyle(el).maxHeight) || 999) + 'px';
 }
@@ -12869,9 +13010,14 @@ function autoGrow(el) {
 // drag this input box by a corner and manually make it bigger"). The box sits
 // on the bottom edge, so the native bottom-right resize handle could only push
 // it off screen; the grip is on its top-left corner and dragging it up raises
-// the box's minimum height. Text still grows the box past that, up to 70% of
-// the screen. The height is kept per device; a double-click on the grip goes
-// back to sizing by content.
+// the box's height. Since 2026-11-06 that height holds in both directions
+// ("i should be able to drag this down even if the text is full"): longer text
+// scrolls inside it instead of holding the box open. Up to 70% of the screen.
+// The hand-set height lasts for the draft (Ethan, 2026-11-07: "the input box
+// should expand vertically as i type but i can also collapse it if i drag").
+// Kept per device, it held every later draft at one size and the box stopped
+// growing. Emptying the box (a send, or deleting the text) or a double-click
+// on the grip goes back to sizing by content.
 const _COMPOSER_H_KEY = 'amux_peek_composer_h';
 function _composerSetHeight(ta, h) {
   if (!ta) return;
@@ -12879,6 +13025,7 @@ function _composerSetHeight(ta, h) {
   const max = Math.round(innerHeight * 0.7);
   h = Math.max(44, Math.min(max, Math.round(h)));
   ta.style.setProperty('--composer-h', h + 'px');
+  ta.style.height = '';   // an inline height from autoGrow would override the hand-set one
   ta.classList.add('user-sized');
   return h;
 }
@@ -12886,20 +13033,18 @@ function _composerGripInit(gripId, taId, key) {
   const grip = document.getElementById(gripId), ta = document.getElementById(taId);
   if (!grip || !ta || grip._wired) return;
   grip._wired = true;
-  const saved = parseInt(localStorage.getItem(key) || '', 10);
-  if (saved > 0) _composerSetHeight(ta, saved);
-  let startY = 0, startH = 0, last = 0;
-  const move = e => { last = _composerSetHeight(ta, startH + (startY - e.clientY)) || last; e.preventDefault(); };
+  try { localStorage.removeItem(key); } catch (e) {}   // a height saved before 2026-11-07
+  let startY = 0, startH = 0;
+  const move = e => { _composerSetHeight(ta, startH + (startY - e.clientY)); e.preventDefault(); };
   const up = () => {
     grip.classList.remove('dragging');
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
-    if (last) { try { localStorage.setItem(key, String(last)); } catch (e) {} }
   };
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
-    startY = e.clientY; startH = ta.getBoundingClientRect().height; last = 0;
+    startY = e.clientY; startH = ta.getBoundingClientRect().height;
     grip.classList.add('dragging');
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', up);
@@ -12907,7 +13052,6 @@ function _composerGripInit(gripId, taId, key) {
   });
   grip.addEventListener('dblclick', () => {
     _composerSetHeight(ta, 0);
-    try { localStorage.removeItem(key); } catch (e) {}
     autoGrow(ta);
   });
 }
@@ -13188,7 +13332,12 @@ function _draftInputChanged(input) {
   if (id === 'peek-cmd-input' || id === 'peek-input-fs-ta') _draftSave(_peekComposerTarget(), input.value);
   else if (id.startsWith('input-')) _draftSave(id.slice(6), input.value);
 }
-document.addEventListener('input', event => _draftInputChanged(event.target));
+document.addEventListener('input', event => {
+  _draftInputChanged(event.target);
+  // Deleting a hand-sized draft down to nothing sizes the box by content again.
+  const t = event.target;
+  if (t && t.classList && t.classList.contains('user-sized') && !t.value) _composerSetHeight(t, 0);
+});
 window.addEventListener('storage', event => {
   if (event.storageArea !== localStorage || !event.key || !event.key.startsWith(_DRAFT_PREFIX)) return;
   const session = event.key.slice(_DRAFT_PREFIX.length);
@@ -13236,8 +13385,7 @@ async function sendFromInput(name) {
   const queued = _sendMode === 'queue' && !_waitingNow(name);
   if (_composerPendingSends.has(name)) return;
   const draftRevision = _draftSave(name, original);
-  _composerPendingSends.add(name);
-  _composerLockWatch(name, original);
+  const lock = _composerLockTake(name, original);
   _syncComposerPending();
   try {
     const identity = {};
@@ -13272,7 +13420,7 @@ async function sendFromInput(name) {
     _composerUnconfirmed(name, 'exception', _files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(name);
+    _composerLockRelease(name, lock);
     _syncComposerPending();
   }
 }
@@ -15096,7 +15244,7 @@ function _steeringDelayPrompt(msgId) {
   val.oninput = unit.onchange = preview; preview();
   box.querySelector('#steer-dp-cancel').onclick = () => bg.remove();
   box.querySelector('#steer-dp-set').onclick = () => { const s = secs(); bg.remove(); _steeringSetDelay(msgId, s); };
-  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') bg.remove(); };
+  val.onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('#steer-dp-set').click(); if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); bg.remove(); } };   // one Escape closes only the picker, not the worker view under it
   setTimeout(() => val.select(), 0);
   bg.onclick = (e) => { if (e.target === bg) bg.remove(); };
 }
@@ -19466,7 +19614,23 @@ function _detectTextLinks(plain) {
     // The host after the scheme. `slice(8)` assumed `https://` and cut the
     // first letter off an http host, so http://localhost:3077 was never a
     // link (owner, 2026-10-17: the port proxy links in the peek were dead).
-    if (/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) add(m.index, m.index + v.length, 'url', v);
+    if (!/\.[a-z]|localhost|\d+\.\d+\.\d+\.\d+/i.test(v.replace(/^https?:\/\//i, ''))) continue;
+    // A HARD WRAP IS NOT THE END OF A URL (Ethan, 2026-11-07: "this isnt working
+    // this link"). A worker wrapped .../#view=apps&open=<32 hex> after 18 of the
+    // id's characters, the link stopped at the newline, and the Apps tab got an
+    // id it could not match. A URL that runs to the end of a long line takes the
+    // next line's first token when that token reads as URL text (a digit or
+    // / ? = & # % _ in it); a prose word or a "- " bullet ends it as before.
+    let val = v, end = m.index + v.length, open = v === m[0];   // trailing punctuation closed it
+    while (open && plain[end] === '\n' && end - (plain.lastIndexOf('\n', end - 1) + 1) >= 40) {
+      const tail = /^[ \t]*([^\s<>\]\)'"`,;\\$-]+)(?=\s|$)/.exec(plain.slice(end + 1));
+      if (!tail || tail[1].length < 3 || !/[0-9\/?=&#%_]/.test(tail[1])) break;
+      const t2 = trim(tail[1]);
+      val += t2;
+      end += 1 + tail[0].length - tail[1].length + t2.length;
+      open = t2 === tail[1];
+    }
+    add(m.index, end, 'url', val);
   }
   // `@` before a path is Claude Code's file-mention marker, not part of the path.
   const abs = new RegExp(String.raw`(^|[\s(\x60'"=:\[@])((?:\/|\.\.?\/|~\/)[\w.\/@+-]*\w` + fileEnd + String.raw`(?::\d+(?::\d+)?)?)(?![\w\/])`, 'g');
@@ -19505,8 +19669,11 @@ function _detectTextLinks(plain) {
 }
 function _linkWrap(L, htmlText) {
   const ea = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  if (L.type === 'url')
-    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer">' + htmlText + '</a>';
+  if (L.type === 'url') {
+    const fp = typeof _ownFilePath === 'function' ? _ownFilePath(L.value) : '';
+    return '<a href="' + ea(L.value) + '" target="_blank" rel="noopener noreferrer"' + (fp ? ' class="own-file-link" title="' + ea(L.value) + '"' : '') + '>'
+      + (fp ? ea(fp) : htmlText) + '</a>';
+  }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
   return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
@@ -23684,10 +23851,13 @@ function handleCardPaste(name, e) {
 // reply answers it. Only on a FRESH reading: a snapshot older than 10 s may
 // say waiting for a worker that has moved on, and the message then skipped
 // the queue and landed mid-turn (implicit state machines inventory #36).
+// Fresh means the WORKER LIST was read in the last 10 s. _lastDataTime moves on
+// every SSE message, the 10 s ping included, so it called a minutes-old list
+// fresh and the queued message still landed mid-turn (2026-11-06).
 function _waitingNow(name) {
   const s = (sessions || []).find(x => x.name === name);
   if (!s || s.status !== 'waiting') return false;
-  const fresh = Date.now() - (_lastDataTime || 0) < 10000;
+  const fresh = Date.now() - _sessionsReadAt < 10000;
   if (!fresh) { try { amuxTrack('queue_kept_stale_waiting', { measured: true, n_considered: 1 }); } catch (e) {} }
   return fresh;
 }
@@ -23733,7 +23903,25 @@ function _updateSendSplit() {
 }
 setTimeout(_updateSendSplit, 0);
 
-const _composerPendingSends = new Set();
+// session -> the token of the ONE send holding that composer. A send releases
+// the lock only while it still holds it: after the 20 s watch gives the button
+// back and a second send starts, the first send's late finish must not unlock
+// the composer under the second (inventory #2, 2026-11-06).
+const _composerPendingSends = new Map();
+function _composerLockTake(name, original) {
+  const token = {};
+  _composerPendingSends.set(name, token);
+  _composerLockWatch(name, original, token);
+  return token;
+}
+function _composerLockRelease(name, token) {
+  if (_composerPendingSends.get(name) !== token) {
+    console.info('[amux] composer_stale_release_ignored', name);
+    return;
+  }
+  _composerPendingSends.delete(name);
+  _composerPendingSince.delete(name);
+}
 function _composerUnconfirmed(session, result, attachments) {
   // The local log is available even with analytics disabled. Never send message
   // contents, upload paths or credentials in a failure beacon.
@@ -23748,11 +23936,11 @@ function _composerUnconfirmed(session, result, attachments) {
 // arrived shows in Messages, so the toast says to look there before resending.
 const _COMPOSER_LOCK_MS = 20000;
 const _composerPendingSince = new Map();
-function _composerLockWatch(name, original) {
+function _composerLockWatch(name, original, token) {
   _composerPendingSince.set(name, Date.now());
   setTimeout(() => {
     const t = _composerPendingSince.get(name);
-    if (!t || !_composerPendingSends.has(name) || Date.now() - t < _COMPOSER_LOCK_MS) return;
+    if (!t || _composerPendingSends.get(name) !== token || Date.now() - t < _COMPOSER_LOCK_MS) return;
     _composerPendingSends.delete(name);
     _composerPendingSince.delete(name);
     // The text back where it was typed, as a refused send does.
@@ -23813,8 +24001,7 @@ async function sendPeekCmd() {
   // Persist text and upload references in the local outbox before clearing.
   // A network refusal remains reviewable in Sync and pending Messages.
   const draftRevision = _draftSave(session, original);
-  _composerPendingSends.add(session);
-  _composerLockWatch(session, original);
+  const lock = _composerLockTake(session, original);
   _syncComposerPending();
   let result = 'failed';
   try {
@@ -23854,7 +24041,7 @@ async function sendPeekCmd() {
     _composerUnconfirmed(session, 'exception', files.length);
     showToast('Message not confirmed — draft and attachments kept');
   } finally {
-    _composerPendingSends.delete(session);
+    _composerLockRelease(session, lock);
     _syncComposerPending();
   }
 }
@@ -27170,9 +27357,11 @@ function _linkifyUrls(safeHtml) {
     return String(safeHtml).replace(/(https?:\/\/[^\s<>"'`]+)(?![^<]*>)/g, (m) => {
       const url = m.replace(/[.,;:!?)]+$/, '');   // trailing punctuation is prose, not URL
       const tail = m.slice(url.length);
+      const fp = _ownFilePath(url.replace(/&amp;/g, '&'));   // a file on this amux reads as its path
       return '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
-        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();">'
-        + url + '</a>' + tail;
+        + 'style="color:var(--accent);text-decoration:underline;" onclick="event.stopPropagation();"'
+        + (fp ? ' title="' + url + '"' : '') + '>'
+        + (fp ? esc(fp) : url) + '</a>' + tail;
     });
   } catch (e) { return safeHtml; }
 }
@@ -33142,6 +33331,10 @@ function closeFilePreview() {
   document.getElementById('file-body').style.display = '';
   _fileData = null;
   _fileViewMode = 'preview';
+  // A load still in flight belongs to a viewer that is gone: without this its
+  // cache read or reply passed the generation check and set _fileData on a
+  // closed overlay (2026-11-06).
+  _filePreviewGen++;
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -38458,6 +38651,16 @@ function _ownLinkHash(href) {
   if ((m = u.pathname.match(/^\/w\/([^/]+)\/?$/))) return '#peek=' + m[1];
   if ((u.pathname === '/' || u.pathname === '') && u.hash.length > 1) return u.hash;
   return null;
+}
+// The absolute path behind a link to a file on THIS amux (/f/<path>), or ''.
+// Such a link is shown as its path, the way amux shows every file: a worker
+// asked for "a link to the plan" wrote https://<this amux>/f/Users/... and the
+// owner read a server URL where a clickable path belonged (Ethan, 2026-11-06).
+// The href stays, so a plain click opens the file here (_openOwnLink).
+function _ownFilePath(href) {
+  const h = _ownLinkHash(href);
+  if (!h || h.indexOf('#path=') !== 0) return '';
+  try { return decodeURIComponent(h.slice(6)); } catch (_) { return ''; }
 }
 function _openOwnLink(href, how) {
   const hash = _ownLinkHash(href);
@@ -46403,6 +46606,13 @@ function _renderMarkdownInner(raw, basePath) {
           return '<a href="#" class="md-file-link" data-file="' + esc(target) + '"' +
                  (isDir ? ' data-dir="1"' : '') + ' title="' + esc(target) + '">' + text + '</a>';
         }
+        // A link to a file on THIS amux (/f/<path>) is that file: it opens in
+        // the viewer, and a bare URL reads as its path (Ethan, 2026-11-06).
+        const own = typeof _ownFilePath === 'function' ? _ownFilePath(href || '') : '';
+        if (own) {
+          const bare = text.replace(/<[^>]*>/g, '') === (href || '') || text === esc(href || '');
+          return '<a href="#" class="md-file-link" data-file="' + esc(own) + '" title="' + esc(own) + '">' + (bare ? esc(own) : text) + '</a>';
+        }
         const isAnchor = (href || '').startsWith('#');
         const tgt = (!isAnchor && /^https?:/i.test(href || '')) ? ' target="_blank" rel="noopener"' : '';
         const t = title ? ' title="' + esc(title) + '"' : '';
@@ -52840,19 +53050,42 @@ const _idb = (() => {
       if (isHidden()) flushCache(true); else flushCache();
     });
   }
+  const resetDb = (reason) => {
+    const had = !!db;
+    try { if (db) db.close(); } catch (_) {}
+    db = null;
+    try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
+      body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
+    return had;
+  };
+  // A CACHE READ HAS A DEADLINE (Ethan, 2026-11-07: a worker opened to an empty
+  // terminal, "this keeps happening"). A WebKit storage read can hang for hours.
+  // The terminal's failed-fetch path awaited its saved copy, so its request
+  // never settled, and every later poll for that worker reused the stuck
+  // request: no fetch reached the server again until the app was reloaded. A
+  // rebuildable cache key reads as absent after 3s and the connection is reset
+  // (kind=idb-reopened reason=cache_read_timeout). Pending work (drafts,
+  // offline_queue, dictation) keeps waiting: reading it as empty could let a
+  // caller write the empty value back over it.
+  const _CACHE_READ_MS = 3000;
+  const readKv = key => withDb(d => new Promise((resolve) => {
+    const tx = d.transaction('kv', 'readonly');
+    const req = tx.objectStore('kv').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  })).catch(() => null);
+  const readCache = key => {
+    let timer;
+    return Promise.race([readKv(key), new Promise(resolve => {
+      timer = setTimeout(() => { resetDb('cache_read_timeout'); resolve(null); }, _CACHE_READ_MS);
+    })]).finally(() => clearTimeout(timer));
+  };
   return {
     // Drop the connection so the next call opens a fresh one. A connection
     // whose storage process went away can hang every request without an
     // error or onclose (WebKit; the Mac app logged 1,331 upload-list timeouts
     // in a day, every outbox pass after the first one on the same handle).
-    reset: (reason) => {
-      const had = !!db;
-      try { if (db) db.close(); } catch (_) {}
-      db = null;
-      try { fetch('/api/client-debug', {method: 'POST', headers: {'Content-Type': 'application/json'}, keepalive: true,
-        body: JSON.stringify({kind: 'idb-reopened', verdict: 'idb_connection_reset', reason: String(reason || ''), had_connection: had, measured: true, n_considered: 1})}).catch(() => {}); } catch (_) {}
-      return had;
-    },
+    reset: resetDb,
     // Cache callers are best-effort; pending work uses the strict methods below.
     set: (key, val) => _CACHE_KEY.test(String(key)) ? setCache(String(key), val)
       : transaction('kv', os => os.put(val, key)).catch(error => _uploadStorageError('cache-write', error)),
@@ -52896,12 +53129,8 @@ const _idb = (() => {
       tx.oncomplete = () => resolve(request.result);
       tx.onabort = tx.onerror = () => reject(tx.error || new Error('Attachment read aborted'));
     })),
-    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key)) : withDb(d => new Promise((resolve) => {
-      const tx = d.transaction('kv', 'readonly');
-      const req = tx.objectStore('kv').get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    })).catch(() => null),
+    get: (key) => cachePending.has(key) ? Promise.resolve(cachePending.get(key))
+      : _CACHE_KEY.test(String(key)) ? readCache(key) : readKv(key),
     del: (key) => withDb(d => {
       const tx = d.transaction('kv', 'readwrite');
       tx.objectStore('kv').delete(key);
@@ -53316,6 +53545,7 @@ function connectSSE() {
           // list. The class test now forbids any bare `workers =` assignment in
           // client code.
           sessions = _applyLifecycleAcks(msg.payload);
+          _sessionsReadAt = Date.now();
           _peekChatStateSync();
           _sessionsSnapshotEpoch++;
           // Quota-full store: drop the cache rather than let the throw break SSE handling
@@ -53743,6 +53973,16 @@ let _storageEstimate = null;       // {usage, quota} from the browser, not our c
 _storagePersistEnsure();
 
 if ('serviceWorker' in navigator) {
+  let _swReloadWhenShown = false;
+  const _swReloadNow = () => {
+    // The draft in the open worker's composer survives the reload in the draft
+    // store, which the composer reads on open. (peekState.draft had no reader.)
+    try {
+      const inp = document.getElementById('peek-cmd-input');
+      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) _draftSave(peekSession, inp.value);
+    } catch (e) { console.warn('[amux] draft not kept across the service worker reload', e); }
+    location.reload();
+  };
   // A first visit has no controller yet: the new worker claiming this page fires
   // controllerchange, and reloading then threw away whatever the visitor had started.
   // A new amux Cloud customer's "Sign in with Claude" click was lost to it about 5 s
@@ -53767,17 +54007,22 @@ if ('serviceWorker' in navigator) {
       console.info('[amux] service worker installed on first visit; no reload needed');
       return;
     }
-    // Rescue in-progress peek input from the reload
-    try {
-      const inp = document.getElementById('peek-cmd-input');
-      if (typeof peekSession !== 'undefined' && peekSession && inp && inp.value.trim()) {
-        const st = JSON.parse(sessionStorage.getItem('peekState') || '{}');
-        st.session = st.session || peekSession;
-        st.draft = inp.value;
-        sessionStorage.setItem('peekState', JSON.stringify(st));
+    // One tab's update makes the new worker claim EVERY tab. A hidden tab waits
+    // until it is shown, as the version reload does, so a deploy does not reload
+    // every background tab at once (inventory follow-up to #34, 2026-11-06).
+    if (document.hidden) {
+      if (!_swReloadWhenShown) {
+        _swReloadWhenShown = true;
+        document.addEventListener('visibilitychange', function onShown() {
+          if (document.hidden) return;
+          document.removeEventListener('visibilitychange', onShown);
+          console.info('[amux] sw_reload_deferred_until_shown');
+          _swReloadNow();
+        });
       }
-    } catch (e) {}
-    location.reload();
+      return;
+    }
+    _swReloadNow();
   });
   }).catch(err => {
     // NEVER swallow this. A failed registration is the difference between a
@@ -58595,12 +58840,17 @@ const _ASK_MAX_THREAD = 6;
 let _askThread = [];          // [{q, a}] for the global tab
 let _peekAskThread = [];      // [{q, a}] for the worker tab
 let _peekAskThreadFor = '';   // which worker _peekAskThread belongs to
+// One generation per panel. An answer takes up to 300 s; a new question, a new
+// thread or a switch of worker in that time makes it someone else's answer, so
+// it is dropped rather than pushed into the thread on screen.
+const _askGen = { global: 0, peek: 0 };
 function _askThreadFor(peek) {
   if (!peek) return _askThread;
   if (_peekAskThreadFor !== peekSession) { _peekAskThread = []; _peekAskThreadFor = peekSession; }
   return _peekAskThread;
 }
 function _askNewThread(peek) {
+  _askGen[peek ? 'peek' : 'global']++;
   if (peek) { _peekAskThread = []; _peekAskThreadFor = peekSession; } else { _askThread = []; }
   const ansEl = document.getElementById(peek ? 'peek-ask-answer' : 'ask-answer');
   const metaEl = document.getElementById(peek ? 'peek-ask-meta' : 'ask-meta');
@@ -58667,6 +58917,12 @@ async function _askRun(peek) {
   if (!question) { if (qEl) qEl.focus(); return; }
   const days = +(document.getElementById(peek ? 'peek-ask-days' : 'ask-days')?.value || 14);
   const session = peek ? peekSession : null;
+  const genKey = peek ? 'peek' : 'global';
+  const gen = ++_askGen[genKey];
+  const askedThread = _askThreadFor(peek);
+  // Still the question on screen: same panel generation, same worker, same thread.
+  const current = () => gen === _askGen[genKey] && (!peek || peekSession === session) && askedThread === _askThreadFor(peek);
+  const dropStale = (why) => { console.info('[amux] ask_answer_dropped', { session, why }); };
   if (metaEl) metaEl.textContent = 'Asking' + (session ? ' about ' + session : '') + '\u2026';
   if (ansEl) ansEl.innerHTML = '';
   let r, d;
@@ -58683,14 +58939,16 @@ async function _askRun(peek) {
       // The thread goes with the question so a follow-up ("why?", "which of
       // those...") is interpreted against what was already asked.
       body: JSON.stringify({ question, session, days,
-        history: _askThreadFor(peek).slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
+        history: askedThread.slice(-_ASK_MAX_THREAD).map(t => ({ question: t.q, answer: t.a })) }),
       _skipOutbox: true, signal: AbortSignal.timeout(300000),
     });
     d = await r.json();
   } catch (e) {
+    if (!current()) { dropStale('superseded'); return; }
     if (metaEl) metaEl.textContent = 'Could not reach the server: ' + String(e && e.message || e);
     return;
   }
+  if (!current()) { dropStale('superseded'); return; }
   // A locally queued 202 never left the browser, so it is not an answer.
   if (_isLocallyQueued(r)) {
     if (metaEl) metaEl.textContent = 'Not sent: this client queued the request offline. Reconnect and ask again.';
@@ -58723,8 +58981,7 @@ async function _askRun(peek) {
       : '')
     + (d.history_turns ? ' \u00b7 follow-up with ' + d.history_turns + ' earlier exchange' + (d.history_turns === 1 ? '' : 's') : '')
     + secs;
-  const thread = _askThreadFor(peek);
-  thread.push({ q: question, a: d.answer || '' });
+  askedThread.push({ q: question, a: d.answer || '' });
   if (qEl) qEl.value = '';   // the box is ready for the follow-up
   // One row of message buttons: what the answer cited, and the closest
   // matches by shared words, so a message the prose missed is still one tap away.
@@ -68865,6 +69122,8 @@ function _cvFindName(conv) {
   const w = (L.workers || []).find(x => x.conv === conv); if (w) return w.name;
   if (conv && conv.indexOf('g:') === 0) return '#' + conv.slice(2);
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
+  // A worker's direct message with you (`d:<worker>|<you>`): the worker.
+  if (conv && conv.indexOf('d:') === 0) return conv.slice(2).split('|')[0];
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
@@ -68910,7 +69169,8 @@ function _cvNewCandidates() {
   const L = _cv.list || {};
   return [
     ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
-    ...(L.people || []).filter(p => !p.me && p.conv).map(p => ({ conv: p.conv, label: p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.people || []).filter(p => p.conv).map(p => ({ conv: p.conv, label: p.me ? p.name + ' (you)' : p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
+    ...(L.direct || []).map(d => ({ conv: d.conv, label: d.worker, kind: 'direct message', ico: _cvAvatar(d.worker, true) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
 }
@@ -68957,11 +69217,15 @@ function _cvRenderSide() {
     // Owners and admins manage channels from here (AA-52). The server refuses
     // everyone else, so this only hides a button nobody else could use.
     + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
-  const ppl = (L.people || []);
-  document.getElementById('cv-people-sec').style.display = ppl.length ? '' : 'none';
-  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me
+  const ppl = (L.people || []), dms = (L.direct || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length ? '' : 'none';
+  // Your own entry opens your notes to yourself, as in Slack (Ethan,
+  // 2026-11-06: "i should also be able to open my own"). A worker that wrote
+  // to you directly is listed here too, as its 1:1 with you.
+  document.getElementById('cv-people').innerHTML = ppl.map(p => p.me && !p.conv
     ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
-    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.online ? ' on' : '') + '" title="' + (p.online ? 'online' : 'away') + '"></span>')).join('');
+    : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.me ? p.name + ' (you)' : p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.me || p.online ? ' on' : '') + '" title="' + (p.me || p.online ? 'online' : 'away') + '"></span>')).join('')
+    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -69144,7 +69408,7 @@ function _cvEnter() {
     _cvSelect(sel, true);
   });
 }
-function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; _cvRenderSide(); }
+function _cvBack() { document.getElementById('messages-view').classList.remove('cv-open'); _cv.sel = null; clearInterval(_cv.pollT); _cv.pollT = null; _cvRenderSide(); }
 function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
@@ -69166,6 +69430,7 @@ function _cvSelect(sel, auto) {
   if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
   _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
   _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
   document.getElementById('cv-title').textContent = _cvFindName(sel);
@@ -69274,6 +69539,7 @@ function _cvSqConvs() {
   return [].concat(
     (L.channels || []).map(c => ({ conv: c.conv, name: '#' + (c.title || c.name), kind: 'Channel', key: c.name, ico: '<span class="cv-ico">' + (c.private ? '&#x1F512;' : '#') + '</span>' })),
     (L.people || []).filter(p => !p.me).map(p => ({ conv: p.conv, name: p.name, kind: 'Person', key: String(p.email || p.name).split('@')[0], ico: _cvAvatar(p.name, false, p.email) })),
+    (L.direct || []).map(d => ({ conv: d.conv, name: d.worker, kind: 'Direct message', key: d.worker, ico: _cvAvatar(d.worker, true) })),
     (L.workers || []).map(w => ({ conv: w.conv, name: w.name, kind: 'Worker', key: w.name, ico: _cvAvatar(w.name, true) })));
 }
 function _cvSqWhen(ts) {
@@ -69451,7 +69717,12 @@ async function _cvPollOnce(full) {
   // Typing "@" before the member list arrived left the picker empty; offer
   // it again now that the names are here.
   if (!hadInfo) { const inp = document.getElementById('cv-input'); if (inp && /(^|\s)@[\w.\-]*$/.test(inp.value.slice(0, inp.selectionStart))) _cvOnInput(inp); }
-  if (full) _cv.posts = d.posts || [];
+  // A full refresh of a conversation already on screen MERGES (below): it used
+  // to replace the list, dropping the older pages scrolled in and the posts
+  // still waiting on the server (2026-11-06).
+  const hadPosts = _cv.posts.length > 0;
+  if (full && !hadPosts) _cv.posts = d.posts || [];
+  if (full && hadMore && _cv.posts.length && _cv.posts[0].id < ((d.posts || [])[0] || {}).id) _cv.info.has_more = hadMore;
   // The first post someone else wrote after your read mark, captured before
   // this load marks the conversation read (_cvMarkRead below).
   if (full && _cv.restoreScroll) {
@@ -69459,7 +69730,7 @@ async function _cvPollOnce(full) {
     const first = lr ? (d.posts || []).find(p => typeof p.id === 'number' && p.id > lr && p.author_key !== me) : null;
     _cv.unreadFrom = first ? first.id : null;
   }
-  else if ((d.posts || []).length) {
+  if ((hadPosts || !full) && (d.posts || []).length) {
     // Merged by id and kept in order; the optimistic pending posts stay last.
     const byId = new Map(_cv.posts.filter(p => typeof p.id === 'number').map(p => [p.id, p]));
     for (const np of d.posts) byId.set(np.id, np);
@@ -69509,8 +69780,12 @@ function _cvRenderHead(sel, d) {
         + 'data-key="' + esc(wkey) + '" onchange="_cvSetAvatar(this.dataset.key, this.files[0]); this.value=\'\'"></label>';
       return;
     }
+  } else if (sel.indexOf('d:') === 0) {
+    const w = sel.slice(2).split('|')[0];
+    meta.textContent = 'Direct message with ' + w + '. Only you and ' + w + ' can read this; messages here go to it.';
   } else {
-    meta.textContent = 'Direct message';
+    const ends = sel.slice(2).split('|');
+    meta.textContent = ends.length === 2 && ends[0] === ends[1] ? 'Your notes to yourself. Only you can read this.' : 'Direct message';
   }
   document.getElementById('cv-head-people').innerHTML = (on ? '<span style="margin-right:var(--space-2)"><span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1)"></span>' + on + ' online</span>' : '') +
     ppl.slice(0, 4).map(p => _cvAvatar(p.name, false, p.key)).join('');
@@ -69535,17 +69810,55 @@ function _cvBodyHtml(p) {
     const k = names[tok.replace(/\.$/, '').toLowerCase()];
     return k ? pre + '<span class="cv-mention' + (k === me ? ' me' : '') + '">@' + tok + '</span>' : m;
   });
-  const imgs = [];
-  body.replace(/(?:^|[\s(\[>"'`,;=@])((?:~\/|\/)[^\s'"`<>()]+\.(?:png|jpe?g|gif|webp))(?=$|[\s,;:)\].])/gim, (m, path) => {
-    if (!imgs.includes(path) && imgs.length < 4) imgs.push(path);
-    return m;
-  });
+  const imgs = _cvImageRefs(body);
   if (imgs.length) {
-    h += '<div class="cv-thumbs">' + imgs.map(path => '<img class="cv-thumb" loading="lazy" alt="' + esc(path.split('/').pop())
-      + '" title="Open ' + esc(path) + '" data-path="' + esc(path) + '" src="'
-      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(path))) + '" onclick="openFilePreview(this.dataset.path)">').join('') + '</div>';
+    h += '<div class="cv-thumbs">' + imgs.map(r => r.path
+      ? '<img class="cv-thumb" loading="lazy" alt="' + esc(r.name) + '" title="Open ' + esc(r.path) + '" data-path="' + esc(r.path) + '" src="'
+        + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(r.path))) + '" onclick="openFilePreview(this.dataset.path)" onerror="_cvThumbFailed(this)">'
+      : '<img class="cv-thumb" loading="lazy" referrerpolicy="no-referrer" alt="' + esc(r.name) + '" title="Open ' + esc(r.url) + '" data-url="' + esc(r.url)
+        + '" src="' + esc(r.url) + '" onclick="window.open(this.dataset.url,\'_blank\',\'noopener\')" onerror="_cvThumbFailed(this)">').join('') + '</div>';
   }
   return h;
+}
+// INLINE IMAGE PREVIEWS, like Slack (Ethan, 2026-11-06: "make sure any image
+// links have an inline preview", screenshot of an `@.../IMG_5708.tiff` post
+// shown as a bare link). A local image path (absolute or ~/, with or without
+// the @ an attachment rides on) previews through /api/file/raw; a web link to
+// an image previews from its URL, this server's /f/ links included. The list
+// used to stop at png/jpg/gif/webp, so a phone's .tiff or .heic never showed.
+const _CV_IMG_EXT = 'png|jpe?g|gif|webp|svg|bmp|avif|heic|heif|tiff?';
+function _cvImageRefs(body) {
+  const out = [], seen = new Set();
+  const add = r => { const k = r.path || r.url; if (!seen.has(k) && out.length < 4) { seen.add(k); out.push(r); } };
+  String(body || '').replace(new RegExp('(?:^|[\\s(\\[>"\'`,;=@])((?:~\\/|\\/)[^\\s\'"`<>()]+\\.(?:' + _CV_IMG_EXT + '))(?=$|[\\s,;:)\\].])', 'gim'), (m, path) => {
+    // A copied file link (`/f/<path>`, api/deep_links.rs) names the file on
+    // disk; the link itself redirects to the dashboard, so preview the file.
+    if (path.indexOf('/f/') === 0) path = path.slice(2);
+    add({ path, name: path.split('/').pop() }); return m;
+  });
+  String(body || '').replace(new RegExp('https?:\\/\\/[^\\s<>()"\']+\\.(?:' + _CV_IMG_EXT + ')(?:\\?[^\\s<>()"\']*[^\\s<>()"\'.,;:!?])?(?=$|[\\s,;:!?)\\].])', 'gim'), url => {
+    const name = url.split('?')[0].split('/').pop();
+    try {
+      const u = new URL(url);
+      if (typeof location !== 'undefined' && u.host === location.host && u.pathname.indexOf('/f/') === 0) {
+        add({ path: decodeURIComponent(u.pathname.slice(2)), name }); return url;
+      }
+    } catch (e) {}
+    add({ url, name }); return url;
+  });
+  return out;
+}
+// A browser that cannot draw the format (Chrome and Firefox have no TIFF or
+// HEIC; Safari and the amux apps do) gets a file chip that opens it instead of
+// a broken image.
+function _cvThumbFailed(img) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'cv-thumb-chip';
+  chip.textContent = '\u{1F5BC} ' + (img.alt || 'image') + ' (no preview in this browser; open)';
+  const path = img.dataset.path, url = img.dataset.url;
+  chip.onclick = () => path ? openFilePreview(path) : window.open(url, '_blank', 'noopener');
+  img.replaceWith(chip);
 }
 // PATHS IN A POST ARE LINKS (AA-51, Ethan 2026-10-28). _linkifyPaths needs a
 // file extension, so a folder such as /home/amux/wexus/runs/x/for-elliot was
@@ -69900,10 +70213,11 @@ async function _cvOnScroll(box) {
   if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
-  const sel = _cv.sel, first = _cv.posts[0].id, h0 = box.scrollHeight;
+  const sel = _cv.sel, gen = _cv.gen, first = _cv.posts[0].id, h0 = box.scrollHeight;
   try {
     const d = await (await fetch(API + '/api/conversations/' + encodeURIComponent(sel) + '/posts?before=' + first + '&limit=100')).json();
-    if (sel !== _cv.sel) return;
+    // The same conversation reopened (A, B, A) is a fresh list: same sel, new gen.
+    if (sel !== _cv.sel || gen !== _cv.gen) return;
     _cv.posts = (d.posts || []).concat(_cv.posts);
     _cv.info.has_more = d.has_more;
     Object.assign(_cvProfiles, d.profiles || {});
@@ -70032,7 +70346,7 @@ function _cvRenderPosts(scroll) {
     _cv.restoreScroll = false;
     const sel = _cv.sel || '';
     box.innerHTML = '<div class="cv-empty">' + (sel.indexOf('w:') === 0 ? 'Send ' + esc(sel.slice(2)) + ' a message. It will reply here.'
-      : sel.indexOf('p:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
+      : sel.indexOf('p:') === 0 || sel.indexOf('d:') === 0 ? 'Start a direct message.' : 'No messages yet. Say hello, or @mention a worker to give it a task.') + '</div>';
     return;
   }
   let html = '', day = '';
@@ -70097,7 +70411,7 @@ function _cvRenderUnread() {
   document.getElementById('cv-title').textContent = 'Unread';
   document.getElementById('cv-meta').textContent = 'Conversations with messages you have not opened';
   const L = _cv.list || {};
-  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.workers || []).map(w => [w, w.name])]
+  const rows = [...(L.channels || []).map(c => [c, '#' + c.name]), ...(L.people || []).filter(p => !p.me).map(p => [p, p.name]), ...(L.direct || []).map(d => [d, d.worker]), ...(L.workers || []).map(w => [w, w.name])]
     .filter(([x]) => x.unread).sort((a, b) => b[0].last_ts - a[0].last_ts);
   document.getElementById('cv-posts').innerHTML = rows.length ? '<div class="cv-nav">' + rows.map(([x, n]) => _cvItem(x.conv, '', n, x.unread, x.mentions)).join('') + '</div>'
     : '<div class="cv-empty">You are all caught up.</div>';
@@ -70252,7 +70566,7 @@ async function _cvMaybeNotify(ev) {
   } catch (e) { return; }
   if (!p || p.author_key === _cvMeKey()) return;
   const me = _cvMeKey();
-  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || !!ev.parent_id;
+  const addressed = (p.mentions || []).includes(me) || ev.conv.indexOf('w:') === 0 || ev.conv.indexOf('p:') === 0 || ev.conv.indexOf('d:') === 0 || !!ev.parent_id;
   if (!addressed) return;
   _cvNotified.add(ev.id);
   const title = (p.author_name || 'Someone') + (ev.parent_id ? ' replied in ' : ' in ') + _cvFindName(ev.conv);
@@ -73921,7 +74235,7 @@ function _drawRtAfterDiskReload(text, etag) {
 // the kind of thing, active work, where you are, and what you open often.
 // Archived and discarded things stay out until "Show archived" is on.
 const _cmdk = { q: '', sel: 0, rows: [], lists: null, listsAt: 0, failed: [], server: [], serverMeta: null, seq: 0, timer: 0,
-  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0 };
+  more: false, hidden: false, moved: false, selKey: '', hiddenLocal: 0, open: {}, openToken: '' };
 const _CMDK_SHOW = 8;
 const _CMDK_USAGE_KEY = 'amux-cmdk-usage';
 const _CMDK_KIND = {
@@ -74175,6 +74489,31 @@ function _cmdkCompute() {
   if (_cmdk.sel >= rows.length) _cmdk.sel = Math.max(0, rows.length - 1);
 }
 
+// Which workers and tabs are already open, by place ("peek=<worker>",
+// "view=<tab>"): 'here' for the one on this page, 'elsewhere' for another tab
+// or pane of the Mac app, which says so when asked (owner, 2026-11-07: "for
+// each worker in the list if its already open it says it"). Choosing one goes
+// to it rather than opening it again (_cmdkRun).
+function _cmdkPlace(r) {
+  return r.kind === 'worker' ? 'peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? 'view=' + _viewHashName(r.id) : '';
+}
+function _cmdkAskOpen() {
+  const open = {};
+  if (peekSession && document.getElementById('peek-overlay')?.classList.contains('active')) open['peek=' + peekSession] = 'here';
+  else if (typeof activeView !== 'undefined' && activeView && activeView !== 'sessions') open['view=' + _viewHashName(activeView)] = 'here';
+  _cmdk.open = open;
+  const h = _nativePaneBridge();
+  if (!h) return;
+  _cmdk.openToken = Math.random().toString(36).slice(2, 10);
+  try { h.postMessage({ op: 'places', token: _cmdk.openToken }); } catch (e) { console.warn('[amux] palette could not ask which places are open', e); }
+}
+function _cmdkPlacesAck(token, places) {
+  if (token !== _cmdk.openToken || !Array.isArray(places)) return;
+  places.forEach(p => { if (typeof p === 'string' && !_cmdk.open[p]) _cmdk.open[p] = 'elsewhere'; });
+  if (typeof amuxTrack === 'function') amuxTrack('palette_open_places', { n: places.length, measured: true, n_considered: places.length });
+  if (document.getElementById('cmdk-overlay')?.classList.contains('active')) _cmdkRender();
+}
+
 function _cmdkRowHtml(r, i, toks, q) {
   const meta = r.kind === 'more' || r.kind === 'hidden';
   const head = '<div class="cmdk-row' + (i === _cmdk.sel ? ' sel' : '') + (meta ? ' cmdk-meta' : '') + '" role="option" aria-selected="' + (i === _cmdk.sel) + '" data-i="' + i + '"'
@@ -74183,8 +74522,11 @@ function _cmdkRowHtml(r, i, toks, q) {
   const fz = r.match === 'fuzzy' ? q : '';
   const sub = r.snippet ? '<span class="cmdk-sub cmdk-snippet">' + _cmdkMark(r.snippet, toks, '') + '</span>'
     : r.sub ? '<span class="cmdk-sub">' + _cmdkMark(r.sub, fz ? [] : toks, '') + '</span>' : '';
+  const open = _cmdk.open[_cmdkPlace(r)];
+  const badge = open ? '<span class="status-badge background cmdk-open" title="' + (open === 'here' ? 'Showing on this page' : 'Open in another tab or pane: choosing it goes there') + '">'
+    + (open === 'here' ? 'Open here' : 'Open') + '</span>' : '';
   return head + '<span class="cmdk-kind">' + esc(_CMDK_KIND[r.kind] || r.kind) + '</span>'
-    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span></div>';
+    + '<span class="cmdk-text"><span class="cmdk-title">' + _cmdkMark(r.title, toks, fz) + '</span>' + sub + '</span>' + badge + '</div>';
 }
 
 function _cmdkRender() {
@@ -74283,6 +74625,7 @@ function openCmdk() {
   const inp = document.getElementById('cmdk-input');
   inp.value = _cmdk.q = ''; _cmdk.sel = 0; _cmdk.server = []; _cmdk.serverMeta = null;
   _cmdk.moved = false; _cmdk.more = false; _cmdk.selKey = '';
+  _cmdkAskOpen();
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
@@ -74324,7 +74667,7 @@ function _cmdkRun(i) {
   // and select something for which a tab is already open it goes to that
   // tab"). The app answers within a moment; with no answer (an older app) or
   // no such tab, it opens here as before.
-  const place = r.kind === 'worker' ? '#peek=' + r.id : r.kind === 'view' && r.id !== 'sessions' ? '#view=' + _viewHashName(r.id) : '';
+  const place = _cmdkPlace(r) ? '#' + _cmdkPlace(r) : '';
   if (place && _cmdkFocusElsewhere(place, () => _cmdkOpen(r))) return;
   _cmdkOpen(r);
 }

@@ -9122,6 +9122,8 @@ button.cv-sec:hover { color:var(--text); }
 .cv-thumbs { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-top:var(--space-1-5); }
 .cv-md img.cv-thumb { max-width:220px; max-height:160px; object-fit:cover; border:1px solid var(--border); cursor:pointer; }
 @media (max-width: 600px) { .cv-md img.cv-thumb { max-width:46vw; } }
+.cv-thumb-chip { display:inline-flex; align-items:center; min-height:44px; padding:0 var(--space-2); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg2, transparent); color:inherit; font:inherit; cursor:pointer; }
+.cv-dm-tag { margin-left:auto; font-size:var(--fs-2xs); color:var(--dim); border:1px solid var(--border); border-radius:var(--radius-sm); padding:0 var(--space-1); }
 .cv-deliv { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-top:var(--space-0-5); }
 .cv-deliv span { font-size:var(--fs-2xs); padding:1px var(--space-1-5); border-radius:var(--radius-xl); border:1px solid var(--border); color:var(--dim); }
 .cv-deliv span.ok { color:var(--green); border-color:color-mix(in srgb, var(--green) 45%, transparent); }
@@ -10307,7 +10309,8 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .cmdk-row { display: flex; align-items: center; gap: var(--space-2-5); padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); cursor: pointer; min-height: 44px; box-sizing: border-box; }
 .cmdk-row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .cmdk-kind { flex: 0 0 76px; font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--dim); }
-.cmdk-text { display: flex; flex-direction: column; min-width: 0; }
+.cmdk-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.cmdk-open { margin-left: auto; white-space: nowrap; }
 .cmdk-title { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-sub { color: var(--dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-empty { color: var(--dim); padding: var(--space-4) var(--space-3); }
@@ -10415,11 +10418,16 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-1-5) var(--space-2); }
 @media (max-width: 600px) { .host-fix-row .btn { min-height: 44px; } }
 
-/* Composer resize grip (top-left corner of the peek's message box): drag up
-   to make the box taller. A user-set height becomes the floor; content can
-   still grow it, to 70% of the screen. */
+/* Composer resize grip (top-left corner of the peek's message box): drag it
+   up or down to set the box's height. A hand-set height IS the height, in
+   both directions: it used to be only a floor, so a box full of text could
+   not be dragged smaller than its text (Ethan, 2026-11-06). Longer text
+   scrolls inside it; a double-click on the grip returns to sizing by content. */
 .send-input.user-sized,
-#peek-overlay #peek-cmd-input.user-sized { min-height: var(--composer-h, 44px); max-height: 70dvh; }
+#peek-overlay #peek-cmd-input.user-sized {
+  field-sizing: fixed; height: var(--composer-h, 44px);
+  min-height: var(--composer-h, 44px); max-height: var(--composer-h, 44px); overflow-y: auto;
+}
 .composer-grip {
   position: absolute; top: -7px; left: -7px; width: 18px; height: 18px; z-index: 4;
   cursor: ns-resize; touch-action: none; border-radius: var(--radius-round);

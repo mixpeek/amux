@@ -525,6 +525,13 @@ struct ShareView: View {
         // background: the picker never waits on it.
         Task.detached { await ShareOutbox.drainShared() }
         do {
+            // A worker renamed since the last share keeps its place: the
+            // remembered selection and share counts move to its new name.
+            let renames = await AmuxClient.renames(server: server)
+            if !renames.isEmpty {
+                AmuxStore.applyRenames(renames)
+                selected = selected.map { renames[$0] ?? $0 }
+            }
             let found = try await AmuxClient.workers(server: server)
             workers = found
             if frozenRank.isEmpty { frozenRank = Self.activityRank(found) }

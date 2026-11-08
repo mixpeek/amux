@@ -8,6 +8,8 @@
 #   3. GitHub unreadable (gh exits 1 with a 401 body) exits 3 UNMEASURED, never 0
 #   4. a "completed failure" cached before the wait began (an earlier attempt of
 #      a re-run, 2026-10-29) is not the verdict: the wait polls and gets success
+#   5. a poller lock left with no pid (a wait killed between mkdir and the pid
+#      write, 2026-11-06) is broken once it is old, and the wait gets success
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"; AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
 T="$(mktemp -d "${TMPDIR:-/tmp}/ciw.XXXXXX")"; trap 'rm -rf -- "${T:?}"' EXIT
@@ -49,4 +51,10 @@ printf '{"polled_at": %s, "rc": 0, "measured": true, "status": "completed", "con
   "$(( $(date +%s) - 300 ))" > "$AMUX_HOME/ci-watch/o_r-104/state.json"
 bash "$AM" ci wait 104 --repo o/r --poll 1 --timeout 60 >/dev/null 2>&1; rc=$?
 [ "$rc" = 0 ] && ok "a conclusion cached before the wait began is re-read, not reported" || bad "stale cached attempt: rc=$rc"
+export CIW_COUNT="$T/c5" CIW_MODE=normal CIW_CONCLUSION=success
+mkdir -p "$AMUX_HOME/ci-watch/o_r-105/poller"
+touch -t "$(date -v-2M +%Y%m%d%H%M.%S 2>/dev/null || date -d '2 minutes ago' +%Y%m%d%H%M.%S)" "$AMUX_HOME/ci-watch/o_r-105/poller"
+out="$(bash "$AM" ci wait 105 --repo o/r --poll 1 --timeout 20 2>&1)"; rc=$?
+if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q ci_wait_lock_empty_broken; then ok "an old poller lock with no pid is broken and the wait completes"
+else bad "empty-pid lock: rc=$rc out=$out"; fi
 exit "$fail"

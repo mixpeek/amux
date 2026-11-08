@@ -18,14 +18,27 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"HowTo","name":"How to Set Up Secure Secrets for AI Coding Agents","description":"Step-by-step guide to managing API keys and credentials for parallel AI coding agent fleets.","step":[{"@type":"HowToStep","name":"Audit your current secret exposure","text":"Check where your secrets currently live. Look for .env files in working directories agents can access, secrets in CLAUDE.md or system prompts, hardcoded values in config files, and keys in conversation history. Any of these are readable by an agent."},{"@type":"HowToStep","name":"Move secrets out of agent-readable files","text":"Remove secrets from .env files and config files in project directories where agents work. Use .gitignore to exclude them at minimum, but prefer moving them to a dedicated secrets store."},{"@type":"HowToStep","name":"Configure vault-level injection","text":"In amux, use 'amux vault set KEY=value --scope [global|group:name|worker:name]' to store encrypted secrets. On next session launch, amux injects them as environment variables scoped to matching sessions."},{"@type":"HowToStep","name":"Verify injection without exposing values","text":"Confirm the agent can use the secret without you exposing the value: ask the agent to call the API using the environment variable name (e.g. os.environ['OPENAI_API_KEY']) and verify it works. Never ask the agent to print or log the secret value."},{"@type":"HowToStep","name":"Apply least-privilege scoping","text":"Narrow each secret's scope to the minimum set of agents that need it. A payment API key should be worker-scoped to the billing agent, not globally available to all 20 workers in your fleet."}]}</script>
   <script src="/site.js" defer></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
 
 <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>

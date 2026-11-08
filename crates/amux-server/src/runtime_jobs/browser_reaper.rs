@@ -1136,7 +1136,7 @@ mod tests {
         crate::integrations::browser::test_seed_running_port("shared-ttl", &owner, u32::MAX, 1);
         crate::integrations::browser::JOINED.lock().unwrap().insert(
             joiner.clone(),
-            crate::integrations::browser::Join { profile: "shared-ttl".into(), tab: "T".into() },
+            crate::integrations::browser::Join { profile: "shared-ttl".into(), tab: "T".into(), pid: 0 },
         );
         // Driven just now: started_at 0 is far past ttl=1, and the TTL waits.
         crate::integrations::browser::touch_verb("shared-ttl");

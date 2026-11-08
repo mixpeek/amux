@@ -23,13 +23,26 @@
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"},{"@type":"ListItem","position":3,"name":"Rust Workspace Architecture","item":"https://amux.io/features/single-file-architecture/"}]}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Rust Workspace Architecture — How amux is Built (2026)","description":"amux is a 4-crate Rust workspace (amux-server, amux-dashboard, amux-core, amux-cli) that compiles to a single binary. No Docker, no config files. Commit a change — the auto-builder ships it within seconds.","datePublished":"2026-08-12","dateModified":"2026-08-12","author":{"@type":"Organization","name":"Mixpeek"},"publisher":{"@type":"Organization","name":"amux","logo":{"@type":"ImageObject","url":"https://amux.io/icon.svg"}},"mainEntityOfPage":{"@type":"WebPage","@id":"https://amux.io/features/single-file-architecture/"}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"How is amux's server built?","acceptedAnswer":{"@type":"Answer","text":"amux is a 4-crate Cargo workspace: amux-server (axum HTTP server + REST API + SSE backbone), amux-dashboard (real static files: app.js, app.css, index.html, sw.js), amux-core (shared types), and amux-cli (the Rust CLI). The whole workspace compiles to a single binary with no runtime dependencies beyond tmux."}},{"@type":"Question","name":"Does amux require Docker?","acceptedAnswer":{"@type":"Answer","text":"No. amux compiles to a single Rust binary and requires only tmux. Install with ./install.sh — it builds the binary and registers the launchd agents. No Docker daemon, no container registry, no image builds."}},{"@type":"Question","name":"How does amux auto-deploy updates?","acceptedAnswer":{"@type":"Answer","text":"A background launchd agent (scripts/rust-auto-build.sh) runs every 60 seconds. When the last commit touching crates/ or Cargo.* changes, it rebuilds the binary and installs it. The running server detects the new binary on the next health check cycle, exits cleanly, and launchd restarts it with the updated code. Commit a change — it is live within about 60 seconds."}},{"@type":"Question","name":"How do I contribute to amux?","acceptedAnswer":{"@type":"Answer","text":"Clone the workspace, run 'cargo check --workspace' after edits, and commit. The auto-builder picks up the commit and ships the new binary within about 60 seconds. For the dashboard (crates/amux-dashboard/static/app.js), bump APP_VER in app.js and CACHE in sw.js together so browsers receive the update. For a new REST endpoint, add a handler module in crates/amux-server/src/api/ and register it in the router."}},{"@type":"Question","name":"Is the amux dashboard a separate web app?","acceptedAnswer":{"@type":"Answer","text":"No. The dashboard is real static files (app.js, app.css, index.html, sw.js) in crates/amux-dashboard/static/, served directly by the amux-server binary. There is no separate build step, no webpack, no npm install. Edit the static files, bump the cache version, and commit — the auto-builder ships it."}}]}</script>
-  <link rel="stylesheet" href="/nav.css">
-  <script src="/site.js"></script>
+  <link rel="stylesheet" href="/nav.css?v=20261106">
+  <script src="/site.js?v=20261106"></script>
 </head>
 <body>
   <header class="site-header">
     <a class="logo" href="/">amux</a>
     <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
       <a href="/demos/" class="hide-mobile">demos</a>
       <a href="/docs/" class="hide-mobile">docs</a>
       <a href="/pricing/" class="hide-mobile">pricing</a>

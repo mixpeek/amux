@@ -104,6 +104,21 @@
       document.addEventListener('click', function (e) { if (!pick.contains(e.target)) close(false); });
       document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(true); });
     });
+
+    // Solutions menu (<details class="nav-drop">): the browser opens and closes
+    // it; this keeps aria-expanded in step and closes it on Escape or a click
+    // anywhere else, like the theme menu.
+    document.querySelectorAll('.nav-drop').forEach(function (drop) {
+      var sum = drop.querySelector('summary');
+      if (!sum) return;
+      function sync() { sum.setAttribute('aria-expanded', drop.open ? 'true' : 'false'); }
+      sync();
+      drop.addEventListener('toggle', sync);
+      document.addEventListener('click', function (e) { if (drop.open && !drop.contains(e.target)) drop.open = false; });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && drop.open) { drop.open = false; sum.focus(); }
+      });
+    });
   });
 
 
@@ -195,6 +210,8 @@
       if (/^\/start\/?$/.test(u.pathname)) return 'cloud';
       if (/^\/pricing\/?$/.test(u.pathname) || u.hash === '#get') return 'pricing';
       if (/^\/walkthrough\/?$/.test(u.pathname)) return 'walkthrough';
+      if (/^\/concierge\/?$/.test(u.pathname)) return 'concierge_page';
+      if (/^\/solutions\//.test(u.pathname) && a.closest('.nav-drop')) return 'solutions';
     }
     if (u.hostname === 'apps.apple.com') return 'ios';
     if (a.classList.contains('js-schedule') || u.hostname === 'calendly.com') return 'concierge';

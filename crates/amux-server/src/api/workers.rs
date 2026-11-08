@@ -2005,11 +2005,27 @@ pub async fn send_worker(
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(e),
     };
+    // A renamed worker's old name reaches the worker it became, as it does on
+    // /api/sessions/<old>/send (session_verbs::dispatch).
+    let followed = crate::api::session_verbs::renamed_target(&state, &resolved).await;
+    let resolved = match followed.clone() {
+        Some(current) => {
+            tracing::info!(old = %resolved, new = %current, action = "send",
+                measured = true, n_considered = 1, verdict = "renamed_name_followed",
+                "a send to a renamed worker's old name was delivered to the worker it became");
+            current
+        }
+        None => resolved,
+    };
     let body = match crate::api::fs::parse_body(&body_bytes) {
         Ok(v) => v,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
     };
-    crate::api::session_verbs::send_verb(&state, &resolved, &headers, &body).await
+    let mut resp = crate::api::session_verbs::send_verb(&state, &resolved, &headers, &body).await;
+    if let Some(v) = followed.and_then(|n| axum::http::HeaderValue::from_str(&n).ok()) {
+        resp.headers_mut().insert("x-amux-renamed-to", v);
+    }
+    resp
 }
 
 /// Resolve a `/api/workers/{id}` path key to the session name the fleet verbs

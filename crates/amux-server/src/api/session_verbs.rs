@@ -19474,7 +19474,12 @@ pub(crate) fn apply_archive_status_move(
         // overwrite the original status with `discarded`, which would make the
         // second archive the lossy one.
         conn.execute(
-            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1 \
+            // The lease goes with the status, as `apply_lease_transition` does
+            // on every other door: no non-doing card carries one (2026-11-06,
+            // a lane archive left discarded cards still leased).
+            "UPDATE issues SET pre_archive_status = status, status = 'discarded', updated = ?1, \
+               lease_generation = lease_generation + (lease_owner IS NOT NULL), \
+               lease_owner = NULL, lease_acquired_at = NULL, lease_heartbeat_at = NULL, lease_expires_at = NULL \
              WHERE session = ?2 AND deleted IS NULL \
                AND status NOT IN ('done','verified','discarded','quarantined','cancelled') \
                AND pre_archive_status IS NULL",
@@ -26583,7 +26588,138 @@ async fn session_verb_handler(
     dispatch(state, name, verb, method, headers, q, body).await
 }
 
+// A RENAMED WORKER'S OLD NAME STILL REACHES IT (2026-11-06). `workflows` was
+// renamed to `wexus`; a phone that still had `workflows` open sent two messages
+// to /api/sessions/workflows/send, both answered "session not found", and its
+// outbox showed "the worker did not accept it" with a Send again that retried
+// the same dead name. The rename journal (`session.renamed` {old,new}) already
+// records every rename durably, so an address that names no worker but names a
+// retired one is followed to the worker it became. A real worker always wins:
+// the follow runs only when no worker holds the name. Changes to the worker
+// itself (delete, archive, rename, config) are NOT followed; they answer 404
+// with `renamed_to`, so nothing destructive lands on a worker by an old name.
 async fn dispatch(
+    state: AppState,
+    name: String,
+    verb: String,
+    method: Method,
+    headers: HeaderMap,
+    q: Option<String>,
+    body_bytes: axum::body::Bytes,
+) -> Response {
+    let Some(current) = renamed_target(&state, &name).await else {
+        return dispatch_named(state, name, verb, method, headers, q, body_bytes).await;
+    };
+    let action = verb.split('/').next().unwrap_or("");
+    if rename_follow_refused(&method, action) {
+        tracing::info!(old = %name, new = %current, %action, method = %method.as_str(),
+            measured = true, n_considered = 1, verdict = "renamed_name_not_followed",
+            "a change to a worker addressed by its old name was refused; the caller must use the current name");
+        return jresp(
+            StatusCode::NOT_FOUND,
+            json!({"error": format!("worker '{name}' was renamed to '{current}'; address it by its current name"),
+                   "renamed_to": current}),
+        );
+    }
+    tracing::info!(old = %name, new = %current, %action, method = %method.as_str(),
+        measured = true, n_considered = 1, verdict = "renamed_name_followed",
+        "a request to a renamed worker's old name was served by the worker it became");
+    let mut resp = dispatch_named(state, current.clone(), verb, method, headers, q, body_bytes).await;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&current) {
+        resp.headers_mut().insert("x-amux-renamed-to", v);
+    }
+    resp
+}
+
+/// Requests that change the worker itself, rather than talk to it or read it.
+fn rename_follow_refused(method: &Method, action: &str) -> bool {
+    *method == Method::DELETE
+        || *method == Method::PATCH
+        || matches!(action, "delete" | "archive" | "unarchive" | "rename" | "duplicate" | "restore")
+}
+
+/// The worker a retired name now belongs to, when no worker holds that name.
+pub(crate) async fn renamed_target(state: &AppState, name: &str) -> Option<String> {
+    if name.is_empty()
+        || env_path(name).exists()
+        || super::chat_worker::companion_parent(name).is_some()
+    {
+        return None;
+    }
+    let wanted = name.to_string();
+    state
+        .store
+        .read_async(move |conn| {
+            Ok(rename_successors(conn, &|n: &str| env_path(n).exists()).remove(&wanted))
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Every retired worker name mapped to the worker it became, from the rename
+/// journal. A chain (a -> b -> c) resolves to its end; a name a worker holds
+/// today is never in the map (a real worker wins); a chain that ends at no
+/// worker (deleted since) is dropped rather than pointing at nothing.
+pub(crate) fn rename_successors(
+    conn: &rusqlite::Connection,
+    exists: &dyn Fn(&str) -> bool,
+) -> BTreeMap<String, String> {
+    let mut next: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT data FROM session_events WHERE type='session.renamed' ORDER BY id")
+    {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, Option<String>>(0)) {
+            for data in rows.flatten().flatten() {
+                let Ok(v) = serde_json::from_str::<Value>(&data) else { continue };
+                let (Some(old), Some(new)) = (
+                    v.get("old").and_then(Value::as_str),
+                    v.get("new").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                if !old.is_empty() && !new.is_empty() && old != new {
+                    next.insert(old.to_string(), new.to_string());
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for old in next.keys() {
+        if exists(old) {
+            continue;
+        }
+        let mut cur = old.as_str();
+        let mut seen = std::collections::HashSet::from([cur]);
+        while let Some(n) = next.get(cur) {
+            if !seen.insert(n.as_str()) {
+                break;
+            }
+            cur = n.as_str();
+            if exists(cur) {
+                break;
+            }
+        }
+        if cur != old && exists(cur) {
+            out.insert(old.clone(), cur.to_string());
+        }
+    }
+    out
+}
+
+/// GET /api/session-renames: every retired worker name and the worker it
+/// became, so a client can rewrite the names it stored (open view, outbox,
+/// drafts, orders) instead of addressing a worker that is gone.
+pub async fn session_renames(State(state): State<AppState>) -> Response {
+    let map = state
+        .store
+        .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+        .await
+        .unwrap_or_default();
+    j200(json!({"renames": map, "measured": true, "n_considered": map.len()}))
+}
+
+async fn dispatch_named(
     state: AppState,
     name: String,
     verb: String,
@@ -48834,6 +48970,84 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let (st, _) = call(&app, "PUT", "/api/sessions/sib/config", Some(json!({}))).await;
         assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
     }
+    /// A RENAMED WORKER'S OLD NAME STILL REACHES IT (2026-11-06: a phone with
+    /// `workflows` open sent to it after it became `wexus`, and both sends were
+    /// refused as "session not found"). Talking to the old name is followed and
+    /// says where it went; changing the worker by its old name is refused with
+    /// `renamed_to`; and a new worker that takes the old name wins.
+    #[tokio::test]
+    async fn a_renamed_workers_old_name_follows_to_the_worker_it_became() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        std::fs::write(env_path("fo-old"), "CC_DESC=\"lane\"\n").unwrap();
+        let app: Router = routes().with_state(state.clone());
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"rename": "fo-mid"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-mid/config",
+            Some(json!({"rename": "fo-new"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+
+        // The journal resolves a chain to its end.
+        let map = state
+            .store
+            .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+            .await
+            .unwrap();
+        assert_eq!(map.get("fo-old").map(String::as_str), Some("fo-new"), "{map:?}");
+        assert_eq!(map.get("fo-mid").map(String::as_str), Some("fo-new"), "{map:?}");
+
+        // Talking to the old name lands on the renamed worker and says so.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/sessions/fo-old/steer")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"text": "sent to the old name"}).to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let renamed_to = res
+            .headers()
+            .get("x-amux-renamed-to")
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string);
+        assert!(res.status().is_success(), "steer to the old name: {}", res.status());
+        assert_eq!(renamed_to.as_deref(), Some("fo-new"));
+        let queued: Vec<String> = state
+            .store
+            .read_async(|conn| {
+                let mut stmt = conn.prepare("SELECT session FROM steering_queue")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                Ok(rows.filter_map(Result::ok).collect())
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued, vec!["fo-new".to_string()]);
+
+        // Changing the worker by its old name is refused, naming the new one.
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"desc": "x"}))).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(v["renamed_to"], json!("fo-new"));
+        let (st, v) = call(&app, "POST", "/api/sessions/fo-old/delete", None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        assert!(env_path("fo-new").exists());
+
+        // A new worker that takes the old name is that worker, not an alias.
+        std::fs::write(env_path("fo-old"), "CC_DESC=\"fresh\"\n").unwrap();
+        let map = state
+            .store
+            .read_async(|conn| Ok(rename_successors(conn, &|n: &str| env_path(n).exists())))
+            .await
+            .unwrap();
+        assert!(!map.contains_key("fo-old"), "{map:?}");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/fo-old/config",
+            Some(json!({"desc": "fresh lane"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(parse_env("fo-new").get("CC_DESC") != Some("fresh lane"));
+    }
+
     /// The owner-addendum rename matrix: noop, happy-path cascade with
     /// attached rows, retry-after-partial convergence, target collision.
     #[tokio::test]
@@ -55422,9 +55636,17 @@ mod roster_tests {
         add("A-TODO", "gone-lane", "todo");
         add("A-DONE", "gone-lane", "done");
         add("B-DOING", "other-lane", "doing");
+        conn.execute("UPDATE issues SET lease_owner='gone-lane', lease_expires_at=999 WHERE id IN ('A-DOING','B-DOING')", [])
+            .expect("lease");
+        let leased = |id: &str| -> Option<String> {
+            conn.query_row("SELECT lease_owner FROM issues WHERE id=?1", [id], |r| r.get(0)).unwrap()
+        };
 
         // ARCHIVE. Live cards go terminal and remember what they were.
         super::apply_archive_status_move(&conn, "gone-lane", 1, 100).expect("archive");
+        // ...and give up their lease, as every other door does (2026-11-06).
+        assert_eq!(leased("A-DOING"), None, "a discarded card carries no lease");
+        assert_eq!(leased("B-DOING").as_deref(), Some("gone-lane"), "another lane's card keeps its lease");
         assert_eq!(
             status("A-DOING"),
             "discarded",
