@@ -4,18 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Atomic Task Claiming — amux</title>
+  <title>Atomic Task Claiming | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Dozens of agents race to claim the same task queue — only one wins. SQLite CAS ensures zero duplicated work, no Redis required.">
+  <meta name="description" content="Dozens of agents race to claim the same task queue, only one wins. SQLite CAS ensures zero duplicated work, no Redis required.">
   <meta name="keywords" content="atomic task claiming, AI agent coordination, sqlite compare-and-swap, amux board claim, multi-agent task queue">
   <link rel="canonical" href="https://amux.io/demos/atomic-task-claiming/">
-  <meta property="og:title" content="Atomic Task Claiming — amux">
-  <meta property="og:description" content="Dozens of agents race to claim the same task queue — only one wins. SQLite CAS ensures zero duplicated work, no Redis required.">
+  <meta property="og:title" content="Atomic Task Claiming | amux">
+  <meta property="og:description" content="Dozens of agents race to claim the same task queue, only one wins. SQLite CAS ensures zero duplicated work, no Redis required.">
   <meta property="og:url" content="https://amux.io/demos/atomic-task-claiming/">
-  <meta property="og:image" content="https://amux.io/demos/atomic-task-claiming/demo.mp4">
+  <meta property="og:image" content="https://amux.io/demos/atomic-task-claiming/poster.jpg">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/atomic-task-claiming/demo.mp4">
+  <meta name="twitter:image" content="https://amux.io/demos/atomic-task-claiming/poster.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -62,15 +62,16 @@
       <span>Atomic Task Claiming</span>
     </div>
     <h1>Atomic Task Claiming</h1>
-    <p class="subtitle">Dozens of agents race to claim the same task queue — only one wins. SQLite CAS ensures zero duplicated work, no Redis required.</p>
+    <p class="subtitle">Dozens of agents race to claim the same task queue ,  only one wins. SQLite CAS ensures zero duplicated work, no Redis required.</p>
 
-    <video src="demo.mp4" autoplay loop muted playsinline title="Atomic Task Claiming demo"></video>
+    <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="Atomic Task Claiming demo"></video>
+<p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 
     <h2>How it works</h2>
 <ol class="step-list">
   <li>Create tasks on the board with <code>status: "todo"</code></li>
   <li>Any agent calls <code>POST /api/board/:id/claim</code></li>
-  <li>SQLite CAS: only one claim succeeds — task moves atomically to "doing"</li>
+  <li>SQLite CAS: only one claim succeeds ,  task moves atomically to "doing"</li>
   <li>The losing agents get a 409 conflict and try the next task</li>
 </ol>
     <h2>When to use this</h2>

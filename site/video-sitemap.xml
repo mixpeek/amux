@@ -15,11 +15,11 @@
   <url>
     <loc>https://amux.io/demos/send-command-dashboard/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/poster.jpg</video:thumbnail_loc>
       <video:title>Send Command from Dashboard — amux Demo</video:title>
       <video:description>Send instructions to any agent directly from the web dashboard.</video:description>
       <video:content_loc>https://amux.io/demos/send-command-dashboard/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -37,11 +37,11 @@
   <url>
     <loc>https://amux.io/demos/atomic-task-claiming/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/atomic-task-claiming/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/atomic-task-claiming/poster.jpg</video:thumbnail_loc>
       <video:title>Atomic Task Claiming — amux Demo</video:title>
       <video:description>Multiple agents race to claim tasks from the board without duplicated work.</video:description>
       <video:content_loc>https://amux.io/demos/atomic-task-claiming/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -59,11 +59,11 @@
   <url>
     <loc>https://amux.io/demos/agent-orchestration/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/agent-orchestration/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/agent-orchestration/poster.jpg</video:thumbnail_loc>
       <video:title>Agent Orchestration — amux Demo</video:title>
       <video:description>Orchestrator session delegates tasks to worker sessions via REST API.</video:description>
       <video:content_loc>https://amux.io/demos/agent-orchestration/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
