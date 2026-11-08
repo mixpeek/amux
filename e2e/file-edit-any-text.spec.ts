@@ -29,6 +29,9 @@ test('an HTML file and a code file are editable and saved to disk', async ({ pag
       await page.locator('#file-edit-ta').fill(after);
       await page.locator('#file-save-btn').click();
       await expect.poll(() => readFile(file, 'utf8')).toBe(after);
+      // The file is on disk before the response reaches the page; the viewer
+      // keeps the saved text only once it reads that response ("Saved!").
+      await expect(page.locator('#file-save-btn')).toHaveText('Saved!');
       // Back to what it renders as, showing the saved text.
       await page.locator('#file-tab-raw').click();
       await expect(page.locator('#file-body')).toContainText(shown);
