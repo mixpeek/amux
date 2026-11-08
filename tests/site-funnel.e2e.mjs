@@ -165,6 +165,30 @@ await p.goto(B + '/pricing/');
 await p.click('.site-header .nav-drop > summary');
 ok(await p.locator('.nav-drop-menu').isVisible(), 'Solutions menu opens with no site.js');
 
+// /concierge/ starts light for a visitor who has not chosen, even on a dark OS; the theme menu still rules.
+{
+  const ctx = await b.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark' });
+  const tp = await ctx.newPage();
+  await tp.route(/posthog\.com|cloud\.amux\.io/, r => r.abort());
+  const theme = () => tp.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  const pick = async v => { await tp.click('.theme-btn'); await tp.click(`[data-theme-set="${v}"]`); };
+  await tp.goto(B + '/concierge/');
+  ok(await theme() === 'light', 'dark OS, no saved choice: /concierge/ is light');
+  await pick('dark');
+  ok(await theme() === 'dark', 'theme menu switches /concierge/ to dark');
+  ok(await tp.evaluate(() => [...document.querySelectorAll('#future, #how, .final')].every(e => { const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number); return m[3] === 0 || m[0] < 60; })), 'dark mode reaches every band');
+  await tp.reload();
+  ok(await theme() === 'dark', 'the saved choice survives a reload');
+  await pick('system');
+  ok(await theme() === 'dark', 'choosing System follows the dark OS, on /concierge/ too');
+  await pick('light');
+  ok(await tp.evaluate(() => [...document.querySelectorAll('#future, #how, .final')].every(e => { const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number); return m[3] === 0 || m[0] > 200; })), 'light mode has no dark bands');
+  await tp.evaluate(() => localStorage.clear());
+  await tp.goto(B + '/pricing/');
+  ok(await theme() === 'dark', 'other pages still follow the OS when nothing is saved');
+  await ctx.close();
+}
+
 // Welcome page: paid once per order
 p = await page();
 await p.goto(B + '/start/welcome/?session_id=cs_test_funnel');

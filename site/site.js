@@ -3,11 +3,14 @@
   // and keeps following it. Runs synchronously in <head>, before first paint.
   var KEY = 'amux-theme';
   var root = document.documentElement;
+  // <html data-theme-default="light"> starts a visitor who has not chosen in
+  // light, whatever the OS says. A choice from the theme menu always wins.
+  var DEFAULT_PREF = root.getAttribute('data-theme-default') === 'light' ? 'light' : 'system';
   var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
   function getPref() {
     var v = null;
     try { v = localStorage.getItem(KEY); } catch (e) {}
-    return v === 'light' || v === 'dark' ? v : 'system';
+    return v === 'light' || v === 'dark' || v === 'system' ? v : DEFAULT_PREF;
   }
   function resolve(pref) { return pref === 'system' ? (mq && mq.matches ? 'light' : 'dark') : pref; }
   function apply(pref) {
@@ -90,7 +93,7 @@
       items.forEach(function (it, i) {
         it.addEventListener('click', function () {
           var p = it.getAttribute('data-theme-set');
-          try { if (p === 'system') localStorage.removeItem(KEY); else localStorage.setItem(KEY, p); } catch (err) {}
+          try { localStorage.setItem(KEY, p); } catch (err) {}
           apply(p);
           if (window.posthog) posthog.capture('theme_set', { theme_pref: p, theme: resolve(p) });
           close(true);

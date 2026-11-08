@@ -11,7 +11,6 @@
   --k-accent: var(--accent, #c75b2e);
   --k-on:     var(--bg, #fff);
 }
-.on-dark .cflow { --k-fg: var(--cream, #f4efe4); --k-dim: var(--cream-dim, #c3b9a3); --k-line: #3a3428; --k-card: var(--dark-3, #2a2519); --k-on: #fff; }
 
 /* How Concierge works: five connected steps. Left to right on a wide
    screen, top to bottom on a phone. It is an ordered list underneath. */

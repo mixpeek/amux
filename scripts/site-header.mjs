@@ -23,8 +23,12 @@ const SITE = path.join(ROOT, 'site');
 export const CANONICAL = fs.readFileSync(path.join(ROOT, 'scripts/site-header.html'), 'utf8').trim();
 const HEADER_RE = /<header class="site-header">[\s\S]*?<\/header>|<header class="site">[\s\S]*?<\/header>/;
 export const ASSET_V = fs.readFileSync(path.join(ROOT, 'scripts/site-asset-version.txt'), 'utf8').trim();
-export const NAV_CSS = `<link rel="stylesheet" href="/nav.css?v=${ASSET_V}">`;
-export const SITE_JS = `<script src="/site.js?v=${ASSET_V}"></script>`;
+// A page that alone depends on a newer nav.css or site.js moves first, so the
+// rest of the site is not rewritten for it. The higher version wins.
+export const PAGE_ASSET_V = new Map([['concierge/index.html', '20261108']]);
+const assetV = rel => { const v = PAGE_ASSET_V.get(rel); return v && v > ASSET_V ? v : ASSET_V; };
+const navCss = rel => `<link rel="stylesheet" href="/nav.css?v=${assetV(rel)}">`;
+const siteJs = rel => `<script src="/site.js?v=${assetV(rel)}"></script>`;
 const FONT = '<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">';
 
 // Pages whose header has no Get started link, each for a reason of its own.
@@ -66,9 +70,9 @@ export function problems(rel, html) {
   }
   const head = html.split('</head>')[0];
   if (!head.includes('href="/nav.css')) out.push('missing /nav.css in <head>');
-  else if (!head.includes(NAV_CSS)) out.push(`/nav.css not at ?v=${ASSET_V}`);
+  else if (!head.includes(navCss(rel))) out.push(`/nav.css not at ?v=${assetV(rel)}`);
   if (!head.includes('src="/site.js')) out.push('/site.js not loaded in <head>');
-  else if (!head.includes(SITE_JS)) out.push(`/site.js not at ?v=${ASSET_V}`);
+  else if (!head.includes(siteJs(rel))) out.push(`/site.js not at ?v=${assetV(rel)}`);
   if (/<html[^>]*\sdata-theme=/.test(html)) out.push('<html> hardcodes data-theme (site.js decides)');
   return out;
 }
@@ -79,11 +83,11 @@ export function fix(rel, html) {
   else html = html.replace(/<body([^>]*)>/, `<body$1>\n  ${expectedHeader(rel)}`);
   html = html.replace(/(<html[^>]*?)\sdata-theme="[^"]*"/, '$1');
   html = html.replace(/[ \t]*<script src="\/site\.js(\?v=[^"]*)?"><\/script>\n?/g, '');
-  html = html.replace(/<link rel="stylesheet" href="\/nav\.css(\?v=[^"]*)?">/g, NAV_CSS);
+  html = html.replace(/<link rel="stylesheet" href="\/nav\.css(\?v=[^"]*)?">/g, navCss(rel));
   const add = [];
   if (!html.split('</head>')[0].includes('JetBrains+Mono')) add.push(FONT);
-  add.push(SITE_JS);
-  if (!html.split('</head>')[0].includes('href="/nav.css')) add.push(NAV_CSS);
+  add.push(siteJs(rel));
+  if (!html.split('</head>')[0].includes('href="/nav.css')) add.push(navCss(rel));
   return html.replace('</head>', add.map(l => '  ' + l).join('\n') + '\n</head>');
 }
 
