@@ -232,6 +232,14 @@ async fn serve(method: Method, headers: HeaderMap, uri: Uri, body: Body) -> Resp
         }
         return refuse(StatusCode::NOT_FOUND, "This app is not in Apps", open_from_pages, "not_approved", &id);
     };
+    // A name the app had before a rename: the same page under its current name.
+    if link.id != id {
+        let rest = uri.path().strip_prefix(&format!("/app/{id}")).unwrap_or("/");
+        let q = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+        tracing::info!(from = %id, to = %link.id, measured = true, n_considered = 1, verdict = "app_origin_old_name",
+            "an app was opened by a name it had before a rename");
+        return (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, format!("/app/{}{}{q}", link.id, if rest.is_empty() { "/" } else { rest }))]).into_response();
+    }
     let is_file = !link.path.is_empty();
     if !is_file && public_links::refused_port(link.port).is_some() {
         return refuse(StatusCode::FORBIDDEN, "amux does not open this port", open_from_pages, "refused_port", &id);
@@ -310,6 +318,10 @@ pub(crate) async fn serve_at_root(id: &str, req: axum::extract::Request) -> Resp
         }
         return refuse(StatusCode::NOT_FOUND, "This app is not in Apps", open_from_pages, "not_approved", id);
     };
+    // The listener was started under the name the app had then; a rename
+    // since keeps this port, and the session is the current name's.
+    let current = link.id.clone();
+    let id = current.as_str();
     if public_links::refused_port(link.port).is_some() {
         return refuse(StatusCode::FORBIDDEN, "amux does not open this port", open_from_pages, "refused_port", id);
     }
@@ -478,6 +490,7 @@ async fn serve_view(id: &str, root: &str, uri: &Uri, tail: &str, method: &Method
         created_by: "site_view".into(),
         created_at: 0,
         approved_by: "owner".into(),
+        aliases: Vec::new(),
     };
     let r = public_links::serve_link_file(&link, uri.path(), tail, method, headers).await;
     if r.status() == StatusCode::NOT_FOUND {

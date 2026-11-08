@@ -4302,6 +4302,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pubAsPerson": {
+      "kind": "command._pubAsPerson",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pubMenu": {
       "kind": "command._pubMenu",
       "feedback_required": true,
@@ -4310,6 +4316,12 @@
     },
     "_pubNew": {
       "kind": "command._pubNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pubRename": {
+      "kind": "command._pubRename",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

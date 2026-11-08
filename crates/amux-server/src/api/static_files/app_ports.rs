@@ -136,6 +136,20 @@ pub(crate) fn port_for(id: &str) -> Option<u16> {
     None
 }
 
+/// App `old` is now called `new`: it keeps its port, under the new name.
+pub(crate) fn renamed(old: &str, new: &str) {
+    let mut g = LISTENING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = g.get_or_insert_with(HashMap::new).remove(old) {
+        g.get_or_insert_with(HashMap::new).insert(new.to_string(), p);
+    }
+    let home = crate::config::amux_home();
+    let mut ports = load(&home);
+    if let Some(p) = ports.remove(old) {
+        ports.insert(new.to_string(), p);
+        save(&home, &ports);
+    }
+}
+
 /// At boot, serve again every app that had a port, so a tab left open on it
 /// keeps working across a restart.
 pub(crate) fn resume() {

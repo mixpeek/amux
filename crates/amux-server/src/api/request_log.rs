@@ -2408,7 +2408,7 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/page-links/{id}",
-        methods: &["DELETE"],
+        methods: &["DELETE", "PATCH"],
     },
     RouteEntry {
         path: "/api/page-links/{id}/approve",

@@ -11,7 +11,7 @@
   // Under /app/<id>/ the app is that prefix; on a port of its own it is the
   // whole origin, which this script's own address says.
   var self = document.currentScript && document.currentScript.getAttribute('src');
-  var m = location.pathname.match(/^\/app\/[0-9a-f]{32}/);
+  var m = self === '/.amux-viewer.js' ? null : location.pathname.match(/^\/app\/[a-z0-9-]{3,64}(?=\/|$)/);
   if (!m && self !== '/.amux-viewer.js') return;
   var prefix = m ? m[0] + '/' : '/';
   var parentOrigin = (location.ancestorOrigins && location.ancestorOrigins[0]) || '*';

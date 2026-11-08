@@ -622,7 +622,7 @@ pub fn router_with_connector_transport(
         )
         .route(
             "/api/page-links/{id}",
-            axum::routing::delete(static_files::public_links::revoke),
+            axum::routing::delete(static_files::public_links::revoke).patch(static_files::public_links::rename),
         )
         .route(
             "/api/page-links/{id}/approve",

@@ -66,6 +66,11 @@ pub(crate) struct Link {
     /// field existed reads as pending too, so an upgrade fails closed.
     #[serde(default)]
     pub approved_by: String,
+    /// Names this link answered to before the owner renamed it. Each still
+    /// opens it, by a redirect to the current name, so a link already shared
+    /// keeps working.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 impl Link {
@@ -84,7 +89,21 @@ impl Link {
 /// The app inside amux with this id, if a person approved it: the only apps
 /// the apps origin serves (apps_origin.rs).
 pub(crate) fn approved_internal(id: &str) -> Option<Link> {
-    load(&crate::config::amux_home()).into_iter().find(|l| l.id == id && l.kind == "internal" && !l.approved_by.is_empty())
+    lookup(load(&crate::config::amux_home()), id).filter(|l| l.kind == "internal" && !l.approved_by.is_empty())
+}
+
+/// The link named `key`: its current name, or one it had before a rename.
+pub(crate) fn lookup(links: Vec<Link>, key: &str) -> Option<Link> {
+    let mut by_alias = None;
+    for l in links {
+        if l.id == key {
+            return Some(l);
+        }
+        if by_alias.is_none() && l.aliases.iter().any(|a| a == key) {
+            by_alias = Some(l);
+        }
+    }
+    by_alias
 }
 
 /// The signed-in PERSON behind a request, never a worker: a server-verified
@@ -143,9 +162,18 @@ pub(crate) fn new_id() -> Option<String> {
     Some(hex::encode(b))
 }
 
+/// A link's name: the random id it was made with (32 hex digits), or one the
+/// owner chose. Lowercase letters, digits and inner hyphens, 3 to 64 long, so
+/// it is one plain URL path segment and a cookie name.
 pub(crate) fn valid_id(s: &str) -> bool {
-    s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    (3..=64).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
 }
+
+/// Names a link may not take: a route beside `/api/page-links/<id>`.
+const RESERVED_NAMES: &[&str] = &["site-view"];
 
 /// Ports an app link may never reach: amux itself (its API and dashboard),
 /// the cloud front door, and SSH.
@@ -484,7 +512,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     // Every kind needs a person: a public link hands the app or file to
     // anyone, and an internal app runs with the owner's amux access.
     let approved_by = person.clone().unwrap_or_default();
-    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by };
+    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by, aliases: Vec::new() };
     let home = crate::config::amux_home();
     {
         let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -544,6 +572,51 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
     }
     tracing::warn!(id = %id, by = %person, measured = true, n_considered = 1, verdict = "public_link_approved",
         "an Apps link was approved (a public one now opens for anyone with it)");
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RenameBody {
+    id: String,
+}
+
+/// `PATCH /api/page-links/<id>` with `{"id": "<new name>"}`: give a link the
+/// name its address shows. Only a person may: a public link's name is how
+/// anyone opens it, so a worker cannot choose or change it. The old name
+/// stays as an alias and redirects to the new one.
+pub(crate) async fn rename(State(state): State<AppState>, headers: HeaderMap, AxPath(id): AxPath<String>, body: Option<Json<RenameBody>>) -> Response {
+    let Some(person) = person_of(&state, &headers) else {
+        tracing::warn!(id = %id, measured = true, n_considered = 1, verdict = "public_link_rename_refused",
+            "a link rename came from something other than a signed-in person");
+        return bad(StatusCode::FORBIDDEN, "only the owner, signed in to the dashboard, can rename an Apps link");
+    };
+    let Some(Json(body)) = body else { return bad(StatusCode::BAD_REQUEST, "send {\"id\": \"<new name>\"}") };
+    let new = body.id.trim().to_ascii_lowercase();
+    if !valid_id(&new) || RESERVED_NAMES.contains(&new.as_str()) {
+        return bad(StatusCode::BAD_REQUEST, "a name is 3 to 64 lowercase letters, digits and hyphens, not starting or ending with a hyphen");
+    }
+    let home = crate::config::amux_home();
+    let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut links = load(&home);
+    let Some(i) = links.iter().position(|l| l.id == id) else {
+        return bad(StatusCode::NOT_FOUND, "no such link");
+    };
+    if new == id {
+        return Json(link_json(&home, &links[i])).into_response();
+    }
+    if links.iter().enumerate().any(|(j, l)| j != i && (l.id == new || l.aliases.contains(&new))) {
+        return bad(StatusCode::CONFLICT, "another link already has that name");
+    }
+    let link = &mut links[i];
+    link.aliases.retain(|a| *a != new);
+    link.aliases.push(std::mem::replace(&mut link.id, new.clone()));
+    let out = link_json(&home, link);
+    if let Err(e) = save(&home, &links) {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
+    }
+    super::app_ports::renamed(&id, &new);
+    tracing::warn!(from = %id, to = %new, by = %person, measured = true, n_considered = 1, verdict = "public_link_renamed",
+        "an Apps link was renamed; its old name redirects to the new one");
     Json(out).into_response()
 }
 
@@ -743,7 +816,7 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
         return not_found();
     }
     let home = crate::config::amux_home();
-    let Some(link) = load(&home).into_iter().find(|l| l.id == id) else {
+    let Some(link) = lookup(load(&home), &id) else {
         tracing::info!(measured = true, n_considered = 1, verdict = "public_link_unknown", "public link not found");
         return not_found();
     };
@@ -751,6 +824,14 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
     // like one that does not exist.
     if !link.is_live() {
         return not_found();
+    }
+    // A name it had before a rename: the same page under the current name.
+    // Temporary (307), never cached: the owner may rename it back, and a
+    // cached redirect would then loop.
+    if link.id != id {
+        tracing::info!(from = %id, to = %link.id, measured = true, n_considered = 1, verdict = "public_link_old_name",
+            "a public link was opened by a name it had before a rename");
+        return axum::response::Redirect::temporary(&format!("/pub/{}{tail}", link.id)).into_response();
     }
     if uri.path() == format!("/pub/{id}") {
         // Without the slash the app's relative URLs would resolve under /pub/.
@@ -836,18 +917,32 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_random_hex_and_only_that_shape_is_accepted() {
+    fn ids_are_random_hex_or_a_plain_name_and_nothing_else() {
         let a = new_id().unwrap();
         let b = new_id().unwrap();
         assert!(valid_id(&a) && valid_id(&b) && a != b);
-        for bad in ["", "abc", "../../etc", &a.to_uppercase(), &format!("{a}0")] {
+        for good in ["acme-demo", "q4x", "mixpeek-homepage-2"] {
+            assert!(valid_id(good), "{good}");
+        }
+        for bad in ["", "ab", "../../etc", "a/b", "-x-", "My-App", "a_b", "a.b", &a.to_uppercase(), &"x".repeat(65)] {
             assert!(!valid_id(bad), "{bad}");
         }
     }
 
     #[test]
+    fn a_renamed_link_answers_to_its_new_name_first_and_its_old_names_after() {
+        let mk = |id: &str, aliases: &[&str]| Link { id: id.into(), kind: "app".into(), port: 1, path: String::new(), title: String::new(),
+            created_by: String::new(), created_at: 0, approved_by: "owner".into(), aliases: aliases.iter().map(|a| a.to_string()).collect() };
+        let links = vec![mk("demo", &["0123456789abcdef0123456789abcdef"]), mk("other", &["demo-old"])];
+        assert_eq!(lookup(links.clone(), "demo").unwrap().id, "demo");
+        assert_eq!(lookup(links.clone(), "0123456789abcdef0123456789abcdef").unwrap().id, "demo", "the old id still opens it");
+        assert_eq!(lookup(links.clone(), "demo-old").unwrap().id, "other");
+        assert!(lookup(links, "nope").is_none());
+    }
+
+    #[test]
     fn a_public_link_is_live_only_once_a_person_approved_it() {
-        let mut l = Link { id: new_id().unwrap(), kind: "file".into(), port: 0, path: "/x".into(), title: String::new(),
+        let mut l = Link { id: new_id().unwrap(), kind: "file".into(), port: 0, path: "/x".into(), title: String::new(), aliases: Vec::new(),
             created_by: "mtp-demo".into(), created_at: 0, approved_by: String::new() };
         assert!(!l.is_live(), "asked for by a worker: pending, served to nobody");
         l.approved_by = "member:ethan@mixpeek.com".into();

@@ -63279,7 +63279,7 @@ async function _pagesEnter() {
   // Deep links: #view=apps&open=<id> (or the older #view=pages&open=<id>) opens
   // an app inside amux; a worker's link to localhost:<port> arrives as
   // &add-internal=<port>, which opens that app when it is already in Apps and offers to add it otherwise.
-  const open = /[#&]open=([0-9a-f]{32})(?:&|$)/.exec(h);
+  const open = /[#&]open=([a-z0-9-]{3,64})(?:&|$)/.exec(h);
   const add = /[#&]add-internal=(\d{1,5})(?:&|$)/.exec(h);
   await _pubList();
   // &at=<path> opens it at that page: an app page opened in a tab of its own
@@ -63392,6 +63392,7 @@ function _pubMenu(e, id) {
   m.className = 'card-menu open'; m.id = 'pub-menu'; m.setAttribute('role', 'menu');
   m.innerHTML = item('open', '&#x2197;', internal ? 'Open' : 'Open link')
     + (internal ? '' : item('copy', '&#x2398;', 'Copy link'))
+    + item('rename', '&#x270E;', 'Rename address')
     + '<div class="card-menu-sep"></div>' + item('remove', '&#x2715;', internal ? 'Remove from Apps' : 'Turn off');
   m.addEventListener('click', ev => {
     const it = ev.target.closest('[data-act]');
@@ -63399,6 +63400,7 @@ function _pubMenu(e, id) {
     ev.stopPropagation(); _pubMenuClose();
     if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
     else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
+    else if (it.dataset.act === 'rename') _pubRename(id);
     else if (it.dataset.act === 'remove') _pubRevoke(id);
   });
   document.body.appendChild(m);
@@ -63439,6 +63441,40 @@ function _pagesFilter(q) {
     el.classList.toggle('pages-hidden', !!t && !el.dataset.search.includes(t));
   });
 }
+// A change only a person may make (approve, rename). It takes the owner's
+// session cookie, which only a sign-in sets: a worker can hold the bearer,
+// never the cookie. A browser on this Mac gets the bearer in the page and no
+// cookie, so the owner's own click was refused. Sign in once with the page's
+// owner token (same origin), then try again.
+async function _pubAsPerson(what, call) {
+  try { return await call(); }
+  catch (e) {
+    if (!(_authToken && /signed in/i.test(e.message || ''))) throw e;
+    const s = await fetch(location.origin + '/api/connection/session', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: _authToken }) });
+    window._clientDebug && window._clientDebug('pages-' + what, { verdict: s.ok ? 'owner_session_established_for_' + what : 'owner_session_sign_in_refused', status: s.status, measured: true, n_considered: 1 });
+    if (!s.ok) throw e;
+    return await call();
+  }
+}
+// Give a link the name its address shows (public_links.rs rename). The old
+// name keeps working: it redirects to the new one.
+async function _pubRename(id) {
+  const l = _pubLinks.find(x => x.id === id);
+  if (!l) return;
+  const internal = l.kind === 'internal';
+  const name = await showPrompt((internal ? 'Name for this app\'s address' : 'Name for this link')
+    + ' (lowercase letters, digits and hyphens). The old address keeps working.'
+    + (internal ? '' : ' Anyone who can guess a public link\'s name can open it.'), 'my-app', id);
+  if (name == null) return;
+  const want = String(name).trim().toLowerCase();
+  if (!want || want === id) return;
+  try {
+    const d = await _pubAsPerson('rename', () => _pubFetch('/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ id: want }) }));
+    showToast('Renamed: ' + (internal ? (d.app_path || d.id) : (d.url || d.path)));
+  } catch (e) { showToast('Not renamed: ' + e.message); }
+  _pubList();
+}
 async function _pubApprove(id) {
   const l = _pubLinks.find(x => x.id === id);
   const what = l && l.file ? 'the file or folder ' + l.file : 'the app on port ' + (l ? l.port : '');
@@ -63447,25 +63483,8 @@ async function _pubApprove(id) {
       : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
     : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
   if (!(await showConfirm(ask, 'Approve', true))) return;
-  const approve = () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
-  try { await approve(); showToast('Public link approved'); }
-  catch (e) {
-    // Approval takes the owner's session cookie, which only a sign-in sets: a
-    // worker can hold the bearer, never the cookie. A browser on this Mac gets
-    // the bearer in the page and no cookie, so the owner's own click was
-    // refused. Sign in once with the page's owner token (same origin), then
-    // try again.
-    let retried = false;
-    if (_authToken && /signed in/i.test(e.message || '')) {
-      try {
-        const s = await fetch(location.origin + '/api/connection/session', { method: 'POST', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: _authToken }) });
-        if (s.ok) { await approve(); retried = true; showToast('Public link approved'); }
-        window._clientDebug && window._clientDebug('pages-approve', { verdict: s.ok ? 'owner_session_established_for_approve' : 'owner_session_sign_in_refused', status: s.status, measured: true, n_considered: 1 });
-      } catch (e2) { e = e2; }
-    }
-    if (!retried) showToast('Not approved: ' + e.message);
-  }
+  try { await _pubAsPerson('approve', () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' })); showToast('Public link approved'); }
+  catch (e) { showToast('Not approved: ' + e.message); }
   _pubList();
 }
 async function _pubList() {
@@ -63667,8 +63686,8 @@ window.addEventListener('message', (e) => {
 function _appUrlAt(url, at) {
   if (!_appPathOk(at) || at === '/') return url;
   const u = new URL(url);
-  // An app on a port of its own (app_ports.rs) is at `/`; otherwise under /app/<id>.
-  const m = /^\/app\/[0-9a-f]{32}/.exec(u.pathname);
+  // An app on a port of its own (app_ports.rs) is at `/`; otherwise under /app/<name>.
+  const m = /^\/app\/[a-z0-9-]{3,64}(?=\/|$)/.exec(u.pathname);
   if (!m && u.pathname !== '/') return url;
   const t = new URL(at, 'https://x.invalid');
   const q = new URLSearchParams(t.search);
