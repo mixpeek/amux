@@ -75,6 +75,11 @@ AUTH_FAIL_BURST = int(os.environ.get("NETWORK_WATCH_AUTH_BURST", "60"))
 # Matched as prefixes: lsof prints the full name here (amux-server,
 # ControlCenter) and the old exact match on 9-character names never fired.
 DYNAMIC_PORT_COMMANDS = ("amux-serv", "rapportd", "Spotify", "ControlCe", "identitys")
+# A cargo test binary (target/<profile>/deps/<crate>-<16 hex>) picks fresh random
+# ports on every run, so a port key alerted on every test run (mvs_shard, 2026-11-07
+# to 11-09). Its listeners are keyed by binary instead: still reported, once per
+# binary per SEEN_TTL, and a test binary on a fixed port is reported the same way.
+TEST_BINARY = re.compile(r"/target/[^/ ]+/deps/[^/ ]+-[0-9a-f]{16}(\s|$)")
 FILE_SERVER = re.compile(
     r"(-m\s+(http\.server|SimpleHTTPServer)\b|\bhttp-server\b|\bnpx\s+serve\b|\bserve\s+-[ls]\b)"
 )
@@ -267,7 +272,10 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         if FILE_SERVER.search(w.get("cmdline", "")):
             out.append({"key": f"fileserver:{w['pid']}:{port}", "kind": "FILE-SERVER", "w": w})
         elif not known:
-            out.append({"key": f"listener:{w['command']}:{port}", "kind": "LISTENER", "w": w})
+            test = bool(TEST_BINARY.search(w.get("cmdline", "")))
+            key = f"listener:{w['command']}:{'cargo-test' if test else port}"
+            if not any(r["key"] == key for r in out):  # one line per test binary
+                out.append({"key": key, "kind": "LISTENER", "w": w, "test": test})
     known_peers = set(base.get("peers", []))
     for pid, p in snap["peers"].items():
         if pid not in known_peers:
@@ -307,6 +315,7 @@ def line(r: dict) -> str:
         w = r["w"]
         s = f"{k} {clean(w['command'])} pid {w['pid']} on {clean(w['host'])}:{clean(w['port'])}"
         s += " (stopped)" if r.get("stopped") else ""
+        s += " (cargo test binary; its other random ports stay quiet for a day)" if r.get("test") else ""
         return s + (f" started in {clean(r['cwd'], 120)}" if r.get("cwd") else "")
     if "p" in r:
         return f"{k} {clean(r['p']['host'])} {clean(r['p']['ip'])}"

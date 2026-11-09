@@ -69,6 +69,25 @@ full = {**snap, "wide": [{"pid": 5, "command": "amux-server", "name": "*:19404",
                          "port": "19404", "cmdline": "amux-server"}]}
 check("a full-length e2e amux-server name on a random port is quiet",
       not any(r["kind"] == "LISTENER" for r in nw.evaluate(full, {**base, "listeners": [["amux-server", "8824"]]}, reqs)))
+tb = "/x/shard-rs/target/debug/deps/mvs_shard-b41e156173769d4b"
+def tbrow(pid, port, cmd=tb):
+    return {"pid": pid, "command": "mvs_shard-b41e156173769d4b", "name": f"*:{port}", "host": "*",
+            "port": port, "cmdline": cmd}
+run_a = nw.evaluate({**snap, "wide": [tbrow(6, "59912"), tbrow(6, "8080")]}, base, reqs)
+run_b = nw.evaluate({**snap, "wide": [tbrow(7, "54142")]}, base, reqs)
+keys_a = {r["key"] for r in run_a if r["kind"] == "LISTENER"}
+check("a cargo test binary's random ports share one key across runs",
+      len(keys_a) == 1 and keys_a == {r["key"] for r in run_b if r["kind"] == "LISTENER"}, str(keys_a))
+check("a cargo test binary is reported on one line per run",
+      sum(r["kind"] == "LISTENER" for r in run_a) == 1, str([nw.line(r) for r in run_a]))
+check("a cargo test binary is still reported and says so",
+      any("cargo test binary" in nw.line(r) for r in run_a), str([nw.line(r) for r in run_a]))
+for label, exe in [("a release binary", "/x/target/debug/mvs_shard"),
+                   ("a hashed name outside deps/", "/x/target/debug/mvs_shard-b41e156173769d4b"),
+                   ("a short hash in deps/", "/x/target/debug/deps/mvs_shard-b41e")]:
+    plain = nw.evaluate({**snap, "wide": [tbrow(8, "59912", exe), tbrow(8, "54142", exe)]}, base, reqs)
+    check(f"{label} keeps one key per port",
+          len({r["key"] for r in plain if r["kind"] == "LISTENER"}) == 2)
 check("loopback burst is an AUTH-BURST, not an UNKNOWN-CLIENT",
       not any(r["kind"] == "UNKNOWN-CLIENT" and r["ip"] == "127.0.0.1" for r in nw.evaluate(snap, base, reqs)))
 check("known peer below the burst threshold is quiet",

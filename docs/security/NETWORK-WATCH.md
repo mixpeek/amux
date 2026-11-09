@@ -10,7 +10,7 @@ and who uses it. Requested in MSG-104254.
 
 | check | source | anomaly |
 |---|---|---|
-| listeners | `lsof -iTCP -sTCP:LISTEN` | a TCP listener on a non-loopback address that is not in the baseline |
+| listeners | `lsof -iTCP -sTCP:LISTEN` | a TCP listener on a non-loopback address that is not in the baseline. A cargo test binary (`target/<profile>/deps/<crate>-<16 hex>`) takes new random ports each run, so it is reported once per binary per day rather than once per port |
 | file servers | listener command line | `python -m http.server` and similar on a non-loopback address. **Stopped automatically** |
 | tailnet | `tailscale status --json` | a new node, a node owned by another user, a node shared in |
 | exposure | `tailscale serve status --json` | any serve or funnel config |
