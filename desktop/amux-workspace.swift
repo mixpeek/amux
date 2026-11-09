@@ -984,6 +984,9 @@ extension AppDelegate {
         case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
         case "/pointer-clear": Pointer.testOverride = nil
         case "/recorder": recorderTestHook(q)
+        // A sideways scroll over the focused pane's tab strip (?dx= in points).
+        case "/pane-strip-scroll":
+            if let g = arrangeTarget.flatMap({ w in controllers.first { $0.window === w } })?.grid, let f = g.focused { g.views[f]?.scrollStrip(by: num("dx")) }
         case "/press-tab": press(true)          // the mouse-down that starts a tab drag
         case "/press-content": press(false)     // a click in the page, which must not
         // What AppKit does with a tab dropped outside every tab bar.
@@ -1225,6 +1228,8 @@ extension AppDelegate {
                     d["focused"] = g.focused.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
                     d["zoomed"] = g.zoomed.flatMap { g.tree.leaves.firstIndex(of: $0) } ?? -1
                     // Per pane, the header buttons showing (amux-panes.swift), by their tooltips' first word.
+                    // Per pane, its strip: visible width, and each tab's x and width in it.
+                    d["pane_strips"] = g.tree.leaves.map { id in g.views[id]?.stripState ?? [:] }
                     d["pane_buttons"] = g.tree.leaves.map { id in g.views[id]?.header.subviews.compactMap { v -> String? in
                         guard let b = v as? NSButton, !b.isHidden else { return nil }
                         return b.toolTip?.split(separator: " ").first.map(String.init)

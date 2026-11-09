@@ -211,6 +211,15 @@ final class PaneView: NSView {
     let header = PaneHeader()
     private let focusLine = NSView()
     private var items: [PaneTabItem] = []
+    /// The tabs sit in a clipped strip that scrolls sideways once they reach
+    /// their narrowest. Before, each got room ÷ count with no floor, so a pane
+    /// with many tabs squeezed them to unreadable slivers (owner, 2026-11-09).
+    private let tabsClip = NSView()
+    private var scrollX: CGFloat = 0
+    /// Scroll the shown tab into view at the next layout (a new or picked tab).
+    private var revealActive = true
+    static let minTabWidth: CGFloat = 120
+    static let maxTabWidth: CGFloat = 200
     private let newButton = NSButton()
     private let zoomButton = NSButton()
     private let tabButton = NSButton()
@@ -242,9 +251,23 @@ final class PaneView: NSView {
             b.action = act
             header.addSubview(b)
         }
+        tabsClip.wantsLayer = true
+        tabsClip.layer?.masksToBounds = true
+        header.addSubview(tabsClip)
         header.addSubview(focusLine)
         addSubview(header)
-        header.tabAt = { [weak self] x in self?.items.firstIndex { $0.frame.minX <= x && x < $0.frame.maxX } }
+        // Header x to strip x: the strip starts at its own frame and is scrolled.
+        header.tabAt = { [weak self] x in
+            guard let s = self, x >= s.tabsClip.frame.minX, x < s.tabsClip.frame.maxX else { return nil }
+            let sx = x - s.tabsClip.frame.minX
+            return s.items.firstIndex { $0.frame.minX <= sx && sx < $0.frame.maxX }
+        }
+        header.onScroll = { [weak self] dx in
+            guard let s = self else { return }
+            s.scrollX += dx
+            s.revealActive = false
+            s.needsLayout = true
+        }
         header.onClick = { [weak self] i in self?.selectTab(i) }
         header.onDrag = { [weak self] p, i in self?.dragged(to: p, tab: i) }
         header.onDrop = { [weak self] p, i in self?.dropped(at: p, tab: i) }
@@ -285,11 +308,12 @@ final class PaneView: NSView {
                 }
             }
             items.append(it)
-            header.addSubview(it)
+            tabsClip.addSubview(it)
         }
         // A frozen workspace keeps its tabs: no close, new, split or move buttons.
         let frozen = grid?.host?.app?.isFrozen ?? false
         for (i, c) in t.enumerated() { items[i].set(title: grid?.label(c) ?? c.pageTitle, active: c === controller, closable: !frozen) }
+        revealActive = true
         zoomButton.contentTintColor = grid?.zoomed == id ? .controlAccentColor : .secondaryLabelColor
         nestButton.isHidden = frozen || !(grid?.canNest(id) ?? false)
         for b in [newButton, tabButton, closeButton] { b.isHidden = frozen }
@@ -304,10 +328,28 @@ final class PaneView: NSView {
         var x = bounds.width - 26
         for b in [closeButton, tabButton, zoomButton, newButton, nestButton] where !b.isHidden { b.frame = NSRect(x: x, y: 3, width: 22, height: 20); x -= 26 }
         let room = max(0, bounds.width - PaneView.buttonsWidth - 6)
-        let w = items.isEmpty ? 0 : min(200, floor(room / CGFloat(items.count)))
-        for (i, it) in items.enumerated() { it.frame = NSRect(x: 4 + CGFloat(i) * w, y: 2, width: max(0, w - 2), height: h - 4) }
+        tabsClip.frame = NSRect(x: 4, y: 0, width: room, height: h)
+        // Share the room down to the narrowest readable tab, then scroll.
+        let w = items.isEmpty ? 0 : min(PaneView.maxTabWidth, max(PaneView.minTabWidth, floor(room / CGFloat(items.count))))
+        let maxScroll = max(0, CGFloat(items.count) * w - room)
+        if revealActive, let a = tabs.firstIndex(where: { $0 === controller }) {
+            let lo = CGFloat(a) * w, hi = lo + w
+            if lo < scrollX { scrollX = lo } else if hi > scrollX + room { scrollX = hi - room }
+            revealActive = false
+        }
+        scrollX = min(max(0, scrollX), maxScroll)
+        for (i, it) in items.enumerated() { it.frame = NSRect(x: CGFloat(i) * w - scrollX, y: 2, width: max(0, w - 2), height: h - 4) }
         for v in subviews where v !== header { v.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - h)) }
     }
+
+    /// For tests: the strip's visible width, its scroll, and each tab's place.
+    var stripState: [String: Any] {
+        layoutSubtreeIfNeeded()
+        return ["room": tabsClip.frame.width, "scroll": scrollX,
+                "tabs": items.map { ["x": $0.frame.minX, "w": $0.frame.width] }]
+    }
+    /// For tests: a sideways scroll over the strip, as a trackpad gives it.
+    func scrollStrip(by dx: CGFloat) { header.onScroll?(dx); layoutSubtreeIfNeeded() }
 
     var controller: DashboardWindowController? { grid?.members[id] }
     func tab(_ i: Int?) -> DashboardWindowController? {
@@ -419,6 +461,14 @@ final class PaneHeader: NSView {
     var onClick: ((Int?) -> Void)?
     var onDrag: ((NSPoint, Int?) -> Void)?
     var onDrop: ((NSPoint, Int?) -> Void)?
+    /// A sideways scroll over the strip, in points (a trackpad swipe, or a
+    /// mouse wheel's vertical turn).
+    var onScroll: ((CGFloat) -> Void)?
+    override func scrollWheel(with e: NSEvent) {
+        let d = abs(e.scrollingDeltaX) >= abs(e.scrollingDeltaY) ? -e.scrollingDeltaX : -e.scrollingDeltaY
+        let pts = e.hasPreciseScrollingDeltas ? d : d * 12
+        if pts != 0, let f = onScroll { f(pts) } else { super.scrollWheel(with: e) }
+    }
     /// A frozen workspace: a press only picks a tab, it never drags one.
     var frozen: (() -> Bool)?
     override func mouseDown(with e: NSEvent) {
