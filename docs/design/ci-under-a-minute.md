@@ -159,10 +159,18 @@ owner's approval of its exact diff, filed by the gate itself.
 
 **Changes, smallest first:**
 
-1. **No load wait for a change with no Rust leg.** The wait protects the
-   machine from a compile. A dashboard, site or docs change compiles nothing
-   in the gate, so it should start its e2e leg at once. This saves 270 to
-   331 s on the commits that hit it.
+1. **No compile, and so no load wait, for a change with no Rust input.**
+   The e2e leg compiles too: `e2e/serve-head.sh` builds the server from the
+   composed tree, and a dashboard change recompiles because `static/` is
+   embedded. That compile is what the load wait protects. When the change's
+   compile inputs (`scripts/ci-rust-key.mjs`) match the live server's
+   receipt apart from `crates/amux-dashboard/static/`, the gate can hand the
+   e2e leg the live binary (`AMUX_E2E_SERVER_BIN`, which CI already uses)
+   and the composed tree's `static/` (`AMUX_DASHBOARD_DIR`, which
+   serve-head already honors), and skip `wait_for_load`. That saves the
+   270 to 331 s wait and the e2e build on those commits. If the inputs
+   differ, the gate compiles and waits as today, and logs which inputs
+   differed.
 2. **e2e beside the Rust leg.** Today it waits for nextest to finish. The two
    share the build directory, so the overlap is only the browser time
    (75 to 164 s), and only if the e2e server build does not wait on the
@@ -176,5 +184,5 @@ owner's approval of its exact diff, filed by the gate itself.
    leg, which the builder's boot health check and the `rust` workflow also
    catch.
 
-Change 1 is the cheapest and carries no new risk. Change 3 is the one that
+Change 1 reuses two hooks that exist and changes no verdict. Change 3 is the one that
 reaches the 2-minute goal for Rust commits.
