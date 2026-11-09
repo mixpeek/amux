@@ -103,132 +103,132 @@
   <url>
     <loc>https://amux.io/demos/ai-coding-while-you-sleep/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ai-coding-while-you-sleep/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/ai-coding-while-you-sleep/poster.jpg</video:thumbnail_loc>
       <video:title>AI Coding While You Sleep — amux Demo</video:title>
       <video:description>Run dozens of agents overnight — wake up to finished features.</video:description>
       <video:content_loc>https://amux.io/demos/ai-coding-while-you-sleep/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/parallel-feature-development/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/parallel-feature-development/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/parallel-feature-development/poster.jpg</video:thumbnail_loc>
       <video:title>Parallel Feature Development — amux Demo</video:title>
       <video:description>Each feature branch gets its own Claude session, all building simultaneously.</video:description>
       <video:content_loc>https://amux.io/demos/parallel-feature-development/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/test-generation-at-scale/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/test-generation-at-scale/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/test-generation-at-scale/poster.jpg</video:thumbnail_loc>
       <video:title>Test Generation at Scale — amux Demo</video:title>
       <video:description>One agent per module — generate the full test suite in parallel.</video:description>
       <video:content_loc>https://amux.io/demos/test-generation-at-scale/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/large-scale-refactoring/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/large-scale-refactoring/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/large-scale-refactoring/poster.jpg</video:thumbnail_loc>
       <video:title>Large-Scale Refactoring — amux Demo</video:title>
       <video:description>Split codebase by module and refactor everything simultaneously.</video:description>
       <video:content_loc>https://amux.io/demos/large-scale-refactoring/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/bug-triage-and-fixing/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/bug-triage-and-fixing/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/bug-triage-and-fixing/poster.jpg</video:thumbnail_loc>
       <video:title>Bug Triage and Fixing — amux Demo</video:title>
       <video:description>Clear the entire bug backlog in parallel — one agent per issue.</video:description>
       <video:content_loc>https://amux.io/demos/bug-triage-and-fixing/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/automated-code-review/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/automated-code-review/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/automated-code-review/poster.jpg</video:thumbnail_loc>
       <video:title>Automated Code Review — amux Demo</video:title>
       <video:description>Review 10 pull requests simultaneously with consistent analysis.</video:description>
       <video:content_loc>https://amux.io/demos/automated-code-review/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/documentation-generation/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/documentation-generation/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/documentation-generation/poster.jpg</video:thumbnail_loc>
       <video:title>Documentation Generation — amux Demo</video:title>
       <video:description>Generate docstrings and READMEs for every module at once.</video:description>
       <video:content_loc>https://amux.io/demos/documentation-generation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/api-endpoint-generation/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/api-endpoint-generation/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/api-endpoint-generation/poster.jpg</video:thumbnail_loc>
       <video:title>API Endpoint Generation — amux Demo</video:title>
       <video:description>Scaffold your entire REST API simultaneously — one session per resource.</video:description>
       <video:content_loc>https://amux.io/demos/api-endpoint-generation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/code-migration/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/code-migration/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/code-migration/poster.jpg</video:thumbnail_loc>
       <video:title>Code Migration — amux Demo</video:title>
       <video:description>Convert legacy code across all packages simultaneously.</video:description>
       <video:content_loc>https://amux.io/demos/code-migration/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/legacy-code-modernization/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/legacy-code-modernization/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/legacy-code-modernization/poster.jpg</video:thumbnail_loc>
       <video:title>Legacy Code Modernization — amux Demo</video:title>
       <video:description>Modernize every module in parallel — jQuery to React, Python 2 to 3.</video:description>
       <video:content_loc>https://amux.io/demos/legacy-code-modernization/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/monorepo-management/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/monorepo-management/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/monorepo-management/poster.jpg</video:thumbnail_loc>
       <video:title>Monorepo Management — amux Demo</video:title>
       <video:description>One session per package — manage 50-package monorepos like a team of 50.</video:description>
       <video:content_loc>https://amux.io/demos/monorepo-management/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/dependency-updates/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/dependency-updates/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/dependency-updates/poster.jpg</video:thumbnail_loc>
       <video:title>Dependency Updates — amux Demo</video:title>
       <video:description>Update every package simultaneously — bump, fix, and test in parallel.</video:description>
       <video:content_loc>https://amux.io/demos/dependency-updates/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -246,22 +246,22 @@
   <url>
     <loc>https://amux.io/demos/ci-cd-pipeline-creation/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ci-cd-pipeline-creation/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/ci-cd-pipeline-creation/poster.jpg</video:thumbnail_loc>
       <video:title>CI/CD Pipeline Creation — amux Demo</video:title>
       <video:description>Write GitHub Actions, Dockerfiles, and deploy configs for all envs at once.</video:description>
       <video:content_loc>https://amux.io/demos/ci-cd-pipeline-creation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/research-and-prototyping/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/research-and-prototyping/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/research-and-prototyping/poster.jpg</video:thumbnail_loc>
       <video:title>Research and Prototyping — amux Demo</video:title>
       <video:description>Test 10 hypotheses in parallel — each agent explores a different approach.</video:description>
       <video:content_loc>https://amux.io/demos/research-and-prototyping/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
