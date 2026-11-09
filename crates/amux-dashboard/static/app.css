@@ -11016,6 +11016,15 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
 
+/* Hover preview of an @worker mention (app.js _wkHoverShow): the worker list's card, read-only. */
+.worker-hovercard { position: fixed; z-index: 10050; width: min(440px, calc(100vw - 16px)); max-height: min(60vh, 520px);
+  overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--shade) 35%, transparent); pointer-events: none; }
+.worker-hovercard[hidden] { display: none; }
+.worker-hovercard > .card { margin: 0; border: none; box-shadow: none; }
+.worker-hovercard .card-menu-btn { display: none; }   /* nothing in a preview takes a click */
+.worker-hovercard-none { padding: var(--space-3); color: var(--dim); font-size: var(--fs-md); }
+
 /* Scheduled sends in the Email tab (app.js _emailSchedPaint). The reschedule
    row is the banner's own form, restyled for the page background. */
 .mail-sched-when { flex: 0 0 auto; color: var(--accent); font-size: var(--fs-sm); white-space: nowrap; }
