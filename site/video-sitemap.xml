@@ -4,10 +4,10 @@
   <url>
     <loc>https://amux.io/demos/session-cards-overview/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/poster.jpg?v=4f6a27c7</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/poster.jpg?v=59a081ba</video:thumbnail_loc>
       <video:title>Worker Cards | amux demo</video:title>
       <video:description>See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.</video:description>
-      <video:content_loc>https://amux.io/demos/session-cards-overview/demo.mp4?v=4f6a27c7</video:content_loc>
+      <video:content_loc>https://amux.io/demos/session-cards-overview/demo.mp4?v=59a081ba</video:content_loc>
       <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
@@ -15,10 +15,10 @@
   <url>
     <loc>https://amux.io/demos/send-command-dashboard/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/poster.jpg?v=48a05b47</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/poster.jpg?v=eb6f5108</video:thumbnail_loc>
       <video:title>Send to Any Worker | amux demo</video:title>
       <video:description>Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.</video:description>
-      <video:content_loc>https://amux.io/demos/send-command-dashboard/demo.mp4?v=48a05b47</video:content_loc>
+      <video:content_loc>https://amux.io/demos/send-command-dashboard/demo.mp4?v=eb6f5108</video:content_loc>
       <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
@@ -103,10 +103,10 @@
   <url>
     <loc>https://amux.io/demos/mobile-pwa/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/poster.jpg?v=c497bbfb</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/poster.jpg?v=4fbb2af5</video:thumbnail_loc>
       <video:title>Phone App | amux demo</video:title>
       <video:description>Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.</video:description>
-      <video:content_loc>https://amux.io/demos/mobile-pwa/demo.mp4?v=c497bbfb</video:content_loc>
+      <video:content_loc>https://amux.io/demos/mobile-pwa/demo.mp4?v=4fbb2af5</video:content_loc>
       <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>

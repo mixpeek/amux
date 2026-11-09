@@ -27,6 +27,8 @@ Found while recording:
 - Run now prefixes the delivered message with an `[amux] Run-now ...` note that reads as internal plumbing in a terminal; a cron fire delivers the bare message.
 - A peek on a loaded host can lag the phone by several seconds and show "Reconnecting... retrying terminal updates" (AMUX-6802). This sank the Offline Sync clip: in all three takes the banner showed on the laptop while the phone's queue replayed. Offline sync itself works (the phone saves the message offline, then syncs and the agent starts); re-record it on a quieter host.
 
+A footer check (the recorder kit's `footcheck.py`: in every frame, OCR the single line under each terminal at 3x) found that banner in three clips already live from the first round: Worker Cards, Send to Any Worker and Phone App. Whole-frame OCR had missed it. All three were re-recorded on 2026-11-09 with the footer check as part of the recorder gate, and every clip on the page now reads clean on it.
+
 Next to record: Offline Sync (see above), then needs-you approvals (1), Apps (10), Git panel (15), Vault (19) from the table below.
 
 
