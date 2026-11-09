@@ -110,6 +110,23 @@ try:
     w = split()
     check("a pane's page rename names only that page", w["title"] == "Board | Dates" and w["pane_tabs"] == [["Board"], ["Dates"]],
           f'{w["title"]} {w["pane_tabs"]}')
+    # The tab keeps its name when the pages inside it change (owner, 2026-11-09:
+    # "tab group names change when the tabs inside them change"). The page that
+    # hosts the split leaves for a tab of its own: the other page takes over the
+    # window, and with one page left the tab is that page, still named Planning.
+    send("amux://test/rename-tab?view=view%3Dboard&whole=1&name=Planning", 2)
+    check("named again", split()["title"] == "Planning", split()["title"])
+    send("amux://test/pane-tab?i=0", 3)
+    titles = sorted(w["title"] for w in state()["windows"])
+    check("the host page leaving does not rename the tab", "Planning" in titles and "Board" in titles, titles)
+    lg = open(LOG, errors="replace").read()
+    check("the hand-over carried the name", "pane_grid_rehosted panes=2 named=1" in lg,
+          [l for l in lg.splitlines() if "pane_grid_rehosted" in l][-1:])
+    check("and the one page left kept it", "verdict=tab_name_kept why=split_collapsed" in lg)
+    stop()
+    start()
+    check("the kept name survives a relaunch", "Planning" in [w["title"] for w in state()["windows"]],
+          [w["title"] for w in state()["windows"]])
 finally:
     if p and p.poll() is None:
         stop()

@@ -649,6 +649,8 @@ extension AppDelegate {
             }
             let g = PaneGrid(host: host)
             host.grid = g
+            // A tab the owner named keeps that name once it holds panes.
+            if host.windowName == nil, let n = host.customName { host.windowName = n }
             if let parent = host.paneHost?.grid, let pid = parent.id(of: host) {
                 g.container.frame = parent.views[pid]?.bounds ?? .zero
             } else {
@@ -776,11 +778,18 @@ extension AppDelegate {
         c.window?.contentView = own
         if g.tree.leaves.count <= 1 && g.all.count <= 1 {
             host.grid = nil
+            // Down to one page, the tab is that page: it keeps the name the
+            // owner gave the tab.
+            if let n = host.windowName {
+                host.customName = n
+                host.windowName = nil
+                dlog("verdict=tab_name_kept why=split_collapsed")
+            }
             g.container.removeFromSuperview()
             host.webView.removeFromSuperview()
             if let parent = host.paneHost?.grid, let pid = parent.id(of: host) {
-                // A split inside a tab down to one page: the tab is that page again.
-                host.windowName = nil
+                // A split inside a tab down to one page: the tab is that page
+                // again, under the name it had (moved to the page above).
                 parent.views[pid]?.attach(host)
                 parent.refreshStrips()
             } else {
@@ -796,6 +805,8 @@ extension AppDelegate {
     /// Where a page that left its pane goes: a window tab, closed, or another pane.
     private func finishUndock(_ c: DashboardWindowController, to dest: PaneDestination, window hw: NSWindow,
                               panesLeft: Int, targetPage: DashboardWindowController?) {
+        // Its window still reads the split's title until it names itself.
+        c.updateTitle()
         switch dest {
         case .tab:
             if let cw = c.window, cw !== hw, !(hw.tabbedWindows?.contains(cw) ?? false) { hw.addTabbedWindow(cw, ordered: .above) }
@@ -919,12 +930,17 @@ extension AppDelegate {
         nw.makeKeyAndOrderFront(nil)
         heir.paneHost = nil
         heir.grid = g
+        // The tab's name belongs to the tab, not to the page that hosted it
+        // (owner, 2026-11-09: "tab group names change when the tabs inside
+        // them change").
+        heir.windowName = old.windowName
+        old.windowName = nil
         old.grid = nil
         old.paneHost = heir
         g.host = heir
         for m in g.all where m !== heir { m.paneHost = heir }
         heir.home = old.home
-        dlog("verdict=pane_grid_rehosted panes=\(g.tree.leaves.count)")
+        dlog("verdict=pane_grid_rehosted panes=\(g.tree.leaves.count) named=\(heir.windowName == nil ? 0 : 1)")
     }
 
     /// A grid's window closed: its panes close with it.
