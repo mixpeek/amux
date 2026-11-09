@@ -29934,6 +29934,7 @@ function _fvPrintHtml(name) {
 async function _fvBlobBase64(blob) {
   return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
 }
+let _fvPrintPoll = 0;
 async function _filePrint() {
   const path = _fvNeedPath(); if (!path) return;
   const name = path.split('/').pop();
@@ -29954,6 +29955,8 @@ async function _filePrint() {
     _fvBeacon('print', 'sent_to_app', { file_kind: kind });
     return;
   }
+  // A new print replaces the last one, and the last one's wait stops with it.
+  clearInterval(_fvPrintPoll);
   document.getElementById('file-print-frame')?.remove();
   const fr = document.createElement('iframe');
   fr.id = 'file-print-frame'; fr.className = 'file-print-frame'; fr.title = 'Print ' + name;
@@ -29983,7 +29986,8 @@ async function _filePrint() {
   };
   fr.addEventListener('load', go);
   let waited = 0;
-  const poll = setInterval(() => {
+  const poll = _fvPrintPoll = setInterval(() => {
+    if (!fr.isConnected) { clearInterval(poll); return; }
     waited += 250;
     let ready = false;
     try { ready = !!fr.contentDocument && fr.contentDocument.readyState === 'complete' && waited >= 750; } catch (e) { ready = false; }
@@ -30004,8 +30008,9 @@ function _fileOpenNewWindow() {
 function _fileShowInFolder() {
   const path = _fvNeedPath(); if (!path) return;
   const dir = path.replace(/\/[^/]*$/, '') || '/';
+  // The folder opens underneath either way; a file with unsaved edits stays
+  // on top until its own save-or-discard prompt is answered.
   closeFilePreview();
-  if (_fileData && _fileData.path === path) return;   // kept open: unsaved edits
   _filesPath = dir;
   switchView('files');
   loadFiles(dir);

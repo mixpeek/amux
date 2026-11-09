@@ -127,3 +127,22 @@ test('Show in folder opens Files at the folder that holds the file', async ({ pa
   await expect.poll(() => page.evaluate(() => String((0, eval)('_filesPath')))).toMatch(new RegExp('/' + leaf + '$'));
   await expect(page.locator('.fe-row[data-path$="/report.pdf"]').first()).toBeVisible();
 });
+
+test('Show in folder with unsaved edits still opens the folder under the file', async ({ page }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'amux-e2e-fmenu-md-'));
+  const f = join(dir, 'notes.txt');
+  writeFileSync(f, 'one\n');
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openFilePreview === 'function');
+  await page.evaluate(p => (window as any).openFilePreview(p), f);
+  await page.locator('#file-tab-edit').click();
+  await page.locator('#file-edit-ta').fill('one\ntwo\n');
+  await menu(page);
+  await page.locator('#file-tab-reveal').click();
+  // The edits are not thrown away: the save-or-discard prompt asks first.
+  await expect(page.locator('#modal-backdrop')).toHaveClass(/open/);
+  const leaf = dir.split('/').pop()!;
+  await expect.poll(() => page.evaluate(() => String((0, eval)('_filesPath')))).toMatch(new RegExp('/' + leaf + '$'));
+  expect(readFileSync(f, 'utf8')).toBe('one\n');
+});
