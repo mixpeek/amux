@@ -104,7 +104,7 @@ pub(crate) fn query_rows_json(
     params: &[&dyn rusqlite::types::ToSql],
 ) -> rusqlite::Result<Vec<Value>> {
     let mut stmt = conn.prepare(sql)?;
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let rows = stmt.query_map(params, |row| {
         let mut obj = Map::new();
         for (i, name) in cols.iter().enumerate() {

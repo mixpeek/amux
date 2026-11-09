@@ -20,7 +20,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 rusqlite.workspace = true
 r2d2.workspace = true
-r2d2_sqlite.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 ulid.workspace = true

@@ -16,6 +16,7 @@
 
 pub mod advance;
 pub mod artifact_store;
+pub mod read_manager;
 pub mod attempts;
 pub mod board_store;
 pub mod commands;
@@ -33,7 +34,7 @@ pub mod verification_store;
 pub mod workflow_store;
 
 use amux_core::revision::{MutationKind, StateEvent, StateRevision};
-use r2d2_sqlite::SqliteConnectionManager;
+use read_manager::SqliteConnectionManager;
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::mpsc;

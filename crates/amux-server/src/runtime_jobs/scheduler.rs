@@ -1162,7 +1162,7 @@ fn select_schedules(
     params: &[&dyn rusqlite::ToSql],
 ) -> rusqlite::Result<Vec<DurableSchedule>> {
     let mut stmt = conn.prepare(sql)?;
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let cols: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     let rows = stmt.query_map(params, |r| DurableSchedule::from_row(r, &cols))?;
     rows.collect()
 }

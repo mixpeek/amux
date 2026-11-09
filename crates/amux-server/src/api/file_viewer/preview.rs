@@ -497,7 +497,7 @@ fn read_sqlite(p: &Path) -> Result<Value, String> {
                 continue;
             }
         };
-        let cols: Vec<String> = st.column_names().iter().map(|c| c.to_string()).collect();
+        let cols: Vec<String> = st.column_names().map(|c| c.to_string()).collect();
         let n = cols.len();
         let rows: Vec<Value> = match st.query([]) {
             Ok(mut rs) => {

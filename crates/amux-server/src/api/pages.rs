@@ -139,7 +139,7 @@ fn open_db(dir: &Path) -> rusqlite::Result<rusqlite::Connection> {
     let conn = rusqlite::Connection::open(dir.join("page.db"))?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0);
+    conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
     conn.execute_batch(PAGE_SCHEMA)?;
     Ok(conn)
 }
@@ -198,7 +198,7 @@ fn exec(conn: &rusqlite::Connection, sql: &str, params: &Value) -> rusqlite::Res
         _ => {}
     }
     if stmt.readonly() && stmt.column_count() > 0 {
-        let cols: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
+        let cols: Vec<String> = stmt.column_names().map(String::from).collect();
         let mut rows = stmt.raw_query();
         let mut out = Vec::new();
         let mut truncated = false;

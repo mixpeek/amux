@@ -2318,6 +2318,22 @@ mod cost_tests {
         bad
     }
 
+    /// Correlated scans that are bounded by construction, as (migration, plan
+    /// detail, why). Each entry must still match a plan, or the test fails, so
+    /// a stale exemption cannot hide a new offender under its name.
+    ///
+    /// 0060: `org_teams` is created empty by 0060 itself and then holds one
+    /// row per distinct legacy scope grant, so each member row scans tens of
+    /// teams at most. SQLite 3.46 reported this as `SCAN t USING INDEX` (the
+    /// primary key's autoindex, chosen for `ORDER BY id`), which this check
+    /// counted as indexed though it read the whole table too; 3.53 and later
+    /// report a plain `SCAN t`. Migrations are append-only, so 0060 stays.
+    const BOUNDED_CORRELATED_SCANS: &[(&str, &str, &str)] = &[(
+        "0060_org_teams",
+        "SCAN t",
+        "org_teams is created by 0060 and holds one row per distinct legacy grant",
+    )];
+
     /// Every migration, applied in order, with each one's DML plan-checked
     /// against the schema THAT MIGRATION LEAVES BEHIND — previous migrations
     /// plus its own DDL, and nothing from later ones.
@@ -2338,6 +2354,7 @@ mod cost_tests {
         let mut offenders: Vec<String> = Vec::new();
         let mut explained = 0usize;
         let mut saw_the_0031_backfill = false;
+        let mut exemptions_used = vec![false; BOUNDED_CORRELATED_SCANS.len()];
 
         for m in MIGRATIONS {
             let tx = conn.transaction().unwrap();
@@ -2359,6 +2376,10 @@ mod cost_tests {
                     saw_the_0031_backfill = true;
                 }
                 for bad in unindexed_correlated_access(&rows) {
+                    if let Some(i) = BOUNDED_CORRELATED_SCANS.iter().position(|(n, d, _)| *n == m.name && *d == bad) {
+                        exemptions_used[i] = true;
+                        continue;
+                    }
                     offenders.push(format!(
                         "{}: `{}` runs once per outer row with no index\n    statement: {}",
                         m.name,
@@ -2385,6 +2406,9 @@ mod cost_tests {
              that held the database for 186 seconds, and this check exists to see it."
         );
 
+        for (used, (name, detail, why)) in exemptions_used.iter().zip(BOUNDED_CORRELATED_SCANS) {
+            assert!(*used, "exemption ({name}, `{detail}`: {why}) matched no plan; remove it rather than keep a name that hides nothing");
+        }
         assert!(
             offenders.is_empty(),
             "a migration would full-scan a table once per outer row, which is how 0031 held \

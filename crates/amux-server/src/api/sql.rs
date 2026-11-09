@@ -55,7 +55,7 @@ fn rows_to_json(
     stmt: &mut rusqlite::Statement<'_>,
     cap: usize,
 ) -> rusqlite::Result<(Vec<String>, Vec<Vec<Value>>, bool)> {
-    let cols: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
+    let cols: Vec<String> = stmt.column_names().map(String::from).collect();
     let mut out = Vec::new();
     let mut q = stmt.query([])?;
     while let Some(r) = q.next()? {
