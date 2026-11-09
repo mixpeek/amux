@@ -69,6 +69,12 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
     // Only this function says a request presented the owner bearer
     // (human_proof.rs). An inbound copy is never believed.
     req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
+    // The sign-in door's owner proof (loopback_trust.rs). Taken off the request
+    // either way; only a match becomes the owner mark.
+    let door_owner = super::loopback_trust::take_front_door_proof(req.headers_mut());
+    if door_owner {
+        super::loopback_trust::stamp_owner(req.headers_mut());
+    }
     let Some(expected) = &state.auth_token else {
         // NO OWNER TOKEN IS NOT NO AUTHORIZATION. A host behind its own front
         // door runs with AMUX_AUTH_TOKEN=none, and member scopes must still
@@ -85,9 +91,29 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
             ) {
                 return response;
             }
+            return next.run(req).await;
+        }
+        if door_owner {
+            return next.run(req).await;
+        }
+        // No owner token, so nothing local could prove itself until a front
+        // door has proven the owner here; after that every socket caller
+        // (Caddy forwards from loopback too) is held to the same rule.
+        if super::loopback_trust::front_door_active() {
+            if let Some(ci) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() {
+                let exempt = exempt_from_credential(&req);
+                if super::loopback_trust::gate(req.headers(), req.uri().path(), req.method().as_str(), ci.0.ip().is_loopback(), exempt)
+                    == super::loopback_trust::Gate::Refuse
+                {
+                    return super::loopback_trust::refused();
+                }
+            }
         }
         return next.run(req).await;
     };
+    if door_owner {
+        return next.run(req).await;
+    }
     // An explicit owner credential wins even if this browser also carries an
     // old member cookie. Owners use that combination when testing an invite in
     // the same browser; treating them as the invitee would lock them out of the
@@ -122,18 +148,24 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
     // into_make_service_with_connect_info (lib.rs does); absence — e.g. in
     // router-level tests — errs toward REQUIRING the token.
     //
-    // AMUX_RS_NO_LOOPBACK_BYPASS=1 disables it, for e2e that must exercise
-    // the TOKEN path: a browser test necessarily connects over loopback, so
-    // without this knob "reject a bad token" is a check that cannot pass
-    // (e2e/phase0.spec.ts asserted 401 and was reported as an auth
-    // regression, 2026-08-09 — the code was right, the check was unrunnable).
-    if !std::env::var("AMUX_RS_NO_LOOPBACK_BYPASS").is_ok_and(|v| v == "1")
-        && req
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|ci| ci.0.ip().is_loopback())
+    // GOVERNANCE PR 3: locality is no longer a credential, because every
+    // worker is local too. AMUX_LOOPBACK_TRUST decides what an uncredentialed
+    // loopback request costs (loopback_trust.rs): `report` (default) admits and
+    // counts it by caller, `enforce` refuses it, `off` admits it silently as
+    // before. A worker proves itself with its minted token; public paths and
+    // the dashboard shell pass in every mode. AMUX_RS_NO_LOOPBACK_BYPASS=1, the
+    // older e2e knob for exercising the TOKEN path over loopback
+    // (e2e/phase0.spec.ts, 2026-08-09), now means `enforce`.
+    if req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ci| ci.0.ip().is_loopback())
     {
-        return next.run(req).await;
+        let exempt = exempt_from_credential(&req);
+        return match super::loopback_trust::gate(req.headers(), req.uri().path(), req.method().as_str(), true, exempt) {
+            super::loopback_trust::Gate::Admit => next.run(req).await,
+            super::loopback_trust::Gate::Refuse => super::loopback_trust::refused(),
+        };
     }
     let path = req.uri().path();
     if PUBLIC_PATHS.contains(&path) || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) {
@@ -175,6 +207,15 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
             "recovery": if owner_session == "valid" { "refresh_bootstrap" } else { "open_owner_or_invite_link" }
         })),
     ).into_response()
+}
+
+/// Public paths and non-API GETs (the dashboard shell) need no credential from
+/// anyone, local or not.
+fn exempt_from_credential(req: &Request) -> bool {
+    let path = req.uri().path();
+    PUBLIC_PATHS.contains(&path)
+        || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p))
+        || (req.method() == Method::GET && !path.starts_with("/api/"))
 }
 
 /// Whether this request explicitly presented the configured owner bearer.
@@ -625,5 +666,75 @@ mod tests {
         assert_eq!(ask(&app, "/api/who", None, true, Some("127.0.0.1")).await, "unproven",
             "a loopback caller is admitted but not proven, and its own marker is stripped");
         assert_eq!(ask(&app, "/pub/who", None, true, None).await, "unproven", "public paths strip it too");
+    }
+
+    /// Governance PR 3: locality is not a credential. Report mode admits and
+    /// counts, enforce refuses, off admits silently; the owner bearer and the
+    /// exempt paths pass in every mode.
+    #[tokio::test]
+    async fn an_uncredentialed_loopback_request_is_counted_then_refused() {
+        use crate::api::loopback_trust::{test_state, Mode};
+        let app = guarded_app(Some("tok123"));
+        test_state::set_mode(Some(Mode::Report));
+        assert_eq!(hit(&app, "POST", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::OK);
+        test_state::set_mode(Some(Mode::Enforce));
+        assert_eq!(hit(&app, "POST", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::UNAUTHORIZED,
+            "enforce: a local request with no credential is refused");
+        assert_eq!(hit(&app, "GET", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(hit(&app, "POST", "/api/thing", Some("tok123"), Some("127.0.0.1")).await, StatusCode::OK,
+            "the owner bearer still passes");
+        assert_eq!(hit(&app, "GET", "/page", None, Some("127.0.0.1")).await, StatusCode::OK,
+            "the dashboard shell needs no credential");
+        assert_eq!(hit(&app, "GET", "/api/branding/asset/logo.png", None, Some("127.0.0.1")).await, StatusCode::OK);
+        assert_eq!(hit(&app, "POST", "/api/thing", None, None).await, StatusCode::UNAUTHORIZED,
+            "no socket and no token was already refused");
+        test_state::set_mode(Some(Mode::Off));
+        assert_eq!(hit(&app, "POST", "/api/thing", None, Some("127.0.0.1")).await, StatusCode::OK);
+        test_state::set_mode(None);
+    }
+
+    /// A host with no owner token (behind a sign-in door) proves the owner with
+    /// the front-door secret; once it has, local callers need a credential too.
+    #[tokio::test]
+    async fn a_front_door_proves_the_owner_on_a_host_without_a_token() {
+        use crate::api::human_proof::{proven, Proven};
+        use crate::api::loopback_trust::{front_door_active, init, test_state, Mode, FRONT_DOOR_HEADER};
+        let home = tempfile::tempdir().unwrap();
+        init(home.path(), Some("door-secret-1"));
+        let st = state(None);
+        async fn echo(h: HeaderMap) -> &'static str {
+            if proven(&h) == Some(Proven::Owner) { "owner" } else { "unproven" }
+        }
+        let app = Router::new()
+            .route("/api/who", get(echo).post(echo))
+            .layer(axum::middleware::from_fn_with_state(st.clone(), require_bearer))
+            .with_state(st);
+        async fn ask(app: &Router, method: &str, proof: Option<&str>) -> (StatusCode, String) {
+            let mut b = HttpRequest::builder().method(method).uri("/api/who");
+            if let Some(p) = proof {
+                b = b.header(FRONT_DOOR_HEADER, p);
+            }
+            let mut req = b.body(Body::empty()).unwrap();
+            req.extensions_mut().insert(ConnectInfo("127.0.0.1:55555".parse::<SocketAddr>().unwrap()));
+            let r = app.clone().oneshot(req).await.unwrap();
+            let s = r.status();
+            (s, String::from_utf8(axum::body::to_bytes(r.into_body(), 4096).await.unwrap().to_vec()).unwrap())
+        }
+        test_state::set_mode(Some(Mode::Enforce));
+        assert!(!front_door_active());
+        assert_eq!(ask(&app, "POST", None).await.0, StatusCode::OK,
+            "before any door has proven the owner, a token-less host cannot refuse anyone");
+        assert_eq!(ask(&app, "POST", Some("wrong")).await, (StatusCode::OK, "unproven".to_string()),
+            "a wrong proof is not the owner");
+        assert!(!front_door_active());
+        assert_eq!(ask(&app, "POST", Some("door-secret-1")).await, (StatusCode::OK, "owner".to_string()));
+        assert!(front_door_active(), "the first valid proof makes the host enforceable");
+        assert!(home.path().join("front-door-owner.seen").exists(), "and survives a restart");
+        let (code, body) = ask(&app, "POST", None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "now a local caller with no credential is refused: {body}");
+        assert!(body.contains("loopback_not_trusted"), "{body}");
+        test_state::set_mode(Some(Mode::Report));
+        assert_eq!(ask(&app, "POST", None).await, (StatusCode::OK, "unproven".to_string()), "report admits, unproven");
+        test_state::set_mode(None);
     }
 }

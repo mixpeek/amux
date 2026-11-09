@@ -300,6 +300,13 @@ _curl() {
     && ! printf '%s\n' "$@" | grep -qi '^Authorization:'; then
     local _owner_tok; _owner_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/auth_token" 2>/dev/null)"
     [[ -n "$_owner_tok" ]] && _id+=(-H "Authorization: Bearer $_owner_tok")
+  elif [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/front-door-owner" ]]; then
+    # A HOST BEHIND A SIGN-IN DOOR has no owner token (AMUX_AUTH_TOKEN=none);
+    # there the owner's credential is the secret the door returns for them
+    # (governance PR 3, api/loopback_trust.rs), and the owner's own terminal
+    # presents the same one. Again only to this machine's own server.
+    local _door_tok; _door_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/front-door-owner" 2>/dev/null)"
+    [[ -n "$_door_tok" ]] && _id+=(-H "X-Amux-Front-Door-Owner: $_door_tok")
   fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.
