@@ -468,6 +468,28 @@ pub async fn approval_attachment(
     }
 }
 
+/// The attachments as a held send keeps them: their bytes, read when the send
+/// is held (owner, 2026-11-09: "make sure the attachment works"). A
+/// `{"path": ...}` kept as a path was read again only at release: a temp file
+/// gone by then failed the send, and a file changed since went out with bytes
+/// the approver never saw. A bad path is refused now, while the worker can fix it.
+fn frozen_attachments(body: &Value) -> Result<Value, String> {
+    let atts = parse_attachments(body)?;
+    if atts.is_empty() {
+        return Ok(Value::Null);
+    }
+    Ok(Value::Array(
+        atts.into_iter()
+            .map(|a| {
+                json!({
+                    "filename": a.filename, "content_type": a.content_type,
+                    "content_base64": base64::engine::general_purpose::STANDARD.encode(&a.data),
+                })
+            })
+            .collect(),
+    ))
+}
+
 /// Feed a real Gmail outcome into the registry (RR-0073). Auth-shaped
 /// failures are `Unavailable` (re-auth needed / no token); transient ones
 /// `Degraded`; success is the only path to `Available`.
@@ -629,11 +651,15 @@ pub async fn send(
                 "body": message.chars().take(2000).collect::<String>(),
                 "external_recipients": externals,
             });
+            let attachments = match frozen_attachments(&body) {
+                Ok(a) => a,
+                Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+            };
             let payload = json!({
                 "from": from_acct, "to": to, "cc": cc, "subject": subject,
                 "body": message,
                 "signature": body.get("signature").cloned().unwrap_or(Value::Null),
-                "attachments": body.get("attachments").cloned().unwrap_or(Value::Null),
+                "attachments": attachments,
             });
             return match crate::api::email_approval::request_approval(
                 &home,
@@ -906,12 +932,16 @@ pub async fn reply(
                         "body": reply_body.chars().take(2000).collect::<String>(),
                         "external_recipients": externals,
                     });
+                    let frozen = match frozen_attachments(&body) {
+                        Ok(a) => a,
+                        Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+                    };
                     let payload = json!({
                         "from": gmail_from, "message_id": message_id,
                         "body": reply_body, "reply_all": reply_all,
                         "allow_self": allow_self, "cc": extra_cc,
                         "signature": body.get("signature").cloned().unwrap_or(Value::Null),
-                        "attachments": body.get("attachments").cloned().unwrap_or(Value::Null),
+                        "attachments": frozen,
                     });
                     return match crate::api::email_approval::request_approval(
                         &home,
@@ -3581,6 +3611,47 @@ mod tests {
     /// is, approved with the approver's edit, and scheduled (with an edit) then
     /// released by the job. Each sent MIME carries the file part. The approval
     /// card previews the same bytes through its route, sandboxed.
+    /// A file attached by path is kept when the send is held: gone from disk
+    /// before approval, the preview and the release both still have its bytes.
+    /// A path that cannot be read is refused at the hold.
+    #[tokio::test]
+    async fn a_held_path_attachment_is_kept_when_its_file_goes() {
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "pa1", "threadId": "tp1" })),
+        ]);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let file = home.path().join("deck.pdf");
+        let pdf = b"%PDF-1.4 the deck the owner approves".to_vec();
+        std::fs::write(&file, &pdf).unwrap();
+        let (st, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "Deck", "body": "Attached.", "from": ACCT,
+                         "force_new_thread": true, "attachments": [{ "path": file.to_string_lossy() }] })),
+            &[("x-amux-session", "gtm-engine")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
+        let apr = res["approval_id"].as_str().unwrap().to_string();
+        std::fs::remove_file(&file).unwrap();
+
+        let res = app.clone().oneshot(Request::builder().uri(format!("/api/email/approvals/{apr}/attachments/0"))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the preview still has the file");
+        assert_eq!(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()[..], &pdf[..]);
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{apr}"), None,
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let call = http.calls.lock().unwrap().iter().find(|c| c.1.contains("/messages/send")).cloned().unwrap();
+        let mime = String::from_utf8(crate::integrations::email::base64url_decode(call.2.unwrap()["raw"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(mime.contains("filename=\"deck.pdf\""), "{mime}");
+        assert!(mime.replace("\r\n", "").contains(&base64::engine::general_purpose::STANDARD.encode(&pdf)));
+
+        let (st, e) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "y", "body": "y", "from": ACCT, "force_new_thread": true,
+                         "attachments": [{ "path": "/nonexistent/deck.pdf" }] })),
+            &[("x-amux-session", "gtm-engine")]).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "refused at the hold: {e}");
+    }
+
     #[tokio::test]
     async fn a_released_draft_still_carries_its_attachment() {
         let home = temp_home();
