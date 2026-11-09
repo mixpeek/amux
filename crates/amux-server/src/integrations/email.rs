@@ -291,6 +291,25 @@ pub fn encode_header_value(s: &str) -> String {
     }
 }
 
+/// The From header value: `"Display Name" <addr>`, or the bare address when
+/// there is no name. A non-ASCII name becomes an RFC 2047 encoded-word.
+pub fn format_from(display: &str, addr: &str) -> String {
+    let name: String = display
+        .chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return addr.to_string();
+    }
+    if name.is_ascii() {
+        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{quoted}\" <{addr}>")
+    } else {
+        format!("{} <{addr}>", encode_header_value(name))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RFC822 assembly (Python `_gmail_compose_send`'s MIME construction)
 // ---------------------------------------------------------------------------
@@ -1272,17 +1291,14 @@ impl GmailClient {
         self.api(account, "GET", &url, None).await
     }
 
-    /// Python `_gmail_get_signature`: the account's configured send-as HTML
-    /// signature; "" on any failure.
-    pub async fn get_signature(&self, account: &str) -> String {
+    /// The account's send-as entry (`users/settings/sendAs`): the one whose
+    /// address matches, else the primary, else the first. None on any failure.
+    async fn send_as(&self, account: &str) -> Option<Value> {
         let url = format!("{GMAIL_BASE}/settings/sendAs");
-        let Ok(v) = self.api(account, "GET", &url, None).await else {
-            return String::new();
-        };
-        let empty = vec![];
-        let sendas = v.get("sendAs").and_then(Value::as_array).unwrap_or(&empty);
+        let v = self.api(account, "GET", &url, None).await.ok()?;
+        let sendas = v.get("sendAs").and_then(Value::as_array)?;
         let target = account.to_lowercase();
-        let chosen = sendas
+        sendas
             .iter()
             .find(|sa| {
                 sa.get("sendAsEmail")
@@ -1296,12 +1312,21 @@ impl GmailClient {
                     .iter()
                     .find(|sa| sa.get("isPrimary").and_then(Value::as_bool) == Some(true))
             })
-            .or_else(|| sendas.first());
-        chosen
-            .and_then(|sa| sa.get("signature"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
+            .or_else(|| sendas.first())
+            .cloned()
+    }
+
+    /// Python `_gmail_get_signature`: the account's configured send-as HTML
+    /// signature; "" on any failure.
+    pub async fn get_signature(&self, account: &str) -> String {
+        self.send_as(account)
+            .await
+            .and_then(|sa| {
+                sa.get("signature")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .unwrap_or_default()
     }
 
     /// Python `_gmail_compose_send`: multipart/alternative with signature,
@@ -1321,11 +1346,24 @@ impl GmailClient {
         include_signature: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
-        let sig_html = if include_signature {
-            self.get_signature(account).await
+        // The send-as entry carries both the signature and the display name.
+        // Without the name the From header is the bare address, and recipients
+        // see "ethan@mixpeek.com" with a blank avatar instead of the person.
+        let send_as = if include_signature {
+            self.send_as(account).await
         } else {
-            String::new()
+            None
         };
+        let field = |k: &str| {
+            send_as
+                .as_ref()
+                .and_then(|sa| sa.get(k))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let sig_html = field("signature");
+        let from = format_from(&field("displayName"), account);
         let (plain, html, sig_included) = compose_bodies(body, &sig_html);
         // Boundary needs no cryptographic strength, only absence from the
         // payload; nanos + a fixed tag matches Python's uniqueness level.
@@ -1337,7 +1375,7 @@ impl GmailClient {
                 .unwrap_or(0)
         );
         let rfc822 = build_rfc822(&MimeSpec {
-            from: account,
+            from: &from,
             to,
             cc,
             subject,
@@ -3532,6 +3570,28 @@ mod tests {
         assert!(err.contains("invalid_grant"), "{err}");
     }
 
+    #[test]
+    fn from_header_names_the_sender_and_falls_back_to_the_address() {
+        assert_eq!(
+            format_from("Ethan Steininger", "ethan@mixpeek.com"),
+            "\"Ethan Steininger\" <ethan@mixpeek.com>"
+        );
+        assert_eq!(format_from("", "a@b.c"), "a@b.c");
+        assert_eq!(format_from("  \r\n ", "a@b.c"), "a@b.c");
+        assert_eq!(
+            format_from("A \"Q\" B", "a@b.c"),
+            "\"A \\\"Q\\\" B\" <a@b.c>"
+        );
+        assert_eq!(
+            format_from("Evil\r\nBcc: x@y.z", "a@b.c"),
+            "\"EvilBcc: x@y.z\" <a@b.c>"
+        );
+        assert_eq!(
+            format_from("Zoë", "a@b.c"),
+            format!("{} <a@b.c>", encode_header_value("Zoë"))
+        );
+    }
+
     #[tokio::test]
     async fn compose_send_raw_decodes_to_rfc822_with_signature_and_thread() {
         let home = temp_home_with_token("acct@example.com", true);
@@ -3541,7 +3601,7 @@ mod tests {
                 "/settings/sendAs",
                 200,
                 json!({ "sendAs": [
-                    { "sendAsEmail": "acct@example.com", "signature": "<b>Sig</b>" },
+                    { "sendAsEmail": "acct@example.com", "displayName": "Acct Person", "signature": "<b>Sig</b>" },
                 ]}),
             ),
             (
@@ -3579,6 +3639,12 @@ mod tests {
         let decoded = String::from_utf8(base64url_decode(raw).unwrap()).unwrap();
         assert!(decoded.contains("To: x@ext.com\r\n"), "{decoded}");
         assert!(decoded.contains("Cc: c@ext.com\r\n"));
+        // The send-as display name reaches From, so the recipient sees the
+        // person and their avatar rather than the bare address.
+        assert!(
+            decoded.contains("From: \"Acct Person\" <acct@example.com>\r\n"),
+            "{decoded}"
+        );
         assert!(decoded.contains("In-Reply-To: <orig@id>\r\n"));
         assert!(decoded.contains("References: <root@id> <orig@id>\r\n"));
         // Signature reached both alternatives (encoded in base64 parts).
