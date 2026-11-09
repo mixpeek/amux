@@ -1,14 +1,11 @@
 /* Shared lightbox (site/lightbox.js). Opt in with data-lightbox on a <video> or <img>. */
 :root {
-  --lb-backdrop: oklch(0.12 0.01 250 / 0.95);
+  --lb-backdrop: rgba(6, 8, 12, 0.94);
   --lb-fg: oklch(0.96 0.005 90);
   --lb-btn: oklch(0.26 0.012 250 / 0.9);
   --lb-btn-hover: oklch(0.34 0.014 250);
   --lb-line: oklch(0.42 0.015 250);
   --lb-accent: oklch(0.82 0.17 85);
-}
-[data-theme="light"] {
-  --lb-backdrop: oklch(0.18 0.012 250 / 0.93);
 }
 
 [data-lightbox] { cursor: zoom-in; }
@@ -32,6 +29,7 @@ html.lb-open, html.lb-open body { overflow: hidden; }
   display: flex; flex-direction: column;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   background: var(--lb-backdrop); color: var(--lb-fg);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   animation: lb-in .16s ease-out;
 }
 .lb[hidden] { display: none; }
@@ -78,5 +76,6 @@ html.lb-open, html.lb-open body { overflow: hidden; }
   .lb-link { padding: 0 10px; font-size: 13px; }
   .lb-link .lb-wide { display: none; }
   .lb-link .lb-narrow { display: inline; }
-  .lb-stage { padding: 0 8px 8px; }
+  .lb-stage { padding: 0 0 calc(56px + env(safe-area-inset-bottom)); }
+  .lb-media { border-radius: 0; }
 }
