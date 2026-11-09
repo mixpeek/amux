@@ -29926,10 +29926,10 @@ function _fvPrintHtml(name) {
   const shown = body && body.style.display !== 'none' && body.innerHTML.trim() ? body.innerHTML
     : '<pre>' + esc((_fileData && _fileData.content) || '') + '</pre>';
   return '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(name) + '</title><style>'
-    + '@page{margin:14mm}body{font:11pt/1.5 -apple-system,system-ui,sans-serif;color:#000;background:#fff;margin:0}'
-    + 'pre,code{white-space:pre-wrap;word-break:break-word;font:9.5pt/1.45 ui-monospace,Menlo,monospace}'
-    + 'img,video{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #999;padding:3px 6px}'
-    + 'a{color:#000}button,.md-copy-btn{display:none}</style></head><body>' + shown + '</body></html>';
+    + '@page{margin:14mm}body{font:11pt/1.5 -apple-system,system-ui,sans-serif;color:#000;background:#fff;margin:0}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'pre,code{white-space:pre-wrap;word-break:break-word;font:9.5pt/1.45 ui-monospace,Menlo,monospace}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'img,video{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #999;padding:3px 6px}'   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
+    + 'a{color:#000}button,.md-copy-btn{display:none}</style></head><body>' + shown + '</body></html>';   // design-tokens: allow (print is black on white paper; the page tokens do not reach the print frame)
 }
 async function _fvBlobBase64(blob) {
   return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
