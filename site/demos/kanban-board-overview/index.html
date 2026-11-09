@@ -4,18 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Kanban Board — amux</title>
+  <title>Kanban Board | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
   <meta name="keywords" content="AI agent kanban board, claude code task management, amux board, agent task queue sqlite">
   <link rel="canonical" href="https://amux.io/demos/kanban-board-overview/">
-  <meta property="og:title" content="Kanban Board — amux">
+  <meta property="og:title" content="Kanban Board | amux">
   <meta property="og:description" content="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
   <meta property="og:url" content="https://amux.io/demos/kanban-board-overview/">
-  <meta property="og:image" content="https://amux.io/demos/kanban-board-overview/demo.mp4">
+  <meta property="og:image" content="https://amux.io/demos/kanban-board-overview/poster.jpg">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/kanban-board-overview/demo.mp4">
+  <meta name="twitter:image" content="https://amux.io/demos/kanban-board-overview/poster.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -64,13 +64,14 @@
     <h1>Kanban Board</h1>
     <p class="subtitle">SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.</p>
 
-    <video src="demo.mp4" autoplay loop muted playsinline title="Kanban Board demo"></video>
+    <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="Kanban Board demo"></video>
+<p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 
     <h2>How it works</h2>
 <ol class="step-list">
-  <li>Open the Board tab — issues listed with auto-generated keys (PROJ-1, PROJ-2…)</li>
+  <li>Open the Board tab, issues listed with auto-generated keys (PROJ-1, PROJ-2…)</li>
   <li>Switch to Status view for column layout: Todo → Doing → Done</li>
-  <li>Filter by tag, session, or status — board syncs to all agents via SSE</li>
+  <li>Filter by tag, session, or status, board syncs to all agents via SSE</li>
   <li>Board items with due dates export to iCal → subscribe in Google/Apple Calendar</li>
 </ol>
     <h2>When to use this</h2>

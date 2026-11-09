@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agent Coordination via REST Demo — amux</title>
+<title>Agent Coordination via REST Demo | amux</title>
 <meta name="description" content="Orchestrator sessions send tasks to workers via HTTP API. Board acts as shared task queue with atomic claiming.">
   <link rel="canonical" href="https://amux.io/demos/agent-coordination/">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -50,12 +50,13 @@
 <h1>Agent Coordination via REST</h1>
 <p class="desc">Orchestrator sessions send tasks to workers via HTTP API. Board acts as shared task queue with atomic claiming.</p>
 <div class="gif-wrap">
-  <video src="demo.mp4" autoplay loop muted playsinline title="Agent Coordination via REST demo"></video>
+  <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="Agent Coordination via REST demo"></video>
 </div>
+<p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 <ol class="steps">
   <li><span class="step-num">1</span><span>Orchestrator sends tasks via POST /api/sessions/worker/send</span></li>
-  <li><span class="step-num">2</span><span>Board is the shared task queue — agents claim atomically</span></li>
-  <li><span class="step-num">3</span><span>No manual routing — fully autonomous coordination</span></li>
+  <li><span class="step-num">2</span><span>Board is the shared task queue, agents claim atomically</span></li>
+  <li><span class="step-num">3</span><span>No manual routing, fully autonomous coordination</span></li>
   <li><span class="step-num">4</span><span>Multi-agent systems without custom orchestration code</span></li>
 </ol>
 <div class="cta">

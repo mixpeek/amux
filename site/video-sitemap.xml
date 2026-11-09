@@ -4,11 +4,11 @@
   <url>
     <loc>https://amux.io/demos/session-cards-overview/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/poster.jpg</video:thumbnail_loc>
       <video:title>Session Cards Overview — amux Demo</video:title>
       <video:description>All running Claude agents at a glance — live status, tokens, and current task.</video:description>
       <video:content_loc>https://amux.io/demos/session-cards-overview/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -26,11 +26,11 @@
   <url>
     <loc>https://amux.io/demos/kanban-board-overview/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/kanban-board-overview/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/kanban-board-overview/poster.jpg</video:thumbnail_loc>
       <video:title>Kanban Board Overview — amux Demo</video:title>
       <video:description>SQLite-backed kanban board for coordinating AI agent tasks.</video:description>
       <video:content_loc>https://amux.io/demos/kanban-board-overview/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -48,11 +48,11 @@
   <url>
     <loc>https://amux.io/demos/self-healing-watchdog/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/self-healing-watchdog/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/self-healing-watchdog/poster.jpg</video:thumbnail_loc>
       <video:title>amux Demo: Status Detection and Recovery</video:title>
       <video:description>amux status detection on the dashboard. Captions are from an older release; the server does not restart crashed agents.</video:description>
       <video:content_loc>https://amux.io/demos/self-healing-watchdog/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -70,33 +70,33 @@
   <url>
     <loc>https://amux.io/demos/ical-calendar-sync/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ical-calendar-sync/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/ical-calendar-sync/poster.jpg</video:thumbnail_loc>
       <video:title>iCal Calendar Sync — amux Demo</video:title>
       <video:description>Board items with due dates sync to Google and Apple Calendar.</video:description>
       <video:content_loc>https://amux.io/demos/ical-calendar-sync/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/conversation-fork/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/conversation-fork/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/conversation-fork/poster.jpg</video:thumbnail_loc>
       <video:title>Conversation Fork — amux Demo</video:title>
       <video:description>Clone any session JSONL history into a new session on a separate branch.</video:description>
       <video:content_loc>https://amux.io/demos/conversation-fork/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/mobile-pwa/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/poster.jpg</video:thumbnail_loc>
       <video:title>Mobile PWA — amux Demo</video:title>
       <video:description>Monitor and control all Claude agents from your phone.</video:description>
       <video:content_loc>https://amux.io/demos/mobile-pwa/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -235,11 +235,11 @@
   <url>
     <loc>https://amux.io/demos/security-audit/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/security-audit/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/security-audit/poster.jpg</video:thumbnail_loc>
       <video:title>Security Audit — amux Demo</video:title>
       <video:description>Audit auth, API, DB, and frontend layers simultaneously.</video:description>
       <video:content_loc>https://amux.io/demos/security-audit/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
@@ -268,22 +268,22 @@
   <url>
     <loc>https://amux.io/demos/agent-coordination/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/agent-coordination/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/agent-coordination/poster.jpg</video:thumbnail_loc>
       <video:title>Agent Coordination via REST — amux Demo</video:title>
       <video:description>Orchestrate agents with POST /api/sessions/NAME/send — no tmux hacks.</video:description>
       <video:content_loc>https://amux.io/demos/agent-coordination/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/web-dashboard/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/web-dashboard/demo.gif</video:thumbnail_loc>
+      <video:thumbnail_loc>https://amux.io/demos/web-dashboard/poster.jpg</video:thumbnail_loc>
       <video:title>Web Dashboard Overview — amux Demo</video:title>
       <video:description>Sessions, board, calendar, and file browser in one PWA dashboard.</video:description>
       <video:content_loc>https://amux.io/demos/web-dashboard/demo.mp4</video:content_loc>
-      <video:publication_date>2026-02-26</video:publication_date>
+      <video:publication_date>2026-11-08</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>

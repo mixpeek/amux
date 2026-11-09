@@ -4,18 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Conversation Fork — amux</title>
+  <title>Conversation Fork | amux</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.">
   <meta name="keywords" content="claude code fork conversation, branch AI session, conversation clone amux, parallel agent branches">
   <link rel="canonical" href="https://amux.io/demos/conversation-fork/">
-  <meta property="og:title" content="Conversation Fork — amux">
+  <meta property="og:title" content="Conversation Fork | amux">
   <meta property="og:description" content="Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.">
   <meta property="og:url" content="https://amux.io/demos/conversation-fork/">
-  <meta property="og:image" content="https://amux.io/demos/conversation-fork/demo.mp4">
+  <meta property="og:image" content="https://amux.io/demos/conversation-fork/poster.jpg">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/conversation-fork/demo.mp4">
+  <meta name="twitter:image" content="https://amux.io/demos/conversation-fork/poster.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -64,11 +64,12 @@
     <h1>Conversation Fork</h1>
     <p class="subtitle">Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.</p>
 
-    <video src="demo.mp4" autoplay loop muted playsinline title="Conversation Fork demo"></video>
+    <video src="demo.mp4" poster="poster.jpg" autoplay loop muted playsinline title="Conversation Fork demo"></video>
+<p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
 
     <h2>How it works</h2>
 <ol class="step-list">
-  <li>Open the session menu (⋯) and choose Clone / Fork</li>
+  <li>Call POST /api/sessions/&lt;name&gt;/clone (the dashboard menu's Duplicate copies a worker's settings, not its conversation)</li>
   <li>amux starts the clone with <code>--resume &lt;id&gt; --fork-session</code> flags</li>
   <li>The fork gets a new conversation ID while sharing the prior history</li>
   <li>Fallback: if no JSONL, captures last 3000 lines of scrollback as context</li>
