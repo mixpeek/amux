@@ -529,6 +529,15 @@ fn is_dingbat_lead(s: &str) -> bool {
     matches!(s.chars().next(), Some(c) if ('\u{2700}'..='\u{27bf}').contains(&c) || c == '\u{b7}')
 }
 
+lazy_re!(RE_SPINNER_TIMER, r"\((\d+h )?(\d+m )?\d+s\b");
+
+/// Claude's `*` spinner phase. `*` also starts a markdown bullet, so unlike
+/// the dingbat glyphs it counts only with the spinner's shape: … plus the
+/// elapsed-time parenthetical (the rule detect_claude_status uses, AMUX-3426).
+fn is_asterisk_spinner(s: &str) -> bool {
+    s.starts_with('*') && s.contains('\u{2026}') && RE_SPINNER_TIMER.is_match(s)
+}
+
 /// A provider authentication failure that leaves the CLI drawn at an input
 /// prompt but unable to accept work. The leading solid square is Codex's own
 /// error marker and is load-bearing: matching the sentence alone would flag a
@@ -784,7 +793,7 @@ fn claude_tui_state(clean: &str) -> TuiState {
         if is_prompt_line(s) {
             continue;
         }
-        if is_dingbat_lead(s) && s.contains('…') {
+        if (is_dingbat_lead(s) && s.contains('…')) || is_asterisk_spinner(s) {
             return TuiState::Active;
         }
         if s.starts_with("Running…") || RE_READING_FILES.is_match(s) {
@@ -2157,6 +2166,44 @@ CLAUDE-POSTFIX-COMPLETE
         assert!(
             matches!(st, TuiState::Active),
             "expected Active, got {st:?}"
+        );
+    }
+
+    #[test]
+    fn asterisk_spinner_frame_is_active() {
+        // Claude Code's spinner cycles through ·✢✶✻✽*. `*` is outside the
+        // dingbat range too, so a capture landing on that phase read a
+        // generating turn as idle here, as AMUX-3426 fixed in
+        // detect_claude_status. Recognised by shape: … plus the timer.
+        let frame = "\
+  some output text
+* Befuddling\u{2026} (21m 48s \u{b7} \u{2193} 15.0k tokens)
+
+\u{276f}
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+  \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)";
+        let st = claude_tui_state(frame);
+        assert!(
+            matches!(st, TuiState::Active),
+            "expected Active, got {st:?}"
+        );
+    }
+
+    #[test]
+    fn asterisk_markdown_bullet_with_ellipsis_is_not_a_spinner() {
+        // A prose bullet quoting an ellipsis has no elapsed-time suffix, so
+        // a finished turn that printed one must not read as generating.
+        let frame = "\
+* Loading the config\u{2026} then retrying
+* Done
+
+\u{276f}
+\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}
+  \u{23f5}\u{23f5} bypass permissions on (shift+tab to cycle)";
+        let st = claude_tui_state(frame);
+        assert!(
+            !matches!(st, TuiState::Active),
+            "a bullet is not a spinner, got {st:?}"
         );
     }
 
