@@ -2318,6 +2318,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/email/approvals",
         methods: &["GET"],
     },
+    RouteEntry {
+        path: "/api/email/approvals/{id}/attachments/{index}",
+        methods: &["GET"],
+    },
     // AMUX-3998: email_intel's routes, merged into email::routes() so they
     // share its EmailCtx -- AMUX-93 found these were mounted and working
     // (a direct POST to /themes/refresh reached the real handler, HTTP 502

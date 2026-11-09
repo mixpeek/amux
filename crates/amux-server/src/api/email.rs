@@ -64,6 +64,9 @@ pub fn routes_with(ctx: Arc<EmailCtx>) -> Router<AppState> {
         .route("/approve/{id}", post(approve))
         .route("/reject/{id}", post(reject))
         .route("/approvals", get(list_approvals))
+        // One held draft's attachment, for the approver's preview: the list
+        // names each file and never carries its bytes.
+        .route("/approvals/{id}/attachments/{index}", get(approval_attachment))
         // AF-540: the READ-ONLY half. `fate()` has always said the right thing —
         // including "this approval EXPIRED unreleased (1h TTL)" — and was
         // reachable ONLY as the error body of POST /approve/{id}, a mutation a
@@ -402,6 +405,67 @@ fn parse_attachments(body: &Value) -> Result<Vec<Attachment>, String> {
         });
     }
     Ok(out)
+}
+
+/// What an approver sees of each held attachment: its name, type and size,
+/// never its bytes or the path of a file on disk. Each one is read the way a
+/// release reads it (`parse_attachments`), so `ok: false` means the send
+/// would fail on it too: the file is gone, or the data is not valid.
+pub(crate) fn attachment_summaries(payload: &Value) -> Vec<Value> {
+    let Some(list) = payload.get("attachments").and_then(Value::as_array) else { return vec![] };
+    list.iter().enumerate().map(|(i, a)| match parse_attachments(&json!({ "attachments": [a] })) {
+        Ok(mut v) if v.len() == 1 => {
+            let a = v.remove(0);
+            json!({ "index": i, "filename": a.filename, "content_type": a.content_type, "size": a.data.len(), "ok": true })
+        }
+        _ => {
+            let name = a.get("filename").and_then(Value::as_str).map(str::to_string)
+                .or_else(|| a.get("path").and_then(Value::as_str)
+                    .and_then(|p| std::path::Path::new(p).file_name()).map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "attachment".into());
+            json!({ "index": i, "filename": name, "content_type": Value::Null, "size": Value::Null, "ok": false })
+        }
+    }).collect()
+}
+
+/// GET /api/email/approvals/{id}/attachments/{index}: the bytes of one held
+/// attachment, inline, for the approval card's preview. Read through the
+/// same parse as the send, so what previews is what would go out. Served
+/// sandboxed and not sniffed: a held HTML file must not run as the dashboard.
+pub async fn approval_attachment(
+    Extension(ctx): Extension<Arc<EmailCtx>>,
+    axum::extract::Path((id, index)): axum::extract::Path<(String, usize)>,
+) -> Response {
+    let Some(doc) = crate::api::email_approval::peek(ctx.client.home(), &id) else {
+        return err(StatusCode::NOT_FOUND, json!({ "error": "no held draft with that id", "id": id }));
+    };
+    let Some(a) = doc["payload"]["attachments"].get(index).cloned() else {
+        return err(StatusCode::NOT_FOUND, json!({ "error": "that draft has no attachment at that index", "id": id, "index": index }));
+    };
+    match parse_attachments(&json!({ "attachments": [a] })) {
+        Ok(mut v) if v.len() == 1 => {
+            let a = v.remove(0);
+            tracing::info!(approval_id = %id, index, bytes = a.data.len(), measured = true, n_considered = 1,
+                verdict = "email_approval_attachment_served", "[email] a held attachment was opened for review");
+            let fname = a.filename.replace(['"', '\r', '\n'], "");
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, a.content_type),
+                    (axum::http::header::CONTENT_DISPOSITION, format!("inline; filename=\"{fname}\"")),
+                    (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (axum::http::header::CONTENT_SECURITY_POLICY, "sandbox".to_string()),
+                    (axum::http::header::CACHE_CONTROL, "private, no-store".to_string()),
+                ],
+                a.data,
+            ).into_response()
+        }
+        _ => {
+            tracing::warn!(approval_id = %id, index, measured = true, n_considered = 1,
+                verdict = "email_approval_attachment_unreadable",
+                "[email] a held attachment cannot be read; its release would fail the same way");
+            err(StatusCode::GONE, json!({ "error": "this attachment cannot be read (the file is gone or its data is not valid); the send would fail on it", "id": id, "index": index }))
+        }
+    }
 }
 
 /// Feed a real Gmail outcome into the registry (RR-0073). Auth-shaped
@@ -3511,6 +3575,85 @@ mod tests {
         assert_eq!(sent["session"], json!("autodesk"));
         assert!(log["log"].as_array().unwrap().iter().any(|x| x.get("scheduled") == Some(&json!(true))),
             "the schedule itself is a ledger row");
+    }
+
+    /// A held draft keeps its attachment however it is released: approved as
+    /// is, approved with the approver's edit, and scheduled (with an edit) then
+    /// released by the job. Each sent MIME carries the file part. The approval
+    /// card previews the same bytes through its route, sandboxed.
+    #[tokio::test]
+    async fn a_released_draft_still_carries_its_attachment() {
+        let home = temp_home();
+        let mut script = Vec::new();
+        for _ in 0..3 {
+            script.push(("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })));
+            script.push(("POST", "/messages/send", 200, json!({ "id": "att", "threadId": "ta" })));
+        }
+        let http = MockHttp::new(script);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let ctx = Arc::new(EmailCtx {
+            client: Arc::new(GmailClient::new(http.clone(), home.path().to_path_buf())),
+            registry: Arc::new(IntegrationRegistry::new()),
+        });
+        let pdf = b"%PDF-1.4 quote";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(pdf);
+        let hold = |subject: &'static str| {
+            let (app, b64) = (app.clone(), b64.clone());
+            async move {
+                let (st, res) = send_req(&app, "POST", "/api/email/send",
+                    Some(json!({ "to": "cto@customer.com", "subject": subject, "body": "draft", "from": ACCT,
+                                 "force_new_thread": true,
+                                 "attachments": [{ "filename": "quote.pdf", "content_base64": b64 }] })),
+                    &[("x-amux-session", "gtm-engine")]).await;
+                assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
+                res["approval_id"].as_str().unwrap().to_string()
+            }
+        };
+        let last_mime = |h: &MockHttp| {
+            let calls = h.calls.lock().unwrap();
+            let body = calls.iter().rev().find(|c| c.1.contains("/messages/send")).and_then(|c| c.2.clone()).expect("a send");
+            String::from_utf8(crate::integrations::email::base64url_decode(body["raw"].as_str().unwrap()).unwrap()).unwrap()
+        };
+        let carries = |mime: &str| mime.contains("filename=\"quote.pdf\"") && mime.contains(&b64);
+
+        // The card previews the held file: its bytes, typed, sandboxed.
+        let plain = hold("as is").await;
+        let res = app.clone().oneshot(Request::builder().uri(format!("/api/email/approvals/{plain}/attachments/0"))
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "application/pdf");
+        assert_eq!(res.headers()["content-security-policy"], "sandbox");
+        assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()[..], pdf);
+        let (st, _) = send_req(&app, "GET", &format!("/api/email/approvals/{plain}/attachments/1"), None, &[]).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let (st, _) = send_req(&app, "GET", "/api/email/approvals/apr_0000000000000000/attachments/0", None, &[]).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+
+        // Approved as is.
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{plain}"), None, &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        assert!(carries(&last_mime(&http)), "approved as is: {}", last_mime(&http));
+
+        // Approved with the approver's edit to the body.
+        let edited = hold("edited").await;
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{edited}"),
+            Some(json!({ "body": "edited words" })), &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let mime = last_mime(&http);
+        assert!(carries(&mime) && mime.contains(&base64::engine::general_purpose::STANDARD.encode("edited words")), "approved with an edit: {mime}");
+
+        // Scheduled with an edit, then released by the job at its time.
+        let later = hold("scheduled").await;
+        let now = crate::config::now_f64();
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{later}"),
+            Some(json!({ "send_at": now + 600.0, "body": "scheduled words" })), &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let row = crate::api::email_approval::list_pending(home.path()).into_iter().find(|r| r["id"] == json!(later)).unwrap();
+        assert_eq!(row["review"]["attachments"][0]["filename"], json!("quote.pdf"), "the Scheduled folder names it too");
+        assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 601.0).await, 1);
+        let mime = last_mime(&http);
+        assert!(carries(&mime) && mime.contains(&base64::engine::general_purpose::STANDARD.encode("scheduled words")), "scheduled release: {mime}");
     }
 
     /// A scheduled release that fails goes back to plain pending: left

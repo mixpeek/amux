@@ -23083,6 +23083,7 @@ function _attachPreviewOpen(f, opener) {
   if (f.file instanceof Blob) { src = URL.createObjectURL(f.file); revoke = src; from = 'device'; }
   else if (kind === 'image' && f.previewUrl) { src = f.previewUrl; from = 'device'; }
   else if (f.path) { src = _htmlPreviewUrl(f.path) || ''; from = 'server'; }
+  else if (f.url) { src = f.url; from = f.from || 'server'; }
   let body;
   if (!src) body = '<p class="ui-help">This file has no copy to show yet. It can be previewed once it finishes uploading.</p>';
   else if (kind === 'image') body = `<img class="attach-preview-img" src="${esc(src)}" alt="${esc(f.name)}">`;
@@ -23093,7 +23094,7 @@ function _attachPreviewOpen(f, opener) {
   else body = `<p class="attach-preview-icon">${_fileIcon(f.name)}</p><p class="ui-help">No preview for this kind of file here.</p>`;
   if (f.path) body += `<p><button type="button" class="btn" data-open-file>Open in the file viewer</button></p>`;
   const size = f.sizeMB ? f.sizeMB + ' MB' : (f.file && f.file.size ? (f.file.size / 1048576).toFixed(1) + ' MB' : '');
-  const state = f.path ? 'uploaded' : (f.error ? 'upload failed' : 'uploading');
+  const state = f.state || (f.path ? 'uploaded' : (f.error ? 'upload failed' : 'uploading'));
   const ov = _chipDetailModal('attach-preview', f.name, [size, state].filter(Boolean).join(' · '), body,
     { returnFocus: opener, onClose: () => { if (revoke) URL.revokeObjectURL(revoke); } });
   ov.querySelector('.modal').classList.add('attach-preview');
@@ -25200,6 +25201,7 @@ async function _approvalsRefresh() {
         + 'style="white-space:pre-wrap;word-break:break-word;background:color-mix(in srgb, var(--shade) 25%, transparent);'
         + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
+        + _apprAttachHtml(p)
         + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
         + (p.schedule_failed ? '<div class="appr-sched-failed">'
           + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
@@ -25213,6 +25215,36 @@ async function _approvalsRefresh() {
     el.innerHTML = html;
     el.style.display = 'block';
   } catch (e) {}
+}
+// THE FILES GO OUT TOO (Ethan, 2026-11-09: "make sure amux supports
+// attachments too in the approval flow"). Each held attachment is a chip with
+// its name and size; a click previews the bytes that will be sent, in the same
+// dialog the composer's chips use, read from the held draft by
+// /api/email/approvals/<id>/attachments/<i>. The list itself never carries them.
+const _apprFiles = {};
+function _apprAttachHtml(p) {
+  const list = ((p.review || {}).attachments || []);
+  _apprFiles[p.id] = list;
+  if (!list.length) return '';
+  return '<div class="appr-attach" aria-label="Attachments">' + list.map(a => {
+    const size = a.ok ? _apprSize(a.size) : 'cannot be read, so it will not send';
+    return '<button type="button" class="appr-attach-chip' + (a.ok ? '' : ' appr-attach-bad') + '" '
+      + 'onclick="event.preventDefault();event.stopPropagation();_apprAttachOpen(\'' + esc(p.id) + '\',' + a.index + ',this)" '
+      + 'title="Preview ' + esc(a.filename) + '">' + _fileIcon(a.filename) + ' <span class="appr-attach-name">'
+      + esc(a.filename) + '</span> <span class="appr-attach-size">' + esc(size) + '</span></button>';
+  }).join('') + '</div>';
+}
+function _apprSize(n) {
+  if (typeof n !== 'number') return '';
+  return n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+}
+function _apprAttachOpen(id, i, btn) {
+  const a = (_apprFiles[id] || []).find(x => x.index === i);
+  if (!a) return;
+  _attachPreviewOpen({ name: a.filename, mime: a.content_type || '', from: 'held-draft',
+    state: a.ok ? 'attached, sends with this email' : 'cannot be read, so it will not send',
+    sizeMB: a.ok ? (a.size / 1048576).toFixed(1) : '',
+    url: a.ok ? _authUrl(API + '/api/email/approvals/' + encodeURIComponent(id) + '/attachments/' + i) : '' }, btn);
 }
 function _apprHeaders(pv) {
   const row = (k, v) => v ? '<div style="display:flex;gap:var(--space-2);"><span style="opacity:0.7;min-width:56px;">' + k
@@ -36644,6 +36676,7 @@ function _emailSchedPaint() {
       + (p.scheduled && p.scheduled.approver ? ', scheduled by ' + esc(p.scheduled.approver) : '')
       + (p.scheduled && p.scheduled.edited ? ', with your edit' : '') + '</div>'
       + '<div class="mail-sched-text">' + esc(body) + '</div>'
+      + _apprAttachHtml(p)
       + '<div class="mail-sched-actions">'
       + '<button class="btn" onclick="event.stopPropagation();_apprApprove(\'' + id + '\',this)">Send now</button>'
       + '<button class="btn" onclick="event.stopPropagation();_apprSchedule(\'' + id + '\')">Reschedule</button>'
