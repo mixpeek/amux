@@ -19,7 +19,7 @@ outside every tab bar. So this does NOT prove that AppKit delivers the press
 to the app's event monitor or keeps the timer firing during its own drag
 session; a person dragging once does.
 """
-import json, os, signal, subprocess, sys, tempfile, time
+import json, os, re, signal, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "Amux.app")
@@ -180,7 +180,8 @@ check("no preview, no zone", not mid["preview"] and not any(near(rect(w["frame"]
 other = "{{%d, %d}, {%d, %d}}" % (vx + vw * 0.55, vy + vh * 0.1, vw * 0.4, vh * 0.4)
 st, mid, end, logged = drag_tab("9. a tab dropped on another window's tab bar joins it and nothing is placed", edge_left, None,
                                 tear="join-tab", extra=[{"url": url + "/#view=calendar", "frame": other}])
-check("the tab joined the other window", any(w["title"] == "Messages" and w["tabs"] == 2 for w in end["windows"]), str(end["windows"]))
+# The Messages page puts its unread count in its title ("Messages216").
+check("the tab joined the other window", any(re.fullmatch(r"Messages\d*", w["title"]) and w["tabs"] == 2 for w in end["windows"]), str(end["windows"]))
 check("the tab it left is not moved", any(w["title"] == "Board" and w["tabs"] == 1 and near(rect(w["frame"]), src) for w in end["windows"]), str(end["windows"]))
 check("no window is put in the zone the drag passed over", not any(near(rect(w["frame"]), zone(st, 0, 0, 0.5, 1)) for w in end["windows"]), str(end["windows"]))
 

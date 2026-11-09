@@ -61,7 +61,22 @@ case "windows":
               "x": Int(b["X"]!), "y": Int(primaryH - b["Y"]! - b["Height"]!), "w": Int(b["Width"]!), "h": Int(b["Height"]!),
               "desktop": info?.1 ?? -1, "display": info?.0 ?? ""])
     }
+// What the owner would see of an app: its Dock presence, whether it is in
+// front, and every window it has on screen with how opaque it is.
+case "seen":
+    let pid = Int32(args[2])!
+    let app = NSRunningApplication(processIdentifier: pid)
+    let policy = app.map { $0.activationPolicy == .regular ? "regular" : $0.activationPolicy == .accessory ? "accessory" : "prohibited" } ?? "gone"
+    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+    var wins: [[String: Any]] = []
+    for w in CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]
+        where (w[kCGWindowOwnerPID as String] as? Int32) == pid {
+        let b = w[kCGWindowBounds as String] as! [String: CGFloat]
+        wins.append(["alpha": w[kCGWindowAlpha as String] as? Double ?? -1, "layer": w[kCGWindowLayer as String] as? Int ?? 0,
+                     "w": Int(b["Width"]!), "h": Int(b["Height"]!)])
+    }
+    json(["policy": policy, "front": front == pid, "front_pid": Int(front), "bundle": app?.bundleIdentifier ?? "", "windows": wins])
 default:
-    FileHandle.standardError.write("usage: wsctl windows <pid> | send <pid> <url> | displays | spaces\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: wsctl windows <pid> | seen <pid> | send <pid> <url> | displays | spaces\n".data(using: .utf8)!)
     exit(2)
 }

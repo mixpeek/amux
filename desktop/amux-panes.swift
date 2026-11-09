@@ -605,7 +605,9 @@ extension AppDelegate {
             guard let n = w[kCGWindowNumber as String] as? Int, !skip.contains(n),
                   (w[kCGWindowLayer as String] as? Int ?? 0) <= ours,
                   let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b), r.contains(q) else { continue }
-            if (w[kCGWindowAlpha as String] as? Double ?? 1) == 0 { continue }
+            // Another app's invisible window is not in the way. A quiet test
+            // copy's own windows are all invisible (QuietTestCopy) and are the targets.
+            if (w[kCGWindowAlpha as String] as? Double ?? 1) == 0, !(desktopTestQuiet && (w[kCGWindowOwnerPID as String] as? Int) == me) { continue }
             if let c = controllers.first(where: { $0.window?.windowNumber == n && $0.window?.isVisible == true }) { return c }
             if (w[kCGWindowOwnerPID as String] as? Int) == me { continue }
             paneBlocker = "\(w[kCGWindowOwnerName as String] as? String ?? "?") layer=\(w[kCGWindowLayer as String] as? Int ?? 0) \(Int(r.width))x\(Int(r.height))"

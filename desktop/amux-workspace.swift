@@ -1,5 +1,6 @@
 import Cocoa
 import ServiceManagement
+import WebKit
 
 // The workspace: where every amux window lives and what it shows, kept across
 // quits, crashes, reboots and display changes.
@@ -447,6 +448,12 @@ extension AppDelegate {
         let want = config.openAtLogin ?? true
         let svc = SMAppService.mainApp
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        // Only the installed app opens at login. A test copy or an Amux Dev
+        // build registered itself, so a copy in a worktree could start at login.
+        if desktopTestMode || Bundle.main.bundleIdentifier != "com.amux.desktop" {
+            NSLog("amux-desktop: verdict=login_item_skipped reason=%@", desktopTestMode ? "test_copy" : "dev_build")
+            return
+        }
         do {
             if want, svc.status != .enabled { try svc.register() }
             if !want, svc.status == .enabled { try svc.unregister() }
@@ -488,6 +495,60 @@ enum Pointer {
     }
 }
 let desktopTestMode = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST"] == "1"
+
+// A test copy stays out of the owner's way (owner, 2026-11-09: "when u do work
+// related to the amux mac app / ux you open up new amux apps and it disrupts my
+// experience"). It has no Dock icon or menu bar, never comes to the front,
+// posts no notifications, and its windows are invisible and let every click
+// through to whatever is under them. AMUX_DESKTOP_TEST_VISIBLE=1 shows them,
+// for a test that screenshots its own windows.
+let desktopTestQuiet = desktopTestMode && ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_VISIBLE"] != "1"
+
+/// A test names a tab by its page's title. A page can add a count to it
+/// ("Messages216", its unread messages), which the test cannot know.
+func testTitleMatches(_ title: String?, _ want: String) -> Bool {
+    guard let t = title else { return false }
+    return t == want || (t.hasPrefix(want) && !t.dropFirst(want.count).isEmpty && t.dropFirst(want.count).allSatisfy(\.isNumber))
+}
+
+/// Brings amux to the front, unless this is a quiet test copy.
+func activateApp() {
+    if desktopTestQuiet { return }
+    NSApp.activate(ignoringOtherApps: true)
+}
+
+enum QuietTestCopy {
+    static func start() {
+        guard desktopTestQuiet else { return }
+        NSLog("amux-desktop: verdict=test_copy_quiet dock=0 windows=invisible")
+        NotificationCenter.default.addObserver(forName: NSApplication.didUpdateNotification, object: nil, queue: .main) { _ in hide() }
+        hide()
+    }
+    /// Every window, each pass of the event loop: windows are made in many places.
+    /// Floating too: a copy that never comes to the front would sit under the
+    /// owner's windows, and its own drag code finds the window under the
+    /// pointer from the window server. Invisible and click-through, it covers nothing.
+    static func hide() {
+        for w in NSApp.windows where w.alphaValue != 0 || !w.ignoresMouseEvents || w.level == .normal {
+            w.alphaValue = 0
+            w.ignoresMouseEvents = true
+            if w.level == .normal { w.level = .floating }
+        }
+    }
+    /// An invisible window reads as covered, and WebKit stops drawing and
+    /// throttles the page of a covered window. A test page has to keep running.
+    static func keepRendering(_ v: WKWebView) {
+        guard desktopTestQuiet else { return }
+        let sel = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        // The setter itself, not KVC: KVC cannot find this name and throws,
+        // which aborted the window restore it was called from.
+        guard v.responds(to: sel), let imp = v.method(for: sel) else {
+            NSLog("amux-desktop: verdict=test_copy_occlusion_unavailable"); return
+        }
+        typealias SetBool = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(imp, to: SetBool.self)(v, sel, false)
+    }
+}
 
 let gridColumns: CGFloat = 12
 let gridRows: CGFloat = 8
@@ -969,7 +1030,7 @@ extension AppDelegate {
             var p = inTabBar ? NSPoint(x: cv.frame.midX, y: cv.frame.maxY + 8) : NSPoint(x: cv.frame.midX, y: cv.frame.midY)
             // ?title= presses that tab's own button in AppKit's tab bar.
             if inTabBar, let t = q.first(where: { $0.name == "title" })?.value, let group = w.tabbedWindows,
-               let i = group.firstIndex(where: { tw in controllers.first { $0.window === tw }?.pageTitle == t }) {
+               let i = group.firstIndex(where: { tw in testTitleMatches(controllers.first { $0.window === tw }?.pageTitle, t) }) {
                 let b = tabButtonFrames(in: w)
                 if b.count == group.count { p = NSPoint(x: b[i].midX, y: b[i].midY) }
                 dlog("verdict=test_press_tab title=\(t) buttons=\(b.count) tabs=\(group.count)")
@@ -1001,7 +1062,7 @@ extension AppDelegate {
         case "/drop-tab":
             if let o = Pointer.testOverride { Pointer.testOverride = (o.at, false) }
             let want = q.first { $0.name == "title" }?.value
-            let tab = want.flatMap { t in (arrangeTarget?.tabbedWindows ?? []).first { tw in controllers.first { $0.window === tw }?.pageTitle == t } }
+            let tab = want.flatMap { t in (arrangeTarget?.tabbedWindows ?? []).first { tw in testTitleMatches(controllers.first { $0.window === tw }?.pageTitle, t) } }
             if let t = want, tab == nil {
                 // Dropping the showing tab instead would pass a test about a different tab.
                 dlog("verdict=test_drop_tab_title_missing title=\(t) tabs=\((arrangeTarget?.tabbedWindows ?? []).compactMap { tw in controllers.first { $0.window === tw }?.pageTitle })")
@@ -1011,7 +1072,7 @@ extension AppDelegate {
         // own: macOS no longer lets a background app activate itself, and the
         // owner's real amux window covered the test window (2026-10-23).
         case "/activate":
-            NSApp.activate(ignoringOtherApps: true)
+            activateApp()
             for c in controllers { c.window?.level = .floating }
             arrangeTarget?.orderFrontRegardless()
         // What AppKit does with a tab dropped on another window's tab bar.

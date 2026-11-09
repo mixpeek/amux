@@ -191,7 +191,7 @@ extension AppDelegate {
         }
         applyFreeze()
         NSLog("amux-desktop: verdict=layout_opened name=%@ windows=%d pins=%d", name, l.windows.count, l.pins?.count ?? 0)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
     }
 
     func deleteLayout(named name: String) {
@@ -406,7 +406,7 @@ extension AppDelegate {
     }
 
     func askText(title: String, message: String, value: String, ok: String) -> String? {
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         let a = NSAlert()
         a.messageText = title
         a.informativeText = message
@@ -487,7 +487,7 @@ extension AppDelegate {
         settings?.reload()
         settings?.showWindow(nil)
         settings?.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         // Opening Settings checks too, at most every 10 minutes.
         let u = Updater.shared
         if u.state == .idle || (u.state != .checking && u.state != .installing && -(u.checkedAt?.timeIntervalSinceNow ?? -1e9) > 600) { u.check() }
@@ -514,6 +514,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
         self.app = app
         let cfg = WKWebViewConfiguration()
         webView = WKWebView(frame: .zero, configuration: cfg)
+        QuietTestCopy.keepRendering(webView)
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 680),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)

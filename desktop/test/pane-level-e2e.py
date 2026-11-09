@@ -47,7 +47,9 @@ def log():
 def start():
     global p
     n = log().count("verdict=windows_restored")
-    p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST),
+    p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST,
+                                                 # A screenshot needs the windows drawn; otherwise the copy stays invisible.
+                                                 **({"AMUX_DESKTOP_TEST_VISIBLE": "1"} if os.environ.get("LEVEL_SHOT") else {})),
                          stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
     end = time.time() + 30
     while time.time() < end and log().count("verdict=windows_restored") <= n:
@@ -139,7 +141,9 @@ try:
     send(f"amux://test/pane-tab-drag?i=2&t=0&x={x + 4}&y={mid}", 3)
     settle()
     w = win()
-    check("let go, Messages is a pane of the window beside the split", w["pane_tabs"] == [["Board"], ["Messages"], ["Calendar | Calendar"]], json.dumps(w["pane_tabs"]))
+    # The Messages page puts its unread count in its title ("Messages216").
+    tabs = [[re.sub(r"^Messages\d+$", "Messages", t) for t in p] for p in w["pane_tabs"]]
+    check("let go, Messages is a pane of the window beside the split", tabs == [["Board"], ["Messages"], ["Calendar | Calendar"]], json.dumps(w["pane_tabs"]))
     nested = w.get("pane_nested") or []
     check("and the split keeps both its panes", len(nested) == 3 and bool(nested[2]) and nested[2]["pane_tabs"] == [["Calendar"], ["Calendar"]], json.dumps(nested)[:300])
     check("the drop logged its level", log().count("verdict=pane_drop_level level=2") == before + 1, log()[-500:])

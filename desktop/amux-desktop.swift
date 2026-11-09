@@ -466,6 +466,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // wrong cell (2026-10-26; the page's zoom-mode beacon read apple_webkit:false).
         cfg.applicationNameForUserAgent = "Amux-Desktop/2.0"
         webView = WKWebView(frame: .zero, configuration: cfg)
+        QuietTestCopy.keepRendering(webView)
         webView.allowsMagnification = true
         webView.allowsBackForwardNavigationGestures = true
 
@@ -970,7 +971,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             decisionHandler(.grant)
         case .notDetermined:
             dlog("verdict=mic_permission_asked view=\(viewHash)")
-            NSApp.activate(ignoringOtherApps: true)
+            activateApp()
             AVCaptureDevice.requestAccess(for: .audio) { ok in
                 DispatchQueue.main.async {
                     dlog("verdict=mic_permission_\(ok ? "granted" : "refused") view=\(self.viewHash)")
@@ -1080,6 +1081,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         routeStderrToLogFile()
+        QuietTestCopy.start()
         registerTextCheckingDefaults()
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenuBar(self)
@@ -1111,7 +1113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.reportResources() }
         resourcesTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.reportResources() }
         memoryGuardTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60), repeats: true) { [weak self] _ in self?.guardTabMemory() }
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         // `amux amux://worker/x` on the command line, once the pins are known.
         let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
         if !links.isEmpty {
@@ -1242,7 +1244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if NSApp.isActive, NSApp.keyWindow != nil {
             NSApp.hide(nil)
         } else {
-            NSApp.activate(ignoringOtherApps: true)
+            activateApp()
             if !controllers.contains(where: { $0.window?.isVisible == true }) { openWindow(url: nil, frame: nil) }
         }
     }
@@ -1296,7 +1298,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func handleAmuxURL(_ url: URL) {
         NSLog("amux-desktop: amux_url=%@ server=%@", url.absoluteString, serverURL?.absoluteString ?? "-")
         if handleTestURL(url) { return }
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         let arg = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).removingPercentEncoding ?? ""
         let enc = arg.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? arg
         switch url.host ?? "" {
@@ -1674,11 +1676,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // ── Needs you: Dock badge and notifications ──
     /// Notifications need a real .app bundle: UNUserNotificationCenter throws
     /// (and takes the app down) when the binary runs outside one.
-    var canNotify: Bool { Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil }
+    var canNotify: Bool { Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil && !desktopTestQuiet }
+    var notifyUnavailableReason: String { desktopTestQuiet ? "quiet_test_copy" : "not_in_app_bundle" }
 
     func setUpNotifications() {
         guard canNotify else {
-            NSLog("amux-desktop: verdict=notifications_unavailable reason=not_in_app_bundle path=%@", Bundle.main.bundlePath)
+            NSLog("amux-desktop: verdict=notifications_unavailable reason=%@ path=%@", notifyUnavailableReason, Bundle.main.bundlePath)
             return
         }
         let c = UNUserNotificationCenter.current()
@@ -1746,7 +1749,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         if let hash = response.notification.request.content.userInfo["hash"] as? String, hash.hasPrefix("#messages=") || hash == "#view=messages" {
             openNotificationTab(hash, why: "message")
             completionHandler()
@@ -1777,7 +1780,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let safe = hash.allSatisfy { $0.isLetter || $0.isNumber || "#=&:-_.%|@".contains($0) }
         guard safe else { return }
         NSApp.unhide(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        activateApp()
         let withWindow = controllers.filter { $0.window != nil }
         let host = withWindow.first { $0.window == NSApp.keyWindow }
             ?? withWindow.last { $0.window?.isVisible == true }
@@ -2214,7 +2217,7 @@ struct AmuxDesktop {
     static func main() {
         let app = NSApplication.shared
         app.delegate = delegate
-        app.setActivationPolicy(.regular)
+        app.setActivationPolicy(desktopTestQuiet ? .accessory : .regular)
         app.run()
     }
 }

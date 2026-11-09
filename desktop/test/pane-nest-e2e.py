@@ -48,7 +48,9 @@ def log():
 def start():
     global p
     n = log().count("verdict=windows_restored")
-    p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST),
+    p = subprocess.Popen([BIN], env=dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST,
+                                                 # A screenshot needs the windows drawn; otherwise the copy stays invisible.
+                                                 **({"AMUX_DESKTOP_TEST_VISIBLE": "1"} if os.environ.get("NEST_SHOT") else {})),
                          stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
     end = time.time() + 30
     while time.time() < end and log().count("verdict=windows_restored") <= n:

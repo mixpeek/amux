@@ -7,6 +7,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP="Amux.app"
+# An agent's build is a separate app, "Amux Dev" (com.amux.desktop.dev), so a
+# test copy never shares the owner's preferences, Dock icon, notifications or
+# amux:// links (owner, 2026-11-09: "maybe you create a new amux app for
+# development that way my current amux macos app experience isnt
+# intervened"). AMUX_DESKTOP_DEV=0|1 picks either way; installing builds the
+# real one. Its Microphone and Screen Recording grants are its own.
+DEV=0
+if [ "${AMUX_DESKTOP_INSTALL:-0}" != 1 ] && { [ -n "${CLAUDECODE:-}" ] || [ -n "${AMUX_SESSION:-}" ]; }; then DEV=1; fi
+case "${AMUX_DESKTOP_DEV:-}" in 1) DEV=1 ;; 0) DEV=0 ;; esac
+BUNDLE_ID=com.amux.desktop
+if [ "$DEV" = 1 ]; then BUNDLE_ID=com.amux.desktop.dev; fi
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
@@ -122,6 +133,12 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion $MIN_MACOS" "$APP/Contents/Info.plist"   # the one value, from MIN_MACOS
+if [ "$DEV" = 1 ]; then
+    # Its own id and name, and no amux:// handler: a link the owner clicks opens their app.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" -c "Set :CFBundleName Amux Dev" \
+        -c "Set :CFBundleDisplayName Amux Dev" -c "Delete :CFBundleURLTypes" "$APP/Contents/Info.plist"
+    echo "  Development build: Amux Dev ($BUNDLE_ID), separate from the installed Amux"
+fi
 
 # The commit this build came from, so Settings > Updates can compare it with
 # the desktop-latest release. "-dirty" when the app's sources have uncommitted
@@ -140,8 +157,8 @@ echo "  Built from ${COMMIT:-an unknown commit}"
 # hoc signature's default one is the binary's hash: every rebuild silently
 # lost both grants and asked again (2026-10-28). The id stays the same build
 # to build, so a grant given once carries over.
-codesign --force --deep --sign - -r='designated => identifier "com.amux.desktop"' "$APP" >/dev/null 2>&1 \
-  && echo "  Signed (ad hoc, requirement: identifier com.amux.desktop)" || echo "  !! codesign failed; permissions may be asked again"
+codesign --force --deep --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null 2>&1 \
+  && echo "  Signed (ad hoc, requirement: identifier $BUNDLE_ID)" || echo "  !! codesign failed; permissions may be asked again"
 
 # Install to /Applications if requested or by default on build
 # AMUX_DESKTOP_NO_INSTALL=1 leaves the bundle in the repo root (CI zips it).

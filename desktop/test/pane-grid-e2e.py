@@ -70,10 +70,13 @@ def displays():
 # click of theirs lands on them and moves them mid-case (2026-10-24 07:4x). A
 # virtual display (vdisplay.m, as workspace-e2e.py uses) keeps them out of
 # reach. PANE_E2E_MAIN_DISPLAY=1 runs on the main display instead.
+# A quiet test copy (the default since 2026-11-09) is invisible and lets clicks
+# through, so it needs no display of its own, and adding one rearranges the
+# owner's windows. Only a visible run (AMUX_DESKTOP_TEST_VISIBLE=1) adds it.
 vdisp = None
 before = displays()
 d0 = before[0]
-if os.environ.get("PANE_E2E_MAIN_DISPLAY") != "1":
+if os.environ.get("PANE_E2E_MAIN_DISPLAY") != "1" and os.environ.get("AMUX_DESKTOP_TEST_VISIBLE") == "1":
     assert sh("clang", "-fobjc-arc", "-o", os.path.join(TMP, "vdisplay"), os.path.join(HERE, "vdisplay.m"),
               "-framework", "Foundation", "-framework", "CoreGraphics").returncode == 0
     vdisp = subprocess.Popen([os.path.join(TMP, "vdisplay"), "amux-pane-e2e", "4343", "1920", "1080"], stdout=subprocess.DEVNULL)
@@ -131,7 +134,8 @@ class App:
         end = time.time() + 5
         while time.time() < end and (not os.path.exists(STATE) or os.path.getmtime(STATE) == before):
             time.sleep(0.05)
-        return json.load(open(STATE))
+        # The Messages page puts its unread count in its title ("Messages216").
+        return json.loads(re.sub(r'"Messages\d+"', '"Messages"', open(STATE).read()))
 
     def stop(self):
         self.p.send_signal(signal.SIGTERM)
@@ -147,6 +151,9 @@ SHOTS = os.environ.get("PANE_E2E_SHOTS") or os.path.join(TMP, "shots")
 def shot(name, g):
     """The grid window as the window server draws it, for a human to judge."""
     if not g or "number" not in g:
+        return
+    # A test copy's windows are invisible unless the run asks to see them.
+    if os.environ.get("AMUX_DESKTOP_TEST_VISIBLE") != "1":
         return
     os.makedirs(SHOTS, exist_ok=True)
     out = os.path.join(SHOTS, name + ".png")
