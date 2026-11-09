@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Best AI Agent Multiplexers Compared (2026): 13 Tools Ranked | amux</title>
+  <title>Best AI Agent Multiplexers Compared (2026): 17 Tools Ranked | amux</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations for amux, cmux, dmux, Termdock, workmux, Claude Code Agent Teams, Cursor, Devin, and more.">
+  <meta name="description" content="The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations for amux, cmux, dmux, Termdock, workmux, Orca, Warp, Claude Code Agent Teams, Cursor, Devin, and more.">
   <meta name="keywords" content="best ai agent multiplexer 2026, parallel coding agents tools, ai agent orchestrator comparison, run multiple claude code sessions, cmux vs amux vs dmux, ai coding agent multiplexer, terminal multiplexer ai agents, parallel ai agents tools compared, best tools for running ai agents, ai agent fleet management">
   <link rel="canonical" href="https://amux.io/guides/best-ai-agent-multiplexers-2026/">
-  <meta property="og:title" content="Best AI Agent Multiplexers Compared (2026): 13 Tools Ranked">
+  <meta property="og:title" content="Best AI Agent Multiplexers Compared (2026): 17 Tools Ranked">
   <meta property="og:description" content="The definitive comparison of every AI agent multiplexer and orchestrator in 2026: feature matrices, architecture deep-dives, and honest recommendations.">
   <meta property="og:url" content="https://amux.io/guides/best-ai-agent-multiplexers-2026/">
   <meta property="og:image" content="https://amux.io/og-image.png">
@@ -21,9 +21,9 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Guides","item":"https://amux.io/guides/"},{"@type":"ListItem","position":3,"name":"Best AI Agent Multiplexers 2026","item":"https://amux.io/guides/best-ai-agent-multiplexers-2026/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Agent Multiplexers Compared (2026): 13 Tools Ranked","description":"The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations.","url":"https://amux.io/guides/best-ai-agent-multiplexers-2026/","datePublished":"2026-07-16","dateModified":"2026-11-02","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"Best AI Agent Multiplexers Compared (2026): 17 Tools Ranked","description":"The definitive comparison of every AI agent multiplexer and orchestrator in 2026. Feature matrix, architecture deep-dives, and honest recommendations.","url":"https://amux.io/guides/best-ai-agent-multiplexers-2026/","datePublished":"2026-07-16","dateModified":"2026-11-09","author":{"@type":"Organization","name":"amux","url":"https://amux.io/"},"publisher":{"@type":"Organization","name":"amux","url":"https://amux.io/","logo":{"@type":"ImageObject","url":"https://amux.io/icon.png"}}}</script>
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is an AI agent multiplexer?","acceptedAnswer":{"@type":"Answer","text":"An AI agent multiplexer is a tool that lets you run multiple AI coding agents (like Claude Code, Codex CLI, or Aider) in parallel sessions, each working on a different task simultaneously. It manages session lifecycle, monitors health, and coordinates work across agents: turning a single developer into a fleet operator."}},{"@type":"Question","name":"What is the best AI agent multiplexer in 2026?","acceptedAnswer":{"@type":"Answer","text":"It depends on your workflow. For unattended overnight runs with usage-limit resume, stall alerts and mobile monitoring, amux leads. For the best native macOS desktop experience, cmux is unmatched. For minimal CLI-only git worktree workflows, dmux or workmux are lightweight options. For cloud-hosted autonomous agents, Devin or OpenAI Codex are the simplest to start with."}},{"@type":"Question","name":"Can I run multiple Claude Code sessions without a multiplexer?","acceptedAnswer":{"@type":"Answer","text":"Yes: Claude Code has built-in Agent Teams (claude --agent-teams) that spawn parallel sub-agents using git worktrees. For simple parallelism this works well. A dedicated multiplexer adds session persistence, resume after usage limits, cost tracking, mobile monitoring, and inter-agent coordination that the built-in feature doesn't provide."}},{"@type":"Question","name":"How many parallel AI agents can I run?","acceptedAnswer":{"@type":"Answer","text":"The bottleneck is typically API rate limits and cost, not local resources. Most developers run 3-10 agents in parallel. amux users regularly run 10-20+ sessions on a single machine. Claude Code uses roughly 200-400MB RAM per session, so a 16GB laptop can host 20+ agents comfortably. The API provider's rate limits are usually the binding constraint."}},{"@type":"Question","name":"Do I need a multiplexer if I use Cursor or an AI IDE?","acceptedAnswer":{"@type":"Answer","text":"IDE-based AI tools like Cursor run agents inside the editor, which limits parallelism and requires a GUI. If you want to run 5+ agents overnight on different tasks, a terminal-based multiplexer is more practical. Many developers use both: Cursor for interactive coding at their desk, and a multiplexer for batch/overnight agent runs."}},{"@type":"Question","name":"Are AI agent multiplexers free?","acceptedAnswer":{"@type":"Answer","text":"Most are open source and free. amux (MIT + Commons Clause), dmux (MIT), workmux (MIT), and ittybitty (MIT) are fully free. cmux core is GPL-3.0 (free) with a paid Founder's Edition. Termdock and Paradev have free tiers. You still pay for the underlying AI API usage (Anthropic, OpenAI, etc.) regardless of which multiplexer you choose."}},{"@type":"Question","name":"Do AI agent multiplexers prevent agents from editing the same files?","acceptedAnswer":{"@type":"Answer","text":"Only if they isolate the working tree. dmux, workmux, ittybitty, Paradev and Claude Code Agent Teams give each agent its own git worktree. amux does the same per worker when AMUX_WORKSPACE_ISOLATION=1 is set, and also stops two agents from claiming the same task through an atomic shared board. Without isolation, two agents in one checkout will collide."}},{"@type":"Question","name":"Can an AI agent multiplexer keep running when my laptop is closed?","acceptedAnswer":{"@type":"Answer","text":"A local multiplexer stops when the machine sleeps. Run it on an always-on machine or VM, or use a hosted option. amux Cloud gives you your own always-on amux server at yourname.amux.io from $39/month. Cloud agent platforms like Devin and OpenHands run remotely by design."}}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best AI Agent Multiplexers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://github.com/mixpeek/amux"},{"@type":"ListItem","position":2,"name":"cmux","url":"https://cmux.com"},{"@type":"ListItem","position":3,"name":"dmux","url":"https://github.com/standardagents/dmux"},{"@type":"ListItem","position":4,"name":"Termdock","url":"https://termdock.com"},{"@type":"ListItem","position":5,"name":"workmux","url":"https://github.com/raine/workmux"},{"@type":"ListItem","position":6,"name":"ittybitty","url":"https://github.com/adamwulf/ittybitty"},{"@type":"ListItem","position":7,"name":"Paradev (formerly Superset)","url":"https://paradev.com"},{"@type":"ListItem","position":8,"name":"Emdash","url":"https://emdash.com/"},{"@type":"ListItem","position":9,"name":"Claude Code Agent Teams","url":"https://github.com/anthropics/claude-code"},{"@type":"ListItem","position":10,"name":"Cursor Background Agents","url":"https://cursor.com"},{"@type":"ListItem","position":11,"name":"Devin","url":"https://devin.ai"},{"@type":"ListItem","position":12,"name":"OpenAI Codex","url":"https://github.com/openai/codex"},{"@type":"ListItem","position":13,"name":"OpenHands","url":"https://github.com/All-Hands-AI/OpenHands"}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"Best AI Agent Multiplexers 2026","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","url":"https://github.com/mixpeek/amux"},{"@type":"ListItem","position":2,"name":"cmux","url":"https://cmux.com"},{"@type":"ListItem","position":3,"name":"dmux","url":"https://github.com/standardagents/dmux"},{"@type":"ListItem","position":4,"name":"Termdock","url":"https://termdock.com"},{"@type":"ListItem","position":5,"name":"workmux","url":"https://github.com/raine/workmux"},{"@type":"ListItem","position":6,"name":"ittybitty","url":"https://github.com/adamwulf/ittybitty"},{"@type":"ListItem","position":7,"name":"Paradev (formerly Superset)","url":"https://paradev.com"},{"@type":"ListItem","position":8,"name":"Emdash","url":"https://emdash.com/"},{"@type":"ListItem","position":9,"name":"Orca","url":"https://www.onorca.dev/"},{"@type":"ListItem","position":10,"name":"Xum (formerly Mux)","url":"https://github.com/coder/xum"},{"@type":"ListItem","position":11,"name":"crystl","url":"https://crystl.dev/"},{"@type":"ListItem","position":12,"name":"Claude Code Agent Teams","url":"https://github.com/anthropics/claude-code"},{"@type":"ListItem","position":13,"name":"Cursor Background Agents","url":"https://cursor.com"},{"@type":"ListItem","position":14,"name":"Warp","url":"https://www.warp.dev/"},{"@type":"ListItem","position":15,"name":"Devin","url":"https://devin.ai"},{"@type":"ListItem","position":16,"name":"OpenAI Codex","url":"https://github.com/openai/codex"},{"@type":"ListItem","position":17,"name":"OpenHands","url":"https://github.com/All-Hands-AI/OpenHands"}]}</script>
   <style>
     .quick-pick { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 0.75rem; }
     .quick-pick strong { color: var(--accent); }
@@ -81,8 +81,8 @@
   <main>
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/guides/">Guides</a> <span class="sep">&rsaquo;</span> <span>Best AI Agent Multiplexers 2026</span></div>
     <h1>Best AI Agent Multiplexers Compared (2026)</h1>
-    <p class="subtitle">The definitive comparison of every tool for running parallel AI coding agents. 13 tools across 3 categories, with an honest feature matrix and opinionated recommendations.</p>
-    <p style="font-family:var(--font-mono);font-size:12px;color:var(--fg-mute);margin-top:-0.5rem;"><!-- last-updated: 2026-11-02 --> Updated November 2026</p>
+    <p class="subtitle">The definitive comparison of every tool for running parallel AI coding agents. 17 tools across 3 categories, with an honest feature matrix and opinionated recommendations.</p>
+    <p style="font-family:var(--font-mono);font-size:12px;color:var(--fg-mute);margin-top:-0.5rem;"><!-- last-updated: 2026-11-09 --> Updated November 2026</p>
 
     <div class="quick-pick" style="margin-top:1.5rem;">
       <div class="pick-label">The short answer</div>
@@ -106,8 +106,8 @@
         <li><a href="#october-2026" style="color:var(--dim);text-decoration:none;">What Changed in October 2026</a></li>
         <li><a href="#what" style="color:var(--dim);text-decoration:none;">What Is an AI Agent Multiplexer?</a></li>
         <li><a href="#matrix" style="color:var(--dim);text-decoration:none;">The Complete Feature Matrix</a></li>
-        <li><a href="#dedicated" style="color:var(--dim);text-decoration:none;">Dedicated Multiplexers (7 tools)</a></li>
-        <li><a href="#builtin" style="color:var(--dim);text-decoration:none;">Built-in Multi-Agent Features (2 tools)</a></li>
+        <li><a href="#dedicated" style="color:var(--dim);text-decoration:none;">Dedicated Multiplexers (11 tools)</a></li>
+        <li><a href="#builtin" style="color:var(--dim);text-decoration:none;">Built-in Multi-Agent Features (3 tools)</a></li>
         <li><a href="#cloud" style="color:var(--dim);text-decoration:none;">Cloud Agent Platforms (3 tools)</a></li>
         <li><a href="#decision" style="color:var(--dim);text-decoration:none;">Decision Framework</a></li>
         <li><a href="#faq" style="color:var(--dim);text-decoration:none;">FAQ</a></li>
@@ -298,6 +298,51 @@
             <td style="padding:8px;text-align:center;color:var(--ok);">Apache-2.0</td>
             <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
           </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://www.onorca.dev/" style="color:var(--fg);">Orca</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Paired server</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Beta app</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">CLI</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Orchestrator</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">MIT</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/coder/xum" style="color:var(--fg);">Xum</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees, Docker</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Server mode</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Responsive web</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Subagents</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">AGPL-3.0</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://crystl.dev/" style="color:var(--fg);">crystl</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Worktrees</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">iPhone app</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">CLI</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Task list</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Orchestrator (paid)</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">macOS only</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Free tier</td>
+          </tr>
           <tr style="border-top:2px solid var(--line-2);">
             <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://github.com/anthropics/claude-code" style="color:var(--fg);">Agent Teams</a></td>
             <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
@@ -327,6 +372,21 @@
             <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
             <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
             <td style="padding:8px;text-align:center;color:var(--fg-dim);">Paid plan</td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://www.warp.dev/" style="color:var(--fg);">Warp</a></td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Cloud sandboxes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Cloud agents</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Cloud agents</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">API, SDK</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Usage billing</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-mute);">-</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Cloud agents</td>
+            <td style="padding:8px;text-align:center;color:var(--ok);">Yes</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Client AGPL-3.0</td>
+            <td style="padding:8px;text-align:center;color:var(--fg-dim);">Free tier</td>
           </tr>
           <tr style="border-top:2px solid var(--line-2);">
             <td style="padding:8px 12px;font-weight:600;position:sticky;left:0;background:var(--bg);z-index:1;"><a href="https://devin.ai" style="color:var(--fg);">Devin</a></td>
@@ -565,6 +625,68 @@
       <p><strong>Best for:</strong> Developers at a desktop, on any of the three major systems, who review and merge each agent's work themselves. See <a href="/compare/amux-vs-emdash/">amux vs Emdash</a>.</p>
     </div>
 
+        <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://www.onorca.dev/">Orca</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/stablyai/orca">Stably AI</a></span>
+        <span>MIT</span>
+        <span>Desktop app</span>
+        <span>macOS, Windows, Linux</span>
+      </div>
+      <p><a href="https://www.onorca.dev/">Orca</a> calls itself an agent development environment. The free desktop app gives each coding agent its own git worktree, with chat or raw terminal views, a line-level diff reviewer, a browser per worktree and GitHub, Linear and Jira items in the sidebar. It runs Claude Code, Codex and dozens of other CLI agents, and its repository has about 120k GitHub stars.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Diff review with line notes that go back to the agent, plus commits and pull requests from the app</li>
+        <li>One agent can split a task and start worker agents in their own worktrees</li>
+        <li>Agents can run on SSH hosts, a Remote Orca Server you run, or VMs in your own cloud account</li>
+        <li>iOS and Android companion app in beta for status, scrollback and quick replies</li>
+        <li>No managed hosting and no shared task board</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers at a desktop who want an IDE built around worktrees and review each agent's diff themselves. See <a href="/compare/amux-vs-orca/">amux vs Orca</a>.</p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://github.com/coder/xum">Xum (formerly Mux)</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://coder.com">Coder</a></span>
+        <span>AGPL-3.0</span>
+        <span>Desktop app and server mode</span>
+        <span>macOS, Linux, Windows (alpha)</span>
+      </div>
+      <p><a href="https://github.com/coder/xum">Xum</a> is Coder's coding agent multiplexer, renamed from Mux. It runs parallel agents in isolated workspaces from a desktop app or a browser. Unlike most tools here it brings its own agent loop, with Plan and Exec modes, and connects to models through provider API keys, GitHub Copilot, OpenRouter, Ollama or a Coder AI Gateway. It has about 2.1k GitHub stars.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Local, Worktree, SSH, Docker and Dev Container runtimes per workspace</li>
+        <li>Costs tab per workspace, plus analytics</li>
+        <li>Best of N: several answers to one ask, side by side</li>
+        <li>Server mode with a responsive web layout for phones</li>
+        <li>Runs its own agent, so Claude Code and Codex subscriptions do not carry over</li>
+      </ul>
+      <p><strong>Best for:</strong> Developers who pay per token on their own API keys and want strong isolation per workspace. See <a href="/compare/amux-vs-xum/">amux vs Xum</a>.</p>
+    </div>
+
+    <div class="tool-card">
+      <span class="category-label cat-multiplexer">Multiplexer</span>
+      <h3><a href="https://crystl.dev/">crystl</a></h3>
+      <div class="tool-meta">
+        <span>Commercial app</span>
+        <span>Native terminal</span>
+        <span>macOS, plus an iPhone app</span>
+      </div>
+      <p><a href="https://crystl.dev/">crystl</a> is a Metal-accelerated macOS terminal built for coding agents. Projects are "gems" and each session inside one is a "shard" with its own git worktree and branch. Claude Code, Codex, Antigravity CLI and Kimi Code are first-class, any other CLI agent runs too, and agents can point at open models through Ollama, LM Studio, vLLM or llama.cpp.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Floating approval cards and a searchable session history</li>
+        <li>Up to 3 schedules free; unlimited schedules and an orchestrator agent on the Guild plan</li>
+        <li>iPhone app: free over Wi-Fi, from anywhere through an encrypted relay on Guild</li>
+        <li>Free tier; Guild is $170 a year</li>
+        <li>Mac only, with no team features on its pricing page</li>
+      </ul>
+      <p><strong>Best for:</strong> Mac users who want one polished native terminal for many agent sessions. See <a href="/compare/amux-vs-crystl/">amux vs crystl</a>.</p>
+    </div>
+
     <!-- ═══════════════ BUILT-IN FEATURES ═══════════════ -->
     <h2 id="builtin">Built-in Multi-Agent Features</h2>
     <p>Some AI coding tools have added native multi-agent capabilities. These aren't standalone multiplexers: they're features within existing tools. The advantage is zero extra setup. The limitation is they're constrained by their host tool's architecture.</p>
@@ -609,6 +731,27 @@
       </ul>
       <p><strong>Limitations:</strong> Requires a <a href="https://cursor.com">Cursor</a> paid plan. Agents run in Cursor's cloud, not locally: you can't use local tools, databases, or environment-specific configs. No REST API, no task board. Tied to the Cursor ecosystem.</p>
       <p><a href="/compare/amux-vs-cursor/">Detailed comparison: amux vs Cursor</a></p>
+    </div>
+
+        <div class="tool-card">
+      <span class="category-label cat-builtin">Built-in</span>
+      <h3><a href="https://www.warp.dev/">Warp</a></h3>
+      <div class="tool-meta">
+        <span>By <a href="https://github.com/warpdotdev/warp">Warp</a></span>
+        <span>Client AGPL-3.0</span>
+        <span>Terminal app and hosted cloud agents</span>
+        <span>macOS, Linux, Windows</span>
+      </div>
+      <p><a href="https://www.warp.dev/">Warp</a> is a terminal with its own multi-model Warp Agent. It runs Claude Code, Codex, OpenCode and Gemini CLI in vertical tabs that show each session's branch, worktree and pull request, and it adds Warp-hosted cloud agents you can trigger from Slack, Linear, GitHub, a CLI or an API.</p>
+      <p><strong>Distinguishing features:</strong></p>
+      <ul>
+        <li>Attention notifications when a tab's agent needs you</li>
+        <li>Scheduled and triggered cloud agents in Warp-hosted sandboxes</li>
+        <li>Business plan up to 25 seats with a single view of the team's agents</li>
+        <li>Free; Build $20/mo; Max $200/mo; Business $50 per user per month</li>
+      </ul>
+      <p><strong>Limitations:</strong> The terminal is desktop only; phone and web reach cloud agents, not your local tabs. Warp Agent and cloud agents bill on agent usage. No shared task board.</p>
+      <p><a href="/compare/amux-vs-warp/">Detailed comparison: amux vs Warp</a></p>
     </div>
 
     <!-- ═══════════════ CLOUD PLATFORMS ═══════════════ -->
