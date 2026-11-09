@@ -1,126 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#1e2330">
-  <title>Conversation Fork | amux</title>
-    <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.">
-  <meta name="keywords" content="claude code fork conversation, branch AI session, conversation clone amux, parallel agent branches">
-  <link rel="canonical" href="https://amux.io/demos/conversation-fork/">
-  <meta property="og:title" content="Conversation Fork | amux">
-  <meta property="og:description" content="Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.">
-  <meta property="og:url" content="https://amux.io/demos/conversation-fork/">
-  <meta property="og:image" content="https://amux.io/demos/conversation-fork/poster.jpg?v=f5b20ebb">
-  <meta property="og:type" content="article">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:image" content="https://amux.io/demos/conversation-fork/poster.jpg?v=f5b20ebb">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css">
-    <link rel="stylesheet" href="/nav.css?v=20261108">
-  <link rel="stylesheet" href="/lightbox.css?v=bb52e13d">
-  <script defer src="/lightbox.js?v=224481c0"></script>
-  <script src="/site.js?v=20261108"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Conversation fork: moved | amux</title>
+<link rel="canonical" href="https://amux.io/demos/send-command-dashboard/">
+<meta http-equiv="refresh" content="0; url=/demos/send-command-dashboard/">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header class="site-header">
-    <a class="logo" href="/">amux</a>
-    <nav aria-label="Main">
-      <details class="nav-drop" data-cta-loc="nav-solutions">
-        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
-        <div class="nav-drop-menu">
-          <div class="nd-head">Solutions by industry</div>
-          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
-          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
-          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
-          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
-          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
-          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
-          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
-        </div>
-      </details>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/pricing/" class="hide-mobile">pricing</a>
-      <div class="theme-pick">
-        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
-        <div class="theme-menu" role="menu" hidden>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
-        </div>
-      </div>
-      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
-    </nav>
-  </header>
-  <main>
-    <div class="breadcrumb">
-      <a href="/">amux</a> <span class="sep">›</span>
-      <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Conversation Fork</span>
-    </div>
-    <h1>Conversation Fork</h1>
-    <p class="subtitle">Clone any session's conversation to a new branch point. Two agents explore different approaches from the same starting state.</p>
-
-    <video data-lightbox src="demo.mp4?v=f5b20ebb" poster="poster.jpg?v=f5b20ebb" autoplay loop muted playsinline title="Conversation Fork demo"></video>
-<p class="desc video-credit">Silent clip, recorded from a real amux server with real agents, on a laptop and an iPhone-sized screen. Agent work is sped up. <a href="demo.gif">GIF version</a> for docs and READMEs.</p>
-
-    <h2>How it works</h2>
-<ol class="step-list">
-  <li>Call POST /api/sessions/&lt;name&gt;/clone (the dashboard menu's Duplicate copies a worker's settings, not its conversation)</li>
-  <li>amux starts the clone with <code>--resume &lt;id&gt; --fork-session</code> flags</li>
-  <li>The fork gets a new conversation ID while sharing the prior history</li>
-  <li>Fallback: if no JSONL, captures last 3000 lines of scrollback as context</li>
-</ol>
-    <h2>When to use this</h2>
-<ul>
-  <li>Two agents need to try different approaches to the same problem</li>
-  <li>You want to continue work on a new git branch without losing context</li>
-  <li>Recovering from a corrupted session by forking from a good checkpoint</li>
-</ul>
-    <h2>Example</h2><pre><code># Fork via API
-curl -sk -X POST $AMUX_URL/api/sessions/myproject/clone \
-  -H 'Content-Type: application/json' \
-  -d '{"new_name":"myproject-v2"}'</code></pre>
-    <h2>Related demos</h2>
-<div class="related">
-  <a href="/demos/session-cards-overview/">Session cards overview</a>
-  <a href="/guides/conversation-forking/">Conversation forking guide</a>
-  <a href="/demos/agent-orchestration/">Agent orchestration</a>
+<div class="wrap">
+<h1>Conversation fork</h1>
+<p class="desc">The amux demos now show one feature each. <a href="/demos/send-command-dashboard/">Go to Send to Any Worker demo</a>.</p>
 </div>
-    <div class="cta-box">
-  <h3>Try amux</h3>
-  <p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Free to self-host.</p>
-  <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh
-amux register myproject --dir ~/Dev/myproject --yolo
-amux serve  # → https://localhost:8824</code></pre>
-  <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
-  <a class="btn" href="/guides/getting-started/">Getting started →</a>
-</div>
-  </main>
-  <footer class="site-foot">
-  <div class="site-foot-inner">
-    <div class="site-foot-brand">
-      <a href="/" class="site-foot-logo">amux</a>
-      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
-    </div>
-    <nav class="site-foot-cols" aria-label="Footer">
-      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
-      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
-      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
-      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
-    </nav>
-  </div>
-  <div class="site-foot-bottom">
-    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
-    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
-  </div>
-</footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

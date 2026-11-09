@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>iCal Calendar Sync | amux</title>
+  <title>Calendar | amux demo</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.">
   <meta name="keywords" content="amux calendar sync, AI agent task calendar, ical board integration, board to google calendar, claude code deadlines">
   <link rel="canonical" href="https://amux.io/demos/ical-calendar-sync/">
-  <meta property="og:title" content="iCal Calendar Sync | amux">
+  <meta property="og:title" content="Calendar | amux demo">
   <meta property="og:description" content="Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.">
   <meta property="og:url" content="https://amux.io/demos/ical-calendar-sync/">
   <meta property="og:image" content="https://amux.io/demos/ical-calendar-sync/poster.jpg?v=47f50e70">
@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="/lightbox.css?v=bb52e13d">
   <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
+  <script type="application/ld+json" id="demo-ld">{"@context": "https://schema.org", "@type": "VideoObject", "name": "Calendar | amux demo", "description": "Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.", "thumbnailUrl": "https://amux.io/demos/ical-calendar-sync/poster.jpg?v=47f50e70", "contentUrl": "https://amux.io/demos/ical-calendar-sync/demo.mp4?v=47f50e70", "uploadDate": "2026-11-09", "url": "https://amux.io/demos/ical-calendar-sync/", "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
 </head>
 <body>
   <header class="site-header">
@@ -61,9 +62,9 @@
     <div class="breadcrumb">
       <a href="/">amux</a> <span class="sep">›</span>
       <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>iCal Calendar Sync</span>
+      <span>Calendar</span>
     </div>
-    <h1>iCal Calendar Sync</h1>
+    <h1>Calendar</h1>
     <p class="subtitle">Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.</p>
 
     <video data-lightbox src="demo.mp4?v=47f50e70" poster="poster.jpg?v=47f50e70" autoplay loop muted playsinline title="iCal Calendar Sync demo"></video>
@@ -91,8 +92,9 @@ curl -sk -X PATCH $AMUX_URL/api/board/PROJ-3 \
 open "https://your-bucket.s3.amazonaws.com/amux/calendar.ics"</code></pre>
     <h2>Related demos</h2>
 <div class="related">
-  <a href="/demos/kanban-board-overview/">Kanban board overview</a>
-  <a href="/demos/atomic-task-claiming/">Atomic task claiming</a>
+  <a href="/demos/kanban-board-overview/">Board</a>
+  <a href="/demos/session-cards-overview/">Worker Cards</a>
+  <a href="/demos/send-command-dashboard/">Send to Any Worker</a>
 </div>
     <div class="cta-box">
   <h3>Try amux</h3>

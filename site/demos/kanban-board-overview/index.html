@@ -4,12 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Kanban Board | amux</title>
+  <title>Board | amux demo</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <meta name="description" content="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
   <meta name="keywords" content="AI agent kanban board, claude code task management, amux board, agent task queue sqlite">
   <link rel="canonical" href="https://amux.io/demos/kanban-board-overview/">
-  <meta property="og:title" content="Kanban Board | amux">
+  <meta property="og:title" content="Board | amux demo">
   <meta property="og:description" content="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
   <meta property="og:url" content="https://amux.io/demos/kanban-board-overview/">
   <meta property="og:image" content="https://amux.io/demos/kanban-board-overview/poster.jpg?v=ca363874">
@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="/lightbox.css?v=bb52e13d">
   <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
+  <script type="application/ld+json" id="demo-ld">{"@context": "https://schema.org", "@type": "VideoObject", "name": "Board | amux demo", "description": "SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.", "thumbnailUrl": "https://amux.io/demos/kanban-board-overview/poster.jpg?v=ca363874", "contentUrl": "https://amux.io/demos/kanban-board-overview/demo.mp4?v=ca363874", "uploadDate": "2026-11-09", "url": "https://amux.io/demos/kanban-board-overview/", "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}}</script>
 </head>
 <body>
   <header class="site-header">
@@ -61,9 +62,9 @@
     <div class="breadcrumb">
       <a href="/">amux</a> <span class="sep">›</span>
       <a href="/demos/">Demos</a> <span class="sep">›</span>
-      <span>Kanban Board</span>
+      <span>Board</span>
     </div>
-    <h1>Kanban Board</h1>
+    <h1>Board</h1>
     <p class="subtitle">SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.</p>
 
     <video data-lightbox src="demo.mp4?v=ca363874" poster="poster.jpg?v=ca363874" autoplay loop muted playsinline title="Kanban Board demo"></video>
@@ -88,9 +89,9 @@ curl -sk -X POST $AMUX_URL/api/board \
   -d '{"title":"Add login endpoint","status":"todo","session":"worker-1"}'</code></pre>
     <h2>Related demos</h2>
 <div class="related">
-  <a href="/demos/atomic-task-claiming/">Atomic task claiming</a>
-  <a href="/demos/ical-calendar-sync/">iCal calendar sync</a>
-  <a href="/demos/agent-orchestration/">Agent orchestration</a>
+  <a href="/demos/ical-calendar-sync/">Calendar</a>
+  <a href="/demos/session-cards-overview/">Worker Cards</a>
+  <a href="/demos/send-command-dashboard/">Send to Any Worker</a>
 </div>
     <div class="cta-box">
   <h3>Try amux</h3>

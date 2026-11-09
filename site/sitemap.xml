@@ -168,31 +168,12 @@
   <url><loc>https://amux.io/compare/amux-vs-windsurf/</loc><lastmod>2026-08-26</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/demos/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/demos/draw-realtime-sync/</loc><lastmod>2026-10-18</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/agent-coordination/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/agent-orchestration/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/ai-coding-while-you-sleep/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/api-endpoint-generation/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/atomic-task-claiming/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/automated-code-review/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/bug-triage-and-fixing/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/ci-cd-pipeline-creation/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/code-migration/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/conversation-fork/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/dependency-updates/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/documentation-generation/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/ical-calendar-sync/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/kanban-board-overview/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/large-scale-refactoring/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/legacy-code-modernization/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/mobile-pwa/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/monorepo-management/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/parallel-feature-development/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/research-and-prototyping/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/security-audit/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/self-healing-watchdog/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/send-command-dashboard/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/session-cards-overview/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/test-generation-at-scale/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/tweet-1-agent-fleet/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/tweet-2-mobile-command-center/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/tweet-3-offline-sync/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
@@ -200,7 +181,6 @@
   <url><loc>https://amux.io/demos/tweet-5-agent-orchestration/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/tweet-6-power-features/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/demos/tweet-7-quick-start/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
-  <url><loc>https://amux.io/demos/web-dashboard/</loc><lastmod>2026-03-06</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/faq/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://amux.io/features/</loc><lastmod>2026-03-09</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
   <url><loc>https://amux.io/features/agent-coordination/</loc><lastmod>2026-07-11</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>

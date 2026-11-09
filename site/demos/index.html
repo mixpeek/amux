@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>amux Demos: See It in Action</title>
-<meta name="description" content="Short demo videos of amux in action, recorded from a real setup: parallel agents, kanban board, recovery from usage limits and reboots, mobile PWA, agent orchestration, and more.">
+<meta name="description" content="Short videos of amux features, each recorded from a real setup on a laptop and a phone: worker cards, send to any worker, live status and restarts, board, calendar, draw, phone app and more.">
   <link rel="canonical" href="https://amux.io/demos/">
     <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -67,7 +67,7 @@
   </header>
 <div class="wrap">
 <h1>amux Demos</h1>
-<p class="subtitle">27 demos covering every use case and feature</p>
+<p class="subtitle">7 short clips, one per amux feature</p>
 <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.1rem 1.4rem;margin:1.25rem 0 1.75rem" data-cta-loc="cloud-inline-top">
   <p style="margin:0 0 0.7rem;font-size:0.95rem">Run a fleet of Claude Code, Codex, and Gemini CLI agents from one dashboard. amux is free to self-host (MIT + Commons Clause) and takes 2 minutes to install.</p>
   <a href="/start/?source=demos" style="display:inline-block;margin:0 0.5rem 0.4rem 0;background:#047857;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">Start amux Cloud</a>
@@ -88,308 +88,88 @@
 </div>
 <div class="filters">
     <button class="filter-btn active" onclick="filterDemos('All')">All</button>
-    <button class="filter-btn" onclick="filterDemos('Sessions')">Sessions</button>
-    <button class="filter-btn" onclick="filterDemos('Board')">Board</button>
-    <button class="filter-btn" onclick="filterDemos('Features')">Features</button>
-    <button class="filter-btn" onclick="filterDemos('Use Cases')">Use Cases</button>
+    <button class="filter-btn" onclick="filterDemos('Workers')">Workers</button>
+    <button class="filter-btn" onclick="filterDemos('Board & schedule')">Board &amp; schedule</button>
+    <button class="filter-btn" onclick="filterDemos('Files & apps')">Files &amp; apps</button>
+    <button class="filter-btn" onclick="filterDemos('Phone & sync')">Phone &amp; sync</button>
 </div>
 <p class="demo-empty" id="demo-empty" role="status" hidden>No demos match that search. <button type="button" id="demo-clear">Clear search</button></p>
 <div class="grid" id="demo-grid">
 
-  <div class="demo-card" data-playlist="Features" data-tags="draw sketch whiteboard excalidraw multiplayer collaboration realtime phone" data-desc="Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop updates live, with every device&#x27;s cursor labeled.">
-    <a href="/demos/draw-realtime-sync/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/draw-realtime-sync/demo.mp4?v=c488cfaf" poster="/demos/draw-realtime-sync/poster.jpg?v=c488cfaf" preload="none" loop muted playsinline title="Draw: Realtime Sync Across Devices"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Features</span>
-        <h3>Draw: Realtime Sync Across Devices</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Sessions" data-tags="workers sessions cards status fleet overview search" data-desc="See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.">
+  <div class="demo-card" data-playlist="Workers" data-tags="workers sessions cards status fleet overview search" data-desc="See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.">
     <a href="/demos/session-cards-overview/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/session-cards-overview/demo.mp4?v=4f6a27c7" poster="/demos/session-cards-overview/poster.jpg?v=4f6a27c7" preload="none" loop muted playsinline title="Session Cards Overview"></video>
+        <video data-lightbox src="/demos/session-cards-overview/demo.mp4?v=4f6a27c7" poster="/demos/session-cards-overview/poster.jpg?v=4f6a27c7" preload="none" loop muted playsinline title="Worker Cards"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Sessions</span>
-        <h3>Session Cards Overview</h3>
+        <span class="demo-tag">Workers</span>
+        <h3>Worker Cards</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Sessions" data-tags="prompt message terminal send browser composer" data-desc="Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.">
+  <div class="demo-card" data-playlist="Workers" data-tags="prompt message terminal send browser composer" data-desc="Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.">
     <a href="/demos/send-command-dashboard/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/send-command-dashboard/demo.mp4?v=48a05b47" poster="/demos/send-command-dashboard/poster.jpg?v=48a05b47" preload="none" loop muted playsinline title="Send Command from Dashboard"></video>
+        <video data-lightbox src="/demos/send-command-dashboard/demo.mp4?v=48a05b47" poster="/demos/send-command-dashboard/poster.jpg?v=48a05b47" preload="none" loop muted playsinline title="Send to Any Worker"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Sessions</span>
-        <h3>Send Command from Dashboard</h3>
+        <span class="demo-tag">Workers</span>
+        <h3>Send to Any Worker</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Board" data-tags="board issues tasks kanban columns" data-desc="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
-    <a href="/demos/kanban-board-overview/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/kanban-board-overview/demo.mp4?v=ca363874" poster="/demos/kanban-board-overview/poster.jpg?v=ca363874" preload="none" loop muted playsinline title="Kanban Board Overview"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Board</span>
-        <h3>Kanban Board Overview</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Board" data-tags="board claim race queue concurrency rest api" data-desc="Dozens of agents race to claim the same task queue, only one wins. SQLite CAS ensures zero duplicated work, no Redis required.">
-    <a href="/demos/atomic-task-claiming/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/atomic-task-claiming/demo.mp4?v=009618a6" poster="/demos/atomic-task-claiming/poster.jpg?v=009618a6" preload="none" loop muted playsinline title="Atomic Task Claiming"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Board</span>
-        <h3>Atomic Task Claiming</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Sessions" data-tags="status needs input recovery restart resume approve" data-desc="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
+  <div class="demo-card" data-playlist="Workers" data-tags="status needs input waiting idle restart resume approve answer" data-desc="amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.">
     <a href="/demos/self-healing-watchdog/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/self-healing-watchdog/demo.mp4?v=cb5efff4" poster="/demos/self-healing-watchdog/poster.jpg?v=cb5efff4" preload="none" loop muted playsinline title="Recovery and restarts"></video>
+        <video data-lightbox src="/demos/self-healing-watchdog/demo.mp4?v=cb5efff4" poster="/demos/self-healing-watchdog/poster.jpg?v=cb5efff4" preload="none" loop muted playsinline title="Live Status and Restarts"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Sessions</span>
-        <h3>Recovery and Restarts</h3>
+        <span class="demo-tag">Workers</span>
+        <h3>Live Status and Restarts</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Features" data-tags="delegate handoff multi-agent peers amux send" data-desc="Agents discover peers and delegate work via REST API. Every session gets $AMUX_SESSION and $AMUX_URL at startup plus the full API reference in global memory.">
-    <a href="/demos/agent-orchestration/">
+  <div class="demo-card" data-playlist="Board &amp; schedule" data-tags="board issues tasks kanban columns cards" data-desc="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
+    <a href="/demos/kanban-board-overview/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/agent-orchestration/demo.mp4?v=2350b680" poster="/demos/agent-orchestration/poster.jpg?v=2350b680" preload="none" loop muted playsinline title="Agent Orchestration"></video>
+        <video data-lightbox src="/demos/kanban-board-overview/demo.mp4?v=ca363874" poster="/demos/kanban-board-overview/poster.jpg?v=ca363874" preload="none" loop muted playsinline title="Board"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Features</span>
-        <h3>Agent Orchestration</h3>
+        <span class="demo-tag">Board &amp; schedule</span>
+        <h3>Board</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Board" data-tags="calendar due dates ics google apple feed subscribe" data-desc="Board items with due dates automatically appear in Google Calendar, Apple Calendar, or any iCal-compatible app via a live S3-hosted feed.">
+  <div class="demo-card" data-playlist="Board &amp; schedule" data-tags="calendar due dates ics google apple feed subscribe events" data-desc="Board items with due dates show on the amux calendar beside your events, and the calendar&#x27;s events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.">
     <a href="/demos/ical-calendar-sync/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/ical-calendar-sync/demo.mp4?v=47f50e70" poster="/demos/ical-calendar-sync/poster.jpg?v=47f50e70" preload="none" loop muted playsinline title="iCal Calendar Sync"></video>
+        <video data-lightbox src="/demos/ical-calendar-sync/demo.mp4?v=47f50e70" poster="/demos/ical-calendar-sync/poster.jpg?v=47f50e70" preload="none" loop muted playsinline title="Calendar"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Board</span>
-        <h3>iCal Calendar Sync</h3>
+        <span class="demo-tag">Board &amp; schedule</span>
+        <h3>Calendar</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Sessions" data-tags="duplicate fork clone branch conversation history" data-desc="Clone any session&#x27;s conversation to a new branch point. Two agents explore different approaches from the same starting state.">
-    <a href="/demos/conversation-fork/">
+  <div class="demo-card" data-playlist="Files &amp; apps" data-tags="draw sketch whiteboard excalidraw multiplayer collaboration realtime phone" data-desc="Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop updates live, with every device&#x27;s cursor labeled.">
+    <a href="/demos/draw-realtime-sync/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/conversation-fork/demo.mp4?v=f5b20ebb" poster="/demos/conversation-fork/poster.jpg?v=f5b20ebb" preload="none" loop muted playsinline title="Conversation Fork"></video>
+        <video data-lightbox src="/demos/draw-realtime-sync/demo.mp4?v=c488cfaf" poster="/demos/draw-realtime-sync/poster.jpg?v=c488cfaf" preload="none" loop muted playsinline title="Draw"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Sessions</span>
-        <h3>Conversation Fork</h3>
+        <span class="demo-tag">Files &amp; apps</span>
+        <h3>Draw</h3>
       </div>
     </a>
   </div>
-  <div class="demo-card" data-playlist="Features" data-tags="phone iphone android app pwa remote" data-desc="Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.">
+  <div class="demo-card" data-playlist="Phone &amp; sync" data-tags="phone iphone android app pwa remote mobile" data-desc="Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.">
     <a href="/demos/mobile-pwa/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/mobile-pwa/demo.mp4?v=c497bbfb" poster="/demos/mobile-pwa/poster.jpg?v=c497bbfb" preload="none" loop muted playsinline title="Mobile PWA"></video>
+        <video data-lightbox src="/demos/mobile-pwa/demo.mp4?v=c497bbfb" poster="/demos/mobile-pwa/poster.jpg?v=c497bbfb" preload="none" loop muted playsinline title="Phone App"></video>
       </div>
       <div class="demo-info">
-        <span class="demo-tag">Features</span>
-        <h3>Mobile PWA</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="overnight autonomous unattended background" data-desc="Run dozens of Claude agents overnight. Wake up to finished features, no babysitting required.">
-    <a href="/demos/ai-coding-while-you-sleep/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/ai-coding-while-you-sleep/demo.mp4?v=7440a6dd" poster="/demos/ai-coding-while-you-sleep/poster.jpg?v=7440a6dd" preload="none" loop muted playsinline title="AI Coding While You Sleep"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>AI Coding While You Sleep</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="branches features worktrees concurrent" data-desc="Each branch gets its own Claude session. Build multiple features simultaneously without context switching.">
-    <a href="/demos/parallel-feature-development/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/parallel-feature-development/demo.mp4?v=fa685eb3" poster="/demos/parallel-feature-development/poster.jpg?v=fa685eb3" preload="none" loop muted playsinline title="Parallel Feature Development"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Parallel Feature Development</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="testing unit tests coverage" data-desc="One agent per module, generate unit tests, integration tests, and fixtures across the entire codebase in parallel.">
-    <a href="/demos/test-generation-at-scale/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/test-generation-at-scale/demo.mp4?v=78f9074f" poster="/demos/test-generation-at-scale/poster.jpg?v=78f9074f" preload="none" loop muted playsinline title="Test Generation at Scale"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Test Generation at Scale</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="refactor cleanup modules" data-desc="Divide and conquer: split the codebase by module and refactor everything simultaneously.">
-    <a href="/demos/large-scale-refactoring/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/large-scale-refactoring/demo.mp4?v=c3473573" poster="/demos/large-scale-refactoring/poster.jpg?v=c3473573" preload="none" loop muted playsinline title="Large-Scale Refactoring"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Large-Scale Refactoring</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="bugs fixes backlog triage" data-desc="Add bug reports to the board, assign them to sessions, and fix your entire backlog in parallel.">
-    <a href="/demos/bug-triage-and-fixing/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/bug-triage-and-fixing/demo.mp4?v=c9c68b7d" poster="/demos/bug-triage-and-fixing/poster.jpg?v=c9c68b7d" preload="none" loop muted playsinline title="Bug Triage & Fixing"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Bug Triage & Fixing</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="pull request pr review diff" data-desc="One Claude session per PR, review 10 pull requests simultaneously with consistent, thorough analysis.">
-    <a href="/demos/automated-code-review/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/automated-code-review/demo.mp4?v=79be13f1" poster="/demos/automated-code-review/poster.jpg?v=79be13f1" preload="none" loop muted playsinline title="Automated Code Review"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Automated Code Review</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="docs readme writing" data-desc="Assign each module to a session and generate docstrings, READMEs, and API docs all at once.">
-    <a href="/demos/documentation-generation/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/documentation-generation/demo.mp4?v=6817b62b" poster="/demos/documentation-generation/poster.jpg?v=6817b62b" preload="none" loop muted playsinline title="Documentation Generation"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Documentation Generation</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="rest endpoints scaffold backend" data-desc="One session per resource, scaffold your entire REST API simultaneously.">
-    <a href="/demos/api-endpoint-generation/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/api-endpoint-generation/demo.mp4?v=2f343e71" poster="/demos/api-endpoint-generation/poster.jpg?v=2f343e71" preload="none" loop muted playsinline title="API Endpoint Generation"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>API Endpoint Generation</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="typescript port convert" data-desc="Split migration work by package or service. Convert legacy code, update imports, and fix types, all in parallel.">
-    <a href="/demos/code-migration/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/code-migration/demo.mp4?v=fa559c53" poster="/demos/code-migration/poster.jpg?v=fa559c53" preload="none" loop muted playsinline title="Code Migration"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Code Migration</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="python 2 jquery upgrade modernize legacy" data-desc="From jQuery to React, Python 2 to 3, modernize every module simultaneously.">
-    <a href="/demos/legacy-code-modernization/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/legacy-code-modernization/demo.mp4?v=65f28fd6" poster="/demos/legacy-code-modernization/poster.jpg?v=65f28fd6" preload="none" loop muted playsinline title="Legacy Code Modernization"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Legacy Code Modernization</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="packages workspace monorepo" data-desc="One session per package. Each agent works in its own directory, coordinating via the shared board.">
-    <a href="/demos/monorepo-management/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/monorepo-management/demo.mp4?v=c47073d0" poster="/demos/monorepo-management/poster.jpg?v=c47073d0" preload="none" loop muted playsinline title="Monorepo Management"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Monorepo Management</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="npm upgrade bump packages versions" data-desc="Assign each service or package to a session, bump deps, fix breaking changes, run tests, all in parallel.">
-    <a href="/demos/dependency-updates/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/dependency-updates/demo.mp4?v=a9f36388" poster="/demos/dependency-updates/poster.jpg?v=a9f36388" preload="none" loop muted playsinline title="Dependency Updates"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Dependency Updates</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="vulnerabilities injection xss cve security" data-desc="Assign each layer to a dedicated session, auth, API, database, frontend, all audited simultaneously.">
-    <a href="/demos/security-audit/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/security-audit/demo.mp4?v=cba4ea69" poster="/demos/security-audit/poster.jpg?v=cba4ea69" preload="none" loop muted playsinline title="Security Audit"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Security Audit</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="github actions docker deploy pipeline" data-desc="One agent per environment, dev, staging, prod. Write GitHub Actions, Dockerfiles, and deploy configs in parallel.">
-    <a href="/demos/ci-cd-pipeline-creation/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/ci-cd-pipeline-creation/demo.mp4?v=c8d078a4" poster="/demos/ci-cd-pipeline-creation/poster.jpg?v=c8d078a4" preload="none" loop muted playsinline title="CI/CD Pipeline Creation"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>CI/CD Pipeline Creation</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Use Cases" data-tags="prototype compare explore spike" data-desc="Spin up multiple research agents simultaneously, each exploring a different approach. Pick the best.">
-    <a href="/demos/research-and-prototyping/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/research-and-prototyping/demo.mp4?v=973a9024" poster="/demos/research-and-prototyping/poster.jpg?v=973a9024" preload="none" loop muted playsinline title="Research & Prototyping"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Use Cases</span>
-        <h3>Research & Prototyping</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Features" data-tags="rest api board http orchestrator" data-desc="Orchestrator sessions send tasks to workers via HTTP API. Board acts as shared task queue with atomic claiming.">
-    <a href="/demos/agent-coordination/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/agent-coordination/demo.mp4?v=1807140a" poster="/demos/agent-coordination/poster.jpg?v=1807140a" preload="none" loop muted playsinline title="Agent Coordination via REST"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Features</span>
-        <h3>Agent Coordination via REST</h3>
-      </div>
-    </a>
-  </div>
-  <div class="demo-card" data-playlist="Features" data-tags="dashboard tabs overview browser files calendar" data-desc="A full-featured dashboard for managing all your Claude agents, sessions, board, calendar, and file browser.">
-    <a href="/demos/web-dashboard/">
-      <div class="demo-thumb">
-        <video data-lightbox src="/demos/web-dashboard/demo.mp4?v=0ffdcda9" poster="/demos/web-dashboard/poster.jpg?v=0ffdcda9" preload="none" loop muted playsinline title="Web Dashboard Overview"></video>
-      </div>
-      <div class="demo-info">
-        <span class="demo-tag">Features</span>
-        <h3>Web Dashboard Overview</h3>
+        <span class="demo-tag">Phone &amp; sync</span>
+        <h3>Phone App</h3>
       </div>
     </a>
   </div>

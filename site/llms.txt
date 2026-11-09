@@ -204,6 +204,18 @@ amux Concierge builds and runs workflow automation for non-technical business ow
 - [Rust Workspace Architecture — How amux is Built (2026)](https://amux.io/features/single-file-architecture/): amux is a 4-crate Cargo workspace (amux-server, amux-dashboard, amux-core, amux-cli) that compiles to a single binary. The dashboard is real static files (app.js, app.css, index.html, sw.js) in amux-dashboard/static/ — no inline HTML. A background build watcher rebuilds on every commit; the running server self-adopts (exits cleanly, launchd restarts) without manual intervention. No Docker, no config files, no external service dependencies beyond tmux. MIT + Commons Clause. Deployment: one binary install via install.sh. Contributing: clone the workspace, cargo check, commit — the auto-builder ships it.
 - [amux Cloud: your own amux server, running 24/7](https://amux.io/cloud/): amux Cloud is your own dedicated amux server at yourname.amux.io. Workers keep running when your laptop sleeps, and you sign in from any browser or the iOS app. Same product as the self-hosted install; we run the box. Plans: Solo $39/mo, Team $69/mo, Max $129/mo, billed monthly. Move an existing install with amux export, then amux import <file> --to https://<you>.amux.io. Start at https://amux.io/start/.
 
+## Feature demos
+<!-- demos:start -->
+Short silent clips of each amux feature, recorded from a real amux server on a laptop and a phone. Index: https://amux.io/demos/
+- [Worker Cards](https://amux.io/demos/session-cards-overview/): See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.
+- [Send to Any Worker](https://amux.io/demos/send-command-dashboard/): Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.
+- [Live Status and Restarts](https://amux.io/demos/self-healing-watchdog/): amux reads every session's terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.
+- [Board](https://amux.io/demos/kanban-board-overview/): SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.
+- [Calendar](https://amux.io/demos/ical-calendar-sync/): Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.
+- [Draw](https://amux.io/demos/draw-realtime-sync/): Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop updates live, with every device's cursor labeled.
+- [Phone App](https://amux.io/demos/mobile-pwa/): Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.
+<!-- demos:end -->
+
 ## Use Cases
 
 

@@ -4,286 +4,77 @@
   <url>
     <loc>https://amux.io/demos/session-cards-overview/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/poster.jpg</video:thumbnail_loc>
-      <video:title>Session Cards Overview — amux Demo</video:title>
-      <video:description>All running Claude agents at a glance — live status, tokens, and current task.</video:description>
-      <video:content_loc>https://amux.io/demos/session-cards-overview/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/session-cards-overview/poster.jpg?v=4f6a27c7</video:thumbnail_loc>
+      <video:title>Worker Cards | amux demo</video:title>
+      <video:description>See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.</video:description>
+      <video:content_loc>https://amux.io/demos/session-cards-overview/demo.mp4?v=4f6a27c7</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/send-command-dashboard/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/poster.jpg</video:thumbnail_loc>
-      <video:title>Send Command from Dashboard — amux Demo</video:title>
-      <video:description>Send instructions to any agent directly from the web dashboard.</video:description>
-      <video:content_loc>https://amux.io/demos/send-command-dashboard/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/kanban-board-overview/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/kanban-board-overview/poster.jpg</video:thumbnail_loc>
-      <video:title>Kanban Board Overview — amux Demo</video:title>
-      <video:description>SQLite-backed kanban board for coordinating AI agent tasks.</video:description>
-      <video:content_loc>https://amux.io/demos/kanban-board-overview/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/atomic-task-claiming/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/atomic-task-claiming/poster.jpg</video:thumbnail_loc>
-      <video:title>Atomic Task Claiming — amux Demo</video:title>
-      <video:description>Multiple agents race to claim tasks from the board without duplicated work.</video:description>
-      <video:content_loc>https://amux.io/demos/atomic-task-claiming/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/send-command-dashboard/poster.jpg?v=48a05b47</video:thumbnail_loc>
+      <video:title>Send to Any Worker | amux demo</video:title>
+      <video:description>Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.</video:description>
+      <video:content_loc>https://amux.io/demos/send-command-dashboard/demo.mp4?v=48a05b47</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/self-healing-watchdog/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/self-healing-watchdog/poster.jpg</video:thumbnail_loc>
-      <video:title>amux Demo: Status Detection and Recovery</video:title>
-      <video:description>amux status detection on the dashboard. Captions are from an older release; the server does not restart crashed agents.</video:description>
-      <video:content_loc>https://amux.io/demos/self-healing-watchdog/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/self-healing-watchdog/poster.jpg?v=cb5efff4</video:thumbnail_loc>
+      <video:title>Live Status and Restarts | amux demo</video:title>
+      <video:description>amux reads every session&#x27;s terminal to show Working, Needs Input or Idle, resumes agents after usage limits, and on macOS brings workers back after a reboot.</video:description>
+      <video:content_loc>https://amux.io/demos/self-healing-watchdog/demo.mp4?v=cb5efff4</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
-    <loc>https://amux.io/demos/agent-orchestration/</loc>
+    <loc>https://amux.io/demos/kanban-board-overview/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/agent-orchestration/poster.jpg</video:thumbnail_loc>
-      <video:title>Agent Orchestration — amux Demo</video:title>
-      <video:description>Orchestrator session delegates tasks to worker sessions via REST API.</video:description>
-      <video:content_loc>https://amux.io/demos/agent-orchestration/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/kanban-board-overview/poster.jpg?v=ca363874</video:thumbnail_loc>
+      <video:title>Board | amux demo</video:title>
+      <video:description>SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.</video:description>
+      <video:content_loc>https://amux.io/demos/kanban-board-overview/demo.mp4?v=ca363874</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/ical-calendar-sync/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ical-calendar-sync/poster.jpg</video:thumbnail_loc>
-      <video:title>iCal Calendar Sync — amux Demo</video:title>
-      <video:description>Board items with due dates sync to Google and Apple Calendar.</video:description>
-      <video:content_loc>https://amux.io/demos/ical-calendar-sync/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/ical-calendar-sync/poster.jpg?v=47f50e70</video:thumbnail_loc>
+      <video:title>Calendar | amux demo</video:title>
+      <video:description>Board items with due dates show on the amux calendar beside your events, and the calendar&#x27;s events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.</video:description>
+      <video:content_loc>https://amux.io/demos/ical-calendar-sync/demo.mp4?v=47f50e70</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
-    <loc>https://amux.io/demos/conversation-fork/</loc>
+    <loc>https://amux.io/demos/draw-realtime-sync/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/conversation-fork/poster.jpg</video:thumbnail_loc>
-      <video:title>Conversation Fork — amux Demo</video:title>
-      <video:description>Clone any session JSONL history into a new session on a separate branch.</video:description>
-      <video:content_loc>https://amux.io/demos/conversation-fork/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/draw-realtime-sync/poster.jpg?v=c488cfaf</video:thumbnail_loc>
+      <video:title>Draw: Realtime Sync Across Devices | amux demo</video:title>
+      <video:description>Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop updates live, with every device&#x27;s cursor labeled.</video:description>
+      <video:content_loc>https://amux.io/demos/draw-realtime-sync/demo.mp4?v=c488cfaf</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
   <url>
     <loc>https://amux.io/demos/mobile-pwa/</loc>
     <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/poster.jpg</video:thumbnail_loc>
-      <video:title>Mobile PWA — amux Demo</video:title>
-      <video:description>Monitor and control all Claude agents from your phone.</video:description>
-      <video:content_loc>https://amux.io/demos/mobile-pwa/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/ai-coding-while-you-sleep/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ai-coding-while-you-sleep/poster.jpg</video:thumbnail_loc>
-      <video:title>AI Coding While You Sleep — amux Demo</video:title>
-      <video:description>Run dozens of agents overnight — wake up to finished features.</video:description>
-      <video:content_loc>https://amux.io/demos/ai-coding-while-you-sleep/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/parallel-feature-development/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/parallel-feature-development/poster.jpg</video:thumbnail_loc>
-      <video:title>Parallel Feature Development — amux Demo</video:title>
-      <video:description>Each feature branch gets its own Claude session, all building simultaneously.</video:description>
-      <video:content_loc>https://amux.io/demos/parallel-feature-development/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/test-generation-at-scale/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/test-generation-at-scale/poster.jpg</video:thumbnail_loc>
-      <video:title>Test Generation at Scale — amux Demo</video:title>
-      <video:description>One agent per module — generate the full test suite in parallel.</video:description>
-      <video:content_loc>https://amux.io/demos/test-generation-at-scale/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/large-scale-refactoring/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/large-scale-refactoring/poster.jpg</video:thumbnail_loc>
-      <video:title>Large-Scale Refactoring — amux Demo</video:title>
-      <video:description>Split codebase by module and refactor everything simultaneously.</video:description>
-      <video:content_loc>https://amux.io/demos/large-scale-refactoring/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/bug-triage-and-fixing/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/bug-triage-and-fixing/poster.jpg</video:thumbnail_loc>
-      <video:title>Bug Triage and Fixing — amux Demo</video:title>
-      <video:description>Clear the entire bug backlog in parallel — one agent per issue.</video:description>
-      <video:content_loc>https://amux.io/demos/bug-triage-and-fixing/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/automated-code-review/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/automated-code-review/poster.jpg</video:thumbnail_loc>
-      <video:title>Automated Code Review — amux Demo</video:title>
-      <video:description>Review 10 pull requests simultaneously with consistent analysis.</video:description>
-      <video:content_loc>https://amux.io/demos/automated-code-review/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/documentation-generation/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/documentation-generation/poster.jpg</video:thumbnail_loc>
-      <video:title>Documentation Generation — amux Demo</video:title>
-      <video:description>Generate docstrings and READMEs for every module at once.</video:description>
-      <video:content_loc>https://amux.io/demos/documentation-generation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/api-endpoint-generation/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/api-endpoint-generation/poster.jpg</video:thumbnail_loc>
-      <video:title>API Endpoint Generation — amux Demo</video:title>
-      <video:description>Scaffold your entire REST API simultaneously — one session per resource.</video:description>
-      <video:content_loc>https://amux.io/demos/api-endpoint-generation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/code-migration/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/code-migration/poster.jpg</video:thumbnail_loc>
-      <video:title>Code Migration — amux Demo</video:title>
-      <video:description>Convert legacy code across all packages simultaneously.</video:description>
-      <video:content_loc>https://amux.io/demos/code-migration/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/legacy-code-modernization/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/legacy-code-modernization/poster.jpg</video:thumbnail_loc>
-      <video:title>Legacy Code Modernization — amux Demo</video:title>
-      <video:description>Modernize every module in parallel — jQuery to React, Python 2 to 3.</video:description>
-      <video:content_loc>https://amux.io/demos/legacy-code-modernization/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/monorepo-management/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/monorepo-management/poster.jpg</video:thumbnail_loc>
-      <video:title>Monorepo Management — amux Demo</video:title>
-      <video:description>One session per package — manage 50-package monorepos like a team of 50.</video:description>
-      <video:content_loc>https://amux.io/demos/monorepo-management/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/dependency-updates/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/dependency-updates/poster.jpg</video:thumbnail_loc>
-      <video:title>Dependency Updates — amux Demo</video:title>
-      <video:description>Update every package simultaneously — bump, fix, and test in parallel.</video:description>
-      <video:content_loc>https://amux.io/demos/dependency-updates/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/security-audit/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/security-audit/poster.jpg</video:thumbnail_loc>
-      <video:title>Security Audit — amux Demo</video:title>
-      <video:description>Audit auth, API, DB, and frontend layers simultaneously.</video:description>
-      <video:content_loc>https://amux.io/demos/security-audit/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/ci-cd-pipeline-creation/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/ci-cd-pipeline-creation/poster.jpg</video:thumbnail_loc>
-      <video:title>CI/CD Pipeline Creation — amux Demo</video:title>
-      <video:description>Write GitHub Actions, Dockerfiles, and deploy configs for all envs at once.</video:description>
-      <video:content_loc>https://amux.io/demos/ci-cd-pipeline-creation/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/research-and-prototyping/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/research-and-prototyping/poster.jpg</video:thumbnail_loc>
-      <video:title>Research and Prototyping — amux Demo</video:title>
-      <video:description>Test 10 hypotheses in parallel — each agent explores a different approach.</video:description>
-      <video:content_loc>https://amux.io/demos/research-and-prototyping/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/agent-coordination/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/agent-coordination/poster.jpg</video:thumbnail_loc>
-      <video:title>Agent Coordination via REST — amux Demo</video:title>
-      <video:description>Orchestrate agents with POST /api/sessions/NAME/send — no tmux hacks.</video:description>
-      <video:content_loc>https://amux.io/demos/agent-coordination/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
-      <video:family_friendly>yes</video:family_friendly>
-    </video:video>
-  </url>
-  <url>
-    <loc>https://amux.io/demos/web-dashboard/</loc>
-    <video:video>
-      <video:thumbnail_loc>https://amux.io/demos/web-dashboard/poster.jpg</video:thumbnail_loc>
-      <video:title>Web Dashboard Overview — amux Demo</video:title>
-      <video:description>Sessions, board, calendar, and file browser in one PWA dashboard.</video:description>
-      <video:content_loc>https://amux.io/demos/web-dashboard/demo.mp4</video:content_loc>
-      <video:publication_date>2026-11-08</video:publication_date>
+      <video:thumbnail_loc>https://amux.io/demos/mobile-pwa/poster.jpg?v=c497bbfb</video:thumbnail_loc>
+      <video:title>Phone App | amux demo</video:title>
+      <video:description>Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.</video:description>
+      <video:content_loc>https://amux.io/demos/mobile-pwa/demo.mp4?v=c497bbfb</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
       <video:family_friendly>yes</video:family_friendly>
     </video:video>
   </url>
