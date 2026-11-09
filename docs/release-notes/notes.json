@@ -5617,5 +5617,55 @@
     ],
     "description": "Transformed amux into a full offline-first Progressive Web App. Features include: a service worker that caches the app shell and API responses; HTTPS via self-signed cert with automatic Tailscale cert fallback; draft session creation that queues when offline and syncs on reconnect; an IndexedDB-backed sync engine that stores board issues and sessions locally; SSE push updates that write to IDB and trigger UI refreshes; and an offline banner with a visible queue of pending operations.",
     "video": "01c68c4.mp4"
+  },
+  {
+    "hash": "c8b0a79576b1dc6d7a50dc2cc3fd8696e9ce1f3c",
+    "title": "Print, rename and move files from the viewer",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "files"
+    ],
+    "description": "The file viewer's menu now has Print, Show in folder, Download, Share, Rename, Duplicate, Move to, Get info and Delete. Print sends a PDF's own pages, and the Mac app opens its native print panel."
+  },
+  {
+    "hash": "ccb4c3d9113fc7d5927654731eae3a3533ed9dac",
+    "title": "A preview for every file type",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "files"
+    ],
+    "description": "Binary files open to a preview instead of a Download box. TIFF, HEIC, PSD and camera raw images are converted for display, and zip, tar and similar archives list what is inside."
+  },
+  {
+    "hash": "1bf8c3722a9b7453db8769268a270ce36a94d075",
+    "title": "Paste an image into a note",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "notes"
+    ],
+    "description": "Pasting a screenshot into a note saves the image beside it and inserts it at the cursor, and the note's preview shows the picture."
+  },
+  {
+    "hash": "4c1bf9485b69a81111e33874587252f33751b418",
+    "title": "Give an app a readable address",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "apps"
+    ],
+    "description": "Rename an app's address from its card menu, so a published app opens at /pub/your-name/ instead of a long id. Only a person can rename a public link."
+  },
+  {
+    "hash": "ea53276f21602eb5af31407b7b49c1be3a98ddbb",
+    "title": "An expired Google sign-in tells you how to fix it",
+    "date": "2026-11-08",
+    "type": "feat",
+    "tags": [
+      "connectors"
+    ],
+    "description": "When a connected Google account can no longer refresh, amux alerts you with a reconnect link once when it breaks and once a day until you sign in again."
   }
 ]
