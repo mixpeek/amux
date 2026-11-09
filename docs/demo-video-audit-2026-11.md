@@ -1,6 +1,34 @@
 # Demo video audit, 2026-11
 
-Shipped, user-facing amux features with no demo clip on /demos/, ranked by how much a 15 to 30 second clip would help someone choose amux. Checked against `origin/main` on 2026-11-08: every evidence path below exists there. Nothing here has been recorded; pick from this list.
+Shipped, user-facing amux features with no demo clip on /demos/, ranked by how much a 15 to 30 second clip would help someone choose amux. Checked against `origin/main` on 2026-11-08: every evidence path below exists there. Rows 3, 11 and 20 were recorded on 2026-11-09 (see below); the rest are still open.
+
+## Current set, 2026-11-09
+
+Ethan asked for /demos/ to show amux features only, no use cases. It now has 10 clips, one feature each:
+
+| Area | Demo | Page |
+|---|---|---|
+| Workers | Worker Cards | /demos/session-cards-overview/ |
+| Workers | Send to Any Worker | /demos/send-command-dashboard/ |
+| Workers | Live Status and Restarts | /demos/self-healing-watchdog/ |
+| Workers | Messages (new) | /demos/messages/ |
+| Board & schedule | Board | /demos/kanban-board-overview/ |
+| Board & schedule | Scheduler (new) | /demos/scheduler/ |
+| Board & schedule | Calendar | /demos/ical-calendar-sync/ |
+| Files & apps | File Viewer (new) | /demos/file-viewer/ |
+| Files & apps | Draw | /demos/draw-realtime-sync/ |
+| Phone & sync | Phone App | /demos/mobile-pwa/ |
+
+Removed: the 15 use-case demos (overnight, parallel features, tests, refactoring, bug triage, code review, docs, API generation, migration, modernization, monorepo, dependency updates, security audit, CI/CD, research). Folded into the feature they belong to: atomic task claiming into Board, agent orchestration and agent coordination into Messages, conversation fork into Send to Any Worker (fork has no dashboard entry, AMUX-6801), the dashboard tour into Worker Cards. Every removed URL is a noindex redirect.
+
+Found while recording:
+
+- A Scheduler tab open on a second device never shows a schedule made elsewhere until the tab is reopened. The SSE `invalidate` handler in `app.js` acts on board, journal, messages and sessions only.
+- Run now prefixes the delivered message with an `[amux] Run-now ...` note that reads as internal plumbing in a terminal; a cron fire delivers the bare message.
+- A peek on a loaded host can lag the phone by several seconds and show "Reconnecting... retrying terminal updates" (AMUX-6802). This sank the Offline Sync clip: in all three takes the banner showed on the laptop while the phone's queue replayed. Offline sync itself works (the phone saves the message offline, then syncs and the agent starts); re-record it on a quieter host.
+
+Next to record: Offline Sync (see above), then needs-you approvals (1), Apps (10), Git panel (15), Vault (19) from the table below.
+
 
 **Hard to capture** means it needs something the private demo server does not have: a real outside account, a device, or a native app build.
 
