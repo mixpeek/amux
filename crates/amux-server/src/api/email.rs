@@ -1156,32 +1156,59 @@ pub async fn approve(
     //
     // A real boundary needs an auth distinction the localhost bypass currently
     // erases — see AMUX-3699. Fixing that is not a reason to leave this.
-    let approver = headers
+    // WHO DECIDED, PROVEN WHERE IT CAN BE (governance PR 2, human_proof.rs).
+    // The owner bearer, a verified member or an in-process owner policy is a
+    // FINDING: `approved_by` is that identity and `approver_verified: true`.
+    // Without one, the old rule stands: the request must NAME its approver,
+    // and the ledger records the name as a claim (`approver_verified: false`).
+    // AMUX_ANONYMOUS_IS_OWNER=enforce refuses the unproven outright.
+    let claimed = headers
         .get("x-amux-approver")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    let Some(approver) = approver else {
-        tracing::warn!(
-            approval = %id,
-            "[email] approve refused: no X-Amux-Approver. Absence used to mean 'human' and \
-             that is the AUTOD-48 bypass — a worker produces an absence at will"
-        );
-        return err(
-            StatusCode::FORBIDDEN,
-            json!({
-                "error": "approval must NAME its approver: send X-Amux-Approver: <who>. \
-                          Absence used to be read as 'a human at the dashboard', which a \
-                          worker can produce by sending no headers at all (AUTOD-48).",
-                "code": "approver_unidentified",
-                "how_to_fix": {
-                    "dashboard": "the Approvals panel sends this automatically — reload if it does not",
-                    "curl": "curl -X POST -H 'X-Amux-Approver: <your name>' $AMUX_URL/api/email/approve/<id>",
-                    "note": "this names you in the send-audit ledger; it is not a password",
-                },
-            }),
-        );
+    let (approver, approver_verified) = match crate::api::human_proof::check(&headers, "email_approve") {
+        crate::api::human_proof::Verdict::Refused => {
+            email_log(
+                ctx.client.home(),
+                json!({
+                    "endpoint": "approve", "blocked": "anonymous_refused", "approval_id": id,
+                    "approver_claimed": claimed, "approver_verified": false,
+                }),
+            );
+            return crate::api::human_proof::refusal("email_approve");
+        }
+        // An owner policy releasing in-process (the scheduled send, the
+        // needs-input auto-approver) carries the name it acts under.
+        crate::api::human_proof::Verdict::Proven(crate::api::human_proof::Proven::Policy(p)) => {
+            (claimed.clone().unwrap_or(p), true)
+        }
+        crate::api::human_proof::Verdict::Proven(p) => (p.actor(), true),
+        crate::api::human_proof::Verdict::Unproven => match claimed.clone() {
+            Some(name) => (name, false),
+            None => {
+                tracing::warn!(
+                    approval = %id,
+                    "[email] approve refused: no X-Amux-Approver. Absence used to mean 'human' and \
+                     that is the AUTOD-48 bypass — a worker produces an absence at will"
+                );
+                return err(
+                    StatusCode::FORBIDDEN,
+                    json!({
+                        "error": "approval must NAME its approver: send X-Amux-Approver: <who>. \
+                                  Absence used to be read as 'a human at the dashboard', which a \
+                                  worker can produce by sending no headers at all (AUTOD-48).",
+                        "code": "approver_unidentified",
+                        "how_to_fix": {
+                            "dashboard": "the Approvals panel sends this automatically — reload if it does not",
+                            "curl": "curl -X POST -H 'X-Amux-Approver: <your name>' $AMUX_URL/api/email/approve/<id>",
+                            "note": "this names you in the send-audit ledger; it is not a password",
+                        },
+                    }),
+                );
+            }
+        },
     };
     let home = ctx.client.home().to_path_buf();
     // CREATOR CHECK BEFORE CONSUME (AUTOD-48 follow-up). This used to run
@@ -1217,7 +1244,7 @@ pub async fn approve(
                 json!({
                     "endpoint": "approve", "blocked": "creator_cannot_approve",
                     "approval_id": id, "session": creator, "approver_claimed": approver,
-                    "approver_verified": false,
+                    "approver_verified": approver_verified,
                 }),
             );
             return err(
@@ -1249,7 +1276,7 @@ pub async fn approve(
                     ctx.client.home(),
                     json!({
                         "endpoint": "approve", "scheduled": true, "approval_id": id,
-                        "send_at": send_at, "approved_by": approver, "approver_verified": false,
+                        "send_at": send_at, "approved_by": approver, "approver_verified": approver_verified,
                         "approver_edited": edit.is_some(),
                         "session": doc.get("session").cloned().unwrap_or(Value::Null),
                     }),
@@ -1429,7 +1456,7 @@ pub async fn approve(
                     // nothing here proved it, so a forensic reader weighs it as
                     // a claim rather than a finding.
                     "approved_by": approver,
-                    "approver_verified": false,
+                    "approver_verified": approver_verified,
                     // AN EDITED RELEASE IS NOT THE DRAFT THE WORKER WROTE
                     // (AMUX-5021). The ledger's whole job is that a reader can
                     // tell what actually left; without this the body_preview
@@ -3256,6 +3283,57 @@ mod tests {
             .expect("approval_id")
             .to_string();
         (app, d, home, id)
+    }
+
+    /// GOVERNANCE PR 2. Who released a held send is a FINDING when the server
+    /// verified it and a CLAIM when it did not, and the ledger says which.
+    /// Enforce mode on a server with an owner credential refuses the claim,
+    /// and the refusal leaves the draft pending for a person.
+    #[tokio::test]
+    async fn a_proven_approver_is_recorded_as_verified_and_enforce_refuses_a_bare_name() {
+        use crate::api::human_proof::{test_override, Mode, OWNER_PROOF_HEADER};
+        fn ledger_row(home: &std::path::Path, id: &str) -> Value {
+            let text = std::fs::read_to_string(crate::integrations::email::email_log_path(home)).unwrap_or_default();
+            text.lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                .filter(|v| v["approval_id"] == json!(id) && v["approved"] == json!(true))
+                .last()
+                .unwrap_or(Value::Null)
+        }
+        // The owner bearer, stamped by require_bearer: verified, named as such.
+        let _g = test_override::set(Mode::Report, true);
+        let (app, _d, home, id) = held("autodesk").await;
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None,
+            &[(OWNER_PROOF_HEADER, "1"), ("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let row = ledger_row(home.path(), &id);
+        assert_eq!(row["approved_by"], json!("owner-token"), "{row}");
+        assert_eq!(row["approver_verified"], json!(true), "{row}");
+        // A bare name in report mode: released as before, recorded as a claim.
+        let (app, _d, home, id) = held("autodesk").await;
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None,
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let row = ledger_row(home.path(), &id);
+        assert_eq!((row["approved_by"].clone(), row["approver_verified"].clone()), (json!("dashboard"), json!(false)), "{row}");
+        // Enforce: the bare name is refused, and the draft is still pending.
+        let _g = test_override::set(Mode::Enforce, true);
+        let (app, _d, _home, id) = held("autodesk").await;
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None,
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("anonymous_refused")), "{e}");
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None,
+            &[(OWNER_PROOF_HEADER, "1")]).await;
+        assert_eq!(st, StatusCode::OK, "the refused draft stayed pending and the owner released it: {ok}");
+        // Enforce on a server with NO owner credential cannot tell the owner
+        // from anonymous, so it allows and counts rather than locking the
+        // owner out.
+        let _g = test_override::set(Mode::Enforce, false);
+        let (app, _d, _home, id) = held("autodesk").await;
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None,
+            &[("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        test_override::clear();
     }
 
     #[tokio::test]

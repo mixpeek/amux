@@ -531,6 +531,7 @@ async fn async_main() {
 
     boot_watch::step("app_state");
     let reconciled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    api::human_proof::set_owner_credential_configured(auth_token.is_some());
     let state = api::AppState {
         store: store.clone(),
         started: Instant::now(),
