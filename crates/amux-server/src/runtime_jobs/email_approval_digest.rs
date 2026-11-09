@@ -224,7 +224,10 @@ pub(crate) async fn tick_with(
     }
     use chrono::Timelike;
     let today = now_local.format("%Y-%m-%d").to_string();
-    let pending = crate::api::email_approval::list_pending(home);
+    let pending: Vec<_> = crate::api::email_approval::list_pending(home)
+        .into_iter()
+        .filter(|d| !crate::api::email_approval::is_scheduled(d))
+        .collect();
     let last = last_sent(home);
     if !digest_due(
         &today,

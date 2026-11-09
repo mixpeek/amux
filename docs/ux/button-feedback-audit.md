@@ -27,9 +27,12 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 
 | file | control | handler | kind | handler's own feedback today | gap | covered by shared layer |
 |---|---|---|---|---|---|---|
+| app.js | Send now | `_apprApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | … | `_apprApprove` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Edit | `_apprEdit` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js | Discard | `_apprReject` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js | Reschedule | `_apprSchedule` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_apprSchedule` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Cancel | `_apprScheduleClose` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Schedule send | `_apprScheduleConfirm` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
@@ -261,9 +264,9 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | ▼ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | ✓ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | ✕ | `_emailAnnotate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
-| app.js | … | `_emailFolderPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| index.html | Refresh | `_emailLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | + esc(a) + (bad ?  ⚠️ : ) + | `_emailPick` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_emailFolderPick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Refresh | `_emailLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + esc(a) + (bad ?  ⚠️ : ) + | `_emailPick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Re-learn priorities | `_emailThemesRefresh` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | index.html | Expand to full screen | `_expandPeekInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Export | `_exportMessageHistory` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -1148,6 +1151,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Select row | `` | onclick |
 | app.js | View on Google Maps ↗ | `` | onclick |
 | app.js | a | `` | onclick |
+| app.js | appr-sched- | `` | onclick |
 | app.js | button | `` | onclick |
 | app.js | button | `` | onclick |
 | app.js | button | `` | onclick |
@@ -1283,6 +1287,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Import files | `_drawPickImport` | onclick |
 | index.html | Export | `_drawToggleExportMenu` | onclick |
 | index.html | Lock | `_drawToggleLock` | onclick |
+| app.js | + | `_emailToggleBody` | onclick |
 | app.js | // Star is the flag, in the position every clien | `_emailToggleBody` | onclick |
 | index.html | Open in new window | `_fileOpenNewWindow` | onclick |
 | index.html | Present | `_filePresent` | onclick |

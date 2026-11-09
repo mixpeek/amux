@@ -466,6 +466,10 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
     }
     fold_reasks(&mut by_key);
     for doc in crate::api::email_approval::list_pending(home) {
+        // Approved for a later time: nothing left to ask.
+        if crate::api::email_approval::is_scheduled(&doc) {
+            continue;
+        }
         n_considered += 1;
         let id = doc["id"].as_str().unwrap_or("").to_string();
         if id.is_empty() {
@@ -1037,6 +1041,15 @@ mod tests {
             home.join("email-approvals/apr_00000000000000aa.json"),
             json!({"id":"apr_00000000000000aa","created":5000.0,"session":"gtm","endpoint":"send",
                    "preview":{"to":"x@example.com","subject":"hi","body":"hello"}})
+            .to_string(),
+        )
+        .unwrap();
+        // Approved for a later send: nothing left to ask, so not in the queue.
+        std::fs::write(
+            home.join("email-approvals/apr_00000000000000bb.json"),
+            json!({"id":"apr_00000000000000bb","created":5000.0,"session":"gtm","endpoint":"send",
+                   "preview":{"to":"y@example.com","subject":"later","body":"hello"},
+                   "scheduled":{"send_at":99_999.0,"approver":"dashboard"}})
             .to_string(),
         )
         .unwrap();

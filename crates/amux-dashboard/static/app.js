@@ -25042,6 +25042,10 @@ async function _approvalsRefresh() {
     if (!r.ok) return;
     const d = await r.json();
     const pending = Array.isArray(d.pending) ? d.pending : [];
+    // Approved for a later time: no longer a decision, so not in this banner.
+    // The Email tab's Scheduled folder lists them (Ethan, 2026-11-09).
+    _emailScheduled = Array.isArray(d.scheduled) ? d.scheduled : [];
+    _emailSchedPaint();
     // PERMISSION GRANTS SHARE THIS BANNER (AMUX-3997). Ethan asked for the email
     // approval flow to be leveraged for other ad-hoc permissions, and "leverage"
     // has to include the SURFACE: a second banner elsewhere would mean a human
@@ -25393,7 +25397,7 @@ async function _apprScheduleConfirm(id, btn) {
     const d = await r.json().catch(() => ({}));
     if (r.ok && d.scheduled) {
       _apprEditing.delete(id);
-      showToast('Scheduled: sends ' + _apprWhenText(d.send_at));
+      showToast('Scheduled: sends ' + _apprWhenText(d.send_at) + '. It is listed in Email, Scheduled.');
     } else { showToast('Schedule failed: ' + (d.error || r.status)); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
   } catch (e) { showToast('Schedule failed: ' + e); if (btn) { btn.disabled = false; btn.textContent = 'Schedule send'; } return; }
   _apprScheduleClose(id);
@@ -36406,6 +36410,15 @@ async function _emailLoad() {
   }
   if (!_emailAccount || accounts.indexOf(_emailAccount) < 0) _emailAccount = accounts[0];
   _emailRenderSubtabs(accounts, {});
+  if (_emailFolder === 'scheduled') {
+    _emailRenderFolders();
+    host.innerHTML = '<div class="conn-empty">Loading scheduled sends…</div>';
+    await _approvalsRefresh();
+    // A repaint was skipped while a draft is being edited; say so rather than spin.
+    if (_emailScheduled === null) host.innerHTML = '<div class="conn-empty">Could not load the scheduled sends.</div>';
+    else _emailSchedPaint();
+    return;
+  }
   host.innerHTML = '<div class="conn-empty">Loading ' + esc(_emailAccount) + '…</div>';
   try {
     const r = await fetch(API + '/api/email/ranked?count=60&folder=' + encodeURIComponent(_emailFolder)
@@ -36448,7 +36461,9 @@ function _emailRenderFolders() {
   if (!el) return;
   // Inbox is the UNFILED set, not "everything" — a list that keeps showing mail
   // you already filed is one you stop reading.
-  el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected']].map(([k,label]) => {
+  const nSched = _emailScheduled ? _emailScheduled.length : 0;
+  el.innerHTML = [['inbox','Inbox'],['approved','Approved'],['rejected','Rejected'],
+    ['scheduled', 'Scheduled' + (nSched ? ' (' + nSched + ')' : '')]].map(([k,label]) => {
     const on = k === _emailFolder;
     return '<button class="conn-scope-btn" onclick="_emailFolderPick(\'' + k + '\')" '
       + 'style="min-height:34px;' + (on ? 'background:var(--accent);color:var(--on-solid);' : '') + '">'
@@ -36578,6 +36593,54 @@ function _emailRenderList(msgs) {
       + '<div class="mail-body" id="' + id + '" hidden>' + esc(String(m.body || '').slice(0, 4000)) + '</div>';
   }
   host.innerHTML = html;
+}
+
+// SCHEDULED SENDS (Ethan, 2026-11-09: "we should be able to see the scheduled
+// list of emails being sent somewhere (maybe the email tab)"). Outbound drafts a
+// human approved for a later time, soonest first, across every account. The
+// actions are the approval banner's own: Send now, Reschedule, Discard.
+let _emailScheduled = null;
+function _emailSchedPaint() {
+  // Only the folder count changes off this folder, and only once the tab has drawn its folders.
+  if (_emailFolder !== 'scheduled') { if (document.getElementById('email-folders')?.innerHTML) _emailRenderFolders(); return; }
+  const view = document.getElementById('email-view');
+  const host = document.getElementById('email-list');
+  if (!host || !view || view.style.display === 'none' || _emailScheduled === null) return;
+  _emailRenderFolders();
+  const themes = document.getElementById('email-themes');
+  if (themes) themes.innerHTML = '';
+  if (!_emailScheduled.length) {
+    host.innerHTML = '<div class="conn-empty">No scheduled sends. Schedule a held draft from the approval banner and it waits here until its time.</div>';
+    return;
+  }
+  let html = '<div class="mail-sched">';
+  for (const p of _emailScheduled) {
+    const pv = p.preview || {};
+    const rv = p.review || {};
+    const body = typeof rv.body === 'string' ? rv.body : (pv.body || '');
+    const at = p.scheduled && p.scheduled.send_at;
+    const id = esc(p.id);
+    html += '<div class="mail-row mail-sched-row" data-approval="' + id + '" onclick="_emailToggleBody(\'sched-' + id + '\')">'
+      + '<div class="mail-from" title="' + esc(pv.to || '') + '">To ' + esc(pv.to || '?') + '</div>'
+      + '<div class="mail-mid"><span class="mail-subj">' + esc(pv.subject || (pv.endpoint === 'reply' ? '(reply)' : '(no subject)')) + '</span>'
+      + '<span class="mail-snip"> — ' + esc(_emailSnippet(body)) + '</span></div>'
+      + '<div class="mail-sched-when">' + (at ? 'sends ' + esc(_apprWhenText(at)) : '') + '</div>'
+      + '</div>'
+      + '<div class="mail-body" id="sched-' + id + '" hidden>'
+      + _apprHeaders(pv)
+      + '<div class="mail-sched-meta">Drafted by ' + esc(p.session || '?')
+      + (p.scheduled && p.scheduled.approver ? ', scheduled by ' + esc(p.scheduled.approver) : '')
+      + (p.scheduled && p.scheduled.edited ? ', with your edit' : '') + '</div>'
+      + '<div class="mail-sched-text">' + esc(body) + '</div>'
+      + '<div class="mail-sched-actions">'
+      + '<button class="btn" onclick="event.stopPropagation();_apprApprove(\'' + id + '\',this)">Send now</button>'
+      + '<button class="btn" onclick="event.stopPropagation();_apprSchedule(\'' + id + '\')">Reschedule</button>'
+      + '<button class="btn" onclick="event.stopPropagation();_apprReject(\'' + id + '\',this)">Discard</button>'
+      + '</div>'
+      + '<div id="appr-sched-' + id + '" class="appr-sched-row mail-sched-at-row" data-send-at="' + (at || '') + '" onclick="event.stopPropagation()" hidden></div>'
+      + '</div>';
+  }
+  host.innerHTML = html + '</div>';
 }
 
 function _emailToggleBody(id) {

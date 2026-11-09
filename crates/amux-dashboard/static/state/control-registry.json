@@ -1974,6 +1974,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_emailFolderPick": {
+      "kind": "command._emailFolderPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_emailLoad": {
+      "kind": "command._emailLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_emailPick": {
+      "kind": "command._emailPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_emailThemesRefresh": {
       "kind": "command._emailThemesRefresh",
       "feedback_required": true,

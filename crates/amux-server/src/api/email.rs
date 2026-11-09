@@ -1462,10 +1462,21 @@ pub async fn approve(
 
 /// GET /api/email/approvals — pending approvals for the dashboard / a
 /// human's curl. Previews only; the frozen payload stays server-side.
+///
+/// `pending` is what still needs a decision. A draft the human approved for a
+/// later time is in `scheduled`, soonest first (Ethan, 2026-11-09: "When an
+/// email is approved -> scheduled it shouldnt be in the scheduled thing
+/// anymore but we should be able to see the scheduled list").
 pub async fn list_approvals(Extension(ctx): Extension<Arc<EmailCtx>>) -> Response {
-    let pending = crate::api::email_approval::list_pending(ctx.client.home());
+    let (mut scheduled, pending): (Vec<Value>, Vec<Value>) =
+        crate::api::email_approval::list_pending(ctx.client.home())
+            .into_iter()
+            .partition(crate::api::email_approval::is_scheduled);
+    let at = |d: &Value| d["scheduled"]["send_at"].as_f64().unwrap_or(0.0);
+    scheduled.sort_by(|a, b| at(a).partial_cmp(&at(b)).unwrap_or(std::cmp::Ordering::Equal));
     Json(json!({
         "pending": pending,
+        "scheduled": scheduled,
         "approve_with": "POST /api/email/approve/<id> from a human context (no worker origin header)",
     }))
     .into_response()
@@ -3472,6 +3483,12 @@ mod tests {
         assert_eq!(row["scheduled"]["edited"], json!(true));
         assert!(row["scheduled"].get("body").is_none(), "the edit stays out of `scheduled`");
         assert_eq!(row["review"]["body"], json!("edited words"));
+        // It no longer waits for a decision: the approvals list carries it
+        // under `scheduled`, not `pending`.
+        let (_, lst) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+        assert!(lst["pending"].as_array().unwrap().iter().all(|r| r["id"] != json!(apr)), "{lst}");
+        assert_eq!(lst["scheduled"][0]["id"], json!(apr), "{lst}");
+        assert_eq!(lst["scheduled"][0]["scheduled"]["send_at"].as_f64(), Some(now + 3600.0));
 
         // Not due yet: nothing goes out.
         assert_eq!(crate::runtime_jobs::email_scheduled_send::tick_with(ctx.clone(), home.path(), now + 60.0).await, 0);

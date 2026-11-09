@@ -709,6 +709,13 @@ pub fn due_scheduled(home: &Path, now: f64) -> Vec<(String, String, Option<Strin
 }
 
 /// Pending approvals, oldest first, for the dashboard / a human's curl.
+/// A held draft the human already approved for a later time. It still waits
+/// on disk as pending (the scheduled-send job releases it), but nobody needs
+/// to decide it any more, so the approval asks leave it out.
+pub fn is_scheduled(doc: &Value) -> bool {
+    doc.get("scheduled").and_then(|s| s.get("send_at")).and_then(Value::as_f64).is_some()
+}
+
 pub fn list_pending(home: &Path) -> Vec<Value> {
     recover_schedule_claims(home);
     let dir = approvals_dir(home);
