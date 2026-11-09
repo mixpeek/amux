@@ -279,6 +279,17 @@ pub fn order_at(items: &mut [Value], now: f64) {
     });
 }
 
+/// The patch-id a land-approval card asks the owner to approve, read from the
+/// approval link its `ask_unblocks` carries (`land_approvals::request_route`).
+/// The triage Approve sends this to `POST /api/land/approvals`, the record the
+/// land gate reads: until 2026-11-09 it only moved the card, so AMUX-6809 read
+/// approved while the gate still refused the diff.
+pub(crate) fn land_patch_id(unblocks: &str) -> Option<String> {
+    let at = unblocks.find("#land-approve=")? + "#land-approve=".len();
+    let pid: String = unblocks[at..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    (pid.len() == 40 && pid.chars().all(|c| !c.is_ascii_uppercase())).then_some(pid)
+}
+
 fn clip(s: &str, n: usize) -> String {
     let s = s.trim();
     if s.chars().count() <= n {
@@ -454,6 +465,7 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
                 "worker": session, "status": status, "card_type": ctype,
                 "ask_type": ask_type, "ask_actor": actor, "waiting_on": waiting,
                 "question": question, "unblocks": unblocks,
+                "land_patch_id": land_patch_id(&unblocks),
                 "context": clip(&desc, 600),
                 "category": category, "rank": rank, "since": since,
                 "chips": chips(&format!("{question} {unblocks} {desc}")),
@@ -739,6 +751,16 @@ async fn log_action(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_land_approval_card_names_its_patch_id() {
+        let pid = "88f8f5b067f2794864ffc76bbc61bff2f850aafc";
+        let unb = format!("Approving at /#land-approve={pid} lets that exact diff land.");
+        assert_eq!(land_patch_id(&unb).as_deref(), Some(pid));
+        assert_eq!(land_patch_id("Approving lets it land."), None, "no link, not a land approval");
+        assert_eq!(land_patch_id("/#land-approve=88f8f5b0 lets it land"), None, "a short id is not a patch-id");
+        assert_eq!(land_patch_id(&unb.to_uppercase()), None, "git patch-id prints lowercase");
+    }
 
     /// AF-1029: reads inside the TTL share one build; a snooze's
     /// invalidation forces a rebuild; another store never reads this one's.

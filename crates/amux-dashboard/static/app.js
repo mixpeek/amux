@@ -7761,14 +7761,26 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
       else if (action === 'dismiss') text = '';
       else if (action === 'decline') text = 'Declined' + ref + ': ' + q + '. Do not proceed' + (typed ? '; ' + typed : '') + '.';
       else text = 'Re' + ref + ': ' + typed;
-      if (it.worker && text) {
+      // A LAND APPROVAL IS RECORDED BY PATCH-ID, NOT BY THE CARD (2026-11-09:
+      // Approve moved AMUX-6809 to todo while the land gate, which reads only
+      // /api/land/approvals, kept refusing the diff). Approve records it there;
+      // that endpoint also closes the card, so the card is not moved again.
+      let landed = false;
+      if ((action === 'approve' || action === 'approve_always') && it.land_patch_id) {
+        const r = await fetch(API + '/api/land/approvals', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ patch_id: it.land_patch_id, note: 'approved in ' + surface }) });
+        const d = await _niJson(r);
+        if (r.ok && d.approved_at) { landed = true; done.push('change ' + it.land_patch_id.slice(0, 12) + ' approved to land' + (d.card_closed ? ', ' + (d.card || it.card) + ' closed' : '')); }
+        else errs.push('land approval ' + it.land_patch_id.slice(0, 12) + ': ' + _niErr(d, r));
+      }
+      if (it.worker && text && !landed) {
         const s = await _niSend(it.worker, text, it.key, action);
         // A plain send returns on durable local acceptance (the outbox owns
         // delivery and its failures), so say "queued", never "delivered".
         if (s.ok) done.push(s.deduped ? 'already sent to ' + it.worker : (s.queued ? 'message queued for ' + it.worker : 'sent to ' + it.worker));
         else errs.push('send to ' + it.worker + ': ' + s.error);
       }
-      if (it.card) {
+      if (it.card && !landed && !(it.land_patch_id && errs.length)) {
         const verb = action === 'approve' && _niOwnerMustAct(it) ? 'Provided'
           : { approve: 'Approved', approve_always: 'Approved (standing rule)', decline: 'Declined', reply: 'Owner reply', dismiss: 'Dismissed without an answer' }[action];
         const note = '[' + stamp + '] ' + verb + ' by owner in ' + surface + (action === 'reply' || (action === 'decline' && typed) ? ': ' + typed
