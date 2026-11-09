@@ -90,6 +90,17 @@
     </video:video>
   </url>
   <url>
+    <loc>https://amux.io/demos/apps/</loc>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/demos/apps/poster.jpg?v=e10d8306</video:thumbnail_loc>
+      <video:title>Apps | amux demo</video:title>
+      <video:description>Share what your agents build. A worker builds a page and publishes it with amux publish, the link waits in the Apps tab until you approve it, and then anyone with the link can open it.</video:description>
+      <video:content_loc>https://amux.io/demos/apps/demo.mp4?v=e10d8306</video:content_loc>
+      <video:publication_date>2026-11-09</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+  </url>
+  <url>
     <loc>https://amux.io/demos/draw-realtime-sync/</loc>
     <video:video>
       <video:thumbnail_loc>https://amux.io/demos/draw-realtime-sync/poster.jpg?v=c488cfaf</video:thumbnail_loc>

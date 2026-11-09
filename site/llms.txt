@@ -215,6 +215,7 @@ Short silent clips of each amux feature, recorded from a real amux server on a l
 - [Scheduler](https://amux.io/demos/scheduler/): Schedule work for your agents in plain words. Pick a worker, write the message, choose Weekdays at 9:00, and amux delivers it on time. A one-off fires once at the time you set.
 - [Calendar](https://amux.io/demos/ical-calendar-sync/): Board items with due dates show on the amux calendar beside your events, and the calendar's events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.
 - [File Viewer](https://amux.io/demos/file-viewer/): Browse and read your files from the browser. Open the folder an agent works in, read markdown rendered and code highlighted, and read what an agent just wrote, on the laptop or the phone.
+- [Apps](https://amux.io/demos/apps/): Share what your agents build. A worker builds a page and publishes it with amux publish, the link waits in the Apps tab until you approve it, and then anyone with the link can open it.
 - [Draw](https://amux.io/demos/draw-realtime-sync/): Sketch on your laptop and it appears on your phone as you draw. Draw back from the phone and the laptop updates live, with every device's cursor labeled.
 - [Phone App](https://amux.io/demos/mobile-pwa/): Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.
 <!-- demos:end -->
