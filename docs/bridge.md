@@ -104,7 +104,8 @@ are left alone. A name that matches nothing gets one line back saying so.
   skill's script), and only ever to your own thread. Off with
   `AMUX_IMESSAGE_BRIDGE=0`.
 - **Email:** the account is `AMUX_BRIDGE_EMAIL`, else `AMUX_OWNER_EMAIL`, and
-  it must be a connected Gmail account. Replies go through the amux email API,
+  it must be a connected Gmail account. With neither set it is off: no other
+  connected account is guessed. Replies go through the amux email API,
   so they are in `/api/email/log`. Off with `AMUX_BRIDGE_EMAIL=0`. What it has
   seen and sent is in `~/.amux/bridge-email.json`, so a restart neither
   repeats nor reads its own replies as yours.

@@ -1,7 +1,7 @@
 //! Email to yourself as a line into amux, routed by `self_chat`.
 //!
 //! - Receive: every 60 s, the owner's Gmail account (AMUX_BRIDGE_EMAIL, else
-//!   AMUX_OWNER_EMAIL, else the freshest connected account) is searched for
+//!   AMUX_OWNER_EMAIL; never a guessed account) is searched for
 //!   mail from the owner to the owner. A message whose subject (or, with no
 //!   subject, first line) starts with `@` or `#` is a new post: subject and
 //!   body together, signature and quoted text cut. A reply in a thread that
@@ -82,20 +82,24 @@ fn client() -> GmailClient {
     GmailClient::new_default()
 }
 
-/// The owner's mailbox, if it is a connected Gmail account.
+/// The owner's mailbox, if it is a connected Gmail account. Only an address
+/// the owner named: mail "from me to me" in any other connected account (a
+/// shared inbox, a test fixture) is not the owner speaking, and reading it
+/// spends that account's token refreshes.
 pub fn account() -> Option<String> {
     if setting("AMUX_BRIDGE_EMAIL").as_deref() == Some("0") {
         return None;
     }
-    let connected = client().connected_accounts();
-    let want = setting("AMUX_BRIDGE_EMAIL").or_else(|| setting("AMUX_OWNER_EMAIL"))
-        .or_else(|| crate::integrations::email::connected_accounts_by_freshness_in(&crate::config::amux_home()).into_iter().next())?;
-    connected.into_iter().find(|a| a.eq_ignore_ascii_case(&want))
+    let want = setting("AMUX_BRIDGE_EMAIL").or_else(|| setting("AMUX_OWNER_EMAIL"))?;
+    client().connected_accounts().into_iter().find(|a| a.eq_ignore_ascii_case(&want))
 }
 
 pub fn why_off() -> Option<String> {
     if setting("AMUX_BRIDGE_EMAIL").as_deref() == Some("0") {
         return Some("AMUX_BRIDGE_EMAIL=0".into());
+    }
+    if setting("AMUX_BRIDGE_EMAIL").or_else(|| setting("AMUX_OWNER_EMAIL")).is_none() {
+        return Some("neither AMUX_BRIDGE_EMAIL nor AMUX_OWNER_EMAIL is set".into());
     }
     account().is_none().then(|| "the owner's address (AMUX_BRIDGE_EMAIL or AMUX_OWNER_EMAIL) is not a connected Gmail account".into())
 }
