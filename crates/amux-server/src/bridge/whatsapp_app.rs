@@ -6,19 +6,18 @@
 //!
 //! - Receive: WhatsApp keeps its chats in a local SQLite database, current
 //!   while the app runs. Every 3 s this reads, read-only, the owner's own chat
-//!   for new messages they wrote. One that starts with `@` (or is `/link`,
-//!   `/unlink`) goes through the bridge like any platform's message; anything
-//!   else is the owner's note to self and is left alone.
-//! - The chat links itself to `g:general` on first use, so `@worker ...`
-//!   reaches any worker the owner can reach. Only answers in the threads the
-//!   chat started come back (`threads_only`), never the channel's chatter.
+//!   for new messages they wrote. One that starts with `@` or `#` is routed
+//!   by `self_chat` (`@worker`, `@person`, `#channel`); anything else is the
+//!   owner's note to self and is left alone.
+//! - Only answers to what the chat started come back (`self_chat::pending`),
+//!   never the channel's chatter.
 //! - Send: `~/.amux/whatsapp/send-whatsapp.sh` pastes into the app and
 //!   confirms the message landed in its database. It can only type while the
 //!   Mac is unlocked and idle, so a locked or busy Mac is a WAIT, not a failed
 //!   attempt: the answer goes out when the Mac is free.
 //!
 //! Off with AMUX_WHATSAPP_APP=0. Needs AMUX_OWNER_PHONE (the self chat's
-//! number). Verdicts: bridge_whatsapp_app_filed, bridge_whatsapp_app_linked,
+//! number). Verdicts: bridge_whatsapp_app_filed,
 //! bridge_whatsapp_app_read_failed, bridge_whatsapp_app_launched,
 //! bridge_outbound_waiting.
 
@@ -81,8 +80,7 @@ fn self_chat(c: &rusqlite::Connection, phone: &str) -> rusqlite::Result<Option<(
 
 /// A message in the self chat that is a command for amux.
 pub fn is_command(text: &str) -> bool {
-    let t = text.trim_start();
-    t.starts_with('@') || t.starts_with("/link") || t == "/unlink"
+    super::self_chat::is_command(text)
 }
 
 /// What one read found: the self chat's JID and the new messages the owner
@@ -135,15 +133,9 @@ pub async fn poll_once(state: &crate::api::AppState) -> Result<usize, String> {
         if echo || !is_command(text) {
             continue;
         }
-        let linked = state.store.read().ok().and_then(|c| super::conv_of(&c, PLATFORM, &read.jid));
-        if linked.is_none() && !text.trim_start().starts_with("/link") {
-            super::save_link(state, PLATFORM, &read.jid, false, "g:general", "whatsapp-app:first-message").await?;
-            tracing::info!(conv = "g:general", measured = true, n_considered = 1, verdict = "bridge_whatsapp_app_linked",
-                "bridge: the owner's WhatsApp self chat was linked to #general on its first @message");
-        }
         let m = Inbound { platform: PLATFORM.into(), conversation: read.jid.clone(), is_group: false, sender_id: phone.clone(),
             sender_name: "owner".into(), text: text.clone(), platform_msg_id: if stanza.is_empty() { format!("pk:{pk}") } else { stanza.clone() } };
-        let out = super::inbound(state, m).await;
+        let out = super::self_chat::file(state, m, None).await;
         tracing::info!(row = pk, outcome = ?out, measured = true, n_considered = 1, verdict = "bridge_whatsapp_app_filed",
             "bridge: a command from the owner's WhatsApp self chat went through the bridge");
         n += 1;
@@ -295,7 +287,7 @@ mod tests {
         let texts: Vec<&str> = next.rows.iter().map(|r| r.2.as_str()).collect();
         assert_eq!(texts, vec!["@amux \"status?\"", "buy milk"]);
         assert!(is_command(texts[0]) && !is_command(texts[1]), "a note to self is not a command");
-        assert!(is_command("/link amux") && is_command("/unlink") && !is_command("hello @amux"));
+        assert!(is_command("#ops ship it") && !is_command("hello @amux"));
     }
 
     /// A locked or busy Mac (nothing typed) is a wait; a missing Accessibility

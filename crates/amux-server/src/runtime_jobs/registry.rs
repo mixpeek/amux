@@ -126,6 +126,8 @@ pub mod ids {
     pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
     pub const BRIDGE_DISCORD: &str = "bridge-discord";
     pub const BRIDGE_WHATSAPP_APP: &str = "bridge-whatsapp-app";
+    pub const BRIDGE_IMESSAGE: &str = "bridge-imessage";
+    pub const BRIDGE_EMAIL: &str = "bridge-email";
     pub const MESSAGE_CAPTURE: &str = "message-capture";
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
@@ -191,6 +193,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::BRIDGE_OUTBOUND,
     ids::BRIDGE_DISCORD,
     ids::BRIDGE_WHATSAPP_APP,
+    ids::BRIDGE_IMESSAGE,
+    ids::BRIDGE_EMAIL,
     ids::MESSAGE_CAPTURE,
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
@@ -679,10 +683,34 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::BRIDGE_WHATSAPP_APP,
         name: "WhatsApp self chat",
-        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker messages through the chat bridge; answers go back through the app.",
+        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker, @person and #channel messages through the chat bridge; answers go back through the app.",
         env: &[EnvControl {
             var: "AMUX_WHATSAPP_APP",
             effect: "unset = on when AMUX_OWNER_PHONE is set and WhatsApp's database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_IMESSAGE,
+        name: "iMessage self thread",
+        purpose: "Reads the owner's iMessage thread with their own number from Messages on this Mac every 3 s and files @worker, @person and #channel messages through the chat bridge; answers go back into that thread.",
+        env: &[EnvControl {
+            var: "AMUX_IMESSAGE_BRIDGE",
+            effect: "unset = on when AMUX_OWNER_PHONE (or AMUX_IMESSAGE_SELF_HANDLES) is set and Messages' database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_EMAIL,
+        name: "Email to yourself",
+        purpose: "Searches the owner's Gmail every 60 s for mail they sent themselves whose subject starts with @worker, @person or #channel, files it through the chat bridge, and answers as a reply in the same thread.",
+        env: &[EnvControl {
+            var: "AMUX_BRIDGE_EMAIL",
+            effect: "unset = the AMUX_OWNER_EMAIL account when it is connected; an address = that account; 0 = off, checking every 300 s",
             off: Some("0"),
         }],
         pref: None,
