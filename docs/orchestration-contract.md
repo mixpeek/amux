@@ -33,6 +33,14 @@ the same phase, and say which.
 | 13 | Injected instructions and memory have byte budgets; a binding rule links the failure that earned it | boundary | scope + memory writer | unbounded composed memory, always-loaded long files |
 | 14 | Every rule counts blocks, overrides and correct overrides; a rule that never fires or is always overridden is retired. Providers without status hooks and cost coverage run observe-only | boundary | counters | per-feature env flags nobody reads |
 
+Rule 10's minted token reaches every lane, not only contract lanes (2026-11-09):
+each launch of a Claude, Codex, Gemini or isolated worker mints one unless the lane
+lists 10 in `AMUX_CONTRACT_RULES_OFF`. Contract lanes are refused without it as
+before. Other lanes follow `AMUX_WORKER_IDENTITY`: `report` (default, logs
+`worker_identity_would_refuse` and lets the request through), `enforce` (refuses
+403) or `off` (the old opt-in behaviour). `GET /api/contract/counters` shows the
+counts under `worker_identity`; switch to `enforce` once `would_refuse` stays 0.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

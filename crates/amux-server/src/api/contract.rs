@@ -2353,7 +2353,7 @@ pub const RULE_VERDICTS: &[(&str, &[&str])] = &[
     ("4", &["worktree_launch_isolated", "worktree_launch_refused", "shared_guard_skipped_isolated"]),
     ("A1", &["a1_notice_raised", "a1_doing_refused_notice", "a1_held_by_owner", "a1_positive_control_failed"]),
     ("5", &["land_queued", "land_merged", "land_refused", "land_batch_bisected", "worker_push_refused", "land_lock_acquired", "land_lock_waited", "land_lock_timeout_requeued", "land_gate_green", "land_gate_red", "land_gate_unmeasured", "land_gate_undeclared", "land_gate_leg_refused", "land_red_rerun", "land_red_flaky", "land_red_healed", "land_red_unattributed", "land_red_unmeasured", "land_red_fix_opened", "land_red_revert_queued", "land_red_reverted", "land_red_revert_refused", "land_red_revert_capped", "land_red_revert_unbuildable"]),
-    ("10", &["worker_token_minted", "worker_identity_refused", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
+    ("10", &["worker_token_minted", "worker_identity_refused", "worker_identity_would_refuse", "worker_identity_unminted", "owner_by_absence_refused", "credentials_in_worker_env", "bypass_without_sandbox"]),
     ("11", &["needs_input_auto_approved", "needs_input_auto_skipped_category", "needs_input_auto_refused", "needs_input_auto_sent_back"]),
     ("13", &["memory_recomposed_at_boot", "memory_over_budget", "memory_within_budget", "memory_pointers_archived", "rules_delivered", "rules_not_delivered", "rules_withheld_isolated"]),
 ];
@@ -2425,6 +2425,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
     };
     Json(json!({"since_h": since_h, "measured": true, "n_considered": scanned, "rules": rules,
         "rule10": super::worker_identity::report(&home, &lanes),
+        "worker_identity": super::worker_identity::identity_report(&home, &lanes),
         "a2_pool": pool,
         "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
 }

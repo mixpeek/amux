@@ -17599,10 +17599,11 @@ pub(crate) async fn start_session(
     // Contract rule 10 (AH-387): the lane's minted identity rides the vault
     // channel (set-environment, imported by name), so it never reaches argv or
     // a typed line, and a lane the rule left gets it unset as a stale key.
-    if !isolated {
-        if let Some(token) = super::worker_identity::mint(&home(), name) {
-            vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
-        }
+    // Every lane by default, isolated ones too: the token is environment, not
+    // a prompt or a route, so isolation (A9) is unchanged, and an isolated
+    // worker's own `amux` calls prove who they are like anyone else's.
+    if let Some(token) = super::worker_identity::mint(&home(), name) {
+        vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
     }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
     // WHAT THE LAST LAUNCH DELIVERED lives in the tmux session itself
