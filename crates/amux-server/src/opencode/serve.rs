@@ -617,6 +617,11 @@ impl ServeClient {
     /// the status like [`ServeClient::reply_permission`]); `GET …/entries`
     /// then answers `{"data":[{"key","value"}]}`; and the model ANSWERS FROM
     /// IT — a session given only `ZUCCHINI-7731` replied with that word.
+    ///
+    /// Worth knowing: an entry is readable by anything holding this server's
+    /// password. Today that is every worker on this Mac, which can already read
+    /// `~/.amux/rules/`, so nothing new is exposed — it would matter if one
+    /// serve were ever shared across machines or users.
     pub async fn set_session_instructions(
         &self,
         session_id: &str,

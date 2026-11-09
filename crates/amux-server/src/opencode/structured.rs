@@ -1202,10 +1202,11 @@ impl StructuredCliProtocol {
         // 2026-10-16 measurement that forced `--standalone` onto TUI lanes).
         // opencode exposes per-session instruction entries and a live probe on
         // 2.2.5 (2026-11-08) showed the model answering from one.
+        let isolation = crate::api::session_verbs::session_is_isolated(shared.worker.as_str());
         deliver_scoped_context(
             &session,
             shared.worker.as_str(),
-            &crate::api::session_verbs::compose_worker_context(shared.worker.as_str(), false),
+            serve_scoped_context(shared.worker.as_str(), isolation),
             opened.resumed,
         )
         .await;
@@ -1465,6 +1466,98 @@ fn serve_turn_timeout() -> std::time::Duration {
         .unwrap_or(acp::DEFAULT_TURN_TIMEOUT)
 }
 
+/// What a serve session should carry.
+///
+/// Split out from the composition so the ISOLATED branch is a pure answer: an
+/// isolated worker gets an EMPTY scope — no boundaries block, no roster, no
+/// Messages guide — which is the same contract the TUI path enforces by
+/// withholding `OPENCODE_CONFIG_CONTENT` (`rules_withheld_isolated`).
+fn serve_scoped_context(worker: &str, isolated: bool) -> ScopedContext {
+    if isolated {
+        return ScopedContext::Withheld;
+    }
+    let composed = crate::api::session_verbs::compose_worker_context(worker, false);
+    if composed.trim().is_empty() {
+        ScopedContext::Empty
+    } else {
+        ScopedContext::Text(composed)
+    }
+}
+
+/// The scope a serve session should carry, or the reason it carries none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScopedContext {
+    /// The worker's composed context, written to the session.
+    Text(String),
+    /// Nothing to deliver: the worker has no scope.
+    Empty,
+    /// An isolated worker: the contract says no injected prompts, so nothing is
+    /// written AND any earlier entry is removed.
+    Withheld,
+}
+
+/// Give one serve session its worker's scope, or clear it.
+///
+/// Split out so it is testable WITHOUT reading the real home: the caller
+/// composes (or withholds) the text, this decides what the session does with it.
+async fn deliver_scoped_context(
+    session: &serve::ServeSession,
+    worker: &str,
+    scope: ScopedContext,
+    resumed: bool,
+) {
+    let text = match &scope {
+        ScopedContext::Text(text) => Some(text.as_str()),
+        ScopedContext::Empty | ScopedContext::Withheld => None,
+    };
+    let (delivered, chars) = match text {
+        Some(text) if !text.trim().is_empty() => {
+            let chars = text.chars().count();
+            match session.set_instructions(SCOPED_CONTEXT_KEY, text).await {
+                Ok(()) => (true, chars),
+                Err(e) => {
+                    // Say so, and name the consequence: the worker runs with the
+                    // model's own defaults, not the owner's rules.
+                    tracing::warn!(worker, measured = true, n_considered = chars, error = %e,
+                        verdict = "opencode_scoped_context_not_delivered",
+                        "the shared serve would not take this session's scoped context; \
+                         the worker runs without its rules");
+                    (false, 0)
+                }
+            }
+        }
+        // Scope removed — or withheld from an isolated worker: drop the entry so
+        // a stale context cannot keep steering the model. The `ses_` ref and the
+        // session's history survive; only the guidance goes.
+        _ => match session.clear_instructions(SCOPED_CONTEXT_KEY).await {
+            Ok(()) => (false, 0),
+            Err(e) => {
+                tracing::warn!(worker, measured = true, n_considered = 0, error = %e,
+                    verdict = "opencode_scoped_context_clear_failed",
+                    "could not clear the session's scoped context");
+                (false, 0)
+            }
+        },
+    };
+    let verdict = match (&scope, delivered) {
+        (ScopedContext::Withheld, _) => "opencode_scoped_context_withheld_isolated",
+        (_, true) => "opencode_scoped_context_delivered",
+        _ => "opencode_scoped_context_absent",
+    };
+    tracing::info!(
+        worker,
+        session = session.session_id(),
+        resumed,
+        delivered,
+        chars,
+        isolated = matches!(scope, ScopedContext::Withheld),
+        measured = true,
+        n_considered = chars,
+        verdict,
+        "serve session scoped context"
+    );
+}
+
 /// Find a serve turn's END without inventing one.
 ///
 /// `prompt_async` returns at ADMISSION (D3), so there is no stream to read a
@@ -1475,55 +1568,6 @@ fn serve_turn_timeout() -> std::time::Duration {
 /// [`serve_turn_timeout`]; on expiry the turn is reported `failed`, never left
 /// `Working` forever — a worker that looks permanently busy is a diagnosis
 /// nobody can make (ethos rule 4).
-/// Give one serve session its worker's scoped context, or clear it when the
-/// scope is empty.
-///
-/// Split out so it is testable WITHOUT reading the real home: the caller
-/// composes the text, this decides what the session does with it.
-async fn deliver_scoped_context(
-    session: &serve::ServeSession,
-    worker: &str,
-    scoped: &str,
-    resumed: bool,
-) {
-    let (delivered, chars) = if scoped.trim().is_empty() {
-        // Scope removed: drop the entry so a stale context cannot keep steering
-        // the model (the `ses_` ref and its history survive).
-        match session.clear_instructions(SCOPED_CONTEXT_KEY).await {
-            Ok(()) => (false, 0),
-            Err(e) => {
-                tracing::warn!(worker, error = %e,
-                    verdict = "opencode_scoped_context_clear_failed",
-                    "could not clear the session's scoped context");
-                (false, 0)
-            }
-        }
-    } else {
-        let chars = scoped.chars().count();
-        match session.set_instructions(SCOPED_CONTEXT_KEY, scoped).await {
-            Ok(()) => (true, chars),
-            Err(e) => {
-                // Say so, and name the consequence: the worker runs with the
-                // model's own defaults, not the owner's rules.
-                tracing::warn!(worker, error = %e,
-                    verdict = "opencode_scoped_context_not_delivered",
-                    "the shared serve would not take this session's scoped context; \
-                     the worker runs without its rules");
-                (false, 0)
-            }
-        }
-    };
-    tracing::info!(
-        worker,
-        session = session.session_id(),
-        resumed,
-        delivered,
-        chars,
-        verdict = if delivered { "opencode_scoped_context_delivered" } else { "opencode_scoped_context_absent" },
-        "serve session scoped context"
-    );
-}
-
 fn spawn_serve_turn_watcher(
     shared: Arc<WorkerShared>,
     session: Arc<serve::ServeSession>,
@@ -3968,18 +4012,14 @@ mod tests {
     // M6 — boundaries.toml answers a serve permission ask
     // ------------------------------------------------------------------
 
-    /// The chain M6 exists for, end to end over the WIRE: a running serve turn
-    /// polls its permission asks, the pinned policy consults `boundaries.toml`,
-    /// and a write into the vault is REFUSED — `reject` is what the fixture
-    /// records, not what our enum says.
-    ///
-    /// Before M6 nothing polled at all, so the ask would have hung the turn to
-    /// its timeout; and before it, no boundary applied to an opencode worker at
-    /// all (it has no PreToolUse hooks).
     /// A serve worker keeps its own scoped context on a SHARED server: the
-    /// entry is written to the session, and an empty scope removes it. This is
-    /// the piece that makes one `opencode serve` usable by the whole fleet —
-    /// without it a worker on the shared server runs on the model's defaults.
+    /// entry is written to the session, an emptied scope removes it, and an
+    /// ISOLATED worker gets none — the same contract the TUI path enforces by
+    /// withholding `OPENCODE_CONFIG_CONTENT` (`rules_withheld_isolated`).
+    ///
+    /// This is the piece that makes one `opencode serve` usable by the whole
+    /// fleet; without it a worker on the shared server runs on the model's
+    /// defaults, and an isolated worker would receive the fleet's context.
     #[tokio::test]
     async fn a_serve_session_carries_the_workers_scoped_context() {
         use axum::response::IntoResponse;
@@ -4033,7 +4073,8 @@ mod tests {
             .await
             .unwrap();
 
-        deliver_scoped_context(&session, "wrk_test", "# the owner's rules\n", false).await;
+        let rules = ScopedContext::Text("# the owner's rules\n".to_string());
+        deliver_scoped_context(&session, "wrk_test", rules, false).await;
         {
             let p = puts.lock().unwrap();
             assert_eq!(p.len(), 1, "one entry, not one per launch: {p:?}");
@@ -4043,11 +4084,38 @@ mod tests {
 
         // Scope removed: the entry is deleted, and the session (its `ses_` ref
         // and history) is untouched.
-        deliver_scoped_context(&session, "wrk_test", "   \n", false).await;
+        deliver_scoped_context(&session, "wrk_test", ScopedContext::Empty, false).await;
         assert_eq!(deletes.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(puts.lock().unwrap().len(), 1, "nothing re-PUT for an empty scope");
+
+        // An ISOLATED worker: no injected prompts, so no entry — and any earlier
+        // one is removed. This is the blocker the review found: the serve path
+        // must ask the isolation question the TUI path asks.
+        deliver_scoped_context(&session, "wrk_test", ScopedContext::Withheld, false).await;
+        assert_eq!(
+            puts.lock().unwrap().len(),
+            1,
+            "an isolated worker must never receive the fleet's context"
+        );
+        assert_eq!(deletes.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
+    /// The isolation decision itself is PURE: an isolated worker's scope is
+    /// withheld without touching the real home, so this test means the same
+    /// thing on every machine.
+    #[test]
+    fn an_isolated_worker_gets_no_serve_scope() {
+        assert_eq!(serve_scoped_context("wrk_isolated", true), ScopedContext::Withheld);
+    }
+
+    /// The chain M6 exists for, end to end over the WIRE: a running serve turn
+    /// polls its permission asks, the pinned policy consults `boundaries.toml`,
+    /// and a write into the vault is REFUSED — `reject` is what the fixture
+    /// records, not what our enum says.
+    ///
+    /// Before M6 nothing polled at all, so the ask would have hung the turn to
+    /// its timeout; and before it, no boundary applied to an opencode worker at
+    /// all (it has no PreToolUse hooks).
     #[tokio::test]
     async fn a_running_serve_turn_refuses_a_boundary_path_on_the_wire() {
         use axum::response::IntoResponse;
