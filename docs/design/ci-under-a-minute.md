@@ -128,3 +128,53 @@ log `dashboard_snapshot_served`). `/health` reports `dashboard_source` and
 restores the receipt and compiles in the same run. The builder keeps the
 served snapshot and three others. `scripts/test-build-restamp.sh` covers the
 dashboard-only, dashboard-plus-Rust, unsupported-server and refused cases.
+
+## Push to live, 2026-11-09: the land gate sets the floor
+
+The builder's `push_to_live_s` counts from the commit's committer time, which
+`amux land` sets when it replays the change onto origin/main, before the gate
+runs. So the number includes the land gate. After the push, the deploy is
+already fast: activation waits only for `gate` (`AMUX_CI_REQUIRED_WORKFLOWS=gate`
+in server.env, about 16 s), then a re-stamp or a compile.
+
+Measured over 35 pushes from 2026-11-08 08:00 to 11-09 08:00, from committer
+time to the `gate` run's `created_at`: 22 reached GitHub within 34 s, and 13
+waited 167 to 1,605 s. All 13 were held by the land gate. Its receipts show
+three costs, in this order of size:
+
+| cost | what it is | measured |
+|---|---|---|
+| Rust leg | nextest compiles and runs the changed modules' tests on the composed tree | 95 to 1,034 s; 4c1bf9485 1,034 s at load 0.58 per core |
+| Load wait | `wait_for_load` holds every change until load is at most 2.0 per core | 270 s (adfe6b6e5) and 331 s (ecc956210), both changes with no Rust leg |
+| e2e leg | the affected Playwright specs, run after the Rust leg | 75 to 164 s |
+
+The review runs beside the Rust leg (27 to 342 s), so it adds time only when
+it is the longest leg. Across 146 gate runs since 11-08 the median was 216 s
+and the 90th percentile 1,250 s.
+
+**So the 2026-11-09 audit's B1 named the wrong mechanism.** It said activation
+waits for the `rust` workflow's e2e shards. It does not. The fix belongs in
+`scripts/land_gate.py`, an `[owner]` file, so each change below needs the
+owner's approval of its exact diff, filed by the gate itself.
+
+**Changes, smallest first:**
+
+1. **No load wait for a change with no Rust leg.** The wait protects the
+   machine from a compile. A dashboard, site or docs change compiles nothing
+   in the gate, so it should start its e2e leg at once. This saves 270 to
+   331 s on the commits that hit it.
+2. **e2e beside the Rust leg.** Today it waits for nextest to finish. The two
+   share the build directory, so the overlap is only the browser time
+   (75 to 164 s), and only if the e2e server build does not wait on the
+   same cargo lock. Measure that before relying on it.
+3. **Land on the fast legs and run the Rust leg after the push (SA-9, "fast
+   checks with revert-on-red").** The receipt passes on owner, revert,
+   review and e2e. The Rust leg keeps running on the composed tree. If it
+   goes red, the gate pushes `git revert` of the change with the failing
+   tests named, and logs `land_gate_reverted`. That takes up to 1,034 s off
+   a Rust change. The cost: a Rust regression is live for the length of the
+   leg, which the builder's boot health check and the `rust` workflow also
+   catch.
+
+Change 1 is the cheapest and carries no new risk. Change 3 is the one that
+reaches the 2-minute goal for Rust commits.
