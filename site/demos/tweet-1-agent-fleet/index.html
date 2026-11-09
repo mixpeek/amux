@@ -16,6 +16,8 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=c4a974bd">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
 </head>
 <body>
@@ -54,7 +56,7 @@
   <div class="tweet-badge">🧵 1 of 7</div>
   <h1>Agent Fleet Overview</h1>
   <p class="tagline">Stop cycling through panes. See every agent at once.</p>
-  <div class="gif-wrap"><video src="demo.mp4?v=b949e87c" autoplay loop muted playsinline title="Agent Fleet Overview demo"></video></div>
+  <div class="gif-wrap"><video data-lightbox src="demo.mp4?v=b949e87c" autoplay loop muted playsinline title="Agent Fleet Overview demo"></video></div>
   <p class="body-text">I run 10–20 Claude Code agents in parallel across different repos. I was using tmux, constantly cycling through panes trying to figure out which agent was stuck and which one needed me.
 
 Then I realized — why am I sitting at my desk babysitting terminals?

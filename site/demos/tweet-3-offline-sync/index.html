@@ -16,6 +16,8 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=c4a974bd">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
 </head>
 <body>
@@ -54,7 +56,7 @@
   <div class="tweet-badge">🧵 3 of 7</div>
   <h1>Offline-First Sync</h1>
   <p class="tagline">Commands you send on spotty wifi never get lost.</p>
-  <div class="gif-wrap"><video src="demo.mp4?v=9958884a" autoplay loop muted playsinline title="Offline-First Sync demo"></video></div>
+  <div class="gif-wrap"><video data-lightbox src="demo.mp4?v=9958884a" autoplay loop muted playsinline title="Offline-First Sync demo"></video></div>
   <p class="body-text">The part that makes this actually work: offline-first. Commands you send while on spotty wifi or in the subway get queued locally. When you reconnect, Background Sync replays everything automatically — even if the tab is closed.
 
 Three-layer persistence (Service Worker cache, localStorage, IndexedDB) means you never lose state. You're never out of the loop.</p>

@@ -16,6 +16,8 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=c4a974bd">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
 </head>
 <body>
@@ -54,7 +56,7 @@
   <div class="tweet-badge">🧵 7 of 7</div>
   <h1>Up and Running in 60 Seconds</h1>
   <p class="tagline">one Rust binary. Single file. Zero build step.</p>
-  <div class="gif-wrap"><video src="demo.mp4?v=674a5837" autoplay loop muted playsinline title="Up and Running in 60 Seconds demo"></video></div>
+  <div class="gif-wrap"><video data-lightbox src="demo.mp4?v=674a5837" autoplay loop muted playsinline title="Up and Running in 60 Seconds demo"></video></div>
   <p class="body-text">MIT + Commons Clause. One Rust binary. That's it.</p>
   <pre style="background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;padding:16px;font-family:monospace;font-size:0.82rem;line-height:1.8;overflow-x:auto;margin:0 0 24px;">git clone https://github.com/mixpeek/amux && cd amux && ./install.sh
 amux register api --dir ~/Dev/api --yolo && amux start api

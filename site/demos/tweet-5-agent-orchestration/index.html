@@ -16,6 +16,8 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261108">
+  <link rel="stylesheet" href="/lightbox.css?v=c4a974bd">
+  <script defer src="/lightbox.js?v=224481c0"></script>
   <script src="/site.js?v=20261108"></script>
 </head>
 <body>
@@ -54,7 +56,7 @@
   <div class="tweet-badge">🧵 5 of 7</div>
   <h1>Agents That Coordinate Themselves</h1>
   <p class="tagline">Agents discover peers and delegate work on their own.</p>
-  <div class="gif-wrap"><video src="demo.mp4?v=bffff405" autoplay loop muted playsinline title="Agents That Coordinate Themselves demo"></video></div>
+  <div class="gif-wrap"><video data-lightbox src="demo.mp4?v=bffff405" autoplay loop muted playsinline title="Agents That Coordinate Themselves demo"></video></div>
   <p class="body-text">Agents talk to each other too. Every session gets environment variables and a shared memory file with the full REST API. Agents discover peers and delegate work on their own.
 
 Task claiming is atomic via SQLite CAS — dozens of agents race for the same queue, zero duplicated work, no Redis.</p>
