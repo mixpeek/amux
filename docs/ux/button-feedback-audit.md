@@ -272,9 +272,17 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Keep mine | `_fileConflictResolve` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Show their version | `_fileConflictResolve` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Take theirs | `_fileConflictResolve` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Delete | `_fileDeleteOpen` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Download | `_fileDownload` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Duplicate | `_fileDuplicate` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Get info | `_fileInfo` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| index.html | Move to | `_fileMoveOpen` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Open in worker | `_fileOpenInWorker` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Pin | `_filePinOverlay` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| index.html | Print | `_filePrint` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| index.html | Rename | `_fileRenameOpen` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| index.html | Share | `_fileShare` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| index.html | Show in folder | `_fileShowInFolder` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Full-screen player | `_fileVideoFullscreen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + ic + esc(b.label) + | `_filesBookmarkOpen` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1276,6 +1284,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Export | `_drawToggleExportMenu` | onclick |
 | index.html | Lock | `_drawToggleLock` | onclick |
 | app.js | // Star is the flag, in the position every clien | `_emailToggleBody` | onclick |
+| index.html | Open in new window | `_fileOpenNewWindow` | onclick |
 | index.html | Present | `_filePresent` | onclick |
 | index.html | Save | `_fileSave` | onclick |
 | index.html | button | `_filesClearOfflineCache` | onclick |

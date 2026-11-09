@@ -2052,14 +2052,32 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileDeleteOpen": {
+      "kind": "command._fileDeleteOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileDownload": {
       "kind": "command._fileDownload",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileDuplicate": {
+      "kind": "command._fileDuplicate",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileEditBeacon": {
       "kind": "command._fileEditBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileMoveOpen": {
+      "kind": "command._fileMoveOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2082,6 +2100,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileRenameOpen": {
+      "kind": "command._fileRenameOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileSaveOnce": {
       "kind": "command._fileSaveOnce",
       "feedback_required": true,
@@ -2090,6 +2114,12 @@
     },
     "_fileShowCached": {
       "kind": "command._fileShowCached",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_fileShowInFolder": {
+      "kind": "command._fileShowInFolder",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

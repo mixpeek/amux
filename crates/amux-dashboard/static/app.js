@@ -29884,6 +29884,7 @@ function _toggleFileMenu(e) {
   const m = document.getElementById('file-actions');
   if (!m) return;
   const open = m.classList.toggle('open');
+  if (open) _fileMenuSync();
   document.removeEventListener('click', _fileMenuOutside);
   if (open) setTimeout(() => document.addEventListener('click', _fileMenuOutside), 0);
 }
@@ -29895,6 +29896,224 @@ function _fileMenuOutside(e) {
     m.classList.remove('open');
     document.removeEventListener('click', _fileMenuOutside);
   }
+}
+
+// ── File actions in the viewer (Ethan, 2026-11-08: "make it so i can print
+// files have all the file options like i have for any os for files"). The ⋯
+// menu carries what a Finder or Explorer file menu does: open in a new window,
+// show in folder, print, download, share, duplicate, rename, move, get info and
+// delete. Rename, move and delete use the same /api/fs routes as the Files row
+// menu; duplicate re-uploads the bytes through the durable upload, which never
+// overwrites (a taken name gets _1). Every action is beaconed as
+// kind=file-action with its verdict.
+function _fvPath() { return (_fileData && !_fileData._isNew && _fileData.path) || ''; }
+function _fvBeacon(action, verdict, extra) {
+  try { window._clientDebug && window._clientDebug('file-action', Object.assign({}, extra || {}, { action, verdict, measured: true, n_considered: 1, kind: 'file-action' })); } catch (e) { console.warn('file-action beacon', e); }
+}
+function _fvNeedPath() {
+  const p = _fvPath();
+  if (!p) showToast('Save the file first');
+  return p;
+}
+const _FV_IMAGE = /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i;
+// PRINT. A PDF prints its own pages and an image prints alone; any other file
+// prints as it is shown (rendered markdown, highlighted code, a table). In a
+// browser that is a hidden frame's print(). The Mac app's WebKit ignores
+// print(), so there the page hands the bytes or the HTML to the app
+// (amuxPrint), which opens the native print panel.
+function _fvPrintHtml(name) {
+  const body = document.getElementById('file-body');
+  const shown = body && body.style.display !== 'none' && body.innerHTML.trim() ? body.innerHTML
+    : '<pre>' + esc((_fileData && _fileData.content) || '') + '</pre>';
+  return '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(name) + '</title><style>'
+    + '@page{margin:14mm}body{font:11pt/1.5 -apple-system,system-ui,sans-serif;color:#000;background:#fff;margin:0}'
+    + 'pre,code{white-space:pre-wrap;word-break:break-word;font:9.5pt/1.45 ui-monospace,Menlo,monospace}'
+    + 'img,video{max-width:100%}table{border-collapse:collapse}td,th{border:1px solid #999;padding:3px 6px}'
+    + 'a{color:#000}button,.md-copy-btn{display:none}</style></head><body>' + shown + '</body></html>';
+}
+async function _fvBlobBase64(blob) {
+  return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+}
+async function _filePrint() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  const kind = /\.pdf$/i.test(name) ? 'pdf' : _FV_IMAGE.test(name) && !/\.svg$/i.test(name) ? 'image' : 'document';
+  let blob = null;
+  if (kind !== 'document') {
+    try {
+      const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      blob = await r.blob();
+    } catch (e) { showToast('Could not load ' + name + ' to print'); _fvBeacon('print', 'load_failed', { file_kind: kind, error: String(e.message || e) }); return; }
+  }
+  const native = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxPrint;
+  if (native) {
+    const msg = { name, kind };
+    if (blob) msg.data = await _fvBlobBase64(blob); else msg.html = _fvPrintHtml(name);
+    native.postMessage(msg);
+    _fvBeacon('print', 'sent_to_app', { file_kind: kind });
+    return;
+  }
+  document.getElementById('file-print-frame')?.remove();
+  const fr = document.createElement('iframe');
+  fr.id = 'file-print-frame'; fr.className = 'file-print-frame'; fr.title = 'Print ' + name;
+  fr.setAttribute('aria-hidden', 'true');
+  if (kind === 'pdf') {
+    fr.src = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+  } else if (kind === 'image') {
+    fr.srcdoc = '<!doctype html><title>' + esc(name) + '</title><style>@page{margin:10mm}body{margin:0}img{max-width:100%;max-height:100vh;display:block;margin:auto}</style><img src="' + URL.createObjectURL(blob) + '">';
+  } else {
+    fr.srcdoc = _fvPrintHtml(name);
+  }
+  fr.dataset.kind = kind;
+  // Print once the frame is ready: its load event, or its document reporting
+  // complete (Chromium does not always fire load for a frame hosting a PDF).
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true; clearInterval(poll);
+    fr.dataset.loaded = '1';
+    _fvBeacon('print', 'print_opened', { file_kind: kind });
+    try { fr.contentWindow.focus(); fr.contentWindow.print(); fr.dataset.printed = '1'; }
+    catch (e) {
+      // A PDF viewer that refuses a scripted print still prints from its own toolbar.
+      _fvBeacon('print', 'print_blocked', { file_kind: kind, error: String(e.message || e) });
+      if (kind === 'pdf') window.open(fr.src, '_blank'); else showToast('Printing was blocked by the browser');
+    }
+  };
+  fr.addEventListener('load', go);
+  let waited = 0;
+  const poll = setInterval(() => {
+    waited += 250;
+    let ready = false;
+    try { ready = !!fr.contentDocument && fr.contentDocument.readyState === 'complete' && waited >= 750; } catch (e) { ready = false; }
+    if (ready) { go(); return; }
+    if (waited >= 10000 && !done) {
+      done = true; clearInterval(poll);
+      _fvBeacon('print', 'print_timeout', { file_kind: kind });
+      if (kind === 'pdf') window.open(fr.src, '_blank'); else showToast('Could not print ' + name);
+    }
+  }, 250);
+  document.body.appendChild(fr);
+}
+function _fileOpenNewWindow() {
+  const path = _fvNeedPath(); if (!path) return;
+  _fvBeacon('window', 'opened');
+  window.open(location.origin + location.pathname + '#path=' + _encodeHashPath(path), '_blank');
+}
+function _fileShowInFolder() {
+  const path = _fvNeedPath(); if (!path) return;
+  const dir = path.replace(/\/[^/]*$/, '') || '/';
+  closeFilePreview();
+  if (_fileData && _fileData.path === path) return;   // kept open: unsaved edits
+  _filesPath = dir;
+  switchView('files');
+  loadFiles(dir);
+  _fvBeacon('reveal', 'shown');
+}
+async function _fileShare() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); _fvBeacon('share', 'shared'); return; }
+    _copyFileDeeplink(path);
+    _fvBeacon('share', 'link_copied');
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    showToast('Could not share ' + name);
+    _fvBeacon('share', 'failed', { error: String(e.message || e) });
+  }
+}
+// Download is offered for every saved file. A file the viewer already set a
+// download for (a binary, a capped PDF or large text) keeps its own URL.
+function _fileMenuSync() {
+  const dl = document.getElementById('file-download-btn'), path = _fvPath();
+  if (dl && path && dl.style.display === 'none') {
+    dl.dataset.url = API + '/api/file/raw?path=' + encodeURIComponent(path);
+    dl.dataset.filename = path.split('/').pop();
+    dl.style.display = '';
+  }
+  const share = document.getElementById('file-tab-share');
+  if (share) share.style.display = navigator.share ? '' : 'none';
+}
+async function _fileRenameOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const old = path.split('/').pop();
+  const name = ((await showPrompt('Rename "' + old + '" to:', old, old)) || '').trim();
+  if (!name || name === old) return;
+  if (/[\/\0]/.test(name) || name === '.' || name === '..') { showToast('Invalid name'); return; }
+  const r = await apiCall(API + '/api/fs/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, new_name: name }) });
+  if (!r) { _fvBeacon('rename', 'failed'); return; }   // apiCall said why
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast(d.error || 'Rename failed'); _fvBeacon('rename', 'failed'); return; }
+  showToast('Renamed to ' + name);
+  _fvBeacon('rename', 'renamed');
+  closeFilePreview();
+  await openFilePreview(d.path || path.replace(/[^/]*$/, name));
+  _fileViewRefresh();
+}
+async function _fileMoveOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  const to = ((await showPrompt('Move "' + name + '" to folder:', dir, dir)) || '').trim().replace(/\/+$/, '');
+  if (!to || to === dir) return;
+  const r = await apiCall(API + '/api/fs/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, dest: to + '/' + name }) });
+  if (!r) { _fvBeacon('move', 'failed'); return; }   // apiCall said why
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) { showToast(d.error === 'target already exists' ? to + ' already has a ' + name : (d.error || 'Move failed')); _fvBeacon('move', 'failed'); return; }
+  showToast('Moved to ' + to);
+  _fvBeacon('move', 'moved');
+  closeFilePreview();
+  await openFilePreview(d.path || to + '/' + name);
+  _fileViewRefresh();
+}
+async function _fileDuplicate() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  const dot = name.lastIndexOf('.');
+  const copy = dot > 0 ? name.slice(0, dot) + ' copy' + name.slice(dot) : name + ' copy';
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders() });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const blob = await r.blob();
+    const { queued, failed } = await _uploadOrQueue([new File([blob], copy, { type: blob.type })], dir, 'file');
+    if (failed || !queued) throw new Error('not saved');
+    showToast('Duplicating as ' + copy);
+    _fvBeacon('duplicate', 'queued');
+  } catch (e) { showToast('Could not duplicate ' + name); _fvBeacon('duplicate', 'failed', { error: String(e.message || e) }); }
+}
+async function _fileInfo() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop(), dir = path.replace(/\/[^/]*$/, '') || '/';
+  let e = null;
+  try {
+    const d = await (await fetch(API + '/api/ls?path=' + encodeURIComponent(dir) + '&hidden=1')).json();
+    e = (d.entries || []).find(x => x.name === name) || null;
+  } catch (err) { console.warn('file info', err); }
+  const when = t => t ? new Date(t * 1000).toLocaleString() : 'unknown';
+  const ext = name.includes('.') ? name.split('.').pop().toUpperCase() + ' file' : 'File';
+  const rows = [['Name', name], ['Kind', ext], ['Size', e && e.size != null ? _fmtSize(e.size) + ' (' + e.size.toLocaleString() + ' bytes)' : 'unknown'],
+    ['Where', dir], ['Modified', when(e && e.modified)]];
+  if (e && e.created) rows.push(['Created', when(e.created)]);
+  if (e && e.opened) rows.push(['Opened', when(e.opened)]);
+  _fvBeacon('info', e ? 'shown' : 'shown_without_listing');
+  await showAlertHtml(name, '<table class="file-info-table">' + rows.map(([k, v]) => '<tr><th>' + esc(k) + '</th><td>' + esc(String(v)) + '</td></tr>').join('') + '</table>');
+}
+async function _fileDeleteOpen() {
+  const path = _fvNeedPath(); if (!path) return;
+  const name = path.split('/').pop();
+  if (!(await showConfirm('Delete "' + name + '"? This cannot be undone.', 'Delete', true))) return;
+  const r = await apiCall(API + '/api/fs/delete', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+  if (!r) { _fvBeacon('delete', 'failed'); return; }   // apiCall said why
+  showToast('Deleted ' + name);
+  _fvBeacon('delete', 'deleted');
+  _fileData = null;
+  closeFilePreview();
+  _fileViewRefresh();
 }
 
 // ── Open in worker (owner, 2026-10-31 mockup) ──

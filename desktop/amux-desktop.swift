@@ -3,6 +3,7 @@ import WebKit
 import Carbon.HIToolbox
 import UserNotifications
 import AVFoundation
+import PDFKit
 
 // The native macOS app: dashboard windows and tabs on the system WebKit (no
 // bundled browser), pinned notes as floating panels, the menu bar readout, a
@@ -508,6 +509,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // A zoom from the page (app.js _zoomShare): every other page follows it.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxZoom")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxZoom")
+        // Print from the file viewer (app.js _filePrint): WebKit here ignores
+        // window.print(), so the page sends the file's bytes or its HTML.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxPrint")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxPrint")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -521,6 +526,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "amuxPrint" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any], let w = window {
+                FilePrint.run(d, in: w)
+            }
+            return
+        }
         if message.name == "amuxZoom" {
             if let n = message.body as? NSNumber { app?.zoomOthers(from: self, level: n.intValue) }
             return
@@ -2205,5 +2216,66 @@ struct AmuxDesktop {
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()
+    }
+}
+
+
+// Printing a file from the viewer (owner, 2026-11-08: "make it so i can print
+// files"). A PDF prints its own pages and an image prints as one page through
+// PDFKit; any other file arrives as the HTML the viewer shows and prints from
+// an offscreen WebKit view. The print panel is a sheet on the asking window.
+// Each job logs one line to Console under "amux print".
+final class FilePrint: NSObject, WKNavigationDelegate {
+    private static var jobs: Set<FilePrint> = []
+    private let window: NSWindow
+    private let name: String
+    private var web: WKWebView?
+
+    private init(window: NSWindow, name: String) { self.window = window; self.name = name }
+
+    static func run(_ d: [String: Any], in window: NSWindow) {
+        let name = (d["name"] as? String) ?? "file"
+        let kind = (d["kind"] as? String) ?? "document"
+        if let b64 = d["data"] as? String, let data = Data(base64Encoded: b64) {
+            var doc = kind == "pdf" ? PDFDocument(data: data) : nil
+            if doc == nil, let img = NSImage(data: data), let page = PDFPage(image: img) {
+                doc = PDFDocument(); doc?.insert(page, at: 0)
+            }
+            guard let pdf = doc, let op = pdf.printOperation(for: NSPrintInfo.shared, scalingMode: .pageScaleToFit, autoRotate: true) else {
+                NSLog("amux print: could not read %@ as %@ verdict=print_unreadable", name, kind)
+                return
+            }
+            op.jobTitle = name
+            op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+            NSLog("amux print: %@ (%@) verdict=print_panel_shown", name, kind)
+            return
+        }
+        guard let html = d["html"] as? String else {
+            NSLog("amux print: %@ arrived with nothing to print verdict=print_empty", name)
+            return
+        }
+        let job = FilePrint(window: window, name: name)
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 816, height: 1056))
+        web.navigationDelegate = job
+        job.web = web
+        jobs.insert(job)
+        web.loadHTMLString(html, baseURL: nil)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        let op = webView.printOperation(with: NSPrintInfo.shared)
+        op.jobTitle = name
+        op.view?.frame = webView.bounds
+        op.runModal(for: window, delegate: self, didRun: #selector(printed(_:success:contextInfo:)), contextInfo: nil)
+        NSLog("amux print: %@ (document) verdict=print_panel_shown", name)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        NSLog("amux print: %@ did not load: %@ verdict=print_load_failed", name, error.localizedDescription)
+        FilePrint.jobs.remove(self)
+    }
+
+    @objc private func printed(_ op: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        FilePrint.jobs.remove(self)
     }
 }

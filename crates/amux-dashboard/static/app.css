@@ -1268,6 +1268,8 @@
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); box-shadow: var(--shadow-md);
     padding: var(--space-1-5); z-index: 60; min-width: 170px; max-width: 78vw; max-height: 70vh; overflow-y: auto; }
   .file-actions.open { display: flex; }
+  .file-actions-sep { height: 1px; background: var(--border); margin: var(--space-1) 0; flex-shrink: 0; }
+  .file-actions .file-action-danger { color: var(--red); }
   /* Open in worker (app.js _fileOpenInWorker), inside the shared form dialog. */
   .fow-to { display: flex; gap: var(--space-4); margin-bottom: var(--space-3); }
   .fow-to label { display: inline-flex; align-items: center; gap: var(--space-1-5); min-height: 44px; cursor: pointer; }
@@ -11034,3 +11036,10 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .binprev-font-s3 { font-size: var(--fs-xl); }
 .binprev-font-s4 { font-size: var(--fs-md); }
 .binprev-font-chars { font-size: var(--fs-2xl); }
+
+/* File viewer: the frame a file prints from (_filePrint). Kept in the page,
+   zero-sized, so it prints; display:none frames do not print everywhere. */
+.file-print-frame { position: fixed; right: 0; bottom: 0; width: 0; height: 0; border: 0; }
+.file-info-table { border-collapse: collapse; font-size: var(--fs-md); }
+.file-info-table th { text-align: left; color: var(--dim); font-weight: 500; padding: var(--space-1) var(--space-3) var(--space-1) 0; vertical-align: top; }
+.file-info-table td { padding: var(--space-1) 0; word-break: break-all; }

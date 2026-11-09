@@ -30,7 +30,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 MIN_MACOS=12.0
 # ScreenCaptureKit (system audio for the recorder) exists from macOS 13, so it
 # is weak-linked: on 12 the app runs and records the microphone only.
-FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
+FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -framework PDFKit -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
 compile() {  # $1 = output, $2 = optional -target
     # shellcheck disable=SC2086  # SRC and FRAMEWORKS are word lists
     xcrun swiftc -O -parse-as-library -D AMUX_APP ${2:+-target "$2"} -o "$1" $SRC $FRAMEWORKS

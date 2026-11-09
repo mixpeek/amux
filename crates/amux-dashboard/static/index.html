@@ -4217,16 +4217,29 @@
     <button id="file-save-btn" onclick="_fileSave()" style="display:none;">Save</button>
     <button id="file-present-btn" onclick="_filePresent()" title="Present full screen (arrow keys to move, Esc to exit)" style="display:none;">&#x25B6; Present</button>
     <button class="file-menu-btn" id="file-menu-btn" onclick="_toggleFileMenu(event)" title="More actions" aria-label="More actions">&#x22EF;</button>
-    <div class="file-actions" id="file-actions">
+    <div class="file-actions" id="file-actions" role="menu">
+      <button class="file-view-tab" id="file-tab-newwin" onclick="_fileOpenNewWindow()" title="Open this file in a new window">&#x29C9; Open in new window</button>
+      <button class="file-view-tab" id="file-tab-reveal" onclick="_fileShowInFolder()" title="Show this file in its folder">&#x1F4C2; Show in folder</button>
       <button class="file-view-tab" id="file-tab-worker" onclick="_fileOpenInWorker()" title="Hand this file to a worker with instructions">Open in worker&#x2026;</button>
+      <div class="file-actions-sep" role="separator"></div>
+      <button class="file-view-tab" id="file-tab-print" onclick="_filePrint()" title="Print this file">&#x2399; Print&#x2026;</button>
+      <button class="file-view-tab" id="file-download-btn" onclick="_fileDownload()" title="Save a copy of this file to this device" style="display:none;">&#x2B07; Download</button>
+      <button class="file-view-tab" id="file-tab-share" onclick="_fileShare()" title="Share this file">&#x2197; Share&#x2026;</button>
       <button class="file-view-tab" id="file-tab-teleprompter" onclick="_filesOpenTeleprompter()" title="Teleprompter mode" style="display:none;">&#x25B6; Teleprompter</button>
       <button class="file-view-tab" id="file-tab-search" onclick="_mdSearchToggle()" title="Find in markdown" style="display:none;">&#x1F50D; Find</button>
       <button class="file-view-tab" id="file-tab-readaloud" onclick="_ttsSpeak(_mdToSpeech(_fileData&&_fileData.content),this)" title="Read aloud" style="display:none;">&#x1F50A; Read Aloud</button>
+      <div class="file-actions-sep" role="separator"></div>
       <button class="file-view-tab" id="file-tab-copy" onclick="copyFileContent()" title="Copy the file's text">Copy text</button>
       <button class="file-view-tab" id="file-tab-copypath" onclick="_copyFilePath(_fileData&&_fileData.path||'')" title="Copy the file's path">Copy path</button>
       <button class="file-view-tab" id="file-tab-link" onclick="_copyFileDeeplink(_fileData&&_fileData.path||'')" title="Copy a link that opens this file">Copy link</button>
-      <button class="file-view-tab" id="file-download-btn" onclick="_fileDownload()" style="display:none;">&#x2B07; Download</button>
+      <div class="file-actions-sep" role="separator"></div>
+      <button class="file-view-tab" id="file-tab-rename" onclick="_fileRenameOpen()" title="Rename this file">Rename&#x2026;</button>
+      <button class="file-view-tab" id="file-tab-duplicate" onclick="_fileDuplicate()" title="Make a copy beside it">Duplicate</button>
+      <button class="file-view-tab" id="file-tab-move" onclick="_fileMoveOpen()" title="Move this file to another folder">Move to&#x2026;</button>
+      <button class="file-view-tab" id="file-tab-info" onclick="_fileInfo()" title="Size, kind, where it is and when it changed">&#x24D8; Get info</button>
       <button class="file-view-tab" id="file-tab-pin" onclick="_filePinOverlay()" title="Float as overlay on desktop">&#x1F4CC; Pin</button>
+      <div class="file-actions-sep" role="separator"></div>
+      <button class="file-view-tab file-action-danger" id="file-tab-delete" onclick="_fileDeleteOpen()" title="Delete this file">Delete&#x2026;</button>
     </div><!-- /file-actions -->
     <button class="btn" onclick="closeFilePreview()" style="flex-shrink:0;">&#x2715;</button>
   </div>
