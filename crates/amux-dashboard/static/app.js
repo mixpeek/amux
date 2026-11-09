@@ -35670,12 +35670,50 @@ function _spHandlePaste(e, box) {
   const items = [...(e.clipboardData?.items || [])];
   const images = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
   const text = e.clipboardData?.getData('text/plain') || '';
-  if (box && box.value.trim()) return;
+  if (box && box.value.trim()) {
+    // Typing: an image goes into the note, saved beside it (Ethan, 2026-11-08).
+    if (images.length) _pasteImagesIntoNote(e, box, _spPath.replace(/\/$/, ''));
+    return;
+  }
   if (!images.length && !text.trim()) return;
   e.preventDefault();
   images.forEach(_spSaveImage);
   if (text.trim()) _spCaptureSave(text);
 }
+// PASTING AN IMAGE INTO A NOTE (Ethan, 2026-11-08: "I should be able to paste
+// images in scratchpad"). The image is saved as a file in the note's folder,
+// through the durable chunked upload, and the note gets ![](name) at the
+// cursor; the preview shows it (renderer.image resolves relative paths). The
+// name carries a random tail so the server never has to rename it on a
+// collision, which would break the link. Beaconed as kind=note-paste-image.
+function _pasteImageName(file) {
+  const ext = ((file.type || '').split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'png';
+  return 'pasted-' + _spStamp() + '-' + Math.random().toString(36).slice(2, 6) + '.' + ext;
+}
+function _pasteImagesIntoNote(e, ta, dir) {
+  const files = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file' && /^image\//.test(i.type))
+    .map(i => i.getAsFile()).filter(Boolean);
+  if (!files.length || !dir) return false;
+  e.preventDefault();
+  const named = files.map(f => new File([f], _pasteImageName(f), { type: f.type }));
+  const ins = named.map(f => '![](' + f.name + ')').join('\n');
+  const s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, s), lead = before && !before.endsWith('\n') ? '\n' : '';
+  ta.value = before + lead + ins + '\n' + ta.value.slice(en);
+  ta.selectionStart = ta.selectionEnd = s + lead.length + ins.length + 1;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  _uploadOrQueue(named, dir, 'file').then(({ queued, failed }) => {
+    if (window._clientDebug) window._clientDebug('note-paste-image', { verdict: failed ? 'upload_failed' : 'queued', measured: true, n_considered: named.length, queued, failed });
+    if (failed) showToast('Could not save the pasted image');
+  });
+  return true;
+}
+document.addEventListener('paste', e => {
+  const ta = e.target;
+  if (!ta || ta.id !== 'file-edit-ta' || !_fileData || !_fileData.path) return;
+  if (!(_fileData.is_markdown || /\.(md|markdown|txt)$/i.test(_fileData.path))) return;
+  _pasteImagesIntoNote(e, ta, _fileData.path.replace(/\/[^/]*$/, ''));
+});
 async function _spCaptureSaveTyped() {
   const box = document.getElementById('sp-capture');
   if (!box || !box.value.trim()) return;
@@ -46952,7 +46990,11 @@ function _renderMarkdownInner(raw, basePath) {
       // Media inline, scaled to the container: an image link to a video file
       // plays in place instead of showing a broken image.
       renderer.image = function({ href, title, text }) {
-        const h = esc(href || ''), t = title ? ' title="' + esc(title) + '"' : '';
+        // A relative image (![](shot.png), as a pasted image is written) is the
+        // file beside this note, served by this amux.
+        const local = _resolveFileLink(basePath, href);
+        const src = local ? _authUrl(API + '/api/file/raw?path=' + encodeURIComponent(local)) : href;
+        const h = esc(src || ''), t = title ? ' title="' + esc(title) + '"' : '';
         if (/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(href || ''))
           return '<video controls preload="metadata" src="' + h + '"' + t + '></video>';
         if (/\.(mp3|m4a|wav|ogg)(\?|#|$)/i.test(href || ''))

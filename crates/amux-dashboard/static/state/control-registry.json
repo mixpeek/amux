@@ -3720,6 +3720,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pasteImagesIntoNote": {
+      "kind": "command._pasteImagesIntoNote",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_pasteTextInto": {
       "kind": "command._pasteTextInto",
       "feedback_required": true,
