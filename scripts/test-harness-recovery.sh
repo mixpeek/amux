@@ -40,6 +40,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/anonymous-not-owner.mjs anonymous-not-owner
   e2e/chaos/loopback-not-trusted.mjs loopback-not-trusted
   e2e/chaos/connector-token-scope.mjs connector-token-scope
+  e2e/chaos/published-app-api.mjs published-app-api
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot

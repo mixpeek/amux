@@ -63790,6 +63790,15 @@ function _pubSize(n) {
 }
 // An app (inside amux or public) is a card with a live preview; a pending one
 // keeps Approve / Decline, since it opens nothing until you approve it.
+// What amux the app itself may call (app_identity.rs): a published app has
+// none unless a person allows it, and approving a link allows what it asked.
+function _pubApiText(l) {
+  if (l.file || !l.port) return '';
+  const allow = l.api_allow || [], asked = l.api_requested || [];
+  if (allow.length) return 'amux access: ' + allow.join('; ');
+  if (asked.length) return 'asks for amux access: ' + asked.join('; ');
+  return 'no amux access';
+}
 function _pubCard(l) {
   const id = escJs(l.id), name = esc(_pubName(l)), worker = _pubWorker(l);
   const chip = worker ? '<span class="pub-chip">' + esc(worker) + '</span>' : '';
@@ -63804,13 +63813,15 @@ function _pubCard(l) {
     return `<div class="pub-card pub-pending" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}">
       <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b>
         <span class="ui-help pub-pending-note">Waiting for your approval: ${internal ? 'it does not open yet.' : 'nobody can open it yet.'}</span>
-        <span class="ui-help pub-card-meta">${where}${by}</span></div></div>
+        <span class="ui-help pub-card-meta">${where}${by}</span>
+        <span class="ui-help pub-api" data-pub-api="${esc(l.id)}">${esc(_pubApiText(l))}</span></div></div>
       <div class="pages-head-actions"><button class="btn primary" onclick="_pubApprove('${id}')">Approve</button>
         <button class="btn danger" onclick="_pubRevoke('${id}')">Decline</button></div></div>`;
   }
   const open = internal ? ` role="button" tabindex="0" onclick="_pubOpenInternal('${id}')" onkeydown="if(event.key==='Enter'&&event.target===this){event.preventDefault();_pubOpenInternal('${id}')}"` : '';
   return `<div class="pub-card" data-pub="${esc(l.id)}" data-search="${esc(_pubSearchText(l))}"${open}>
-    <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b><span class="ui-help pub-card-meta">${meta}</span></div>
+    <div class="pub-card-head"><div class="pub-card-text"><b>${name}${chip}</b><span class="ui-help pub-card-meta">${meta}</span>
+      <span class="ui-help pub-api" data-pub-api="${esc(l.id)}">${esc(_pubApiText(l))}</span></div>
       <button class="btn pub-more" aria-label="More actions for ${name}" onclick="event.stopPropagation();_pubMenu(event,'${id}')">&#x22EE;</button>
       <button class="btn danger pub-remove" onclick="event.stopPropagation();_pubRevoke('${id}')">${internal ? 'Remove' : 'Turn off'}</button></div>
     <div class="pub-preview" data-preview="${esc(l.id)}" aria-hidden="true">${l.running === false
@@ -63939,7 +63950,9 @@ async function _pubApprove(id) {
     ? (l.file ? 'Show ' + what + ' inside amux? Only you, signed in, can open it.'
       : 'Open ' + what + ' inside amux? It runs with your amux access, so approve only an app you trust.')
     : 'Make ' + what + ' public? Anyone with the link can open it, without signing in, until you turn it off.';
-  if (!(await showConfirm(ask, 'Approve', true))) return;
+  const asked = (l && l.api_requested) || [];
+  const api = asked.length ? ' It also asks to call amux: ' + asked.join('; ') + '. Approving allows exactly these.' : '';
+  if (!(await showConfirm(ask + api, 'Approve', true))) return;
   try { await _pubAsPerson('approve', () => _pubFetch('/' + encodeURIComponent(id) + '/approve', { method: 'POST' })); showToast('Public link approved'); }
   catch (e) { showToast('Not approved: ' + e.message); }
   _pubList();

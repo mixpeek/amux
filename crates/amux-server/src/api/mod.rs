@@ -23,6 +23,7 @@ pub mod land_approvals;
 pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
+pub mod app_identity;
 pub mod connector_scope;
 pub mod human_proof;
 pub mod loopback_trust;
@@ -630,6 +631,15 @@ pub fn router_with_connector_transport(
         .route(
             "/api/page-links/{id}/approve",
             axum::routing::post(static_files::public_links::approve),
+        )
+        // A published app's own amux access and credential (app_identity.rs).
+        .route(
+            "/api/page-links/{id}/api",
+            axum::routing::post(static_files::public_links::set_api),
+        )
+        .route(
+            "/api/page-links/{id}/app-token",
+            axum::routing::post(static_files::public_links::new_app_token),
         )
         // A one-time link that opens an app inside amux on the apps origin.
         .route(
