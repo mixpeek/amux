@@ -16,6 +16,19 @@
 //! - **Owner.** On a rule-10 lane's card, the owner is a request that presented
 //!   the owner bearer, never one that merely omitted the worker headers
 //!   (`owner_by_absence_refused`, applied in the board PATCH route).
+//! - **Every lane, by default (governance PR 1, 2026-11-09).** Rule 10 began
+//!   opt-in per lane, so most of a fleet still spoke by assertion. Now every
+//!   lane launch mints a token, Claude, Codex, Gemini and isolated workers
+//!   alike (the token is environment, not a prompt, so A9 holds), unless the
+//!   lane lists 10 in `AMUX_CONTRACT_RULES_OFF`. What a missing or wrong token
+//!   costs a lane that is NOT on the contract is set by `AMUX_WORKER_IDENTITY`:
+//!   `report` (the default) lets the request through and logs
+//!   `worker_identity_would_refuse`; `enforce` refuses it 403 like a contract
+//!   lane; `off` mints nothing and checks nothing (the old opt-in behaviour).
+//!   Contract lanes are refused in every mode except `off`, as before. The
+//!   counts are in `GET /api/contract/counters` under `worker_identity`
+//!   (measured, n_considered), so `enforce` is switched on when
+//!   `would_refuse` has read zero for long enough, not on faith (A11).
 //! - **Credentials and sandbox** are reported, not changed, in phase 1:
 //!   `report()` names (never values) the credential-like keys each rule-10
 //!   lane's launch env sources, and whether it runs a permission-bypass flag
@@ -32,6 +45,96 @@ use std::path::{Path, PathBuf};
 pub const TOKEN_ENV: &str = "AMUX_WORKER_TOKEN";
 pub const TOKEN_HEADER: &str = "x-amux-worker-token";
 pub const RULE: &str = "10";
+pub const MODE_ENV: &str = "AMUX_WORKER_IDENTITY";
+
+/// What a lane that is not on the contract pays for a missing or wrong token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Mint nothing outside contract lanes and check nothing there.
+    Off,
+    /// Mint for every lane; a failed check is logged, not refused.
+    Report,
+    /// Mint for every lane; a failed check is refused 403.
+    Enforce,
+}
+
+impl Mode {
+    pub fn parse(v: Option<&str>) -> Mode {
+        match v.map(|v| v.trim().trim_matches('"').to_ascii_lowercase()).as_deref() {
+            Some("off") | Some("0") | Some("false") => Mode::Off,
+            Some("enforce") => Mode::Enforce,
+            _ => Mode::Report,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Off => "off",
+            Mode::Report => "report",
+            Mode::Enforce => "enforce",
+        }
+    }
+}
+
+/// The server's mode, from its environment (server.env is loaded into it at
+/// start). Read per request so a test or an operator flip needs no rebuild.
+pub fn mode() -> Mode {
+    Mode::parse(std::env::var(MODE_ENV).ok().as_deref())
+}
+
+/// How a lane's identity is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// No token is minted or checked for this lane.
+    None,
+    /// Minted by default; a failure costs what `Mode` says.
+    Default(Mode),
+    /// On the orchestration contract with rule 10: always refused.
+    Contract,
+}
+
+/// Rule 10 explicitly held back for the lane (`AMUX_CONTRACT_RULES_OFF`).
+fn opted_out(home: &Path, lane: &str) -> bool {
+    super::contract::lane_setting(home, lane, "AMUX_CONTRACT_RULES_OFF")
+        .is_some_and(|v| v.trim().trim_matches('"').split(',').any(|r| r.trim().eq_ignore_ascii_case(RULE)))
+}
+
+pub fn coverage_with(home: &Path, lane: &str, mode: Mode) -> Coverage {
+    if super::contract::rule_on(home, lane, RULE) {
+        return if mode == Mode::Off { Coverage::None } else { Coverage::Contract };
+    }
+    if mode == Mode::Off || opted_out(home, lane) {
+        return Coverage::None;
+    }
+    Coverage::Default(mode)
+}
+
+pub fn coverage(home: &Path, lane: &str) -> Coverage {
+    coverage_with(home, lane, mode())
+}
+
+/// Counts since this process started, for the A5 diagnostic.
+pub(crate) mod counters {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    pub static CONSIDERED: AtomicU64 = AtomicU64::new(0);
+    pub static VALID: AtomicU64 = AtomicU64::new(0);
+    pub static UNMINTED: AtomicU64 = AtomicU64::new(0);
+    pub static WOULD_REFUSE: AtomicU64 = AtomicU64::new(0);
+    pub static REFUSED: AtomicU64 = AtomicU64::new(0);
+    pub fn bump(c: &AtomicU64) {
+        c.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn get(c: &AtomicU64) -> u64 {
+        c.load(Ordering::Relaxed)
+    }
+}
+
+/// Log a (lane, kind) once per process: the counters carry every instance,
+/// the log names each lane once, so a fleet of unminted lanes polling the API
+/// does not become a log (ethos 5).
+fn first_time(lane: &str, kind: &str) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default).lock().map(|mut s| s.insert(format!("{kind}\u{0}{lane}"))).unwrap_or(true)
+}
 
 fn hash_path(home: &Path, lane: &str) -> PathBuf {
     home.join("worker-tokens").join(format!("{lane}.sha256"))
@@ -49,12 +152,12 @@ fn random_token() -> Option<String> {
     Some(hex::encode(b))
 }
 
-/// Mint a fresh token for a launch of `lane`, or None when rule 10 does not
-/// apply (a stale hash is then removed, so the lane is not held to a token it
+/// Mint a fresh token for a launch of `lane`, or None when the lane is not
+/// covered (a stale hash is then removed, so the lane is not held to a token it
 /// no longer receives). The caller delivers the value; it is never logged.
 pub fn mint(home: &Path, lane: &str) -> Option<String> {
     let path = hash_path(home, lane);
-    if !super::session_verbs::valid_session_name(lane) || !super::contract::rule_on(home, lane, RULE) {
+    if !super::session_verbs::valid_session_name(lane) || coverage(home, lane) == Coverage::None {
         let _ = std::fs::remove_file(&path);
         return None;
     }
@@ -115,7 +218,7 @@ impl Drop for RunToken {
 }
 
 pub fn mint_run(home: &Path, lane: &str) -> Option<RunToken> {
-    if !super::session_verbs::valid_session_name(lane) || !super::contract::rule_on(home, lane, RULE) {
+    if !super::session_verbs::valid_session_name(lane) || coverage(home, lane) == Coverage::None {
         return None;
     }
     let token = random_token()?;
@@ -156,7 +259,7 @@ fn run_token_valid(home: &Path, lane: &str, presented: &str) -> bool {
 
 #[derive(Debug, PartialEq)]
 pub enum Check {
-    /// Rule 10 is off for the lane: headers are trusted as before.
+    /// The lane is not covered: headers are trusted as before.
     Unenforced,
     /// Rule 10 is on but the lane has not relaunched since: no hash to check.
     Unminted,
@@ -165,7 +268,11 @@ pub enum Check {
 }
 
 pub fn check(home: &Path, lane: &str, presented: Option<&str>) -> Check {
-    if !super::contract::rule_on(home, lane, RULE) {
+    check_with(home, lane, presented, mode())
+}
+
+pub fn check_with(home: &Path, lane: &str, presented: Option<&str>, mode: Mode) -> Check {
+    if coverage_with(home, lane, mode) == Coverage::None {
         return Check::Unenforced;
     }
     let presented = presented.map(str::trim).filter(|t| !t.is_empty());
@@ -189,6 +296,12 @@ fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
 /// a real socket only: the server's own in-process calls (no ConnectInfo) act
 /// for lanes by design and are not a lane asserting itself.
 pub async fn enforce(req: Request, next: Next) -> Response {
+    enforce_in(mode(), req, next).await
+}
+
+/// `enforce` with the mode given, so a test can drive each mode on a real
+/// router without setting a process-wide variable other tests read.
+pub async fn enforce_in(mode: Mode, req: Request, next: Next) -> Response {
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let socket = req.extensions().get::<ConnectInfo<SocketAddr>>().is_some();
     let claimed = header(&req, "x-amux-session").or_else(|| header(&req, "x-amux-worker")).map(String::from);
@@ -199,14 +312,38 @@ pub async fn enforce(req: Request, next: Next) -> Response {
         return next.run(req).await;
     };
     let home = crate::config::amux_home();
-    match check(&home, &lane, header(&req, TOKEN_HEADER)) {
-        Check::Unenforced | Check::Valid => next.run(req).await,
+    let covered = coverage_with(&home, &lane, mode);
+    let result = check_with(&home, &lane, header(&req, TOKEN_HEADER), mode);
+    if result != Check::Unenforced {
+        counters::bump(&counters::CONSIDERED);
+    }
+    match result {
+        Check::Unenforced => next.run(req).await,
+        Check::Valid => {
+            counters::bump(&counters::VALID);
+            next.run(req).await
+        }
         Check::Unminted => {
-            tracing::debug!(lane, measured = true, n_considered = 1, verdict = "worker_identity_unminted",
-                "rule 10: lane has no minted token yet (relaunch to mint); the header is trusted until then");
+            counters::bump(&counters::UNMINTED);
+            if first_time(&lane, "unminted") {
+                tracing::info!(lane, measured = true, n_considered = 1, verdict = "worker_identity_unminted",
+                    "rule 10: lane has no minted token yet (it gets one at its next launch); the header is trusted until then");
+            }
+            next.run(req).await
+        }
+        Check::Invalid if covered == Coverage::Default(Mode::Report) => {
+            counters::bump(&counters::WOULD_REFUSE);
+            if first_time(&lane, "would_refuse") {
+                let presented = header(&req, TOKEN_HEADER).map(|t| digest(t)[..8].to_string());
+                tracing::warn!(lane, method = %req.method(), path = %req.uri().path(), measured = true, n_considered = 1,
+                    token = presented.as_deref().unwrap_or("none"), mode = Mode::Report.as_str(),
+                    verdict = "worker_identity_would_refuse",
+                    "a request claimed a lane without that lane's token; allowed in report mode (AMUX_WORKER_IDENTITY=enforce refuses it)");
+            }
             next.run(req).await
         }
         Check::Invalid => {
+            counters::bump(&counters::REFUSED);
             // Which failure: no token at all, or a token that matches no live
             // hash (a relaunched lane's old value, or another lane's). Only a
             // digest prefix is logged, never the token (2026-10-07: gs12-extra-2
@@ -214,7 +351,7 @@ pub async fn enforce(req: Request, next: Next) -> Response {
             // the line could not say which of the two it was).
             let presented = header(&req, TOKEN_HEADER).map(|t| digest(t)[..8].to_string());
             tracing::warn!(lane, method = %req.method(), path = %req.uri().path(), measured = true, n_considered = 1,
-                token = presented.as_deref().unwrap_or("none"),
+                token = presented.as_deref().unwrap_or("none"), contract = covered == Coverage::Contract,
                 verdict = "worker_identity_refused", "rule 10: a request claimed a lane without that lane's token");
             (StatusCode::FORBIDDEN, Json(json!({
                 "ok": false,
@@ -254,6 +391,44 @@ pub fn credential_like(key: &str) -> bool {
     ["TOKEN", "SECRET", "PASSWORD", "PASSWD", "API_KEY", "PRIVATE_KEY", "CREDENTIAL", "ACCESS_KEY"]
         .iter()
         .any(|w| k.contains(w))
+}
+
+/// The default-coverage diagnostic (A5): the mode, what the middleware saw
+/// since this process started, and which known lanes hold a minted token.
+/// `would_refuse` reading zero beside a non-zero `considered` is what says
+/// `enforce` is safe; a zero `considered` says nothing has been measured yet.
+pub fn identity_report(home: &Path, lanes: &[String]) -> Value {
+    let m = mode();
+    let (mut minted, mut unminted, mut uncovered) = (Vec::new(), Vec::new(), Vec::new());
+    for lane in lanes {
+        match coverage_with(home, lane, m) {
+            Coverage::None => uncovered.push(lane.clone()),
+            _ if hash_path(home, lane).is_file() => minted.push(lane.clone()),
+            _ => unminted.push(lane.clone()),
+        }
+    }
+    use counters::*;
+    let considered = get(&CONSIDERED);
+    json!({
+        "mode": m.as_str(),
+        "measured": true,
+        "n_considered": considered,
+        "since": "server start",
+        "requests": {
+            "considered": considered,
+            "valid": get(&VALID),
+            "unminted": get(&UNMINTED),
+            "would_refuse": get(&WOULD_REFUSE),
+            "refused": get(&REFUSED),
+        },
+        "lanes": {
+            "n_considered": lanes.len(),
+            "minted": minted,
+            "unminted": unminted,
+            "not_covered": uncovered,
+        },
+        "how_to_enforce": format!("{MODE_ENV}=enforce in server.env, then restart, once would_refuse stays 0"),
+    })
 }
 
 /// Phase 1 report for every rule-10 lane: credential-like key NAMES in the env
@@ -337,7 +512,8 @@ mod tests {
         let run = mint_run(h, "w").expect("rule 10 on: a run token is minted");
         assert_eq!(check(h, "w", Some(&run.value)), Check::Valid, "the run speaks as the lane");
         assert_eq!(check(h, "w", Some(&lane)), Check::Valid, "the lane's own token still works");
-        assert_eq!(check(h, "x", Some(&run.value)), Check::Unenforced, "another lane (rule off) is not affected");
+        assert_eq!(check_with(h, "x", Some(&run.value), Mode::Report), Check::Unminted,
+            "another lane is not given w's run token: it has no token of its own yet");
         let v = run.value.clone();
         drop(run);
         assert_eq!(check(h, "w", Some(&v)), Check::Invalid, "a finished run's token is retired");
@@ -394,6 +570,68 @@ mod tests {
         assert_eq!(call("POST", Some(&token), true).await.unwrap().status(), StatusCode::OK);
         assert_eq!(call("GET", None, true).await.unwrap().status(), StatusCode::OK, "reads are not identity claims");
         assert_eq!(call("POST", None, false).await.unwrap().status(), StatusCode::OK, "in-process harness calls");
+    }
+
+    /// Governance PR 1 (2026-11-09): a lane that is NOT on the contract gets a
+    /// token at launch too, unless it opts out of rule 10 or the mode is off.
+    #[test]
+    fn every_lane_is_covered_by_default_and_opts_out_by_name() {
+        let plain = home_with("");
+        let h = plain.path();
+        assert_eq!(coverage_with(h, "w", Mode::Report), Coverage::Default(Mode::Report));
+        assert_eq!(coverage_with(h, "w", Mode::Enforce), Coverage::Default(Mode::Enforce));
+        assert_eq!(coverage_with(h, "w", Mode::Off), Coverage::None, "off is the old opt-in behaviour");
+        assert_eq!(check_with(h, "w", None, Mode::Report), Check::Unminted, "a lane that has not relaunched is reported, not refused");
+        let t = mint(h, "w").expect("no contract, default mode: a token is minted anyway");
+        assert_eq!(check_with(h, "w", Some(&t), Mode::Report), Check::Valid);
+        assert_eq!(check_with(h, "w", None, Mode::Report), Check::Invalid);
+        assert_eq!(check_with(h, "w", None, Mode::Off), Check::Unenforced);
+
+        let out = home_with("AMUX_CONTRACT_RULES_OFF=\"10\"\n");
+        assert_eq!(coverage_with(out.path(), "w", Mode::Enforce), Coverage::None, "a lane can opt out by name");
+        assert_eq!(mint(out.path(), "w"), None);
+
+        let contract = home_with("AMUX_CONTRACT_DONE=1\n");
+        assert_eq!(coverage_with(contract.path(), "w", Mode::Report), Coverage::Contract,
+            "a contract lane is held as before, whatever the default mode");
+        assert_eq!(coverage_with(contract.path(), "w", Mode::Off), Coverage::None);
+        assert_eq!(Mode::parse(None), Mode::Report, "report is the default");
+        assert_eq!(Mode::parse(Some("\"enforce\"")), Mode::Enforce);
+        assert_eq!(Mode::parse(Some("off")), Mode::Off);
+    }
+
+    /// The shipped middleware for a lane that is not on the contract: report
+    /// lets a tokenless claim through and counts it, enforce refuses it, and a
+    /// lane's own token passes in both.
+    #[tokio::test]
+    async fn report_mode_counts_what_enforce_mode_refuses() {
+        use tower::ServiceExt;
+        let d = home_with("");
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let token = mint(d.path(), "w").unwrap();
+        let app = |m: Mode| axum::Router::new()
+            .route("/x", axum::routing::post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(move |r, n| enforce_in(m, r, n)));
+        let call = |m: Mode, tok: Option<&str>| {
+            let mut b = axum::http::Request::builder().method("POST").uri("/x").header("x-amux-session", "w");
+            if let Some(t) = tok {
+                b = b.header(TOKEN_HEADER, t);
+            }
+            let mut req = b.body(axum::body::Body::empty()).unwrap();
+            req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+            app(m).oneshot(req)
+        };
+        let before = counters::get(&counters::WOULD_REFUSE);
+        assert_eq!(call(Mode::Report, None).await.unwrap().status(), StatusCode::OK, "report: allowed");
+        assert!(counters::get(&counters::WOULD_REFUSE) > before, "report: counted as would_refuse");
+        assert_eq!(call(Mode::Enforce, None).await.unwrap().status(), StatusCode::FORBIDDEN, "enforce: refused");
+        assert_eq!(call(Mode::Enforce, Some("forged")).await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(call(Mode::Enforce, Some(&token)).await.unwrap().status(), StatusCode::OK, "its own token passes");
+        assert_eq!(call(Mode::Off, None).await.unwrap().status(), StatusCode::OK, "off: unchecked");
+        let r = identity_report(d.path(), &["w".to_string()]);
+        assert_eq!(r["measured"], true);
+        assert!(r["n_considered"].as_u64().unwrap() >= 4);
+        assert_eq!(r["lanes"]["minted"], json!(["w"]));
     }
 
     #[test]
