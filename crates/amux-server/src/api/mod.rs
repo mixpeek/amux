@@ -96,6 +96,7 @@ pub mod ledger;
 pub mod ledger_checkpoint;
 pub mod trace;
 pub mod instruction_provenance;
+pub mod agent_commit;
 pub mod cli_telemetry;
 pub mod invariants_api;
 pub mod journal;

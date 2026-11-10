@@ -8969,6 +8969,11 @@ pub(crate) async fn cmd_hist_record_with_id(
     let provenance = crate::api::instruction_provenance::enabled().then(|| {
         crate::api::instruction_provenance::classify(&ctype, &origin, &crate::api::instruction_provenance::current())
     });
+    // Whom the worker acts for until its next delivery: the proven sender when
+    // that is a person, else its sponsor (agent_commit.rs). The git hook stamps
+    // it as `On-behalf-of`.
+    let obo_kind = provenance.as_ref().map(|p| p.kind.to_string());
+    let obo_ref = provenance.as_ref().map(|p| p.reference.clone());
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let truth_session = cap_session.clone();
@@ -9008,6 +9013,11 @@ pub(crate) async fn cmd_hist_record_with_id(
                     rusqlite::params![row_id, pv.kind, pv.reference, pv.relayed_from],
                 )?;
                 crate::api::instruction_provenance::note_recorded();
+            }
+            {
+                let who = crate::api::agent_commit::on_behalf_of(obo_kind.as_deref(), obo_ref.as_deref(),
+                    || crate::api::schedule_authority::sponsor_of(conn, &session));
+                crate::api::agent_commit::note_on_behalf(&crate::config::amux_home(), &session, &who);
             }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             // cmd_history is the durable Messages ledger, but this write used
@@ -17655,6 +17665,14 @@ pub(crate) async fn start_session(
             otel_prefix = super::cli_telemetry::command_prefix(vars);
         }
         vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
+    }
+    // Who this worker's commits say made them (governance PR 15,
+    // agent_commit.rs): a per-worker bot author plus this host's id, so a
+    // commit names its worker AND its host. Environment, not a prompt (A9).
+    {
+        let explicit = scoped_setting_in(&home(), name, "GIT_AUTHOR_NAME");
+        vault_values.extend(super::agent_commit::launch_env(
+            &home(), name, super::agent_commit::mode(), explicit.as_deref()));
     }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
     // WHAT THE LAST LAUNCH DELIVERED lives in the tmux session itself

@@ -230,6 +230,19 @@ money, outsiders and production data apply whatever the source.
 `GET /api/trace/{id}` show it. `AMUX_INSTRUCTION_PROVENANCE=off` stops it.
 Counters are under `instruction_provenance`.
 
+**Agent commit identity** (governance PR 15, `api/agent_commit.rs`): a worker
+launches with a bot author and committer, `<worker> (amux)
+<worker+<host8>@agents.noreply.amux.io>` (no mailbox; `AMUX_AGENT_COMMIT_DOMAIN`
+changes the domain), and `AMUX_HOST_ID`, this server's ledger host id. The commit
+hook stamps `Amux-Host` and `On-behalf-of` (`owner` or `member:<email>`: the
+delivery's proven sender if a person, else the worker's sponsor, written to
+`<home>/trace/<worker>.on-behalf-of`). deploy-wake ignores a commit whose
+`Amux-Host` names another server, and says when it matched a commit by worker
+name only. `scripts/push-consent.sh` lists another host's same-named lane as
+`<lane>@<host8>`. `AMUX_AGENT_COMMIT_IDENTITY=human` keeps the human author; a
+worker whose scope sets `GIT_AUTHOR_NAME` keeps it. Counters are under
+`agent_commit_identity`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |
