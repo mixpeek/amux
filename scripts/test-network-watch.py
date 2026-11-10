@@ -88,6 +88,20 @@ for label, exe in [("a release binary", "/x/target/debug/mvs_shard"),
     plain = nw.evaluate({**snap, "wide": [tbrow(8, "59912", exe), tbrow(8, "54142", exe)]}, base, reqs)
     check(f"{label} keeps one key per port",
           len({r["key"] for r in plain if r["kind"] == "LISTENER"}) == 2)
+child = "/x/shard-rs/target/debug/mvs-shard"
+def kid(pid, port, parent):
+    return {"pid": pid, "command": "mvs-shard", "name": f"*:{port}", "host": "*",
+            "port": port, "cmdline": child, "parent": parent}
+kids_a = nw.evaluate({**snap, "wide": [kid(9, "60751", tb), kid(10, "60748", tb)]}, base, reqs)
+kids_b = nw.evaluate({**snap, "wide": [kid(11, "60770", tb + " --exact t --nocapture")]}, base, reqs)
+ka = {r["key"] for r in kids_a if r["kind"] == "LISTENER"}
+check("a cargo test binary's child shares one key across ports and runs",
+      len(ka) == 1 and ka == {r["key"] for r in kids_b if r["kind"] == "LISTENER"}, str(ka))
+check("a cargo test binary's child is still reported and says so",
+      any("cargo test binary" in nw.line(r) for r in kids_a), str([nw.line(r) for r in kids_a]))
+orphan = nw.evaluate({**snap, "wide": [kid(12, "60751", "/bin/zsh"), kid(12, "60748", "")]}, base, reqs)
+check("the same target/ binary without a test parent keeps one key per port",
+      len({r["key"] for r in orphan if r["kind"] == "LISTENER"}) == 2)
 check("loopback burst is an AUTH-BURST, not an UNKNOWN-CLIENT",
       not any(r["kind"] == "UNKNOWN-CLIENT" and r["ip"] == "127.0.0.1" for r in nw.evaluate(snap, base, reqs)))
 check("known peer below the burst threshold is quiet",
