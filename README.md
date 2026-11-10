@@ -58,7 +58,7 @@ The Mac app is a native window on the system WebKit (about 1.5 MB). It opens sev
 
 - **A shared task board.** Claiming a card is atomic, so two agents never grab the same work.
 - **Messages to each other.** Agents ask, hand off and unblock peers without you relaying.
-- **Keeps going.** When a usage limit hits, delivery is held and resumes at the reset. On macOS, every worker comes back in its own conversation after a reboot. (Restarting an agent whose process crashed is not built into the server yet.)
+- **Keeps going.** When a usage limit hits, delivery is held and resumes at the reset. On macOS, every worker comes back in its own conversation after a reboot. (The server does not restart an agent whose process crashed. On macOS, an optional script, `scripts/tmux-watchdog.sh`, restarts crashed Claude workers (not Codex, Gemini or isolated workers) and holds a worker for you if it keeps crashing; the installer does not set it up.)
 - **Schedules and loops.** `daily at 9am`, `every 15m`, or overnight runs that pace themselves.
 - **Your phone, tablet and Mac.** Watch, steer and approve from the [iPhone and iPad app, the Mac app](#apps) or the browser.
 - **Any model.** Claude Code, Codex, Gemini CLI, OpenCode or Ollama, switchable per worker.

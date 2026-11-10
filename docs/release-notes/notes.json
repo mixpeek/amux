@@ -5667,5 +5667,60 @@
       "connectors"
     ],
     "description": "When a connected Google account can no longer refresh, amux alerts you with a reconnect link once when it breaks and once a day until you sign in again."
+  },
+  {
+    "hash": "5808f6935f2725fa83667a1dbb3da46391403057",
+    "title": "Message your workers from WhatsApp, iMessage or email",
+    "date": "2026-11-09",
+    "type": "feat",
+    "tags": [
+      "messages",
+      "integrations"
+    ],
+    "description": "Write to amux from your own WhatsApp self chat, your own iMessage thread or an email to yourself, and the first word says where it goes: @worker reaches that worker, #channel posts in the channel, @person posts in your direct message with them. Answers come back to the same chat, threaded."
+  },
+  {
+    "hash": "c20346bc72ec3e15634fdd2e756da06cd0679ae9",
+    "title": "Hover an @worker mention to see its card",
+    "date": "2026-11-09",
+    "type": "feat",
+    "tags": [
+      "dashboard",
+      "messages"
+    ],
+    "description": "Pause the pointer on a tagged worker in Messages or a note and the worker list's card for it pops up: name, status, folder, current task and model. On a phone, tapping the mention still opens the worker."
+  },
+  {
+    "hash": "8de984a82186484edd1b24eca8aee3308bbf5764",
+    "title": "See every attachment before you approve a held email",
+    "date": "2026-11-09",
+    "type": "feat",
+    "tags": [
+      "email",
+      "approvals"
+    ],
+    "description": "Approval cards and scheduled sends now list each attached file with its type and size, and a click previews it. A file that could not be sent is flagged before you approve, and an approved or edited draft still sends with its attachments."
+  },
+  {
+    "hash": "aecb5d5f7cd17a96d943f788daf632f28d8d000b",
+    "title": "Directives: a named lead can interrupt a worker and get an answer",
+    "date": "2026-11-10",
+    "type": "feat",
+    "tags": [
+      "workers",
+      "messages"
+    ],
+    "description": "Allow a worker or group to send directives with AMUX_DIRECTIVE_SENDERS, and its directive interrupts the target, arrives stamped with the sender and is kept in Messages. The worker answers with what it stopped and what it does next; an unanswered directive is repeated once and then raised to you."
+  },
+  {
+    "hash": "65fda05a7efb534ffe564cf6b100271dad5c0702",
+    "title": "file:// links in worker output open in the file viewer",
+    "date": "2026-11-08",
+    "type": "fix",
+    "tags": [
+      "files",
+      "dashboard"
+    ],
+    "description": "A local file:// link a worker prints now opens in amux's own file viewer, on the server where the file lives, instead of failing in the browser or Finder."
   }
 ]

@@ -244,6 +244,7 @@ fn non_owner_worker(headers: &HeaderMap, gate: &str) -> bool {
 /// For a request with no worker origin: who the server verified, if anyone
 /// (human_proof.rs). `Err` is the enforce-mode refusal; an unproven caller
 /// allowed by report mode is recorded as unproven, never as "owner".
+#[allow(clippy::result_large_err)]
 fn owner_decider(headers: &HeaderMap, gate: &'static str) -> Result<String, Response> {
     match super::human_proof::check(headers, gate) {
         super::human_proof::Verdict::Refused => Err(super::human_proof::refusal(gate)),

@@ -48,6 +48,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_apprAttachOpen": {
+      "kind": "command._apprAttachOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_apprBeacon": {
       "kind": "command._apprBeacon",
       "feedback_required": true,

@@ -61,11 +61,12 @@ BUDGET_S = int(os.environ.get("SECURITY_WATCH_BUDGET_S", "480"))
 DEADLINE = time.time() + BUDGET_S
 
 
-def run(cmd, cwd=None, timeout=600):
+def run(cmd, cwd=None, timeout=600, env=None):
     left = DEADLINE - time.time()
     if left <= 5:
         raise TimeoutError("budget spent before this command started")
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=min(timeout, left))
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=min(timeout, left),
+                       env={**os.environ, **env} if env else None)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -225,7 +226,10 @@ def src_pip(repo):
 
     def one(rel):
         try:
-            _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600)
+            # Wheels only: an unpinned file whose newest release has no wheel for this Intel Mac
+            # otherwise builds it from source and runs past the timeout (amux-GTM, 2026-11-10).
+            _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
+                           env={"PIP_ONLY_BINARY": ":all:"})
             rep = json.loads(j)
         except Exception as e:
             return [], f"{rel}: {e}"[:200]
