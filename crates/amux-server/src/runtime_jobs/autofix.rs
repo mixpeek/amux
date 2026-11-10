@@ -7848,7 +7848,11 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
 /// (`  1) [desktop] › e2e/map-manage.spec.ts:121:5 › title`) and a Rust panic
 /// location (`panicked at crates/amux-server/tests/x.rs:102:5`). Playwright's
 /// trailing list of flaky and skipped specs has no `N)` before its `[project]`,
-/// so it never matches `) [` and is not read as a failure.
+/// so it never matches `) [` and is not read as a failure. A third shape, from
+/// the `checks` catalogue: `node --test` names a failing test as
+/// `test at tests/site-header.test.mjs:13:1`. Main's `checks` was red for 15 h
+/// on 2026-11-09 with `failing_tests: <none named>`, because only the first
+/// two shapes were read.
 pub fn ci_failing_test_paths(log: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in log.lines() {
@@ -7858,6 +7862,8 @@ pub fn ci_failing_test_paths(log: &str) -> Vec<String> {
                 .and_then(|j| rest[j + "› ".len()..].split(':').next())
         } else if let Some(i) = line.find("panicked at ") {
             line[i + "panicked at ".len()..].split(':').next()
+        } else if let Some(i) = line.find("test at ") {
+            line[i + "test at ".len()..].split(':').next()
         } else {
             None
         };
@@ -17483,13 +17489,16 @@ mod tests {
             e2e-shards (14)\tGolden\t2026-10-22T04:20:01Z   [desktop] › board-activity-scrolls.spec.ts:16:5 › the worker activity banner scrolls away\n\
             e2e-shards (2)\tGolden\t2026-10-22T08:42:00Z   2) [ios-safari] › e2e/worker-configurations.spec.ts:10:5 › worker Configurations edits\n\
             test-shards (1)\tnextest\t2026-10-20T21:59:46Z     thread 'bilateral_peers' (6422) panicked at crates/amux-server/tests/bilateral_peers.rs:102:5:\n\
-            spa-gates\tunit\t2026-10-21T11:36:04Z not ok 90 - full history cannot block streaming\n";
+            spa-gates\tunit\t2026-10-21T11:36:04Z not ok 90 - full history cannot block streaming\n\
+            shard (17)\tChecks\t2026-11-10T03:24:10Z test at tests/site-header.test.mjs:13:1\n\
+            shard (17)\tChecks\t2026-11-10T03:24:10Z       at TestContext.<anonymous> (file:///home/runner/work/amux/amux/tests/site-header.test.mjs:17:10)\n";
         assert_eq!(
             ci_failing_test_paths(log),
             vec![
                 "e2e/map-manage.spec.ts".to_string(),
                 "e2e/worker-configurations.spec.ts".to_string(),
                 "crates/amux-server/tests/bilateral_peers.rs".to_string(),
+                "tests/site-header.test.mjs".to_string(),
             ]
         );
     }
