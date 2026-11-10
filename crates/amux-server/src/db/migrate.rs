@@ -836,13 +836,23 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 155,
-        name: "0155_ledger",
-        sql: include_str!("../../migrations/0155_ledger.sql"),
+        name: "0155_goal_samples",
+        sql: include_str!("../../migrations/0155_goal_samples.sql"),
     },
     Migration {
         version: 156,
-        name: "0156_trace",
-        sql: include_str!("../../migrations/0156_trace.sql"),
+        name: "0156_directives",
+        sql: include_str!("../../migrations/0156_directives.sql"),
+    },
+    Migration {
+        version: 157,
+        name: "0157_ledger",
+        sql: include_str!("../../migrations/0157_ledger.sql"),
+    },
+    Migration {
+        version: 158,
+        name: "0158_trace",
+        sql: include_str!("../../migrations/0158_trace.sql"),
     },
 ];
 

@@ -3844,6 +3844,8 @@ pub enum RenameDisposition {
 /// cannot join that gap quietly — the same argument AF-328 made for the issues
 /// fixture.
 pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
+    ("goal_samples", RenameDisposition::Migrate),
+    ("directives", RenameDisposition::Migrate),
     // -- the lane's own state: must follow the rename --
     ("issues", RenameDisposition::Migrate),
     ("issues.reviewer", RenameDisposition::Migrate),
@@ -29875,7 +29877,7 @@ pub(crate) fn owner_mention_grant_allows(origin: &str, target: &str) -> bool {
 }
 
 pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInputRefusal> {
-    if speaks_for_owner(origin) { return None; }
+    if speaks_for_owner(origin) || super::directive::delivering(origin, target) { return None; }
     if let Some(reason) = peer_receive_refusal(origin, target) {
         return Some(PeerInputRefusal { code: "peer_receive_denied", reason });
     }
@@ -30778,7 +30780,8 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     }
     let orig_text = text.clone();
     let mut origin = String::new();
-    if defer_busy {
+    // A directive types now, like deliver_now, and still carries its sender.
+    if defer_busy || super::directive::delivering(&send_origin, name) {
         origin = if member_actor.is_some() {
             // A member cannot turn a human send into a peer relay by claiming
             // source_session in the JSON body.

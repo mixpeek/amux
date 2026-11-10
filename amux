@@ -6912,6 +6912,9 @@ ${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
   amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
+  amux directive W --stdin [--from S] [--url U]  Interrupt W with an instruction it must answer (S must be in W's AMUX_DIRECTIVE_SENDERS)
+  amux directive ack DIR-<id> "<what stopped, what still runs, first action>"
+  amux directive ls [W] [--open]
   amux requests [W|--all] [--open] The owner's requests to a worker: open, on main, live, or closed
 
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
@@ -9118,7 +9121,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-02.58"
+LAND_BEHAVIOR_VERSION="2026-11-10.59"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -9220,6 +9223,48 @@ if e:
     print("Estimate for %s (%s): %s min (%s to %s), %s tokens, from %s %s." % (
         e["card"], (e.get("title") or "")[:60], fmt(em["p50"]), fmt(em["p25"]), fmt(em["p75"]), fmt(et["p50"]), e["n"], e["basis"]))
 ' "$body"
+}
+
+# A named sender's interrupting instruction (crates/amux-server/src/api/directive.rs).
+cmd_directive() {
+  local url; url="$(cmd_url)"; local from="${AMUX_SESSION:-}" target="" text="" stdin="" only_open=""
+  local verb="${1:-}"
+  case "$verb" in
+    ack)
+      local id="${2:-}" note="${*:3}"
+      [[ "$id" == DIR-* && -n "$note" ]] || die "usage: amux directive ack DIR-<id> \"<what stopped, what still runs, first action>\""
+      _directive_call POST "$url/api/directives/$id/ack" "$from" "$(python3 -c 'import json,sys;print(json.dumps({"note":sys.argv[1]}))' "$note")"
+      return ;;
+    ls)
+      shift; target=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in --open) only_open=1 ;; --url) url="$2"; shift ;; *) target="$1" ;; esac; shift
+      done
+      _directive_call GET "$url/api/directives?session=$target&open=${only_open:-0}" "$from" ""
+      return ;;
+  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stdin) stdin=1 ;;
+      --from) from="$2"; shift ;;
+      --url) url="$2"; shift ;;
+      -*) die "amux directive: unknown option $1" ;;
+      *) if [[ -z "$target" ]]; then target="$1"; else text="$text${text:+ }$1"; fi ;;
+    esac
+    shift
+  done
+  [[ -n "$stdin" ]] && text="$(cat)"
+  [[ -n "$target" && -n "$text" ]] || die "usage: amux directive <worker> --stdin [--from <sender>] [--url <server>]"
+  _directive_call POST "$url/api/sessions/$target/directive" "$from" "$(python3 -c 'import json,sys;print(json.dumps({"text":sys.argv[1]}))' "$text")"
+}
+_directive_call() { # <method> <url> <sender> <json>; a refusal exits non-zero with the server's reason
+  local out code args=(-sk --max-time 60 -X "$1" -H 'Content-Type: application/json' -w '\n%{http_code}')
+  [[ -n "$3" ]] && args+=(-H "X-Amux-Session: $3")
+  [[ -n "$4" ]] && args+=(-d "$4")
+  out="$(curl --connect-timeout 10 "${args[@]}" "$2")" || die "amux directive: no answer from $2"
+  code="${out##*$'\n'}"; out="${out%$'\n'*}"
+  printf '%s\n' "$out"
+  case "$code" in 2??) ;; *) return 1 ;; esac
 }
 
 cmd_requests() {
@@ -11056,7 +11101,21 @@ p.communicate(msg.encode())
     if ! _seen="$(_land_rl_ls "$_LAND_RL_REMOTE" "$_ref")"; then
       _land_rl_say "ERROR verdict=land_remote_lease_unverified: could not read $_ref before the push; nothing pushed"; return 7
     fi
+    # OUR OWN RENEWAL. The heartbeat pushes a new lease commit and only then
+    # rewrites rl-sha, so a read between the two saw our renewed lease as
+    # someone else's: mxp-gs12 lost a green merge-queue run that way at
+    # 2026-11-10 12:53:32Z, 302s after taking the lease. A lease commit that
+    # names this process as holder, with our start and take times, is ours.
+    if [ -n "$_seen" ] && [ "$_seen" != "$_mine" ] \
+      && [ "$(_land_rl_field "$_seen" holder)" = "$_LAND_RL_ID" ] \
+      && [ "$(_land_rl_field "$_seen" holder_start)" = "$_LAND_RL_START" ] \
+      && [ "$(_land_rl_field "$_seen" taken_at)" = "$_LAND_RL_TAKEN" ]; then
+      _land_rl_say "verdict=land_remote_lease_renewed_under_check: $_ref moved to our own renewal ${_seen:0:12}; still ours"
+      echo "$_seen" > "$_LAND_RL_DIR/rl-sha"; _mine="$_seen"
+    fi
     if [ -z "$_mine" ] || [ "$_seen" != "$_mine" ]; then
+      # Not ours: the release must not touch it, and must not say it did.
+      : > "$_LAND_RL_DIR/rl-lost"
       _land_rl_say "ERROR verdict=land_remote_lease_not_ours: $_ref reads ${_seen:-nothing}, not our lease ${_mine:-?}; nothing pushed"; return 7
     fi
     _exp="$(_land_rl_field "$_mine" expires_at)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
@@ -11077,7 +11136,10 @@ p.communicate(msg.encode())
     if [ -n "$_hb" ]; then kill "$_hb" 2>/dev/null || true; wait "$_hb" 2>/dev/null || true; fi
     _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
     rm -f -- "$_LAND_RL_DIR/rl-sha" "$_LAND_RL_DIR/rl-hb.pid"
-    if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0; fi
+    if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then
+      [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_rl_say "verdict=land_remote_lease_not_released: $(_land_rl_ref "$2") is not ours; left for its holder"
+      rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0
+    fi
     # A CAS delete is safe to repeat (review item 5).
     local _i _ok=""
     for _i in 1 2 3; do
@@ -12592,6 +12654,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     publish)          shift; cmd_publish "$@" ;;
     contribute)       shift; cmd_contribute "$@" ;;
     github)           shift; cmd_github "$@" ;;
+    directive)        shift; cmd_directive "$@" ;;
     requests)         shift; cmd_requests "$@" ;;
     velocity)         shift; cmd_velocity "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;

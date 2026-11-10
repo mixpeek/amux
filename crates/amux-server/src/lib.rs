@@ -686,6 +686,7 @@ async fn async_main() {
     drop(runtime_jobs::email_scheduled_send::spawn(state.clone()));
     // Z15: daily digest of needsyou cards, dry run until the owner opts in.
     drop(runtime_jobs::decision_digest::spawn(state.clone()));
+    drop(runtime_jobs::directive::spawn(state.clone()));
     // AMUX-5301: approve new needs-input items the owner's policy covers.
     drop(runtime_jobs::needs_input_auto::spawn(state.clone()));
     // AMUX-5239: a lane that pushed and said "live in ~40 min" was never told
@@ -726,6 +727,9 @@ async fn async_main() {
     drop(bridge::adapters::spawn_discord(state.clone()));
     // The owner's WhatsApp self chat, read from the WhatsApp app on this Mac.
     drop(bridge::whatsapp_app::spawn(state.clone()));
+    // The owner's own iMessage thread and email to themselves (bridge/self_chat.rs).
+    drop(bridge::imessage::spawn(state.clone()));
+    drop(bridge::email::spawn(state.clone()));
     // Auto-relay: send session replies back to Telegram when linked sessions respond
     // to Telegram-routed messages. Works for all workers without per-session configuration.
     drop(runtime_jobs::telegram_relay::spawn(state.clone()));
