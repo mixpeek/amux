@@ -1,7 +1,5 @@
 -- Governance PR 13: a schedule keeps its creator, proven, and every firing
 -- re-checks that the creator still has authority over the worker it targets.
--- Numbered 0160 on top of the governance stack; origin/main has its own 0155,
--- so the stack's 0155..0160 are renumbered when it is restacked onto main.
 ALTER TABLE schedules ADD COLUMN created_by TEXT;
 ALTER TABLE schedules ADD COLUMN created_by_verified INTEGER NOT NULL DEFAULT 0;
 

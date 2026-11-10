@@ -387,12 +387,12 @@ async fn file_card(store: &SharedStore, home: &Path, id: &str, by: &str, target:
 // ── Who may act here ───────────────────────────────────────────────────────
 
 /// A person, never a worker or an app. `Err` is the response to send.
-fn person(headers: &HeaderMap, gate: &'static str) -> Result<String, Response> {
+fn person(headers: &HeaderMap, gate: &'static str) -> Result<String, Box<Response>> {
     if super::app_identity::actor(headers).is_some() || super::email::hdr_worker(headers).is_some_and(|w| !w.starts_with("member:")) {
-        return Err((StatusCode::FORBIDDEN, Json(json!({
+        return Err(Box::new((StatusCode::FORBIDDEN, Json(json!({
             "error": "only a person can do this, not a worker or an app",
             "code": "person_required",
-        }))).into_response());
+        }))).into_response()));
     }
     match super::human_proof::check(headers, gate) {
         super::human_proof::Verdict::Proven(p) => Ok(match p {
@@ -400,7 +400,7 @@ fn person(headers: &HeaderMap, gate: &'static str) -> Result<String, Response> {
             other => other.actor(),
         }),
         super::human_proof::Verdict::Unproven => Ok("unproven".into()),
-        super::human_proof::Verdict::Refused => Err(super::human_proof::refusal(gate)),
+        super::human_proof::Verdict::Refused => Err(Box::new(super::human_proof::refusal(gate))),
     }
 }
 
@@ -412,7 +412,7 @@ fn person(headers: &HeaderMap, gate: &'static str) -> Result<String, Response> {
 pub async fn reown(State(state): State<AppState>, headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     let who = match person(&headers, "schedule_reown") {
         Ok(w) => w,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let scope = super::org::local_member_scope(&headers);
     let (rid, who_w) = (id.clone(), who.clone());
@@ -497,7 +497,7 @@ pub async fn set_sponsor(
 ) -> Response {
     let who = match person(&headers, "worker_sponsor") {
         Ok(w) => w,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     if super::org::local_member_scope(&headers).is_some() && !super::org::local_member_is_admin(&headers) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "only the owner or an admin sets a sponsor"}))).into_response();
@@ -591,7 +591,7 @@ pub async fn offboard(
 ) -> Response {
     let who = match person(&headers, "member_offboard") {
         Ok(w) => w,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let dry = q.dry_run.as_deref().is_some_and(|v| matches!(v, "1" | "true" | "yes"));
     let home = crate::config::amux_home();
