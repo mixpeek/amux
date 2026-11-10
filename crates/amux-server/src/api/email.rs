@@ -972,7 +972,7 @@ pub async fn reply_with(
                     remembered = crate::api::approval_cards::standing_use(
                         "email", &lane, &key, None, &format!("email:standing:{key}"), &r_subject).await;
                     if let Some(sa) = remembered {
-                        crate::api::email_scope::record_bypass(&state, &home, &lane,
+                        crate::api::email_scope::record_bypass(state, &home, &lane,
                             &format!("standing approval SA-{sa}"), "reply", &externals).await;
                     }
                 }
