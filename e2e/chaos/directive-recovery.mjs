@@ -51,7 +51,9 @@ try {
   const issued=await amux.req('POST',`/api/sessions/${lane}/directive`,{text:'stop-and-read-this'},30000,from(sender));
   check('named sender delivered',issued.status===200&&issued.body.delivered===true,issued.body);
   const id=issued.body.id;
-  await waitFor('provider receipt',()=>received('stop-and-read-this')===1,30000);
+  // The ack line is the message's last line: it has no newline of its own, so it
+  // is submitted by the Enter that follows the paste's settle, after the rest.
+  await waitFor('provider receipt',()=>received('stop-and-read-this')===1&&seen().includes(`amux directive ack ${id}`),30000);
   check('origin stamped and answer named',seen().includes(`[amux-origin: ${sender}`)&&seen().includes(`amux directive ack ${id}`),seen().slice(-600));
   const row=db('select origin from cmd_history where session=? and text like ?',[lane,'%stop-and-read-this%']);
   check('visible in Messages under the sender',row.length===1&&row[0].origin===sender,row);
