@@ -399,7 +399,7 @@ async fn list_at(home: PathBuf) -> Response {
     Json(json!({ "pending": pending, "ttl_s": GRANT_TTL_S as i64 })).into_response()
 }
 
-async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
+pub(crate) async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     let home = amux_home();
     if is_worker_origin(&headers) {
         return (
@@ -420,6 +420,9 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         super::human_proof::Verdict::Proven(p) => p.actor(),
         super::human_proof::Verdict::Unproven => UNPROVEN_DECIDER.to_string(),
     };
+    if let Some(r) = super::approval_cards::duties("grant", &id, &headers) {
+        return r;
+    }
     if valid_id(&id) && std::fs::read_to_string(grants_dir(&home).join(format!("{id}.json")))
         .ok().and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .is_some_and(|d| d["kind"] == "cross_group_send") {
@@ -446,6 +449,7 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
                     write_allowance(&home, origin, target, &id);
                     tracing::info!(grant = %id, origin, target, approved_by = %decider, measured = true, n_considered = 1,
                         verdict = "vault_spend_approved", "owner approved one vault charge");
+                    super::approval_cards::resolved("grant", &id, "approved", &decider, None).await;
                     Json(json!({
                         "ok": true,
                         "granted": kind,
@@ -484,7 +488,7 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     }
 }
 
-async fn reject(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
+pub(crate) async fn reject(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     let home = amux_home();
     if is_worker_origin(&headers) {
         return (
@@ -498,8 +502,14 @@ async fn reject(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         super::human_proof::Verdict::Proven(p) => p.actor(),
         super::human_proof::Verdict::Unproven => UNPROVEN_DECIDER.to_string(),
     };
+    if let Some(r) = super::approval_cards::duties("grant", &id, &headers) {
+        return r;
+    }
     match discard(&home, &id, &decider) {
-        Some(_) => Json(json!({"ok": true, "rejected": id})).into_response(),
+        Some(_) => {
+            super::approval_cards::resolved("grant", &id, "rejected", &decider, None).await;
+            Json(json!({"ok": true, "rejected": id})).into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": "no such pending grant", "fate": fate(&home, &id)})),

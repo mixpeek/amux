@@ -25,6 +25,7 @@ pub mod land_red;
 pub mod worker_identity;
 pub mod app_identity;
 pub mod capabilities;
+pub mod approval_cards;
 pub mod connector_scope;
 pub mod email_scope;
 pub mod human_proof;
@@ -241,6 +242,7 @@ pub fn router_with_connector_transport(
     // `.with_state` before the outermost wrap.
     let store_for_reqlog = state.store.clone();
     capabilities::install_store(state.store.clone());
+    approval_cards::install_store(state.store.clone());
     let state_for_member_identity = state.clone();
     let protected = Router::new()
         .route("/api/sync", axum::routing::get(sync::delta_sync))
@@ -436,6 +438,7 @@ pub fn router_with_connector_transport(
         .merge(decision_digest::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
+        .merge(approval_cards::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())

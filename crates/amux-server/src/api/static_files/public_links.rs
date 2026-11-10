@@ -561,8 +561,19 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     let title: String = body.title.trim().chars().take(120).collect();
     let person = person_of(&state, &headers);
     // Every kind needs a person: a public link hands the app or file to
-    // anyone, and an internal app runs with the owner's amux access.
-    let approved_by = person.clone().unwrap_or_default();
+    // anyone, and an internal app runs with the owner's amux access. A
+    // remembered "always" for this worker and this kind of link stands in for
+    // the person (governance PR 12), but never for amux access an app asks for.
+    let lane = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::trim).filter(|s| !s.is_empty());
+    let remembered = match (&person, lane) {
+        (None, Some(lane)) if api_requested.is_empty() => super::super::approval_cards::standing_use(
+            "publish", lane, &super::super::approval_cards::publish_key(&kind), None,
+            &format!("publish:standing:{kind}"), &body.title).await,
+        _ => None,
+    };
+    let approved_by = person.clone()
+        .or_else(|| remembered.map(|sa| format!("policy:standing_approval:SA-{sa}")))
+        .unwrap_or_default();
     // A person publishing grants what they asked for; a worker only asks.
     let api_allow = if person.is_some() { api_requested.clone() } else { Vec::new() };
     let link = Link {
@@ -586,6 +597,23 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
         measured = true, n_considered = 1, verdict = "public_link_created",
         "Apps link created; a public one asked for by a worker serves nobody until the owner approves it in Apps");
     super::super::app_identity::forget_tree();
+    if link.is_pending() {
+        super::super::approval_cards::file(super::super::approval_cards::Ask {
+            kind: "publish",
+            item_id: link.id.clone(),
+            requester: created_by.clone(),
+            title: format!("Publish {created_by}'s {} link: {}", link.kind, if link.title.is_empty() { link.id.as_str() } else { link.title.as_str() }),
+            question: format!("Let {created_by} publish this {} link{}?", link.kind,
+                if link.api_requested.is_empty() { String::new() } else { format!(" with amux access {}", link.api_requested.join(", ")) }),
+            unblocks: if link.is_public() { "Approving makes the link open for anyone who has it.".into() }
+                else { "Approving opens the app inside amux.".into() },
+            desc: format!("{created_by} asked to publish a {} link ({}).", link.kind,
+                if link.port > 0 { format!("port {}", link.port) } else { link.path.clone() }),
+            ask_type: "access",
+            expires_at: None,
+            meta: json!({"key": super::super::approval_cards::publish_key(&link.kind), "link_kind": link.kind}),
+        }).await;
+    }
     let mut out = link_json(&home, &link);
     out["listening"] = json!(listening);
     if let Some((token, _)) = minted {
@@ -601,6 +629,7 @@ pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, Ax
     let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut links = load(&home);
     let before = links.len();
+    let was_pending = links.iter().any(|l| l.id == id && l.is_pending());
     links.retain(|l| l.id != id);
     if links.len() == before {
         return bad(StatusCode::NOT_FOUND, "no such link");
@@ -613,6 +642,10 @@ pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, Ax
         .unwrap_or_else(|| "unknown".into());
     super::super::app_identity::forget_tree();
     tracing::warn!(id = %id, by = %who, measured = true, n_considered = 1, verdict = "public_link_revoked", "Apps link removed");
+    drop(_g);
+    if was_pending {
+        super::super::approval_cards::resolved("publish", &id, "rejected", &who, Some("removed before it was approved".into())).await;
+    }
     Json(json!({ "ok": true })).into_response()
 }
 
@@ -624,6 +657,9 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
             "a public link approval came from something other than a signed-in person");
         return bad(StatusCode::FORBIDDEN, "only the owner, signed in to the dashboard, can approve an Apps link");
     };
+    if let Some(r) = super::super::approval_cards::duties("publish", &id, &headers) {
+        return r;
+    }
     let home = crate::config::amux_home();
     let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut links = load(&home);
@@ -644,6 +680,8 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
     }
     tracing::warn!(id = %id, by = %person, measured = true, n_considered = 1, verdict = "public_link_approved",
         "an Apps link was approved (a public one now opens for anyone with it)");
+    drop(_g);
+    super::super::approval_cards::resolved("publish", &id, "approved", &person, None).await;
     Json(out).into_response()
 }
 

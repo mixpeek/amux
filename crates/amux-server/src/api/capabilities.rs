@@ -389,7 +389,7 @@ pub fn cross_with(home: &Path, lane: &str, capability: &str, resource: &str, det
             tracing::warn!(worker = lane, capability, resource, measured = true, n_considered = 1,
                 verdict = "capability_refused", "a worker was refused outside its capabilities");
             receipt(lane, capability, resource, "deny", &hint);
-            file_card(home, lane, capability, resource, &hint);
+            file_card(home, lane, capability, resource, &hint, grant_write(home, lane, capability, detail));
             Some(refusal(lane, capability, resource, &hint))
         }
     }
@@ -404,7 +404,7 @@ pub fn existing_refusal(home: &Path, lane: &str, capability: &str, resource: &st
     }
     counters::bump(&format!("{capability}.refused"));
     let hint = grant_hint(capability, lane, detail);
-    file_card(home, lane, capability, resource, &hint);
+    file_card(home, lane, capability, resource, &hint, grant_write(home, lane, capability, detail));
 }
 
 /// The worker crossed nothing this time: a later crossing may ask again once
@@ -452,6 +452,14 @@ pub fn clear_asks(home: &Path, workers: &[String], caps: &[&str]) {
     for w in workers {
         for c in caps {
             clear_ask(home, w, c);
+            // A grant answers the ask's card too, however it was written
+            // (governance PR 12): the card and the env never disagree.
+            let item = format!("{w}:{c}");
+            if let Ok(h) = tokio::runtime::Handle::try_current() {
+                h.spawn(super::trace::carry(async move {
+                    super::approval_cards::resolved("capability", &item, "approved", "a scope grant", None).await;
+                }));
+            }
         }
     }
     counters::bump("asks_cleared_by_grant");
@@ -506,7 +514,32 @@ fn receipt(lane: &str, capability: &str, resource: &str, effect: &str, hint: &st
     }
 }
 
-fn file_card(home: &Path, lane: &str, capability: &str, resource: &str, hint: &str) {
+/// The one worker-layer setting that grants `capability` to `lane`, merged
+/// with what the worker already has, or `None` when granting is not a single
+/// setting (connectors: the Connectors scope). The card's Approve writes it.
+pub fn grant_write(home: &Path, lane: &str, capability: &str, detail: &str) -> Option<Value> {
+    let merged = |key: &str| {
+        let mut have: Vec<String> = layers(home, lane, key)
+            .into_iter()
+            .filter(|l| l.layer == format!("worker {lane}"))
+            .flat_map(|l| split_list(&l.value))
+            .collect();
+        for d in split_list(detail) {
+            if !have.contains(&d) {
+                have.push(d);
+            }
+        }
+        have.join(",")
+    };
+    match capability {
+        "folders" if !detail.trim().is_empty() => Some(json!({ FOLDERS_KEY: merged(FOLDERS_KEY) })),
+        "message" if !detail.trim().is_empty() => Some(json!({ MESSAGE_KEY: merged(MESSAGE_KEY) })),
+        "publish" => Some(json!({ PUBLISH_KEY: if detail == "internal" { "internal" } else { "public" } })),
+        _ => None,
+    }
+}
+
+fn file_card(home: &Path, lane: &str, capability: &str, resource: &str, hint: &str, grant: Option<Value>) {
     let f = asks_file(home);
     let key = ask_key(lane, capability);
     {
@@ -563,6 +596,8 @@ fn file_card(home: &Path, lane: &str, capability: &str, resource: &str, hint: &s
     let home = home.to_path_buf();
     let capability = capability.to_string();
     let lane = lane.to_string();
+    let (link_lane, link_cap) = (lane.clone(), capability.clone());
+    let link_meta = json!({"grant": grant, "hint": hint, "resource": resource});
     let fut = async move {
         let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let made_w = made.clone();
@@ -570,6 +605,9 @@ fn file_card(home: &Path, lane: &str, capability: &str, resource: &str, hint: &s
         let wrote = store
             .write_async(move |conn| {
                 let row = crate::db::board_store::create_issue(conn, &new, now)?;
+                // Governance PR 12: the card is this ask's approval card.
+                super::approval_cards::link_in(conn, "capability", &format!("{link_lane}:{link_cap}"), &row.id,
+                    &link_lane, &link_meta, now as f64)?;
                 if let Ok(mut m) = made_w.lock() {
                     *m = Some(row.id.clone());
                 }
@@ -805,8 +843,8 @@ mod tests {
     #[test]
     fn one_ask_per_worker_and_capability_until_cleared() {
         let home = tempfile::tempdir().unwrap();
-        file_card(home.path(), "w", "folders", "a", "h");
-        file_card(home.path(), "w", "folders", "b", "h");
+        file_card(home.path(), "w", "folders", "a", "h", None);
+        file_card(home.path(), "w", "folders", "b", "h", None);
         let all: Map<String, Value> =
             serde_json::from_str(&std::fs::read_to_string(asks_file(home.path())).unwrap()).unwrap();
         assert_eq!(all.len(), 1, "a second crossing of the same capability files no second ask");
@@ -821,8 +859,8 @@ mod tests {
     #[test]
     fn an_owner_grant_through_the_scope_api_reopens_the_ask() {
         let home = tempfile::tempdir().unwrap();
-        file_card(home.path(), "w", "folders", "a", "h");
-        file_card(home.path(), "w", "publish", "a", "h");
+        file_card(home.path(), "w", "folders", "a", "h", None);
+        file_card(home.path(), "w", "publish", "a", "h", None);
         assert_eq!(caps_written("env", &json!({FOLDERS_KEY: "/x"})), vec!["folders"]);
         assert_eq!(caps_written("env", &json!("CC_MODEL=x\nAMUX_CAP_PUBLISH=none\n")), vec!["publish"]);
         assert_eq!(caps_written("connectors", &json!({})), vec!["connectors"]);

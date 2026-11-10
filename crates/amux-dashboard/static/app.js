@@ -7618,7 +7618,11 @@ function _niRender() {
     // Email approvals are gated per message by email_approval.rs, which does not
     // read standing approvals, so a rule saved from one would be a promise
     // nothing keeps.
-    + '<button class="btn ni-always" onclick="_niShowPanel(\'always\')"' + (it.worker && it.kind !== 'email' ? '' : ' disabled title="Email sends are approved one at a time"') + '>Approve &amp; always</button>'
+    + (it.approval
+      // An approval card (governance PR 12) remembers an exact decision for
+      // this worker; land and capability approvals cannot be remembered.
+      ? '<button class="btn ni-always" onclick="_niShowPanel(\'always\')"' + (it.approval.remember ? '' : ' disabled title="This kind of approval is decided one at a time"') + '>Approve &amp; remember</button>'
+      : '<button class="btn ni-always" onclick="_niShowPanel(\'always\')"' + (it.worker && it.kind !== 'email' ? '' : ' disabled title="Email sends are approved one at a time"') + '>Approve &amp; always</button>')
     + '<button class="btn ni-snooze1" onclick="_niSnooze(60)">Snooze 1h</button>'
     + '<button class="btn ni-snooze2" onclick="_niSnooze(\'tomorrow\')">Tomorrow</button>'
     + '<button class="btn ni-open" onclick="_niOpenTarget()">Open</button>'
@@ -7631,6 +7635,13 @@ function _niPanelHtml(it) {
       + ((it.chips || []).length ? '<div class="ni-chips">' + it.chips.map((c, i) => '<button class="btn ni-chip" onclick="_niChip(' + i + ')">' + esc(c.label) + '</button>').join('') + '</div>' : '')
       + '<textarea id="ni-reply" class="input ni-reply" rows="3" placeholder="Your answer. Dictation works here." autocomplete="off"></textarea>'
       + '<div class="ni-actions"><button class="btn primary ni-send" onclick="_niAct(\'reply\')">Send reply</button><button class="btn" onclick="_niShowPanel(\'\')">Cancel</button></div></div>';
+  }
+  if (_niPanel === 'always' && it.approval) {
+    const what = { email: 'emails to these same recipients', grant: 'charges at this merchant up to this amount', publish: 'links of this kind' }[it.approval.kind] || 'this exact request';
+    return '<div class="ni-panel ni-remember-panel"><label class="ni-label" for="ni-remember-until">Remember for ' + esc(it.worker || 'this worker') + ': ' + esc(what) + '</label>'
+      + '<select id="ni-remember-until" class="input" aria-label="Remember until">'
+      + '<option value="0">Until I revoke it</option><option value="30">For 30 days</option><option value="7">For 7 days</option><option value="1">For 1 day</option></select>'
+      + '<div class="ni-actions"><button class="btn primary ni-remember-go" onclick="_niAct(\'approve_always\')">Approve and remember</button><button class="btn" onclick="_niShowPanel(\'\')">Cancel</button></div></div>';
   }
   if (_niPanel === 'always') {
     const cats = ['budget', 'customer_outbound', 'prod_data', 'credential', 'access', 'decision'];
@@ -7747,6 +7758,30 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
   const stamp = new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const done = [], errs = [];
   try {
+    // AN APPROVAL CARD IS DECIDED BY ITS ITEM'S OWN PATH (governance PR 12):
+    // the server calls the email, grant, publish, land or capability approve
+    // or reject with this request's identity, closes the card, and with
+    // "remember" records a standing approval for the exact same request.
+    if (it.approval && (action === 'approve' || action === 'approve_always' || action === 'decline')) {
+      const body = { approval_ref: it.approval.ref, decision: action === 'decline' ? 'reject' : 'approve' };
+      if (typed) body.reason = typed;
+      if (action === 'approve_always') {
+        const days = Number(((rule && rule.until_days) || 0));
+        body.remember = days > 0 ? { until: Math.floor(Date.now() / 1000) + days * 86400 } : {};
+      }
+      const r = await fetch(API + '/api/approvals/decide', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body), _skipOutbox: true });
+      const d = await _niJson(r);
+      if (r.ok) {
+        done.push((action === 'decline' ? 'Rejected ' : 'Approved ') + it.approval.kind + (d.card ? ', ' + d.card + ' closed' : ''));
+        if (d.standing_approval) done.push('remembered as SA-' + d.standing_approval);
+        if (d.standing_approval_error) errs.push('remember: ' + d.standing_approval_error);
+      } else {
+        errs.push(it.approval.kind + ': ' + _niErr(d, r));
+        if (r.status === 404 || (d && d.code === 'already_decided')) _niHandled.set(it.key, Date.now() + 5 * 60_000);
+      }
+      return { done, errs };
+    }
     if (it.kind === 'email') {
       const e = await _niEmail(it, action === 'decline' ? 'decline' : 'approve', typed);
       if (e.ok) done.push(e.msg); else errs.push(e.error);
@@ -7788,7 +7823,9 @@ async function _niApply(it, action, typed, rule, surface = 'needs-input triage')
         const marker = '#triage-' + _niHash(it.key + '|' + action + '|' + typed);
         // A dismissed card leaves needsyou for backlog, not todo: todo is
         // dispatched, which would hand the ask straight back to the worker.
-        const c = await _niCard(it.card, note, marker, true, action === 'dismiss' ? 'backlog' : 'todo');
+        // An approval card moves only through its decision, so a reply or a
+        // dismiss leaves a note on it and nothing else.
+        const c = await _niCard(it.card, note, marker, !it.approval, action === 'dismiss' ? 'backlog' : 'todo');
         if (c.ok) done.push(c.already ? it.card + ' already recorded' : it.card + ' ' + (c.status === 'todo' ? 'moved to todo' : c.status === 'backlog' ? (action === 'dismiss' ? 'moved to backlog' : 'moved to backlog (todo full)') : 'noted'));
         else errs.push(c.error);
       }
@@ -7825,7 +7862,9 @@ async function _niAct(action) {
   const typed = replyEl ? replyEl.value.trim() : '';
   if (action === 'reply' && !typed) { showToast('Type a reply first'); replyEl && replyEl.focus(); return; }
   let rule = null;
-  if (action === 'approve_always') {
+  if (action === 'approve_always' && it.approval) {
+    rule = { until_days: Number((document.getElementById('ni-remember-until') || {}).value || 0) };
+  } else if (action === 'approve_always') {
     rule = { allowed: ((document.getElementById('ni-always-text') || {}).value || '').trim(),
       category: (document.getElementById('ni-always-cat') || {}).value || it.standing_category || 'decision' };
     if (!rule.allowed) { showToast('Write the rule sentence first'); return; }

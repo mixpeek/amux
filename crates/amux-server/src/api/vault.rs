@@ -869,7 +869,22 @@ fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, 
     }
     if let SpendDecision::NeedsApproval { limit } = decision {
         let target = spend_target(id, amount, merchant);
-        if super::grants::take_allowance(home, session, &target).is_none() {
+        // A remembered decision for exactly this worker and merchant, up to
+        // the amount the owner approved, answers it without a grant
+        // (governance PR 12). The spending limits above still applied.
+        // take_allowance CONSUMES a one-shot approval: call it exactly once.
+        let allowed_once = super::grants::take_allowance(home, session, &target).is_some();
+        let remembered = (!allowed_once).then(|| {
+            super::approval_cards::standing_use_sync("grant", session, &super::approval_cards::grant_key(merchant),
+                Some(amount), &format!("grant:standing:{merchant}"), &format!("{currency} {amount:.2} at {merchant}: {purpose}"))
+        }).flatten();
+        if let Some(sa) = remembered {
+            let mut a = base_audit.clone();
+            a["decision"] = json!("standing_approval");
+            a["standing_approval"] = json!(sa);
+            audit(home, a);
+        }
+        if !allowed_once && remembered.is_none() {
             let view = public_view(item);
             let summary = format!(
                 "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
@@ -878,6 +893,21 @@ fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, 
                 "origin": session, "target": target, "item": id, "amount_usd": amount,
                 "currency": currency, "merchant": merchant, "purpose": purpose,
             }));
+            if let Some(g) = &grant {
+                super::approval_cards::file_spawn(super::approval_cards::Ask {
+                    kind: "grant",
+                    item_id: g.clone(),
+                    requester: session.to_string(),
+                    title: format!("Approve {session}'s charge of {currency} {amount:.2} at {merchant}"),
+                    question: format!("Let {session} charge {currency} {amount:.2} at {merchant} ({purpose})?"),
+                    unblocks: format!("Approving opens exactly this one charge; {session} retries it once."),
+                    desc: summary.clone(),
+                    ask_type: "budget",
+                    expires_at: Some(crate::config::now_f64() + 3600.0),
+                    meta: json!({"key": super::approval_cards::grant_key(merchant), "amount_usd": amount,
+                        "merchant": merchant, "currency": currency}),
+                });
+            }
             let mut a = base_audit.clone();
             a["decision"] = json!("needs_approval");
             a["grant"] = json!(grant);

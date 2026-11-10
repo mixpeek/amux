@@ -471,6 +471,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Remove  | `_msgsScopeToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … … | `_msgsSetKind` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_needsYouFetch` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Approve and remember | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Approve and save rule | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Decline | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Send reply | `_niAct` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1413,6 +1414,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ni-approve-all | `_niApproveAllArm` | onclick |
 | app.js | Cancel | `_niApproveAllCancel` | onclick |
 | app.js | Approve  always | `_niShowPanel` | onclick |
+| app.js | Approve  remember | `_niShowPanel` | onclick |
+| app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Cancel | `_niShowPanel` | onclick |
 | app.js | Reply | `_niShowPanel` | onclick |

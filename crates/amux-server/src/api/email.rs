@@ -559,11 +559,20 @@ pub async fn send(
         );
         // A standing rule that lets this send skip the hold is recorded
         // every time it is used (governance PR 6, A4: nothing silent).
-        let bypass = if externals.is_empty() {
+        let mut bypass = if externals.is_empty() {
             None
         } else {
             crate::api::email_scope::bypass_rule(&home, &lane)
         };
+        // A remembered "always" for exactly these recipients (governance PR 12).
+        if bypass.is_none() && !externals.is_empty() {
+            let key = crate::api::approval_cards::email_key(&externals);
+            if let Some(sa) = crate::api::approval_cards::standing_use(
+                "email", &lane, &key, None, &format!("email:standing:{key}"), &subject).await
+            {
+                bypass = Some(format!("standing approval SA-{sa}"));
+            }
+        }
         if let Some(rule) = &bypass {
             crate::api::email_scope::record_bypass(&state, &home, &lane, rule, "send", &externals).await;
         }
@@ -604,6 +613,8 @@ pub async fn send(
                         verdict = if req.reused { "email_approval_reused" } else { "email_approval_parked" },
                         "[email] EXTERNAL send from a worker held for human approval (AMUX-3510)"
                     );
+                    crate::api::approval_cards::file(crate::api::approval_cards::email_ask(
+                        &id, &lane, "send", &to, &subject, &externals)).await;
                     approval_required_response(&req, preview)
                 }
                 Err(e) => err(
@@ -853,7 +864,17 @@ pub async fn reply(
                     &crate::api::email_approval::internal_domains(&home),
                     &connected,
                 );
+                let mut remembered = None;
                 if !externals.is_empty() {
+                    let key = crate::api::approval_cards::email_key(&externals);
+                    remembered = crate::api::approval_cards::standing_use(
+                        "email", &lane, &key, None, &format!("email:standing:{key}"), &r_subject).await;
+                    if let Some(sa) = remembered {
+                        crate::api::email_scope::record_bypass(&state, &home, &lane,
+                            &format!("standing approval SA-{sa}"), "reply", &externals).await;
+                    }
+                }
+                if !externals.is_empty() && remembered.is_none() {
                     let preview = json!({
                         "endpoint": "reply", "from": gmail_from,
                         "in_reply_to": message_id, "reply_all": reply_all,
@@ -893,6 +914,8 @@ pub async fn reply(
                                 verdict = if req.reused { "email_approval_reused" } else { "email_approval_parked" },
                                 "[email] EXTERNAL reply from a worker held for human approval (AMUX-3510)"
                             );
+                            crate::api::approval_cards::file(crate::api::approval_cards::email_ask(
+                                &id, &lane, "reply", &r_to, &r_subject, &externals)).await;
                             approval_required_response(&req, preview)
                         }
                         Err(e) => err(
@@ -1055,6 +1078,13 @@ pub async fn reject(
         );
         return crate::api::email_scope::refusal("reject", why);
     }
+    // A worker withdrawing its OWN draft is not a decision on someone else's
+    // request; every other caller is held to separation of duties.
+    if !matches!(caller, crate::api::email_scope::Caller::Worker(_)) {
+        if let Some(r) = crate::api::approval_cards::duties("email", &id, &headers) {
+            return r;
+        }
+    }
     let (by, by_verified) = match &caller {
         crate::api::email_scope::Caller::Human { proven, .. } => (proven.actor(), true),
         crate::api::email_scope::Caller::Worker(lane) => (lane.clone(), false),
@@ -1093,6 +1123,8 @@ pub async fn reject(
                 approval = %id, session = %session, by = %by, reason = %reason,
                 "[email] approval DISCARDED — the draft was never sent (AMUX-3698)"
             );
+            crate::api::approval_cards::resolved("email", &id, "rejected", &by,
+                (!reason.is_empty()).then(|| reason.clone())).await;
             // AMUX-4974, second half. This row recorded WHO rejected and WHY
             // and never WHAT, so all 35 reject rows in the live ledger carried
             // an empty recipient and subject. The card asked whether that was
@@ -1291,6 +1323,9 @@ pub async fn approve(
             );
             return crate::api::email_scope::refusal("approve", why);
         }
+        if let Some(r) = crate::api::approval_cards::duties("email", &id, &headers) {
+            return r;
+        }
         if !creator.is_empty() && approver.eq_ignore_ascii_case(creator) {
             tracing::warn!(
                 session = %creator, approver = %approver, approval = %id,
@@ -1333,6 +1368,8 @@ pub async fn approve(
             .filter(|b| !b.trim().is_empty());
         return match crate::api::email_approval::schedule(&home, &id, send_at, &approver, edit) {
             Ok(doc) => {
+                crate::api::approval_cards::resolved("email", &id, "approved", &approver,
+                    Some(format!("scheduled to send at {send_at}"))).await;
                 email_log(
                     ctx.client.home(),
                     json!({
@@ -1502,6 +1539,7 @@ pub async fn approve(
             email_err_with(&e, json!({ "approval_id": id, "reopened": reopened }))
         }
         Ok(res) => {
+            crate::api::approval_cards::resolved("email", &id, "approved", &approver, None).await;
             // The audit answers "who approved this", not only "which worker
             // sent it" (autodesk's point 5). The approver is the dashboard
             // origin; the SESSION on the row stays the worker that authored
