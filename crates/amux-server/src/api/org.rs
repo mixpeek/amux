@@ -180,7 +180,7 @@ impl MemberScope {
     }
 }
 
-fn parse_member_scope(level: &str, name: &str) -> Option<MemberScope> {
+pub(crate) fn parse_member_scope(level: &str, name: &str) -> Option<MemberScope> {
     match level.trim().to_ascii_lowercase().as_str() {
         "global" if name.trim().is_empty() => Some(MemberScope::Global),
         "group" if !name.trim().is_empty() => {

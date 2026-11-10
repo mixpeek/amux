@@ -48,6 +48,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/ledger-checkpoints.mjs ledger-checkpoints
   e2e/chaos/capabilities.mjs capabilities
   e2e/chaos/approval-cards.mjs approval-cards
+  e2e/chaos/schedule-authority.mjs schedule-authority
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot

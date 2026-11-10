@@ -1252,7 +1252,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 39] = [
+    const COLS: [&str; 41] = [
         "id",
         "title",
         "session",
@@ -1295,6 +1295,9 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         // 0141 wake condition (schedule_wake.rs).
         "when_check",
         "when_once",
+        // 0160 proven creator (schedule_authority.rs).
+        "created_by",
+        "created_by_verified",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -2881,6 +2884,11 @@ async fn fire_recorded(
     policy: MissedRunPolicy,
 ) -> anyhow::Result<bool> {
     use futures::FutureExt;
+    // Governance PR 13: the creator must still have authority over the worker
+    // this fires as. `report` fires and counts; `enforce` pauses and asks.
+    if crate::api::schedule_authority::gate(store, id).await == crate::api::schedule_authority::Gate::Paused {
+        return Ok(false);
+    }
     // A firing is an origin: it starts its own trace, and everything the
     // delivery records (the message row, the worker's trace file) descends
     // from it (api/trace.rs).

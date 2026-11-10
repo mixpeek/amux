@@ -624,6 +624,32 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     (StatusCode::CREATED, Json(out)).into_response()
 }
 
+/// Offboarding (governance PR 13): every link `approver` approved goes back
+/// to pending, so it is served to nobody until a person approves it again. Its
+/// granted amux calls return to "asked for", so re-approving restores them.
+/// Nothing is deleted. Returns the ids changed.
+pub(crate) fn return_to_pending(home: &Path, approver: &str) -> Vec<String> {
+    let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut links = load(home);
+    let mut changed = Vec::new();
+    for l in links.iter_mut().filter(|l| l.approved_by == approver) {
+        l.approved_by.clear();
+        if !l.api_allow.is_empty() {
+            l.api_requested = std::mem::take(&mut l.api_allow);
+        }
+        changed.push(l.id.clone());
+    }
+    if !changed.is_empty() {
+        if let Err(e) = save(home, &links) {
+            tracing::warn!(error = %e, measured = false, verdict = "offboard_apps_unsaved",
+                "offboarding could not return a member's approved apps to pending");
+            return Vec::new();
+        }
+        super::super::app_identity::forget_tree();
+    }
+    changed
+}
+
 pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     let home = crate::config::amux_home();
     let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
