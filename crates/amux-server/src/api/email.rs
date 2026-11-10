@@ -479,6 +479,7 @@ fn bad_addrs(list: &str) -> Vec<String> {
 // ---- POST /api/email/send -------------------------------------------------
 
 pub async fn send(
+    axum::extract::State(state): axum::extract::State<AppState>,
     Extension(ctx): Extension<Arc<EmailCtx>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -556,9 +557,17 @@ pub async fn send(
             &crate::api::email_approval::internal_domains(&home),
             &connected,
         );
-        if !externals.is_empty()
-            && !crate::api::email_approval::external_email_allowed(&home, &lane)
-        {
+        // A standing rule that lets this send skip the hold is recorded
+        // every time it is used (governance PR 6, A4: nothing silent).
+        let bypass = if externals.is_empty() {
+            None
+        } else {
+            crate::api::email_scope::bypass_rule(&home, &lane)
+        };
+        if let Some(rule) = &bypass {
+            crate::api::email_scope::record_bypass(&state, &home, &lane, rule, "send", &externals).await;
+        }
+        if !externals.is_empty() && bypass.is_none() {
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
@@ -731,6 +740,7 @@ use super::py_truthy as truthy;
 // ---- POST /api/email/reply ------------------------------------------------
 
 pub async fn reply(
+    axum::extract::State(state): axum::extract::State<AppState>,
     Extension(ctx): Extension<Arc<EmailCtx>>,
     headers: HeaderMap,
     Json(body): Json<Value>,
@@ -820,7 +830,16 @@ pub async fn reply(
         // runs), classify, and freeze for a human if anyone external is on it.
         if let Some(lane) = hdr_worker(&headers) {
             let home = ctx.client.home().to_path_buf();
-            if !crate::api::email_approval::external_email_allowed(&home, &lane) {
+            let bypass = crate::api::email_scope::bypass_rule(&home, &lane);
+            if let Some(rule) = &bypass {
+                // The rule skips the external check before the thread's
+                // recipients are looked up, so the receipt names the thread,
+                // not resolved addresses: an extra provider lookup per exempt
+                // reply would cost quota to annotate a receipt.
+                let thread = vec![format!("thread of {message_id} (recipients not resolved)")];
+                crate::api::email_scope::record_bypass(&state, &home, &lane, rule, "reply", &thread).await;
+            }
+            if bypass.is_none() {
                 let (r_to, r_cc, r_subject) = match ctx
                     .client
                     .resolve_reply_recipients_cc(&gmail_from, &message_id, reply_all, allow_self, &extra_cc)
@@ -1015,14 +1034,42 @@ pub async fn reject(
     Path(id): Path<String>,
     body: Option<Json<Value>>,
 ) -> Response {
-    let by = headers
-        .get("x-amux-approver")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .or_else(|| hdr_worker(&headers))
-        .unwrap_or_else(|| "unidentified".to_string());
+    // WHO DISCARDS, FROM WHAT THE SERVER PROVED (governance PR 6). A proven
+    // human is recorded as itself and verified, whatever X-Amux-Approver says;
+    // a worker may withdraw only its own draft; an app none.
+    let caller = crate::api::email_scope::resolve(&headers);
+    let home = ctx.client.home().to_path_buf();
+    let creator = crate::api::email_approval::peek(&home, &id)
+        .and_then(|d| d.get("session").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    if matches!(caller, crate::api::email_scope::Caller::Unproven) {
+        if let crate::api::human_proof::Verdict::Refused = crate::api::human_proof::check(&headers, "email_reject") {
+            return crate::api::human_proof::refusal("email_reject");
+        }
+    }
+    if let crate::api::email_scope::Gate::Refuse(why) = crate::api::email_scope::gate(&caller, "reject", &creator) {
+        email_log(
+            ctx.client.home(),
+            json!({ "endpoint": "reject", "blocked": why, "approval_id": id, "session": creator,
+                    "caller": caller.actor() }),
+        );
+        return crate::api::email_scope::refusal("reject", why);
+    }
+    let (by, by_verified) = match &caller {
+        crate::api::email_scope::Caller::Human { proven, .. } => (proven.actor(), true),
+        crate::api::email_scope::Caller::Worker(lane) => (lane.clone(), false),
+        crate::api::email_scope::Caller::App(app) => (app.clone(), false),
+        crate::api::email_scope::Caller::Unproven => (
+            headers
+                .get("x-amux-approver")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| "unidentified".to_string()),
+            false,
+        ),
+    };
     let reason = body
         .as_ref()
         .and_then(|b| b.get("reason"))
@@ -1030,7 +1077,6 @@ pub async fn reject(
         .unwrap_or("")
         .trim()
         .to_string();
-    let home = ctx.client.home().to_path_buf();
     // The creating lane may discard its OWN draft — unlike approve, where
     // self-release is the whole loop the gate exists to break. Withdrawing a
     // send you queued is not a bypass; refusing it would leave a worker that
@@ -1072,7 +1118,7 @@ pub async fn reject(
                 json!({
                     "endpoint": "reject", "approval_id": id, "session": session,
                     "rejected": true, "rejected_by": by, "reason": reason,
-                    "approver_verified": false,
+                    "approver_verified": by_verified,
                     "rejected_endpoint": doc.get("endpoint").cloned().unwrap_or(Value::Null),
                     "to": resolved_envelope(&d_preview, "to", &dp("to")),
                     "cc": resolved_envelope(&d_preview, "cc", &dp("cc")),
@@ -1114,7 +1160,11 @@ pub async fn approve(
     // the frozen draft exactly as before.
     body: Option<Json<Value>>,
 ) -> Response {
-    if let Some(lane) = hdr_worker(&headers) {
+    // A signed-in member's requests carry `x-amux-session: member:<email>`,
+    // which this check used to read as a worker origin, so no member could
+    // approve (governance PR 6). Resolve from what the server proved first.
+    let caller = crate::api::email_scope::resolve(&headers);
+    if let crate::api::email_scope::Caller::Worker(lane) = &caller {
         tracing::warn!(
             session = %lane, approval = %id,
             "[email] a WORKER tried to approve a held external send — refused (AMUX-3510)"
@@ -1230,6 +1280,17 @@ pub async fn approve(
     // the design already conceded.
     if let Some(pending) = crate::api::email_approval::peek(&home, &id) {
         let creator = pending.get("session").and_then(Value::as_str).unwrap_or("");
+        // An app never decides, and a scoped member decides only for the
+        // workers in its scope (governance PR 6). Checked before consume: a
+        // refusal must not destroy what it refuses.
+        if let crate::api::email_scope::Gate::Refuse(why) = crate::api::email_scope::gate(&caller, "approve", creator) {
+            email_log(
+                ctx.client.home(),
+                json!({ "endpoint": "approve", "blocked": why, "approval_id": id, "session": creator,
+                        "caller": caller.actor(), "approver_verified": approver_verified }),
+            );
+            return crate::api::email_scope::refusal("approve", why);
+        }
         if !creator.is_empty() && approver.eq_ignore_ascii_case(creator) {
             tracing::warn!(
                 session = %creator, approver = %approver, approval = %id,
@@ -1494,10 +1555,27 @@ pub async fn approve(
 /// later time is in `scheduled`, soonest first (Ethan, 2026-11-09: "When an
 /// email is approved -> scheduled it shouldnt be in the scheduled thing
 /// anymore but we should be able to see the scheduled list").
-pub async fn list_approvals(Extension(ctx): Extension<Arc<EmailCtx>>) -> Response {
+pub async fn list_approvals(Extension(ctx): Extension<Arc<EmailCtx>>, headers: HeaderMap) -> Response {
+    // SCOPED TO THE CALLER (governance PR 6). This handed every caller every
+    // pending id and the worker that queued it.
+    let caller = crate::api::email_scope::resolve(&headers);
+    if matches!(caller, crate::api::email_scope::Caller::App(_) | crate::api::email_scope::Caller::Unproven) {
+        if let crate::api::email_scope::Gate::Refuse(why) = crate::api::email_scope::gate(&caller, "list", "") {
+            return crate::api::email_scope::refusal("list", why);
+        }
+    }
+    let visible = |d: &Value| -> bool {
+        let creator = d.get("session").and_then(Value::as_str).unwrap_or("");
+        match caller {
+            // Counted once per call above, not once per draft.
+            crate::api::email_scope::Caller::App(_) | crate::api::email_scope::Caller::Unproven => true,
+            _ => !matches!(crate::api::email_scope::gate(&caller, "list", creator), crate::api::email_scope::Gate::Refuse(_)),
+        }
+    };
     let (mut scheduled, pending): (Vec<Value>, Vec<Value>) =
         crate::api::email_approval::list_pending(ctx.client.home())
             .into_iter()
+            .filter(visible)
             .partition(crate::api::email_approval::is_scheduled);
     let at = |d: &Value| d["scheduled"]["send_at"].as_f64().unwrap_or(0.0);
     scheduled.sort_by(|a, b| at(a).partial_cmp(&at(b)).unwrap_or(std::cmp::Ordering::Equal));
@@ -3334,6 +3412,114 @@ mod tests {
             &[("x-amux-approver", "dashboard")]).await;
         assert_eq!(st, StatusCode::OK, "{ok}");
         test_override::clear();
+    }
+
+    /// GOVERNANCE PR 6 (email_scope.rs): who may see and decide a held send,
+    /// and a standing bypass leaves a receipt. One server, two workers' drafts.
+    #[tokio::test]
+    async fn held_email_is_scoped_to_the_proven_caller() {
+        use crate::api::email_scope::test_override as scope_mode;
+        use crate::api::human_proof::{test_override as proof_mode, Mode, OWNER_PROOF_HEADER};
+        let _p = proof_mode::set(Mode::Report, true);
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "sent1", "threadId": "t1" })),
+            ("POST", "/messages/send", 200, json!({ "id": "sent2", "threadId": "t2" })),
+        ]);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let hold = |lane: &'static str| {
+            let app = app.clone();
+            async move {
+                let (st, res) = send_req(&app, "POST", "/api/email/send",
+                    Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                                 "from": ACCT, "force_new_thread": true })),
+                    &[("x-amux-session", lane)]).await;
+                assert_eq!(st, StatusCode::FORBIDDEN, "premise: held: {res}");
+                res["approval_id"].as_str().unwrap().to_string()
+            }
+        };
+        let a1 = hold("alpha").await;
+        let b1 = hold("beta").await;
+        let ids = |v: &Value| -> Vec<String> {
+            v["pending"].as_array().unwrap().iter().map(|d| d["id"].as_str().unwrap_or("").to_string()).collect()
+        };
+        let list = "/api/email/approvals";
+
+        // ENFORCE: a worker sees only its own drafts; another worker's
+        // withdraw is refused and leaves the draft pending.
+        let _s = scope_mode::set(Mode::Enforce);
+        let (st, v) = send_req(&app, "GET", list, None, &[("x-amux-session", "alpha")]).await;
+        assert_eq!((st, ids(&v)), (StatusCode::OK, vec![a1.clone()]), "{v}");
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/reject/{a1}"), None, &[("x-amux-session", "beta")]).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("not_your_draft")), "{e}");
+        // An app and an unproven caller see nothing.
+        let (st, e) = send_req(&app, "GET", list, None, &[(crate::api::app_identity::ACTOR_HEADER, "app:e2e")]).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("app_cannot_decide")), "{e}");
+        let (st, e) = send_req(&app, "GET", list, None, &[]).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("unproven_caller")), "{e}");
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{a1}"), None,
+            &[(crate::api::app_identity::ACTOR_HEADER, "app:e2e"), ("x-amux-approver", "dashboard")]).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("app_cannot_decide")), "{e}");
+
+        // REPORT: the worker's view is as before (both drafts), and counted.
+        let _s = scope_mode::set(Mode::Report);
+        let (st, v) = send_req(&app, "GET", list, None, &[("x-amux-session", "alpha")]).await;
+        assert_eq!((st, ids(&v).len()), (StatusCode::OK, 2), "{v}");
+
+        // A MEMBER SCOPED TO alpha: a human, not a worker (its member:<email>
+        // session marker used to read as a worker origin), held to its scope.
+        let mut mh = HeaderMap::new();
+        crate::api::org::stamp_member_headers(&mut mh, "m@example.com",
+            &crate::api::org::MemberScope::Worker("alpha".into()));
+        let mh: Vec<(String, String)> = mh.iter()
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap().to_string())).collect();
+        let mh: Vec<(&str, &str)> = mh.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (st, v) = send_req(&app, "GET", list, None, &mh).await;
+        assert_eq!((st, ids(&v)), (StatusCode::OK, vec![a1.clone()]), "{v}");
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{b1}"), None, &mh).await;
+        assert_eq!((st, e["code"].clone()), (StatusCode::FORBIDDEN, json!("member_out_of_scope")),
+            "a scoped member is limited even in report mode: {e}");
+        let mut with_claim = mh.clone();
+        with_claim.push(("x-amux-approver", "someone-else"));
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/approve/{a1}"), None, &with_claim).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let sends = http.calls.lock().unwrap().iter().filter(|c| c.1.ends_with("/messages/send")).count();
+        assert_eq!(sends, 1, "exactly one send, for the approved draft");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 200, "");
+        let row = log["log"].as_array().unwrap().iter()
+            .find(|x| x["approval_id"] == json!(a1) && x["approved"] == json!(true)).cloned().unwrap_or(Value::Null);
+        assert_eq!((row["approved_by"].clone(), row["approver_verified"].clone()),
+            (json!("member:m@example.com"), json!(true)), "the proven member, not the claimed name: {row}");
+
+        // The OWNER withdraws beta's draft: recorded as itself, verified.
+        let (st, ok) = send_req(&app, "POST", &format!("/api/email/reject/{b1}"), None,
+            &[(OWNER_PROOF_HEADER, "1"), ("x-amux-approver", "dashboard")]).await;
+        assert_eq!(st, StatusCode::OK, "{ok}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 200, "");
+        let row = log["log"].as_array().unwrap().iter()
+            .find(|x| x["approval_id"] == json!(b1) && x["rejected"] == json!(true)).cloned().unwrap_or(Value::Null);
+        assert_eq!((row["rejected_by"].clone(), row["approver_verified"].clone()), (json!("owner-token"), json!(true)), "{row}");
+
+        // A STANDING BYPASS leaves a receipt naming its rule.
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/gamma.env"), "AMUX_EMAIL_EXTERNAL_ALLOW=1\n").unwrap();
+        let (st, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "direct",
+                         "from": ACCT, "force_new_thread": true })),
+            &[("x-amux-session", "gamma")]).await;
+        assert_eq!(st, StatusCode::OK, "the allowed send is not held: {res}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 200, "");
+        let row = log["log"].as_array().unwrap().iter()
+            .find(|x| x["hold_bypassed"] == json!(true)).cloned().unwrap_or(Value::Null);
+        assert_eq!((row["session"].clone(), row["bypass_rule"].clone()),
+            (json!("gamma"), json!("AMUX_EMAIL_EXTERNAL_ALLOW (worker gamma)")), "{row}");
+        let db = rusqlite::Connection::open(_d.path().join("email-api-test.db")).unwrap();
+        let (actor, rule): (String, String) = db.query_row(
+            "SELECT actor, rule_id FROM _amux_policy_receipts WHERE action='email_external_bypass'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((actor.as_str(), rule.as_str()), ("worker:gamma", "email-external-allow"));
+        assert!(crate::api::email_scope::report()["bypass_uses"]["AMUX_EMAIL_EXTERNAL_ALLOW"].as_u64().unwrap_or(0) >= 1);
     }
 
     #[tokio::test]

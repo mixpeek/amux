@@ -284,15 +284,8 @@ pub fn exempt_sessions(home: &Path) -> Vec<String> {
 /// changed for one worker from the Configurations UI and can be explicitly
 /// denied at a more-specific layer.
 pub fn external_email_allowed(home: &Path, session: &str) -> bool {
-    let scoped =
-        crate::api::session_verbs::scoped_setting_in(home, session, "AMUX_EMAIL_EXTERNAL_ALLOW");
-    if let Some(value) = scoped {
-        return matches!(
-            value.trim().trim_matches('"').to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        );
-    }
-    exempt_sessions(home).contains(&session.trim().to_lowercase())
+    // One resolver (A10): the same function names the rule in the receipt.
+    crate::api::email_scope::bypass_rule(home, session).is_some()
 }
 
 /// The classifier, pure so every cell is testable: which of these addresses
