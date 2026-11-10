@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>amux Demos: See It in Action</title>
-<meta name="description" content="Short videos of amux features, each recorded from a real setup on a laptop and a phone: worker cards, send to any worker, live status and restarts, board, calendar, draw, phone app and more.">
+<meta name="description" content="Short videos of amux features, each recorded from a real setup on a laptop and a phone: worker cards, send to any worker, live status and restarts, messages, board, scheduler, calendar, file viewer and more.">
   <link rel="canonical" href="https://amux.io/demos/">
     <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -67,7 +67,7 @@
   </header>
 <div class="wrap">
 <h1>amux Demos</h1>
-<p class="subtitle">7 short clips, one per amux feature</p>
+<p class="subtitle">11 short clips, one per amux feature</p>
 <div style="background:linear-gradient(135deg,rgba(16,185,129,.08),rgba(5,150,105,.06));border:1px solid rgba(16,185,129,.3);border-radius:8px;padding:1.1rem 1.4rem;margin:1.25rem 0 1.75rem" data-cta-loc="cloud-inline-top">
   <p style="margin:0 0 0.7rem;font-size:0.95rem">Run a fleet of Claude Code, Codex, and Gemini CLI agents from one dashboard. amux is free to self-host (MIT + Commons Clause) and takes 2 minutes to install.</p>
   <a href="/start/?source=demos" style="display:inline-block;margin:0 0.5rem 0.4rem 0;background:#047857;color:#fff;font-weight:600;font-size:0.9rem;padding:0.55rem 1.1rem;border-radius:6px;text-decoration:none">Start amux Cloud</a>
@@ -99,7 +99,7 @@
   <div class="demo-card" data-playlist="Workers" data-tags="workers sessions cards status fleet overview search" data-desc="See all your Claude Code agents at a glance, live status, token spend, current task, and model on every card.">
     <a href="/demos/session-cards-overview/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/session-cards-overview/demo.mp4?v=4f6a27c7" poster="/demos/session-cards-overview/poster.jpg?v=4f6a27c7" preload="none" loop muted playsinline title="Worker Cards"></video>
+        <video data-lightbox src="/demos/session-cards-overview/demo.mp4?v=59a081ba" poster="/demos/session-cards-overview/poster.jpg?v=59a081ba" preload="none" loop muted playsinline title="Worker Cards"></video>
       </div>
       <div class="demo-info">
         <span class="demo-tag">Workers</span>
@@ -110,7 +110,7 @@
   <div class="demo-card" data-playlist="Workers" data-tags="prompt message terminal send browser composer" data-desc="Type prompts and commands directly to any Claude Code agent from the browser, no terminal, no tmux attachment needed.">
     <a href="/demos/send-command-dashboard/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/send-command-dashboard/demo.mp4?v=48a05b47" poster="/demos/send-command-dashboard/poster.jpg?v=48a05b47" preload="none" loop muted playsinline title="Send to Any Worker"></video>
+        <video data-lightbox src="/demos/send-command-dashboard/demo.mp4?v=eb6f5108" poster="/demos/send-command-dashboard/poster.jpg?v=eb6f5108" preload="none" loop muted playsinline title="Send to Any Worker"></video>
       </div>
       <div class="demo-info">
         <span class="demo-tag">Workers</span>
@@ -129,6 +129,17 @@
       </div>
     </a>
   </div>
+  <div class="demo-card" data-playlist="Workers" data-tags="messages chat dm channel worker to worker delegate handoff amux send" data-desc="Workers message each other and you in one place. A lead hands a task to a teammate, the reply comes back, and you read the whole thread in the Messages tab on any screen.">
+    <a href="/demos/messages/">
+      <div class="demo-thumb">
+        <video data-lightbox src="/demos/messages/demo.mp4?v=6276ecc6" poster="/demos/messages/poster.jpg?v=6276ecc6" preload="none" loop muted playsinline title="Messages"></video>
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Workers</span>
+        <h3>Messages</h3>
+      </div>
+    </a>
+  </div>
   <div class="demo-card" data-playlist="Board &amp; schedule" data-tags="board issues tasks kanban columns cards" data-desc="SQLite-backed kanban with auto-generated issue keys, tags, due dates, and atomic task claiming. Agents read and update it via REST API.">
     <a href="/demos/kanban-board-overview/">
       <div class="demo-thumb">
@@ -140,6 +151,17 @@
       </div>
     </a>
   </div>
+  <div class="demo-card" data-playlist="Board &amp; schedule" data-tags="scheduler schedule cron recurring daily weekday every morning run now automation" data-desc="Schedule work for your agents in plain words. Pick a worker, write the message, choose Weekdays at 9:00, and amux delivers it on time. A one-off fires once at the time you set.">
+    <a href="/demos/scheduler/">
+      <div class="demo-thumb">
+        <video data-lightbox src="/demos/scheduler/demo.mp4?v=012029f4" poster="/demos/scheduler/poster.jpg?v=012029f4" preload="none" loop muted playsinline title="Scheduler"></video>
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Board &amp; schedule</span>
+        <h3>Scheduler</h3>
+      </div>
+    </a>
+  </div>
   <div class="demo-card" data-playlist="Board &amp; schedule" data-tags="calendar due dates ics google apple feed subscribe events" data-desc="Board items with due dates show on the amux calendar beside your events, and the calendar&#x27;s events are published as a live iCal feed for Google Calendar, Apple Calendar or any iCal app.">
     <a href="/demos/ical-calendar-sync/">
       <div class="demo-thumb">
@@ -148,6 +170,28 @@
       <div class="demo-info">
         <span class="demo-tag">Board &amp; schedule</span>
         <h3>Calendar</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Files &amp; apps" data-tags="files file viewer browser markdown code preview edit folders" data-desc="Browse and read your files from the browser. Open the folder an agent works in, read markdown rendered and code highlighted, and read what an agent just wrote, on the laptop or the phone.">
+    <a href="/demos/file-viewer/">
+      <div class="demo-thumb">
+        <video data-lightbox src="/demos/file-viewer/demo.mp4?v=4b5738ef" poster="/demos/file-viewer/poster.jpg?v=4b5738ef" preload="none" loop muted playsinline title="File Viewer"></video>
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Files &amp; apps</span>
+        <h3>File Viewer</h3>
+      </div>
+    </a>
+  </div>
+  <div class="demo-card" data-playlist="Files &amp; apps" data-tags="apps publish share link page public approve html" data-desc="Share what your agents build. A worker builds a page and publishes it with amux publish, the link waits in the Apps tab until you approve it, and then anyone with the link can open it.">
+    <a href="/demos/apps/">
+      <div class="demo-thumb">
+        <video data-lightbox src="/demos/apps/demo.mp4?v=e10d8306" poster="/demos/apps/poster.jpg?v=e10d8306" preload="none" loop muted playsinline title="Apps"></video>
+      </div>
+      <div class="demo-info">
+        <span class="demo-tag">Files &amp; apps</span>
+        <h3>Apps</h3>
       </div>
     </a>
   </div>
@@ -165,7 +209,7 @@
   <div class="demo-card" data-playlist="Phone &amp; sync" data-tags="phone iphone android app pwa remote mobile" data-desc="Install amux on your iPhone or Android as a Progressive Web App. Monitor sessions, send commands, and manage the board from anywhere.">
     <a href="/demos/mobile-pwa/">
       <div class="demo-thumb">
-        <video data-lightbox src="/demos/mobile-pwa/demo.mp4?v=c497bbfb" poster="/demos/mobile-pwa/poster.jpg?v=c497bbfb" preload="none" loop muted playsinline title="Phone App"></video>
+        <video data-lightbox src="/demos/mobile-pwa/demo.mp4?v=4fbb2af5" poster="/demos/mobile-pwa/poster.jpg?v=4fbb2af5" preload="none" loop muted playsinline title="Phone App"></video>
       </div>
       <div class="demo-info">
         <span class="demo-tag">Phone &amp; sync</span>

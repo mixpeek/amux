@@ -761,18 +761,20 @@ pub fn list_pending(home: &Path) -> Vec<Value> {
                 // Existing dashboard previews retain their compatible shape.
                 if let Some(payload) = obj.get("payload").cloned() {
                     let body = payload.get("body").and_then(Value::as_str).unwrap_or("");
-                    let attachment_count = payload
-                        .get("attachments")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len);
-                    let complete =
-                        !body.is_empty() && body.len() <= 100_000 && attachment_count == 0;
+                    let attachments = crate::api::email::attachment_summaries(&payload);
+                    let attachment_count = attachments.len();
+                    // Complete means the card shows everything that will go
+                    // out: the whole body, and every attachment by name, size
+                    // and a preview that reads it the way the send will.
+                    let complete = !body.is_empty() && body.len() <= 100_000
+                        && attachments.iter().all(|a| a["ok"] == json!(true));
                     obj.insert(
                         "review".into(),
                         json!({
                             "body": if body.len() <= 100_000 { Some(body) } else { None },
                             "body_complete": !body.is_empty() && body.len() <= 100_000,
                             "attachment_count": attachment_count,
+                            "attachments": attachments,
                             "includes_signature": payload.get("signature")
                                 .and_then(Value::as_bool).unwrap_or(true),
                             "complete": complete,
@@ -856,9 +858,36 @@ mod tests {
             json!({"body": "Attached"})).unwrap();
         let rows = list_pending(dir.path());
         let attached = rows.iter().find(|r| r["id"] != id).unwrap();
-        assert_eq!(attached["review"]["complete"], false);
+        assert_eq!(attached["review"]["complete"], false, "an attachment the send cannot read leaves the review incomplete");
         assert_eq!(attached["review"]["attachment_count"], 1);
+        assert_eq!(attached["review"]["attachments"][0]["ok"], false);
+        assert_eq!(attached["review"]["attachments"][0]["filename"], "evidence.pdf");
         assert!(!attached.to_string().contains("private"));
+    }
+
+    /// Each attachment the card can show is named with its type and size,
+    /// and the review is complete; its bytes and a file's path stay out.
+    #[test]
+    fn the_review_names_each_attachment_without_its_bytes_or_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret-folder-quote.pdf");
+        std::fs::write(&file, b"%PDF-1.4 quote").unwrap();
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"hello world");
+        let id = create_approval(dir.path(), "gtm-engine", "reply",
+            json!({"body": "See attached", "attachments": [
+                {"filename": "terms.txt", "content_base64": b64},
+                {"path": file.to_string_lossy()},
+            ]}),
+            json!({"body": "See attached"})).unwrap();
+        let rows = list_pending(dir.path());
+        let row = rows.iter().find(|r| r["id"] == id).unwrap();
+        let a = &row["review"]["attachments"];
+        assert_eq!(row["review"]["complete"], true, "{row}");
+        assert_eq!((a[0]["filename"].as_str(), a[0]["size"].as_u64(), a[0]["content_type"].as_str()), (Some("terms.txt"), Some(11), Some("text/plain")));
+        assert_eq!((a[1]["filename"].as_str(), a[1]["size"].as_u64()), (Some("secret-folder-quote.pdf"), Some(14)));
+        assert_eq!(a[1]["content_type"], "application/pdf");
+        let text = row.to_string();
+        assert!(!text.contains(&b64) && !text.contains(dir.path().to_string_lossy().as_ref()), "no bytes and no path: {text}");
     }
 
     #[test]

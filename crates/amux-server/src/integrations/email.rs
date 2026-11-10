@@ -291,6 +291,47 @@ pub fn encode_header_value(s: &str) -> String {
     }
 }
 
+/// The From header value: `"Display Name" <addr>`, or the bare address when
+/// there is no name. A non-ASCII name becomes an RFC 2047 encoded-word.
+pub fn format_from(display: &str, addr: &str) -> String {
+    let name: String = display
+        .chars()
+        .filter(|c| *c != '\r' && *c != '\n')
+        .collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return addr.to_string();
+    }
+    if name.is_ascii() {
+        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{quoted}\" <{addr}>")
+    } else {
+        format!("{} <{addr}>", encode_header_value(name))
+    }
+}
+
+/// The display name in a From header value, when its address is `account`:
+/// `"Ethan Steininger" <ethan@mixpeek.com>` gives `Ethan Steininger`. None for
+/// a bare address, another address, or an RFC 2047 encoded name.
+pub fn display_name_of(from: &str, account: &str) -> Option<String> {
+    let (name, rest) = from.rsplit_once('<')?;
+    let addr = rest.split('>').next()?.trim();
+    if !addr.eq_ignore_ascii_case(account) {
+        return None;
+    }
+    let name = name.trim();
+    let name = name
+        .strip_prefix('"')
+        .and_then(|n| n.strip_suffix('"'))
+        .map(|n| n.replace("\\\"", "\"").replace("\\\\", "\\"))
+        .unwrap_or_else(|| name.to_string());
+    let name = name.trim();
+    if name.is_empty() || name.contains("=?") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // RFC822 assembly (Python `_gmail_compose_send`'s MIME construction)
 // ---------------------------------------------------------------------------
@@ -937,11 +978,18 @@ struct TokenFile {
 pub struct GmailClient {
     http: Arc<dyn HttpTransport>,
     home: PathBuf,
+    /// Sender display names found in each account's own sent mail, so the
+    /// fallback in `sender_name` costs its lookups once per account.
+    sender_names: std::sync::Mutex<HashMap<String, String>>,
 }
 
 impl GmailClient {
     pub fn new(http: Arc<dyn HttpTransport>, home: PathBuf) -> Self {
-        Self { http, home }
+        Self {
+            http,
+            home,
+            sender_names: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn new_default() -> Self {
@@ -1272,17 +1320,14 @@ impl GmailClient {
         self.api(account, "GET", &url, None).await
     }
 
-    /// Python `_gmail_get_signature`: the account's configured send-as HTML
-    /// signature; "" on any failure.
-    pub async fn get_signature(&self, account: &str) -> String {
+    /// The account's send-as entry (`users/settings/sendAs`): the one whose
+    /// address matches, else the primary, else the first. None on any failure.
+    async fn send_as(&self, account: &str) -> Option<Value> {
         let url = format!("{GMAIL_BASE}/settings/sendAs");
-        let Ok(v) = self.api(account, "GET", &url, None).await else {
-            return String::new();
-        };
-        let empty = vec![];
-        let sendas = v.get("sendAs").and_then(Value::as_array).unwrap_or(&empty);
+        let v = self.api(account, "GET", &url, None).await.ok()?;
+        let sendas = v.get("sendAs").and_then(Value::as_array)?;
         let target = account.to_lowercase();
-        let chosen = sendas
+        sendas
             .iter()
             .find(|sa| {
                 sa.get("sendAsEmail")
@@ -1296,12 +1341,81 @@ impl GmailClient {
                     .iter()
                     .find(|sa| sa.get("isPrimary").and_then(Value::as_bool) == Some(true))
             })
-            .or_else(|| sendas.first());
-        chosen
-            .and_then(|sa| sa.get("signature"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
+            .or_else(|| sendas.first())
+            .cloned()
+    }
+
+    /// The name on mail this account sent from Gmail itself. Gmail leaves the
+    /// primary address's send-as `displayName` empty and fills in the Google
+    /// Account name only in its own UI, which this token cannot read. Measured
+    /// 2026-11-09 on ethan@mixpeek.com: an empty displayName, and "Ethan
+    /// Steininger <ethan@mixpeek.com>" on every message sent from Gmail.
+    /// "" when no recent sent message names the sender; only a completed
+    /// lookup is cached, so a failed one is retried on the next send.
+    async fn sender_name(&self, account: &str) -> String {
+        let key = account.to_lowercase();
+        if let Some(n) = self
+            .sender_names
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&key).cloned())
+        {
+            return n;
+        }
+        let Ok(list) = self
+            .list_ids(account, &format!("in:sent from:{account}"), 10, None)
+            .await
+        else {
+            return String::new();
+        };
+        let mut name = String::new();
+        let empty = vec![];
+        let ids = list
+            .get("messages")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty);
+        for id in ids
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+        {
+            let url = self.metadata_url(id, &["From"]);
+            let Ok(msg) = self.api(account, "GET", &url, None).await else {
+                continue;
+            };
+            let from = msg
+                .pointer("/payload/headers")
+                .and_then(Value::as_array)
+                .and_then(|hs| {
+                    hs.iter().find(|h| {
+                        h.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|n| n.eq_ignore_ascii_case("From"))
+                    })
+                })
+                .and_then(|h| h.get("value").and_then(Value::as_str))
+                .unwrap_or("");
+            if let Some(n) = display_name_of(from, account) {
+                name = n;
+                break;
+            }
+        }
+        if let Ok(mut m) = self.sender_names.lock() {
+            m.insert(key, name.clone());
+        }
+        name
+    }
+
+    /// Python `_gmail_get_signature`: the account's configured send-as HTML
+    /// signature; "" on any failure.
+    pub async fn get_signature(&self, account: &str) -> String {
+        self.send_as(account)
+            .await
+            .and_then(|sa| {
+                sa.get("signature")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .unwrap_or_default()
     }
 
     /// Python `_gmail_compose_send`: multipart/alternative with signature,
@@ -1321,11 +1435,28 @@ impl GmailClient {
         include_signature: bool,
         attachments: &[Attachment],
     ) -> Result<Value, String> {
-        let sig_html = if include_signature {
-            self.get_signature(account).await
+        // The send-as entry carries both the signature and the display name.
+        // Without the name the From header is the bare address, and recipients
+        // see "ethan@mixpeek.com" with a blank avatar instead of the person.
+        let send_as = if include_signature {
+            self.send_as(account).await
         } else {
-            String::new()
+            None
         };
+        let field = |k: &str| {
+            send_as
+                .as_ref()
+                .and_then(|sa| sa.get(k))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
+        let sig_html = field("signature");
+        let mut name = field("displayName");
+        if name.trim().is_empty() && send_as.is_some() {
+            name = self.sender_name(account).await;
+        }
+        let from = format_from(&name, account);
         let (plain, html, sig_included) = compose_bodies(body, &sig_html);
         // Boundary needs no cryptographic strength, only absence from the
         // payload; nanos + a fixed tag matches Python's uniqueness level.
@@ -1337,7 +1468,7 @@ impl GmailClient {
                 .unwrap_or(0)
         );
         let rfc822 = build_rfc822(&MimeSpec {
-            from: account,
+            from: &from,
             to,
             cc,
             subject,
@@ -3532,6 +3663,134 @@ mod tests {
         assert!(err.contains("invalid_grant"), "{err}");
     }
 
+    #[test]
+    fn from_header_names_the_sender_and_falls_back_to_the_address() {
+        assert_eq!(
+            format_from("Ethan Steininger", "ethan@mixpeek.com"),
+            "\"Ethan Steininger\" <ethan@mixpeek.com>"
+        );
+        assert_eq!(format_from("", "a@b.c"), "a@b.c");
+        assert_eq!(format_from("  \r\n ", "a@b.c"), "a@b.c");
+        assert_eq!(
+            format_from("A \"Q\" B", "a@b.c"),
+            "\"A \\\"Q\\\" B\" <a@b.c>"
+        );
+        assert_eq!(
+            format_from("Evil\r\nBcc: x@y.z", "a@b.c"),
+            "\"EvilBcc: x@y.z\" <a@b.c>"
+        );
+        assert_eq!(
+            format_from("Zoë", "a@b.c"),
+            format!("{} <a@b.c>", encode_header_value("Zoë"))
+        );
+    }
+
+    #[test]
+    fn display_name_comes_from_a_named_from_for_this_account_only() {
+        let a = "ethan@mixpeek.com";
+        assert_eq!(
+            display_name_of("Ethan Steininger <ethan@mixpeek.com>", a).as_deref(),
+            Some("Ethan Steininger")
+        );
+        assert_eq!(
+            display_name_of("\"Ethan \\\"E\\\" S\" <Ethan@Mixpeek.com>", a).as_deref(),
+            Some("Ethan \"E\" S")
+        );
+        assert_eq!(display_name_of("ethan@mixpeek.com", a), None);
+        assert_eq!(display_name_of("Someone <other@x.com>", a), None);
+        assert_eq!(display_name_of("\"\" <ethan@mixpeek.com>", a), None);
+        assert_eq!(
+            display_name_of("=?utf-8?b?WiI=?= <ethan@mixpeek.com>", a),
+            None
+        );
+    }
+
+    /// The live specimen (2026-11-09): ethan@mixpeek.com's send-as entry has
+    /// an empty displayName, so the first fix still sent a bare From. The
+    /// name comes from the account's own Gmail-sent mail, looked up once.
+    #[tokio::test]
+    async fn an_empty_send_as_name_falls_back_to_the_name_on_sent_mail_once() {
+        let home = temp_home_with_token("acct@example.com", true);
+        let send_as = json!({ "sendAs": [
+            { "sendAsEmail": "acct@example.com", "displayName": "", "signature": "" },
+        ]});
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, send_as.clone()),
+            (
+                "GET",
+                "/messages?q=",
+                200,
+                json!({ "messages": [{ "id": "s1" }, { "id": "s2" }] }),
+            ),
+            (
+                "GET",
+                "/messages/s1",
+                200,
+                json!({ "payload": { "headers": [
+                { "name": "From", "value": "acct@example.com" } ]}}),
+            ),
+            (
+                "GET",
+                "/messages/s2",
+                200,
+                json!({ "payload": { "headers": [
+                { "name": "From", "value": "Acct Person <acct@example.com>" } ]}}),
+            ),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m1", "threadId": "t1" }),
+            ),
+            ("GET", "/settings/sendAs", 200, send_as),
+            (
+                "POST",
+                "/messages/send",
+                200,
+                json!({ "id": "m2", "threadId": "t2" }),
+            ),
+        ]);
+        let client = GmailClient::new(http.clone(), home.path().to_path_buf());
+        for _ in 0..2 {
+            client
+                .compose_send(
+                    "acct@example.com",
+                    "x@ext.com",
+                    "S",
+                    "B",
+                    "",
+                    "",
+                    "",
+                    "",
+                    true,
+                    &[],
+                )
+                .await
+                .unwrap();
+        }
+        let calls = http.calls.lock().unwrap();
+        let sends: Vec<String> = calls
+            .iter()
+            .filter(|(m, u, _)| m == "POST" && u.contains("/messages/send"))
+            .map(|(_, _, b)| {
+                let raw = b.as_ref().unwrap()["raw"].as_str().unwrap();
+                String::from_utf8(base64url_decode(raw).unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(sends.len(), 2);
+        for d in &sends {
+            assert!(
+                d.contains("From: \"Acct Person\" <acct@example.com>\r\n"),
+                "{d}"
+            );
+        }
+        let lists = calls
+            .iter()
+            .filter(|(_, u, _)| u.contains("/messages?q="))
+            .count();
+        assert_eq!(lists, 1, "the second send reuses the cached name");
+    }
+
     #[tokio::test]
     async fn compose_send_raw_decodes_to_rfc822_with_signature_and_thread() {
         let home = temp_home_with_token("acct@example.com", true);
@@ -3541,7 +3800,7 @@ mod tests {
                 "/settings/sendAs",
                 200,
                 json!({ "sendAs": [
-                    { "sendAsEmail": "acct@example.com", "signature": "<b>Sig</b>" },
+                    { "sendAsEmail": "acct@example.com", "displayName": "Acct Person", "signature": "<b>Sig</b>" },
                 ]}),
             ),
             (
@@ -3579,6 +3838,12 @@ mod tests {
         let decoded = String::from_utf8(base64url_decode(raw).unwrap()).unwrap();
         assert!(decoded.contains("To: x@ext.com\r\n"), "{decoded}");
         assert!(decoded.contains("Cc: c@ext.com\r\n"));
+        // The send-as display name reaches From, so the recipient sees the
+        // person and their avatar rather than the bare address.
+        assert!(
+            decoded.contains("From: \"Acct Person\" <acct@example.com>\r\n"),
+            "{decoded}"
+        );
         assert!(decoded.contains("In-Reply-To: <orig@id>\r\n"));
         assert!(decoded.contains("References: <root@id> <orig@id>\r\n"));
         // Signature reached both alternatives (encoded in base64 parts).
