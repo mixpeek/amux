@@ -614,7 +614,7 @@ mod tests {
             .query_row("SELECT prev_hash, hash FROM _amux_ledger WHERE event_id='old'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         let f = c
-            .query_row(&format!("SELECT {COLS} FROM _amux_ledger WHERE event_id='old'"), [], |r| fields(r))
+            .query_row(&format!("SELECT {COLS} FROM _amux_ledger WHERE event_id='old'"), [], fields)
             .unwrap();
         assert_eq!(f.len(), V1_COLS);
         assert_eq!(row_hash(&prev, &f), h);
