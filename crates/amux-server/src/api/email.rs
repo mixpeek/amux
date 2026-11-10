@@ -651,7 +651,7 @@ pub async fn send(
             crate::api::email_scope::bypass_rule(&home, &lane)
         };
         if let Some(rule) = &bypass {
-            crate::api::email_scope::record_bypass(&state, &home, &lane, rule, "send", &externals).await;
+            crate::api::email_scope::record_bypass(Some(&state), &home, &lane, rule, "send", &externals).await;
         }
         if !externals.is_empty() && bypass.is_none() {
             let preview = json!({
@@ -835,6 +835,18 @@ pub async fn reply(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    reply_with(Some(&state), ctx, headers, body).await
+}
+
+/// `reply` for in-process callers that hold no `AppState` (the email bridge).
+/// Without a store a hold bypass is still counted and logged, but its policy
+/// receipt is skipped and says so (`email_bypass_receipt_unwritten`).
+pub async fn reply_with(
+    state: Option<&AppState>,
+    ctx: Arc<EmailCtx>,
+    headers: HeaderMap,
+    body: Value,
+) -> Response {
     let mut message_id = body_str(&body, "message_id");
     let reply_body = body_str(&body, "body");
     let reply_all = body.get("reply_all").map(truthy).unwrap_or(false);
@@ -927,7 +939,7 @@ pub async fn reply(
                 // not resolved addresses: an extra provider lookup per exempt
                 // reply would cost quota to annotate a receipt.
                 let thread = vec![format!("thread of {message_id} (recipients not resolved)")];
-                crate::api::email_scope::record_bypass(&state, &home, &lane, rule, "reply", &thread).await;
+                crate::api::email_scope::record_bypass(state, &home, &lane, rule, "reply", &thread).await;
             }
             if bypass.is_none() {
                 let (r_to, r_cc, r_subject) = match ctx
