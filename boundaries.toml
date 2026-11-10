@@ -57,6 +57,12 @@ Never make a payment, charge, transfer or purchase except through `amux order`
 owner above it). Never call a payment provider's API directly, never read card
 or vault data, and never approve a payment grant yourself. If a task needs a
 payment the vault cannot make, stop and ask the owner.
+
+One exception: Stripe TEST mode. A command may call api.stripe.com with a
+test key (`sk_test_...` or `$STRIPE_SECRET_KEY_TEST`) to build and test a
+product's Stripe integration, such as Connect onboarding and test transfers.
+Test mode moves no money. A command that names a live key, or the live key's
+variable, is still refused.
 """
 enforced_by = [
   "server: vault approval limit and single-use grants (api/vault.rs decide)",
@@ -66,14 +72,22 @@ enforced_by = [
 [[boundary.deny]]
 tools = ["Bash"]
 match_all = ['\b(curl|wget|http|httpie|python3?|node|ruby)\b', '(api\.stripe\.com|api\.brex\.com|api(-m)?\.paypal\.com|api\.squareup\.com|connect\.squareup\.com|api\.mercury\.com|api\.ramp\.com|checkout\.stripe\.com)']
-reason = "Payments go through `amux order` only, so the owner's approval limit applies. Calling a payment provider directly skips it."
+# Stripe test mode (Ethan, 2026-11-10): a Stripe call that names only a test
+# key passes; a live key, the live key's variable or another provider blocks.
+match_none = ['\A(?![\s\S]*(sk_live_|rk_live_|STRIPE_SECRET_KEY(?!_TEST)|api\.(brex|mercury|ramp)\.com|paypal\.com|squareup\.com))(?=[\s\S]*api\.stripe\.com)(?=[\s\S]*(sk_test_|STRIPE_SECRET_KEY_TEST))']
+reason = "Payments go through `amux order` only, so the owner's approval limit applies. Calling a payment provider directly skips it. Stripe test mode with a test key is allowed."
 block_examples = [
   "curl -X POST https://api.stripe.com/v1/charges -u sk_live_x: -d amount=500",
   "curl -s https://api.brex.com/v2/transfers -H 'Authorization: Bearer x'",
+  "curl -s https://api.stripe.com/v1/accounts -u \"$STRIPE_SECRET_KEY:\"",
+  "curl -s https://api.stripe.com/v1/accounts -u sk_live_x: -H 'X: sk_test_y'",
 ]
 allow_examples = [
   "grep -rn api.stripe.com docs/",
   "amux order --amount 45.00 --merchant Acme --purpose subscription",
+  "curl -s https://api.stripe.com/v1/accounts -u \"$STRIPE_SECRET_KEY_TEST:\"",
+  "curl -s -X POST https://api.stripe.com/v1/transfers -u sk_test_abc: -d amount=100",
+  "curl -u sk_test_abc: https://api.stripe.com/v1/accounts",
 ]
 
 [[boundary.deny]]
