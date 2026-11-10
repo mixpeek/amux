@@ -17621,7 +17621,19 @@ pub(crate) async fn start_session(
     // Every lane by default, isolated ones too: the token is environment, not
     // a prompt or a route, so isolation (A9) is unchanged, and an isolated
     // worker's own `amux` calls prove who they are like anyone else's.
+    // The CLI's own OpenTelemetry (governance PR 9, cli_telemetry.rs): the
+    // exporter's headers carry this token, so they ride the vault channel too;
+    // the rest is plain configuration on the command line below. Isolated
+    // workers get it the same way (A9: environment, not a prompt).
+    let otel_plan = super::cli_telemetry::plan_for_launch(
+        &home(), name, &provider, cfg.get("CC_TAGS").unwrap_or(""));
+    let mut otel_prefix = String::new();
     if let Some(token) = super::worker_identity::mint(&home(), name) {
+        if let super::cli_telemetry::Plan::Wire { vars } = &otel_plan {
+            vault_values.push((super::cli_telemetry::HEADERS_ENV.to_string(),
+                super::cli_telemetry::headers_value(name, &token)));
+            otel_prefix = super::cli_telemetry::command_prefix(vars);
+        }
         vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
     }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
@@ -17988,8 +18000,11 @@ pub(crate) async fn start_session(
     } else {
         String::new()
     };
-    let cmd =
-        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated.then_some(name));
+    let cmd = provider_command_in_workspace(
+        &work_dir,
+        &format!("{observer_prefix}{otel_prefix}{cmd}"),
+        isolated.then_some(name),
+    );
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set

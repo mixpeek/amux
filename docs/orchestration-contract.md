@@ -132,6 +132,25 @@ the sources it consulted. `AMUX_TRACE=off` turns it off; a failure to write a
 worker's file logs `trace_propagation_failed` and is counted under `trace` in
 `GET /api/contract/counters`.
 
+**The agent CLI's own telemetry** (`api/cli_telemetry.rs`, governance PR 9).
+A Claude lane launches with Claude Code's OpenTelemetry pointed at
+`/api/otel` (OTLP/HTTP, JSON); the exporter's headers carry the lane's worker
+token through the vault channel, and the rest is configuration on the command
+line, isolated lanes included. A lane whose own environment sets OTel is left
+alone (`cli_telemetry_user_otel_kept`). `POST /api/otel/v1/logs` accepts only
+a worker proving itself with its token. Tool results, rejected tool decisions,
+API requests (model, tokens, cost) and turn boundaries land in
+`_amux_tool_events` under that worker (`source=otel`, or `hook+otel` when the
+status hook saw the same call); prompt and response text and account identity
+are never stored, and tool input is redacted and capped. A turn takes the trace
+of the delivery that started it when the worker's trace file was written at
+most five minutes before the turn's first event, else `unattributed`.
+`GET /api/trace/{id}` and `/api/audit` show the rows; `cli_telemetry` in
+`GET /api/contract/counters` has `telemetry_received_at` per worker, so a quiet
+worker and a CLI that is not reporting differ. Metrics are accepted and
+counted, not stored. Codex is not wired (it reads OTel from its config file).
+`AMUX_CLI_TELEMETRY=off` stops wiring launches and refuses posts.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

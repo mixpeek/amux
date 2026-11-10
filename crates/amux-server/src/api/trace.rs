@@ -324,6 +324,38 @@ pub fn tree(conn: &Connection, trace_id: &str) -> rusqlite::Result<Value> {
     } else {
         sources.push(json!({"name": "cmd_history", "consulted": false, "why": "trace columns absent"}));
     }
+    // What the worker's CLI reported doing in a turn this trace delivered
+    // (cli_telemetry.rs): tool calls and API requests, children of the
+    // delivery span. Activity, not decisions, so not in the ledger.
+    let tools_ok = conn.prepare("SELECT trace_id, parent_span_id, trace_source, source FROM _amux_tool_events LIMIT 0").is_ok();
+    if tools_ok {
+        let mut st = conn.prepare(
+            "SELECT id, created_at, worker_id, tool, event_name, detail, parent_span_id, trace_source, source, turn_id
+             FROM _amux_tool_events WHERE trace_id = ?1 ORDER BY created_at, id",
+        )?;
+        let rows = st.query_map([trace_id], |r| {
+            let at: String = r.get(1)?;
+            let ts = chrono::DateTime::parse_from_rfc3339(&at).map(|t| t.timestamp_millis()).unwrap_or(0);
+            let detail: Option<String> = r.get(5)?;
+            Ok(json!({
+                "source": "tool_events", "id": format!("TOOL-{}", r.get::<_, i64>(0)?), "ts": ts,
+                "kind": "tool", "worker": r.get::<_, String>(2)?, "tool": r.get::<_, String>(3)?,
+                "event": r.get::<_, Option<String>>(4)?,
+                "detail": detail.and_then(|d| serde_json::from_str::<Value>(&d).ok()),
+                "span_id": Value::Null, "parent_span_id": r.get::<_, Option<String>>(6)?,
+                "trace_source": r.get::<_, Option<String>>(7)?, "reported_by": r.get::<_, Option<String>>(8)?,
+                "turn": r.get::<_, Option<String>>(9)?,
+            }))
+        })?;
+        let mut n = 0;
+        for row in rows {
+            nodes.push(row?);
+            n += 1;
+        }
+        sources.push(json!({"name": "tool_events", "consulted": true, "rows": n}));
+    } else {
+        sources.push(json!({"name": "tool_events", "consulted": false, "why": "trace columns absent"}));
+    }
     // Named so a reader knows what this tree cannot show yet.
     sources.push(json!({"name": "conversation_posts", "consulted": false,
         "why": "posts are reached through their delivery rows; not stamped directly"}));

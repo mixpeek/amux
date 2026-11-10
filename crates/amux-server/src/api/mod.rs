@@ -91,6 +91,7 @@ pub mod history_backfill;
 pub mod interactions;
 pub mod ledger;
 pub mod trace;
+pub mod cli_telemetry;
 pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
@@ -474,6 +475,7 @@ pub fn router_with_connector_transport(
         .merge(interactions::routes())
         .merge(ledger::routes())
         .merge(trace::routes())
+        .merge(cli_telemetry::routes())
         .nest("/api/settings", settings::routes())
         .nest("/api/push", crate::push::routes())
         // Record tab (AMUX-4624): device recordings synced into a folder and
