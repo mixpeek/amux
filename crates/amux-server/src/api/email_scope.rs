@@ -33,6 +33,7 @@
 //!   before and counted (`email_scope_would_refuse`, logged once per action);
 //! - `enforce`: refused 403 with a next step;
 //! - `off`: not checked (the previous behaviour).
+//!
 //! A scoped member's limits apply in every mode but `off`: that is access a
 //! scoped member never had (the member route guard refused all of
 //! `/api/email/` to them), so there is no previous behaviour to keep.
