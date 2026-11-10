@@ -1608,7 +1608,7 @@ pub(crate) async fn post_inner(
     // each outcome is written back onto it.
     if !targets.is_empty() {
         let (st, conv2, author, text_body) = (state.clone(), conv.clone(), author_name.clone(), body.clone());
-        tokio::spawn(async move {
+        tokio::spawn(super::instruction_provenance::carry(async move {
             let mut outcomes = Vec::new();
             for w in targets {
                 let isolated = iso.contains(&w);
@@ -1659,7 +1659,7 @@ pub(crate) async fn post_inner(
                     Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
                 })
                 .await;
-        });
+        }));
     }
     crate::bridge::notify_outbound();
     notify_owner(state, &conv, &author_key, &author_name, &body, id, parent, &mentions).await;

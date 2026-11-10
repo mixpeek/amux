@@ -214,6 +214,22 @@ to the owner, revokes standing approvals they granted and returns apps they
 approved to pending, with one ledger event per item; nothing is deleted.
 Counters are under `schedule_authority`.
 
+**Instruction provenance** (governance PR 14, `api/instruction_provenance.rs`):
+every `cmd_history` row records `source_kind` (owner, member, worker, schedule,
+app, page, chatgpt, email, webhook, web or unknown), `source_ref` and, for
+words relayed from outside amux, `relayed_from` (`email:<from> <message-id>`,
+`webhook:<platform>:<sender>`). The server derives them from the proven sender
+(the ledger principal) and the bridge that relayed the message, never from the
+text; a worker name only a header claimed is recorded as `<name> (unproven)`.
+A member's send to a non-isolated worker carries the existing server-verified
+`[amux-origin: member:<email> ...]` stamp, as a peer worker's send does; the
+owner's words carry none, and an isolated worker gets the record as metadata
+only. amux records and shows this; it does not score it, and the gates on
+money, outsiders and production data apply whatever the source.
+`GET /api/workers/{name}/history` (a person: any worker; a worker: its own) and
+`GET /api/trace/{id}` show it. `AMUX_INSTRUCTION_PROVENANCE=off` stops it.
+Counters are under `instruction_provenance`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

@@ -7633,6 +7633,12 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
     for col in ["trace_id", "span_id", "parent_span_id", "trace_source"] {
         let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
     }
+    // Where the instruction came from (governance PR 14,
+    // api/instruction_provenance.rs): derived from the proven sender, never
+    // from the message text. Metadata, so an isolated worker gets it too.
+    for col in ["source_kind", "source_ref", "relayed_from"] {
+        let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
+    }
     let _ = conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cmd_history_trace ON cmd_history(trace_id) WHERE trace_id IS NOT NULL",
         [],
@@ -8958,6 +8964,11 @@ pub(crate) async fn cmd_hist_record_with_id(
     // firing that sent it; also written to the worker's trace file so the
     // worker's own calls descend from it (trace.rs). Metadata, never text.
     let delivery_trace = crate::api::trace::delivery(&session);
+    // Where the instruction came from, from the proven sender and any relay
+    // (instruction_provenance). Metadata, never text, so isolated workers too.
+    let provenance = crate::api::instruction_provenance::enabled().then(|| {
+        crate::api::instruction_provenance::classify(&ctype, &origin, &crate::api::instruction_provenance::current())
+    });
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let truth_session = cap_session.clone();
@@ -8990,6 +9001,13 @@ pub(crate) async fn cmd_hist_record_with_id(
                     "UPDATE cmd_history SET trace_id=?2, span_id=?3, parent_span_id=?4, trace_source=?5 WHERE id=?1",
                     rusqlite::params![row_id, t.trace_id, t.span_id, t.parent_span_id, crate::api::trace::DELIVERED],
                 )?;
+            }
+            if let Some(pv) = &provenance {
+                conn.execute(
+                    "UPDATE cmd_history SET source_kind=?2, source_ref=?3, relayed_from=?4 WHERE id=?1",
+                    rusqlite::params![row_id, pv.kind, pv.reference, pv.relayed_from],
+                )?;
+                crate::api::instruction_provenance::note_recorded();
             }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             // cmd_history is the durable Messages ledger, but this write used
@@ -30660,10 +30678,10 @@ async fn send_post_detached(
     let flight = InFlightSend::enter(name, &flight_id);
     // The send runs detached from the client, and still inside the request's
     // trace, so its delivery row descends from it (api/trace.rs).
-    let joined = tokio::spawn(crate::api::trace::carry(async move {
+    let joined = tokio::spawn(crate::api::trace::carry(crate::api::instruction_provenance::carry(async move {
         let _flight = flight;
         send_post(&st, &n, &h, &b).await
-    }))
+    })))
     .await;
     watch.answered = true;
     match joined {
@@ -30844,6 +30862,17 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             tracing::info!(session = name, origin = %origin, verdict = "origin_stamp_skipped_slash_command",
                 "peer slash command delivered bare; the origin is still recorded in history and on the queue row");
         }
+    }
+    // A MEMBER'S WORDS SAY WHOSE THEY ARE (governance PR 14). A peer worker's
+    // send already carried the server-verified origin stamp; a member's did
+    // not, so the worker could not tell a teammate's instruction from the
+    // owner's. Same stamp, member identity; never for the owner, never in an
+    // isolated worker's text (A9: its history row still records the member).
+    if let Some(stamped) =
+        crate::api::instruction_provenance::member_stamp(member_actor.as_deref(), isolated, &text)
+    {
+        text = stamped;
+        crate::api::instruction_provenance::note_stamped();
     }
     // A PEER RELAY IS NOT THE OWNER (AMUX-3764). `origin` is the sender's
     // server-verified session identity, empty only when a person sent it. The

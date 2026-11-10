@@ -95,6 +95,7 @@ pub mod interactions;
 pub mod ledger;
 pub mod ledger_checkpoint;
 pub mod trace;
+pub mod instruction_provenance;
 pub mod cli_telemetry;
 pub mod invariants_api;
 pub mod journal;
@@ -398,6 +399,7 @@ pub fn router_with_connector_transport(
         // of the python handlers (api/fs.rs), same wire shapes.
         .nest("/api/fs", fs::routes().layer(axum::middleware::from_fn(capabilities::fs_gate)))
         .route("/api/workers/{name}/capabilities", axum::routing::get(capabilities::view))
+        .route("/api/workers/{name}/history", axum::routing::get(instruction_provenance::view))
         // The SPA Files BROWSER's listing + dir autocomplete — native, same
         // module (top-level paths in python, so top-level here).
         .route("/api/ls", axum::routing::any(fs::ls))
