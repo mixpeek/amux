@@ -9041,7 +9041,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-02.58"
+LAND_BEHAVIOR_VERSION="2026-11-10.59"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -11021,7 +11021,21 @@ p.communicate(msg.encode())
     if ! _seen="$(_land_rl_ls "$_LAND_RL_REMOTE" "$_ref")"; then
       _land_rl_say "ERROR verdict=land_remote_lease_unverified: could not read $_ref before the push; nothing pushed"; return 7
     fi
+    # OUR OWN RENEWAL. The heartbeat pushes a new lease commit and only then
+    # rewrites rl-sha, so a read between the two saw our renewed lease as
+    # someone else's: mxp-gs12 lost a green merge-queue run that way at
+    # 2026-11-10 12:53:32Z, 302s after taking the lease. A lease commit that
+    # names this process as holder, with our start and take times, is ours.
+    if [ -n "$_seen" ] && [ "$_seen" != "$_mine" ] \
+      && [ "$(_land_rl_field "$_seen" holder)" = "$_LAND_RL_ID" ] \
+      && [ "$(_land_rl_field "$_seen" holder_start)" = "$_LAND_RL_START" ] \
+      && [ "$(_land_rl_field "$_seen" taken_at)" = "$_LAND_RL_TAKEN" ]; then
+      _land_rl_say "verdict=land_remote_lease_renewed_under_check: $_ref moved to our own renewal ${_seen:0:12}; still ours"
+      echo "$_seen" > "$_LAND_RL_DIR/rl-sha"; _mine="$_seen"
+    fi
     if [ -z "$_mine" ] || [ "$_seen" != "$_mine" ]; then
+      # Not ours: the release must not touch it, and must not say it did.
+      : > "$_LAND_RL_DIR/rl-lost"
       _land_rl_say "ERROR verdict=land_remote_lease_not_ours: $_ref reads ${_seen:-nothing}, not our lease ${_mine:-?}; nothing pushed"; return 7
     fi
     _exp="$(_land_rl_field "$_mine" expires_at)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
@@ -11042,7 +11056,10 @@ p.communicate(msg.encode())
     if [ -n "$_hb" ]; then kill "$_hb" 2>/dev/null || true; wait "$_hb" 2>/dev/null || true; fi
     _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
     rm -f -- "$_LAND_RL_DIR/rl-sha" "$_LAND_RL_DIR/rl-hb.pid"
-    if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0; fi
+    if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then
+      [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_rl_say "verdict=land_remote_lease_not_released: $(_land_rl_ref "$2") is not ours; left for its holder"
+      rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0
+    fi
     # A CAS delete is safe to repeat (review item 5).
     local _i _ok=""
     for _i in 1 2 3; do
