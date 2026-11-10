@@ -2242,6 +2242,14 @@ pub fn email_log_path(home: &Path) -> PathBuf {
 /// must never break or block a send (Python parity). Only sends through
 /// this API appear here.
 pub fn email_log(home: &Path, mut record: Value) {
+    // The trace the send ran under (api/trace.rs), so a sent email joins the
+    // rest of its unit of work.
+    if record.get("trace_id").is_none() {
+        if let Some(t) = crate::api::trace::current() {
+            record["trace_id"] = json!(t.trace_id);
+            record["span_id"] = json!(t.span_id);
+        }
+    }
     let mut write = || -> std::io::Result<()> {
         if record.get("ts").is_none() {
             record["ts"] =

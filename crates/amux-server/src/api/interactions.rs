@@ -222,6 +222,9 @@ pub async fn middleware(
         }
     }
     let record_id = id.clone();
+    // The request's trace (trace.rs): read here, on the request's task; the
+    // write below runs on the writer thread, which has none.
+    let trace = super::trace::current();
     let (ledger_kind, ledger_action, ledger_resource) =
         (kind.clone(), format!("{method} {path}"), format!("{}:{}", primitive(&path).0, primitive(&path).1));
     let result = store.write_async(move |conn| {
@@ -245,6 +248,10 @@ pub async fn middleware(
                 outcome: Some(phase.into()),
                 source_table: Some("_amux_interactions".into()),
                 source_id: Some(record_id.clone()),
+                trace_id: trace.as_ref().map(|t| t.trace_id.clone()),
+                span_id: trace.as_ref().map(|t| t.span_id.clone()),
+                parent_span_id: trace.as_ref().and_then(|t| t.parent_span_id.clone()),
+                trace_source: trace.as_ref().map(|t| t.source.to_string()),
                 ..Default::default()
             }
             .with_principal(&principal);

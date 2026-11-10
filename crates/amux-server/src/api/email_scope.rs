@@ -292,14 +292,17 @@ pub async fn record_bypass(
     let resource = format!("email:{endpoint}");
     let rule_id = if key_rule == "AMUX_EMAIL_EXTERNAL_EXEMPT" { "email-external-exempt" } else { "email-external-allow" };
     let rationale = json!({"rule": rule, "external_recipients": recipients, "endpoint": endpoint}).to_string();
+    let trace = super::trace::current();
+    let (trace_id, span_id) = (trace.as_ref().map(|t| t.trace_id.clone()), trace.map(|t| t.span_id));
     let res = state
         .store
         .write_async(move |conn| {
             conn.execute(
                 "INSERT INTO _amux_policy_receipts
-                 (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at)
-                 VALUES(?1,?2,'email_external_bypass',?3,'trusted',0,'allow',?4,?5,0,?6)",
-                rusqlite::params![id, actor, resource, rule_id, rationale, chrono::Utc::now().to_rfc3339()],
+                 (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at,trace_id,span_id)
+                 VALUES(?1,?2,'email_external_bypass',?3,'trusted',0,'allow',?4,?5,0,?6,?7,?8)",
+                rusqlite::params![id, actor, resource, rule_id, rationale, chrono::Utc::now().to_rfc3339(),
+                    trace_id, span_id],
             )?;
             Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
         })

@@ -97,7 +97,9 @@ fn app() -> (Router, Arc<Store>, tempfile::TempDir) {
         .layer(axum::middleware::from_fn_with_state(
             store.clone(),
             api::interactions::middleware,
-        ));
+        ))
+        // As in api/mod.rs: every request runs inside its trace.
+        .layer(axum::middleware::from_fn(api::trace::layer));
     (api::request_log::layer(app, store.clone()), store, dir)
 }
 
@@ -477,4 +479,47 @@ async fn finished_commands_land_in_the_ledger_with_a_proven_actor_and_refusals_a
     assert_eq!(verify["chain_ok"], true, "{verify}");
     assert_eq!(verify["sealed"], 3, "{verify}");
     assert_eq!(verify["measured"], true);
+}
+
+#[tokio::test]
+async fn a_command_lands_in_the_ledger_under_its_trace_minted_or_inherited() {
+    let (app, _store, _dir) = app();
+    // An origin: no traceparent, so the server mints one and names it.
+    let req = Request::builder()
+        .uri("/api/test")
+        .method("POST")
+        .header("x-amux-interaction-id", "int_t1")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let tp = res.headers().get("traceparent").and_then(|v| v.to_str().ok()).unwrap().to_string();
+    let (trace, span) = api::trace::parse(&tp).expect("a valid traceparent on the response");
+    // A hop: the caller names the parent span, and the command descends from it.
+    let req = Request::builder()
+        .uri("/api/test")
+        .method("POST")
+        .header("x-amux-interaction-id", "int_t2")
+        .header("traceparent", api::trace::format(&trace, &span))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let (trace2, span2) = api::trace::parse(res.headers().get("traceparent").unwrap().to_str().unwrap()).unwrap();
+    assert_eq!(trace2, trace);
+    assert_ne!(span2, span);
+    let (_, page) = send(&app, "GET", &format!("/api/ledger?limit=50&trace_id={trace}"), None).await;
+    let events = page["events"].as_array().unwrap();
+    let by_id = |id: &str| events.iter().find(|e| e["event_id"] == id).cloned().unwrap_or(Value::Null);
+    let origin = by_id("int:int_t1:1");
+    assert_eq!(origin["trace_id"], trace.as_str(), "{page}");
+    assert_eq!(origin["span_id"], span.as_str());
+    assert_eq!(origin["parent_span_id"], Value::Null);
+    assert_eq!(origin["trace_source"], "minted");
+    let hop = by_id("int:int_t2:1");
+    assert_eq!(hop["trace_id"], trace.as_str(), "{page}");
+    assert_eq!(hop["span_id"], span2.as_str());
+    assert_eq!(hop["parent_span_id"], span.as_str());
+    assert_eq!(hop["trace_source"], "inherited");
+    // The trace columns joined the hash, and the chain still verifies.
+    let (_, verify) = send(&app, "GET", "/api/ledger/verify", None).await;
+    assert_eq!(verify["chain_ok"], true, "{verify}");
 }

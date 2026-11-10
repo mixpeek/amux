@@ -243,13 +243,15 @@ async fn record_receipt(
     let effect = effect_token(decision.effect).to_string();
     let rule = decision.rule_id.clone();
     let rationale = decision.rationale.clone();
+    let trace = super::trace::current();
+    let (trace_id, span_id) = (trace.as_ref().map(|t| t.trace_id.clone()), trace.map(|t| t.span_id));
     state
         .store
         .write_async(move |conn| {
             conn.execute(
                 "INSERT INTO _amux_policy_receipts
-                 (id,actor,role,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                 (id,actor,role,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at,trace_id,span_id)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 rusqlite::params![
                     row_id,
                     actor,
@@ -263,6 +265,8 @@ async fn record_receipt(
                     rationale,
                     cost,
                     Utc::now().to_rfc3339(),
+                    trace_id,
+                    span_id,
                 ],
             )?;
             Ok(crate::db::WriteOutcome {

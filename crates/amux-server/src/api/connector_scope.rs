@@ -324,14 +324,17 @@ pub async fn record(
     let trust = if matches!(gate, Gate::Allow) { "trusted" } else { "untrusted" };
     let effect = if (200..300).contains(&status) { "allow" } else { "deny" };
     let rationale = rationale(principal, gate, account.as_deref(), scopes.as_deref(), status).to_string();
+    let trace = super::trace::current();
+    let (trace_id, span_id) = (trace.as_ref().map(|t| t.trace_id.clone()), trace.map(|t| t.span_id));
     let res = state
         .store
         .write_async(move |conn| {
             conn.execute(
                 "INSERT INTO _amux_policy_receipts
-                 (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at)
-                 VALUES(?1,?2,'connector_token_mint',?3,?4,1,?5,'connector-token-scope',?6,0,?7)",
-                rusqlite::params![id, actor, resource, trust, effect, rationale, chrono::Utc::now().to_rfc3339()],
+                 (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at,trace_id,span_id)
+                 VALUES(?1,?2,'connector_token_mint',?3,?4,1,?5,'connector-token-scope',?6,0,?7,?8,?9)",
+                rusqlite::params![id, actor, resource, trust, effect, rationale, chrono::Utc::now().to_rfc3339(),
+                    trace_id, span_id],
             )?;
             Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
         })

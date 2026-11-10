@@ -114,6 +114,24 @@ stops appends. A failed append never fails the request: it logs
 `ledger_append_failed`, and verify and `ledger` in `GET
 /api/contract/counters` count it.
 
+**One trace per unit of work** (`api/trace.rs`, governance PR 8). A request
+without a W3C `traceparent` is an origin and the server mints a trace there;
+one with a valid header continues it. Every response names its trace in
+`traceparent`. A schedule firing on the cron path mints its own trace and is
+recorded in the ledger as its root (`kind=schedule`). Delivering a message to
+a worker records a child span on the `cmd_history` row (`trace_id`, `span_id`,
+`parent_span_id`, `trace_source`) and writes `<home>/trace/<worker>.current`;
+the message text is never changed. The `amux` CLI and the git
+`prepare-commit-msg` hook read that file (or `$TRACEPARENT`, or
+`$AMUX_TRACE_ID`), so a worker's calls and commits (`Amux-Trace:` trailer)
+descend from the last message delivered to it. That is all a worker's
+"current" trace means; `trace_source` (`minted`, `inherited`, `delivered`)
+says how each record got its trace. Ledger rows, policy receipts and the
+sent-email log carry it. `GET /api/trace/{id}` returns the tree, measured, with
+the sources it consulted. `AMUX_TRACE=off` turns it off; a failure to write a
+worker's file logs `trace_propagation_failed` and is counted under `trace` in
+`GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

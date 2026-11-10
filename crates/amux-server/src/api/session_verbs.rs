@@ -7626,6 +7626,15 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN queue_id TEXT", []);
     // Migration 0088 carries the same ADDCOL for migrated DBs (F8(e)).
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN repeat_of INTEGER", []);
+    // The trace a delivery ran under (governance PR 8, api/trace.rs): metadata
+    // only, never text in the message (A2, A9).
+    for col in ["trace_id", "span_id", "parent_span_id", "trace_source"] {
+        let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
+    }
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cmd_history_trace ON cmd_history(trace_id) WHERE trace_id IS NOT NULL",
+        [],
+    );
     // Dead-lettered vs delivered must be distinguishable in history
     // (AMUX-3110; migration 0024 carries the same ADDCOL for migrated DBs,
     // this covers a DB bootstrapped through this legacy path).
@@ -8943,6 +8952,10 @@ pub(crate) async fn cmd_hist_record_with_id(
                 && amux_core::board::reads_as_qualifier(&text)
                 && !amux_core::board::is_conversational_ack(&text)))
         && !amux_core::board::is_informational_query(&text);
+    // The span this delivery runs as, a child of the request or schedule
+    // firing that sent it; also written to the worker's trace file so the
+    // worker's own calls descend from it (trace.rs). Metadata, never text.
+    let delivery_trace = crate::api::trace::delivery(&session);
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let truth_session = cap_session.clone();
@@ -8970,6 +8983,12 @@ pub(crate) async fn cmd_hist_record_with_id(
                 ],
             )?;
             let row_id = conn.last_insert_rowid();
+            if let Some(t) = &delivery_trace {
+                conn.execute(
+                    "UPDATE cmd_history SET trace_id=?2, span_id=?3, parent_span_id=?4, trace_source=?5 WHERE id=?1",
+                    rusqlite::params![row_id, t.trace_id, t.span_id, t.parent_span_id, crate::api::trace::DELIVERED],
+                )?;
+            }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             // cmd_history is the durable Messages ledger, but this write used
             // to publish no StateEvent. A healthy SSE client therefore had no
@@ -30610,10 +30629,12 @@ async fn send_post_detached(
     // Same identity send_post reserves: trimmed, first 64 chars.
     let flight_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
     let flight = InFlightSend::enter(name, &flight_id);
-    let joined = tokio::spawn(async move {
+    // The send runs detached from the client, and still inside the request's
+    // trace, so its delivery row descends from it (api/trace.rs).
+    let joined = tokio::spawn(crate::api::trace::carry(async move {
         let _flight = flight;
         send_post(&st, &n, &h, &b).await
-    })
+    }))
     .await;
     watch.answered = true;
     match joined {

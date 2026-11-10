@@ -234,6 +234,11 @@ pub struct Event {
     pub cost_microusd: Option<i64>,
     pub source_table: Option<String>,
     pub source_id: Option<String>,
+    /// This row's own span, the span it descends from, and how it came by its
+    /// trace (`minted`, `inherited`, `delivered`); see `api/trace.rs`.
+    pub span_id: Option<String>,
+    pub parent_span_id: Option<String>,
+    pub trace_source: Option<String>,
 }
 
 impl Event {
@@ -261,14 +266,15 @@ pub fn append(conn: &Connection, ev: &Event) {
         "INSERT OR IGNORE INTO _amux_ledger
          (event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of, authority,
           policy_version, action, resource, input_hash, output_hash, decision, outcome,
-          cost_microusd, source_table, source_id)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+          cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
         rusqlite::params![
             ev.event_id, ev.ts_ms, ev.kind, ev.trace_id, ev.parent_event_id,
             if ev.actor.is_empty() { "anonymous" } else { ev.actor.as_str() },
             ev.claimed, ev.on_behalf_of, ev.authority, ev.policy_version, ev.action,
             ev.resource, ev.input_hash, ev.output_hash, ev.decision, ev.outcome,
-            ev.cost_microusd, ev.source_table, ev.source_id
+            ev.cost_microusd, ev.source_table, ev.source_id,
+            ev.span_id, ev.parent_span_id, ev.trace_source
         ],
     );
     match res {
@@ -287,8 +293,12 @@ pub fn append(conn: &Connection, ev: &Event) {
 
 const COLS: &str = "seq, event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of,
     authority, policy_version, action, resource, input_hash, output_hash, decision, outcome,
-    cost_microusd, source_table, source_id";
-const NCOLS: usize = 20;
+    cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source";
+const NCOLS: usize = 23;
+/// The columns every row has been hashed over since migration 0155. The trace
+/// columns (0156) join the hash only when one is set, so a row sealed before
+/// they existed keeps its hash and the chain still verifies.
+const V1_COLS: usize = 20;
 
 fn fields(r: &rusqlite::Row) -> rusqlite::Result<Vec<Option<String>>> {
     use rusqlite::types::ValueRef;
@@ -302,7 +312,13 @@ fn fields(r: &rusqlite::Row) -> rusqlite::Result<Vec<Option<String>>> {
                 ValueRef::Blob(b) => Some(sha256_hex(b)),
             })
         })
-        .collect()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map(|mut f| {
+            if f[V1_COLS..].iter().all(Option::is_none) {
+                f.truncate(V1_COLS);
+            }
+            f
+        })
 }
 
 /// The hash of one row, linked to the one before it.
@@ -487,7 +503,7 @@ pub struct ListQuery {
 
 const ROW_COLS: &str = "seq, event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of,
     authority, policy_version, action, resource, input_hash, output_hash, decision, outcome,
-    cost_microusd, source_table, source_id, hash IS NOT NULL";
+    cost_microusd, source_table, source_id, hash IS NOT NULL, span_id, parent_span_id, trace_source";
 
 fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     let ts: i64 = r.get(2)?;
@@ -504,6 +520,8 @@ fn row_json(r: &rusqlite::Row) -> rusqlite::Result<Value> {
         "cost_microusd": r.get::<_, Option<i64>>(17)?,
         "source": {"table": r.get::<_, Option<String>>(18)?, "id": r.get::<_, Option<String>>(19)?},
         "sealed": r.get::<_, bool>(20)?,
+        "span_id": r.get::<_, Option<String>>(21)?, "parent_span_id": r.get::<_, Option<String>>(22)?,
+        "trace_source": r.get::<_, Option<String>>(23)?,
     }))
 }
 
@@ -581,6 +599,34 @@ mod tests {
     }
 
     #[test]
+    fn trace_columns_join_the_hash_only_when_set_and_a_changed_one_is_caught() {
+        let c = db();
+        append(&c, &ev("old", 1, "owner"));
+        let mut traced = ev("new", 2, "worker:w");
+        traced.trace_id = Some("a".repeat(32));
+        traced.span_id = Some("b".repeat(16));
+        traced.parent_span_id = Some("c".repeat(16));
+        traced.trace_source = Some("inherited".into());
+        append(&c, &traced);
+        // A row with no trace columns hashes exactly as rows did before the
+        // columns existed, so a chain sealed before migration 0156 verifies.
+        let (prev, h): (String, String) = c
+            .query_row("SELECT prev_hash, hash FROM _amux_ledger WHERE event_id='old'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        let f = c
+            .query_row(&format!("SELECT {COLS} FROM _amux_ledger WHERE event_id='old'"), [], |r| fields(r))
+            .unwrap();
+        assert_eq!(f.len(), V1_COLS);
+        assert_eq!(row_hash(&prev, &f), h);
+        assert_eq!(verify(&c)["chain_ok"], true);
+        c.execute_batch("DROP TRIGGER amux_ledger_no_update").unwrap();
+        c.execute("UPDATE _amux_ledger SET parent_span_id='dddddddddddddddd' WHERE event_id='new'", []).unwrap();
+        let v = verify(&c);
+        assert_eq!(v["chain_ok"], false, "{v}");
+        assert_eq!(v["first_bad_event"], "new");
+    }
+
+    #[test]
     fn appended_rows_are_sealed_into_a_chain_that_verifies() {
         let c = db();
         for i in 0..5 {
@@ -651,6 +697,32 @@ mod tests {
         let gate: i64 = c.query_row("SELECT COUNT(*) FROM _amux_ledger_prune_gate", [], |r| r.get(0)).unwrap();
         assert_eq!(gate, 0);
         assert!(c.execute("DELETE FROM _amux_ledger WHERE event_id='e5'", []).is_err());
+    }
+
+    #[test]
+    fn a_receipt_written_inside_a_trace_lands_under_the_request_span() {
+        let c = db();
+        let (t, s) = ("e".repeat(32), "f".repeat(16));
+        c.execute(
+            "INSERT INTO _amux_policy_receipts (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at,trace_id,span_id)
+             VALUES ('pol_t','worker:w','connector_token_mint','connector:google-gmail','trusted',1,'allow','connector-token-scope','{}',0,
+                     '2026-11-10T12:00:00Z',?1,?2)", rusqlite::params![t, s]).unwrap();
+        let (trace, span, parent, source): (String, String, String, String) = c.query_row(
+            "SELECT trace_id, span_id, parent_span_id, trace_source FROM _amux_ledger WHERE event_id='pol:pol_t'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(trace, t);
+        assert_eq!(parent, s, "the receipt descends from the request's span");
+        assert_eq!(span.len(), 16);
+        assert_ne!(span, s);
+        assert_eq!(source, "inherited");
+        // A receipt outside any trace carries none.
+        c.execute(
+            "INSERT INTO _amux_policy_receipts (id,actor,action,resource,trust,reversible,effect,rule_id,rationale,cost_microusd,created_at)
+             VALUES ('pol_n','owner','x','y','trusted',1,'allow','r','{}',0,'2026-11-10T12:00:00Z')", []).unwrap();
+        let none: Option<String> = c.query_row("SELECT span_id FROM _amux_ledger WHERE event_id='pol:pol_n'", [], |r| r.get(0)).unwrap();
+        assert!(none.is_none());
+        seal(&c).unwrap();
+        assert_eq!(verify(&c)["chain_ok"], true);
     }
 
     #[test]
