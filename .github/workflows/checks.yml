@@ -818,6 +818,12 @@ jobs:
         run: |
           set -uo pipefail
           python3 -m unittest tests/cli_help.py
+      # Hermetic: the shipped CLI against a stub server. `amux post --file`
+      # posted the literal "--file /path" to the owner 21 times (11-09 to 11-10).
+      - name: amux post sends the file or stdin it was given and refuses an unknown flag
+        run: |
+          set -uo pipefail
+          python3 tests/cli_post.py
       - name: the multiplayer browser contract's shape holds
         run: |
           set -uo pipefail
