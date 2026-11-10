@@ -3518,8 +3518,7 @@ mod tests {
             let text = std::fs::read_to_string(crate::integrations::email::email_log_path(home)).unwrap_or_default();
             text.lines()
                 .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                .filter(|v| v["approval_id"] == json!(id) && v["approved"] == json!(true))
-                .next_back()
+                .rfind(|v| v["approval_id"] == json!(id) && v["approved"] == json!(true))
                 .unwrap_or(Value::Null)
         }
         // The owner bearer, stamped by require_bearer: verified, named as such.
