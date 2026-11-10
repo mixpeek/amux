@@ -19,7 +19,7 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/nav.css?v=20261108">
-  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Do I need to ask you for an export?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux export runs on your own server whenever you want, with no request and no waiting."}}, {"@type": "Question", "name": "Can I open the export without amux?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is JSON, the board export is also available as markdown, and the calendar is a standard .ics file."}}, {"@type": "Question", "name": "Does the export include my API keys?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux export leaves out every password, key and token on purpose. Only the raw folder copy includes them."}}, {"@type": "Question", "name": "How do I export from amux Cloud?", "acceptedAnswer": {"@type": "Answer", "text": "Open the Terminal tab on your server, run amux export, then download the file from the Files tab. amux import loads it into any other amux server."}}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Do I need to ask you for an export?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux export runs on your own server whenever you want, with no request and no waiting."}}, {"@type": "Question", "name": "Can I open the export without amux?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. It is JSON, the board export is also available as markdown, and the calendar is a standard .ics file."}}, {"@type": "Question", "name": "Does the export include my API keys?", "acceptedAnswer": {"@type": "Answer", "text": "No. amux export leaves out every password, key and token on purpose. Only the raw folder copy includes them."}}, {"@type": "Question", "name": "How do I export from amux Cloud?", "acceptedAnswer": {"@type": "Answer", "text": "Open the Terminal tab on your server, run amux export, then download the file from the Files tab. amux import loads it into any other amux server."}}, {"@type": "Question", "name": "What about the code and documents agents wrote?", "acceptedAnswer": {"@type": "Answer", "text": "Those are already in your own folders and git repositories. amux works in them; it does not keep a separate copy."}}]}</script>
   <script src="/site.js?v=20261108"></script>
 </head>
 <body>
@@ -141,6 +141,8 @@ tar -czf ~/amux-folder.tar.gz -C ~ .amux</code></pre>
     <p>Yes. It is JSON, the board export is also available as markdown, and the calendar is a standard <code>.ics</code> file.</p>
     <h3>Does the export include my API keys?</h3>
     <p>No. <code>amux export</code> leaves out every password, key and token on purpose. Only the raw folder copy includes them.</p>
+    <h3>How do I export from amux Cloud?</h3>
+    <p>Open the Terminal tab on your server, run <code>amux export</code>, then download the file from the Files tab. <code>amux import</code> loads it into any other amux server.</p>
     <h3>What about the code and documents agents wrote?</h3>
     <p>Those are already in your own folders and git repositories. amux works in them; it does not keep a separate copy.</p>
     </div>
