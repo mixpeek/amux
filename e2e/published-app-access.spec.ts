@@ -51,9 +51,8 @@ test('the Apps tab shows the amux access an app asks for, and approving allows e
     expect(JSON.stringify(list)).not.toContain(link.app_token);
   } finally {
     if (id) {
-      await cleanup('remove the published app link', async () => {
-        await anon.delete(`${base}/api/page-links/${id}`, { headers: { Authorization: 'Bearer ' + token } });
-      }, testInfo);
+      await cleanup('remove the published app link',
+        () => anon.delete(`${base}/api/page-links/${id}`, { headers: { Authorization: 'Bearer ' + token } }), testInfo);
     }
     await cleanup('dispose the anonymous request context', () => anon.dispose(), testInfo);
   }
