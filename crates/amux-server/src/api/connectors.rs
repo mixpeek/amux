@@ -2823,7 +2823,7 @@ async fn mint_for_inner(
         match connector_entitlement_check(
             conn.as_deref(),
             &ctx.home,
-            &lane,
+            lane,
             &id,
             req_account.as_deref(),
         ) {
@@ -2846,7 +2846,7 @@ async fn mint_for_inner(
         }
     }
     if let Some(d) = declared {
-        return declared_oauth::mint(&ctx, &d, q.get("account").map(String::as_str)).await;
+        return declared_oauth::mint(ctx, &d, q.get("account").map(String::as_str)).await;
     }
     let p = provider(&id).expect("builtin was checked");
     // LoginPassword's mint has nothing in common with the Google-SA-impersonation
@@ -3043,10 +3043,10 @@ async fn mint_for_inner(
             )
                 .into_response();
         };
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
     if let Some(acct) = user_account {
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
     let Some(subject) = impersonation_subject(headers, &ctx.home) else {
         return (
