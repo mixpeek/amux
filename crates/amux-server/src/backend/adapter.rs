@@ -533,7 +533,9 @@ lazy_re!(RE_SPINNER_TIMER, r"\((\d+h )?(\d+m )?\d+s\b");
 
 /// Claude's `*` spinner phase. `*` also starts a markdown bullet, so unlike
 /// the dingbat glyphs it counts only with the spinner's shape: … plus the
-/// elapsed-time parenthetical (the rule detect_claude_status uses, AMUX-3426).
+/// elapsed-time parenthetical. This is the `*` half of
+/// session_verbs::is_plain_spinner_line (AMUX-3426); `·` keeps its looser
+/// rule here.
 fn is_asterisk_spinner(s: &str) -> bool {
     s.starts_with('*') && s.contains('\u{2026}') && RE_SPINNER_TIMER.is_match(s)
 }
@@ -922,7 +924,7 @@ fn claude_ui_visible(clean: &str) -> bool {
         }
     }
     for l in ne.iter().rev().take(12) {
-        if !is_prompt_line(l) && is_dingbat_lead(l) {
+        if !is_prompt_line(l) && (is_dingbat_lead(l) || is_asterisk_spinner(l)) {
             return true; // dingbat-prefixed status line (py 8245-8250)
         }
     }
@@ -2205,6 +2207,16 @@ CLAUDE-POSTFIX-COMPLETE
             !matches!(st, TuiState::Active),
             "a bullet is not a spinner, got {st:?}"
         );
+    }
+
+    #[test]
+    fn asterisk_spinner_frame_is_not_read_as_an_exited_cli() {
+        // Active on the `*` phase means no Waiting event, so the dead-CLI
+        // check runs; a tool-output line ending in `%` must not make it fire.
+        let frame = "  \u{23bf}  coverage: 100%\n\
+                     * Befuddling\u{2026} (21m 48s \u{b7} \u{2193} 15.0k tokens)";
+        let ev = adapter("claude-code").scan(frame);
+        assert!(ev.is_empty(), "{ev:?}");
     }
 
     #[test]
