@@ -33,6 +33,24 @@ export function request(base, method, p, body, timeoutMs = 30000, extraHeaders =
   });
 }
 
+// A test server must not hold the developer's live credentials. A worker pane
+// exports about 30 (Stripe live, OpenAI, Granola, connector tokens), and the
+// server falls back to its process env for any key the throwaway server.env
+// does not set, so every connector read as configured with a real key
+// (2026-11-10, a chaos server's egress to AWS). CI has none of them; this makes
+// a local run match. Names only, and the dropped names are printed.
+export const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|_SID)(_|$)/i;
+export function testServerEnv(source = process.env) {
+  const dropped = [];
+  const env = Object.fromEntries(Object.entries(source).filter(([k]) => {
+    if (k.startsWith('AMUX_') || ['TMUX', 'TMUX_PANE'].includes(k)) return false;
+    if (CREDENTIAL_NAME.test(k)) { dropped.push(k); return false; }
+    return true;
+  }));
+  if (dropped.length) console.error(`[chaos] ENV: dropped ${dropped.length} credential var(s) from the test server: ${dropped.sort().join(' ')}`);
+  return env;
+}
+
 export async function startAmux({ binary, env: extra = {}, root } = {}) {
   if (!binary || !fs.existsSync(binary)) throw new Error('pass the amux-server binary (AMUX_CHAOS_BINARY)');
   root = root || fs.mkdtempSync(path.join(os.tmpdir(), 'amux-chaos-'));
@@ -42,7 +60,7 @@ export async function startAmux({ binary, env: extra = {}, root } = {}) {
   fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(userHome, { recursive: true });
   let port = await freePort();
   const log = path.join(root, 'fake-claude.log');
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AMUX_') && !['TMUX', 'TMUX_PANE'].includes(k)));
+  const env = testServerEnv();
   Object.assign(env, {
     HOME: userHome, AMUX_HOME: home, AMUX_RS_PORT: String(port), TMUX_TMPDIR: tmuxDir,
     AMUX_ISOLATED: '1', AMUX_NO_SELF_ADOPT: '1',
