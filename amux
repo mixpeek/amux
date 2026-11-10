@@ -1675,16 +1675,35 @@ USAGE
 # X-Amux-Session (api/conversations.rs).
 cmd_post() {
   local conv="${1:-}"
-  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [--thread <post id>] [text]   (or text on stdin)
+  [[ -n "$conv" ]] || die "usage: amux post <g:group | #group | w:worker | p:<person email or name>> [--thread <post id>] [--file <path> | --stdin | [--] text]   (no text: read stdin)
   From a worker, p:<person> posts in your direct message with that person (d:<you>|<their email>),
   which only the two of you read; their answers there come back to you."
   shift
   [[ "$conv" == \#* ]] && conv="g:${conv#\#}"
   # --thread <id>: reply in that post's thread (a Messages thread, like Slack's).
-  local thread=""
-  if [[ "${1:-}" == "--thread" ]]; then thread="${2:-}"; shift 2 || true; [[ "$thread" =~ ^[0-9]+$ ]] || die "--thread takes a post id"; fi
-  local text
-  if [[ $# -eq 0 || "${1:-}" == "--stdin" || "${1:-}" == "-" ]]; then text=$(cat); else text="$*"; fi
+  # --file and --stdin as `amux send` has them. An unknown --flag is refused:
+  # it used to be posted as the text, and 21 of one worker's posts to the owner
+  # (11-09 to 11-10) arrived as "--file /path". `--` ends the flags.
+  local thread="" file="" from_stdin="" text
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --thread) thread="${2:-}"; shift 2 || shift; [[ "$thread" =~ ^[0-9]+$ ]] || die "--thread takes a post id" ;;
+      --file)   file="${2:-}"; shift 2 || shift; [[ -n "$file" && -f "$file" && -r "$file" ]] || die "amux post: --file needs a readable file (got '${file}'); nothing was posted" ;;
+      --stdin|-) from_stdin=1; shift ;;
+      --) shift; break ;;
+      --*) die "amux post: unknown option '$1'; nothing was posted. Flags: --thread <id>, --file <path>, --stdin. To post text that starts with --, put -- before it." ;;
+      *) break ;;
+    esac
+  done
+  if [[ -n "$file" ]]; then
+    [[ $# -eq 0 && -z "$from_stdin" ]] || die "amux post: --file takes the whole text; drop the other text or --stdin. Nothing was posted."
+    text=$(cat -- "$file")
+  elif [[ -n "$from_stdin" || $# -eq 0 ]]; then
+    [[ $# -eq 0 ]] || die "amux post: --stdin takes the whole text; drop the other text. Nothing was posted."
+    text=$(cat)
+  else
+    text="$*"
+  fi
   [[ -n "${text//[[:space:]]/}" ]] || die "nothing to post"
   local api="${AMUX_API:-https://localhost:8824}" enc out code
   enc=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=":"))' "$conv")
