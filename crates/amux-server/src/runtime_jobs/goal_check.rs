@@ -303,6 +303,45 @@ pub fn view(home: &Path, name: &str, now: f64) -> Value {
     })
 }
 
+/// How long [`record_sample`] keeps a reading. Bounds the table and the
+/// scoreboard's "peak", which is a peak over this window.
+pub const SAMPLE_RETENTION_DAYS: f64 = 14.0;
+
+/// Keep one run for the scoreboard's history and trim what has aged out.
+/// Returns false when the run carries no number to keep: a run with no verdict
+/// or no `done` stores nothing, so the gap reads as unmeasured, never as zero.
+pub fn record_sample(conn: &rusqlite::Connection, name: &str, last: &Last) -> rusqlite::Result<bool> {
+    let Some(done) = last.done.filter(|_| last.measured) else {
+        return Ok(false);
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO goal_samples (session, at, done, total, met) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![name, last.checked_at, done as i64, last.total.map(|t| t as i64), last.met.map(i64::from)],
+    )?;
+    conn.execute(
+        "DELETE FROM goal_samples WHERE at < ?1",
+        [last.checked_at - SAMPLE_RETENTION_DAYS * 86_400.0],
+    )?;
+    Ok(true)
+}
+
+/// [`record_sample`] off the runtime, with a failure a log sweep can find.
+async fn record_sample_logged(app: &crate::api::AppState, name: &str, last: &Last) {
+    let (store, n, l) = (app.store.clone(), name.to_string(), last.clone());
+    let wrote = tokio::task::spawn_blocking(move || {
+        store.write(move |conn| {
+            let applied = record_sample(conn, &n, &l)?;
+            Ok(crate::db::WriteOutcome { applied, events: vec![] })
+        })
+    })
+    .await;
+    if let Err(why) = wrote.map_err(|e| e.to_string()).and_then(|r| r.map(|_| ()).map_err(|e| e.to_string())) {
+        tracing::warn!(target: "amux::goal_check", session = %name, verdict = "goal_sample_write_failed",
+            measured = false, n_considered = 1, why_unmeasured = %why,
+            "goal checker: the reading was not retained, so the scoreboard has a gap here");
+    }
+}
+
 fn in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
     static S: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
     S.get_or_init(Default::default)
@@ -340,6 +379,7 @@ pub fn maybe_run(app: &crate::api::AppState, name: &str, dir: &str, now: f64) {
             st.stall_alerted_at = crate::config::now_f64();
         }
         store(&home, &name, &st);
+        record_sample_logged(&app, &name, &last).await;
         if let Ok(mut f) = in_flight().lock() {
             f.remove(&name);
         }
@@ -480,6 +520,28 @@ mod tests {
         assert!(body.contains("UNKNOWN") && body.contains("not found"), "{body}");
         st = fold(st, parse(Some(1), "44/56", "", 8.0 * h));
         assert_eq!(st.unknown_since, 0.0);
+    }
+
+    #[test]
+    fn only_a_measured_number_is_retained_and_old_rows_age_out() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0155_goal_samples.sql")).unwrap();
+        let count = |c: &rusqlite::Connection| -> i64 {
+            c.query_row("SELECT COUNT(*) FROM goal_samples", [], |r| r.get(0)).unwrap()
+        };
+        assert!(record_sample(&conn, "w", &parse(Some(1), "3/9", "", 100.0)).unwrap());
+        assert_eq!(count(&conn), 1);
+        // No verdict, even with a number on stdout: nothing stored.
+        assert!(!record_sample(&conn, "w", &parse(Some(2), "4/9", "boom", 200.0)).unwrap());
+        // A verdict with no number: nothing stored.
+        assert!(!record_sample(&conn, "w", &parse(Some(1), "still going", "", 300.0)).unwrap());
+        assert_eq!(count(&conn), 1);
+        let later = 100.0 + SAMPLE_RETENTION_DAYS * 86_400.0 + 1.0;
+        assert!(record_sample(&conn, "w", &parse(Some(1), "5/9", "", later)).unwrap());
+        let (at, done): (f64, i64) = conn
+            .query_row("SELECT at, done FROM goal_samples", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((count(&conn), at, done), (1, later, 5), "the old row aged out, the new one stayed");
     }
 
     #[test]

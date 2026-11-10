@@ -6,7 +6,7 @@
 //! when the command finishes, `interactions::middleware` writes it here once.
 //! Every `_amux_policy_receipts` row (policy decisions, connector token mints,
 //! email gate decisions and bypasses) is copied here by a trigger in the same
-//! transaction (migration 0155), so the receipt and its ledger row cannot
+//! transaction (migration 0157), so the receipt and its ledger row cannot
 //! disagree; the receipt is the 30-day working view, this is the record.
 //!
 //! - **Who acted is proven, never claimed.** [`principal`] reads only what the
