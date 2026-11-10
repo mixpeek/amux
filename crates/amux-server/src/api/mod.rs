@@ -25,6 +25,7 @@ pub mod land_red;
 pub mod worker_identity;
 pub mod app_identity;
 pub mod capabilities;
+pub mod cli_sandbox;
 pub mod approval_cards;
 pub mod schedule_authority;
 pub mod connector_scope;
@@ -400,6 +401,7 @@ pub fn router_with_connector_transport(
         // of the python handlers (api/fs.rs), same wire shapes.
         .nest("/api/fs", fs::routes().layer(axum::middleware::from_fn(capabilities::fs_gate)))
         .route("/api/workers/{name}/capabilities", axum::routing::get(capabilities::view))
+        .route("/api/workers/{name}/sandbox", axum::routing::get(cli_sandbox::view))
         .route("/api/workers/{name}/history", axum::routing::get(instruction_provenance::view))
         // The SPA Files BROWSER's listing + dir autocomplete — native, same
         // module (top-level paths in python, so top-level here).

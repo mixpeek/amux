@@ -17086,6 +17086,11 @@ pub(crate) async fn start_session(
     // so the check and the launcher cannot disagree about what gets run.
     let base_bin = launch_base_binary(&provider);
     let rules_opts = worker_rules_shell(name, &provider, isolated);
+    // The CLI's own sandbox, written from the worker's capabilities (governance
+    // PR 16, cli_sandbox.rs). Configuration, not a prompt, so isolated workers
+    // get it too (A9); empty unless AMUX_CLI_SANDBOX=enforce on a Claude lane.
+    let sandbox_opts = super::cli_sandbox::launch_opts(
+        &home(), name, &provider, std::path::Path::new(&work_dir));
     // The model an opencode worker was created with, lifted OUT of the flags
     // before they become argv: the TUI rejects `--model` (usage + exit 1,
     // measured 2026-10-27) and would never start. It is re-attached to the
@@ -17393,7 +17398,7 @@ pub(crate) async fn start_session(
             // channel + lane isolation; see the helper's doc).
             format!("{base_bin}{}", opencode_launch_opts(&flags, extra_flags))
         }
-        _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts,
+        _ => build_claude_cmd(&cfg, &flags, &default_flags, &session_flag, extra_flags) + &rules_opts + &sandbox_opts,
     };
 
     // Shell setup line (py:24532): unset Claude env markers, source profile,
@@ -18172,6 +18177,7 @@ pub(crate) async fn start_session(
                     "{observer_prefix}{}",
                     build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
                         + &rules_opts
+                        + &sandbox_opts
                 ),
                 isolated.then_some(name),
             );

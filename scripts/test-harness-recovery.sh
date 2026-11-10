@@ -52,6 +52,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/schedule-authority.mjs schedule-authority
   e2e/chaos/instruction-provenance.mjs instruction-provenance
   e2e/chaos/agent-commit-identity.mjs agent-commit-identity
+  e2e/chaos/cli-sandbox.mjs cli-sandbox
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot
