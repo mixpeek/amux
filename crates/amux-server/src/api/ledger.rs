@@ -52,6 +52,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/ledger", get(list))
         .route("/api/ledger/verify", get(verify_route))
+        .merge(super::ledger_checkpoint::routes())
 }
 
 /// `AMUX_LEDGER` is on unless it says off.
@@ -335,7 +336,7 @@ pub fn row_hash(prev: &str, fields: &[Option<String>]) -> String {
     sha256_hex(buf.as_bytes())
 }
 
-fn anchor(conn: &Connection) -> rusqlite::Result<(i64, String)> {
+pub(crate) fn anchor(conn: &Connection) -> rusqlite::Result<(i64, String)> {
     Ok(conn
         .query_row("SELECT upto_seq, anchor_hash FROM _amux_ledger_anchor WHERE id=1", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -404,10 +405,22 @@ pub fn prune(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<usize> {
 
 /// Walk the chain from the anchor. Reports the first row that does not match.
 pub fn verify(conn: &Connection) -> Value {
+    verify_capturing(conn, &std::collections::BTreeSet::new()).0
+}
+
+/// [`verify`], also returning the hash the chain holds at each seq in `want`
+/// (the seqs signed checkpoints cover) and the last seq the walk verified, so
+/// `ledger_checkpoint` checks those hashes without a second walk.
+pub fn verify_capturing(
+    conn: &Connection,
+    want: &std::collections::BTreeSet<i64>,
+) -> (Value, std::collections::BTreeMap<i64, String>, i64) {
+    let mut captured = std::collections::BTreeMap::new();
+    let mut walked: i64 = 0;
     let (upto, anchor_hash) = match anchor(conn) {
         Ok(a) => a,
-        Err(e) => return json!({"ok": false, "measured": false, "n_considered": 0,
-            "why_unmeasured": format!("ledger unreadable: {e}")}),
+        Err(e) => return (json!({"ok": false, "measured": false, "n_considered": 0,
+            "why_unmeasured": format!("ledger unreadable: {e}")}), captured, walked),
     };
     let mut prev = anchor_hash.clone();
     let (mut n, mut sealed, mut unsealed) = (0u64, 0u64, 0u64);
@@ -445,16 +458,20 @@ pub fn verify(conn: &Connection) -> Value {
                 break;
             }
             sealed += 1;
+            if want.contains(&seq) {
+                captured.insert(seq, h.clone());
+            }
+            walked = seq;
             prev = h;
         }
         Ok(())
     })();
     if let Err(e) = res {
-        return json!({"ok": false, "measured": false, "n_considered": n,
-            "why_unmeasured": format!("ledger unreadable: {e}")});
+        return (json!({"ok": false, "measured": false, "n_considered": n,
+            "why_unmeasured": format!("ledger unreadable: {e}")}), captured, walked);
     }
     let failures = counters::get(&counters::APPEND_FAILED);
-    json!({
+    let v = json!({
         "ok": bad.is_none() && failures == 0,
         "chain_ok": bad.is_none(),
         "first_bad_event": bad.as_ref().map(|b| b["event_id"].clone()),
@@ -467,7 +484,8 @@ pub fn verify(conn: &Connection) -> Value {
         "retain_days": retain_days(),
         "measured": true,
         "n_considered": n,
-    })
+    });
+    (v, captured, walked)
 }
 
 async fn verify_route(State(state): State<AppState>) -> Response {
@@ -480,8 +498,12 @@ async fn verify_route(State(state): State<AppState>) -> Response {
             Ok(WriteOutcome { applied: false, events: vec![] })
         })
         .await;
-    match state.store.read_async(|conn| Ok(verify(conn))).await {
-        Ok(v) => Json(v).into_response(),
+    let home = crate::config::amux_home();
+    match state.store.read_async(move |conn| Ok(super::ledger_checkpoint::verify_all(conn, &home))).await {
+        Ok(mut v) => {
+            super::ledger_checkpoint::verify_external(&mut v).await;
+            Json(v).into_response()
+        }
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "measured": false,
             "n_considered": 0, "why_unmeasured": e.to_string()}))).into_response(),
     }

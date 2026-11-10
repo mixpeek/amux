@@ -90,6 +90,7 @@ pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
 pub mod ledger;
+pub mod ledger_checkpoint;
 pub mod trace;
 pub mod cli_telemetry;
 pub mod invariants_api;

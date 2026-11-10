@@ -707,6 +707,7 @@ async fn async_main() {
     crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
+    drop(runtime_jobs::ledger_checkpoint::spawn(state.clone()));
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));

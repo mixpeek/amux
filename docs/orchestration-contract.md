@@ -114,6 +114,26 @@ stops appends. A failed append never fails the request: it logs
 `ledger_append_failed`, and verify and `ledger` in `GET
 /api/contract/counters` count it.
 
+**Signed checkpoints** (`api/ledger_checkpoint.rs`, governance PR 10). The
+chain alone cannot show a rewrite by someone holding the database file: they
+can change a row and re-hash every row after it. Every
+`AMUX_LEDGER_CHECKPOINT_INTERVAL_S` (default 3600) the `ledger-checkpoint` job
+signs the head `(seq, hash)` with this host's Ed25519 key (a 0600 file under
+`ledger/`, or the Keychain on a Mac, never the database), stores it append-only
+in `_amux_ledger_checkpoints`, and exports it to `ledger-checkpoints.jsonl`,
+to S3-compatible storage when `AMUX_LEDGER_CHECKPOINT_S3_ENDPOINT`, `_BUCKET`,
+`_ACCESS_KEY_ID` and `_SECRET_ACCESS_KEY` are set (`_LOCK_DAYS` asks for object
+lock; `worm` is what the store answered to `?retention`, never assumed), and to
+`AMUX_LEDGER_CHECKPOINT_WEBHOOK`. `GET /api/ledger/verify` checks each
+checkpoint's signature, link and the hash the chain holds at its seq, the
+export file, and the S3 copy of the newest (and that the sink holds nothing
+newer). `amux ledger verify --against <file|s3> --pubkey <hex> [--db <copy>]`
+does the same for an auditor with only the export and the key. Someone holding
+both the database and the key can re-sign a rewrite; only a copy off the host
+catches that. `AMUX_LEDGER_CHECKPOINTS=off` stops it; a failed sink is counted
+as `ledger_checkpoint_sink_failed` under `ledger_checkpoints` in `GET
+/api/contract/counters` and never fails a request.
+
 **One trace per unit of work** (`api/trace.rs`, governance PR 8). A request
 without a W3C `traceparent` is an origin and the server mints a trace there;
 one with a valid header continues it. Every response names its trace in

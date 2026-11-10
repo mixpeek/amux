@@ -1774,6 +1774,212 @@ print("not visible here: " + "; ".join(x.split(":")[0] for x in d.get("blind_spo
 PYAUDIT
 }
 
+# amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH] [--json]
+# amux ledger checkpoint | key
+# Governance PR 10. Without --against: the server's own verify (chain plus
+# signed checkpoints plus the external sink). With --against: an auditor's
+# check that needs only the exported checkpoints and the public key. Every
+# checkpoint's signature, hash and link is checked here, not by the server;
+# then the ledger's hash at the newest checkpoint's seq is compared, from a
+# copy of the database (--db, every checkpoint, every row re-hashed here) or
+# from the server (GET /api/ledger/at/<seq>).
+cmd_ledger() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    key) _curl -sk -m 30 "$api/api/ledger/checkpoints/key" || die "server unreachable"; echo; return 0 ;;
+    checkpoint) _curl -sk -m 120 -X POST "$api/api/ledger/checkpoints" || die "server unreachable"; echo; return 0 ;;
+    verify) ;;
+    *) echo "usage: amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH] [--json]
+       amux ledger checkpoint   sign the ledger head now and export it
+       amux ledger key          this host's checkpoint public key"; [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+  local against="" pubkey="" db="" raw=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --against) against="${2:?--against needs a checkpoints.jsonl path or s3}"; shift 2 ;;
+      --pubkey)  pubkey="${2:?--pubkey needs the hex public key}"; shift 2 ;;
+      --db)      db="${2:?--db needs a copy of amux.db}"; shift 2 ;;
+      --json)    raw=1; shift ;;
+      *) die "amux ledger verify: unknown argument $1" ;;
+    esac
+  done
+  if [[ -z "$against" ]]; then
+    local out
+    out=$(_curl -sk -m 120 "$api/api/ledger/verify") || die "server unreachable"
+    if [[ -n "$raw" ]]; then printf '%s\n' "$out"; else
+      OUT="$out" python3 -c 'import json,os
+d=json.loads(os.environ["OUT"]); c=d.get("checkpoints") or {}
+print("ledger: %s, %s rows sealed, %s unsealed" % ("ok" if d.get("chain_ok") else "BROKEN", d.get("sealed"), d.get("unsealed")))
+print("checkpoints: %s verified%s" % (c.get("verified"), "" if c.get("ok", True) else ", FAILED: " + json.dumps(c.get("first_bad"))))
+ef=c.get("export_file") or {}; print("export file: %s (%s lines, behind by %s)" % ("ok" if ef.get("ok") else "MISMATCH " + json.dumps(ef.get("first_bad")), ef.get("lines"), ef.get("behind_by")))
+ex=c.get("external") or {}; print("external sink: " + ("not configured" if not ex.get("configured") else ("ok" if ex.get("ok") else "MISMATCH: %s" % ex.get("reason")) if ex.get("checked") else "not checked: %s" % (ex.get("why_unmeasured") or ex.get("reason"))))
+print("verdict:", "OK" if d.get("ok") else "FAILED " + json.dumps(d.get("first_bad")))'
+    fi
+    python3 -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$out"
+    return
+  fi
+  AGAINST="$against" PUBKEY="$pubkey" DB="$db" RAW="$raw" AMUX_BIN="$0" python3 - <<'PYLEDGER'
+import hashlib, hmac, json, os, subprocess, sys, tempfile, datetime, urllib.request, urllib.parse
+FORMAT = "amux-ledger-checkpoint-v1"
+def sha(b): return hashlib.sha256(b).hexdigest()
+def message(c):
+    return "%s\nhost_id=%s\nseq=%s\nhead_hash=%s\nts=%s\nn_rows=%s\nprev_checkpoint_hash=%s\npublic_key=%s" % (
+        FORMAT, c["host_id"], c["seq"], c["head_hash"], c["ts"], c["n_rows"], c["prev_checkpoint_hash"], c["public_key"])
+def sig_ok(pk_hex, msg, sig_hex):
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex)).verify(bytes.fromhex(sig_hex), msg.encode())
+        return True
+    except ImportError:
+        pass
+    except Exception:
+        return False
+    import base64
+    der = bytes.fromhex("302a300506032b6570032100" + pk_hex)
+    pem = "-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n" % base64.b64encode(der).decode()
+    with tempfile.TemporaryDirectory() as d:
+        for n, b in (("k.pem", pem.encode()), ("m", msg.encode()), ("s", bytes.fromhex(sig_hex))):
+            open(os.path.join(d, n), "wb").write(b)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", os.path.join(d, "k.pem"), "-rawin",
+                            "-in", os.path.join(d, "m"), "-sigfile", os.path.join(d, "s")], capture_output=True)
+        return r.returncode == 0
+
+def s3_checkpoints():
+    E = lambda k, d=None: os.environ.get("AMUX_LEDGER_CHECKPOINT_S3_" + k, d)
+    ep, bucket, kid, secret = E("ENDPOINT"), E("BUCKET"), E("ACCESS_KEY_ID"), E("SECRET_ACCESS_KEY")
+    if not all([ep, bucket, kid, secret]):
+        sys.exit("amux ledger verify --against s3 needs AMUX_LEDGER_CHECKPOINT_S3_ENDPOINT, _BUCKET, _ACCESS_KEY_ID and _SECRET_ACCESS_KEY")
+    region, prefix = E("REGION", "auto"), E("PREFIX", "amux-ledger-checkpoints").strip("/") + "/"
+    ep = ep.rstrip("/"); host = urllib.parse.urlparse(ep).netloc
+    enc = lambda s, keep: urllib.parse.quote(s, safe="-_.~" + ("/" if keep else ""))
+    def req(key, query):
+        uri = "/" + enc(bucket, False) + ("/" + enc(key, True) if key else "")
+        qs = "&".join("%s=%s" % (enc(k, False), enc(v, False)) for k, v in sorted(query.items()))
+        now = datetime.datetime.now(datetime.timezone.utc); amz = now.strftime("%Y%m%dT%H%M%SZ"); date = now.strftime("%Y%m%d")
+        ph = sha(b""); h = {"host": host, "x-amz-content-sha256": ph, "x-amz-date": amz}
+        signed = ";".join(sorted(h)); canon = "".join("%s:%s\n" % (k, h[k]) for k in sorted(h))
+        creq = "GET\n%s\n%s\n%s\n%s\n%s" % (uri, qs, canon, signed, ph)
+        scope = "%s/%s/s3/aws4_request" % (date, region)
+        sts = "AWS4-HMAC-SHA256\n%s\n%s\n%s" % (amz, scope, sha(creq.encode()))
+        k = ("AWS4" + secret).encode()
+        for part in (date, region, "s3", "aws4_request"): k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+        sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+        r = urllib.request.Request(ep + uri + ("?" + qs if qs else ""), headers={"x-amz-content-sha256": ph, "x-amz-date": amz,
+            "Authorization": "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s" % (kid, scope, signed, sig)})
+        return urllib.request.urlopen(r, timeout=30).read().decode()
+    keys, token = [], None
+    while True:
+        q = {"list-type": "2", "prefix": prefix}
+        if token: q["continuation-token"] = token
+        t = req(None, q)
+        keys += [s.split("</Key>")[0] for s in t.split("<Key>")[1:]]
+        if "<IsTruncated>true</IsTruncated>" not in t: break
+        token = t.split("<NextContinuationToken>")[1].split("</NextContinuationToken>")[0]
+    out = {}
+    for k in sorted(keys):
+        c = json.loads(req(k, {}))
+        out.setdefault(c["host_id"], []).append(c)
+    if len(out) > 1:
+        print("note: the sink holds checkpoints from %d hosts; checking each" % len(out))
+    return out
+
+against, pinned, db = os.environ["AGAINST"], os.environ.get("PUBKEY") or None, os.environ.get("DB") or None
+if against == "s3":
+    groups = s3_checkpoints()
+else:
+    groups = {}
+    for i, line in enumerate(open(against), 1):
+        if line.strip():
+            try:
+                c = json.loads(line)
+            except Exception:
+                sys.exit("line %d is not JSON" % i)
+            groups.setdefault(c.get("host_id"), []).append(c)
+if not groups:
+    sys.exit("no checkpoints found in " + against)
+if not pinned:
+    print("WARNING: no --pubkey given; trusting the key in the first checkpoint. Pin it with --pubkey for a real audit.")
+
+def chain_from_db(path):
+    import sqlite3
+    c = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    upto, prev = c.execute("SELECT upto_seq, anchor_hash FROM _amux_ledger_anchor WHERE id=1").fetchone()
+    cols = ("seq, event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of, authority, policy_version, action, "
+            "resource, input_hash, output_hash, decision, outcome, cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source")
+    hashes, bad = {}, None
+    for row in c.execute("SELECT %s, prev_hash, hash FROM _amux_ledger ORDER BY seq" % cols):
+        f, rp, rh = list(row[:23]), row[23], row[24]
+        if rh is None: break
+        def s(v):
+            if v is None: return None
+            if isinstance(v, bytes): return sha(v)
+            if isinstance(v, float): return str(int(v)) if v.is_integer() else repr(v)
+            return str(v)
+        f = [s(v) for v in f]
+        if all(v is None for v in f[20:]): f = f[:20]
+        buf = prev + "".join("\x1e" + (v if v is not None else "\x00") for v in f)
+        h = sha(buf.encode())
+        if rp != prev or h != rh:
+            bad = {"seq": row[0], "reason": "row does not hash to its stored hash or link"}; break
+        hashes[row[0]] = h; prev = h
+    return upto, hashes, bad
+
+report = {"ok": True, "hosts": {}}
+for host, cps in groups.items():
+    key = pinned or cps[0]["public_key"]
+    prev, prev_seq, first_bad = "genesis", 0, None
+    for c in cps:
+        m = message(c)
+        why = None
+        if sha(m.encode()) != c.get("checkpoint_hash"): why = "fields do not hash to checkpoint_hash"
+        elif c["public_key"] != key: why = "signed by a different key than the pinned one"
+        elif not sig_ok(c["public_key"], m, c["signature"]): why = "signature does not verify"
+        elif c["prev_checkpoint_hash"] != prev: why = "does not link to the checkpoint before it (one was removed or reordered)"
+        elif c["seq"] < prev_seq: why = "seq went backwards"
+        if why:
+            first_bad = {"checkpoint_seq": c["seq"], "reason": why}; break
+        prev, prev_seq = c["checkpoint_hash"], c["seq"]
+    ledger = {"checked": False}
+    if not first_bad:
+        if db:
+            upto, hashes, chain_bad = chain_from_db(db)
+            ledger = {"checked": True, "source": "db", "rows_rehashed": len(hashes), "chain_bad": chain_bad}
+            for c in cps:
+                if c["seq"] > upto:
+                    if hashes.get(c["seq"]) != c["head_hash"]:
+                        first_bad = {"checkpoint_seq": c["seq"], "reason": "the database's chain does not hold the hash this checkpoint signed (rewritten)"}; break
+            if chain_bad and not first_bad:
+                first_bad = {"seq": chain_bad["seq"], "reason": "the database's chain is broken: " + chain_bad["reason"]}
+        else:
+            last = cps[-1]
+            r = subprocess.run([os.environ["AMUX_BIN"], "get", "api/ledger/at/%d" % last["seq"]], capture_output=True, text=True)
+            try:
+                at = json.loads(r.stdout)
+            except Exception:
+                at = {}
+            ledger = {"checked": bool(at), "source": "server", "seq": last["seq"], "server": at}
+            if not at:
+                ledger["why_unmeasured"] = "the server did not answer"
+            elif at.get("present") and at.get("hash") != last["head_hash"]:
+                first_bad = {"checkpoint_seq": last["seq"], "reason": "the server's ledger no longer holds the hash this checkpoint signed (rows up to it were rewritten)"}
+            elif not at.get("present") and not at.get("pruned"):
+                first_bad = {"checkpoint_seq": last["seq"], "reason": "the server's ledger row this checkpoint signed is gone"}
+    h = {"checkpoints": len(cps), "key": key, "latest_seq": cps[-1]["seq"], "first_bad": first_bad, "ledger": ledger,
+         "ok": first_bad is None and ledger.get("checked", False)}
+    report["hosts"][host] = h
+    report["ok"] = report["ok"] and h["ok"]
+if os.environ.get("RAW"):
+    print(json.dumps(report, indent=2))
+else:
+    for host, h in report["hosts"].items():
+        print("host %s: %d checkpoints, newest seq %s, key %s..." % (host, h["checkpoints"], h["latest_seq"], h["key"][:16]))
+        print("  ledger compared: %s" % (("yes, from " + h["ledger"]["source"]) if h["ledger"].get("checked") else "NO (" + str(h["ledger"].get("why_unmeasured", "a checkpoint failed first")) + ")"))
+        print("  " + ("OK" if h["ok"] else "FAILED: " + json.dumps(h["first_bad"])))
+sys.exit(0 if report["ok"] else 1)
+PYLEDGER
+}
+
 # amux receipts [--keep] [<worker>]: outcomes held so they would not wake you.
 # A clean detached `amux land` writes one here instead of sending a message;
 # the server attaches pending receipts to the next wake it sends anyway (a
@@ -6774,6 +6980,7 @@ ${BOLD}Interaction:${RESET}
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
                                  worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
+  amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
@@ -12565,6 +12772,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     send)             shift; cmd_send "$@" ;;
     post)             shift; cmd_post "$@" ;;
     audit)            shift; cmd_audit "$@" ;;
+    ledger)           shift; cmd_ledger "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;
