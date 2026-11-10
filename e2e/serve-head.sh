@@ -56,11 +56,18 @@ for _k in ${!AMUX_@}; do
     *) unset "$_k"; _scrubbed="$_scrubbed $_k" ;;
   esac
 done
-# A real Gemini key in the developer's shell must not reach a test server: with it,
-# a spec's request to the stub carries the real key, and a server whose stub base
-# was lost would spend it. Test servers have no Gemini key unless a spec saves one.
-for _k in GOOGLE_API_KEY GEMINI_API_KEY; do
-  [ -n "${!_k:-}" ] && { unset "$_k"; _scrubbed="$_scrubbed $_k"; }
+# No live credential in the developer's shell may reach a test server. The server
+# falls back to its process env for any key the throwaway server.env does not set,
+# so a worker pane's exports (Stripe live, OpenAI, Gemini, Granola, connector
+# tokens) made every connector read as configured with a real key, and a spec
+# whose stub base was lost would spend it. CI has none of these; this makes a
+# local run match. Same name rule as e2e/chaos/harness.mjs CREDENTIAL_NAME.
+for _k in $(compgen -e); do
+  [[ "$_k" == AMUX_* ]] && continue
+  _u=$(printf '%s' "$_k" | tr '[:lower:]' '[:upper:]')
+  if [[ "$_u" =~ (KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|_SID)(_|$) ]]; then
+    unset "$_k"; _scrubbed="$_scrubbed $_k"
+  fi
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
 

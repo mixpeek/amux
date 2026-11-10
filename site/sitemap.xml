@@ -411,6 +411,7 @@
   <url><loc>https://amux.io/compare/amux-vs-warp/</loc><lastmod>2026-11-06</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-orca/</loc><lastmod>2026-11-08</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-xum/</loc><lastmod>2026-11-08</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/compare/amux-vs-github-copilot-app/</loc><lastmod>2026-11-10</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-polyscope/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-crystl/</loc><lastmod>2026-11-05</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-cosyra/</loc><lastmod>2026-11-05</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
@@ -419,4 +420,8 @@
   <url><loc>https://amux.io/compare/amux-vs-mission-control/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/compare/amux-vs-orquesta/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://amux.io/guides/manage-coding-agents-from-iphone/</loc><lastmod>2026-10-29</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://amux.io/demos/messages/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://amux.io/demos/scheduler/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://amux.io/demos/file-viewer/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://amux.io/demos/apps/</loc><lastmod>2026-11-09</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>
 </urlset>

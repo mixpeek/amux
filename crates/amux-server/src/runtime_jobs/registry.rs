@@ -126,6 +126,8 @@ pub mod ids {
     pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
     pub const BRIDGE_DISCORD: &str = "bridge-discord";
     pub const BRIDGE_WHATSAPP_APP: &str = "bridge-whatsapp-app";
+    pub const BRIDGE_IMESSAGE: &str = "bridge-imessage";
+    pub const BRIDGE_EMAIL: &str = "bridge-email";
     pub const MESSAGE_CAPTURE: &str = "message-capture";
     pub const MAC_HEALTH: &str = "mac-health";
     pub const ACCOUNTABILITY_NUDGE: &str = "accountability-nudge";
@@ -149,6 +151,7 @@ pub mod ids {
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const EMAIL_SCHEDULED_SEND: &str = "email-scheduled-send";
     pub const DECISION_DIGEST: &str = "decision-digest";
+    pub const DIRECTIVE: &str = "directive";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
@@ -192,6 +195,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::BRIDGE_OUTBOUND,
     ids::BRIDGE_DISCORD,
     ids::BRIDGE_WHATSAPP_APP,
+    ids::BRIDGE_IMESSAGE,
+    ids::BRIDGE_EMAIL,
     ids::MESSAGE_CAPTURE,
     ids::MAC_HEALTH,
     ids::ACCOUNTABILITY_NUDGE,
@@ -219,6 +224,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::EMAIL_APPROVAL_DIGEST,
     ids::EMAIL_SCHEDULED_SEND,
     ids::DECISION_DIGEST,
+    ids::DIRECTIVE,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
@@ -681,10 +687,34 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::BRIDGE_WHATSAPP_APP,
         name: "WhatsApp self chat",
-        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker messages through the chat bridge; answers go back through the app.",
+        purpose: "Reads the owner's WhatsApp \"message yourself\" chat from the WhatsApp app on this Mac every 3 s and files @worker, @person and #channel messages through the chat bridge; answers go back through the app.",
         env: &[EnvControl {
             var: "AMUX_WHATSAPP_APP",
             effect: "unset = on when AMUX_OWNER_PHONE is set and WhatsApp's database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_IMESSAGE,
+        name: "iMessage self thread",
+        purpose: "Reads the owner's iMessage thread with their own number from Messages on this Mac every 3 s and files @worker, @person and #channel messages through the chat bridge; answers go back into that thread.",
+        env: &[EnvControl {
+            var: "AMUX_IMESSAGE_BRIDGE",
+            effect: "unset = on when AMUX_OWNER_PHONE (or AMUX_IMESSAGE_SELF_HANDLES) is set and Messages' database exists; 0 = off, checking every 30 s",
+            off: Some("0"),
+        }],
+        pref: None,
+        detail: Some("/api/bridge"),
+    },
+    Doc {
+        id: ids::BRIDGE_EMAIL,
+        name: "Email to yourself",
+        purpose: "Searches the owner's Gmail every 60 s for mail they sent themselves whose subject starts with @worker, @person or #channel, files it through the chat bridge, and answers as a reply in the same thread.",
+        env: &[EnvControl {
+            var: "AMUX_BRIDGE_EMAIL",
+            effect: "unset = the AMUX_OWNER_EMAIL account when it is connected; an address = that account; 0 = off, checking every 300 s",
             off: Some("0"),
         }],
         pref: None,
@@ -1051,6 +1081,33 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: None,
+    },
+    Doc {
+        id: ids::DIRECTIVE,
+        name: "Directives",
+        purpose: "Works open directives: retries a delivery that did not land, repeats an \
+                  unanswered directive once, then tells the owner. Only a sender the target's \
+                  scope names in AMUX_DIRECTIVE_SENDERS can issue one.",
+        env: &[
+            EnvControl {
+                var: "AMUX_DIRECTIVE_ACK_S",
+                effect: "seconds before an unanswered directive is repeated, and again before the \
+                         owner is told (default 600)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DIRECTIVE_TICK_S",
+                effect: "seconds between passes over the open directives (default 60)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DIRECTIVE_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/directives"),
     },
     Doc {
         id: ids::DECISION_DIGEST,

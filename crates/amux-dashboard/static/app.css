@@ -6412,6 +6412,24 @@
   .reclaim-skip-reason.bad { border-color: var(--yellow); color: var(--yellow); }
   .reclaim-skip-why { color: var(--dim); font-size: var(--fs-xs); flex: 1; min-width: 0; }
   .metrics-table td input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+  /* Scoreboard: the Metrics table and cards, plus one control row that scrolls
+     sideways on a phone and a worker column that stays put while the table does. */
+  .sb-controls { display: flex; align-items: center; gap: var(--space-2-5); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex-shrink: 0; margin-bottom: var(--space-3); }
+  .sb-controls > * { flex-shrink: 0; }
+  .sb-title { font-size: var(--fs-3xl); font-weight: 700; }
+  .sb-updated { font-size: var(--fs-xs); color: var(--dim); white-space: nowrap; }
+  .sb-unmeasured { color: var(--dim); font-style: italic; font-weight: 400; font-size: var(--fs-md); }
+  .sb-of { color: var(--dim); font-weight: 400; font-size: var(--fs-xs); }
+  .sb-table .sb-name { position: sticky; left: 0; z-index: 1; background: var(--card); color: var(--text); font-size: var(--fs-md); text-transform: none; letter-spacing: 0; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; }
+  .sb-table thead th:first-child { position: sticky; left: 0; z-index: 2; }
+  .sb-table .sb-wait { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+  .sb-why-list { margin: 0 0 var(--space-5); padding-left: var(--space-5); font-size: var(--fs-md); color: var(--dim); overflow-wrap: anywhere; }
+  .sb-why-list li { margin-bottom: var(--space-1-5); }
+  @media (max-width: 600px) {
+    .sb-title { font-size: var(--fs-xl); }
+    .sb-table .sb-name { max-width: 8rem; }
+    #sb-refresh { min-height: 44px; min-width: 44px; }
+  }
 
   .metrics-load-row { display: flex; gap: var(--space-2); margin-bottom: var(--space-5); flex-wrap: wrap; }
   .metrics-load-block { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-2) var(--space-4); text-align: center; min-width: 72px; }
@@ -11016,10 +11034,30 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
 
+/* Hover preview of an @worker mention (app.js _wkHoverShow): the worker list's card, read-only. */
+.worker-hovercard { position: fixed; z-index: 10050; width: min(440px, calc(100vw - 16px)); max-height: min(60vh, 520px);
+  overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--shade) 35%, transparent); pointer-events: none; }
+.worker-hovercard[hidden] { display: none; }
+.worker-hovercard > .card { margin: 0; border: none; box-shadow: none; }
+.worker-hovercard .card-menu-btn { display: none; }   /* nothing in a preview takes a click */
+.worker-hovercard-none { padding: var(--space-3); color: var(--dim); font-size: var(--fs-md); }
+
 /* Scheduled sends in the Email tab (app.js _emailSchedPaint). The reschedule
    row is the banner's own form, restyled for the page background. */
 .mail-sched-when { flex: 0 0 auto; color: var(--accent); font-size: var(--fs-sm); white-space: nowrap; }
 .mail-sched-meta { color: var(--dim); font-size: var(--fs-sm); margin: var(--space-1) 0; }
+/* Held attachments on an approval card and a Scheduled row: one chip per file. */
+.appr-attach { display: flex; flex-wrap: wrap; gap: var(--space-1-5); margin: 0 0 var(--space-1-5); }
+.appr-attach-chip { display: inline-flex; align-items: center; gap: var(--space-1); max-width: 100%; min-height: 34px;
+  padding: var(--space-1) var(--space-2-5); border-radius: var(--radius-md); cursor: pointer; font-size: var(--fs-sm);
+  background: color-mix(in srgb, var(--shade) 25%, transparent); color: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent); }
+.appr-attach-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.appr-attach-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.appr-attach-size { opacity: 0.75; white-space: nowrap; }
+.appr-attach-bad { border-color: var(--red); }
+@media (max-width: 600px) { .appr-attach-chip { min-height: 44px; } }
 .mail-sched-text { white-space: pre-wrap; word-break: break-word; margin: var(--space-2) 0; }
 .mail-sched-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .mail-sched-actions .btn { min-height: 44px; }
