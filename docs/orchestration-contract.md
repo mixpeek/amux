@@ -98,6 +98,22 @@ policy receipt (`email_external_bypass`) naming the rule and its layer.
 `email_scope_would_refuse`), `enforce` (403 with the next step) or `off`.
 Counts are under `email_gate` in `GET /api/contract/counters`.
 
+**The ledger** (`api/ledger.rs`, governance PR 7) is the record every gate
+above writes to. A finished command (from `_amux_interactions`) and every
+policy receipt land once in `_amux_ledger`, append-only (triggers refuse
+UPDATE and DELETE) and hash-chained. The actor is what the server proved
+(`owner`, `member:<email>`, `policy:<name>`, `worker:<name>` with its token,
+`app:<id>` with its token); a name only asserted goes in `claimed` and the
+actor is `anonymous`. Presence, status reports, typing and read markers are
+not recorded. `GET /api/ledger?actor=&resource=&kind=&trace_id=&since_h=`
+pages it newest first; `GET /api/ledger/verify` walks the chain and names
+the first changed or missing row; `/api/audit` reads it as `kind=ledger`.
+`AMUX_LEDGER_RETAIN_DAYS` (default 365) prunes a prefix and moves the anchor,
+so the rest still verifies; deleting a worker keeps its rows. `AMUX_LEDGER=off`
+stops appends. A failed append never fails the request: it logs
+`ledger_append_failed`, and verify and `ledger` in `GET
+/api/contract/counters` count it.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

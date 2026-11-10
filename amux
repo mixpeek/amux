@@ -1687,23 +1687,24 @@ print("posted to %s%s as %s%s%s" % (c, where, d.get("author") or d.get("author_n
   esac
 }
 
-# amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]:
+# amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]:
 # what a worker did, newest first: browser verbs (with the page before and
-# after), tool calls, and calls to amux's own API (api/audit.rs). Read-only.
+# after), tool calls, calls to amux's own API, and the ledger's record of its
+# decisions with the authority behind each (api/audit.rs). Read-only.
 cmd_audit() {
-  local worker="" since="24h" kind="browser,tool,api" limit=200 raw=""
+  local worker="" since="24h" kind="browser,tool,api,ledger" limit=200 raw=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --since) since="${2:?--since needs a duration like 30m, 2h, 3d}"; shift 2 ;;
-      --kind)  kind="${2:?--kind needs browser, tool, api or a comma list}"; shift 2 ;;
+      --kind)  kind="${2:?--kind needs browser, tool, api, ledger or a comma list}"; shift 2 ;;
       --limit) limit="${2:?--limit needs a number}"; shift 2 ;;
       --json)  raw=1; shift ;;
-      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"; return 0 ;;
+      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]"; return 0 ;;
       *) worker="$1"; shift ;;
     esac
   done
   worker="${worker:-${AMUX_SESSION:-}}"
-  [[ -n "$worker" ]] || die "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"
+  [[ -n "$worker" ]] || die "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]"
   local hours
   hours=$(python3 -c 'import re,sys
 m=re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)",sys.argv[1].strip())
@@ -1742,6 +1743,10 @@ for e in reversed(d.get("events") or []):
     elif k == "tool":
         ok = det.get("ok")
         line = "%s  tool     %-10s %s%s" % (at, t, (det.get("input") or "")[:140], "" if ok in (None, True) else "  FAILED" + (" exit %s" % det["exit_code"] if det.get("exit_code") is not None else ""))
+    elif k == "ledger":
+        who = det.get("actor") or "anonymous"
+        if det.get("claimed") and who == "anonymous": who += " (claimed %s)" % det["claimed"]
+        line = "%s  ledger   %s  %s by %s on %s" % (at, t, det.get("decision") or det.get("outcome") or "", who, det.get("authority") or "none")
     else:
         line = "%s  api      %s  %s" % (at, t, det.get("status"))
     print(line)

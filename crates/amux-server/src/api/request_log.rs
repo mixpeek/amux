@@ -244,6 +244,13 @@ impl RequestLogger {
                                 (SELECT id FROM _amux_interactions WHERE updated_at < ?1)", [(cutoff * 1000.0) as i64])?;
                             let receipts = conn.execute("DELETE FROM _amux_interactions WHERE updated_at < ?1", [(cutoff * 1000.0) as i64])?;
                             if receipts > 0 { tracing::info!(verdict="interaction_retention", n_considered=receipts, "Expired interaction receipts removed"); }
+                            // The ledger keeps its own window (AMUX_LEDGER_RETAIN_DAYS,
+                            // default a year): the interaction rows above are working
+                            // state, the ledger rows written from them are the record.
+                            let ledger_cutoff = ((unix_now() - super::ledger::retain_days() * 86400.0) * 1000.0) as i64;
+                            if let Err(e) = super::ledger::prune(conn, ledger_cutoff) {
+                                tracing::warn!(verdict="ledger_retention_failed", error=%e, "ledger retention prune failed; rows kept");
+                            }
                             // CAPPED (AMUX-4750). This was an unbounded DELETE
                             // over a 3.2M-row table, so the size of one writer
                             // hold was however many rows happened to age out at

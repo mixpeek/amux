@@ -89,7 +89,11 @@ fn app() -> (Router, Arc<Store>, tempfile::TempDir) {
             post(|| async { Json(json!({"applied":true})) }),
         )
         .merge(api::interactions::routes())
+        .merge(api::ledger::routes())
         .with_state(state)
+        // As in api/mod.rs: the ledger's actor is resolved inside, the
+        // interaction receipt (and its ledger row) is written outside.
+        .layer(axum::middleware::from_fn(api::ledger::stamp))
         .layer(axum::middleware::from_fn_with_state(
             store.clone(),
             api::interactions::middleware,
@@ -430,4 +434,47 @@ async fn invalid_scope_is_not_misreported_as_a_database_outage() {
         .as_str()
         .unwrap()
         .contains("validation"));
+}
+
+#[tokio::test]
+async fn finished_commands_land_in_the_ledger_with_a_proven_actor_and_refusals_are_recorded() {
+    let (app, _store, _dir) = app();
+    // A name only asserted by a header: refused, and recorded as anonymous.
+    let req = Request::builder()
+        .uri("/api/refused")
+        .method("POST")
+        .header("x-amux-interaction-id", "int_l1")
+        .header("x-amux-session", "w1")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.clone().oneshot(req).await.unwrap().status(), 409);
+    assert_eq!(send(&app, "POST", "/api/test", Some("int_l2")).await.0, 200);
+    // A retry under the same interaction id is a second event, linked to the first.
+    assert_eq!(send(&app, "POST", "/api/test", Some("int_l2")).await.0, 200);
+    // Telemetry is not a decision.
+    send(&app, "POST", "/api/sessions/w1/typing", Some("int_l3")).await;
+    let (status, page) = send(&app, "GET", "/api/ledger?limit=50", None).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["measured"], true);
+    let events = page["events"].as_array().unwrap();
+    let by_id = |id: &str| events.iter().find(|e| e["event_id"] == id).cloned().unwrap_or(Value::Null);
+    let refused = by_id("int:int_l1:1");
+    assert_eq!(refused["decision"], "refused", "{page}");
+    assert_eq!(refused["outcome"], "refused");
+    assert_eq!(refused["actor"], "anonymous");
+    assert_eq!(refused["claimed"], "worker:w1");
+    assert!(refused["authority"].as_str().unwrap().starts_with("unproven:"), "{refused}");
+    let applied = by_id("int:int_l2:1");
+    assert_eq!(applied["decision"], "allowed", "{page}");
+    assert_eq!(applied["outcome"], "applied");
+    assert_eq!(applied["action"], "POST /api/test");
+    assert!(applied["output_hash"].as_str().is_some_and(|h| h.len() == 64));
+    let retry = by_id("int:int_l2:2");
+    assert_eq!(retry["parent_event_id"], "int:int_l2:1", "{page}");
+    assert!(events.iter().all(|e| !e["action"].as_str().unwrap_or("").ends_with("/typing")), "{page}");
+    assert_eq!(page["n_considered"], 3, "{page}");
+    let (_, verify) = send(&app, "GET", "/api/ledger/verify", None).await;
+    assert_eq!(verify["chain_ok"], true, "{verify}");
+    assert_eq!(verify["sealed"], 3, "{verify}");
+    assert_eq!(verify["measured"], true);
 }

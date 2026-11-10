@@ -42,6 +42,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/connector-token-scope.mjs connector-token-scope
   e2e/chaos/published-app-api.mjs published-app-api
   e2e/chaos/email-approval-scope.mjs email-approval-scope
+  e2e/chaos/ledger.mjs ledger
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot

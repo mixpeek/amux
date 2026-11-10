@@ -89,6 +89,7 @@ pub mod history_ask;
 pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
+pub mod ledger;
 pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
@@ -470,6 +471,7 @@ pub fn router_with_connector_transport(
         // the structured request log + tracing tail (api/request_log.rs).
         .nest("/api/logs", request_log::routes())
         .merge(interactions::routes())
+        .merge(ledger::routes())
         .nest("/api/settings", settings::routes())
         .nest("/api/push", crate::push::routes())
         // Record tab (AMUX-4624): device recordings synced into a folder and
@@ -663,6 +665,10 @@ pub fn router_with_connector_transport(
         // worker's minted token. Inside require_bearer, so it sees only
         // admitted requests.
         .layer(axum::middleware::from_fn(worker_identity::enforce))
+        // The ledger's actor (ledger.rs): resolved just inside auth, so the
+        // owner proof it stamps is visible, and carried out to the interaction
+        // receipt on the response.
+        .layer(axum::middleware::from_fn(ledger::stamp))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
