@@ -3,12 +3,13 @@
 // cron firing re-checks that creator's authority, and offboarding a member
 // pauses or reassigns what they own in one action.
 //
-// A private amux with worker sa-w (group customers) and a member M scoped to it.
+// A private amux with worker sa-w (group customers) and a Global member M
+// (members scoped to one worker cannot reach /api/schedules at all).
 // Checks:
 //   a. M creates a schedule with their member cookie: it records
 //      created_by=member:<M>, verified;
-//   b. M's scope is moved off sa-w (in the database: member scope changes go
-//      through teams, which this scenario does not need);
+//   b. M's scope is narrowed to another worker (in the database: member scope
+//      changes go through teams, which this scenario does not need);
 //   c. report (default): the next cron firing still runs, is counted
 //      would_skip, and the ledger records would_deny;
 //   d. enforce: the next firing is skipped, the schedule is paused (enabled=0,
@@ -33,7 +34,7 @@ import {execFileSync} from 'node:child_process';
 import {startAmux, waitFor} from './harness.mjs';
 
 const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
-  RUST_LOG: 'info', AMUX_RS_SCHEDULER: '0', AMUX_BOARD_DRIVE_SECS: '0', AMUX_AUTOFIX_SECS: '0',
+  RUST_LOG: 'info', AMUX_ISOLATED: '0', AMUX_RS_SCHEDULER: '0', AMUX_BOARD_DRIVE_SECS: '0', AMUX_AUTOFIX_SECS: '0',
   AMUX_GHOST_RESCUE_SECS: '0', AMUX_MODEL_CATALOG_REFRESH_SECS: '0',
 }});
 const checks = [];
@@ -72,11 +73,11 @@ try {
   const w = await amux.req('POST', '/api/sessions', {name: 'sa-w', dir, start: false}, 15000, OWNER());
   check('setup: worker sa-w', w.status === 201, w);
   fs.appendFileSync(path.join(amux.home, 'sessions', 'sa-w.env'), '\nCC_TAGS=customers\n');
-  const inv = await amux.req('POST', '/api/org/invites', {email: M, scope_level: 'worker', scope_name: 'sa-w'}, 10000, OWNER());
+  const inv = await amux.req('POST', '/api/org/invites', {email: M, scope_level: 'global', scope_name: '', grant_host_access: true}, 10000, OWNER());
   const tok = inv.body.token || String(inv.body.url || '').split('/invite/')[1];
   const acc = await formPost(`/invite/${tok}`, {email: M, name: 'M'});
   const cookie = (acc.headers['set-cookie'] || []).map(c => c.split(';')[0]).find(c => c.startsWith('amux_member='));
-  check('setup: member M scoped to sa-w holds a cookie', !!cookie, acc);
+  check('setup: Global member M holds a cookie', !!cookie, acc);
   const AS_M = {Cookie: cookie};
   const identity = async () => (await amux.req('GET', '/api/identity', undefined, 10000, AS_M)).body;
   check('setup: the cookie verifies as M', (await identity()).is_local_member === true, await identity());
@@ -90,8 +91,9 @@ try {
   check('a. ...recorded with M as its proven creator', r1.created_by === `member:${M}` && r1.created_by_verified === 1, r1);
 
   // b.
-  db("update org_members set scope_name='elsewhere' where email=?", [M]);
-  check('b. M no longer has scope over sa-w', db('select scope_name from org_members where email=?', [M])[0].scope_name === 'elsewhere');
+  // Members are team-backed: the team's scope is the member's scope.
+  db("update org_teams set scope_level='worker', scope_name='elsewhere' where id=(select team_id from org_members where email=?)", [M]);
+  check('b. M no longer has scope over sa-w', db('select t.scope_name from org_teams t join org_members m on m.team_id=t.id where m.email=?', [M])[0].scope_name === 'elsewhere');
 
   // c. report
   await amux.down();
@@ -147,7 +149,7 @@ try {
   check('f. a worker cannot offboard anyone', fw.status === 403, fw);
 
   // g. what M owns
-  db("update org_members set scope_name='sa-w' where email=?", [M]);
+  db("update org_teams set scope_level='global', scope_name='' where id=(select team_id from org_members where email=?)", [M]);
   const s2 = await amux.req('POST', '/api/schedules', {title: 'sa e2e 2', session: 'sa-w', kind: 'shell',
     command: 'true', schedule_expr: 'daily at 4am'}, 10000, AS_M);
   const S2 = s2.body.id || s2.body.schedule?.id;
@@ -192,6 +194,15 @@ try {
   ok = true;
 } finally {
   await amux.down();
+  if (!ok) {
+    // Say why a firing did not happen: the scheduler's own verdicts.
+    const log = path.join(amux.root, 'server.log');
+    if (fs.existsSync(log)) {
+      const lines = fs.readFileSync(log, 'utf8').split('\n')
+        .filter(l => /schedul|host_pressure|schedule_authority/.test(l)).slice(-15);
+      console.log(lines.join('\n'));
+    }
+  }
   console.log(JSON.stringify({ok, passed: checks.filter(x => x.ok).length}));
   if (!ok) process.exitCode = 1;
 }
