@@ -105,6 +105,7 @@ pub mod mcp;
 pub mod mdai;
 pub mod measured;
 pub mod decision_digest;
+pub mod directive;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
@@ -114,6 +115,7 @@ pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
 pub mod observability;
+pub mod scoreboard;
 pub mod offline_origin;
 pub mod orchestrate;
 pub mod orchestrations;
@@ -417,6 +419,7 @@ pub fn router_with_connector_transport(
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
+        .merge(scoreboard::routes())
         .merge(connectors::routes_with(connector_ctx.clone()))
         .nest("/api/telegram", telegram::routes_with(http))
         .merge(grants::routes())
@@ -426,6 +429,7 @@ pub fn router_with_connector_transport(
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
         .merge(decision_digest::routes())
+        .merge(directive::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
         .merge(bridge::routes())
