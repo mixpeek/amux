@@ -31,6 +31,9 @@
 //! bridge_outbound_approved.
 
 pub mod adapters;
+pub mod email;
+pub mod imessage;
+pub mod self_chat;
 pub mod whatsapp_app;
 
 use crate::api::AppState;
@@ -40,7 +43,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Notify;
 
-pub const PLATFORMS: &[&str] = &["whatsapp", "slack", "telegram", "discord", whatsapp_app::PLATFORM];
+pub const PLATFORMS: &[&str] = &["whatsapp", "slack", "telegram", "discord", whatsapp_app::PLATFORM, imessage::PLATFORM, email::PLATFORM];
 const OUTBOUND_MAX_ATTEMPTS: i64 = 8;
 
 /// One message as an adapter hands it over.
@@ -115,6 +118,8 @@ fn label(p: &str) -> &'static str {
         "slack" => "Slack",
         "telegram" => "Telegram",
         "discord" => "Discord",
+        imessage::PLATFORM => "iMessage",
+        email::PLATFORM => "email",
         _ => "chat",
     }
 }
@@ -198,10 +203,20 @@ pub async fn inbound(state: &AppState, m: Inbound) -> Outcome {
 
 /// Post a platform message into its Messages conversation and record it.
 pub async fn post_inbound(state: &AppState, m: &Inbound, owner: bool, conv: &str) -> Outcome {
+    post_inbound_in(state, m, owner, conv, None).await
+}
+
+/// The same, as a reply in `parent`'s thread when there is one.
+pub async fn post_inbound_in(state: &AppState, m: &Inbound, owner: bool, conv: &str, parent: Option<i64>) -> Outcome {
     let place = label(&m.platform);
+    let back = if self_chat::is_self_chat(&m.platform) {
+        "Your reply in this thread is sent back there.".to_string()
+    } else {
+        format!("What you post in {conv} is sent back there.")
+    };
     let (author_key, author_name, note) = if owner {
         ("person:owner".to_string(), "owner".to_string(),
-         Some(format!("(The owner wrote this on {place}. What you post in {conv} is sent back there.)")))
+         Some(format!("(The owner wrote this on {place}. {back})")))
     } else {
         let name = if m.sender_name.is_empty() { m.sender_id.clone() } else { m.sender_name.clone() };
         (format!("ext:{}:{}", m.platform, m.sender_id), format!("{name} ({place})"),
@@ -221,7 +236,7 @@ pub async fn post_inbound(state: &AppState, m: &Inbound, owner: bool, conv: &str
         )?;
         Ok(())
     });
-    let posted = crate::api::conversations::bridge_post(state, conv, &author_key, &author_name, m.text.trim(), note, record).await;
+    let posted = crate::api::conversations::bridge_post(state, conv, &author_key, &author_name, m.text.trim(), note, parent, record).await;
     let v = match posted {
         Ok(v) => v,
         Err(e) => {
@@ -233,7 +248,7 @@ pub async fn post_inbound(state: &AppState, m: &Inbound, owner: bool, conv: &str
     let delivering = v["delivering_to"].as_u64().unwrap_or(0) as usize;
     // A direct chat with the owner, linked to a channel, where nobody was
     // mentioned: say so once, rather than leaving the owner waiting.
-    if owner && !m.is_group && delivering == 0 && conv.starts_with("g:") {
+    if owner && !m.is_group && delivering == 0 && conv.starts_with("g:") && parent.is_none() {
         adapters::send(&m.platform, &m.conversation, false,
             &format!("Posted in {conv}. Mention a worker (@name) to send it to one.")).await.ok();
     }
@@ -317,14 +332,16 @@ fn shared(conn: &rusqlite::Connection, platform: &str, conversation: &str) -> bo
 /// plus failed sends under the cap and held ones the owner approved.
 fn pending(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Pending>> {
     let mut out = Vec::new();
-    let mut stmt = conn.prepare(
+    let own = self_chat::PLATFORMS.iter().map(|p| format!("'{p}'")).collect::<Vec<_>>().join(",");
+    let mut stmt = conn.prepare(&format!(
         "SELECT p.id, p.author_key, p.author_name, p.body, l.conv, l.platform, l.conversation, l.kind, o.attempts, o.state
          FROM bridge_links l JOIN conversation_posts p ON p.conv = l.conv
          LEFT JOIN bridge_outbound o ON o.id = p.id || '|' || l.platform || '|' || l.conversation
-         WHERE (p.id > l.last_post_id AND o.id IS NULL)
-            OR o.state = 'approved' OR (o.state = 'failed' AND o.attempts < ?1)
+         WHERE ((p.id > l.last_post_id AND o.id IS NULL)
+            OR o.state = 'approved' OR (o.state = 'failed' AND o.attempts < ?1))
+           AND l.platform NOT IN ({own})
          ORDER BY p.id LIMIT 100",
-    )?;
+    ))?;
     let rows = stmt.query_map(params![OUTBOUND_MAX_ATTEMPTS], |r| {
         let (pid, platform, conversation): (i64, String, String) = (r.get(0)?, r.get(5)?, r.get(6)?);
         Ok(Pending {
@@ -338,24 +355,14 @@ fn pending(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<Pending>> {
         let from_here: bool = conn.query_row(
             "SELECT 1 FROM bridge_inbound WHERE post_id=?1 AND platform=?2 AND conversation=?3",
             params![p.post_id, p.platform, p.conversation], |_| Ok(())).optional()?.is_some();
-        if !from_here && (!threads_only(&p) || in_chat_thread(conn, &p)?) {
+        if !from_here {
             out.push(p);
         }
     }
+    // The owner's own chats (self_chat.rs) are not linked to one
+    // conversation: what they are owed is the answers to what they started.
+    out.extend(self_chat::pending(conn, OUTBOUND_MAX_ATTEMPTS, now_ms())?);
     Ok(out)
-}
-
-/// The owner's WhatsApp self chat sits on #general: only answers in the
-/// threads it started go back to it, never the channel's other posts.
-fn threads_only(p: &Pending) -> bool {
-    p.platform == whatsapp_app::PLATFORM && p.conv.starts_with("g:")
-}
-
-fn in_chat_thread(conn: &rusqlite::Connection, p: &Pending) -> rusqlite::Result<bool> {
-    Ok(conn.query_row(
-        "SELECT 1 FROM conversation_posts c JOIN bridge_inbound b ON b.post_id = c.parent_id
-         WHERE c.id=?1 AND b.platform=?2 AND b.conversation=?3",
-        params![p.post_id, p.platform, p.conversation], |_| Ok(())).optional()?.is_some())
 }
 
 /// Attempts a send outcome costs: a wait (nothing was typed) costs none, a
@@ -612,11 +619,12 @@ mod tests {
                    (4, 'g:general', 'worker:ops', 'ops', 'reply in someone else''s thread', 0, 3);
                  INSERT INTO bridge_inbound (post_id, platform, conversation, platform_msg_id, sender_id, sender_name, is_owner, received_at)
                    VALUES (1, 'whatsapp-app', '9@lid', 'S1', '1410', 'owner', 1, 0);")?;
+            c.execute("UPDATE bridge_inbound SET received_at=?1", [now_ms()])?;
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         }).unwrap();
         let c = store.read().unwrap();
         let ids: Vec<i64> = pending(&c).unwrap().iter().map(|p| p.post_id).collect();
-        assert_eq!(ids, vec![2], "only the answer in the chat's own thread goes back");
+        assert_eq!(ids, vec![2], "only the answer in the chat's own thread goes back, though its old link names #general");
     }
 
     #[test]

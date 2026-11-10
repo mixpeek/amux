@@ -67,8 +67,13 @@ export function pages(dir = SITE) {
 const norm = s => s.replace(/\s+/g, ' ').trim();
 const starsOf = s => (s.match(/<span class="gh-stars">(\d+)<\/span>/) || [])[1];
 
+// A page that only redirects (a retired demo pointing at its replacement) is
+// never shown, so it carries no header.
+export const isRedirect = html => /<meta\s+http-equiv="refresh"/i.test(html);
+
 export function problems(rel, html) {
   const out = [];
+  if (isRedirect(html)) return out;
   const m = html.match(HEADER_RE);
   const want = expectedHeader(rel);
   if (!m) out.push('no site header');
