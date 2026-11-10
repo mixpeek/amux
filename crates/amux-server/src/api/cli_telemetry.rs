@@ -492,6 +492,7 @@ fn refuse(code: StatusCode, verdict: &str, why: &str) -> Response {
 }
 
 /// The worker a post proves it came from, or the refusal.
+#[allow(clippy::result_large_err)]
 fn prove(home: &Path, h: &HeaderMap) -> Result<String, Response> {
     if !enabled() {
         counters::bump(&counters::REFUSED_OFF);
@@ -518,6 +519,7 @@ fn first_refusal(lane: &str) -> bool {
     SEEN.get_or_init(Default::default).lock().map(|mut s| s.insert(lane.to_string())).unwrap_or(false)
 }
 
+#[allow(clippy::result_large_err)]
 fn json_body(h: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
     let ct = hdr(h, "content-type").unwrap_or("application/json");
     if ct.contains("protobuf") {
