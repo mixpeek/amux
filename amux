@@ -6871,6 +6871,9 @@ ${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
 ${BOLD}Boundaries and resources:${RESET}
   amux boundaries [--json]       The worker boundaries (boundaries.toml), their guard, 24h firings
   amux resources [--worker W]    Machine capacity and pressure, and what this worker uses
+  amux directive W --stdin [--from S] [--url U]  Interrupt W with an instruction it must answer (S must be in W's AMUX_DIRECTIVE_SENDERS)
+  amux directive ack DIR-<id> "<what stopped, what still runs, first action>"
+  amux directive ls [W] [--open]
   amux requests [W|--all] [--open] The owner's requests to a worker: open, on main, live, or closed
 
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
@@ -9140,6 +9143,48 @@ if e:
     print("Estimate for %s (%s): %s min (%s to %s), %s tokens, from %s %s." % (
         e["card"], (e.get("title") or "")[:60], fmt(em["p50"]), fmt(em["p25"]), fmt(em["p75"]), fmt(et["p50"]), e["n"], e["basis"]))
 ' "$body"
+}
+
+# A named sender's interrupting instruction (crates/amux-server/src/api/directive.rs).
+cmd_directive() {
+  local url; url="$(cmd_url)"; local from="${AMUX_SESSION:-}" target="" text="" stdin="" only_open=""
+  local verb="${1:-}"
+  case "$verb" in
+    ack)
+      local id="${2:-}" note="${*:3}"
+      [[ "$id" == DIR-* && -n "$note" ]] || die "usage: amux directive ack DIR-<id> \"<what stopped, what still runs, first action>\""
+      _directive_call POST "$url/api/directives/$id/ack" "$from" "$(python3 -c 'import json,sys;print(json.dumps({"note":sys.argv[1]}))' "$note")"
+      return ;;
+    ls)
+      shift; target=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in --open) only_open=1 ;; --url) url="$2"; shift ;; *) target="$1" ;; esac; shift
+      done
+      _directive_call GET "$url/api/directives?session=$target&open=${only_open:-0}" "$from" ""
+      return ;;
+  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stdin) stdin=1 ;;
+      --from) from="$2"; shift ;;
+      --url) url="$2"; shift ;;
+      -*) die "amux directive: unknown option $1" ;;
+      *) if [[ -z "$target" ]]; then target="$1"; else text="$text${text:+ }$1"; fi ;;
+    esac
+    shift
+  done
+  [[ -n "$stdin" ]] && text="$(cat)"
+  [[ -n "$target" && -n "$text" ]] || die "usage: amux directive <worker> --stdin [--from <sender>] [--url <server>]"
+  _directive_call POST "$url/api/sessions/$target/directive" "$from" "$(python3 -c 'import json,sys;print(json.dumps({"text":sys.argv[1]}))' "$text")"
+}
+_directive_call() { # <method> <url> <sender> <json>; a refusal exits non-zero with the server's reason
+  local out code args=(-sk --max-time 60 -X "$1" -H 'Content-Type: application/json' -w '\n%{http_code}')
+  [[ -n "$3" ]] && args+=(-H "X-Amux-Session: $3")
+  [[ -n "$4" ]] && args+=(-d "$4")
+  out="$(curl --connect-timeout 10 "${args[@]}" "$2")" || die "amux directive: no answer from $2"
+  code="${out##*$'\n'}"; out="${out%$'\n'*}"
+  printf '%s\n' "$out"
+  case "$code" in 2??) ;; *) return 1 ;; esac
 }
 
 cmd_requests() {
@@ -12512,6 +12557,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     publish)          shift; cmd_publish "$@" ;;
     contribute)       shift; cmd_contribute "$@" ;;
     github)           shift; cmd_github "$@" ;;
+    directive)        shift; cmd_directive "$@" ;;
     requests)         shift; cmd_requests "$@" ;;
     velocity)         shift; cmd_velocity "$@" ;;
     browser|br)      shift; cmd_browser "$@" ;;

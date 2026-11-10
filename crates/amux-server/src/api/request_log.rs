@@ -3329,6 +3329,19 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/needs-input/auto/sweep",
         methods: &["POST"],
     },
+    // A named sender's interrupting instruction, which the worker has to answer.
+    RouteEntry {
+        path: "/api/sessions/{name}/directive",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/directives",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/directives/{id}/ack",
+        methods: &["POST"],
+    },
     // Z15 daily decision digest.
     RouteEntry {
         path: "/api/decision-digest",

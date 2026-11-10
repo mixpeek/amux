@@ -101,6 +101,7 @@ pub mod mcp;
 pub mod mdai;
 pub mod measured;
 pub mod decision_digest;
+pub mod directive;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
@@ -424,6 +425,7 @@ pub fn router_with_connector_transport(
         .merge(needs_input::routes())
         .merge(needs_input_auto::routes())
         .merge(decision_digest::routes())
+        .merge(directive::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
         .merge(bridge::routes())

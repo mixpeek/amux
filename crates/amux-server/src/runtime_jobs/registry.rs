@@ -150,6 +150,7 @@ pub mod ids {
     pub const EMAIL_APPROVAL_DIGEST: &str = "email-approval-digest";
     pub const EMAIL_SCHEDULED_SEND: &str = "email-scheduled-send";
     pub const DECISION_DIGEST: &str = "decision-digest";
+    pub const DIRECTIVE: &str = "directive";
     pub const NEEDS_INPUT_AUTO: &str = "needs-input-auto";
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
@@ -221,6 +222,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::EMAIL_APPROVAL_DIGEST,
     ids::EMAIL_SCHEDULED_SEND,
     ids::DECISION_DIGEST,
+    ids::DIRECTIVE,
     ids::NEEDS_INPUT_AUTO,
     ids::CONTRACT_WATCH,
     ids::LAND_QUEUE,
@@ -1063,6 +1065,33 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: None,
+    },
+    Doc {
+        id: ids::DIRECTIVE,
+        name: "Directives",
+        purpose: "Works open directives: retries a delivery that did not land, repeats an \
+                  unanswered directive once, then tells the owner. Only a sender the target's \
+                  scope names in AMUX_DIRECTIVE_SENDERS can issue one.",
+        env: &[
+            EnvControl {
+                var: "AMUX_DIRECTIVE_ACK_S",
+                effect: "seconds before an unanswered directive is repeated, and again before the \
+                         owner is told (default 600)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DIRECTIVE_TICK_S",
+                effect: "seconds between passes over the open directives (default 60)",
+                off: None,
+            },
+            EnvControl {
+                var: "AMUX_DIRECTIVE_SECS",
+                effect: "0 disables the job",
+                off: Some("0"),
+            },
+        ],
+        pref: None,
+        detail: Some("/api/directives"),
     },
     Doc {
         id: ids::DECISION_DIGEST,

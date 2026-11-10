@@ -682,6 +682,7 @@ async fn async_main() {
     drop(runtime_jobs::email_scheduled_send::spawn(state.clone()));
     // Z15: daily digest of needsyou cards, dry run until the owner opts in.
     drop(runtime_jobs::decision_digest::spawn(state.clone()));
+    drop(runtime_jobs::directive::spawn(state.clone()));
     // AMUX-5301: approve new needs-input items the owner's policy covers.
     drop(runtime_jobs::needs_input_auto::spawn(state.clone()));
     // AMUX-5239: a lane that pushed and said "live in ~40 min" was never told
