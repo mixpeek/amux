@@ -94,7 +94,7 @@ jobs:
           # the headless shell must be on the runner (it failed 2026-10-23:
           # "Executable doesn't exist ... chrome-headless-shell").
           npx playwright install --only-shell chromium
-          node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs tests/e2e-plan.test.mjs
+          node --test tests/ci-e2e-evidence.test.mjs tests/worker-lifecycle-cleanup.test.mjs tests/e2e-teardown-ratchet.test.mjs tests/e2e-plan.test.mjs tests/test-server-env.test.mjs
           npm run test:outbox
           npm run test:offline
           npm run test:state
