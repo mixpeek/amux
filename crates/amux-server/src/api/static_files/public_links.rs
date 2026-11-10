@@ -518,6 +518,20 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
         }
         _ => return bad(StatusCode::BAD_REQUEST, "kind is internal, app or file"),
     };
+    // Governance PR 11: a worker's AMUX_CAP_PUBLISH (public, internal, none).
+    // A person publishing is not held to it.
+    if person_of(&state, &headers).is_none() {
+        let home = crate::config::amux_home();
+        if let Some(lane) = super::super::capabilities::acting_worker(&home, &headers) {
+            let (level, _) = super::super::capabilities::publish_level(&home, &lane);
+            if !super::super::capabilities::publish_allows(&level, &kind) {
+                let resource = format!("a {kind} link (AMUX_CAP_PUBLISH={level})");
+                if let Some(resp) = super::super::capabilities::cross(&home, &lane, "publish", &resource, &kind) {
+                    return resp;
+                }
+            }
+        }
+    }
     let api_requested = match super::super::app_identity::parse_rules(&body.api) {
         Ok(r) => r,
         Err(e) => return bad(StatusCode::BAD_REQUEST, &format!("api: {e}")),

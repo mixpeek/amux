@@ -1094,6 +1094,17 @@ async fn scope_write(
     if let Err((status, msg)) = write_result {
         return j(status, json!({"error": msg}));
     }
+    // Governance PR 11: a grant written here answers any open capability ask,
+    // so the next refusal of that capability may ask again.
+    let granted = super::capabilities::caps_written(key, &value);
+    if !granted.is_empty() {
+        let workers = if level == "worker" {
+            vec![name.to_string()]
+        } else {
+            crate::api::session_verbs::workers_in_scope(level, name)
+        };
+        super::capabilities::clear_asks(&home, &workers, &granted);
+    }
 
     let after = {
         let conn = state.store.read().ok();
@@ -1195,10 +1206,17 @@ const OWNER_ONLY_ENV_PREFIXES: &[&str] = &[
     "AMUX_BROWSER_PROFILES_",
     "AMUX_APPROVAL_TYPES",
     "AMUX_EMAIL_EXTERNAL_ALLOW",
+    // Governance PR 11: a capability is a grant, so only the owner sets one.
+    "AMUX_CAP_",
 ];
 
 fn is_owner_only_env_key(k: &str) -> bool {
     OWNER_ONLY_ENV_PREFIXES.iter().any(|p| k.starts_with(p))
+}
+
+#[cfg(test)]
+pub(crate) fn is_owner_only_env_key_pub(k: &str) -> bool {
+    is_owner_only_env_key(k)
 }
 
 /// The first owner-only key whose value this write would change, if any.

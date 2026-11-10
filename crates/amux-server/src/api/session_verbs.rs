@@ -29908,8 +29908,20 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
         return None;
     }
     let target_groups = lane_groups(target);
-    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
-    worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
+    let home = crate::config::amux_home();
+    // Governance PR 11: the owner can widen a worker's reach with
+    // AMUX_CAP_MESSAGE (workers or `group:<name>`), owner-only to set.
+    if let Some(grant) = super::capabilities::message_granted(&home, origin, target, &target_groups) {
+        tracing::info!(origin, target, grant = %grant, verdict = "message_capability_allowed", measured = true,
+            n_considered = 1, "worker input allowed outside a shared group: an owner-set message capability");
+        return None;
+    }
+    let open = super::worker_messaging::open_inbound_groups(&home, &target_groups);
+    let refusal = worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open);
+    if refusal.is_some() {
+        super::capabilities::existing_refusal(&home, origin, "message", &format!("worker {target}"), target);
+    }
+    refusal
 }
 
 /// Queue producers use an empty sender for system input and "owner" for saved

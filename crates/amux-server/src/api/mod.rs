@@ -24,6 +24,7 @@ pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
 pub mod app_identity;
+pub mod capabilities;
 pub mod connector_scope;
 pub mod email_scope;
 pub mod human_proof;
@@ -239,6 +240,7 @@ pub fn router_with_connector_transport(
     // For the request-log layer below — `state` itself is consumed by
     // `.with_state` before the outermost wrap.
     let store_for_reqlog = state.store.clone();
+    capabilities::install_store(state.store.clone());
     let state_for_member_identity = state.clone();
     let protected = Router::new()
         .route("/api/sync", axum::routing::get(sync::delta_sync))
@@ -388,7 +390,8 @@ pub fn router_with_connector_transport(
         // field, open/mkdir/rename/read/list/search/delete on ABSOLUTE
         // paths) — a different contract from /api/files above. NATIVE port
         // of the python handlers (api/fs.rs), same wire shapes.
-        .nest("/api/fs", fs::routes())
+        .nest("/api/fs", fs::routes().layer(axum::middleware::from_fn(capabilities::fs_gate)))
+        .route("/api/workers/{name}/capabilities", axum::routing::get(capabilities::view))
         // The SPA Files BROWSER's listing + dir autocomplete — native, same
         // module (top-level paths in python, so top-level here).
         .route("/api/ls", axum::routing::any(fs::ls))

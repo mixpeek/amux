@@ -46,6 +46,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/trace-id.mjs trace-id
   e2e/chaos/cli-otel.mjs cli-otel
   e2e/chaos/ledger-checkpoints.mjs ledger-checkpoints
+  e2e/chaos/capabilities.mjs capabilities
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot
