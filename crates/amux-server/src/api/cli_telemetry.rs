@@ -730,7 +730,7 @@ mod tests {
         // An API request the exporter re-sends (same request_id) is one row.
         let api = Event { name: "api_request".into(), tool: Some("api_request".into()), tool_use_id: None,
             detail: json!({"source": "otel", "request_id": "req_1"}), ..ev("api_request", None) };
-        assert_eq!(store(&c, home.path(), "w1", &[api.clone()]).unwrap().0, 1);
+        assert_eq!(store(&c, home.path(), "w1", std::slice::from_ref(&api)).unwrap().0, 1);
         assert_eq!(store(&c, home.path(), "w1", &[api]).unwrap().0, 0, "a re-sent API request is not a second row");
     }
 
