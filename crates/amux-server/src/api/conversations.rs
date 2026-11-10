@@ -1890,12 +1890,51 @@ pub(crate) async fn recorder_post(state: &AppState, group: &str, body: &str) -> 
 /// not the owner) is what the worker reads first.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn bridge_post(state: &AppState, conv_key: &str, author_key: &str, author_name: &str, body: &str,
-    note: Option<String>, record: AlsoWrite) -> Result<Value, String> {
+    note: Option<String>, parent: Option<i64>, record: AlsoWrite) -> Result<Value, String> {
     let conv = Conv::parse(conv_key).ok_or_else(|| format!("not a conversation: {conv_key}"))?;
     let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
     let body: String = body.chars().take(MAX_BODY).collect();
-    post_inner(state, conv, &me, author_key.to_string(), author_name.to_string(), body, HeaderMap::new(), note, None, json!([]), None, Some(record)).await
+    post_inner(state, conv, &me, author_key.to_string(), author_name.to_string(), body, HeaderMap::new(), note, parent, json!([]), None, Some(record)).await
         .map_err(|_| "the post was not stored".to_string())
+}
+
+/// Where the owner's message in one of their own chats goes (the WhatsApp or
+/// iMessage "message yourself" chat, or an email to themselves), read from
+/// its first word: `#channel` posts the rest in that channel; `@worker` posts
+/// it all in #general, where the mention reaches the worker; `@person` posts
+/// it all in the owner's direct message with that person. Returns the
+/// conversation key, a label for it, and the body to post.
+pub(crate) fn resolve_self_chat(conn: &rusqlite::Connection, text: &str) -> Result<(String, String, String), String> {
+    let text = text.trim();
+    let (first, rest) = text.split_once(char::is_whitespace).map(|(a, b)| (a, b.trim())).unwrap_or((text, ""));
+    let name = first.get(1..).unwrap_or("").trim_end_matches([':', ',', '.', '!', '?']).to_lowercase();
+    if name.is_empty() {
+        return Err("Start with @worker, @person or #channel.".into());
+    }
+    if first.starts_with('#') {
+        // The channel check Messages itself uses: `#amux` is the amux
+        // channel even where a worker is also called amux.
+        let f = Fleet { lanes: lanes(), ch: Channels::load(conn) };
+        if !channel_exists(&name, &f) {
+            return Err(format!("No channel named #{name}."));
+        }
+        if rest.is_empty() {
+            return Err(format!("Nothing to post in #{name}."));
+        }
+        return Ok((format!("g:{name}"), format!("#{name}"), rest.to_string()));
+    }
+    if !first.starts_with('@') {
+        return Err("Start with @worker, @person or #channel.".into());
+    }
+    if lanes().iter().chain(isolated_lanes().iter()).any(|l| l.name.to_lowercase() == name) {
+        return Ok((format!("g:{GENERAL}"), format!("#{GENERAL}"), text.to_string()));
+    }
+    let person = people(conn, false).into_iter()
+        .find(|p| p.name.to_lowercase() == name || p.email.split('@').next().unwrap_or("") == name);
+    match person {
+        Some(p) => Ok((dm_key("owner", &p.email), p.name.clone(), text.to_string())),
+        None => Err(format!("No worker or person named @{name}.")),
+    }
 }
 
 
@@ -2618,6 +2657,33 @@ async fn remove_member(State(state): State<AppState>, Path((name, email)): Path<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first word of a message from the owner's own chat routes it:
+    /// @worker to #general (the mention reaches it), @person to the owner's
+    /// direct message with them, #channel to that channel without the tag.
+    #[test]
+    fn a_self_chat_message_is_routed_by_its_first_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/amux.env"), "CC_TAGS=amux\n").unwrap();
+        std::fs::write(dir.path().join("sessions/desktop.env"), "CC_ISOLATED=1\n").unwrap();
+        let store = crate::db::Store::open(&dir.path().join("c.db")).unwrap();
+        store.write(|c| { c.execute("INSERT INTO org_members (id, email, name, joined_at) VALUES ('m1', 'doron@x.com', 'Doron', 0)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+        let c = store.read().unwrap();
+        let r = |t: &str| resolve_self_chat(&c, t);
+        assert_eq!(r("@amux status?").unwrap(), ("g:general".into(), "#general".into(), "@amux status?".into()));
+        assert_eq!(r("@Amux: status?").unwrap().0, "g:general", "case and a trailing colon do not matter");
+        assert_eq!(r("@desktop look").unwrap().0, "g:general", "an isolated worker is a worker too");
+        assert_eq!(r("@doron deck?").unwrap(), ("p:doron@x.com|owner".into(), "Doron".into(), "@doron deck?".into()));
+        assert_eq!(r("#amux @amux the build is red").unwrap(), ("g:amux".into(), "#amux".into(), "@amux the build is red".into()));
+        assert_eq!(r("#general hello").unwrap().0, "g:general");
+        assert!(r("#amux").unwrap_err().contains("Nothing to post"));
+        assert!(r("#nope hi").unwrap_err().contains("No channel named #nope"));
+        assert!(r("@nobody hi").unwrap_err().contains("No worker or person named @nobody"));
+        assert!(r("hello").is_err());
+    }
 
     #[test]
     fn search_operators_are_understood_and_a_bad_one_is_named() {

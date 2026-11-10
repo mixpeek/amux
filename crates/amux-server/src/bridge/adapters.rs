@@ -45,6 +45,10 @@ pub fn configured() -> Vec<(&'static str, bool, Vec<&'static str>)> {
     }).collect();
     out.push((super::whatsapp_app::PLATFORM, super::whatsapp_app::enabled(),
         if setting("AMUX_OWNER_PHONE").is_none() { vec!["AMUX_OWNER_PHONE"] } else { vec![] }));
+    out.push((super::imessage::PLATFORM, super::imessage::enabled(),
+        if super::imessage::enabled() { vec![] } else { vec!["AMUX_OWNER_PHONE"] }));
+    out.push((super::email::PLATFORM, super::email::enabled(),
+        if super::email::enabled() { vec![] } else { vec!["AMUX_OWNER_EMAIL"] }));
     out
 }
 
@@ -53,6 +57,12 @@ pub async fn send(platform: &str, conversation: &str, is_group: bool, text: &str
     let text: String = text.chars().take(3800).collect();
     if platform == super::whatsapp_app::PLATFORM {
         return super::whatsapp_app::send(&text).await;
+    }
+    if platform == super::imessage::PLATFORM {
+        return super::imessage::send(conversation, &text).await;
+    }
+    if platform == super::email::PLATFORM {
+        return super::email::send(conversation, &text).await;
     }
     let c = client();
     let (status, body): (u16, Value) = match platform {

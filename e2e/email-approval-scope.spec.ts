@@ -12,6 +12,7 @@
 // covered end to end by e2e/chaos/email-approval-scope.mjs and by the handler
 // test `held_email_is_scoped_to_the_proven_caller`.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 
 test('the owner releases a held email from the banner, recorded as the proven owner', async ({ page }, info) => {
   const lane = `pw-scope-${info.project.name}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
@@ -53,9 +54,9 @@ test('the owner releases a held email from the banner, recorded as the proven ow
     expect(row.approved_by, 'the proven owner, not the name the banner sent').toBe('owner-token');
     expect(row.approver_verified).toBe(true);
   } finally {
-    await page.evaluate(async (id) => {
+    await cleanup('withdraw the held draft', () => page.evaluate((id) => {
       const h = (window as any)._authHeaders({ 'Content-Type': 'application/json' });
-      await fetch('/api/email/reject/' + id, { method: 'POST', headers: h, body: '{}' }).catch(() => {});
-    }, id);
+      return fetch('/api/email/reject/' + id, { method: 'POST', headers: h, body: '{}' }).catch(() => {});
+    }, id), info);
   }
 });

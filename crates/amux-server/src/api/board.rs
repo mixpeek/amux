@@ -213,17 +213,22 @@ async fn needsyou_queue(
         .and_then(|v| v.parse().ok())
         .unwrap_or(NEEDSYOU_VIEW_CAP)
         .clamp(1, 500);
+    let (status, body) = needsyou_payload(&state, want_all, cap);
+    (status, Json(body)).into_response()
+}
+
+/// The owner view's body, shared with the scoreboard so both rank one way.
+pub(crate) fn needsyou_payload(state: &AppState, want_all: bool, cap: usize) -> (StatusCode, Value) {
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(crate::api::measured::unmeasured(
+                crate::api::measured::unmeasured(
                     json!({"error": e.to_string(), "queue": []}),
                     "the store could not be opened, so no needsyou card was read",
-                )),
+                ),
             )
-                .into_response()
         }
     };
     let rows = match bs::list_issues(
@@ -236,12 +241,11 @@ async fn needsyou_queue(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(crate::api::measured::unmeasured(
+                crate::api::measured::unmeasured(
                     json!({"error": e.to_string(), "queue": []}),
                     "the needsyou query failed, so an empty queue here is unmeasured",
-                )),
+                ),
             )
-                .into_response()
         }
     };
     let now = crate::config::now_f64();
@@ -376,7 +380,7 @@ async fn needsyou_queue(
             |r| r.get(0),
         )
         .unwrap_or(-1);
-    Json(crate::api::measured::measured(
+    let body = crate::api::measured::measured(
         json!({
             "queue": shown,
             "total": total,
@@ -409,8 +413,8 @@ async fn needsyou_queue(
                      unrecorded legacy state, not junk.",
         }),
         total,
-    ))
-    .into_response()
+    );
+    (StatusCode::OK, body)
 }
 
 /// Creator name exempt from the todo WIP limit (AF-317). Cards filed under
