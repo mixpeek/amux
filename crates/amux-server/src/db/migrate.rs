@@ -865,9 +865,9 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0160_ledger_checkpoints.sql"),
     },
     Migration {
-        version: 159,
-        name: "0159_approval_cards",
-        sql: include_str!("../../migrations/0159_approval_cards.sql"),
+        version: 161,
+        name: "0161_approval_cards",
+        sql: include_str!("../../migrations/0161_approval_cards.sql"),
     },
 ];
 
