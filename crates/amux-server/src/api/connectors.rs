@@ -2840,7 +2840,7 @@ async fn mint_for_inner(
                     Some(a) => format!("connector {id} account {a}"),
                     None => format!("connector {id}"),
                 };
-                super::capabilities::existing_refusal(&ctx.home, &lane, "connectors", &resource, &id);
+                super::capabilities::existing_refusal(&ctx.home, lane, "connectors", &resource, &id);
                 return (StatusCode::FORBIDDEN, Json(denial)).into_response();
             }
         }
