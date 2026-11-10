@@ -13,8 +13,11 @@ const DIR = mkdtempSync(join(tmpdir(), 'amux-e2e-mdw-'));
 const FILE = join(DIR, 'plan.md');
 writeFileSync(FILE, '# Plan\n\nAsk @' + W + ' about the launch.\n\nMail ethan@example.com, not @nobody-here.\n\nIn code: `@' + W + '` stays.\n');
 
+const TASK = 'S3 EventBridge notifications';
+
 async function boot(page: Page) {
-  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [{ name: W, running: true, status: 'idle', dir: DIR }] }));
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [{ name: W, running: true, status: 'active', dir: DIR,
+    desc: 'The md tag test worker', task_name: TASK, task_source: 'board' }] }));
   await page.route(/\/api\/sessions\/md-tag-w\/peek\?/, r => r.fulfill({ json: { name: W, live: 'ready', history: '' } }));
   await page.route(/\/api\/sessions\/md-tag-w\/subagents$/, r => r.fulfill({ json: { session: W, subagents: [] } }));
   // Only the test that opens the worker reads these.
@@ -123,4 +126,38 @@ test('a file opened over a worker reopens on reload, and closing it gives the wo
   await page.evaluate(p => (window as any).openFilePreview(p), FILE);
   await page.evaluate(() => (window as any).closeFilePreview());
   await expect.poll(() => page.evaluate(() => location.hash)).toContain('peek=');
+});
+
+// Owner, 2026-11-09: "Make it so when I hover a tagged worker it shows a
+// preview of the card of that worker like in the worker list page. I want to
+// see the task, status, etc." Hover is a mouse thing: a phone taps the link.
+test('hovering a tagged worker shows its worker-list card', async ({ page }) => {
+  await boot(page);
+  test.skip(!(await page.evaluate(() => matchMedia('(hover: hover)').matches)), 'no hover on a touch screen');
+  const link = page.locator('#file-body .md-worker-link').first();
+  await link.hover();
+  const pop = page.locator('#worker-hovercard');
+  await expect(pop).toBeVisible();
+  // The worker list's own card: its name, its task and its status.
+  const card = pop.locator('.card');
+  await expect(card).toHaveAttribute('data-session', W);
+  await expect(card).toContainText(W);
+  await expect(card).toContainText(TASK);
+  expect(await card.getAttribute('data-worker-status')).toBeTruthy();
+  if (process.env.HOVER_SHOT) await page.screenshot({ path: process.env.HOVER_SHOT });
+  // A copy that nothing in the page can find or click.
+  expect(await pop.locator('[id]').count()).toBe(0);
+  expect(await pop.evaluate(el => (el as any).inert)).toBe(true);
+  // Beside the mention and inside the window.
+  const lb = (await link.boundingBox())!, pb = (await pop.boundingBox())!, vp = page.viewportSize()!;
+  expect(pb.y >= lb.y + lb.height - 1 || pb.y + pb.height <= lb.y + 1).toBe(true);
+  expect(pb.x).toBeGreaterThanOrEqual(0);
+  expect(pb.x + pb.width).toBeLessThanOrEqual(vp.width + 1);
+  // The mouse leaves: it goes away.
+  await page.mouse.move(2, vp.height - 2);
+  await expect(pop).toBeHidden();
+  // A click still opens the worker, with no card left over.
+  await link.click();
+  await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', W);
+  await expect(pop).toBeHidden();
 });

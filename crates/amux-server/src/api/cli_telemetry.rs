@@ -492,6 +492,7 @@ fn refuse(code: StatusCode, verdict: &str, why: &str) -> Response {
 }
 
 /// The worker a post proves it came from, or the refusal.
+#[allow(clippy::result_large_err)]
 fn prove(home: &Path, h: &HeaderMap) -> Result<String, Response> {
     if !enabled() {
         counters::bump(&counters::REFUSED_OFF);
@@ -518,6 +519,7 @@ fn first_refusal(lane: &str) -> bool {
     SEEN.get_or_init(Default::default).lock().map(|mut s| s.insert(lane.to_string())).unwrap_or(false)
 }
 
+#[allow(clippy::result_large_err)]
 fn json_body(h: &HeaderMap, body: &Bytes) -> Result<Value, Response> {
     let ct = hdr(h, "content-type").unwrap_or("application/json");
     if ct.contains("protobuf") {
@@ -728,7 +730,7 @@ mod tests {
         // An API request the exporter re-sends (same request_id) is one row.
         let api = Event { name: "api_request".into(), tool: Some("api_request".into()), tool_use_id: None,
             detail: json!({"source": "otel", "request_id": "req_1"}), ..ev("api_request", None) };
-        assert_eq!(store(&c, home.path(), "w1", &[api.clone()]).unwrap().0, 1);
+        assert_eq!(store(&c, home.path(), "w1", std::slice::from_ref(&api)).unwrap().0, 1);
         assert_eq!(store(&c, home.path(), "w1", &[api]).unwrap().0, 0, "a re-sent API request is not a second row");
     }
 

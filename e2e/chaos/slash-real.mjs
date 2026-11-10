@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
-import { request, freePort, waitFor } from './harness.mjs';
+import { request, freePort, waitFor, testServerEnv } from './harness.mjs';
 
 const provider = process.env.PROVIDER || 'claude';
 const CASES = {
@@ -26,7 +26,7 @@ const home = path.join(root, 'amux-home'); fs.mkdirSync(home, { recursive: true 
 const work = path.join(root, 'work'); fs.mkdirSync(work);
 const tmuxDir = fs.mkdtempSync('/tmp/amux-slash-tmux-');
 const port = await freePort(); const base = `https://localhost:${port}`;
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AMUX_') && !['TMUX', 'TMUX_PANE'].includes(k)));
+const env = testServerEnv();
 Object.assign(env, { AMUX_HOME: home, AMUX_RS_PORT: String(port), TMUX_TMPDIR: tmuxDir, AMUX_ISOLATED: '1', AMUX_NO_SELF_ADOPT: '1', AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME: '1' });
 const logf = fs.openSync(path.join(root, 'server.log'), 'a');
 const srv = spawn(process.env.AMUX_CHAOS_BINARY, [], { env, stdio: ['ignore', logf, logf], detached: true });

@@ -836,28 +836,38 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 155,
-        name: "0155_ledger",
-        sql: include_str!("../../migrations/0155_ledger.sql"),
+        name: "0155_goal_samples",
+        sql: include_str!("../../migrations/0155_goal_samples.sql"),
     },
     Migration {
         version: 156,
-        name: "0156_trace",
-        sql: include_str!("../../migrations/0156_trace.sql"),
+        name: "0156_directives",
+        sql: include_str!("../../migrations/0156_directives.sql"),
     },
     Migration {
         version: 157,
-        name: "0157_cli_telemetry",
-        sql: include_str!("../../migrations/0157_cli_telemetry.sql"),
+        name: "0157_ledger",
+        sql: include_str!("../../migrations/0157_ledger.sql"),
     },
     Migration {
         version: 158,
-        name: "0158_ledger_checkpoints",
-        sql: include_str!("../../migrations/0158_ledger_checkpoints.sql"),
+        name: "0158_trace",
+        sql: include_str!("../../migrations/0158_trace.sql"),
     },
     Migration {
         version: 159,
-        name: "0159_approval_cards",
-        sql: include_str!("../../migrations/0159_approval_cards.sql"),
+        name: "0159_cli_telemetry",
+        sql: include_str!("../../migrations/0159_cli_telemetry.sql"),
+    },
+    Migration {
+        version: 160,
+        name: "0160_ledger_checkpoints",
+        sql: include_str!("../../migrations/0160_ledger_checkpoints.sql"),
+    },
+    Migration {
+        version: 161,
+        name: "0161_approval_cards",
+        sql: include_str!("../../migrations/0161_approval_cards.sql"),
     },
     Migration {
         version: 160,

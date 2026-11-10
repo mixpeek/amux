@@ -690,7 +690,7 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
                 client: std::sync::Arc::new(crate::integrations::email::GmailClient::new_default()),
                 registry: crate::integrations::global_registry().clone(),
             });
-            let b = (!body.is_null() && body.as_object().is_some_and(|o| !o.is_empty())).then(|| Json(body));
+            let b = (!body.is_null() && body.as_object().is_some_and(|o| !o.is_empty())).then_some(Json(body));
             if approve {
                 super::email::approve(axum::Extension(ctx), headers, AxPath(id), b).await
             } else {

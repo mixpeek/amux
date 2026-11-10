@@ -33,6 +33,7 @@
 //!   before and counted (`email_scope_would_refuse`, logged once per action);
 //! - `enforce`: refused 403 with a next step;
 //! - `off`: not checked (the previous behaviour).
+//!
 //! A scoped member's limits apply in every mode but `off`: that is access a
 //! scoped member never had (the member route guard refused all of
 //! `/api/email/` to them), so there is no previous behaviour to keep.
@@ -267,7 +268,7 @@ pub fn bypass_rule(home: &Path, session: &str) -> Option<String> {
 /// Record one external send that a standing rule let skip the hold: counted,
 /// logged once per rule, a row in the email ledger, and a policy receipt.
 pub async fn record_bypass(
-    state: &super::AppState,
+    state: Option<&super::AppState>,
     home: &Path,
     session: &str,
     rule: &str,
@@ -292,6 +293,11 @@ pub async fn record_bypass(
     let resource = format!("email:{endpoint}");
     let rule_id = if key_rule == "AMUX_EMAIL_EXTERNAL_EXEMPT" { "email-external-exempt" } else { "email-external-allow" };
     let rationale = json!({"rule": rule, "external_recipients": recipients, "endpoint": endpoint}).to_string();
+    let Some(state) = state else {
+        tracing::warn!(session, rule, measured = false, verdict = "email_bypass_receipt_unwritten",
+            "an email hold bypass had no store to record its policy receipt in (in-process caller)");
+        return;
+    };
     let trace = super::trace::current();
     let (trace_id, span_id) = (trace.as_ref().map(|t| t.trace_id.clone()), trace.map(|t| t.span_id));
     let res = state

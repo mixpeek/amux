@@ -6,7 +6,7 @@
 //! when the command finishes, `interactions::middleware` writes it here once.
 //! Every `_amux_policy_receipts` row (policy decisions, connector token mints,
 //! email gate decisions and bypasses) is copied here by a trigger in the same
-//! transaction (migration 0155), so the receipt and its ledger row cannot
+//! transaction (migration 0157), so the receipt and its ledger row cannot
 //! disagree; the receipt is the 30-day working view, this is the record.
 //!
 //! - **Who acted is proven, never claimed.** [`principal`] reads only what the
@@ -296,8 +296,8 @@ const COLS: &str = "seq, event_id, ts, kind, trace_id, parent_event_id, actor, c
     authority, policy_version, action, resource, input_hash, output_hash, decision, outcome,
     cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source";
 const NCOLS: usize = 23;
-/// The columns every row has been hashed over since migration 0155. The trace
-/// columns (0156) join the hash only when one is set, so a row sealed before
+/// The columns every row has been hashed over since migration 0157. The trace
+/// columns (0158) join the hash only when one is set, so a row sealed before
 /// they existed keeps its hash and the chain still verifies.
 const V1_COLS: usize = 20;
 
@@ -631,12 +631,12 @@ mod tests {
         traced.trace_source = Some("inherited".into());
         append(&c, &traced);
         // A row with no trace columns hashes exactly as rows did before the
-        // columns existed, so a chain sealed before migration 0156 verifies.
+        // columns existed, so a chain sealed before migration 0158 verifies.
         let (prev, h): (String, String) = c
             .query_row("SELECT prev_hash, hash FROM _amux_ledger WHERE event_id='old'", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         let f = c
-            .query_row(&format!("SELECT {COLS} FROM _amux_ledger WHERE event_id='old'"), [], |r| fields(r))
+            .query_row(&format!("SELECT {COLS} FROM _amux_ledger WHERE event_id='old'"), [], fields)
             .unwrap();
         assert_eq!(f.len(), V1_COLS);
         assert_eq!(row_hash(&prev, &f), h);

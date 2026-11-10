@@ -332,6 +332,9 @@ pub fn latest(conn: &Connection) -> rusqlite::Result<Option<Checkpoint>> {
 /// Sign the current head. `None` when there is nothing new to sign (no sealed
 /// row, or the head has not moved since the last checkpoint and `force` is
 /// off). Pure over a connection and a home, for tests.
+/// Where a blocking checkpoint write hands its result back to the async caller.
+type CheckpointSlot = std::sync::Arc<std::sync::Mutex<Option<Result<Option<Checkpoint>, String>>>>;
+
 pub fn create(conn: &Connection, home: &Path, now_ms: i64, force: bool) -> Result<Option<Checkpoint>, String> {
     super::ledger::seal(conn).map_err(|e| e.to_string())?;
     let head: Option<(i64, String)> = conn
@@ -896,7 +899,7 @@ pub async fn tick(state: &AppState, force: bool) -> Value {
     let home = crate::config::amux_home();
     let now = chrono::Utc::now().timestamp_millis();
     let due_after_ms = (interval_s() as i64) * 1000;
-    let slot: std::sync::Arc<std::sync::Mutex<Option<Result<Option<Checkpoint>, String>>>> = Default::default();
+    let slot: CheckpointSlot = Default::default();
     let (s2, h2) = (slot.clone(), home.clone());
     let res = state
         .store

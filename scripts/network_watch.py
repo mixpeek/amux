@@ -79,6 +79,9 @@ DYNAMIC_PORT_COMMANDS = ("amux-serv", "rapportd", "Spotify", "ControlCe", "ident
 # ports on every run, so a port key alerted on every test run (mvs_shard, 2026-11-07
 # to 11-09). Its listeners are keyed by binary instead: still reported, once per
 # binary per SEEN_TTL, and a test binary on a fixed port is reported the same way.
+# A process a test binary starts (the shard tests run target/debug/mvs-shard as a
+# child, 2026-11-09) is judged by that parent: a plain target/ binary with no test
+# parent may be a dev server and keeps its port key.
 TEST_BINARY = re.compile(r"/target/[^/ ]+/deps/[^/ ]+-[0-9a-f]{16}(\s|$)")
 FILE_SERVER = re.compile(
     r"(-m\s+(http\.server|SimpleHTTPServer)\b|\bhttp-server\b|\bnpx\s+serve\b|\bserve\s+-[ls]\b)"
@@ -164,6 +167,14 @@ def cmdline(pid: int) -> str:
         return run(["ps", "-o", "command=", "-p", str(pid)], timeout=10).strip()
     except CouldNotRun:
         return ""
+
+
+def parent_cmdline(pid: int) -> str:
+    try:
+        ppid = run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=10).strip()
+    except CouldNotRun:
+        return ""
+    return cmdline(int(ppid)) if ppid.isdigit() and int(ppid) > 1 else ""
 
 
 def cwd_of(pid: int) -> str:
@@ -272,7 +283,8 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         if FILE_SERVER.search(w.get("cmdline", "")):
             out.append({"key": f"fileserver:{w['pid']}:{port}", "kind": "FILE-SERVER", "w": w})
         elif not known:
-            test = bool(TEST_BINARY.search(w.get("cmdline", "")))
+            test = bool(TEST_BINARY.search(w.get("cmdline", ""))
+                        or TEST_BINARY.search(w.get("parent", "")))
             key = f"listener:{w['command']}:{'cargo-test' if test else port}"
             if not any(r["key"] == key for r in out):  # one line per test binary
                 out.append({"key": key, "kind": "LISTENER", "w": w, "test": test})
@@ -389,6 +401,7 @@ def main() -> int:
         snap = collect()
         for w in snap["wide"]:
             w["cmdline"] = cmdline(w["pid"])
+            w["parent"] = parent_cmdline(w["pid"])
         peer_ips = {p["ip"] for p in snap["peers"].values() if p["ip"]}
         reqs = requests_since(cursor, peer_ips)
     except (CouldNotRun, ValueError, OSError) as exc:
