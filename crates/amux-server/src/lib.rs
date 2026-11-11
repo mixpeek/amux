@@ -708,7 +708,6 @@ async fn async_main() {
     drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
     drop(runtime_jobs::task_titles::spawn(state.clone()));
-    drop(runtime_jobs::desc_refresh::spawn(state.clone()));
     // Record tab transcripts (AMUX-4624): the folder is the work list, so a
     // restart or a late model install resolves on the next tick.
     drop(runtime_jobs::recordings_transcribe::spawn(state.clone()));
@@ -855,6 +854,9 @@ async fn async_main() {
     let proxies_store = state.store.clone();
     api::board_intake::initialize();
     api::history_ask::initialize();
+    // After the helper model is installed: its first tick runs at once, and
+    // spawned earlier it found no model and logged desc_refresh_no_model.
+    drop(runtime_jobs::desc_refresh::spawn(state.clone()));
     boot_watch::step("router");
     let app = api::router(state);
 
