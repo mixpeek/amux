@@ -978,7 +978,15 @@ async fn delete_subscription(
         .store
         .write_async(move |conn| {
             ensure_subscription_tables(conn)?;
+            // Its fires reference it (signal_fires.subscription_id), so a
+            // subscription that ever fired could not be deleted: "FOREIGN KEY
+            // constraint failed" on #4, live 2026-11-11. They go with it.
+            let fires = conn.execute("DELETE FROM signal_fires WHERE subscription_id = ?1", [id])?;
             let n = conn.execute("DELETE FROM signal_subscriptions WHERE id = ?1", [id])?;
+            if n > 0 {
+                tracing::info!(target: "amux::signals", subscription_id = id, fires_removed = fires, measured = true,
+                    n_considered = 1, verdict = "subscription_deleted", "event subscription deleted with its fire history");
+            }
             Ok(WriteOutcome {
                 applied: n > 0,
                 events: vec![],

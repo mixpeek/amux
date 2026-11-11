@@ -526,6 +526,12 @@ async fn ledger_writers_and_restarts_reach_subscriptions() {
     assert_eq!(fired.len(), 2, "both events written while it was down fired");
     assert!(amux_server::runtime_jobs::event_dispatch::drain(&restarted).await.is_empty(), "nothing fires twice");
     assert_eq!(fires_of(&app, "fanout").await.len(), 3);
+    // A subscription that has fired can still be removed (its fires go with it).
+    let (_, list) = get(&app, "/api/subscriptions").await;
+    let id = list["subscriptions"].as_array().unwrap().iter().find(|s| s["name"] == "fanout").unwrap()["id"].as_i64().unwrap();
+    let (st, v) = delete(&app, &format!("/api/subscriptions/{id}")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(fires_of(&app, "fanout").await.is_empty());
 }
 
 #[tokio::test]
