@@ -14258,7 +14258,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   const model = sessionConfiguredModel(s);
   const effort = flagValue(s.flags || '', '--effort') || ((s.flags || '').match(/model_reasoning_effort=["']?([a-z]+)/) || [])[1] || '';
   const q = escJs(name);
-  const edit = (field, current, extra) => '<button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
+  const edit = (field, current, extra) => '<button class="btn worker-config-btn"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
     + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
   const sw = (on, fn, label) => '<button class="btn" role="switch" aria-checked="'
