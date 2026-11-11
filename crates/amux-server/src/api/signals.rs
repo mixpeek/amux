@@ -1250,7 +1250,8 @@ fn default_text(sub: &LiveSub, event_type: &str, ev: &Value) -> String {
             parts.push(format!("{k}: {v}"));
         }
     }
-    let head = if sub.criteria.is_empty() { String::new() } else { format!("{}\n", sub.criteria) };
+    // A blank line: a single newline runs the two together in a Messages post.
+    let head = if sub.criteria.is_empty() { String::new() } else { format!("{}\n\n", sub.criteria) };
     format!("{head}{}", parts.join(" · "))
 }
 
