@@ -1230,6 +1230,13 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // prune stamps Utc::now().timestamp_millis()).
     ("_amux_ledger", "ts", true),
     ("_amux_ledger_anchor", "pruned_at", true),
+    // 0163: api/governance.rs writes epoch milliseconds (now_ms).
+    ("_amux_ledger", "redacted_at", true),
+    ("_amux_ledger_holds", "placed_at", true),
+    ("_amux_ledger_holds", "lifted_at", true),
+    ("_amux_ledger_holds", "from_ts", true),
+    ("_amux_ledger_holds", "to_ts", true),
+    ("_amux_ledger_erasures", "at", true),
     // 0156: api/directive.rs writes now_f64() epoch seconds.
     ("directives", "issued_at", false),
     ("directives", "delivered_at", false),

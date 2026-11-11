@@ -82,6 +82,8 @@ pub(crate) mod counters {
     pub static APPEND_FAILED: AtomicU64 = AtomicU64::new(0);
     pub static SEALED: AtomicU64 = AtomicU64::new(0);
     pub static PRUNED: AtomicU64 = AtomicU64::new(0);
+    /// Rows past retention that a legal hold kept, counted per prune pass.
+    pub static HELD_BACK: AtomicU64 = AtomicU64::new(0);
     pub fn bump(c: &AtomicU64, n: u64) {
         c.fetch_add(n, Ordering::Relaxed);
     }
@@ -338,6 +340,37 @@ pub fn row_hash(prev: &str, fields: &[Option<String>]) -> String {
     sha256_hex(buf.as_bytes())
 }
 
+/// A ledger row `l` matches an active legal hold `h`. The same predicate as
+/// the triggers in migration 0163.
+pub const HOLD_MATCH: &str = "h.lifted_at IS NULL
+    AND (h.actor IS NULL OR l.actor = h.actor OR l.claimed = h.actor OR l.on_behalf_of = h.actor)
+    AND (h.worker IS NULL OR l.actor = 'worker:' || h.worker OR l.claimed = 'worker:' || h.worker
+         OR l.resource = 'worker:' || h.worker OR l.resource LIKE 'worker:' || h.worker || '/%')
+    AND (h.from_ts IS NULL OR l.ts >= h.from_ts)
+    AND (h.to_ts IS NULL OR l.ts <= h.to_ts)";
+
+/// The digest an erasure commits to: every row it redacted, as it now stands
+/// (all hashed columns, the stored hash), in seq order. Recorded as the
+/// output_hash of the erasure's own ledger row, so a later change to a
+/// redacted row, whose content hash can no longer be recomputed, is caught.
+pub fn redaction_digest(conn: &Connection, erasure_id: &str) -> rusqlite::Result<(String, usize)> {
+    let mut st = conn.prepare(&format!(
+        "SELECT {COLS}, hash, redacted_at FROM _amux_ledger
+          WHERE seq IN (SELECT seq FROM _amux_ledger_redactions WHERE erasure_id = ?1) ORDER BY seq"))?;
+    let mut rows = st.query([erasure_id])?;
+    let mut buf = String::new();
+    let mut n = 0usize;
+    while let Some(r) = rows.next()? {
+        let mut f = fields(r)?;
+        f.push(r.get::<_, Option<String>>(NCOLS)?);
+        f.push(r.get::<_, Option<i64>>(NCOLS + 1)?.map(|v| v.to_string()));
+        buf.push_str(&row_hash("", &f));
+        buf.push('\n');
+        n += 1;
+    }
+    Ok((sha256_hex(buf.as_bytes()), n))
+}
+
 pub(crate) fn anchor(conn: &Connection) -> rusqlite::Result<(i64, String)> {
     Ok(conn
         .query_row("SELECT upto_seq, anchor_hash FROM _amux_ledger_anchor WHERE id=1", [], |r| {
@@ -378,12 +411,26 @@ pub fn seal(conn: &Connection) -> rusqlite::Result<usize> {
 /// a known point. Unsealed rows are never pruned.
 pub fn prune(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<usize> {
     let (from, _) = anchor(conn)?;
+    // A row under an active legal hold (governance PR 19) stops the prune
+    // like a row inside the window does: the chain stays a pruned prefix.
     let stop: Option<i64> = conn.query_row(
-        "SELECT MIN(seq) FROM _amux_ledger WHERE ts >= ?1 OR hash IS NULL", [cutoff_ms], |r| r.get(0))?;
+        &format!("SELECT MIN(seq) FROM _amux_ledger l WHERE l.ts >= ?1 OR l.hash IS NULL
+                  OR EXISTS (SELECT 1 FROM _amux_ledger_holds h WHERE {HOLD_MATCH})"),
+        [cutoff_ms], |r| r.get(0))?;
+    let held_stop: Option<i64> = conn.query_row(
+        &format!("SELECT MIN(seq) FROM _amux_ledger l WHERE EXISTS (SELECT 1 FROM _amux_ledger_holds h WHERE {HOLD_MATCH})"),
+        [], |r| r.get(0))?;
     let upto: Option<i64> = match stop {
         Some(s) => conn.query_row("SELECT MAX(seq) FROM _amux_ledger WHERE seq < ?1", [s], |r| r.get(0))?,
         None => conn.query_row("SELECT MAX(seq) FROM _amux_ledger", [], |r| r.get(0))?,
     };
+    if held_stop.is_some() && held_stop == stop {
+        let older: i64 = conn.query_row("SELECT COUNT(*) FROM _amux_ledger WHERE seq >= ?1 AND ts < ?2",
+            rusqlite::params![stop, cutoff_ms], |r| r.get(0))?;
+        counters::bump(&counters::HELD_BACK, older.max(0) as u64);
+        tracing::info!(verdict = "ledger_retention_held", from_seq = stop, kept_past_retention = older,
+            measured = true, n_considered = older, "a legal hold stopped the ledger retention prune");
+    }
     let Some(upto) = upto.filter(|u| *u > from) else {
         return Ok(0);
     };
@@ -425,10 +472,14 @@ pub fn verify_capturing(
             "why_unmeasured": format!("ledger unreadable: {e}")}), captured, walked),
     };
     let mut prev = anchor_hash.clone();
-    let (mut n, mut sealed, mut unsealed) = (0u64, 0u64, 0u64);
+    let (mut n, mut sealed, mut unsealed, mut redacted) = (0u64, 0u64, 0u64, 0u64);
     let mut bad: Option<Value> = None;
+    let mut erasures = std::collections::BTreeSet::<String>::new();
     let res: rusqlite::Result<()> = (|| {
-        let mut st = conn.prepare(&format!("SELECT {COLS}, prev_hash, hash FROM _amux_ledger ORDER BY seq"))?;
+        let mut st = conn.prepare(&format!(
+            "SELECT {COLS}, prev_hash, hash, redacted_at,
+                    (SELECT r.erasure_id FROM _amux_ledger_redactions r WHERE r.seq = _amux_ledger.seq)
+               FROM _amux_ledger ORDER BY seq"))?;
         let mut rows = st.query([])?;
         while let Some(r) = rows.next()? {
             n += 1;
@@ -454,7 +505,20 @@ pub fn verify_capturing(
                     "reason": "prev_hash does not link to the row before it (a row was removed or reordered)"}));
                 break;
             }
-            if row_hash(&prev, &f) != h {
+            // An erased row (governance PR 19) keeps its hash but no longer
+            // hashes to it: its link is checked here and its contents against
+            // the digest its erasure recorded, below.
+            let redacted_at: Option<i64> = r.get(NCOLS + 2)?;
+            let erasure: Option<String> = r.get(NCOLS + 3)?;
+            if redacted_at.is_some() || erasure.is_some() {
+                let Some(e) = erasure.filter(|_| redacted_at.is_some()) else {
+                    bad = Some(json!({"seq": seq, "event_id": event_id,
+                        "reason": "row is marked redacted without an erasure record (the row was changed)"}));
+                    break;
+                };
+                erasures.insert(e);
+                redacted += 1;
+            } else if row_hash(&prev, &f) != h {
                 bad = Some(json!({"seq": seq, "event_id": event_id,
                     "reason": "hash does not match the row's contents (the row was changed)"}));
                 break;
@@ -472,6 +536,20 @@ pub fn verify_capturing(
         return (json!({"ok": false, "measured": false, "n_considered": n,
             "why_unmeasured": format!("ledger unreadable: {e}")}), captured, walked);
     }
+    if bad.is_none() {
+        match check_erasures(conn, &erasures) {
+            Ok(None) => {}
+            Ok(Some(b)) => {
+                // The redacted rows from the first bad one on are unverified.
+                if let Some(first) = b["seq"].as_i64() {
+                    walked = walked.min(first - 1);
+                }
+                bad = Some(b);
+            }
+            Err(e) => return (json!({"ok": false, "measured": false, "n_considered": n,
+                "why_unmeasured": format!("erasure records unreadable: {e}")}), captured, walked),
+        }
+    }
     let failures = counters::get(&counters::APPEND_FAILED);
     let v = json!({
         "ok": bad.is_none() && failures == 0,
@@ -480,6 +558,7 @@ pub fn verify_capturing(
         "first_bad": bad,
         "sealed": sealed,
         "unsealed": unsealed,
+        "redacted": redacted,
         "anchor": {"upto_seq": upto, "hash": anchor_hash},
         "append_failures_since_start": failures,
         "enabled": enabled(),
@@ -488,6 +567,42 @@ pub fn verify_capturing(
         "n_considered": n,
     });
     (v, captured, walked)
+}
+
+/// Each erasure's digest, recomputed from its rows as they stand now, must
+/// match the digest its own ledger row recorded (a row whose hash verified).
+fn check_erasures(conn: &Connection, seen: &std::collections::BTreeSet<String>) -> rusqlite::Result<Option<Value>> {
+    for id in seen {
+        let rec: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT e.digest, l.output_hash FROM _amux_ledger_erasures e
+                   LEFT JOIN _amux_ledger l ON l.event_id = e.ledger_event_id WHERE e.id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let first: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT l.seq, l.event_id FROM _amux_ledger l JOIN _amux_ledger_redactions r ON r.seq = l.seq
+                  WHERE r.erasure_id = ?1 ORDER BY l.seq LIMIT 1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (seq, event_id) = first.unwrap_or((0, String::new()));
+        let (digest, _) = redaction_digest(conn, id)?;
+        let reason = match rec {
+            None => Some("redacted rows name an erasure that has no record"),
+            Some((_, None)) => Some("the erasure's own ledger row is missing"),
+            Some((d, Some(o))) if d != o => Some("the erasure record disagrees with its ledger row"),
+            Some((d, _)) if d != digest => Some("a redacted row changed after its erasure"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            return Ok(Some(json!({"seq": seq, "event_id": event_id, "erasure_id": id, "reason": reason})));
+        }
+    }
+    Ok(None)
 }
 
 async fn verify_route(State(state): State<AppState>) -> Response {
@@ -602,6 +717,7 @@ pub fn report() -> Value {
         "append_failed": counters::get(&counters::APPEND_FAILED),
         "sealed": counters::get(&counters::SEALED),
         "pruned": counters::get(&counters::PRUNED),
+        "held_back_by_legal_hold": counters::get(&counters::HELD_BACK),
         "measured": true,
         "n_considered": counters::get(&counters::APPENDED) + counters::get(&counters::APPEND_FAILED),
         "verify": "GET /api/ledger/verify",
@@ -681,7 +797,8 @@ mod tests {
         for i in 0..4 {
             append(&c, &ev(&format!("e{i}"), 10 + i, "worker:w"));
         }
-        c.execute_batch("DROP TRIGGER amux_ledger_no_update;").unwrap();
+        // The personal columns have their own trigger since 0163 (erasure).
+        c.execute_batch("DROP TRIGGER amux_ledger_no_update; DROP TRIGGER amux_ledger_erase_only;").unwrap();
         c.execute("UPDATE _amux_ledger SET actor='owner' WHERE event_id='e2'", []).unwrap();
         let v = verify(&c);
         assert_eq!(v["chain_ok"], false, "{v}");

@@ -287,6 +287,19 @@ stops sealing; `amux security decrypt-grants` (owner, sealing off) rewrites gran
 files. The database and Claude transcripts are not encrypted by amux:
 `docs/ops/encryption-at-rest.md`.
 
+The record for an auditor, a lawyer and an incident (governance PR 19, `api/governance.rs`):
+an `auditor` member role reads the ledger, traces, approvals, the at-rest report and the audit
+routes and is refused everything else; `GET /api/audit/export` (CSV, OCSF JSON lines, JSON)
+marks every row with whether the chain verified it and carries the verdict in its headers;
+a legal hold (`/api/audit/holds`, owner) makes matching ledger rows undeletable, so the
+retention prune stops at the first one; `GET /api/audit/person` exports what amux keeps about a
+person and `POST /api/audit/person/erase` (owner, refused under a hold) replaces their name with
+`erased:<id>` while every row keeps its hash, the erasure's own ledger row committing to a
+digest of the redacted rows; the kill switch (`/api/audit/kill-switch`, owner) stops every
+worker, app and policy publish, email send, connector mint and git push until lifted
+(`AMUX_KILL_SWITCH=off` makes it inert). Each use is a `governance` ledger row; counters are
+under `governance`. `docs/ops/audit-governance.md`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

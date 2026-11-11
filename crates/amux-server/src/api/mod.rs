@@ -109,6 +109,7 @@ pub mod social;
 pub mod social_browser;
 pub mod social_devto;
 pub mod social_publish;
+pub mod governance;
 pub mod log_search;
 pub mod lookup;
 pub mod location;
@@ -689,6 +690,9 @@ pub fn router_with_connector_transport(
             state.clone(),
             policy::enforce,
         ))
+        // The owner's kill switch (governance.rs): while engaged, no worker,
+        // app or policy publishes, sends email or mints a connector token.
+        .layer(axum::middleware::from_fn(governance::kill_gate))
         // Contract rule 10 (AH-387): a claimed worker identity carries that
         // worker's minted token. Inside require_bearer, so it sees only
         // admitted requests.

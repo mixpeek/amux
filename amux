@@ -1728,7 +1728,84 @@ print("posted to %s%s as %s%s%s" % (c, where, d.get("author") or d.get("author_n
 # what a worker did, newest first: browser verbs (with the page before and
 # after), tool calls, calls to amux's own API, and the ledger's record of its
 # decisions with the authority behind each (api/audit.rs). Read-only.
+# amux audit export|holds|hold|unhold|person|erase|kill-switch (governance PR 19)
+# The record for an auditor, a lawyer or an incident. Anything else after
+# `amux audit` is a worker name (the per-worker timeline below).
+_audit_governance() {
+  local sub="$1"; shift
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    export)
+      local fmt="csv" out="" args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --format) fmt="${2:?--format is csv, ocsf or json}"; shift 2 ;;
+          --since-h) args+=(--data-urlencode "since_h=${2:?}"); shift 2 ;;
+          --since) args+=(--data-urlencode "since=${2:?epoch ms}"); shift 2 ;;
+          --until) args+=(--data-urlencode "until=${2:?epoch ms}"); shift 2 ;;
+          --actor) args+=(--data-urlencode "actor=${2:?}"); shift 2 ;;
+          --worker) args+=(--data-urlencode "worker=${2:?}"); shift 2 ;;
+          -o|--out) out="${2:?}"; shift 2 ;;
+          *) die "amux audit export: unknown argument $1" ;;
+        esac
+      done
+      local hdr; hdr=$(mktemp)
+      if [[ -n "$out" ]]; then
+        _curl -sk -m 300 -D "$hdr" -o "$out" -G "$api/api/audit/export" --data-urlencode "format=$fmt" "${args[@]}" || { rm -f "$hdr"; die "server unreachable"; }
+      else
+        _curl -sk -m 300 -D "$hdr" -G "$api/api/audit/export" --data-urlencode "format=$fmt" "${args[@]}" || { rm -f "$hdr"; die "server unreachable"; }
+      fi
+      # The chain's verdict goes to stderr, so the export itself stays clean.
+      local ok rows upto
+      ok=$(grep -i '^x-amux-ledger-chain-ok:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      rows=$(grep -i '^x-amux-ledger-rows:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      upto=$(grep -i '^x-amux-ledger-verified-upto:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      local status; status=$(head -1 "$hdr" | awk '{print $2}'); rm -f "$hdr"
+      [[ "$status" == 200 ]] || die "amux audit export: the server answered $status"
+      echo "amux audit export: $rows rows; chain ${ok:-unknown} (verified up to seq ${upto:-?})${out:+; written to $out}" >&2
+      [[ "$ok" == true ]] ;;
+    holds) _curl -sk -m 60 "$api/api/audit/holds" || die "server unreachable"; echo ;;
+    hold)
+      local body
+      body=$(python3 - "$@" <<'PYHOLD'
+import json, sys
+a = sys.argv[1:]; d = {}
+keys = {"--name": "name", "--actor": "actor", "--worker": "worker", "--from": "from", "--to": "to"}
+i = 0
+while i < len(a):
+    if a[i] == "--all": d["all"] = True; i += 1; continue
+    k = keys.get(a[i])
+    if not k or i + 1 >= len(a): sys.exit("usage: amux audit hold [--name N] [--actor A] [--worker W] [--from MS] [--to MS] [--all]")
+    d[k] = int(a[i + 1]) if k in ("from", "to") else a[i + 1]; i += 2
+print(json.dumps(d))
+PYHOLD
+) || return 2
+      _curl -sk -m 60 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/audit/holds" || die "server unreachable"; echo ;;
+    unhold) _curl -sk -m 60 -X POST "$api/api/audit/holds/${1:?usage: amux audit unhold <hold id>}/lift" || die "server unreachable"; echo ;;
+    person) _curl -sk -m 120 -G "$api/api/audit/person" --data-urlencode "subject=${1:?usage: amux audit person <email>}" || die "server unreachable"; echo ;;
+    erase)
+      local subj="${1:?usage: amux audit erase <email> [--yes]}" dry=true
+      [[ "${2:-}" == --yes ]] && dry=false
+      _curl -sk -m 120 -X POST -H 'Content-Type: application/json' \
+        -d "$(python3 -c 'import json,sys; print(json.dumps({"subject": sys.argv[1], "dry_run": sys.argv[2] == "true"}))' "$subj" "$dry")" \
+        "$api/api/audit/person/erase" || die "server unreachable"; echo
+      [[ "$dry" == true ]] && echo "(dry run: nothing changed; add --yes to erase)" >&2 ;;
+    kill-switch)
+      case "${1:-status}" in
+        status) _curl -sk -m 30 "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        on) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' \
+              -d "$(python3 -c 'import json,sys; print(json.dumps({"engaged": True, "reason": sys.argv[1]}))' "${2:-}")" \
+              "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        off) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d '{"engaged":false}' "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        *) die "usage: amux audit kill-switch [status|on [reason]|off]" ;;
+      esac ;;
+  esac
+}
+
 cmd_audit() {
+  case "${1:-}" in
+    export|holds|hold|unhold|person|erase|kill-switch) _audit_governance "$@"; return ;;
+  esac
   local worker="" since="24h" kind="browser,tool,api,ledger" limit=200 raw=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1736,7 +1813,11 @@ cmd_audit() {
       --kind)  kind="${2:?--kind needs browser, tool, api, ledger or a comma list}"; shift 2 ;;
       --limit) limit="${2:?--limit needs a number}"; shift 2 ;;
       --json)  raw=1; shift ;;
-      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]"; return 0 ;;
+      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]
+       amux audit export [--format csv|ocsf|json] [--since-h H] [--actor A] [--worker W] [-o FILE]
+       amux audit holds | hold [--actor A] [--worker W] [--from MS] [--to MS] [--all] [--name N] | unhold <id>
+       amux audit person <email> | erase <email> [--yes]
+       amux audit kill-switch [status|on [reason]|off]"; return 0 ;;
       *) worker="$1"; shift ;;
     esac
   done

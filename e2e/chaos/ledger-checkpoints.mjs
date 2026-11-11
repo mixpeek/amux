@@ -180,7 +180,7 @@ print(c.execute("SELECT MIN(seq)+1 FROM _amux_ledger").fetchone()[0])`);
   py(`import sqlite3,sys,hashlib
 c=sqlite3.connect(sys.argv[1],timeout=30)
 seq=int(sys.argv[2])
-for t in ("amux_ledger_no_update","amux_ledger_seal_once"): c.execute("DROP TRIGGER IF EXISTS "+t)
+for t in ("amux_ledger_no_update","amux_ledger_seal_once","amux_ledger_erase_only"): c.execute("DROP TRIGGER IF EXISTS "+t)
 c.execute("UPDATE _amux_ledger SET resource='worker:not-who-it-was' WHERE seq=?", (seq,))
 cols="seq, event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of, authority, policy_version, action, resource, input_hash, output_hash, decision, outcome, cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source"
 prev=c.execute("SELECT hash FROM _amux_ledger WHERE seq<? AND hash IS NOT NULL ORDER BY seq DESC LIMIT 1",(seq,)).fetchone()

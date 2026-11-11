@@ -1064,7 +1064,8 @@ mod tests {
     /// Re-hash every row from `from_seq` on after editing one, the way someone
     /// holding the file would: the chain verifies again.
     fn rewrite_and_rehash(conn: &Connection, seq: i64, new_resource: &str) {
-        conn.execute_batch("DROP TRIGGER amux_ledger_no_update; DROP TRIGGER amux_ledger_seal_once;").unwrap();
+        conn.execute_batch("DROP TRIGGER amux_ledger_no_update; DROP TRIGGER amux_ledger_seal_once;
+            DROP TRIGGER amux_ledger_erase_only;").unwrap();
         conn.execute("UPDATE _amux_ledger SET resource=?2 WHERE seq=?1", rusqlite::params![seq, new_resource]).unwrap();
         conn.execute("UPDATE _amux_ledger SET hash=NULL, prev_hash=NULL WHERE seq>=?1", [seq]).unwrap();
         ledger::seal(conn).unwrap();

@@ -1298,6 +1298,11 @@ pub async fn approve(
     // the frozen draft exactly as before.
     body: Option<Json<Value>>,
 ) -> Response {
+    // The owner's kill switch (governance PR 19) stops in-process releases too:
+    // a scheduled send or an auto-approver calls this handler directly.
+    if let Some(r) = crate::api::governance::kill_refusal("email_send", &headers) {
+        return r;
+    }
     // A signed-in member's requests carry `x-amux-session: member:<email>`,
     // which this check used to read as a worker origin, so no member could
     // approve (governance PR 6). Resolve from what the server proved first.
