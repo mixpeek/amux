@@ -46229,9 +46229,21 @@ async function _evNew(worker) {
   if (then === 'send') Object.assign(base, { action: 'send', action_target: who });
   else Object.assign(base, { action: 'notify', action_target: 'owner' });
   showToast('Reading “' + words + '”…');
-  const post = (extra) => apiCall(API + '/api/subscriptions', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({}, base, extra)),
-  });
+  // Not through the offline outbox (apiCall): the compile takes 15-20 s and the
+  // outbox aborted it and queued it for a replay (live, 2026-11-11: "Queued (1
+  // pending)" with no preview). A preview has to answer now, and a replayed
+  // save would add a second subscription.
+  const post = async (extra) => {
+    try {
+      const r = await fetch(API + '/api/subscriptions', { method: 'POST', _skipOutbox: true,
+        headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(Object.assign({}, base, extra)) });
+      if (!r.ok) { showToast(await _apiErrText(r)); return null; }
+      return r;
+    } catch (e) {
+      showToast('Could not reach amux: ' + (e.message || e));
+      return null;
+    }
+  };
   const r = await post({ dry_run: true });
   if (!r) return;
   const d = await r.json().catch(() => ({}));

@@ -209,7 +209,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),
     ("board.card.deleted", "a board card was deleted"),
-    ("session.native_status", "a worker's status as its own CLI reported it (busy, idle, waiting)"),
+    ("session.native_status", "a hook from a worker's own CLI: event is UserPromptSubmit (a turn started), PreToolUse, PostToolUse, or Stop (it finished its turn); session is the worker's name"),
     ("session.status_decided", "the status amux decided for a worker"),
     ("session.desc_updated", "a worker's description changed (from, to, by)"),
     ("session.context_low", "a worker is low on context"),
@@ -436,18 +436,29 @@ pub(crate) fn compile_prompt(criteria: &str, catalog: &Value) -> String {
     let mut lines = Vec::new();
     for t in catalog["types"].as_array().into_iter().flatten() {
         let fields: Vec<&str> = t["fields"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        // A real example shows what the values look like: without one the
+        // model read "mixpeek-general finishes its turn" as session_id =
+        // mixpeek-general and native_status = idle (live, 2026-11-11), fields
+        // that hold a uuid and a boolean.
+        let example = if t["example"].is_null() { String::new() } else {
+            let e = t["example"].to_string();
+            format!("; example {}", e.chars().take(300).collect::<String>())
+        };
         lines.push(format!(
-            "- {} ({} in 7 days){}: fields {}",
+            "- {} ({} in 7 days){}: fields {}{}",
             t["type"].as_str().unwrap_or(""),
             t["count"],
             t["meaning"].as_str().map(|m| format!(", {m}")).unwrap_or_default(),
-            fields.join(", ")
+            fields.join(", "),
+            example
         ));
     }
     format!(
         "Turn a request to be told about something into an event subscription for amux.\n\n\
          Request: {criteria}\n\n\
-         Event types amux emits, with their fields:\n{}\n\n\
+         Event types amux emits, with their fields and a real example:\n{}\n\n\
+         In every event, `session` is the amux name of the worker it is about (such as \"backend\"), and \
+         `type` is the event type. Match a worker by `session`, never by an id field.\n\n\
          Answer with one JSON object inside <json></json> and nothing else:\n\
          {{\"pattern\": an event type from the list, or a prefix ending in \".*\",\n\
           \"filter\": a predicate over the fields, built from {{\"all\": [..]}}, {{\"any\": [..]}}, {{\"not\": f}} and \
@@ -657,6 +668,15 @@ mod tests {
         // A fenced answer with no tags (the live helper model's shape) still parses.
         let fenced = "```json\n{\"pattern\": \"browser.blocked\", \"filter\": {\"field\": \"reason\", \"op\": \"eq\", \"value\": \"captcha\"}}\n```";
         assert_eq!(parse_compiled(fenced, &cat()).unwrap().pattern, "browser.blocked");
+    }
+
+    #[test]
+    fn the_compile_prompt_shows_real_values_and_how_to_name_a_worker() {
+        let c = json!({"types": [{"type": "session.native_status", "count": 9, "meaning": "hooks",
+            "fields": ["event", "session_id", "session"], "example": {"event": "Stop", "session": "mixpeek-general", "session_id": "b61f"}}]});
+        let p = compile_prompt("mixpeek-general finishes its turn", &c);
+        assert!(p.contains("example {") && p.contains("\"event\":\"Stop\"") && p.contains("mixpeek-general"), "{p}");
+        assert!(p.contains("Match a worker by `session`"), "{p}");
     }
 
     #[test]
