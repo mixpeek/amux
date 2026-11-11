@@ -14137,96 +14137,6 @@ async function _boardOneSet(name, on) {
   }
 }
 
-// Event subscriptions (docs/design/event-subscriptions.md): what this worker is
-// woken for, added in plain words. The server compiles the words into an
-// event filter and backtests it; the confirm shows both before saving.
-function _subsRow(name, q) {
-  const id = 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_');
-  setTimeout(() => _subsFill(name, id), 0);
-  const b = (fn, label) => ' <button class="btn worker-config-btn" onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
-  return _workerConfigurationRow('subscriptions', 'Subscriptions', '', '', b('_subsAdd', 'Add') + b('_subsManage', 'Manage'))
-    .replace('<div class="worker-config-note">', '<div class="worker-config-note"><span id="' + id + '">Loading…</span>');
-}
-
-async function _subsFor(name) {
-  const r = await apiCall(API + '/api/subscriptions');
-  if (!r) return null;
-  const d = await r.json().catch(() => ({}));
-  return (d.subscriptions || []).filter(x => x.owner === name || (x.action === 'send' && x.action_target === name));
-}
-
-async function _subsFill(name, id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const subs = await _subsFor(name);
-  if (!subs) { el.textContent = 'Could not load subscriptions.'; return; }
-  const on = subs.filter(x => x.enabled);
-  el.textContent = on.length
-    ? on.length + ' active: ' + on.map(x => x.criteria || x.pattern).join('; ')
-    : 'None. Add one in plain words to wake this worker when something happens, instead of polling.';
-}
-
-async function _subsAdd(name) {
-  const words = await showPrompt('Wake ' + name + ' when… (plain words)', 'e.g. a browser hits a captcha');
-  if (!words) return;
-  const post = (body) => apiCall(API + '/api/subscriptions', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(Object.assign({ criteria: words, action: 'send', action_target: name }, body)),
-  });
-  showToast('Reading “' + words + '”…');
-  const r = await post({ dry_run: true });
-  if (!r) return;
-  const d = await r.json().catch(() => ({}));
-  const c = d.compiled || {};
-  const b = d.backtest || {};
-  const lines = [
-    c.summary || ('Events: ' + d.pattern),
-    'Events: ' + d.pattern + (d.filter && Object.keys(d.filter).length ? ' where ' + JSON.stringify(d.filter) : ''),
-    b.measured ? ('Last 7 days: ' + b.matched + ' of ' + b.n_considered + ' events would have matched.') : '',
-    c.judge ? 'The helper model checks each match against your words.' : '',
-    'When it fires, ' + name + ' gets a message.',
-  ].filter(Boolean);
-  if (!await showConfirm(lines.join('\n'), 'Subscribe')) return;
-  // Save exactly what the confirm showed: a second compile could differ.
-  const r2 = await post({ pattern: d.pattern, filter: d.filter, judge: !!c.judge, dedupe_key: c.dedupe_key || '' });
-  if (!r2) return;
-  const d2 = await r2.json().catch(() => ({}));
-  showToast('Subscribed: ' + (d2.criteria || d2.name));
-  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
-}
-
-async function _subsManage(name) {
-  const subs = await _subsFor(name);
-  if (!subs) return;
-  const rows = subs.length ? subs.map(x => '<div class="worker-config-row" data-sub="' + x.id + '"><div class="worker-config-copy">'
-      + '<div class="worker-config-label">' + esc(x.criteria || x.name) + '</div>'
-      + '<div class="worker-config-note">' + esc(x.pattern) + ' · fired ' + x.fire_count + '×' + (x.enabled ? '' : ' · off') + '</div></div>'
-      + '<div class="worker-config-actions">'
-      + '<button class="btn worker-config-btn" onclick="_subsSet(' + x.id + ',' + !x.enabled + ',\'' + escJs(name) + '\')">' + (x.enabled ? 'Turn off' : 'Turn on') + '</button>'
-      + ' <button class="btn worker-config-btn danger" onclick="_subsRemove(' + x.id + ',\'' + escJs(name) + '\')">Remove</button>'
-      + '</div></div>').join('')
-    : '<div class="worker-config-note">No subscriptions yet.</div>';
-  showFormModal(name + ' subscriptions', rows, 'Done');
-}
-
-async function _subsSet(id, enabled, name) {
-  const r = await apiCall(API + '/api/subscriptions/' + id, {
-    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled }),
-  });
-  if (!r) return;
-  showToast(enabled ? 'Subscription on' : 'Subscription off');
-  _subsManage(name);
-  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
-}
-
-async function _subsRemove(id, name) {
-  const r = await apiCall(API + '/api/subscriptions/' + id, { method: 'DELETE' });
-  if (!r) return;
-  showToast('Subscription removed');
-  _subsManage(name);
-  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
-}
-
 // Who wrote the description and whether amux keeps it current
 // (runtime_jobs/desc_refresh.rs). The owner's own edit locks it; Revert puts
 // back the text the last change replaced.
@@ -14360,7 +14270,6 @@ function _workerPrimaryConfigurationsHTML(name) {
     _workerConfigurationRow('description', 'Description', s.desc || '', _descNote(s), edit('desc', s.desc || '') + _descControls(s, q)),
     _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
-    ...(s.isolated ? [] : [_subsRow(s.name || name, q)]),
   ];
   const wtype = _workerTypeInfo(s.worker_type);
   const typeButtons = _workerTypes.map(t => '<button class="btn' + (t.id === wtype.id ? ' primary' : '') + '"'
@@ -16669,7 +16578,7 @@ async function _peekLoadSchedules() {
     _peekColorSchedBadge(sched);   // active/inactive two-number badge
   };
   try {
-    await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
+    await Promise.all([fetchSchedules(), fetchSchedulerRuns(), _evSubsFetch()]);
     if (!peekSession) return;
     _idb.set('schedules_all', schedules);   // cache for offline reads
     _paint();
@@ -42623,7 +42532,7 @@ function switchView(view) {
     // Only poll if SSE is not active (SSE pushes board updates)
     if (_sseFallback && !boardTimer) boardTimer = setInterval(fetchBoard, 5000);
   } else if (view === 'scheduler') {
-    Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit()])
+    Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit(), _evSubsFetch()])
       .then(() => { renderScheduler(); renderSchedulerAudit(); });
     // amux's own background jobs live under the user's schedules. Fetched
     // separately because they are a separate thing (see renderSystemJobs), and
@@ -46123,7 +46032,7 @@ function renderScheduler(opts) {
       <div class="sx-empty-ico">&#x23F0;</div>
       <div class="sx-empty-title">No schedules yet</div>
       <div>Run a shell command or send a worker a message on a timer.</div>
-      <button class="btn primary" onclick="${main ? 'openSchedModal()' : '_peekNewSchedule()'}">+ New schedule</button>
+      <button class="btn primary" onclick="${main ? '_sxNew()' : '_sxNew(peekSession)'}">+ New schedule</button>
     </div>`;
   } else if (main && f.group === 'system') {
     listEl.innerHTML = '';
@@ -46189,6 +46098,195 @@ function renderScheduler(opts) {
     }).join('');
   }
   if (_sxDetailId && document.getElementById('sched-detail') && !document.getElementById('sched-detail').hidden) _sxRenderDetail();
+  _evRender({ session: sessionFilter });
+}
+
+// ── Event subscriptions in the Scheduler (docs/design/event-subscriptions.md) ──
+// A subscription is a schedule whose trigger is an event instead of a time, so
+// it lives here: its own section under the schedules, the same New button, a
+// third type in the filter, and each worker's Schedules tab shows the ones that
+// wake it. The words are compiled and backtested by the server (dry_run) and
+// shown before anything is saved.
+let _evSubs = [];
+async function _evSubsFetch() {
+  const r = await apiCall(API + '/api/subscriptions');
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  _evSubs = d.subscriptions || [];
+}
+
+// Who a subscription is for: a worker it wakes, or the owner it tells.
+function _evWho(x) {
+  return x.action === 'send' ? x.action_target : (x.action === 'notify' ? '' : x.owner);
+}
+function _evThen(x) {
+  if (x.action === 'send') return 'wakes ' + x.action_target;
+  if (x.action === 'notify') return 'tells you';
+  return x.action + ' ' + x.action_target;
+}
+
+function _evRender(opts) {
+  opts = opts || {};
+  const el = document.getElementById(opts.session ? 'peek-schedules-events' : 'scheduler-events');
+  if (!el) return;
+  const type = opts.session ? '' : (_sxFilters.type || '');
+  if (!opts.session && type === 'event') {
+    const list = document.getElementById('scheduler-list');
+    if (list) list.innerHTML = '';
+  }
+  if (type && type !== 'event') { el.innerHTML = ''; return; }
+  const q = ((opts.session ? _peekSchedSearch : schedSearchQuery) || '').trim().toLowerCase();
+  const rows = _evSubs.filter(x => (!opts.session || _evWho(x) === opts.session)
+    && (!q || ((x.criteria || '') + ' ' + x.name + ' ' + x.pattern).toLowerCase().includes(q)));
+  const target = opts.session ? '\'' + escJs(opts.session) + '\'' : '';
+  el.innerHTML = '<section class="sx-group" data-group="events">'
+    + '<header class="sx-group-head"><span class="sx-group-ico" aria-hidden="true">&#x26A1;</span>'
+    + '<div class="sx-group-text"><h3>When something happens <span class="sx-count">' + rows.length + '</span></h3>'
+    + '<p>Runs when an event matches, not on a clock: a browser hits a CAPTCHA, a card moves to done, a worker finishes.</p></div>'
+    + '<button class="btn sx-ev-new" onclick="_evNew(' + target + ')">+ New</button></header>'
+    + (rows.length ? rows.map(_evRowHTML).join('')
+      : '<div class="sx-group-empty">' + (q ? 'Nothing matches.' : 'None yet. Say what should start work, in plain words.') + '</div>')
+    + '</section>';
+}
+
+function _evRowHTML(x) {
+  const last = x.last_fired_at ? ' &middot; last ' + esc(timeAgo(x.last_fired_at)) : '';
+  return '<div class="sx-ev-row' + (x.enabled ? '' : ' sx-ev-off') + '" data-sub="' + x.id + '">'
+    + '<button class="sx-ev-main" onclick="_evOpen(' + x.id + ')">'
+    + '<span class="sx-ev-title">' + esc(x.criteria || x.name) + '</span>'
+    + '<span class="sx-ev-sub">' + esc(_evThen(x)) + ' &middot; fired ' + x.fire_count + '&times;' + last + (x.enabled ? '' : ' &middot; off') + '</span>'
+    + '</button>'
+    + '<button class="btn sx-ev-toggle" role="switch" aria-checked="' + !!x.enabled + '" aria-label="' + (x.enabled ? 'Turn off' : 'Turn on') + '"'
+    + ' onclick="_evSet(' + x.id + ',' + !x.enabled + ')">' + (x.enabled ? 'On' : 'Off') + '</button>'
+    + '</div>';
+}
+
+async function _evRefresh() {
+  await _evSubsFetch();
+  renderScheduler();
+  if (peekSession) _peekRenderSchedules();
+}
+
+async function _evSet(id, enabled) {
+  const r = await apiCall(API + '/api/subscriptions/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled }),
+  });
+  if (!r) return;
+  showToast(enabled ? 'Turned on' : 'Turned off');
+  _evRefresh();
+}
+
+async function _evRemove(id) {
+  if (!await showConfirm('Remove this subscription and its history?', 'Remove', true)) return;
+  const r = await apiCall(API + '/api/subscriptions/' + id, { method: 'DELETE' });
+  if (!r) return;
+  showToast('Subscription removed');
+  _evRefresh();
+}
+
+// New: a time or an event. The time path is the existing schedule dialog.
+async function _sxNew(worker) {
+  const pick = await new Promise(resolve => {
+    window._sxNewPick = (v) => { resolve(v); _modalClose(false); };
+    showFormModal('New', '<div class="sx-ev-choice">'
+      + '<button class="btn sx-ev-choice-btn" onclick="_sxNewPick(\'time\')"><b>&#x23F1; At a time</b><span>every day at 9, every 15 minutes, once on Friday</span></button>'
+      + '<button class="btn sx-ev-choice-btn" onclick="_sxNewPick(\'event\')"><b>&#x26A1; When something happens</b><span>a browser hits a CAPTCHA, a card moves to done</span></button>'
+      + '</div>', 'Cancel').then(() => resolve(null));
+  });
+  if (pick === 'time') return worker ? _peekNewSchedule() : openSchedModal();
+  if (pick === 'event') return _evNew(worker);
+}
+
+const _EV_EXAMPLES = [
+  'a browser hits a captcha and cannot continue',
+  'a card on my board moves to done',
+  'a worker finishes its turn',
+  'a new build goes live',
+  'a worker is low on context',
+];
+
+async function _evNew(worker) {
+  const workers = (sessions || []).filter(s => !s.isolated && !s.archived).map(s => s.name).sort();
+  const opt = (n) => '<option value="' + esc(n) + '"' + (n === worker ? ' selected' : '') + '>' + esc(n) + '</option>';
+  const ok = await showFormModal('When something happens',
+    '<label class="sx-ev-label" for="ev-words">When…</label>'
+    + '<input id="ev-words" class="input sx-ev-input" list="ev-examples" placeholder="a browser hits a captcha" autocomplete="off">'
+    + '<datalist id="ev-examples">' + _EV_EXAMPLES.map(e => '<option value="' + esc(e) + '">').join('') + '</datalist>'
+    + '<div class="sx-ev-label">Then</div>'
+    + '<label class="sx-ev-radio"><input type="radio" name="ev-then" value="notify"' + (worker ? '' : ' checked') + '> tell me</label>'
+    + '<label class="sx-ev-radio"><input type="radio" name="ev-then" value="send"' + (worker ? ' checked' : '') + '> wake worker '
+    + '<select id="ev-worker" class="input" onfocus="document.querySelector(\'input[name=ev-then][value=send]\').checked=true">' + workers.map(opt).join('') + '</select></label>'
+    + '<label class="sx-ev-radio"><input type="checkbox" id="ev-judge"> the helper model checks each match against my words</label>'
+    + '<a href="#" class="sx-ev-browse" onclick="event.preventDefault();_evCatalog()">Browse all events</a>',
+    'Preview');
+  if (!ok) return;
+  const words = (document.getElementById('ev-words')?.value || '').trim();
+  const then = (document.querySelector('input[name=ev-then]:checked') || {}).value || 'notify';
+  const who = document.getElementById('ev-worker')?.value || '';
+  const judge = !!document.getElementById('ev-judge')?.checked;
+  if (!words) { showToast('Say when, in plain words'); return; }
+  const base = { criteria: words, judge };
+  if (then === 'send') Object.assign(base, { action: 'send', action_target: who });
+  else Object.assign(base, { action: 'notify', action_target: 'owner' });
+  showToast('Reading “' + words + '”…');
+  const post = (extra) => apiCall(API + '/api/subscriptions', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({}, base, extra)),
+  });
+  const r = await post({ dry_run: true });
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  const c = d.compiled || {};
+  const b = d.backtest || {};
+  const ex = (b.examples || []).map(e => '<li>' + esc(new Date(e.ts * 1000).toLocaleString()) + ' &middot; '
+    + esc([e.event.session, e.event.title, e.event.url, e.event.status].filter(Boolean).join(' · ')) + '</li>').join('');
+  const save = await showFormModal('Save this?',
+    '<div class="sx-ev-preview">'
+    + '<div><b>' + esc(c.summary || words) + '</b></div>'
+    + '<div class="sx-ev-reads">Reads as: <code>' + esc(d.pattern) + '</code>'
+    + (d.filter && Object.keys(d.filter).length ? ' where <code>' + esc(JSON.stringify(d.filter)) + '</code>' : '') + '</div>'
+    + (b.measured ? '<div>Last 7 days: <b>' + b.matched + '</b> of ' + b.n_considered + ' events matched</div>' : '')
+    + (ex ? '<ul class="sx-ev-examples">' + ex + '</ul>' : '')
+    + (c.judge || judge ? '<div>The helper model checks each match against your words.</div>' : '')
+    + '<div>Then it ' + (then === 'send' ? 'wakes ' + esc(who) : 'tells you in #general') + '.</div>'
+    + '</div>', 'Save');
+  if (!save) return;
+  // Save exactly what was shown: a second compile could differ.
+  const r2 = await post({ pattern: d.pattern, filter: d.filter, judge: judge || !!c.judge, dedupe_key: c.dedupe_key || '' });
+  if (!r2) return;
+  showToast('Subscribed: ' + words);
+  _evRefresh();
+}
+
+async function _evOpen(id) {
+  const x = _evSubs.find(s => s.id === id);
+  if (!x) return;
+  const r = await apiCall(API + '/api/subscriptions/fires?limit=20&subscription_id=' + id);
+  const fires = r ? ((await r.json().catch(() => ({}))).fires || []) : [];
+  const hist = fires.length ? fires.map(f => {
+    const e = f.event_data || {};
+    return '<li><span class="sx-ev-when">' + esc(new Date(f.fired_at * 1000).toLocaleString()) + '</span> '
+      + esc([f.event_type, e.worker || e.session || e.lane, e.title, e.url].filter(Boolean).join(' · ')) + ' &rarr; ' + esc(f.outcome) + '</li>';
+  }).join('') : '<li>Not fired yet.</li>';
+  showFormModal(x.criteria || x.name,
+    '<div class="sx-ev-preview">'
+    + '<div>Reads as: <code>' + esc(x.pattern) + '</code>' + (x.filter && Object.keys(x.filter).length ? ' where <code>' + esc(JSON.stringify(x.filter)) + '</code>' : '') + '</div>'
+    + '<div>Then it ' + esc(_evThen(x)) + (x.judge ? '; the helper model checks each match' : '') + '.</div>'
+    + '<div>Fired ' + x.fire_count + '&times; &middot; ' + (x.enabled ? 'on' : 'off') + ' &middot; by ' + esc(x.owner || x.created_by || 'owner') + '</div>'
+    + '<div class="sx-ev-label">History</div><ul class="sx-ev-examples">' + hist + '</ul>'
+    + '<div class="sx-ev-actions">'
+    + '<button class="btn" onclick="_modalClose(false);_evSet(' + x.id + ',' + !x.enabled + ')">' + (x.enabled ? 'Turn off' : 'Turn on') + '</button> '
+    + '<button class="btn danger" onclick="_modalClose(false);_evRemove(' + x.id + ')">Remove</button>'
+    + '</div></div>', 'Done');
+}
+
+async function _evCatalog() {
+  const r = await apiCall(API + '/api/subscriptions/catalog');
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  const rows = (d.types || []).map(t => '<li><b>' + esc(t.type) + '</b> <span class="sx-ev-when">' + t.count + ' in 7 days</span>'
+    + (t.meaning ? '<div>' + esc(t.meaning) + '</div>' : '') + '</li>').join('');
+  showFormModal('Every event amux records', '<p>' + (d.count || 0) + ' types, ' + (d.n_considered || 0)
+    + ' events in the last 7 days. Describe one in plain words and amux matches it.</p><ul class="sx-ev-examples sx-ev-catalog">' + rows + '</ul>', 'Done');
 }
 
 // ── Row / detail "more" menu ────────────────────────────────────────────────

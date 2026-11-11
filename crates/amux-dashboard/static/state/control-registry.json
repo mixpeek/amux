@@ -2040,6 +2040,48 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_evCatalog": {
+      "kind": "command._evCatalog",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evNew": {
+      "kind": "command._evNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evOpen": {
+      "kind": "command._evOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evRefresh": {
+      "kind": "command._evRefresh",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evRemove": {
+      "kind": "command._evRemove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evSet": {
+      "kind": "command._evSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evSubsFetch": {
+      "kind": "command._evSubsFetch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_expandPeekInput": {
       "kind": "command._expandPeekInput",
       "feedback_required": true,
@@ -3954,6 +3996,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekLoadSchedules": {
+      "kind": "command._peekLoadSchedules",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekLogAtClose": {
       "kind": "command._peekLogAtClose",
       "feedback_required": true,
@@ -5328,48 +5376,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_subsAdd": {
-      "kind": "command._subsAdd",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsFill": {
-      "kind": "command._subsFill",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsFor": {
-      "kind": "command._subsFor",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsManage": {
-      "kind": "command._subsManage",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsRemove": {
-      "kind": "command._subsRemove",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsRow": {
-      "kind": "command._subsRow",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_subsSet": {
-      "kind": "command._subsSet",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_suggestBranch": {
       "kind": "command._suggestBranch",
       "feedback_required": true,
@@ -5396,6 +5402,12 @@
     },
     "_sxModalBeacon": {
       "kind": "command._sxModalBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxNew": {
+      "kind": "command._sxNew",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6032,12 +6044,6 @@
     },
     "_workerModelsFor": {
       "kind": "command._workerModelsFor",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_workerPrimaryConfigurationsHTML": {
-      "kind": "command._workerPrimaryConfigurationsHTML",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
