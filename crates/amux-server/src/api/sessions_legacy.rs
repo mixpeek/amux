@@ -2653,6 +2653,42 @@ fn no_current_hook_report(report: Option<&Value>, started: f64) -> bool {
     ts <= 0.0 || ts < started
 }
 
+/// How long a fleet listing stays usable after the tmux probe last answered.
+const FLEET_LISTING_REUSE: std::time::Duration = std::time::Duration::from_secs(120);
+
+static LAST_FLEET_LISTING: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+
+/// The `list-sessions` text to read the fleet from. A fleet-wide probe that
+/// times out or fails reuses the last good listing for up to two minutes
+/// instead of reading as "no worker is running": on 2026-11-11 at 15:42 a load
+/// spike (49.6 on 28 cores) made two probes miss their budget, and the
+/// dashboard showed every worker stopped while 48 ran (owner: "why did all my
+/// workers stop"). A single-lane probe never reuses: it asks about one session.
+fn fleet_listing(single_lane: bool, out: &Result<std::process::Output, ()>, now: std::time::Instant) -> Option<String> {
+    match out {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            if !single_lane {
+                *LAST_FLEET_LISTING.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, text.clone()));
+            }
+            Some(text)
+        }
+        _ if single_lane => None,
+        _ => {
+            let last = LAST_FLEET_LISTING.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match last {
+                Some((at, text)) if now.saturating_duration_since(at) <= FLEET_LISTING_REUSE => {
+                    tracing::warn!(age_s = now.saturating_duration_since(at).as_secs(), measured = true, n_considered = 1,
+                        verdict = "fleet_probe_reused_last",
+                        "tmux did not answer the fleet probe; showing the last listing it gave instead of an empty fleet");
+                    Some(text)
+                }
+                _ => None,
+            }
+        }
+    }
+}
+
 impl FleetSignals {
     pub fn load(conn: &rusqlite::Connection) -> Self {
         Self::load_scoped(conn, None)
@@ -2781,8 +2817,9 @@ impl FleetSignals {
                  (remain-on-exit keeps the session after the command exits; AMUX-2644)"
             );
         }
-        if let Ok(o) = tmux_out {
-            for l in String::from_utf8_lossy(&o.stdout).lines() {
+        let listing = fleet_listing(lane.is_some(), &tmux_out, std::time::Instant::now());
+        if let Some(text) = listing {
+            for l in text.lines() {
                 let Some((n, a, c)) = parse_list_sessions_line(l) else {
                     continue;
                 };
@@ -8730,6 +8767,27 @@ mod status_authority_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A probe that times out keeps the last listing for two minutes, so a
+    /// load spike does not show every worker stopped (2026-11-11 15:42).
+    #[test]
+    fn a_failed_fleet_probe_reuses_the_last_listing_briefly() {
+        use std::os::unix::process::ExitStatusExt;
+        let ok = |t: &str| Ok(std::process::Output { status: std::process::ExitStatus::from_raw(0), stdout: t.as_bytes().to_vec(), stderr: vec![] });
+        let t0 = std::time::Instant::now();
+        assert_eq!(fleet_listing(false, &ok("amux-a:1:1:1\n"), t0).as_deref(), Some("amux-a:1:1:1\n"));
+        let failed: Result<std::process::Output, ()> = Err(());
+        assert_eq!(fleet_listing(false, &failed, t0 + std::time::Duration::from_secs(30)).as_deref(), Some("amux-a:1:1:1\n"),
+            "a missed probe reads the last listing, not an empty fleet");
+        assert_eq!(fleet_listing(true, &failed, t0 + std::time::Duration::from_secs(30)), None, "one lane is asked about directly");
+        assert_eq!(fleet_listing(false, &failed, t0 + FLEET_LISTING_REUSE + std::time::Duration::from_secs(1)), None,
+            "an old listing is not reused");
+        let bad_exit = Ok(std::process::Output { status: std::process::ExitStatus::from_raw(256), stdout: vec![], stderr: vec![] });
+        assert_eq!(fleet_listing(false, &ok("amux-b:1:1:1\n"), t0), Some("amux-b:1:1:1\n".into()));
+        assert_eq!(fleet_listing(false, &bad_exit, t0).as_deref(), Some("amux-b:1:1:1\n"), "a failed tmux exit is a missed probe too");
+        // Global: leave nothing for a parallel test that expects an empty fleet.
+        *LAST_FLEET_LISTING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
     static PROBE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The 2026-10-21 stall: a builder takes the flight lock and never
