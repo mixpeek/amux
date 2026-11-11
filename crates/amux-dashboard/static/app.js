@@ -14154,7 +14154,7 @@ function _descNote(s) {
 function _descControls(s, q) {
   if (s.isolated) return '';
   const m = s.desc_meta || {};
-  const b = (fn, label, extra) => ' <button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
+  const b = (fn, label, extra) => ' <button class="btn worker-config-btn"'
     + (extra || '') + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
   return (m.prev ? b('_descRevert', 'Revert', ' title="Restore: ' + esc(m.prev) + '"') : '')
     + b('_descLockToggle', m.locked ? 'Unlock' : 'Lock', ' aria-pressed="' + !!m.locked + '" title="' + (m.locked ? 'Let amux keep it current' : 'Stop amux changing it') + '"');

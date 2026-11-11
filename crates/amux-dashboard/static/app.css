@@ -5070,6 +5070,7 @@
   .worker-config-note { color:var(--dim); font-size:var(--fs-3xs); line-height:1.35; overflow-wrap:anywhere; }
   .worker-config-actions { display:flex; align-items:center; gap:var(--space-1); flex:0 0 auto; }
   .worker-config-grid-board { margin-top:0; }
+  .worker-config-btn { font-size:var(--fs-2xs); min-height:32px; padding:var(--space-1) var(--space-2); }
   @media (min-width: 980px) {
     #peek-scope-panel .worker-config-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     #peek-scope-panel .worker-config-grid-board { grid-template-columns:minmax(0,1fr); }
@@ -5077,6 +5078,7 @@
   @media (max-width: 560px) {
     .worker-config-row { align-items:flex-start; flex-direction:column; }
     .worker-config-actions { width:100%; justify-content:flex-end; }
+    .worker-config-btn { min-height:44px; }
   }
   @media (max-width: 600px) {
     .scope-tile { min-width:118px; padding:var(--space-2) var(--space-2-5); }
