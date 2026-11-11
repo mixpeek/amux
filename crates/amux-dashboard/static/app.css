@@ -11099,6 +11099,8 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 
 /* Event subscriptions in the Scheduler (app.js _evRender). */
 .sx-events:empty { display: none; }
+.sx-ev-empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); margin-top: var(--space-2); border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--dim); font-size: var(--fs-sm); }
+.sx-ev-empty-text { min-width: 0; }
 .sx-ev-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); }
 .sx-ev-row.sx-ev-off .sx-ev-title { color: var(--dim); }
 .sx-ev-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-0-5); background: none; border: 0; padding: 0; text-align: left; color: var(--text); cursor: pointer; font: inherit; }

@@ -106,10 +106,21 @@ test('a worker gets a subscription from its Schedules tab, and the row fits a ph
       await (window as any).fetchSessions();
       return (0, eval)('sessions').some((s: any) => s.name === n);
     }, name), { timeout: 30_000 }).toBe(true);
+    // A real schedule too, so the tab has a list the events block must not cover.
+    expect((await request.post('/api/schedules', { headers: auth, data: {
+      title: 'nightly check', session: name, command: 'echo ok', schedule_expr: 'daily at 3am', kind: 'shell' } })).ok()).toBe(true);
     await page.evaluate((n) => (window as any).openPeek(n), name);
     await page.evaluate(() => (window as any).setPeekTab('schedules'));
-    const section = page.locator('#peek-schedules-events section[data-group="events"]');
+    const section = page.locator('#peek-schedules-list [data-group="events"]');
     await expect(section).toContainText('When something happens');
+    await expect(section).toContainText('none yet');
+    // Inside the schedule list, below the schedules (it sat on top of them:
+    // Ethan's screenshot, 2026-11-11).
+    const lastGroup = page.locator('#peek-schedules-list .sx-group').last();
+    await expect(lastGroup).toContainText('nightly check');
+    const g = (await lastGroup.boundingBox())!;
+    const ev = (await section.boundingBox())!;
+    expect(ev.y).toBeGreaterThanOrEqual(g.y + g.height - 1);
 
     await section.locator('.sx-ev-new').click();
     await expect(page.locator('#ev-worker')).toHaveValue(name);
@@ -130,6 +141,8 @@ test('a worker gets a subscription from its Schedules tab, and the row fits a ph
     const main = (await row.locator('.sx-ev-main').boundingBox())!;
     expect(Math.abs(main.y + main.height / 2 - (box.y + box.height / 2))).toBeLessThan(24);
   } finally {
+    const sched = await (await request.get('/api/schedules', { headers: auth })).json();
+    for (const x of sched.filter((x: any) => x.session === name)) await request.delete(`/api/schedules/${x.id}`, { headers: auth });
     const subs = await (await request.get('/api/subscriptions', { headers: auth })).json();
     for (const s of subs.subscriptions.filter((x: any) => x.action_target === name)) {
       await request.delete(`/api/subscriptions/${s.id}`, { headers: auth });

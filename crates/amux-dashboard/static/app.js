@@ -46127,7 +46127,16 @@ function _evThen(x) {
 
 function _evRender(opts) {
   opts = opts || {};
-  const el = document.getElementById(opts.session ? 'peek-schedules-events' : 'scheduler-events');
+  // In a worker's Schedules tab the section goes INSIDE the scrolling list,
+  // after the schedules: as a sibling box it sat on top of them (Ethan's
+  // screenshot, 2026-11-11, "in the way").
+  let el = document.getElementById('scheduler-events');
+  if (opts.session) {
+    const list = document.getElementById('peek-schedules-list');
+    if (!list) return;
+    el = list.querySelector(':scope > .sx-ev-wrap');
+    if (!el) { el = document.createElement('div'); el.className = 'sx-ev-wrap'; list.appendChild(el); }
+  }
   if (!el) return;
   const type = opts.session ? '' : (_sxFilters.type || '');
   if (!opts.session && type === 'event') {
@@ -46139,11 +46148,18 @@ function _evRender(opts) {
   const rows = _evSubs.filter(x => (!opts.session || _evWho(x) === opts.session)
     && (!q || ((x.criteria || '') + ' ' + x.name + ' ' + x.pattern).toLowerCase().includes(q)));
   const target = opts.session ? '\'' + escJs(opts.session) + '\'' : '';
+  const newBtn = '<button class="btn sx-ev-new" onclick="_evNew(' + target + ')">+ New</button>';
+  if (!rows.length && type !== 'event') {
+    // None yet: one line, not a section that takes half a phone screen.
+    el.innerHTML = '<section class="sx-ev-empty" data-group="events">'
+      + '<span class="sx-ev-empty-text"><span aria-hidden="true">&#x26A1;</span> When something happens'
+      + (q ? ': nothing matches' : ' &middot; none yet') + '</span>' + newBtn + '</section>';
+    return;
+  }
   el.innerHTML = '<section class="sx-group" data-group="events">'
     + '<header class="sx-group-head"><span class="sx-group-ico" aria-hidden="true">&#x26A1;</span>'
     + '<div class="sx-group-text"><h3>When something happens <span class="sx-count">' + rows.length + '</span></h3>'
-    + '<p>Runs when an event matches, not on a clock: a browser hits a CAPTCHA, a card moves to done, a worker finishes.</p></div>'
-    + '<button class="btn sx-ev-new" onclick="_evNew(' + target + ')">+ New</button></header>'
+    + '<p>Runs when an event matches, not on a clock.</p></div>' + newBtn + '</header>'
     + (rows.length ? rows.map(_evRowHTML).join('')
       : '<div class="sx-group-empty">' + (q ? 'Nothing matches.' : 'None yet. Say what should start work, in plain words.') + '</div>')
     + '</section>';
