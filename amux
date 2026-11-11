@@ -12482,12 +12482,12 @@ for t in d["types"]:
     if q and q not in t["type"].lower():
         continue
     fields = ", ".join(f for f in t["fields"] if f not in ("type", "session", "source"))
-    print(f"{t[\"count\"]:>7}  {t[\"type\"]}" + ("" if t["documented"] else "  (undocumented)"))
+    print("%7d  %s%s" % (t["count"], t["type"], "" if t["documented"] else "  (undocumented)"))
     if t.get("meaning"):
         print("         " + t["meaning"])
     if fields:
         print("         fields: " + fields)
-print(f"\n{d[\"count\"]} types, {d[\"n_considered\"]} events in the last {d[\"days\"]} days ({d[\"undocumented\"]} undocumented).", file=sys.stderr)
+print("\n%d types, %d events in the last %d days (%d undocumented)." % (d["count"], d["n_considered"], d["days"], d["undocumented"]), file=sys.stderr)
 ' "${1:-}" ;;
     tail)
       local pattern="${1:-*}" after=0
@@ -12500,7 +12500,7 @@ import json, sys, datetime
 d = json.load(sys.stdin)
 for e in d.get("events", []):
     t = datetime.datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
-    print(f"{t}  {e[\"type\"]:<28} {e[\"session\"]:<22} {json.dumps(e[\"data\"])[:160]}", file=sys.stderr)
+    print("%s  %-28s %-22s %s" % (t, e["type"], e["session"], json.dumps(e["data"])[:160]), file=sys.stderr)
 print(d.get("last_id", 0))
 ' 2>&2) || after=0
         sleep 2
@@ -12540,7 +12540,7 @@ d = json.load(sys.stdin)
 if d.get("error"):
     sys.exit("amux subscribe: " + d["error"])
 c = d.get("compiled") or {}
-print(("Would subscribe" if d.get("dry_run") else f"Subscribed #{d.get(\"id\")} {d.get(\"name\")}") + ":")
+print(("Would subscribe" if d.get("dry_run") else "Subscribed #%s %s" % (d.get("id"), d.get("name"))) + ":")
 if c.get("summary"):
     print("  matches: " + c["summary"])
 print("  events:  " + str(d.get("pattern")) + (" where " + json.dumps(d.get("filter")) if d.get("filter") not in (None, {}) else ""))
@@ -12549,7 +12549,7 @@ if d.get("judge") or c.get("judge"):
 print("  then:    " + str(d.get("action")) + " -> " + str(d.get("action_target")))
 b = d.get("backtest") or {}
 if b.get("measured"):
-    print(f"  last 7 days: {b[\"matched\"]} of {b[\"n_considered\"]} events would have matched")
+    print("  last 7 days: %s of %s events would have matched" % (b["matched"], b["n_considered"]))
 '
 }
 
@@ -12563,16 +12563,16 @@ import json, sys
 d = json.load(sys.stdin)
 for s in d.get("subscriptions", []):
     state = "on " if s["enabled"] else "off"
-    print(f"#{s[\"id\"]:<4} {state} {s[\"name\"]:<36} {s[\"pattern\"]:<24} -> {s[\"action\"]} {s[\"action_target\"]}  fired {s[\"fire_count\"]}x  owner {s.get(\"owner\") or \"-\"}")
+    print("#%-4s %s %-36s %-24s -> %s %s  fired %sx  owner %s" % (s["id"], state, s["name"], s["pattern"], s["action"], s["action_target"], s["fire_count"], s.get("owner") or "-"))
     if s.get("criteria"):
         print("      " + s["criteria"])
-print(f"{d.get(\"count\", 0)} subscriptions", file=sys.stderr)
+print("%s subscriptions" % d.get("count", 0), file=sys.stderr)
 ' ;;
     fires)
       _curl -sk "$AMUX_API/api/subscriptions/fires?limit=${2:-20}${1:+&subscription_id=$1}" | python3 -c '
 import json, sys
 for f in json.load(sys.stdin).get("fires", []):
-    print(f"{f[\"fired_at_iso\"]}  {f[\"subscription_name\"]:<32} {f[\"event_type\"]:<24} {f[\"outcome\"]}")
+    print("%s  %-32s %-24s %s" % (f["fired_at_iso"], f["subscription_name"], f["event_type"], f["outcome"]))
 ' ;;
     on|off)
       [[ -n "${1:-}" ]] || die "Usage: amux subscriptions $sub <id>"

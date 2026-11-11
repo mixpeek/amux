@@ -433,9 +433,9 @@ pub(crate) fn compile_prompt(criteria: &str, catalog: &Value) -> String {
 /// fields. A wrong compile is refused here rather than saved as a filter that
 /// silently matches nothing.
 pub(crate) fn parse_compiled(out: &str, catalog: &Value) -> Result<Compiled, String> {
-    let start = out.find("<json>").map(|i| i + 6).ok_or("the model answered without <json>")?;
-    let end = start + out[start..].find("</json>").ok_or("the model's <json> was not closed")?;
-    let v: Value = serde_json::from_str(out[start..end].trim()).map_err(|e| format!("the model's JSON did not parse: {e}"))?;
+    let v = answer_json(out).ok_or_else(|| {
+        format!("the model's answer held no JSON object: {:?}", out.chars().take(200).collect::<String>())
+    })?;
     if let Some(e) = v.get("error").and_then(Value::as_str) {
         return Err(format!("no event fits: {e}"));
     }
@@ -462,6 +462,29 @@ pub(crate) fn parse_compiled(out: &str, catalog: &Value) -> Result<Compiled, Str
         judge: v["judge"].as_bool().unwrap_or(false),
         dedupe_key: v["dedupe_key"].as_str().unwrap_or("").trim().to_string(),
     })
+}
+
+/// The JSON object in a model answer: inside `<json></json>` as asked, else a
+/// fenced block, else the first `{...}` that parses. The live helper model
+/// (2026-11-11) answered with a fenced block and no tags.
+pub(crate) fn answer_json(out: &str) -> Option<Value> {
+    if let Some(i) = out.find("<json>") {
+        let rest = &out[i + 6..];
+        if let Some(j) = rest.find("</json>") {
+            if let Ok(v) = serde_json::from_str::<Value>(rest[..j].trim()) {
+                return Some(v);
+            }
+        }
+    }
+    for (i, _) in out.match_indices('{') {
+        let mut de = serde_json::Deserializer::from_str(&out[i..]).into_iter::<Value>();
+        if let Some(Ok(v)) = de.next() {
+            if v.is_object() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 fn filter_fields(f: &Value, out: &mut Vec<String>) {
@@ -599,6 +622,9 @@ mod tests {
             .unwrap_err().contains("colour"));
         assert!(parse_compiled(r#"<json>{"error":"amux records no weather"}</json>"#, &cat()).unwrap_err().contains("weather"));
         assert!(parse_compiled("KEEP", &cat()).is_err());
+        // A fenced answer with no tags (the live helper model's shape) still parses.
+        let fenced = "```json\n{\"pattern\": \"browser.blocked\", \"filter\": {\"field\": \"reason\", \"op\": \"eq\", \"value\": \"captcha\"}}\n```";
+        assert_eq!(parse_compiled(fenced, &cat()).unwrap().pattern, "browser.blocked");
     }
 
     #[test]
