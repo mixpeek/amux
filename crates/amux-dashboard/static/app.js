@@ -56218,7 +56218,6 @@ function _vaultEnsurePage() {
       <div class="vault-tabs" role="tablist" aria-label="Vault sections">
         <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
         <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods<span id="vault-pending-count" class="vault-chip vault-chip-global" hidden></span></button>
-        <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
       </div>
       <div class="vault-body">
         <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
@@ -56244,13 +56243,6 @@ function _vaultEnsurePage() {
           <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above a card's approval threshold waits for your approval in the approvals banner. A charge that would pass a daily, monthly or yearly spending limit is refused outright.</p>
           <div class="vault-actions-row"><button class="btn primary" id="vault-card-add-btn" onclick="_vaultCardAdd()">${_vaultIcon('plus')}Add Payment Method</button></div>
           <div id="vault-items">Loading…</div>
-        </div>
-        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden>
-          <div id="vault-apikeys-custom">
-            <p class="ui-help">API keys are key/value secrets: encrypted, scoped to everyone, chosen groups or one worker, and injected as environment variables when a worker starts. They follow the same scope, reveal, rotation and audit rules as every other secret.</p>
-            <div class="vault-actions-row"><button class="btn primary" id="vault-apikey-add-btn" onclick="_vaultEdit(null,'add',{kind:'api_key'})">${_vaultIcon('plus')}Add API Key</button></div>
-            <div id="vault-apikeys-table" aria-live="polite"></div>
-          </div>
         </div>
       </div>
     </section>`;
@@ -56294,7 +56286,6 @@ function _vaultPendingRender(items) {
 function _vaultLeave() {
   if (!document.getElementById('vault-view')?.firstElementChild) return;
   _vaultMaskAll();
-  _vaultApiKeysHome();
   document.querySelectorAll('.vault-sub').forEach(el => el.remove());
 }
 // Open the Vault tab on a given section, optionally filtered to a worker or
@@ -56304,7 +56295,7 @@ function openVault(tab, filter) {
   _vault.q = ''; _vault.scope = ''; _vault.group = ''; _vault.worker = ''; _vault.prov = null;
   if (filter && filter.group) _vault.group = String(filter.group).toLowerCase();
   if (filter && filter.worker) _vault.worker = filter.worker;
-  _vault.tab = ['payments', 'apikeys'].includes(tab) ? tab : 'secrets';
+  _vault.tab = tab === 'payments' ? tab : 'secrets';
   const q = document.getElementById('vault-q'); if (q) q.value = '';
   if (activeView !== 'vault') switchView('vault');
   else _vaultEnter();
@@ -56326,7 +56317,7 @@ function closeVault() {
 }
 function _vaultTab(name) {
   _vault.tab = name;
-  for (const t of ['secrets', 'payments', 'apikeys']) {
+  for (const t of ['secrets', 'payments']) {
     const on = t === name;
     const b = document.getElementById('vault-tab-' + t);
     if (b) { b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
@@ -56334,23 +56325,6 @@ function _vaultTab(name) {
     if (p) p.hidden = !on;
   }
   if (name === 'payments') _vaultLoad();
-  if (name === 'apikeys') {
-    // Settings no longer shows API Keys (b15e61d9); the section's markup and
-    // handlers stay in #settings-moved-out, and this tab borrows the node so
-    // every id its scripts look up keeps working.
-    const sec = document.getElementById('settings-apikeys-section');
-    const panel = document.getElementById('vault-panel-apikeys');
-    if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
-    loadApiKeys();
-    _vaultApiKeysRender();
-  }
-}
-// Return the borrowed API Keys section before the overlay is removed, or the
-// next openVault would find nothing to borrow.
-function _vaultApiKeysHome() {
-  const sec = document.getElementById('settings-apikeys-section');
-  const home = document.getElementById('settings-moved-out');
-  if (sec && home && sec.parentElement !== home) home.appendChild(sec);
 }
 async function _vaultSecretsLoad() {
   const table = document.getElementById('vault-secrets-table');
@@ -56447,7 +56421,6 @@ function _vaultVisible() {
 }
 function _vaultRender() {
   _vaultWorkerPanel();
-  _vaultApiKeysRender();
   const table = document.getElementById('vault-secrets-table');
   if (!table) return;
   if (_vault.loadErr) {
@@ -56464,8 +56437,6 @@ function _vaultRender() {
   if (!list.length) { table.innerHTML = '<div class="vault-empty"><b>No secrets match</b><p>Change the search or filters.</p></div>'; return; }
   table.innerHTML = _vaultTableHtml(list, 'vault-val-');
 }
-// One table markup for every list of secrets (the Secrets tab and the API
-// Keys tab), so a row action works the same wherever the row is shown.
 function _vaultTableHtml(list, idPrefix) {
   const effective = new Map((_vault.prov?.resolved || []).map(x => [x.id, x]));
   return '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
@@ -56473,7 +56444,7 @@ function _vaultTableHtml(list, idPrefix) {
       const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
       const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
-        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.kind === 'api_key' ? '<span class="vault-chip vault-chip-apikey">API key</span>' : '') + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
         + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="' + idPrefix + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
         + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
@@ -56482,16 +56453,6 @@ function _vaultTableHtml(list, idPrefix) {
         + '<td data-label="Actions" class="vault-actions-cell"><button class="vault-icon-btn vault-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(i.key) + '" onclick="_vaultMenu(event,\'' + escJs(i.id) + '\')">' + _vaultIcon('more') + '</button></td>'
         + '</tr>';
     }).join('') + '</tbody></table>';
-}
-// API Keys tab: the secrets filed as kind api_key. Same store, same scope,
-// same reveal, rotate, access and audit actions as any secret.
-function _vaultApiKeysRender() {
-  const el = document.getElementById('vault-apikeys-table');
-  if (!el) return;
-  if (_vault.loadErr) { el.innerHTML = '<div class="vault-empty" role="alert"><b>API keys unavailable</b><p>' + esc(_vault.loadErr) + '</p></div>'; return; }
-  const list = _vault.items.filter(i => i.kind === 'api_key').sort((a, b) => a.key.localeCompare(b.key));
-  el.innerHTML = list.length ? _vaultTableHtml(list, 'vault-akval-')
-    : '<div class="vault-empty"><b>No API keys yet</b><p>Add a key name and value, then choose which workers receive it.</p></div>';
 }
 function _vaultMenuClose() {
   document.querySelectorAll('.vault-menu').forEach(m => m.remove());
@@ -56567,11 +56528,11 @@ function _vaultSubClose(id) {
 }
 // Add, Edit and Rotate share one dialog. Edit never shows the stored value:
 // leaving Value blank keeps it, typing one rotates (version + 1).
-function _vaultEdit(id, mode, opts) {
+function _vaultEdit(id, mode) {
   const it = id ? _vault.items.find(x => x.id === id) : null;
   mode = it ? (mode || 'edit') : 'add';
-  const kind = it ? (it.kind || 'secret') : (opts?.kind === 'api_key' ? 'api_key' : 'secret');
-  const noun = kind === 'api_key' ? 'API Key' : 'Secret';
+  const kind = it ? (it.kind || 'secret') : 'secret';
+  const noun = 'Secret';
   const wg = _vaultWorkerGroups();
   const groups = [...new Set([..._vault.groups, ...Object.values(wg).flat()])].sort();
   const workers = Object.keys(wg).sort();
@@ -57511,71 +57472,6 @@ async function saveHelperModel(val) {
   } catch(e) { showToast('Error: ' + e.message); }
 }
 
-// ── API Keys ───────────────────────────────────────────────────────────────────
-// Same 3 keys provider::live_catalog (server) can probe for a real model
-// list; the placeholder/status ids match what api/settings.rs's PROVIDER_ENV_KEYS
-// allows it to read/write. ANTHROPIC_API_KEY keeps its ORIGINAL element ids
-// (settings-anthropic-key / settings-apikey-status, no suffix) — e2e/settings.spec.ts
-// locates them unsuffixed and saveApiKey() with no argument is a real call site
-// (index.html's own onclick used to omit it), so both stay working unchanged.
-const API_KEY_FIELDS = [
-  { key: 'ANTHROPIC_API_KEY', input: 'settings-anthropic-key', status: 'settings-apikey-status', placeholder: 'sk-ant-...' },
-  { key: 'OPENAI_API_KEY', input: 'settings-openai-key', status: 'settings-apikey-status-openai', placeholder: 'sk-...' },
-  { key: 'GEMINI_API_KEY', input: 'settings-gemini-key', status: 'settings-apikey-status-gemini', placeholder: 'AIza...' },
-];
-
-async function loadApiKeys() {
-  try {
-    const r = await fetch('/api/settings/env');
-    const data = await r.json();
-    for (const f of API_KEY_FIELDS) {
-      const inp = document.getElementById(f.input);
-      const st = document.getElementById(f.status);
-      if (!inp) continue;
-      inp.placeholder = data[f.key] ? data[f.key] : f.placeholder;
-      // Never clear a NON-EMPTY input: this callback is async and can land
-      // AFTER someone started typing into the field — the unconditional
-      // `inp.value = ''` here wiped the entry mid-flight, and Save then hit
-      // its empty-value early return as a silent no-op. That was the
-      // settings_api_key_anthropic CI flake (6/8 runs: fill won the race on a
-      // loaded runner, the refresh wiped it, waitForResponse hung 60s) and is
-      // the same bug a fast human hits as "my key vanished while I typed".
-      // The one writer that needs the field cleared — saveApiKey after a
-      // successful PATCH — clears it itself before calling us.
-      if (st) st.textContent = data[f.key] ? 'Key saved ✓' : 'No key set';
-    }
-  } catch(e) {}
-}
-
-async function saveApiKey(providerKey) {
-  const f = API_KEY_FIELDS.find(x => x.key === (providerKey || 'ANTHROPIC_API_KEY'));
-  if (!f) return;
-  const inp = document.getElementById(f.input);
-  const st = document.getElementById(f.status);
-  const val = inp ? inp.value.trim() : '';
-  if (!val) {
-    // Say so instead of silently no-oping: when the refresh race above wiped
-    // the field, Save "doing nothing" was indistinguishable from Save being
-    // broken — the e2e's only symptom was a 60s network wait on a request
-    // that was never sent.
-    if (st) st.textContent = 'Enter a key first';
-    return;
-  }
-  st && (st.textContent = 'Saving…');
-  try {
-    const body = {}; body[f.key] = val;
-    const r = await fetch('/api/settings/env', {method:'PATCH', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)});
-    if (r.ok) {
-      if (inp) inp.value = '';
-      if (st) st.textContent = 'Saved ✓';
-      await loadApiKeys();
-    } else {
-      if (st) st.textContent = 'Save failed';
-    }
-  } catch(e) { if (st) st.textContent = 'Error: ' + e.message; }
-}
-
 // ── Commit guard ─────────────────────────────────────────────────────────────
 let _peekCommitGuardOverride = null;  // null=global, true=on, false=off
 
@@ -58155,14 +58051,13 @@ async function openBillingPortal() {
   } catch(e) { alert('Connection error'); }
 }
 
-// Load team + API keys + billing whenever settings opens
+// Load team + billing whenever settings opens
 const _origToggleSettings = toggleSettings;
 toggleSettings = function() {
   _origToggleSettings();
   const menu = document.getElementById('settings-menu');
   if (menu && menu.style.display !== 'none') {
     loadTeamSection();
-    loadApiKeys();
     loadBillingSection();
   }
 };
@@ -75330,7 +75225,7 @@ async function _cmdkLoadLists() {
     group: get('/api/groups').then(d => (d.groups || []).map(g => { const about = [g.department, g.goal].filter(Boolean).join(' · '); return { kind: 'group', id: g.name, title: g.name, sub: about || 'Group', body: about }; })),
     pin: get('/api/pinned').then(d => (d || []).map(p => ({ kind: 'pin', id: p.id, title: p.title || String(p.file_path || '').split('/').pop(), sub: p.file_path || 'Pinned note', body: p.file_path || '' }))),
     // Names and scopes only; the vault never sends values here.
-    secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: (s.kind === 'api_key' ? 'API key' : 'Secret') + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
+    secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: 'Secret' + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
     payment: get('/api/vault').then(d => (d.items || []).filter(p => p.kind !== 'login').map(p => ({ kind: 'payment', id: p.id, title: p.label || p.brand || 'Card', sub: 'Payment method' + (p.brand ? ' · ' + p.brand : '') }))),
     connector: get('/api/connectors').then(d => (d.connectors || []).map(c => ({ kind: 'connector', id: c.id, title: c.name || c.id, sub: c.category || 'Connector' }))),
     skill: get('/api/skills').then(d => (d || []).map(s => ({ kind: 'skill', id: s.name, title: '/' + s.name, sub: s.description || 'Skill', body: s.description || '' }))),

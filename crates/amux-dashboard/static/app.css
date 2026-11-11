@@ -8295,8 +8295,6 @@ select.input { height:var(--control-height); }
 body:not(.light) .vault-chip-global { color: color-mix(in srgb, var(--accent) 75%, var(--text)); }
 body:not(.light) .vault-chip-group { color: color-mix(in srgb, var(--purple) 65%, var(--on-solid)); }
 body:not(.light) .vault-chip-worker { color: color-mix(in srgb, var(--green) 61%, var(--text)); }
-.vault-chip-apikey { color: color-mix(in srgb, var(--yellow) 84%, var(--shade)); background: color-mix(in srgb, color-mix(in srgb, var(--yellow) 84%, var(--shade)) 14%, transparent); margin-left: var(--space-1-5); }
-body:not(.light) .vault-chip-apikey { color: color-mix(in srgb, var(--yellow) 64%, var(--on-solid)); }
 /* Payment method limits (vault_spend.rs): three optional windows side by side,
    stacked on a phone. */
 .vault-limits { border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3) var(--space-3); margin: var(--space-2) 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); min-width: 0; }

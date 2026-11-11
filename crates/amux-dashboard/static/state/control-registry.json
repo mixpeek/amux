@@ -6972,12 +6972,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "saveApiKey": {
-      "kind": "command.saveApiKey",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "saveBoardEdit": {
       "kind": "command.saveBoardEdit",
       "feedback_required": true,

@@ -239,17 +239,11 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     await expect(page.locator('#vault-panel-payments')).toBeVisible();
     await expect(page.locator('#vault-items')).not.toHaveText('Loading…');
 
-    // API Keys moved here from Settings (b15e61d9): the tab borrows the
-    // settings section, returns it when you leave Vault, and can borrow it
-    // again on the next visit.
-    for (let pass = 0; pass < 2; pass++) {
-      if (pass) await page.locator('#tab-vault').click();
-      await vault.getByRole('tab', { name: 'API Keys' }).click();
-      await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key')).toBeVisible();
-      await page.evaluate(() => (window as any).switchView('sessions'));
-      await expect(vault).toBeHidden();
-      await expect(page.locator('#settings-moved-out #settings-apikeys-section')).toHaveCount(1);
-    }
+    // Two tabs only: an API key is a secret (owner, 2026-11-11: "get rid of
+    // api keys - we just have secrets").
+    await expect(vault.getByRole('tab')).toHaveText(['Secrets', /^Payment Methods/]);
+    await page.evaluate(() => (window as any).switchView('sessions'));
+    await expect(vault).toBeHidden();
     // The tab is remembered across a reload like every other view.
     await page.locator('#tab-vault').click();
     await page.reload();
@@ -331,8 +325,9 @@ test('Vault: each secret and payment method shows a copyable id', async ({ page,
 // UI (Ethan, 2026-10-18: "payment methods i should be able to add new ones,
 // and each one have a spending limit (monthly, daily, yearly) ... api keys i
 // should able to create api keys (key value pair)"). The limits are then
-// checked where money moves, /api/browser/complete-order, and the API key is
-// checked against the same scope rules every secret obeys. Same file as the
+// checked where money moves, /api/browser/complete-order. The API key is added
+// as a plain secret (no API Keys tab since 2026-11-11) and checked against the
+// scope rules every secret obeys. Same file as the
 // lifecycle test so it never runs beside it; it removes what it adds.
 test('Vault: add a payment method with limits and an API key from the UI', async ({ page, request }, info) => {
   test.setTimeout(120_000);
@@ -418,12 +413,11 @@ test('Vault: add a payment method with limits and an API key from the UI', async
     }).toEqual({ daily: 40, monthly: 300 });
     expect((await (await order(30)).json()).limit_exceeded, 'after the raise $30 fits').toBeUndefined();
 
-    // 4. Add an API key for one group from the API Keys tab.
-    await vault.getByRole('tab', { name: 'API Keys' }).click();
-    await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key'), 'the existing provider keys stay').toBeVisible();
-    await page.locator('#vault-apikey-add-btn').click();
+    // 4. Add an API key for one group, as a secret.
+    await vault.getByRole('tab', { name: 'Secrets' }).click();
+    await page.locator('#vault-add-btn').click();
     const kd = page.locator('#vault-edit');
-    await expect(kd.getByRole('heading', { name: 'Add API Key' })).toBeVisible();
+    await expect(kd.getByRole('heading', { name: 'Add Secret' })).toBeVisible();
     await page.fill('#vault-e-key', keyName);
     await page.check('input[name="vault-e-scope"][value="group"]');
     for (const box of await page.locator('#vault-e-group input[type=checkbox]').all()) {
@@ -432,7 +426,7 @@ test('Vault: add a payment method with limits and an API key from the UI', async
     await page.fill('#vault-e-value', keyValue);
     await page.locator('#vault-e-save').click();
     await expect(kd).toHaveCount(0);
-    const keyRow = page.locator('#vault-apikeys-table .vault-row', { hasText: keyName });
+    const keyRow = page.locator('#vault-secrets-table .vault-row', { hasText: keyName });
     await expect(keyRow).toHaveCount(1);
     await expect(keyRow.locator('.vault-chip-group')).toBeVisible();
     expect(await page.content(), 'the API key value stayed in the page').not.toContain(keyValue);
@@ -442,7 +436,7 @@ test('Vault: add a payment method with limits and an API key from the UI', async
     // 5. Same scope rules as any secret: the worker outside the group does not get it.
     const all = await (await request.get('/api/vault/secrets', { headers: auth })).json();
     const sec = (all.items || []).find((i: any) => i.id === secretId);
-    expect(sec.kind).toBe('api_key');
+    expect(sec.kind).toBe('secret');
     expect(sec.scope).toBe('group');
     expect(sec.target).toBe(group);
     const resolvedFor = async (w: string) => ((await (await request.get(`/api/vault/secrets?worker=${w}`, { headers: auth })).json()).resolved || []).map((r: any) => r.key);
@@ -450,9 +444,6 @@ test('Vault: add a payment method with limits and an API key from the UI', async
     expect(await resolvedFor(outW)).not.toContain(keyName);
     const asOut = await (await request.get('/api/vault/secrets', { headers: { ...auth, 'X-Amux-Session': outW } })).json();
     expect((asOut.items || []).map((i: any) => i.key)).not.toContain(keyName);
-    // The Secrets tab lists it too, tagged as an API key.
-    await vault.getByRole('tab', { name: 'Secrets' }).click();
-    await expect(page.locator('#vault-secrets-table .vault-row', { hasText: keyName }).locator('.vault-chip-apikey')).toBeVisible();
     await page.screenshot({ path: info.outputPath('vault-limits-keys.png') });
   } finally {
     await cleanup('remove vault limit and API key fixtures', removeFixtures, info);
