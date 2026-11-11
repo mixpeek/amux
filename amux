@@ -674,6 +674,38 @@ is_running() {
   [[ "$migrate_rc" -eq 124 ]] && return 124
   tmux_has_session_exact "=$(tmux_name "$1")"
 }
+# Whether a worker's tmux pane still runs its agent. The server's stop ends the
+# agent and deliberately keeps the pane (a shell, scrollback intact), so a live
+# tmux session alone does not mean a live worker. Same predicate as the server's
+# pane_has_live_child: the pane's shell has a child that is not a zombie.
+#   0  the pane runs something besides its shell (a live worker)
+#   1  only the shell is left (stopped: safe to relaunch)
+#   2  could not tell (no pane pid, or ps failed); callers treat it as live
+pane_agent_state() {
+  local tname pid kids
+  tname=$(tmux_name "$1")
+  pid=$(tmux list-panes -t "=$tname:" -F '#{pane_pid}' 2>/dev/null | head -1) || pid=""
+  [[ -n "$pid" ]] || return 2
+  # A launch line can end in an exec, which makes the pane process the agent
+  # itself; an idle agent may have no children. Only a bare shell can be empty.
+  local comm
+  comm=$(ps -p "$pid" -o comm= 2>/dev/null) || return 2
+  comm="${comm##*/}"; comm="${comm#-}"
+  case "$comm" in bash|zsh|sh|dash|fish|ksh|tcsh|csh) ;; *) return 0 ;; esac
+  kids=$(pgrep -P "$pid" 2>/dev/null | paste -sd, -) || kids=""
+  [[ -n "$kids" ]] || return 1
+  local stats
+  stats=$(ps -p "$kids" -o stat= 2>/dev/null) || return 2
+  grep -qv '^[[:space:]]*Z' <<<"$stats" && return 0
+  return 1
+}
+# A worker whose session exists AND whose pane still runs its agent.
+agent_alive() {
+  is_running "$1" || return 1
+  local rc=0
+  pane_agent_state "$1" || rc=$?
+  [[ "$rc" != 1 ]]
+}
 _amux_tmpfile() {
   # A temp file a SANDBOXED AGENT can actually create.
   #
@@ -1081,6 +1113,21 @@ cmd_start() {
   local tname
   tname=$(tmux_name "$name")
 
+  # A session left by `amux stop` (or the dashboard's Stop) holds only a shell:
+  # the server ends the agent and keeps the pane. Reporting that as "already
+  # running" made a stopped worker impossible to start from the CLI until its
+  # session was killed by hand. Replace the empty session and launch.
+  if ! $dry_run && is_running "$name"; then
+    local _pane_rc=0
+    pane_agent_state "$name" || _pane_rc=$?
+    if [[ "$_pane_rc" == 1 ]]; then
+      mkdir -p "$CC_HOME/logs"
+      printf '%s WARN amux::start verdict=empty_pane_replaced session=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" >> "$CC_HOME/logs/server-rs.log"
+      echo "${DIM}$name had a stopped session with only a shell left; starting it again${RESET}"
+      tmux kill-session -t "=$tname" 2>/dev/null || true
+    fi
+  fi
   if ! $dry_run && is_running "$name"; then
     if $detach; then
       echo "${YELLOW}already running:${RESET} $name"
@@ -2293,7 +2340,9 @@ cmd_stop() {
     # Kill tmux directly only when the server cannot be reached.
     if _stop_via_api "$name"; then
       local waited=0
-      while is_running "$name" && (( waited < 30 )); do
+      # The server keeps the pane after a stop, so wait for the agent to
+      # leave it, not for the session to disappear (it never does).
+      while agent_alive "$name" && (( waited < 30 )); do
         sleep 1; waited=$((waited + 1))
       done
     else
@@ -2306,7 +2355,7 @@ cmd_stop() {
 
   # Clean up worktree if one exists for this session
   local wt_dir="$CC_HOME/worktrees/$name"
-  if [[ -d "$wt_dir" ]] && is_running "$name"; then
+  if [[ -d "$wt_dir" ]] && agent_alive "$name"; then
     echo "  ${DIM}worktree kept: $name is still stopping ($wt_dir)${RESET}"
   elif [[ -d "$wt_dir" ]]; then
     # Resolve the repo that owns this worktree from the .git file
