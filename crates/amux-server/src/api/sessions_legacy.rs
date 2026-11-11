@@ -2659,7 +2659,7 @@ const FLEET_LISTING_REUSE: std::time::Duration = std::time::Duration::from_secs(
 static LAST_FLEET_LISTING: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
 
 /// The `list-sessions` text to read the fleet from. A fleet-wide probe that
-/// times out or fails reuses the last good listing for up to two minutes
+/// times out (or cannot spawn tmux) reuses the last good listing for up to two minutes
 /// instead of reading as "no worker is running": on 2026-11-11 at 15:42 a load
 /// spike (49.6 on 28 cores) made two probes miss their budget, and the
 /// dashboard showed every worker stopped while 48 ran (owner: "why did all my
@@ -2673,8 +2673,11 @@ fn fleet_listing(single_lane: bool, out: &Result<std::process::Output, ()>, now:
             }
             Some(text)
         }
-        _ if single_lane => None,
-        _ => {
+        // tmux ran and answered: a non-zero exit with empty output is a real
+        // "no sessions" or "no server", which a cached listing would hide.
+        Ok(o) => Some(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Err(_) if single_lane => None,
+        Err(_) => {
             let last = LAST_FLEET_LISTING.lock().unwrap_or_else(|e| e.into_inner()).clone();
             match last {
                 Some((at, text)) if now.saturating_duration_since(at) <= FLEET_LISTING_REUSE => {
@@ -8784,7 +8787,8 @@ pub(crate) mod tests {
             "an old listing is not reused");
         let bad_exit = Ok(std::process::Output { status: std::process::ExitStatus::from_raw(256), stdout: vec![], stderr: vec![] });
         assert_eq!(fleet_listing(false, &ok("amux-b:1:1:1\n"), t0), Some("amux-b:1:1:1\n".into()));
-        assert_eq!(fleet_listing(false, &bad_exit, t0).as_deref(), Some("amux-b:1:1:1\n"), "a failed tmux exit is a missed probe too");
+        assert_eq!(fleet_listing(false, &bad_exit, t0).as_deref(), Some(""),
+            "tmux answering non-zero (no server, no sessions) is a real empty fleet, not a missed probe");
         // Global: leave nothing for a parallel test that expects an empty fleet.
         *LAST_FLEET_LISTING.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
