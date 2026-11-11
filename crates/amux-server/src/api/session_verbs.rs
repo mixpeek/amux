@@ -36702,7 +36702,9 @@ async fn config_patch_with_liveness(
     if body.get("desc").is_some() || revert {
         let old = cfg.get_or("CC_DESC", "").to_string();
         let new = if revert {
-            match cfg.get("CC_DESC_PREV").filter(|p| !p.trim().is_empty()) {
+            // An empty previous text is a real state to restore: a worker that
+            // had no description before amux wrote one.
+            match cfg.get("CC_DESC_PREV") {
                 Some(p) => p.to_string(),
                 None => return jresp(StatusCode::CONFLICT, json!({"error": "there is no previous description to restore"})),
             }
@@ -48694,6 +48696,10 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         let e = parse_env("probe");
         assert_eq!((e.get("CC_DESC"), e.get("CC_DESC_PREV"), e.get("CC_DESC_LOCK")),
             (Some("a probe"), Some("new desc"), Some("1")), "revert restores the previous text and locks it");
+        std::fs::write(env_path("blank"), "CC_DESC=\"auto text\"\nCC_DESC_PREV=\"\"\nCC_DESC_BY=\"auto\"\n").unwrap();
+        let (st, v) = call(&app, "PATCH", "/api/sessions/blank/config", Some(json!({"desc_revert": true}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("blank").get("CC_DESC"), Some(""), "an empty previous description is restored too");
         let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"desc": "new desc"}))).await;
         assert_eq!(st, StatusCode::OK, "{v}");
         let (st, _) = call(

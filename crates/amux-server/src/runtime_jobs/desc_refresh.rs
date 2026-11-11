@@ -90,23 +90,28 @@ pub(crate) fn prompt(name: &str, desc: &str, work: &[String]) -> String {
          decide what to send this worker by reading it, so it must say what the worker is used for now.\n\n\
          Current description: {current}\n\n\
          Its work over the last two weeks, oldest first:\n{}\n\n\
-         If the current description still fits this work, answer exactly KEEP. Otherwise answer with only the \
-         new description: one line in the same style and about the same length as the current one (at most \
-         160 characters), naming the kinds of work, with no dates, ids, quotes or em-dashes.",
+         If the current description still fits this work, answer exactly KEEP. Otherwise answer with the new \
+         description inside <desc></desc> and nothing else: one line in the same style and about the same \
+         length as the current one (at most 160 characters), naming the kinds of work, with no dates, ids, \
+         quotes or em-dashes.",
         work.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")
     )
 }
 
 /// The model's answer as a new description, or None to keep the current one.
+/// Only text inside `<desc></desc>` counts: on 2026-11-11 the first live run
+/// took a preamble line ("Here's the updated description:") as the
+/// description of amux-security, because the answer was read as its first line.
 pub(crate) fn parse_answer(out: &str, current: &str) -> Option<String> {
-    let line = out.lines().map(str::trim).find(|l| !l.is_empty())?;
-    let line = line.trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
-    let line = line.strip_prefix("Description:").map(str::trim).unwrap_or(line);
-    if line.eq_ignore_ascii_case("KEEP") || line.is_empty() || line.chars().count() > MAX_LEN {
+    let start = out.find("<desc>")? + "<desc>".len();
+    let end = start + out[start..].find("</desc>")?;
+    let text = out[start..end].split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.trim_matches(|c| c == '"' || c == '\'' || c == '`').trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("KEEP") || text.chars().count() > MAX_LEN {
         return None;
     }
-    let line = line.replace(" \u{2014} ", ", ").replace('\u{2014}', ",");
-    (line != current.trim()).then_some(line)
+    let text = text.replace(" \u{2014} ", ", ").replace('\u{2014}', ",");
+    (text != current.trim()).then_some(text)
 }
 
 /// Whether this worker is due: work newer than its last check, and the last
@@ -253,11 +258,15 @@ mod tests {
     #[test]
     fn the_answer_is_keep_or_one_new_line() {
         assert_eq!(parse_answer("KEEP", "a"), None);
-        assert_eq!(parse_answer("keep\n", "a"), None);
-        assert_eq!(parse_answer("a", "a"), None, "the same text is a keep");
-        assert_eq!(parse_answer("\n\"Billing and invoices\"\nbecause...", "a").as_deref(), Some("Billing and invoices"));
-        assert_eq!(parse_answer(&"x".repeat(MAX_LEN + 1), "a"), None, "an essay is not a description");
-        assert_eq!(parse_answer("Ops \u{2014} disk and CPU RCAs", "a").as_deref(), Some("Ops, disk and CPU RCAs"));
+        assert_eq!(parse_answer("<desc>a</desc>", "a"), None, "the same text is a keep");
+        assert_eq!(parse_answer("<desc>\"Billing and\n invoices\"</desc>", "a").as_deref(), Some("Billing and invoices"));
+        assert_eq!(parse_answer(&format!("<desc>{}</desc>", "x".repeat(MAX_LEN + 1)), "a"), None, "an essay is not a description");
+        assert_eq!(parse_answer("<desc>Ops \u{2014} disk and CPU RCAs</desc>", "a").as_deref(), Some("Ops, disk and CPU RCAs"));
+        // The live answer that became amux-security's description: a preamble
+        // with the real text below it and no tags is not taken at all.
+        let live = "Based on the recent work items, the current description of \"(none)\" does not fit. Here's the updated description:\n\nSecurity review of amux";
+        assert_eq!(parse_answer(live, ""), None);
+        assert_eq!(parse_answer("Here it is:\n<desc>Security review of amux</desc>", "").as_deref(), Some("Security review of amux"));
     }
 
     #[test]
