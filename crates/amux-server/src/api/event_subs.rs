@@ -580,9 +580,10 @@ pub(crate) fn judge_allowed(sub_id: i64, now: i64) -> bool {
 pub(crate) fn judge_prompt(criteria: &str, ev: &Value) -> String {
     format!(
         "Someone asked amux to tell them: {criteria}\n\nThis event just happened:\n{}\n\n\
-         Does it match what they asked for? Use what the event shows (a title, a status, a reason); a word \
-         in a URL path alone is weak evidence. If the event does not show that it matches, answer NO. \
-         Answer YES or NO, and nothing else.",
+         Does it match what they asked for? Decide from what the event shows: a title, a status, a reason. \
+         A word in a URL is not enough: if the request is about what a page shows and the event has no \
+         title, answer NO (a later event for the same page carries its title). If the event does not show \
+         that it matches, answer NO. Answer YES or NO, and nothing else.",
         clip(ev.clone())
     )
 }
@@ -685,6 +686,8 @@ mod tests {
 
     #[test]
     fn the_judge_answers_yes_or_no_and_is_capped() {
+        let p = judge_prompt("a browser lands on a sign-in page", &json!({"url": "https://en.wikipedia.org/wiki/Login"}));
+        assert!(p.contains("has no \\\ntitle, answer NO") || p.contains("title, answer NO"), "{p}");
         assert!(judge_says_yes("YES") && judge_says_yes(" yes.") && !judge_says_yes("No") && !judge_says_yes(""));
         let id = 987_654;
         for _ in 0..JUDGE_PER_HOUR {
