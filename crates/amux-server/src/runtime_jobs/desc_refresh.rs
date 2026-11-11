@@ -288,17 +288,17 @@ mod tests {
 
     #[test]
     fn recent_work_reads_the_owners_messages_and_closed_cards() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = crate::db::migrate::test_memdb();
         conn.execute_batch(
-            "CREATE TABLE cmd_history (id INTEGER PRIMARY KEY, text TEXT, type TEXT, session TEXT, ts INTEGER, origin TEXT NOT NULL DEFAULT '');
-             CREATE TABLE issues (id TEXT, title TEXT, session TEXT, status TEXT, updated INTEGER, deleted INTEGER);
-             INSERT INTO cmd_history (text,type,session,ts,origin) VALUES
+            "INSERT INTO cmd_history (text,type,session,ts,origin) VALUES
                ('fix the   invoice\nexport','user','w',100,''),
                ('peer chatter','user','w',110,'other-lane'),
                ('old','user','w',5,''),
                ('relayed ask','chat','W',120,'chat-companion');
-             INSERT INTO issues VALUES ('A-1','Ship billing page','w','done',130,NULL),
-               ('A-2','open card','w','todo',140,NULL), ('A-3','gone','w','done',150,1);",
+             INSERT INTO issues (id,title,desc,status,session,created,updated,owner_type,type,deleted) VALUES
+               ('A-1','Ship billing page','','done','w',1,130,'agent','task',NULL),
+               ('A-2','open card','','todo','w',1,140,'agent','task',NULL),
+               ('A-3','gone','','done','w',1,150,'agent','task',1);",
         ).unwrap();
         let (lines, newest) = recent_work(&conn, "w", 50).unwrap();
         assert_eq!(lines, vec![
