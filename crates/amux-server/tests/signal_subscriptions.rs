@@ -548,6 +548,13 @@ async fn a_board_card_moving_fires_a_card_event() {
     assert_eq!(fires[0]["event_type"], "board.card.moved");
     assert_eq!(fires[0]["event_data"]["title"], "Ship the page");
     assert_eq!(fires[0]["event_data"]["old_status"], "review");
+    // The backtest reads the board's change log too, so the same subscription
+    // made now would show this move in its last 7 days.
+    let (st, v) = post_json(&app, "/api/subscriptions", json!({
+        "pattern": "board.card.moved", "filter": {"field": "status", "op": "eq", "value": "done"}, "dry_run": true,
+    })).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!((v["backtest"]["matched"].as_i64(), v["backtest"]["n_considered"].as_i64()), (Some(1), Some(2)), "{v}");
 }
 
 #[tokio::test]

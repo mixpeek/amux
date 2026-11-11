@@ -386,6 +386,38 @@ pub(crate) fn backtest(conn: &rusqlite::Connection, pattern: &str, filter: &Valu
             }
         }
     }
+    // Board events live in the board's change log, not the ledger: a
+    // board.card.* subscription read "0 of 0" over a busy board (live, 2026-11-11).
+    let mut types = types;
+    if ["board.card.created", "board.card.moved", "board.card.updated", "board.card.deleted"]
+        .iter().any(|t| super::signals::glob_matches(pattern, t))
+    {
+        let mut stmt = conn.prepare(
+            "SELECT seq, changed_at, row_id, operation, old_status, new_status, changed_by FROM board_change_log \
+             WHERE table_name = 'issues' AND changed_at >= ?1 ORDER BY seq DESC LIMIT 5000",
+        )?;
+        type Raw = (i64, f64, String, String, Option<String>, Option<String>, Option<String>);
+        let rows: Vec<Raw> = stmt
+            .query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?
+            .collect::<Result<_, _>>()?;
+        for (seq, ts, id, op, old, new, by) in rows {
+            let (t, session, data) = board_event(conn, &id, &op, old.as_deref(), new.as_deref(), by.as_deref());
+            if !super::signals::glob_matches(pattern, &t) {
+                continue;
+            }
+            scanned += 1;
+            if !types.contains(&t) {
+                types.push(t.clone());
+            }
+            let ev = event_view(&t, &session, "board", &data);
+            if filter_matches(filter, &ev) {
+                matched += 1;
+                if examples.len() < 3 {
+                    examples.push(json!({"id": seq, "ts": ts, "event": clip(ev)}));
+                }
+            }
+        }
+    }
     Ok(json!({"measured": true, "n_considered": scanned, "types": types, "matched": matched, "examples": examples, "days": days}))
 }
 
