@@ -224,13 +224,26 @@ def src_pip(repo):
     # Every requirements/constraints file, so `-r other.txt` includes resolve.
     materialize(repo, tracked(repo, r"(requirements|constraints)[^/]*\.txt$"), Path(td.name))
 
+    uv = shutil.which("uv") or str(HOME / ".local/bin/uv")
+
     def one(rel):
         try:
-            # Prefer wheels: an unpinned file whose newest release has no wheel for this Intel Mac
-            # otherwise builds it from source past the timeout (amux-GTM, 2026-11-10). Wheels ONLY
-            # failed a package that ships no wheel at all (rumps in amux procwarden, 2026-11-11).
-            _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
-                           env={"PIP_PREFER_BINARY": "1"})
+            # Resolve as the Linux the code ships to, then audit those pins. Resolving on this
+            # Intel Mac picked the last release with a Mac x86_64 wheel (cryptography 48.0.1 where
+            # Linux installs 50.0.2) and reported 18 advisories production does not have (2026-11-11).
+            pinned = f"{rel}.linux-pins"
+            rc, _, _ = run([uv, "pip", "compile", "-q", "--python-platform", "x86_64-manylinux_2_28",
+                            "--python-version", "3.11", rel, "-o", pinned], cwd=td.name, timeout=300) \
+                if Path(uv).exists() else (1, "", "")
+            if rc == 0:
+                _, j, se = run([pa, "-r", pinned, "--no-deps", "--disable-pip", "-f", "json",
+                                "--progress-spinner", "off"], cwd=td.name, timeout=600)
+            else:
+                # No Linux resolution (a Mac-only file such as amux procwarden's rumps): resolve here,
+                # preferring wheels so an unpinned package without one for this Mac takes an older
+                # wheel instead of building from source past the timeout (amux-GTM, 2026-11-10).
+                _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
+                               env={"PIP_PREFER_BINARY": "1"})
             rep = json.loads(j)
         except Exception as e:
             return [], f"{rel}: {e}"[:200]
