@@ -766,7 +766,10 @@ jobs:
         # azure.archive.ubuntu.com (exit 100) while security.ubuntu.com
         # answered. Retry, then fall back to archive.ubuntu.com and say so.
         run: |
-          pkgs="python3 tmux openssl lsof procps rsync"
+          # unzip: on Linux the file viewer lists a .zip with unzip or bsdtar
+          # (api/file_viewer/preview.rs), and this image has neither, so
+          # file-viewer-binary-previews failed on every run from 11-08 (AMUX-6795).
+          pkgs="python3 tmux openssl lsof procps rsync unzip"
           apt_install() {
             apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends $pkgs
