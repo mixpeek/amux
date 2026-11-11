@@ -34842,7 +34842,7 @@ async fn patch_dispatch(state: &AppState, name: &str, action: &str, body: &Value
     if let Some(refusal) = membership_patch_refusal(headers, body.get("tags").is_some()) { return refusal; }
     match action {
         "commit-guard" => commit_guard_patch_verb(name, body),
-        "config" => config_patch(state, name, body).await,
+        "config" => config_patch(state, name, &with_desc_writer(body, headers)).await,
         _ => not_found(),
     }
 }
@@ -35904,6 +35904,24 @@ async fn apply_live_config_change(
 /// several branches write one field and then reject a second. Clearing a cache
 /// that did not need clearing costs one rebuild; NOT clearing one that did is
 /// the bug this fixes.
+/// Who a description edit comes from: the worker named by the request's
+/// session header, else the owner. Carried in the body as `_desc_by` so
+/// `config_patch` keeps its one signature.
+pub(crate) fn with_desc_writer(body: &Value, headers: &HeaderMap) -> Value {
+    let mut b = body.clone();
+    if let Some(o) = b.as_object_mut() {
+        if o.contains_key("desc") || o.contains_key("desc_revert") {
+            let w = super::groups::hdr_worker(headers);
+            o.insert("_desc_by".into(), json!(if w.is_empty() { "owner".to_string() } else { w }));
+        }
+    }
+    b
+}
+
+fn desc_writer(body: &Value) -> String {
+    body.get("_desc_by").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("owner").to_string()
+}
+
 pub(crate) fn membership_patch_refusal(headers: &HeaderMap, membership_named: bool) -> Option<Response> {
     if !membership_named || hdr_worker(headers).is_empty() || super::org::local_member_actor(headers).is_some()
         || admin_origin(headers, "group_membership").is_some() { return None; }
@@ -36666,9 +36684,41 @@ async fn config_patch_with_liveness(
         return j200(json!({"ok": true, "message": "task label updated"}));
     }
 
-    // Description (py:76667).
-    if let Some(dv) = body.get("desc") {
-        cfg.set("CC_DESC", dv.as_str().unwrap_or("").trim());
+    // Lock or unlock the description against the automatic refresh
+    // (runtime_jobs::desc_refresh). Unlocking hands it back to amux.
+    if let Some(lock) = body.get("desc_lock") {
+        if py_truthy(lock) { cfg.set("CC_DESC_LOCK", "1") } else { cfg.remove("CC_DESC_LOCK") }
+        if let Err(e) = cfg.write(&f) {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": env_write_error(&f, &e)}));
+        }
+        return j200(json!({"ok": true, "message": if py_truthy(lock) { "description locked" } else { "description unlocked: amux keeps it current" }}));
+    }
+
+    // Description (py:76667). A hand edit records who wrote it and keeps the
+    // text it replaced; the owner's own edit also locks it, so the automatic
+    // refresh never overwrites what the owner wrote. `desc_revert` puts the
+    // previous text back the same way.
+    let revert = body.get("desc_revert").map(py_truthy).unwrap_or(false);
+    if body.get("desc").is_some() || revert {
+        let old = cfg.get_or("CC_DESC", "").to_string();
+        let new = if revert {
+            match cfg.get("CC_DESC_PREV").filter(|p| !p.trim().is_empty()) {
+                Some(p) => p.to_string(),
+                None => return jresp(StatusCode::CONFLICT, json!({"error": "there is no previous description to restore"})),
+            }
+        } else {
+            body["desc"].as_str().unwrap_or("").trim().to_string()
+        };
+        let by = desc_writer(body);
+        if new != old {
+            cfg.set("CC_DESC_PREV", &old);
+        }
+        cfg.set("CC_DESC", &new);
+        cfg.set("CC_DESC_BY", &by);
+        cfg.set("CC_DESC_AT", &now_i64().to_string());
+        if by == "owner" {
+            cfg.set("CC_DESC_LOCK", "1");
+        }
         if let Err(e) = cfg.write(&f) {
             return jresp(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -36680,9 +36730,11 @@ async fn config_patch_with_liveness(
         // visible where peers actually read it, rather than only in this
         // worker's env file where nobody looks.
         let refreshed = refresh_fleet_rosters();
+        emit_event(state, name, "session.desc_updated",
+            Some(json!({"from": old, "to": new, "by": by, "revert": revert})), None, "config").await;
         return j200(json!({
             "ok": true,
-            "message": "description updated",
+            "message": if revert { "previous description restored" } else { "description updated" },
             "rosters_refreshed": refreshed,
         }));
     }
@@ -48573,6 +48625,16 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             "clearing removes the key on both sides");
     }
 
+    #[test]
+    fn a_description_edit_names_its_writer() {
+        let mut h = HeaderMap::new();
+        assert_eq!(with_desc_writer(&json!({"desc": "x"}), &h)["_desc_by"], json!("owner"));
+        h.insert("x-amux-session", "backend".parse().unwrap());
+        let b = with_desc_writer(&json!({"desc": "x"}), &h);
+        assert_eq!(desc_writer(&b), "backend", "a worker editing its own description does not lock it as the owner's");
+        assert!(with_desc_writer(&json!({"tags": "a"}), &h).get("_desc_by").is_none());
+    }
+
     #[tokio::test]
     async fn file_backed_verbs_roundtrip_hermetically() {
         let home = tempfile::tempdir().unwrap();
@@ -48619,6 +48681,21 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(parse_env("probe").get("CC_DESC"), Some("new desc"));
+        // The owner's hand edit keeps what it replaced and locks it against
+        // the automatic refresh (runtime_jobs::desc_refresh).
+        let e = parse_env("probe");
+        assert_eq!((e.get("CC_DESC_PREV"), e.get("CC_DESC_BY"), e.get("CC_DESC_LOCK")),
+            (Some("a probe"), Some("owner"), Some("1")));
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"desc_lock": false}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(parse_env("probe").get("CC_DESC_LOCK"), None, "unlocked: amux may keep it current");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"desc_revert": true}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let e = parse_env("probe");
+        assert_eq!((e.get("CC_DESC"), e.get("CC_DESC_PREV"), e.get("CC_DESC_LOCK")),
+            (Some("a probe"), Some("new desc"), Some("1")), "revert restores the previous text and locks it");
+        let (st, v) = call(&app, "PATCH", "/api/sessions/probe/config", Some(json!({"desc": "new desc"}))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
         let (st, _) = call(
             &app,
             "PATCH",

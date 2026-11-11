@@ -1168,6 +1168,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
+| app.js | … | `` | onclick |
 | index.html | Change your picture | `` | onclick |
 | index.html | Clear cache | `` | onclick |
 | index.html | Clear cache | `` | onclick |

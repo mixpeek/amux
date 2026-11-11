@@ -1386,6 +1386,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_descLockToggle": {
+      "kind": "command._descLockToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_descPatch": {
+      "kind": "command._descPatch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_descRevert": {
+      "kind": "command._descRevert",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictAddWord": {
       "kind": "command._dictAddWord",
       "feedback_required": true,

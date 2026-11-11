@@ -14137,6 +14137,44 @@ async function _boardOneSet(name, on) {
   }
 }
 
+// Who wrote the description and whether amux keeps it current
+// (runtime_jobs/desc_refresh.rs). The owner's own edit locks it; Revert puts
+// back the text the last change replaced.
+function _descNote(s) {
+  if (s.isolated) return 'Description for the owner; isolated workers are hidden from peers.';
+  const m = s.desc_meta || {};
+  const when = m.at ? ' ' + timeAgo(m.at) : '';
+  const by = m.by === 'auto' ? 'Updated by amux from recent work' + when
+    : m.by === 'owner' ? 'Written by you' + when
+    : m.by ? 'Written by ' + m.by + when : '';
+  const keep = m.locked ? 'Locked: amux will not change it.' : 'amux keeps it current with this worker\'s work.';
+  return (by ? by + (m.prev ? ', was "' + m.prev + '"' : '') + '. ' : '') + 'Used by people and peer-worker discovery. ' + keep;
+}
+
+function _descControls(s, q) {
+  if (s.isolated) return '';
+  const m = s.desc_meta || {};
+  const b = (fn, label, extra) => ' <button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
+    + (extra || '') + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
+  return (m.prev ? b('_descRevert', 'Revert', ' title="Restore: ' + esc(m.prev) + '"') : '')
+    + b('_descLockToggle', m.locked ? 'Unlock' : 'Lock', ' aria-pressed="' + !!m.locked + '" title="' + (m.locked ? 'Let amux keep it current' : 'Stop amux changing it') + '"');
+}
+
+async function _descPatch(name, body, done) {
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (!r) return;  // apiCall already said why
+  const d = await r.json().catch(() => ({}));
+  showToast(d.message || done);
+  fetchSessions();
+}
+function _descRevert(name) { return _descPatch(name, { desc_revert: true }, 'Previous description restored'); }
+function _descLockToggle(name) {
+  const s = (sessions || []).find(x => x.name === name) || {};
+  return _descPatch(name, { desc_lock: !(s.desc_meta || {}).locked }, 'Saved');
+}
+
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
     + '<div class="worker-config-copy"><div class="worker-config-label">'
@@ -14229,7 +14267,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
     _workerConfigurationRow('name', 'Name', s.name || name, s.isolated ? 'Renaming preserves messages and worker identity.' : 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
-    _workerConfigurationRow('description', 'Description', s.desc || '', s.isolated ? 'Description for the owner; isolated workers are hidden from peers.' : 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
+    _workerConfigurationRow('description', 'Description', s.desc || '', _descNote(s), edit('desc', s.desc || '') + _descControls(s, q)),
     _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];

@@ -77,6 +77,7 @@ pub mod heartbeat;
 pub mod goal_check;
 pub mod goal_keeper;
 pub mod task_titles;
+pub mod desc_refresh;
 pub mod host_guard;
 pub mod host_metrics;
 mod log_retention;

@@ -7387,6 +7387,14 @@ fn python_fleet_sessions(signals: &FleetSignals) -> Vec<serde_json::Value> {
             "preview": "",
             "task_name": "",
             "desc": env.get("CC_DESC").cloned().unwrap_or_default(),
+            // Who last wrote the description, what it replaced and whether
+            // the automatic refresh may change it (runtime_jobs::desc_refresh).
+            "desc_meta": {
+                "by": env.get("CC_DESC_BY").cloned().unwrap_or_default(),
+                "prev": env.get("CC_DESC_PREV").cloned().unwrap_or_default(),
+                "at": env.get("CC_DESC_AT").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0),
+                "locked": env.get("CC_DESC_LOCK").map(|v| v == "1").unwrap_or(false),
+            },
             // TRIMMED, matching Python's t.strip(): CC_TAGS="mvs, gtm"
             // otherwise yields " gtm" beside "gtm" — TWO gtm groups in the
             // UI (Ethan's finding).
