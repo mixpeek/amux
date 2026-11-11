@@ -1411,7 +1411,10 @@ async fn execute_send_action(state: &AppState, target: &str, text: &str) -> Stri
     )
     .await
     {
-        Ok(_) => "delivered".to_string(),
+        // Steering hands it to the worker at its next turn boundary; until
+        // then it is queued, and saying "delivered" claimed more than happened
+        // (live, 2026-11-11: a busy lane's wake sat in steering_queue).
+        Ok(_) => "queued".to_string(),
         Err(reason) => format!("refused:{reason}"),
     }
 }
