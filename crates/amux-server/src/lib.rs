@@ -709,6 +709,11 @@ async fn async_main() {
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
     drop(runtime_jobs::ledger_checkpoint::spawn(state.clone()));
+    // Encryption at rest (governance PR 18): seal any plain connector grant
+    // once per boot. Reads seal lazily too; this pass covers grants nothing reads.
+    tokio::task::spawn_blocking(|| {
+        crate::integrations::at_rest::migrate_home(&crate::config::amux_home());
+    });
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));

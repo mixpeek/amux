@@ -171,6 +171,9 @@ impl Rig {
             .env("HOME", self.home.join("fixture-home"))
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("AMUX_HOME", &self.home)
+            // These tests read grant files on disk to prove durability; sealing
+            // is covered by e2e/chaos/encryption-at-rest.mjs (governance PR 18).
+            .env("AMUX_ENCRYPT_AT_REST", "off")
             .env("AMUX_DB", &self.db)
             .env("TMUX_TMPDIR", self._tmp.path())
             .env("AMUX_NO_SELF_ADOPT", "1")

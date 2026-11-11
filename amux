@@ -1802,6 +1802,18 @@ PYAUDIT
 # then the ledger's hash at the newest checkpoint's seq is compared, from a
 # copy of the database (--db, every checkpoint, every row re-hashed here) or
 # from the server (GET /api/ledger/at/<seq>).
+cmd_security() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    at-rest) _curl -sk -m 60 "$api/api/security/at-rest" || die "server unreachable"; echo ;;
+    decrypt-grants) _curl -sk -m 120 -X POST "$api/api/security/at-rest/decrypt" || die "server unreachable"; echo ;;
+    *) echo "usage: amux security at-rest          what is encrypted at rest, and where the key lives
+       amux security decrypt-grants   rewrite sealed connector grants as plain files (owner; needs AMUX_ENCRYPT_AT_REST=off)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
 cmd_ledger() {
   local sub="${1:-}"; shift || true
   local api="${AMUX_API:-$(cmd_url)}"
@@ -7000,6 +7012,7 @@ ${BOLD}Interaction:${RESET}
                                  worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
   amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
+  amux security at-rest | decrypt-grants   What is encrypted at rest; the owner's way back to plain grant files
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
@@ -12854,6 +12867,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     post)             shift; cmd_post "$@" ;;
     audit)            shift; cmd_audit "$@" ;;
     ledger)           shift; cmd_ledger "$@" ;;
+    security)         shift; cmd_security "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;
