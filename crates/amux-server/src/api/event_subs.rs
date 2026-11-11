@@ -41,15 +41,22 @@ pub(crate) fn ensure_columns(conn: &rusqlite::Connection) -> rusqlite::Result<()
             .collect::<Result<_, _>>()?;
         for (name, ty) in cols {
             if !have.iter().any(|h| h == name) {
-                // A read connection cannot ALTER; the migration already did it there.
-                let _ = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {ty}"), []);
+                // Two connections can race to add the same column; the loser's
+                // "duplicate column" is the outcome both wanted.
+                if let Err(e) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {ty}"), []) {
+                    if !e.to_string().contains("duplicate column") {
+                        tracing::warn!(target: "amux::signals", table, column = name, error = %e,
+                            verdict = "subscription_column_add_failed", "could not add an event-subscription column");
+                        return Err(e);
+                    }
+                }
             }
         }
     }
-    let _ = conn.execute(
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS event_dispatch_cursor (name TEXT PRIMARY KEY, last_id INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
         [],
-    );
+    )?;
     Ok(())
 }
 

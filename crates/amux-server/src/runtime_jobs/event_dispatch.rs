@@ -51,7 +51,7 @@ pub(crate) fn start_at(stored: Option<i64>, head: i64) -> (i64, i64) {
 
 async fn save(state: &AppState, name: &'static str, id: i64) {
     let now = chrono::Utc::now().timestamp();
-    let _ = state
+    let saved = state
         .store
         .write_async(move |conn| {
             crate::api::event_subs::ensure_columns(conn)?;
@@ -63,6 +63,12 @@ async fn save(state: &AppState, name: &'static str, id: i64) {
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
         .await;
+    // An unsaved cursor costs a replay after the next restart, never a lost
+    // event; say so, because the replay would look like duplicate fires.
+    if let Err(e) = saved {
+        tracing::warn!(job = JOB, table = name, last_id = id, error = %e, verdict = "event_dispatch_cursor_unsaved",
+            "event dispatcher could not store its cursor; a restart will replay from the last saved one");
+    }
 }
 
 struct Row {
