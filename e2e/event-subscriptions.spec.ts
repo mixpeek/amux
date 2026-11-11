@@ -62,7 +62,9 @@ test('the owner subscribes from the Scheduler, it fires on a real event, and it 
 
   // A real matching event fires it; a non-matching one does not.
   const emit = (reason: string) => request.post('/api/subscriptions/emit', { headers: auth,
-    data: { type: 'browser.blocked', session: 'amux', data: { reason, url: 'https://www.google.com/recaptcha/api2/demo' } } });
+    // The fields a real browser.blocked carries (browser_routing.rs blocked_event).
+    data: { type: 'browser.blocked', session: 'amux', data: { reason, provider: 'recaptcha', worker: 'amux',
+      url: 'https://www.google.com/recaptcha/api2/demo' } } });
   expect((await (await emit('captcha')).json()).subscriptions_fired.length).toBe(1);
   expect((await (await emit('login')).json()).subscriptions_fired.length).toBe(0);
   await page.evaluate(() => (window as any)._evRefresh());
