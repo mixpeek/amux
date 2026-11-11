@@ -227,6 +227,9 @@ mod tests {
             (Some("action"), Some("type"), Some("amux"), Some("netsuite")));
         assert_eq!((e["ok"].as_bool(), e["latency_ms"].as_u64(), e["via"].as_str()), (Some(true), Some(42), Some("route")));
         assert_eq!(e["typed_chars"], 16);
+        let titled = route_audit_event("state", &serde_json::json!({}),
+            &serde_json::json!({"ok":true,"url":"https://en.wikipedia.org/wiki/Login","title":"Login - Wikipedia"}), StatusCode::OK, 5);
+        assert_eq!(titled["title"], "Login - Wikipedia", "the title is recorded so a judge or filter can read it");
 
         let failed = route_audit_event("start", &serde_json::json!({"url":"https://x.example/"}),
             &serde_json::json!({"error":"page did not load; api_key=sk-live-SECRETSECRET1234"}), StatusCode::BAD_GATEWAY, 7);
@@ -533,6 +536,12 @@ fn route_audit_event(verb: &str, body: &Value, v: &Value, status: StatusCode, la
     if let Some(o) = ev.as_object_mut() {
         o.insert("verb".into(), json!(verb));
         o.insert("url_after".into(), json!(super::browser::audit_url(&page)));
+        // The page's title, when the route returned one: a URL alone could not
+        // tell a sign-in page from an article about signing in (live judge,
+        // 2026-11-11: /wiki/Login read as a login page).
+        if let Some(t) = first_str(&["/title", "/data/title", "/state/title", "/page/title"]).filter(|t| !t.is_empty()) {
+            o.insert("title".into(), json!(t.chars().take(160).collect::<String>()));
+        }
         if let Some(target) = body.get("url").and_then(Value::as_str) {
             o.insert("target_url".into(), json!(super::browser::audit_url(target)));
         }

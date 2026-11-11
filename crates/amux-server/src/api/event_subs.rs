@@ -458,7 +458,9 @@ pub(crate) fn compile_prompt(criteria: &str, catalog: &Value) -> String {
          Request: {criteria}\n\n\
          Event types amux emits, with their fields and a real example:\n{}\n\n\
          In every event, `session` is the amux name of the worker it is about (such as \"backend\"), and \
-         `type` is the event type. Match a worker by `session`, never by an id field.\n\n\
+         `type` is the event type. Match a worker by `session`, never by an id field. When several types \
+         carry the fields you need (a page's url or title is on every browser.route.* event), use the prefix \
+         pattern rather than the busiest single type.\n\n\
          Answer with one JSON object inside <json></json> and nothing else:\n\
          {{\"pattern\": an event type from the list, or a prefix ending in \".*\",\n\
           \"filter\": a predicate over the fields, built from {{\"all\": [..]}}, {{\"any\": [..]}}, {{\"not\": f}} and \
@@ -578,7 +580,9 @@ pub(crate) fn judge_allowed(sub_id: i64, now: i64) -> bool {
 pub(crate) fn judge_prompt(criteria: &str, ev: &Value) -> String {
     format!(
         "Someone asked amux to tell them: {criteria}\n\nThis event just happened:\n{}\n\n\
-         Does it match what they asked for? Answer YES or NO, and nothing else.",
+         Does it match what they asked for? Use what the event shows (a title, a status, a reason); a word \
+         in a URL path alone is weak evidence. If the event does not show that it matches, answer NO. \
+         Answer YES or NO, and nothing else.",
         clip(ev.clone())
     )
 }
