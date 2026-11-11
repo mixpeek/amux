@@ -226,10 +226,11 @@ def src_pip(repo):
 
     def one(rel):
         try:
-            # Wheels only: an unpinned file whose newest release has no wheel for this Intel Mac
-            # otherwise builds it from source and runs past the timeout (amux-GTM, 2026-11-10).
+            # Prefer wheels: an unpinned file whose newest release has no wheel for this Intel Mac
+            # otherwise builds it from source past the timeout (amux-GTM, 2026-11-10). Wheels ONLY
+            # failed a package that ships no wheel at all (rumps in amux procwarden, 2026-11-11).
             _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
-                           env={"PIP_ONLY_BINARY": ":all:"})
+                           env={"PIP_PREFER_BINARY": "1"})
             rep = json.loads(j)
         except Exception as e:
             return [], f"{rel}: {e}"[:200]
