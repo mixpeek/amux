@@ -1282,7 +1282,11 @@ async fn async_main() {
     boot_watch::step("publish_endpoint");
     legacy_port::publish_endpoint(&cfg.amux_home, cfg.port, None);
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], cfg.port));
+    let addr = std::net::SocketAddr::new(cfg.bind, cfg.port);
+    if let Some(bad) = &cfg.bind_rejected {
+        tracing::warn!(value = %bad, fallback = %cfg.bind, verdict = "bind_value_rejected",
+            "AMUX_RS_BIND is not an IP address; binding the default instead");
+    }
     // HOW LONG AFTER `record_boot` DID WE ACTUALLY START SERVING (AMUX-3647).
     //
     // The card proposed a `ready_at` COLUMN on `_amux_request_log` so the

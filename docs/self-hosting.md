@@ -202,6 +202,7 @@ Server configuration lives in `~/.amux/server.env` (plain `KEY=value`; process e
 | Variable | What |
 |---|---|
 | `AMUX_RS_PORT` | server port (installer sets 8824) |
+| `AMUX_RS_BIND` | IP address the listeners bind (default `0.0.0.0`, every IPv4 interface; `127.0.0.1` for loopback only). A value that is not an IP is logged as `bind_value_rejected` and the default is used |
 | `AMUX_HOME` | data dir (default `~/.amux`) |
 | `AMUX_DB` | SQLite path (default `$AMUX_HOME/amux.db`) |
 | `AMUX_HERDR_SESSION` | herdr session hosting amux workspaces (enables the herdr backend) |
