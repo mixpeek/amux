@@ -152,6 +152,7 @@ pub mod simple;
 pub mod skill_examples;
 pub mod skills;
 pub mod signals;
+pub mod event_subs;
 pub mod standing_approvals;
 pub mod skin;
 pub mod speedtest;

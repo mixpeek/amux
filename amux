@@ -6781,6 +6781,12 @@ ${BOLD}Coordination:${RESET}
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
+  amux events [ls [filter] | tail [pattern]]
+                                 Every event amux emits (type, fields, count), or follow them live
+  amux subscribe "<plain words>" [--notify | --to <worker>] [--judge] [--dry-run]
+                                 Be told when it happens: a worker is woken, the owner gets a #general post
+  amux subscriptions [ls | fires [id] | on|off|rm <id>]
+                                 Your subscriptions and what they fired
   amux watch add file --path P [--regex R] | add ci --repo O/R --run ID
                                  Wake YOUR lane once when a file lands or a CI run concludes
   amux watch ls | rm <ID>        Your watches, measured or not; remove one
@@ -12460,6 +12466,125 @@ print(json.dumps({"scheduled_at": os.environ["I"], "force": os.environ["Fz"] == 
   esac
 }
 
+# Event subscriptions (docs/design/event-subscriptions.md): the catalog of
+# events, a live tail, and subscribing in plain words.
+cmd_events() {
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  case "$sub" in
+    ls|list|catalog)
+      _curl -sk "$AMUX_API/api/subscriptions/catalog" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("measured"):
+    sys.exit("events: catalog not measured: " + str(d.get("why_unmeasured")))
+q = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+for t in d["types"]:
+    if q and q not in t["type"].lower():
+        continue
+    fields = ", ".join(f for f in t["fields"] if f not in ("type", "session", "source"))
+    print(f"{t[\"count\"]:>7}  {t[\"type\"]}" + ("" if t["documented"] else "  (undocumented)"))
+    if t.get("meaning"):
+        print("         " + t["meaning"])
+    if fields:
+        print("         fields: " + fields)
+print(f"\n{d[\"count\"]} types, {d[\"n_considered\"]} events in the last {d[\"days\"]} days ({d[\"undocumented\"]} undocumented).", file=sys.stderr)
+' "${1:-}" ;;
+    tail)
+      local pattern="${1:-*}" after=0
+      echo "Following events matching $pattern (Ctrl-C to stop)" >&2
+      while true; do
+        local out
+        out=$(_curl -sk "$AMUX_API/api/subscriptions/events?pattern=$(printf '%s' "$pattern" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read()))')&after=$after&limit=200") || { sleep 2; continue; }
+        after=$(printf '%s' "$out" | python3 -c '
+import json, sys, datetime
+d = json.load(sys.stdin)
+for e in d.get("events", []):
+    t = datetime.datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
+    print(f"{t}  {e[\"type\"]:<28} {e[\"session\"]:<22} {json.dumps(e[\"data\"])[:160]}", file=sys.stderr)
+print(d.get("last_id", 0))
+' 2>&2) || after=0
+        sleep 2
+      done ;;
+    *) die "Usage: amux events [ls [filter] | tail [pattern]]" ;;
+  esac
+}
+
+cmd_subscribe() {
+  local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
+  local criteria="" action="" target="" dry=false judge=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --notify)   action="notify"; target="owner"; shift ;;
+      --to)       action="send"; target="${2:-}"; shift 2 ;;
+      --dry-run)  dry=true; shift ;;
+      --judge)    judge=true; shift ;;
+      --stdin)    criteria="$(cat)"; shift ;;
+      -h|--help)  die "Usage: amux subscribe \"<what to be told about, in plain words>\" [--notify | --to <worker>] [--judge] [--dry-run]" ;;
+      *)          criteria="${criteria:+$criteria }$1"; shift ;;
+    esac
+  done
+  [[ -n "$criteria" ]] || die "Usage: amux subscribe \"<what to be told about, in plain words>\" [--notify | --to <worker>] [--judge] [--dry-run]"
+  local body hdr=()
+  body=$(C="$criteria" A="$action" T="$target" D="$dry" J="$judge" python3 -c '
+import json, os
+b = {"criteria": os.environ["C"], "dry_run": os.environ["D"] == "true"}
+if os.environ["J"] == "true":
+    b["judge"] = True
+if os.environ["A"]:
+    b["action"], b["action_target"] = os.environ["A"], os.environ["T"]
+print(json.dumps(b))')
+  [[ -n "$me" ]] && hdr=(-H "X-Amux-Session: $me")
+  printf '%s' "$body" | _curl -sk -X POST -H 'Content-Type: application/json' "${hdr[@]}" -d @- "$AMUX_API/api/subscriptions" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"):
+    sys.exit("amux subscribe: " + d["error"])
+c = d.get("compiled") or {}
+print(("Would subscribe" if d.get("dry_run") else f"Subscribed #{d.get(\"id\")} {d.get(\"name\")}") + ":")
+if c.get("summary"):
+    print("  matches: " + c["summary"])
+print("  events:  " + str(d.get("pattern")) + (" where " + json.dumps(d.get("filter")) if d.get("filter") not in (None, {}) else ""))
+if d.get("judge") or c.get("judge"):
+    print("  judged:  the helper model checks each match against your words")
+print("  then:    " + str(d.get("action")) + " -> " + str(d.get("action_target")))
+b = d.get("backtest") or {}
+if b.get("measured"):
+    print(f"  last 7 days: {b[\"matched\"]} of {b[\"n_considered\"]} events would have matched")
+'
+}
+
+cmd_subscriptions() {
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
+  case "$sub" in
+    ls|list)
+      _curl -sk "$AMUX_API/api/subscriptions${1:+?owner=$1}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get("subscriptions", []):
+    state = "on " if s["enabled"] else "off"
+    print(f"#{s[\"id\"]:<4} {state} {s[\"name\"]:<36} {s[\"pattern\"]:<24} -> {s[\"action\"]} {s[\"action_target\"]}  fired {s[\"fire_count\"]}x  owner {s.get(\"owner\") or \"-\"}")
+    if s.get("criteria"):
+        print("      " + s["criteria"])
+print(f"{d.get(\"count\", 0)} subscriptions", file=sys.stderr)
+' ;;
+    fires)
+      _curl -sk "$AMUX_API/api/subscriptions/fires?limit=${2:-20}${1:+&subscription_id=$1}" | python3 -c '
+import json, sys
+for f in json.load(sys.stdin).get("fires", []):
+    print(f"{f[\"fired_at_iso\"]}  {f[\"subscription_name\"]:<32} {f[\"event_type\"]:<24} {f[\"outcome\"]}")
+' ;;
+    on|off)
+      [[ -n "${1:-}" ]] || die "Usage: amux subscriptions $sub <id>"
+      _curl -sk -X PATCH -H 'Content-Type: application/json' -d "{\"enabled\": $([[ $sub == on ]] && echo true || echo false)}" \
+        "$AMUX_API/api/subscriptions/$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or ("#%s %s" % (d["id"], "on" if d["enabled"] else "off")))' ;;
+    rm|delete)
+      [[ -n "${1:-}" ]] || die "Usage: amux subscriptions rm <id>"
+      _curl -sk -X DELETE "$AMUX_API/api/subscriptions/$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or "deleted #%s" % d["deleted"])' ;;
+    *) die "Usage: amux subscriptions [ls [owner] | fires [id] | on <id> | off <id> | rm <id>]" ;;
+  esac
+}
+
 cmd_signal() {
   local sub="${1:-help}"; shift 2>/dev/null || true
   local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
@@ -12582,6 +12707,9 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
+    events)           shift; cmd_events "$@" ;;
+    subscribe)        shift; cmd_subscribe "$@" ;;
+    subscriptions)    shift; cmd_subscriptions "$@" ;;
     social)           shift; cmd_social "$@" ;;
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;

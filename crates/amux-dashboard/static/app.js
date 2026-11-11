@@ -14137,6 +14137,96 @@ async function _boardOneSet(name, on) {
   }
 }
 
+// Event subscriptions (docs/design/event-subscriptions.md): what this worker is
+// woken for, added in plain words. The server compiles the words into an
+// event filter and backtests it; the confirm shows both before saving.
+function _subsRow(name, q) {
+  const id = 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_');
+  setTimeout(() => _subsFill(name, id), 0);
+  const b = (fn, label) => ' <button class="btn worker-config-btn" onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
+  return _workerConfigurationRow('subscriptions', 'Subscriptions', '', '', b('_subsAdd', 'Add') + b('_subsManage', 'Manage'))
+    .replace('<div class="worker-config-note">', '<div class="worker-config-note"><span id="' + id + '">Loading…</span>');
+}
+
+async function _subsFor(name) {
+  const r = await apiCall(API + '/api/subscriptions');
+  if (!r) return null;
+  const d = await r.json().catch(() => ({}));
+  return (d.subscriptions || []).filter(x => x.owner === name || (x.action === 'send' && x.action_target === name));
+}
+
+async function _subsFill(name, id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const subs = await _subsFor(name);
+  if (!subs) { el.textContent = 'Could not load subscriptions.'; return; }
+  const on = subs.filter(x => x.enabled);
+  el.textContent = on.length
+    ? on.length + ' active: ' + on.map(x => x.criteria || x.pattern).join('; ')
+    : 'None. Add one in plain words to wake this worker when something happens, instead of polling.';
+}
+
+async function _subsAdd(name) {
+  const words = await showPrompt('Wake ' + name + ' when… (plain words)', 'e.g. a browser hits a captcha');
+  if (!words) return;
+  const post = (body) => apiCall(API + '/api/subscriptions', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({ criteria: words, action: 'send', action_target: name }, body)),
+  });
+  showToast('Reading “' + words + '”…');
+  const r = await post({ dry_run: true });
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  const c = d.compiled || {};
+  const b = d.backtest || {};
+  const lines = [
+    c.summary || ('Events: ' + d.pattern),
+    'Events: ' + d.pattern + (d.filter && Object.keys(d.filter).length ? ' where ' + JSON.stringify(d.filter) : ''),
+    b.measured ? ('Last 7 days: ' + b.matched + ' of ' + b.n_considered + ' events would have matched.') : '',
+    c.judge ? 'The helper model checks each match against your words.' : '',
+    'When it fires, ' + name + ' gets a message.',
+  ].filter(Boolean);
+  if (!await showConfirm(lines.join('\n'), 'Subscribe')) return;
+  // Save exactly what the confirm showed: a second compile could differ.
+  const r2 = await post({ pattern: d.pattern, filter: d.filter, judge: !!c.judge, dedupe_key: c.dedupe_key || '' });
+  if (!r2) return;
+  const d2 = await r2.json().catch(() => ({}));
+  showToast('Subscribed: ' + (d2.criteria || d2.name));
+  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
+}
+
+async function _subsManage(name) {
+  const subs = await _subsFor(name);
+  if (!subs) return;
+  const rows = subs.length ? subs.map(x => '<div class="worker-config-row" data-sub="' + x.id + '"><div class="worker-config-copy">'
+      + '<div class="worker-config-label">' + esc(x.criteria || x.name) + '</div>'
+      + '<div class="worker-config-note">' + esc(x.pattern) + ' · fired ' + x.fire_count + '×' + (x.enabled ? '' : ' · off') + '</div></div>'
+      + '<div class="worker-config-actions">'
+      + '<button class="btn worker-config-btn" onclick="_subsSet(' + x.id + ',' + !x.enabled + ',\'' + escJs(name) + '\')">' + (x.enabled ? 'Turn off' : 'Turn on') + '</button>'
+      + ' <button class="btn worker-config-btn danger" onclick="_subsRemove(' + x.id + ',\'' + escJs(name) + '\')">Remove</button>'
+      + '</div></div>').join('')
+    : '<div class="worker-config-note">No subscriptions yet.</div>';
+  showFormModal(name + ' subscriptions', rows, 'Done');
+}
+
+async function _subsSet(id, enabled, name) {
+  const r = await apiCall(API + '/api/subscriptions/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled }),
+  });
+  if (!r) return;
+  showToast(enabled ? 'Subscription on' : 'Subscription off');
+  _subsManage(name);
+  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
+}
+
+async function _subsRemove(id, name) {
+  const r = await apiCall(API + '/api/subscriptions/' + id, { method: 'DELETE' });
+  if (!r) return;
+  showToast('Subscription removed');
+  _subsManage(name);
+  _subsFill(name, 'subs-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_'));
+}
+
 // Who wrote the description and whether amux keeps it current
 // (runtime_jobs/desc_refresh.rs). The owner's own edit locks it; Revert puts
 // back the text the last change replaced.
@@ -14270,6 +14360,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     _workerConfigurationRow('description', 'Description', s.desc || '', _descNote(s), edit('desc', s.desc || '') + _descControls(s, q)),
     _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
+    ...(s.isolated ? [] : [_subsRow(s.name || name, q)]),
   ];
   const wtype = _workerTypeInfo(s.worker_type);
   const typeButtons = _workerTypes.map(t => '<button class="btn' + (t.id === wtype.id ? ' primary' : '') + '"'

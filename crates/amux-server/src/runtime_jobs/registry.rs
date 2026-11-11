@@ -98,6 +98,7 @@ pub mod ids {
     pub const GOAL_KEEPER: &str = "goal-keeper";
     pub const TASK_TITLES: &str = "task-titles";
     pub const DESC_REFRESH: &str = "desc-refresh";
+    pub const EVENT_DISPATCH: &str = "event-dispatch";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -209,6 +210,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::GOAL_KEEPER,
     ids::TASK_TITLES,
     ids::DESC_REFRESH,
+    ids::EVENT_DISPATCH,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -871,6 +873,14 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: None,
+    },
+    Doc {
+        id: ids::EVENT_DISPATCH,
+        name: "Event subscriptions",
+        purpose: "Every second, reads the events written since its stored cursor (session_events, and board_change_log as board.card.* events) and fires each enabled subscription whose pattern, source, session and filter match: send, board, schedule, shell or notify. Dedupes per subscription (or per dedupe key), caps each subscription at 60 fires an hour, and asks the helper model only for subscriptions marked judge. A restart replays what it missed up to 5000 events.",
+        env: &[EnvControl { var: "AMUX_EVENT_DISPATCH_SECS", effect: "0 stops the dispatcher; no subscription fires", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/subscriptions/fires"),
     },
     Doc {
         id: ids::DESC_REFRESH,

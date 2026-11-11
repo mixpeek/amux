@@ -88,6 +88,8 @@ pub fn subscription_routes() -> Router<AppState> {
         )
         .route("/emit", axum::routing::post(emit_custom_signal))
         .route("/fires", get(list_fires))
+        .route("/catalog", get(event_catalog))
+        .route("/events", get(recent_events))
 }
 
 /// A signal name: 1-64 chars of `[a-z0-9._-]`, starting with a letter or
@@ -546,23 +548,42 @@ async fn raise_in_store(
 fn ensure_subscription_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(include_str!(
         "../../migrations/0130_signal_subscriptions.sql"
-    ))
+    ))?;
+    super::event_subs::ensure_columns(conn)
 }
 
-#[derive(serde::Deserialize, Clone, Debug)]
+/// A new subscription. Either the engine's own fields (`pattern` and
+/// `action`), or `criteria` in plain words, which the server compiles into a
+/// pattern and a filter against the event catalog (`event_subs::compile`).
+/// `dry_run` compiles and backtests without saving.
+#[derive(serde::Deserialize, Clone, Debug, Default)]
 struct NewSubscription {
+    #[serde(default)]
     name: String,
+    #[serde(default)]
     pattern: String,
     #[serde(default)]
     source_filter: String,
     #[serde(default)]
     session_filter: String,
+    #[serde(default)]
     action: String,
+    #[serde(default)]
     action_target: String,
     #[serde(default)]
     action_template: String,
     #[serde(default = "default_dedupe")]
     dedupe_window_s: i64,
+    #[serde(default)]
+    criteria: String,
+    #[serde(default)]
+    filter: Value,
+    #[serde(default)]
+    judge: bool,
+    #[serde(default)]
+    dedupe_key: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 fn default_dedupe() -> i64 {
@@ -570,10 +591,10 @@ fn default_dedupe() -> i64 {
 }
 
 fn valid_action(a: &str) -> bool {
-    matches!(a, "send" | "board" | "schedule" | "shell")
+    matches!(a, "send" | "board" | "schedule" | "shell" | "notify")
 }
 
-fn glob_matches(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_matches(pattern: &str, text: &str) -> bool {
     let pat = pattern.to_ascii_lowercase();
     let txt = text.to_ascii_lowercase();
     if pat == "*" {
@@ -588,64 +609,55 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     pat == txt
 }
 
+const SUB_COLS: &str = "id, name, pattern, source_filter, session_filter, action, action_target, \
+     action_template, created_by, created_at, enabled, dedupe_window_s, last_fired_at, \
+     fire_count, criteria, filter, owner, judge, dedupe_key, notify_post";
+
+fn sub_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let filter: String = r.get(15)?;
+    Ok(json!({
+        "id": r.get::<_, i64>(0)?,
+        "name": r.get::<_, String>(1)?,
+        "pattern": r.get::<_, String>(2)?,
+        "source_filter": r.get::<_, String>(3)?,
+        "session_filter": r.get::<_, String>(4)?,
+        "action": r.get::<_, String>(5)?,
+        "action_target": r.get::<_, String>(6)?,
+        "action_template": r.get::<_, String>(7)?,
+        "created_by": r.get::<_, String>(8)?,
+        "created_at": r.get::<_, i64>(9)?,
+        "enabled": r.get::<_, i64>(10)? != 0,
+        "dedupe_window_s": r.get::<_, i64>(11)?,
+        "last_fired_at": r.get::<_, Option<i64>>(12)?,
+        "fire_count": r.get::<_, i64>(13)?,
+        "criteria": r.get::<_, String>(14)?,
+        "filter": serde_json::from_str::<Value>(&filter).unwrap_or(json!({})),
+        "owner": r.get::<_, String>(16)?,
+        "judge": r.get::<_, i64>(17)? != 0,
+        "dedupe_key": r.get::<_, String>(18)?,
+        "notify_post": r.get::<_, Option<i64>>(19)?,
+    }))
+}
+
 fn sub_row_to_json(conn: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
-    conn.query_row(
-        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
-         action_template, created_by, created_at, enabled, dedupe_window_s, last_fired_at, \
-         fire_count FROM signal_subscriptions WHERE id = ?1",
-        [id],
-        |r| {
-            Ok(json!({
-                "id": r.get::<_, i64>(0)?,
-                "name": r.get::<_, String>(1)?,
-                "pattern": r.get::<_, String>(2)?,
-                "source_filter": r.get::<_, String>(3)?,
-                "session_filter": r.get::<_, String>(4)?,
-                "action": r.get::<_, String>(5)?,
-                "action_target": r.get::<_, String>(6)?,
-                "action_template": r.get::<_, String>(7)?,
-                "created_by": r.get::<_, String>(8)?,
-                "created_at": r.get::<_, i64>(9)?,
-                "enabled": r.get::<_, i64>(10)? != 0,
-                "dedupe_window_s": r.get::<_, i64>(11)?,
-                "last_fired_at": r.get::<_, Option<i64>>(12)?,
-                "fire_count": r.get::<_, i64>(13)?,
-            }))
-        },
-    )
-    .optional()
+    conn.query_row(&format!("SELECT {SUB_COLS} FROM signal_subscriptions WHERE id = ?1"), [id], sub_from_row)
+        .optional()
 }
 
 fn all_sub_rows(conn: &Connection) -> rusqlite::Result<Vec<Value>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
-         action_template, created_by, created_at, enabled, dedupe_window_s, last_fired_at, \
-         fire_count FROM signal_subscriptions ORDER BY id",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(json!({
-            "id": r.get::<_, i64>(0)?,
-            "name": r.get::<_, String>(1)?,
-            "pattern": r.get::<_, String>(2)?,
-            "source_filter": r.get::<_, String>(3)?,
-            "session_filter": r.get::<_, String>(4)?,
-            "action": r.get::<_, String>(5)?,
-            "action_target": r.get::<_, String>(6)?,
-            "action_template": r.get::<_, String>(7)?,
-            "created_by": r.get::<_, String>(8)?,
-            "created_at": r.get::<_, i64>(9)?,
-            "enabled": r.get::<_, i64>(10)? != 0,
-            "dedupe_window_s": r.get::<_, i64>(11)?,
-            "last_fired_at": r.get::<_, Option<i64>>(12)?,
-            "fire_count": r.get::<_, i64>(13)?,
-        }))
-    })?;
+    let mut stmt = conn.prepare(&format!("SELECT {SUB_COLS} FROM signal_subscriptions ORDER BY id"))?;
+    let rows = stmt.query_map([], sub_from_row)?;
     rows.collect()
 }
 
 use rusqlite::OptionalExtension as _;
 
-async fn list_subscriptions(State(state): State<AppState>) -> Response {
+#[derive(serde::Deserialize, Default)]
+struct SubListQuery {
+    owner: Option<String>,
+}
+
+async fn list_subscriptions(State(state): State<AppState>, Query(q): Query<SubListQuery>) -> Response {
     let res = state
         .store
         .read_async(move |conn| {
@@ -654,7 +666,12 @@ async fn list_subscriptions(State(state): State<AppState>) -> Response {
         })
         .await;
     match res {
-        Ok(subs) => reply(StatusCode::OK, json!({"subscriptions": subs, "count": subs.len()})),
+        Ok(mut subs) => {
+            if let Some(o) = q.owner.filter(|o| !o.is_empty()) {
+                subs.retain(|s| s["owner"].as_str() == Some(o.as_str()));
+            }
+            reply(StatusCode::OK, json!({"subscriptions": subs, "count": subs.len()}))
+        }
         Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
     }
 }
@@ -677,29 +694,110 @@ async fn get_subscription(
     }
 }
 
+/// A short unique-enough name from plain words: the first few words, slugged.
+fn name_from(criteria: &str) -> String {
+    let words: Vec<String> = criteria
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .take(6)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let base = if words.is_empty() { "subscription".to_string() } else { words.join("-") };
+    format!("{base}-{}", chrono::Utc::now().timestamp() % 100_000)
+}
+
+/// Who may make which subscription. The owner (no worker header): anything.
+/// A worker: no `shell` (a shell command run by the server on every match is
+/// the owner's to set up), and `send` only to itself.
+fn refusal_for(creator: &str, action: &str, target: &str) -> Option<String> {
+    if creator.is_empty() {
+        return None;
+    }
+    if action == "shell" {
+        return Some("only the owner can make a shell subscription".into());
+    }
+    if action == "send" && target != creator {
+        return Some(format!("a worker's send subscription goes to itself ({creator}), not {target}"));
+    }
+    None
+}
+
 async fn create_subscription(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<NewSubscription>,
+    Json(mut body): Json<NewSubscription>,
 ) -> Response {
-    if body.name.trim().is_empty() {
-        return reply(StatusCode::BAD_REQUEST, json!({"error": "name is required"}));
+    let creator = actor_of(&headers);
+    let mut compiled_view = Value::Null;
+    if body.pattern.trim().is_empty() && !body.criteria.trim().is_empty() {
+        let Some(client) = super::board_intake::model_client() else {
+            return reply(StatusCode::SERVICE_UNAVAILABLE, json!({"error": "no helper model is configured to read the criteria; give pattern and filter instead"}));
+        };
+        let catalog = match state.store.read_async(|conn| Ok(super::event_subs::catalog(conn, 7)?)).await {
+            Ok(c) => c,
+            Err(e) => return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+        };
+        match super::event_subs::compile(client, body.criteria.clone(), catalog).await {
+            Ok(c) => {
+                tracing::info!(target: "amux::signals", criteria = %body.criteria, pattern = %c.pattern, filter = %c.filter,
+                    judge = c.judge, measured = true, n_considered = 1, verdict = "subscription_compiled",
+                    "plain words compiled to an event subscription");
+                compiled_view = json!({"pattern": c.pattern, "filter": c.filter, "summary": c.summary, "judge": c.judge, "dedupe_key": c.dedupe_key});
+                body.pattern = c.pattern;
+                if body.filter.is_null() {
+                    body.filter = c.filter;
+                }
+                body.judge = body.judge || c.judge;
+                if body.dedupe_key.is_empty() {
+                    body.dedupe_key = c.dedupe_key;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "amux::signals", criteria = %body.criteria, error = %e, verdict = "subscription_compile_failed",
+                    "plain words did not compile to an event subscription");
+                return reply(StatusCode::UNPROCESSABLE_ENTITY, json!({"error": e, "criteria": body.criteria}));
+            }
+        }
     }
     if body.pattern.trim().is_empty() {
-        return reply(StatusCode::BAD_REQUEST, json!({"error": "pattern is required"}));
+        return reply(StatusCode::BAD_REQUEST, json!({"error": "pattern is required (or criteria in plain words)"}));
+    }
+    if body.action.is_empty() {
+        // The owner is told; a worker wakes itself.
+        body.action = if creator.is_empty() { "notify".into() } else { "send".into() };
+    }
+    if body.action_target.trim().is_empty() {
+        body.action_target = if creator.is_empty() { "owner".into() } else { creator.clone() };
+    }
+    if body.name.trim().is_empty() {
+        body.name = name_from(if body.criteria.is_empty() { &body.pattern } else { &body.criteria });
     }
     if !valid_action(&body.action) {
         return reply(
             StatusCode::BAD_REQUEST,
-            json!({"error": "action must be one of: send, board, schedule, shell", "got": body.action}),
+            json!({"error": "action must be one of: send, board, schedule, shell, notify", "got": body.action}),
         );
     }
-    if body.action_target.trim().is_empty() {
-        return reply(StatusCode::BAD_REQUEST, json!({"error": "action_target is required"}));
+    if let Some(why) = refusal_for(&creator, &body.action, body.action_target.trim()) {
+        return reply(StatusCode::FORBIDDEN, json!({"error": why}));
     }
-    let creator = actor_of(&headers);
+    let filter = if body.filter.is_null() { json!({}) } else { body.filter.clone() };
+    let (pattern, f2) = (body.pattern.trim().to_string(), filter.clone());
+    let backtest = state
+        .store
+        .read_async(move |conn| Ok(super::event_subs::backtest(conn, &pattern, &f2, 7)?))
+        .await
+        .unwrap_or_else(|e| json!({"measured": false, "why_unmeasured": e.to_string()}));
+    if body.dry_run {
+        return reply(StatusCode::OK, json!({
+            "dry_run": true, "compiled": compiled_view, "pattern": body.pattern.trim(), "filter": filter,
+            "action": body.action, "action_target": body.action_target.trim(), "backtest": backtest,
+        }));
+    }
     let now = chrono::Utc::now().timestamp();
     let b = body.clone();
+    let owner = if creator.is_empty() { "owner".to_string() } else { creator.clone() };
+    let filter_s = filter.to_string();
     let slot: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let res = state
@@ -709,8 +807,8 @@ async fn create_subscription(
             conn.execute(
                 "INSERT INTO signal_subscriptions \
                  (name, pattern, source_filter, session_filter, action, action_target, \
-                  action_template, created_by, created_at, dedupe_window_s) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                  action_template, created_by, created_at, dedupe_window_s, criteria, filter, owner, judge, dedupe_key) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                 rusqlite::params![
                     b.name.trim(),
                     b.pattern.trim(),
@@ -722,6 +820,11 @@ async fn create_subscription(
                     creator,
                     now,
                     b.dedupe_window_s.max(0),
+                    b.criteria.trim(),
+                    filter_s,
+                    owner,
+                    b.judge as i64,
+                    b.dedupe_key.trim(),
                 ],
             )?;
             *slot_w.lock().unwrap() = Some(conn.last_insert_rowid());
@@ -740,7 +843,14 @@ async fn create_subscription(
                 .await
                 .ok()
                 .flatten();
-            reply(StatusCode::CREATED, sub.unwrap_or(json!({"id": id})))
+            let mut sub = sub.unwrap_or(json!({"id": id}));
+            if let Some(o) = sub.as_object_mut() {
+                o.insert("compiled".into(), compiled_view);
+                o.insert("backtest".into(), backtest);
+            }
+            tracing::info!(target: "amux::signals", subscription = %body.name, pattern = %body.pattern, action = %body.action,
+                owner = %sub["owner"], measured = true, n_considered = 1, verdict = "subscription_created", "event subscription created");
+            reply(StatusCode::CREATED, sub)
         }
         Err(e) => {
             let msg = e.to_string();
@@ -798,15 +908,23 @@ async fn update_subscription(
             maybe_set!("session_filter", "session_filter", String);
             maybe_set!("action_target", "action_target", String);
             maybe_set!("action_template", "action_template", String);
-            if let Some(v) = body.get("enabled") {
-                let on = match v {
-                    Value::Bool(b) => *b,
-                    Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
-                    _ => true,
-                };
-                sets.push(format!("enabled = ?{idx}"));
-                params.push(Box::new(if on { 1i64 } else { 0 }));
+            maybe_set!("dedupe_key", "dedupe_key", String);
+            if let Some(f) = body.get("filter").filter(|f| f.is_object()) {
+                sets.push(format!("filter = ?{idx}"));
+                params.push(Box::new(f.to_string()));
                 idx += 1;
+            }
+            for (key, col) in [("enabled", "enabled"), ("judge", "judge")] {
+                if let Some(v) = body.get(key) {
+                    let on = match v {
+                        Value::Bool(b) => *b,
+                        Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+                        _ => true,
+                    };
+                    sets.push(format!("{col} = ?{idx}"));
+                    params.push(Box::new(if on { 1i64 } else { 0 }));
+                    idx += 1;
+                }
             }
             if let Some(v) = body.get("dedupe_window_s") {
                 if let Some(n) = v.as_i64() {
@@ -851,6 +969,7 @@ async fn update_subscription(
     }
 }
 
+
 async fn delete_subscription(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -873,6 +992,7 @@ async fn delete_subscription(
     }
 }
 
+
 #[derive(serde::Deserialize)]
 struct EmitBody {
     #[serde(rename = "type")]
@@ -885,6 +1005,10 @@ struct EmitBody {
     data: Value,
 }
 
+/// Emit an event, then run the dispatcher over the ledger right away so the
+/// reply can say which subscriptions this event fired. The dispatcher is the
+/// one that fires (runtime_jobs::event_dispatch); this only does not wait for
+/// its next tick.
 async fn emit_custom_signal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -904,23 +1028,26 @@ async fn emit_custom_signal(
     } else {
         body.session.clone()
     };
+    static EMITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let idem = format!("emit:{}:{}:{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        EMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     crate::api::session_verbs::emit_event_store(
         &state.store,
         &session,
         &body.event_type,
         Some(body.data.clone()),
-        None,
+        Some(idem.clone()),
         &source,
     )
     .await;
-    let fires = dispatch_subscriptions(
-        &state,
-        &body.event_type,
-        &session,
-        &source,
-        &body.data,
-    )
-    .await;
+    let id = state
+        .store
+        .read_async(move |conn| Ok(conn.query_row("SELECT id FROM session_events WHERE idem = ?1", [&idem], |r| r.get::<_, i64>(0)).optional()?))
+        .await
+        .ok()
+        .flatten();
+    let fires = crate::runtime_jobs::event_dispatch::drain_including(&state, id).await;
+    let mine = id.and_then(|i| fires.get(&i).cloned()).unwrap_or_default();
     reply(
         StatusCode::OK,
         json!({
@@ -928,9 +1055,44 @@ async fn emit_custom_signal(
             "type": body.event_type,
             "session": session,
             "source": source,
-            "subscriptions_fired": fires,
+            "event_id": id,
+            "subscriptions_fired": mine,
         }),
     )
+}
+
+#[derive(serde::Deserialize, Default)]
+struct CatalogQuery {
+    days: Option<i64>,
+}
+
+/// Every event type a subscription can listen to (event_subs::catalog).
+async fn event_catalog(State(state): State<AppState>, Query(q): Query<CatalogQuery>) -> Response {
+    let days = q.days.unwrap_or(7).clamp(1, 90);
+    match state.store.read_async(move |conn| Ok(super::event_subs::catalog(conn, days)?)).await {
+        Ok(v) => reply(StatusCode::OK, v),
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"measured": false, "why_unmeasured": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct RecentQuery {
+    pattern: Option<String>,
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// Events after `after` whose type matches `pattern`, for `amux events tail`.
+async fn recent_events(State(state): State<AppState>, Query(q): Query<RecentQuery>) -> Response {
+    let pattern = q.pattern.unwrap_or_else(|| "*".into());
+    let (after, limit) = (q.after.unwrap_or(0), q.limit.unwrap_or(50).clamp(1, 500));
+    match state.store.read_async(move |conn| Ok(super::event_subs::recent(conn, &pattern, after, limit)?)).await {
+        Ok(rows) => {
+            let last = rows.last().and_then(|r| r["id"].as_i64()).unwrap_or(after);
+            reply(StatusCode::OK, json!({"events": rows, "count": rows.len(), "last_id": last}))
+        }
+        Err(e) => reply(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e.to_string()})),
+    }
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -991,73 +1153,72 @@ async fn list_fires(State(state): State<AppState>, Query(q): Query<FiresQuery>) 
     }
 }
 
+
 // ---------------------------------------------------------------------------
 // Dispatcher: match events against subscriptions and fire actions
 // ---------------------------------------------------------------------------
 
-struct MatchedSub {
-    id: i64,
-    name: String,
-    action: String,
-    action_target: String,
-    action_template: String,
+/// Fires one subscription may make in an hour. A subscription whose action
+/// itself emits a matching event would otherwise loop.
+pub(crate) const FIRES_PER_HOUR: i64 = 60;
+
+/// An enabled subscription, loaded once per dispatcher batch.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveSub {
+    pub id: i64,
+    pub name: String,
+    pub pattern: String,
+    pub source_filter: String,
+    pub session_filter: String,
+    pub action: String,
+    pub action_target: String,
+    pub action_template: String,
+    pub dedupe_window_s: i64,
+    pub last_fired_at: Option<i64>,
+    pub criteria: String,
+    pub filter: Value,
+    pub judge: bool,
+    pub dedupe_key: String,
+    pub notify_post: Option<i64>,
 }
 
-fn matching_subscriptions(
-    conn: &Connection,
-    event_type: &str,
-    session: &str,
-    source: &str,
-) -> rusqlite::Result<Vec<MatchedSub>> {
+pub(crate) fn load_live_subs(conn: &Connection) -> rusqlite::Result<Vec<LiveSub>> {
     ensure_subscription_tables(conn)?;
-    let now = chrono::Utc::now().timestamp();
     let mut stmt = conn.prepare(
-        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, \
-         action_template, dedupe_window_s, last_fired_at \
-         FROM signal_subscriptions WHERE enabled = 1",
+        "SELECT id, name, pattern, source_filter, session_filter, action, action_target, action_template, \
+         dedupe_window_s, last_fired_at, criteria, filter, judge, dedupe_key, notify_post \
+         FROM signal_subscriptions WHERE enabled = 1 ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, String>(4)?,
-            r.get::<_, String>(5)?,
-            r.get::<_, String>(6)?,
-            r.get::<_, String>(7)?,
-            r.get::<_, i64>(8)?,
-            r.get::<_, Option<i64>>(9)?,
-        ))
+        let filter: String = r.get(11)?;
+        Ok(LiveSub {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            pattern: r.get(2)?,
+            source_filter: r.get(3)?,
+            session_filter: r.get(4)?,
+            action: r.get(5)?,
+            action_target: r.get(6)?,
+            action_template: r.get(7)?,
+            dedupe_window_s: r.get(8)?,
+            last_fired_at: r.get(9)?,
+            criteria: r.get(10)?,
+            filter: serde_json::from_str(&filter).unwrap_or(json!({})),
+            judge: r.get::<_, i64>(12)? != 0,
+            dedupe_key: r.get(13)?,
+            notify_post: r.get(14)?,
+        })
     })?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, name, pattern, src_f, sess_f, action, target, template, dedupe, last) = row?;
-        if !glob_matches(&pattern, event_type) {
-            continue;
-        }
-        if !src_f.is_empty() && !glob_matches(&src_f, source) {
-            continue;
-        }
-        if !sess_f.is_empty() && !glob_matches(&sess_f, session) {
-            continue;
-        }
-        if dedupe > 0 {
-            if let Some(last_ts) = last {
-                if now - last_ts < dedupe {
-                    continue;
-                }
-            }
-        }
-        out.push(MatchedSub {
-            id,
-            name,
-            action,
-            action_target: target,
-            action_template: template,
-        });
-    }
-    Ok(out)
+    rows.collect()
+}
+
+/// Whether `sub` wants this event, before dedupe: type, source and session
+/// globs, then the filter over the event view.
+pub(crate) fn sub_matches(sub: &LiveSub, event_type: &str, session: &str, source: &str, ev: &Value) -> bool {
+    glob_matches(&sub.pattern, event_type)
+        && (sub.source_filter.is_empty() || glob_matches(&sub.source_filter, source))
+        && (sub.session_filter.is_empty() || glob_matches(&sub.session_filter, session))
+        && super::event_subs::filter_matches(&sub.filter, ev)
 }
 
 fn render_template(template: &str, event_type: &str, data: &Value) -> String {
@@ -1079,79 +1240,158 @@ fn render_template(template: &str, event_type: &str, data: &Value) -> String {
     out
 }
 
-pub(crate) async fn dispatch_subscriptions(
+/// The notice for a fire when the subscription has no template: what
+/// happened, for whom, and where, in one readable line.
+fn default_text(sub: &LiveSub, event_type: &str, ev: &Value) -> String {
+    let pick = |k: &str| ev.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let mut parts = vec![format!("{event_type}")];
+    for k in ["reason", "provider", "worker", "session", "title", "status", "url"] {
+        if let Some(v) = pick(k) {
+            parts.push(format!("{k}: {v}"));
+        }
+    }
+    let head = if sub.criteria.is_empty() { String::new() } else { format!("{}\n", sub.criteria) };
+    format!("{head}{}", parts.join(" · "))
+}
+
+/// One event through every live subscription. `subs` is the batch's list and
+/// is updated in place (last fire time, thread root), so a burst inside one
+/// batch dedupes the same as one spread over several.
+pub(crate) async fn dispatch_one(
     state: &AppState,
+    subs: &mut [LiveSub],
+    event_id: Option<i64>,
     event_type: &str,
     session: &str,
     source: &str,
     data: &Value,
 ) -> Vec<Value> {
-    let et = event_type.to_string();
-    let sess = session.to_string();
-    let src = source.to_string();
-    let matched = state
-        .store
-        .read_async(move |conn| Ok(matching_subscriptions(conn, &et, &sess, &src)?))
-        .await;
-    let subs = match matched {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(target: "amux::signals", event_type, error = %e, "subscription dispatch read failed");
-            return vec![];
-        }
-    };
+    let ev = super::event_subs::event_view(event_type, session, source, data);
+    let now = chrono::Utc::now().timestamp();
     let mut fired = Vec::new();
-    for sub in subs {
-        let text = render_template(&sub.action_template, event_type, data);
+    for sub in subs.iter_mut() {
+        if !sub_matches(sub, event_type, session, source, &ev) {
+            continue;
+        }
+        let key = super::event_subs::fill(&sub.dedupe_key, &ev);
+        let (sid, k2, window) = (sub.id, key.clone(), sub.dedupe_window_s);
+        let recent = state
+            .store
+            .read_async(move |conn| {
+                let last_same: Option<i64> = if k2.is_empty() {
+                    None
+                } else {
+                    conn.query_row(
+                        "SELECT MAX(fired_at) FROM signal_fires WHERE subscription_id = ?1 AND dedupe_key = ?2 AND outcome NOT LIKE 'judge_no%'",
+                        rusqlite::params![sid, k2], |r| r.get(0))?
+                };
+                let hour: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM signal_fires WHERE subscription_id = ?1 AND fired_at > ?2 AND outcome NOT LIKE 'judge_no%'",
+                    rusqlite::params![sid, now - 3600], |r| r.get(0))?;
+                Ok((last_same, hour))
+            })
+            .await;
+        let (last_same, hour) = recent.unwrap_or((None, 0));
+        let last = if sub.dedupe_key.is_empty() { sub.last_fired_at } else { last_same };
+        if window > 0 && last.is_some_and(|t| now - t < window) {
+            continue;
+        }
+        if hour >= FIRES_PER_HOUR {
+            tracing::warn!(target: "amux::signals", subscription = %sub.name, event_type, fires_last_hour = hour,
+                measured = true, n_considered = 1, verdict = "subscription_rate_capped",
+                "a subscription hit its hourly fire cap; this event did not fire it");
+            continue;
+        }
+        if sub.judge {
+            let outcome = judge(sub, &ev, now).await;
+            if outcome != "judge_yes" {
+                record_fire(state, sub, event_id, event_type, data, now, "judge", &outcome, &key).await;
+                continue;
+            }
+        }
+        let text = if sub.action_template.is_empty() {
+            default_text(sub, event_type, &ev)
+        } else {
+            super::event_subs::fill(&render_template(&sub.action_template, event_type, data), &ev)
+        };
         let outcome = match sub.action.as_str() {
-            "send" => {
-                execute_send_action(state, &sub.action_target, &text).await
-            }
-            "board" => {
-                execute_board_action(state, &sub.action_target, event_type, &text).await
-            }
-            "schedule" => {
-                execute_schedule_action(state, &sub.action_target).await
-            }
-            "shell" => {
-                execute_shell_action(&sub.action_target, &text).await
+            "send" => execute_send_action(state, &sub.action_target, &text).await,
+            "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
+            "schedule" => execute_schedule_action(state, &sub.action_target).await,
+            "shell" => execute_shell_action(&sub.action_target, &text).await,
+            "notify" => {
+                let (outcome, root) = super::event_subs::notify(state, &sub.name, sub.notify_post, &text, &ev).await;
+                if root != sub.notify_post {
+                    sub.notify_post = root;
+                    let (sid, r) = (sub.id, root);
+                    let _ = state.store.write_async(move |conn| {
+                        conn.execute("UPDATE signal_subscriptions SET notify_post = ?1 WHERE id = ?2", rusqlite::params![r, sid])?;
+                        Ok(WriteOutcome { applied: true, events: vec![] })
+                    }).await;
+                }
+                outcome
             }
             _ => "unsupported_action".to_string(),
         };
-        let now = chrono::Utc::now().timestamp();
-        let sub_id = sub.id;
-        let et2 = event_type.to_string();
-        let data_s = data.to_string();
-        let action = sub.action.clone();
-        let target = sub.action_target.clone();
-        let outcome_w = outcome.clone();
-        let _ = state
-            .store
-            .write_async(move |conn| {
-                conn.execute(
-                    "INSERT INTO signal_fires (subscription_id, event_type, event_data, fired_at, action, action_target, outcome) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                    rusqlite::params![sub_id, et2, data_s, now, action, target, outcome_w],
-                )?;
-                conn.execute(
-                    "UPDATE signal_subscriptions SET last_fired_at = ?1, fire_count = fire_count + 1 WHERE id = ?2",
-                    rusqlite::params![now, sub_id],
-                )?;
-                Ok(WriteOutcome { applied: true, events: vec![] })
-            })
-            .await;
+        sub.last_fired_at = Some(now);
+        let (action, target) = (sub.action.clone(), sub.action_target.clone());
+        record_fire(state, sub, event_id, event_type, data, now, &action, &outcome, &key).await;
         tracing::info!(target: "amux::signals",
-            subscription = %sub.name, event_type, action = %sub.action,
-            target = %sub.action_target, outcome = %outcome,
-            measured = true, "subscription fired");
+            subscription = %sub.name, event_type, action = %action,
+            target = %target, outcome = %outcome, event_id = ?event_id,
+            measured = true, n_considered = 1, verdict = "subscription_fired", "subscription fired");
         fired.push(json!({
             "subscription": sub.name,
-            "action": sub.action,
-            "target": sub.action_target,
+            "action": action,
+            "target": target,
             "outcome": outcome,
         }));
     }
     fired
+}
+
+async fn judge(sub: &LiveSub, ev: &Value, now: i64) -> String {
+    if !super::event_subs::judge_allowed(sub.id, now) {
+        tracing::warn!(target: "amux::signals", subscription = %sub.name, verdict = "subscription_judge_capped",
+            measured = true, n_considered = 1, "judge calls for this subscription hit the hourly cap; the event was not judged");
+        return "judge_no:capped".into();
+    }
+    let Some(client) = super::board_intake::model_client() else {
+        return "judge_no:no_model".into();
+    };
+    let prompt = super::session_verbs::redact_prompt_secrets(&super::event_subs::judge_prompt(&sub.criteria, ev));
+    let model = super::mdai::resolve_model(None);
+    match tokio::task::spawn_blocking(move || client.complete(&model, &prompt)).await {
+        Ok(Ok(out)) if super::event_subs::judge_says_yes(&out) => "judge_yes".into(),
+        Ok(Ok(_)) => "judge_no".into(),
+        Ok(Err(e)) => format!("judge_no:error:{}", e.chars().take(120).collect::<String>()),
+        Err(e) => format!("judge_no:error:{e}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_fire(state: &AppState, sub: &LiveSub, event_id: Option<i64>, event_type: &str, data: &Value,
+    now: i64, action: &str, outcome: &str, key: &str) {
+    let (sub_id, et, data_s, action, target, outcome, key) = (sub.id, event_type.to_string(), data.to_string(),
+        action.to_string(), sub.action_target.clone(), outcome.to_string(), key.to_string());
+    let counts = !outcome.starts_with("judge_no");
+    let _ = state
+        .store
+        .write_async(move |conn| {
+            conn.execute(
+                "INSERT INTO signal_fires (subscription_id, event_type, event_data, fired_at, action, action_target, outcome, event_id, dedupe_key) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                rusqlite::params![sub_id, et, data_s, now, action, target, outcome, event_id, key],
+            )?;
+            if counts {
+                conn.execute(
+                    "UPDATE signal_subscriptions SET last_fired_at = ?1, fire_count = fire_count + 1 WHERE id = ?2",
+                    rusqlite::params![now, sub_id],
+                )?;
+            }
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        })
+        .await;
 }
 
 async fn execute_send_action(state: &AppState, target: &str, text: &str) -> String {
@@ -1292,22 +1532,6 @@ async fn execute_shell_action(command: &str, _text: &str) -> String {
         }
         Err(e) => format!("spawn_error:{e}"),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Hook: called from emit_event to check subscriptions
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn on_event(
-    state: &AppState,
-    event_type: &str,
-    session: &str,
-    source: &str,
-    data: Option<&Value>,
-) {
-    let empty = Value::Null;
-    let data = data.unwrap_or(&empty);
-    let _ = dispatch_subscriptions(state, event_type, session, source, data).await;
 }
 
 #[cfg(test)]

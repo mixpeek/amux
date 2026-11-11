@@ -7657,8 +7657,9 @@ pub(crate) async fn emit_event(
     idem: Option<String>,
     source: &str,
 ) {
-    emit_event_store(&state.store, session, etype, data.clone(), idem, source).await;
-    super::signals::on_event(state, etype, session, source, data.as_ref()).await;
+    // Subscriptions read the ledger itself (runtime_jobs::event_dispatch), so
+    // every writer of session_events reaches them, not only this function.
+    emit_event_store(&state.store, session, etype, data, idem, source).await;
 }
 
 /// [`emit_event`] addressed by store — see [`steer_enqueue_store`] for why
@@ -32627,6 +32628,15 @@ instruction, within your rules and boundaries. Answer where the delivery says, w
 `amux post` command it gives (in a channel or direct message that is the thread under their post), \
 and ask any question in that same thread. A reply there reaches you again.";
 
+/// Event subscriptions reach a worker only if it knows they exist: the engine
+/// sat at zero subscriptions for three weeks (docs/design/event-subscriptions.md).
+pub(crate) const EVENTS_CONTEXT: &str = "# Event subscriptions\n\n\
+To be told when something happens instead of polling for it (a browser hits a CAPTCHA, a peer's card \
+moves to done, a worker goes idle), subscribe in plain words: `amux subscribe \"<what>\"`. amux turns \
+the words into an event filter, shows what it matched over the last 7 days, and wakes you with a \
+message when it fires. `amux events ls` lists every event and its fields; `amux subscriptions` lists \
+yours (`rm <id>` to stop one). Never poll in a loop for something an event already reports.";
+
 pub(crate) const BOARD_OFF_CONTEXT: &str = "# Board off for this worker\n\n\
 Every board switch is off for this worker, so you have no board: do not read, create, append to, \
 move or close board cards, and skip the board and task-ledger sections of CLAUDE.md. The board API \
@@ -32658,7 +32668,7 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = if crate::api::board_lifecycle::board_unused(name) {
         format!("{block}\n\n{BOARD_OFF_CONTEXT}")
     } else { block };
-    let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}");
+    let block = format!("{block}\n\n{MEMORY_VERB_CONTEXT}\n\n{MESSAGES_CONTEXT}\n\n{EVENTS_CONTEXT}");
     let roster = reachable_roster(name);
     let block = if roster.is_empty() { block } else { format!("{block}\n{roster}") };
     let velocity = crate::api::velocity::context_section(name);
@@ -56455,6 +56465,7 @@ mod commit_shape_tests {
         assert!(launch.contains("amux memory add --stdin"));
         // A Messages delivery is a person's request, not pasted text (2026-10-28).
         assert!(launch.contains(super::MESSAGES_CONTEXT), "{launch}");
+        assert!(launch.contains(super::EVENTS_CONTEXT), "every non-isolated worker learns it can subscribe: {launch}");
         assert!(!super::compose_worker_context("memapp", true).contains("# amux Messages"), "isolated workers get no injected guide");
 
         // A worker that launched before an amux update changed its

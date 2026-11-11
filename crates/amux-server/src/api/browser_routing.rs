@@ -193,6 +193,26 @@ mod tests {
         assert!(super::bot_check(&plain).is_none());
     }
 
+    /// The route state the reCAPTCHA demo returned on 2026-11-11, trimmed.
+    #[test]
+    fn a_captcha_on_the_page_is_a_blocked_event() {
+        let demo = serde_json::json!({"ok":true,"url":"https://www.google.com/recaptcha/api2/demo","title":"ReCAPTCHA demo",
+            "text":"Sample Form with ReCAPTCHA","route":{"profile":"ethan"},
+            "elements":[{"role":"textbox","label":"Jane","name":"First Name"},
+                {"role":"checkbox","tag":"span","label":"recaptcha-anchor","name":"I'm not a robot","frame":"a-hswjpj1ka9xi"}]});
+        assert_eq!(super::captcha_check(&demo), Some("recaptcha"));
+        let e = super::blocked_event(&demo, None, "amux", "state").unwrap();
+        assert_eq!((e["reason"].as_str(), e["provider"].as_str(), e["profile"].as_str(), e["worker"].as_str()),
+            (Some("captcha"), Some("recaptcha"), Some("ethan"), Some("amux")));
+        let cf = serde_json::json!({"ok":true,"state":{"url":"https://platform.openai.com/apps","title":"Just a moment..."}});
+        let check = super::bot_check(&cf);
+        assert_eq!(super::blocked_event(&cf, check.as_ref(), "w", "start").unwrap()["reason"], "bot_check");
+        let sorry = serde_json::json!({"url":"https://www.google.com/sorry/index?continue=x"});
+        assert_eq!(super::captcha_check(&sorry), Some("google_sorry"));
+        let plain = serde_json::json!({"ok":true,"url":"https://example.com/","elements":[{"label":"Search","name":"q"}]});
+        assert!(super::captcha_check(&plain).is_none() && super::blocked_event(&plain, None, "w", "state").is_none());
+    }
+
     #[test]
     fn a_route_call_is_audited_with_outcome_and_without_typed_secrets() {
         use super::route_audit_event;
@@ -377,10 +397,21 @@ async fn request(
     if v.is_null() {
         return Response::from_parts(parts, axum::body::Body::from(bytes));
     }
-    if let Some(check) = bot_check(&v) {
+    let check = bot_check(&v);
+    if let Some(check) = &check {
         tracing::info!(session = %session, verb = %verb, provider = check["provider"].as_str().unwrap_or(""),
             measured = true, n_considered = 1, verdict = "browser_route_bot_check",
             "route landed on a bot check; the response names the headed start that passes it");
+    }
+    // A page the worker cannot get past by itself is an event, so an owner
+    // or worker subscribed to it hears about it (docs/design/event-subscriptions.md).
+    if let Some(blocked) = blocked_event(&v, check.as_ref(), &session, &verb) {
+        tracing::info!(session = %session, verb = %verb, reason = blocked["reason"].as_str().unwrap_or(""),
+            provider = blocked["provider"].as_str().unwrap_or(""), measured = true, n_considered = 1,
+            verdict = "browser_route_blocked", "route landed on a page it cannot pass by itself");
+        super::browser::record_browser_event(&state, Some(&session), &session, "blocked", blocked).await;
+    }
+    if let Some(check) = check {
         if let Some(o) = v.as_object_mut() {
             o.insert("bot_check".into(), check);
         }
@@ -424,6 +455,63 @@ fn bot_check(v: &Value) -> Option<Value> {
             "try a headed window: amux browser route start '{}' (add \"join\":false if another worker holds this profile headless); if it still shows the check, the challenge needs a person",
             json!({"url": target, "headless": false})
         ),
+    }))
+}
+
+/// The CAPTCHA a route's page shows, if any, read from what the route already
+/// returns: the reCAPTCHA checkbox (label `recaptcha-anchor`, "I'm not a
+/// robot"), hCaptcha's ("I am human"), a challenge iframe's title, or the
+/// text of Google's /sorry/ page. Measured on google.com/recaptcha/api2/demo
+/// (2026-11-11): the checkbox is an element in a frame, not in the page text.
+pub(crate) fn captcha_check(v: &Value) -> Option<&'static str> {
+    let field = |k: &str| {
+        ["", "/state", "/data", "/page"].iter().find_map(|p| v.pointer(&format!("{p}/{k}")).and_then(Value::as_str))
+    };
+    let url = field("url").unwrap_or("");
+    let text = field("text").unwrap_or("");
+    let elements = ["/elements", "/state/elements", "/data/elements"].iter()
+        .find_map(|p| v.pointer(p).and_then(Value::as_array)).cloned().unwrap_or_default();
+    for e in &elements {
+        let said = format!("{} {} {}", e["label"].as_str().unwrap_or(""), e["name"].as_str().unwrap_or(""), e["title"].as_str().unwrap_or(""))
+            .to_ascii_lowercase();
+        if said.contains("recaptcha") || said.contains("i'm not a robot") {
+            return Some("recaptcha");
+        }
+        if said.contains("hcaptcha") || said.contains("i am human") {
+            return Some("hcaptcha");
+        }
+        if said.contains("turnstile") || said.contains("cloudflare security challenge") {
+            return Some("turnstile");
+        }
+    }
+    if url.contains("google.com/sorry/") || text.contains("Our systems have detected unusual traffic") {
+        return Some("google_sorry");
+    }
+    if url.contains("captcha-delivery.com") {
+        return Some("datadome");
+    }
+    if text.contains("Press & Hold") && text.contains("human") {
+        return Some("perimeterx");
+    }
+    None
+}
+
+/// The `browser.blocked` event for a route response, if its page blocks the
+/// worker: a CAPTCHA, or a bot check (Cloudflare's managed challenge).
+fn blocked_event(v: &Value, check: Option<&Value>, session: &str, verb: &str) -> Option<Value> {
+    let (reason, provider) = match captcha_check(v) {
+        Some(p) => ("captcha", p.to_string()),
+        None => ("bot_check", check?["provider"].as_str().unwrap_or("").to_string()),
+    };
+    let field = |k: &str| {
+        ["", "/state", "/data", "/page", "/route"].iter().find_map(|p| v.pointer(&format!("{p}/{k}")).and_then(Value::as_str))
+    };
+    Some(json!({
+        "reason": reason, "provider": provider,
+        "url": super::browser::audit_url(field("url").unwrap_or("")),
+        "title": field("title").unwrap_or(""),
+        "profile": v.pointer("/route/profile").and_then(Value::as_str).or_else(|| field("profile")).unwrap_or(""),
+        "worker": session, "verb": verb,
     }))
 }
 
