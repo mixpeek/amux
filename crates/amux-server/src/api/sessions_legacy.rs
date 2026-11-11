@@ -2762,7 +2762,8 @@ impl FleetSignals {
             ),
             Err(_) => tracing::warn!(
                 "tmux list-sessions did not answer within the probe budget, or failed to \
-                 spawn — fleet will read as not-running (AF-301)"
+                 spawn — the last listing under two minutes old is used; with none, the \
+                 fleet reads as not-running (AF-301)"
             ),
             _ => {}
         }
