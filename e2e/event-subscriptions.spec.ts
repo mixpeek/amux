@@ -6,6 +6,7 @@
 // helper model, which a test home does not have, so only the dry run is
 // answered here; everything else is the real API.
 import { test, expect } from './fixtures';
+import { cleanup } from './teardown';
 
 test.setTimeout(90_000);
 
@@ -31,6 +32,16 @@ async function boot(page: any) {
         { id: 1, ts: 1794400000, event: { session: 'amux', url: 'https://www.google.com/recaptcha/api2/demo' } }] } } });
   });
   return { auth, sent };
+}
+
+/** The schedules and subscriptions a test gave a fixture worker. */
+async function purgeFixtures(request: any, auth: any, name: string) {
+  const sched = await (await request.get('/api/schedules', { headers: auth })).json();
+  for (const x of sched.filter((x: any) => x.session === name)) await request.delete(`/api/schedules/${x.id}`, { headers: auth });
+  const subs = await (await request.get('/api/subscriptions', { headers: auth })).json();
+  for (const s of subs.subscriptions.filter((x: any) => x.action_target === name)) {
+    await request.delete(`/api/subscriptions/${s.id}`, { headers: auth });
+  }
 }
 
 async function chooseEvent(page: any) {
@@ -141,12 +152,7 @@ test('a worker gets a subscription from its Schedules tab, and the row fits a ph
     const main = (await row.locator('.sx-ev-main').boundingBox())!;
     expect(Math.abs(main.y + main.height / 2 - (box.y + box.height / 2))).toBeLessThan(24);
   } finally {
-    const sched = await (await request.get('/api/schedules', { headers: auth })).json();
-    for (const x of sched.filter((x: any) => x.session === name)) await request.delete(`/api/schedules/${x.id}`, { headers: auth });
-    const subs = await (await request.get('/api/subscriptions', { headers: auth })).json();
-    for (const s of subs.subscriptions.filter((x: any) => x.action_target === name)) {
-      await request.delete(`/api/subscriptions/${s.id}`, { headers: auth });
-    }
-    await request.post(`/api/sessions/${encodeURIComponent(name)}/delete`, { headers: auth });
+    await cleanup('delete the fixture schedules and subscriptions', () => purgeFixtures(request, auth, name));
+    await cleanup('delete fixture worker', () => request.post(`/api/sessions/${encodeURIComponent(name)}/delete`, { headers: auth }));
   }
 });
