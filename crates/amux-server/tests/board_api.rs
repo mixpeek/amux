@@ -9259,3 +9259,102 @@ async fn deleting_a_board_status_with_no_custom_column_moves_nothing() {
     let (_, _, back) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
     assert_eq!(back["status"], json!("blocked"));
 }
+
+/// The board ETag is the store rev, but `stale` is time-based: an in-progress
+/// card goes stale 30 minutes after its last touch with no write at all, so no
+/// rev bump. A poller holding the fresh-card ETag must not get a 304 once the
+/// card has gone stale, or the dashboard never shows it.
+#[tokio::test]
+async fn a_card_going_stale_without_a_write_invalidates_the_board_etag() {
+    let (app, store, _dir) = app_with_store();
+    let card = create(
+        &app,
+        json!({"title":"long-running doing card", "status":"doing", "session":"lane-quiet", "type":"chore"}),
+    )
+    .await;
+    let id = card["id"].as_str().unwrap().to_string();
+
+    let (st, h, list) = send(&app, "GET", "/api/board", None).await;
+    assert_eq!(st, StatusCode::OK);
+    let fresh = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap();
+    assert_ne!(
+        fresh["stale"],
+        json!(true),
+        "a just-touched card is not stale: {fresh}"
+    );
+    let etag = h.get("etag").unwrap().to_str().unwrap().to_string();
+
+    // Time passes: backdate the last touch past the 30-minute threshold,
+    // without a rev bump, which is what the clock does to the row.
+    let rev_before = store.current_rev().unwrap();
+    let row_id = id.clone();
+    store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE issues SET updated = updated - 3600 WHERE id = ?1",
+                [&row_id],
+            )?;
+            // applied:false commits the row but skips the rev bump.
+            Ok(amux_server::db::WriteOutcome {
+                applied: false,
+                events: vec![],
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        store.current_rev().unwrap(),
+        rev_before,
+        "the scenario needs an unchanged rev"
+    );
+
+    let (st, h2, list) =
+        send_with(&app, "GET", "/api/board", None, &[("if-none-match", &etag)]).await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a 304 here hides the card's stale flag from the poller"
+    );
+    let now_stale = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap();
+    assert_eq!(now_stale["stale"], json!(true), "{now_stale}");
+    let etag2 = h2.get("etag").unwrap().to_str().unwrap().to_string();
+    assert_ne!(etag2, etag);
+
+    // And the new validator is stable while nothing changes.
+    let (st, _, _) = send_with(
+        &app,
+        "GET",
+        "/api/board",
+        None,
+        &[("if-none-match", &etag2)],
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+}
+
+/// The control: with nothing stale and nothing written, the board still 304s,
+/// and its ETag is the plain rev form, so the bandwidth saving is untouched.
+#[tokio::test]
+async fn an_unchanged_board_with_nothing_stale_still_answers_304() {
+    let (app, _dir) = app();
+    create(&app, json!({"title":"fresh doing card", "status":"doing", "session":"lane-busy", "type":"chore"})).await;
+    let (st, h, _) = send(&app, "GET", "/api/board", None).await;
+    assert_eq!(st, StatusCode::OK);
+    let etag = h.get("etag").unwrap().to_str().unwrap().to_string();
+    assert!(etag.starts_with("\"board-"), "{etag}");
+    assert!(
+        !etag.contains("-s"),
+        "no stale card, no stale fingerprint: {etag}"
+    );
+    let (st, _, _) = send_with(&app, "GET", "/api/board", None, &[("if-none-match", &etag)]).await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+}
