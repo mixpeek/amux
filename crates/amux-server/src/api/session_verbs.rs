@@ -73,6 +73,47 @@ macro_rules! cached_re {
     }};
 }
 
+/// WHO SAID IT reaches the lane from the authenticated request, never from
+/// whichever composer happened to send. Only the dashboard's main composer
+/// stamped "[time email]"; the focus view, suggestions, drafts and bulk sends
+/// posted bare text, so in a shared cloud workspace a teammate's message read
+/// as nobody's. A human send carries the gateway's `x-amux-user-email`; the
+/// local owner carries none and is left alone, as is an isolated worker
+/// (direct owner-to-CLI transport) and a worker's chat tab.
+fn stamp_human_author(name: &str, headers: &HeaderMap, text: &mut String) {
+    if !hdr_worker(headers).is_empty() || session_is_isolated(name) || name.ends_with("@chat") {
+        return;
+    }
+    let email = headers
+        .get("x-amux-user-email")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim();
+    if let Some(stamped) = with_send_author(text, email) {
+        tracing::info!(session = name, author = email, measured = true, n_considered = 1,
+            verdict = "send_author_stamped", "the send named its human author for the lane");
+        *text = stamped;
+    }
+}
+
+/// `text` with the human `author` in its leading "[time]" stamp, or a new
+/// "[author]" prefix when it has none. `None` when there is nothing to add: no
+/// author, a slash command (sent verbatim), or a stamp that already names one.
+fn with_send_author(text: &str, author: &str) -> Option<String> {
+    if author.is_empty() || author.contains(']') || text.trim_start().starts_with('/') {
+        return None;
+    }
+    let stamp = cached_re!(r"(?i)^\[\s*(\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?)([^\]]*)\]\s");
+    match stamp.captures(text) {
+        Some(c) if !c[2].trim().is_empty() => None,
+        Some(c) => {
+            let end = c.get(0).map(|m| m.end()).unwrap_or(0);
+            Some(format!("[{} {author}] {}", c[1].trim(), &text[end..]))
+        }
+        None => Some(format!("[{author}] {text}")),
+    }
+}
+
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 /// A live=1 peek's capture budget. The dashboard aborts a live poll at 3s
@@ -28837,6 +28878,9 @@ pub(crate) async fn steer_mutate(
         } else {
             hdr_worker(headers)
         };
+        if sender.is_empty() {
+            stamp_human_author(name, headers, &mut text);
+        }
         let peer_coordination =
             !sender.is_empty() && !crate::db::board_store::board_delegation_allowed(Some(name));
         let msg_id = match steer_enqueue(state, name, &text, guard, &sender).await {
@@ -30683,6 +30727,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     }
     let isolated = session_is_isolated(name);
     let mut text = body_str(body, "text");
+    stamp_human_author(name, headers, &mut text);
     // AF-534 / AF-352, twice in five days. The isolation boundary is enforced at
     // REPLY time, on the peer: `cross_group_send_ok` refuses a send TO an
     // isolated worker. Nothing refuses a send FROM one, so an isolated lane can
@@ -58781,5 +58826,22 @@ mod live_peek_budget_tests {
                 assert_eq!(v["live"], "frame from the fake pane", "{v}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod send_author_tests {
+    use super::with_send_author as w;
+
+    #[test]
+    fn a_teammates_send_names_them_whichever_composer_sent_it() {
+        assert_eq!(w("hi", "doron@mixpeek.com").as_deref(), Some("[doron@mixpeek.com] hi"));
+        assert_eq!(
+            w("[11:31 AM] update the CSA", "doron@mixpeek.com").as_deref(),
+            Some("[11:31 AM doron@mixpeek.com] update the CSA")
+        );
+        assert_eq!(w("[11:31 AM ethan@mixpeek.com] hi", "ethan@mixpeek.com"), None, "already named");
+        assert_eq!(w("/compact", "doron@mixpeek.com"), None, "slash commands stay verbatim");
+        assert_eq!(w("hi", ""), None, "the local owner has no header and nothing changes");
     }
 }
