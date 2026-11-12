@@ -2237,6 +2237,7 @@ pub async fn config_worker(
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e })),
     };
     if let Some(refusal) = crate::api::session_verbs::membership_patch_refusal(&headers, body.get("tags").is_some()) { return refusal; }
+    let body = crate::api::session_verbs::with_desc_writer(&body, &headers);
     crate::api::session_verbs::config_patch(&state, &name, &body).await
 }
 

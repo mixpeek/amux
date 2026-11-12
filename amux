@@ -710,6 +710,38 @@ is_running() {
   [[ "$migrate_rc" -eq 124 ]] && return 124
   tmux_has_session_exact "=$(tmux_name "$1")"
 }
+# Whether a worker's tmux pane still runs its agent. The server's stop ends the
+# agent and deliberately keeps the pane (a shell, scrollback intact), so a live
+# tmux session alone does not mean a live worker. Same predicate as the server's
+# pane_has_live_child: the pane's shell has a child that is not a zombie.
+#   0  the pane runs something besides its shell (a live worker)
+#   1  only the shell is left (stopped: safe to relaunch)
+#   2  could not tell (no pane pid, or ps failed); callers treat it as live
+pane_agent_state() {
+  local tname pid kids
+  tname=$(tmux_name "$1")
+  pid=$(tmux list-panes -t "=$tname:" -F '#{pane_pid}' 2>/dev/null | head -1) || pid=""
+  [[ -n "$pid" ]] || return 2
+  # A launch line can end in an exec, which makes the pane process the agent
+  # itself; an idle agent may have no children. Only a bare shell can be empty.
+  local comm
+  comm=$(ps -p "$pid" -o comm= 2>/dev/null) || return 2
+  comm="${comm##*/}"; comm="${comm#-}"
+  case "$comm" in bash|zsh|sh|dash|fish|ksh|tcsh|csh) ;; *) return 0 ;; esac
+  kids=$(pgrep -P "$pid" 2>/dev/null | paste -sd, -) || kids=""
+  [[ -n "$kids" ]] || return 1
+  local stats
+  stats=$(ps -p "$kids" -o stat= 2>/dev/null) || return 2
+  grep -qv '^[[:space:]]*Z' <<<"$stats" && return 0
+  return 1
+}
+# A worker whose session exists AND whose pane still runs its agent.
+agent_alive() {
+  is_running "$1" || return 1
+  local rc=0
+  pane_agent_state "$1" || rc=$?
+  [[ "$rc" != 1 ]]
+}
 _amux_tmpfile() {
   # A temp file a SANDBOXED AGENT can actually create.
   #
@@ -1117,6 +1149,21 @@ cmd_start() {
   local tname
   tname=$(tmux_name "$name")
 
+  # A session left by `amux stop` (or the dashboard's Stop) holds only a shell:
+  # the server ends the agent and keeps the pane. Reporting that as "already
+  # running" made a stopped worker impossible to start from the CLI until its
+  # session was killed by hand. Replace the empty session and launch.
+  if ! $dry_run && is_running "$name"; then
+    local _pane_rc=0
+    pane_agent_state "$name" || _pane_rc=$?
+    if [[ "$_pane_rc" == 1 ]]; then
+      mkdir -p "$CC_HOME/logs"
+      printf '%s WARN amux::start verdict=empty_pane_replaced session=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" >> "$CC_HOME/logs/server-rs.log"
+      echo "${DIM}$name had a stopped session with only a shell left; starting it again${RESET}"
+      tmux kill-session -t "=$tname" 2>/dev/null || true
+    fi
+  fi
   if ! $dry_run && is_running "$name"; then
     if $detach; then
       echo "${YELLOW}already running:${RESET} $name"
@@ -2540,7 +2587,9 @@ cmd_stop() {
     # Kill tmux directly only when the server cannot be reached.
     if _stop_via_api "$name"; then
       local waited=0
-      while is_running "$name" && (( waited < 30 )); do
+      # The server keeps the pane after a stop, so wait for the agent to
+      # leave it, not for the session to disappear (it never does).
+      while agent_alive "$name" && (( waited < 30 )); do
         sleep 1; waited=$((waited + 1))
       done
     else
@@ -2553,7 +2602,7 @@ cmd_stop() {
 
   # Clean up worktree if one exists for this session
   local wt_dir="$CC_HOME/worktrees/$name"
-  if [[ -d "$wt_dir" ]] && is_running "$name"; then
+  if [[ -d "$wt_dir" ]] && agent_alive "$name"; then
     echo "  ${DIM}worktree kept: $name is still stopping ($wt_dir)${RESET}"
   elif [[ -d "$wt_dir" ]]; then
     # Resolve the repo that owns this worktree from the .git file
@@ -7029,6 +7078,12 @@ ${BOLD}Coordination:${RESET}
   amux signal wait <CARD> <name> Park YOUR card until a peer raises <name>
   amux signal raise <name> --note <text>
                                  Raise it: clears every waiting card, wakes their lanes
+  amux events [ls [filter] | tail [pattern]]
+                                 Every event amux emits (type, fields, count), or follow them live
+  amux subscribe "<plain words>" [--notify | --to <worker>] [--judge] [--dry-run]
+                                 Be told when it happens: a worker is woken, the owner gets a #general post
+  amux subscriptions [ls | fires [id] | on|off|rm <id>]
+                                 Your subscriptions and what they fired
   amux watch add file --path P [--regex R] | add ci --repo O/R --run ID
                                  Wake YOUR lane once when a file lands or a CI run concludes
   amux watch ls | rm <ID>        Your watches, measured or not; remove one
@@ -7132,7 +7187,7 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
 ${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
-  amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
+  amux publish [--internal|--origin] PORT [TITLE]   An app: public (--origin: on its own host), or inside amux only
   amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
 ${BOLD}Boundaries and resources:${RESET}
@@ -7425,7 +7480,7 @@ cmd_publish() {
   # app for anyone with the link, or a file or folder for anyone with the link
   # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
-  local kind=app target title
+  local kind=app target title origin=0
   # --api "METHOD /api/path" (repeatable): amux calls the app asks for. A
   # published app has no amux access otherwise (governance PR 5).
   local -a api_rules=() rest=()
@@ -7445,6 +7500,10 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
 
   amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
+  amux publish --origin PORT [TITLE]           The same, at the root of its own host
+                                               (https://<id>.<AMUX_PUBLIC_APPS_DOMAIN>/), with its
+                                               own cookies: for an app with a login or session
+                                               that breaks under /pub/<id>/
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
   amux publish PORT [TITLE] --api "POST /api/sessions/NAME/send"
@@ -7502,6 +7561,7 @@ for l in links:
       return 0
       ;;
     --internal) kind=internal; shift ;;
+    --origin) origin=1; shift ;;
     --file) kind="file"; shift ;;
   esac
   local is_path=0
@@ -7518,13 +7578,15 @@ for l in links:
   local body
   body=$(python3 -c '
 import json, sys
-kind, target, title, is_path = sys.argv[1:5]
-d = {"kind": kind, "title": title, "api": sys.argv[5:]}
+kind, target, title, is_path, origin = sys.argv[1:6]
+d = {"kind": kind, "title": title, "api": sys.argv[6:]}
+if origin == "1":
+    d["origin"] = True
 if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "${api_rules[@]+"${api_rules[@]}"}")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin" "${api_rules[@]+"${api_rules[@]}"}")
   local token_dir="${AMUX_HOME:-$HOME/.amux}/app-tokens"
 
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
@@ -10920,6 +10982,18 @@ cmd_land() {
       }
     fi
   fi
+  # PRECHECK FIRST: the repository's land precheck takes seconds and the gate
+  # takes minutes, so a range the precheck refuses comes back before the gate
+  # builds anything. On 2026-11-12 PR #448 passed a full gate and was then
+  # refused at push in 2 s by the slop ratchet. The queue path below skips it
+  # once it has run here (AMUX_LAND_PRECHECKED); --detach runs it in the
+  # detached process, as before.
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ -z "$land_sha" ] \
+     && [ "$detach" != 1 ] && [ "${AMUX_LAND_PRECHECKED:-}" != 1 ]; then
+    mkdir -p "$HOME/.amux/logs"
+    _land_precheck "$remote" "$branch" HEAD "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$HOME/.amux/logs/land.log" || return 3
+    export AMUX_LAND_PRECHECKED=1
+  fi
   # LAND GATE (scripts/land_gate.py): in a repo whose origin/main has one, run
   # the checks main runs on origin/main plus this change before it queues, so
   # a red result comes back here instead of turning main red for every lane.
@@ -12747,6 +12821,125 @@ print(json.dumps({"scheduled_at": os.environ["I"], "force": os.environ["Fz"] == 
   esac
 }
 
+# Event subscriptions (docs/design/event-subscriptions.md): the catalog of
+# events, a live tail, and subscribing in plain words.
+cmd_events() {
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  case "$sub" in
+    ls|list|catalog)
+      _curl -sk "$AMUX_API/api/subscriptions/catalog" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not d.get("measured"):
+    sys.exit("events: catalog not measured: " + str(d.get("why_unmeasured")))
+q = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+for t in d["types"]:
+    if q and q not in t["type"].lower():
+        continue
+    fields = ", ".join(f for f in t["fields"] if f not in ("type", "session", "source"))
+    print("%7d  %s%s" % (t["count"], t["type"], "" if t["documented"] else "  (undocumented)"))
+    if t.get("meaning"):
+        print("         " + t["meaning"])
+    if fields:
+        print("         fields: " + fields)
+print("\n%d types, %d events in the last %d days (%d undocumented)." % (d["count"], d["n_considered"], d["days"], d["undocumented"]), file=sys.stderr)
+' "${1:-}" ;;
+    tail)
+      local pattern="${1:-*}" after=0
+      echo "Following events matching $pattern (Ctrl-C to stop)" >&2
+      while true; do
+        local out
+        out=$(_curl -sk "$AMUX_API/api/subscriptions/events?pattern=$(printf '%s' "$pattern" | python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.stdin.read()))')&after=$after&limit=200") || { sleep 2; continue; }
+        after=$(printf '%s' "$out" | python3 -c '
+import json, sys, datetime
+d = json.load(sys.stdin)
+for e in d.get("events", []):
+    t = datetime.datetime.fromtimestamp(e["ts"]).strftime("%H:%M:%S")
+    print("%s  %-28s %-22s %s" % (t, e["type"], e["session"], json.dumps(e["data"])[:160]), file=sys.stderr)
+print(d.get("last_id", 0))
+' 2>&2) || after=0
+        sleep 2
+      done ;;
+    *) die "Usage: amux events [ls [filter] | tail [pattern]]" ;;
+  esac
+}
+
+cmd_subscribe() {
+  local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
+  local criteria="" action="" target="" dry=false judge=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --notify)   action="notify"; target="owner"; shift ;;
+      --to)       action="send"; target="${2:-}"; shift 2 ;;
+      --dry-run)  dry=true; shift ;;
+      --judge)    judge=true; shift ;;
+      --stdin)    criteria="$(cat)"; shift ;;
+      -h|--help)  die "Usage: amux subscribe \"<what to be told about, in plain words>\" [--notify | --to <worker>] [--judge] [--dry-run]" ;;
+      *)          criteria="${criteria:+$criteria }$1"; shift ;;
+    esac
+  done
+  [[ -n "$criteria" ]] || die "Usage: amux subscribe \"<what to be told about, in plain words>\" [--notify | --to <worker>] [--judge] [--dry-run]"
+  local body hdr=()
+  body=$(C="$criteria" A="$action" T="$target" D="$dry" J="$judge" python3 -c '
+import json, os
+b = {"criteria": os.environ["C"], "dry_run": os.environ["D"] == "true"}
+if os.environ["J"] == "true":
+    b["judge"] = True
+if os.environ["A"]:
+    b["action"], b["action_target"] = os.environ["A"], os.environ["T"]
+print(json.dumps(b))')
+  [[ -n "$me" ]] && hdr=(-H "X-Amux-Session: $me")
+  printf '%s' "$body" | _curl -sk -X POST -H 'Content-Type: application/json' "${hdr[@]}" -d @- "$AMUX_API/api/subscriptions" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"):
+    sys.exit("amux subscribe: " + d["error"])
+c = d.get("compiled") or {}
+print(("Would subscribe" if d.get("dry_run") else "Subscribed #%s %s" % (d.get("id"), d.get("name"))) + ":")
+if c.get("summary"):
+    print("  matches: " + c["summary"])
+print("  events:  " + str(d.get("pattern")) + (" where " + json.dumps(d.get("filter")) if d.get("filter") not in (None, {}) else ""))
+if d.get("judge") or c.get("judge"):
+    print("  judged:  the helper model checks each match against your words")
+print("  then:    " + str(d.get("action")) + " -> " + str(d.get("action_target")))
+b = d.get("backtest") or {}
+if b.get("measured"):
+    print("  last 7 days: %s of %s events would have matched" % (b["matched"], b["n_considered"]))
+'
+}
+
+cmd_subscriptions() {
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
+  case "$sub" in
+    ls|list)
+      _curl -sk "$AMUX_API/api/subscriptions${1:+?owner=$1}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get("subscriptions", []):
+    state = "on " if s["enabled"] else "off"
+    print("#%-4s %s %-36s %-24s -> %s %s  fired %sx  owner %s" % (s["id"], state, s["name"], s["pattern"], s["action"], s["action_target"], s["fire_count"], s.get("owner") or "-"))
+    if s.get("criteria"):
+        print("      " + s["criteria"])
+print("%s subscriptions" % d.get("count", 0), file=sys.stderr)
+' ;;
+    fires)
+      _curl -sk "$AMUX_API/api/subscriptions/fires?limit=${2:-20}${1:+&subscription_id=$1}" | python3 -c '
+import json, sys
+for f in json.load(sys.stdin).get("fires", []):
+    print("%s  %-32s %-24s %s" % (f["fired_at_iso"], f["subscription_name"], f["event_type"], f["outcome"]))
+' ;;
+    on|off)
+      [[ -n "${1:-}" ]] || die "Usage: amux subscriptions $sub <id>"
+      _curl -sk -X PATCH -H 'Content-Type: application/json' -d "{\"enabled\": $([[ $sub == on ]] && echo true || echo false)}" \
+        "$AMUX_API/api/subscriptions/$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or ("#%s %s" % (d["id"], "on" if d["enabled"] else "off")))' ;;
+    rm|delete)
+      [[ -n "${1:-}" ]] || die "Usage: amux subscriptions rm <id>"
+      _curl -sk -X DELETE "$AMUX_API/api/subscriptions/$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or "deleted #%s" % d["deleted"])' ;;
+    *) die "Usage: amux subscriptions [ls [owner] | fires [id] | on <id> | off <id> | rm <id>]" ;;
+  esac
+}
+
 cmd_signal() {
   local sub="${1:-help}"; shift 2>/dev/null || true
   local me="${AMUX_WORKER:-${AMUX_SESSION:-}}"
@@ -12870,6 +13063,9 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     serve|web)        shift; cmd_serve "$@" ;;
     board|b)          shift; cmd_board "$@" ;;
     signal)           shift; cmd_signal "$@" ;;
+    events)           shift; cmd_events "$@" ;;
+    subscribe)        shift; cmd_subscribe "$@" ;;
+    subscriptions)    shift; cmd_subscriptions "$@" ;;
     social)           shift; cmd_social "$@" ;;
     memory|mem)       shift; cmd_memory "$@" ;;
     land)             shift; cmd_land "$@" ;;
