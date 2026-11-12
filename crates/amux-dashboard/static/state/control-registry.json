@@ -3642,6 +3642,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openOwnPage": {
+      "kind": "command._openOwnPage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openPathFromOutput": {
       "kind": "command._openPathFromOutput",
       "feedback_required": true,
@@ -3806,6 +3812,12 @@
     },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ownPageBeacon": {
+      "kind": "command._ownPageBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
