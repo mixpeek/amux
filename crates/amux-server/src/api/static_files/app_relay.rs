@@ -87,6 +87,15 @@ fn client() -> &'static reqwest::Client {
 /// dev server the browser cannot reach directly. `prefix` is the path the app
 /// is mounted under (`/app/<id>` or `/pub/<id>`), `tail` the page and query.
 pub(crate) async fn relay(local: &str, port: u16, prefix: &str, tail: &str, method: Method, headers: &HeaderMap, body: Body) -> Response {
+    relay_as(local, port, prefix, tail, method, headers, body, None).await
+}
+
+/// [`relay`], telling the app the public host it is served at
+/// (`X-Forwarded-Host`, `X-Forwarded-Proto: https`) in place of whatever the
+/// client sent under those names: an app on an origin of its own
+/// (public_origin.rs) checks `Origin` against them and builds its URLs from them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn relay_as(local: &str, port: u16, prefix: &str, tail: &str, method: Method, headers: &HeaderMap, body: Body, public_host: Option<&str>) -> Response {
     let body = match axum::body::to_bytes(body, 64 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return page(StatusCode::PAYLOAD_TOO_LARGE, "Request too large", "<p>The request body is over 64 MB.</p>"),
@@ -96,9 +105,13 @@ pub(crate) async fn relay(local: &str, port: u16, prefix: &str, tail: &str, meth
         .request(method, format!("http://{local}:{port}{tail}"))
         .header("Host", format!("localhost:{port}"));
     for (k, v) in headers {
-        if forward_request_header(k) {
+        let forwarded = matches!(k.as_str(), "x-forwarded-host" | "x-forwarded-proto" | "forwarded");
+        if forward_request_header(k) && !(public_host.is_some() && forwarded) {
             req = req.header(k.as_str(), v.as_bytes());
         }
+    }
+    if let Some(h) = public_host {
+        req = req.header("X-Forwarded-Host", h).header("X-Forwarded-Proto", "https");
     }
     if let Some(c) = strip_amux_cookies(headers) {
         req = req.header("Cookie", c);

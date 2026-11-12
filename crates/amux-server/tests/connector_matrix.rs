@@ -352,6 +352,7 @@ impl Rig {
             .env("AMUX_MATRIX_CHILD_HOME", &self.home)
             .env("AMUX_HOME", &self.home)
             .env("AMUX_RS_PORT", self.port.to_string())
+            .env("AMUX_RS_BIND", "127.0.0.1")
             .env("AMUX_MATRIX_CHILD_PORT", self.port.to_string())
             .env("AMUX_MATRIX_PROVIDER", &self.provider)
             .env("AMUX_NO_SELF_ADOPT", "1")
