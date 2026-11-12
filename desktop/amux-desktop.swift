@@ -403,6 +403,8 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// that have been out of sight a while).
     var lastShown = Date()
     var lastMemoryReload = Date.distantPast
+    /// The footprint the guard reloaded this page at; 0 once the result is logged.
+    var memoryReloadFromMB = 0
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
 
@@ -741,6 +743,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     func windowDidExitFullScreen(_ notification: Notification) { normalFrame = nil; app?.windowPlaced(self) }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        memoryKillPending = false
         // Any amux server this tab shows, not only the default connection: a tab on
         // sandbox.amux.io must remember sandbox, or its new tabs and its saved place
         // fall back to the default server (Ethan, 2026-10-26).
@@ -756,6 +759,23 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
                 if reached { a?.adoptServerWindows() }
             }
         }
+    }
+
+    /// The memory guard ended this page's process and loads the page again
+    /// itself, so that one termination must not reload too. One-shot: the
+    /// callback for it, or the new page finishing its load, clears it, so a
+    /// later crash of the replacement process still recovers.
+    var memoryKillPending = false
+
+    // A page's web process ended: macOS did (memory pressure) or it crashed.
+    // A blank tab is left behind, so load the page again in a new process, on
+    // its saved view, and report it.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if memoryKillPending { memoryKillPending = false; return }
+        dlog("verdict=webcontent_terminated view=\(viewHash) url=\(webView.url?.absoluteString ?? "-")")
+        app?.beaconFrom(self, ["kind": "desktop-web-process-ended", "verdict": "webcontent_terminated", "measured": true,
+                               "n_considered": 1, "view": viewHash])
+        if let t = savedURL().flatMap({ URL(string: $0) }) { webView.load(URLRequest(url: t)) } else { webView.reload() }
     }
 
     // The tab bar's "+" button and File > New Tab.
@@ -852,12 +872,6 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         app?.loadFailed(in: self, error: error)
-    }
-
-    // A crashed web content process leaves a blank window; reload it.
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        NSLog("amux-desktop: verdict=webcontent_terminated url=%@", webView.url?.absoluteString ?? "-")
-        webView.reload()
     }
 
     // ── WKDownloadDelegate: into ~/Downloads, never overwriting ──
@@ -1376,12 +1390,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // show single tabs at 1.8, 3.2 and 6.3 GB. A page that has been out of
     // sight for a while and is over the limit is reloaded on the same URL: its
     // view, worker and tab come back from the URL, drafts from local storage,
-    // and the shown page is never touched. Each reload is logged and reported.
+    // and the shown page is never touched. Each reload is logged and reported,
+    // and so is the footprint a minute later (verdict=tab_reload_freed, or
+    // tab_reload_did_not_free when the page is still over the limit).
     func guardTabMemory() {
         let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
         let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
         let now = Date()
         for c in controllers {
+            // Until 2026-11-12 every reload here was a jump within the open page
+            // (see below), logged as a reload while the page kept 3 GB: one tab
+            // was "reloaded" 24 times at 3.1-3.5 GB. Measuring the result is what
+            // would have said so.
+            if c.memoryReloadFromMB > 0, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60),
+               let pid = webPID(c), let after = footprintMB(pid) {
+                let verdict = after > limit ? "tab_reload_did_not_free" : "tab_reload_freed"
+                dlog("verdict=\(verdict) before_mb=\(c.memoryReloadFromMB) after_mb=\(after) limit=\(limit) view=\(c.viewHash)")
+                beaconFrom(c, ["kind": "desktop-tab-reload-result", "verdict": verdict, "measured": true, "n_considered": 1,
+                               "before_mb": c.memoryReloadFromMB, "after_mb": after, "limit_mb": limit, "view": c.viewHash])
+                c.memoryReloadFromMB = 0
+            }
             if isShown(c) { c.lastShown = now; continue }
             let hidden = now.timeIntervalSince(c.lastShown)
             // At most one reload per page per cooldown: a page that grows straight
@@ -1390,17 +1418,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                   let pid = webPID(c), let mb = footprintMB(pid), mb > limit,
                   let url = c.webView.url, isServerURL(url) else { continue }
             c.lastMemoryReload = now
+            c.memoryReloadFromMB = mb
             dlog("verdict=tab_reloaded_for_memory mb=\(mb) limit=\(limit) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
-            let payload: [String: Any] = ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
-                                          "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash]
-            if let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
-               let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) {
-                r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
-            }
+            beaconFrom(c, ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
+                           "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash])
             // The saved URL carries what the page had open (a file, a drawing, a
             // worker's tab); the web view's own URL may have dropped that hash.
-            c.webView.load(URLRequest(url: c.savedURL().flatMap { URL(string: $0) } ?? url))
+            let target = c.savedURL().flatMap { URL(string: $0) } ?? url
+            // A reload frees nothing: until 2026-11-12 this loaded the saved URL,
+            // which differs from the page only in its #fragment, so WebKit jumped
+            // within the open page; and a real reload keeps the same web process,
+            // which keeps its memory (measured: a 1.7 GB page still 1.6 GB two
+            // minutes after reloading). Ending the process frees it, and the
+            // load starts the page's saved view in a new one. Only when the
+            // process is this page's alone.
+            let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+            if c.webView.responds(to: kill), !controllers.contains(where: { $0 !== c && webPID($0) == pid }) {
+                c.memoryKillPending = true
+                c.webView.perform(kill)
+                dlog("verdict=web_process_replaced_for_memory old_pid=\(pid) view=\(c.viewHash)")
+            } else {
+                dlog("verdict=tab_reload_same_process why=\(c.webView.responds(to: kill) ? "shared_process" : "no_kill_api") view=\(c.viewHash)")
+            }
+            c.webView.load(URLRequest(url: target))
         }
+    }
+
+    /// Post a client-debug beacon through any amux page but `c` (a page about to
+    /// reload would drop it).
+    func beaconFrom(_ c: DashboardWindowController, _ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload), let json = String(data: data, encoding: .utf8),
+              let r = controllers.first(where: { $0 !== c && ($0.webView.url.map(isServerURL) ?? false) }) ?? (c.webView.url.map(isServerURL) == true ? c : nil)
+        else { return }
+        r.webView.evaluateJavaScript("fetch('/api/client-debug',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))}).catch(()=>{}); 0", completionHandler: nil)
     }
 
     func footprintMB(_ pid: pid_t) -> Int? {
