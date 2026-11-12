@@ -4217,6 +4217,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/workers/{name}/capabilities",
         methods: &["GET"],
     },
+    RouteEntry {
+        path: "/api/approvals/decide",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/approvals/cards",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/land/approvals/reject",
+        methods: &["POST"],
+    },
 ];
 
 /// Match `path` against an axum-style pattern, returning a specificity score
