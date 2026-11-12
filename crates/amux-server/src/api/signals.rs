@@ -1367,51 +1367,68 @@ pub(crate) async fn dispatch_one(
             continue;
         }
         if sub.judge {
-            let outcome = judge(sub, &ev, now).await;
-            if outcome != "judge_yes" {
-                record_fire(state, sub, event_id, event_type, data, now, "judge", &outcome, &key).await;
-                continue;
-            }
-        }
-        let text = if sub.action_template.is_empty() {
-            default_text(sub, event_type, &ev)
-        } else {
-            super::event_subs::fill(&render_template(&sub.action_template, event_type, data), &ev)
-        };
-        let outcome = match sub.action.as_str() {
-            "send" => execute_send_action(state, &sub.action_target, &text).await,
-            "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
-            "schedule" => execute_schedule_action(state, &sub.action_target).await,
-            "shell" => execute_shell_action(&sub.action_target, &text).await,
-            "notify" => {
-                let (outcome, root) = super::event_subs::notify(state, &sub.name, sub.notify_post, &text, &ev).await;
-                if root != sub.notify_post {
-                    sub.notify_post = root;
-                    let (sid, r) = (sub.id, root);
-                    let _ = state.store.write_async(move |conn| {
-                        conn.execute("UPDATE signal_subscriptions SET notify_post = ?1 WHERE id = ?2", rusqlite::params![r, sid])?;
-                        Ok(WriteOutcome { applied: true, events: vec![] })
-                    }).await;
+            // A judge call takes the helper model 20-50 s. Awaited here it held
+            // the whole dispatcher, so every subscription in the fleet waited on
+            // one judged match (live, 2026-11-11: the cursor sat 85 s behind).
+            // It runs on its own; the dispatcher moves on.
+            let (st, mut s2, ev2, data2, et, key2) = (state.clone(), sub.clone(), ev.clone(), data.clone(), event_type.to_string(), key.clone());
+            tokio::spawn(async move {
+                let outcome = judge(&s2, &ev2, now).await;
+                tracing::info!(target: "amux::signals", subscription = %s2.name, event_type = %et, verdict_judge = %outcome,
+                    measured = true, n_considered = 1, verdict = "subscription_judged", "the helper model judged a match");
+                if outcome == "judge_yes" {
+                    act(&st, &mut s2, event_id, &et, &data2, &ev2, now, &key2).await;
+                } else {
+                    record_fire(&st, &s2, event_id, &et, &data2, now, "judge", &outcome, &key2).await;
                 }
-                outcome
-            }
-            _ => "unsupported_action".to_string(),
-        };
-        sub.last_fired_at = Some(now);
-        let (action, target) = (sub.action.clone(), sub.action_target.clone());
-        record_fire(state, sub, event_id, event_type, data, now, &action, &outcome, &key).await;
-        tracing::info!(target: "amux::signals",
-            subscription = %sub.name, event_type, action = %action,
-            target = %target, outcome = %outcome, event_id = ?event_id,
-            measured = true, n_considered = 1, verdict = "subscription_fired", "subscription fired");
-        fired.push(json!({
-            "subscription": sub.name,
-            "action": action,
-            "target": target,
-            "outcome": outcome,
-        }));
+            });
+            fired.push(json!({"subscription": sub.name, "action": "judge", "target": sub.action_target, "outcome": "judging"}));
+            continue;
+        }
+        fired.push(act(state, sub, event_id, event_type, data, &ev, now, &key).await);
     }
     fired
+}
+
+/// Run a subscription's action for one event and record the fire.
+#[allow(clippy::too_many_arguments)]
+async fn act(state: &AppState, sub: &mut LiveSub, event_id: Option<i64>, event_type: &str, data: &Value, ev: &Value,
+    now: i64, key: &str) -> Value {
+    let text = if sub.action_template.is_empty() {
+        default_text(sub, event_type, ev)
+    } else {
+        super::event_subs::fill(&render_template(&sub.action_template, event_type, data), ev)
+    };
+    let outcome = match sub.action.as_str() {
+        "send" => execute_send_action(state, &sub.action_target, &text).await,
+        "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
+        "schedule" => execute_schedule_action(state, &sub.action_target).await,
+        "shell" => execute_shell_action(&sub.action_target, &text).await,
+        "notify" => {
+            let (outcome, root) = super::event_subs::notify(state, &sub.name, sub.notify_post, &text, ev).await;
+            if root != sub.notify_post {
+                sub.notify_post = root;
+                let (sid, r) = (sub.id, root);
+                if let Err(e) = state.store.write_async(move |conn| {
+                    conn.execute("UPDATE signal_subscriptions SET notify_post = ?1 WHERE id = ?2", rusqlite::params![r, sid])?;
+                    Ok(WriteOutcome { applied: true, events: vec![] })
+                }).await {
+                    tracing::warn!(target: "amux::signals", subscription = %sub.name, error = %e, verdict = "subscription_thread_unsaved",
+                        "the notice thread was not saved; the next fire starts a new one");
+                }
+            }
+            outcome
+        }
+        _ => "unsupported_action".to_string(),
+    };
+    sub.last_fired_at = Some(now);
+    let (action, target) = (sub.action.clone(), sub.action_target.clone());
+    record_fire(state, sub, event_id, event_type, data, now, &action, &outcome, key).await;
+    tracing::info!(target: "amux::signals",
+        subscription = %sub.name, event_type, action = %action,
+        target = %target, outcome = %outcome, event_id = ?event_id,
+        measured = true, n_considered = 1, verdict = "subscription_fired", "subscription fired");
+    json!({"subscription": sub.name, "action": action, "target": target, "outcome": outcome})
 }
 
 async fn judge(sub: &LiveSub, ev: &Value, now: i64) -> String {

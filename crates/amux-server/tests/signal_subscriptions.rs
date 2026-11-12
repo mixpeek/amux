@@ -536,6 +536,32 @@ async fn ledger_writers_and_restarts_reach_subscriptions() {
     assert!(fires_of(&app, "fanout").await.is_empty());
 }
 
+/// A judged match does not hold the dispatcher: the emit answers at once with
+/// "judging" and the verdict is recorded when the model answers (here the
+/// test home has no model, so the verdict is judge_no:no_model).
+#[tokio::test]
+async fn a_judged_match_runs_beside_the_dispatcher() {
+    let (app, _store, _dir) = app();
+    let (st, v) = post_json(&app, "/api/subscriptions", json!({
+        "name": "judged", "pattern": "browser.route.*", "action": "shell", "action_target": "true",
+        "judge": true, "criteria": "a sign-in page", "dedupe_window_s": 0,
+    })).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let t0 = std::time::Instant::now();
+    let (_, v) = post_json(&app, "/api/subscriptions/emit",
+        json!({"type": "browser.route.state", "session": "w", "data": {"url": "https://x/login"}})).await;
+    assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(v["subscriptions_fired"][0]["outcome"], "judging", "{v}");
+    let mut seen = vec![];
+    for _ in 0..50 {
+        seen = fires_of(&app, "judged").await;
+        if !seen.is_empty() { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen.len(), 1, "the verdict is recorded once the judge answers");
+    assert!(seen[0]["outcome"].as_str().unwrap().starts_with("judge_no"), "{seen:?}");
+}
+
 #[tokio::test]
 async fn a_board_card_moving_fires_a_card_event() {
     let (app, store, dir) = app();
