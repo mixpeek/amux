@@ -41,6 +41,97 @@ before. Other lanes follow `AMUX_WORKER_IDENTITY`: `report` (default, logs
 403) or `off` (the old opt-in behaviour). `GET /api/contract/counters` shows the
 counts under `worker_identity`; switch to `enforce` once `would_refuse` stays 0.
 
+Locality is no longer a credential either (2026-11-09, `api/loopback_trust.rs`).
+A request from this machine proves itself like any other: the owner bearer, a
+member cookie, a lane's minted token, or, on a host behind a sign-in door with no
+owner token, the front-door owner secret (`~/.amux/front-door-owner`, which the
+door returns to Caddy for the owner and the owner's own CLI reads). What an
+uncredentialed local request costs is `AMUX_LOOPBACK_TRUST`: `report` (default,
+admitted, counted and named by caller, `loopback_would_be_refused`), `enforce`
+(401 `loopback_not_trusted`; `AMUX_RS_NO_LOOPBACK_BYPASS=1` means this) or `off`.
+`GET /api/contract/counters` shows it under `loopback`, with
+`uncredentialed_callers` naming who still relies on locality.
+
+A connector token is minted for whoever the request proves, not for whoever a
+header names or omits (2026-11-09, `api/connector_scope.rs`). A lane's token
+holds the bearer to that worker's connectors scope; the owner, a member or an
+in-process job (its `org::policy_headers("job:<name>")` mark) prove themselves
+as for any other route; a request that proves nobody is anonymous. A worker
+header alone still narrows the bearer to that worker's scope, since a name can
+only restrict. `AMUX_CONNECTOR_TOKEN_SCOPE`: `report` (default, minted, counted,
+`connector_token_would_be_refused`), `enforce` (403 `connector_token_refused`
+with how to prove; a lane not yet minted a token is still served and counted) or
+`off`. Every mint writes a receipt (`GET /api/policy/receipts`, action
+`connector_token_mint`) with actor, on-behalf-of, account, scopes and verdict,
+never the bearer. Counts are under `connector_token` in
+`GET /api/contract/counters`.
+
+A published app is its own principal with no amux access unless a person gave
+it some (2026-11-09, `api/app_identity.rs`). Publishing a port mints an app
+credential, returned once and stored only as its hash; the app sends it as
+`X-Amux-App-Token` and is attributed `app:<id>` on behalf of its publisher,
+held to the calls a person allowed (`api_allow`, `METHOD /api/path` rules; a
+worker can only ask, `api_requested`, and approving the link allows exactly
+that). It can never be given its own access controls, members, sign-in,
+connectors, the vault, grants or scopes. On Linux a loopback call from the
+app's process tree without its token is caught by process, including one that
+carries the worker token it inherited or the owner token it read from disk.
+`AMUX_PUBLISHED_APP_API`: `report` (default, allowed, counted per app and kind,
+`published_app_api_would_be_refused`), `enforce` (403 `published_app_api_refused`
+with what to do) or `off`. Counts are under `published_app` in
+`GET /api/contract/counters`. Still open: a process the app detaches from its
+tree, a non-Linux host, or a non-loopback call carrying the owner token is not
+caught; governance PRs 16-17 close that.
+
+A held external email is seen and decided only by who may (2026-11-09,
+`api/email_scope.rs`). The pending list is scoped to the caller the server
+proved: the owner, an owner policy and a Global member see every draft, a
+scoped member the drafts of the workers in its scope, a worker only its own,
+an app or an unproven caller none. Approve and reject record the proven
+identity with `approver_verified: true`, never the name `X-Amux-Approver`
+claims; a worker may withdraw only its own draft and never approve; an app can
+do neither; a scoped member decides only inside its scope, in every mode but
+`off`. Every external send that `AMUX_EMAIL_EXTERNAL_ALLOW` or
+`AMUX_EMAIL_EXTERNAL_EXEMPT` lets skip the hold leaves a ledger row and a
+policy receipt (`email_external_bypass`) naming the rule and its layer.
+`AMUX_EMAIL_APPROVAL_SCOPE`: `report` (default, allowed and counted,
+`email_scope_would_refuse`), `enforce` (403 with the next step) or `off`.
+Counts are under `email_gate` in `GET /api/contract/counters`.
+
+**The ledger** (`api/ledger.rs`, governance PR 7) is the record every gate
+above writes to. A finished command (from `_amux_interactions`) and every
+policy receipt land once in `_amux_ledger`, append-only (triggers refuse
+UPDATE and DELETE) and hash-chained. The actor is what the server proved
+(`owner`, `member:<email>`, `policy:<name>`, `worker:<name>` with its token,
+`app:<id>` with its token); a name only asserted goes in `claimed` and the
+actor is `anonymous`. Presence, status reports, typing and read markers are
+not recorded. `GET /api/ledger?actor=&resource=&kind=&trace_id=&since_h=`
+pages it newest first; `GET /api/ledger/verify` walks the chain and names
+the first changed or missing row; `/api/audit` reads it as `kind=ledger`.
+`AMUX_LEDGER_RETAIN_DAYS` (default 365) prunes a prefix and moves the anchor,
+so the rest still verifies; deleting a worker keeps its rows. `AMUX_LEDGER=off`
+stops appends. A failed append never fails the request: it logs
+`ledger_append_failed`, and verify and `ledger` in `GET
+/api/contract/counters` count it.
+
+**One trace per unit of work** (`api/trace.rs`, governance PR 8). A request
+without a W3C `traceparent` is an origin and the server mints a trace there;
+one with a valid header continues it. Every response names its trace in
+`traceparent`. A schedule firing on the cron path mints its own trace and is
+recorded in the ledger as its root (`kind=schedule`). Delivering a message to
+a worker records a child span on the `cmd_history` row (`trace_id`, `span_id`,
+`parent_span_id`, `trace_source`) and writes `<home>/trace/<worker>.current`;
+the message text is never changed. The `amux` CLI and the git
+`prepare-commit-msg` hook read that file (or `$TRACEPARENT`, or
+`$AMUX_TRACE_ID`), so a worker's calls and commits (`Amux-Trace:` trailer)
+descend from the last message delivered to it. That is all a worker's
+"current" trace means; `trace_source` (`minted`, `inherited`, `delivered`)
+says how each record got its trace. Ledger rows, policy receipts and the
+sent-email log carry it. `GET /api/trace/{id}` returns the tree, measured, with
+the sources it consulted. `AMUX_TRACE=off` turns it off; a failure to write a
+worker's file logs `trace_propagation_failed` and is counted under `trace` in
+`GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

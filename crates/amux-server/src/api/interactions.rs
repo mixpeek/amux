@@ -159,7 +159,16 @@ pub async fn middleware(
         "x-amux-interaction-id",
         HeaderValue::from_str(&id).expect("validated id"),
     );
+    let claimed = Some(actor.clone()).filter(|a| !a.is_empty());
     let response = interactions::CURRENT.scope(id.clone(), next.run(req)).await;
+    // The proven actor, resolved inside auth (ledger::stamp). Absent when auth
+    // itself refused the request: then nobody was proven.
+    let principal = response
+        .extensions()
+        .get::<super::ledger::Stamp>()
+        .map(|s| s.0.clone())
+        .unwrap_or_else(|| super::ledger::Principal::anonymous(claimed));
+    let ledger_on = super::ledger::records(&path);
     let status = response.status().as_u16();
     // Only bounded, already-sized JSON. Never buffer an upload/download stream
     // or consume a response merely to discover it exceeds a telemetry limit.
@@ -213,9 +222,41 @@ pub async fn middleware(
         }
     }
     let record_id = id.clone();
+    // The request's trace (trace.rs): read here, on the request's task; the
+    // write below runs on the writer thread, which has none.
+    let trace = super::trace::current();
+    let (ledger_kind, ledger_action, ledger_resource) =
+        (kind.clone(), format!("{method} {path}"), format!("{}:{}", primitive(&path).0, primitive(&path).1));
     let result = store.write_async(move |conn| {
+        let ack_text = ack.to_string();
+        let done_at = chrono::Utc::now().timestamp_millis();
         conn.execute("UPDATE _amux_interactions SET phase=?2,status=?3,acknowledgement=?4,updated_at=?5 WHERE id=?1",
-            rusqlite::params![record_id,phase,status,ack.to_string(),chrono::Utc::now().timestamp_millis()])?;
+            rusqlite::params![record_id,phase,status,ack_text,done_at])?;
+        if ledger_on {
+            let attempts: i64 = conn.query_row("SELECT attempts FROM _amux_interactions WHERE id=?1",
+                [&record_id], |r| r.get(0)).optional()?.unwrap_or(1);
+            let ev = super::ledger::Event {
+                event_id: format!("int:{record_id}:{attempts}"),
+                ts_ms: done_at,
+                kind: "interaction".into(),
+                parent_event_id: (attempts > 1).then(|| format!("int:{record_id}:{}", attempts - 1)),
+                action: Some(ledger_action),
+                resource: Some(ledger_resource),
+                policy_version: Some(ledger_kind),
+                output_hash: Some(super::ledger::sha256_hex(ack_text.as_bytes())),
+                decision: Some(if phase == "refused" { "refused" } else if status < 400 { "allowed" } else { "failed" }.into()),
+                outcome: Some(phase.into()),
+                source_table: Some("_amux_interactions".into()),
+                source_id: Some(record_id.clone()),
+                trace_id: trace.as_ref().map(|t| t.trace_id.clone()),
+                span_id: trace.as_ref().map(|t| t.span_id.clone()),
+                parent_span_id: trace.as_ref().and_then(|t| t.parent_span_id.clone()),
+                trace_source: trace.as_ref().map(|t| t.source.to_string()),
+                ..Default::default()
+            }
+            .with_principal(&principal);
+            super::ledger::append(conn, &ev);
+        }
         Ok(WriteOutcome{applied:false,events:vec![]})
     }).await;
     if let Err(error) = result {
