@@ -858,6 +858,7 @@ async fn async_main() {
     // spawned earlier it found no model and logged desc_refresh_no_model.
     drop(runtime_jobs::desc_refresh::spawn(state.clone()));
     drop(runtime_jobs::event_dispatch::spawn(state.clone()));
+    drop(runtime_jobs::email_events::spawn(state.clone()));
     boot_watch::step("router");
     let app = api::router(state);
 

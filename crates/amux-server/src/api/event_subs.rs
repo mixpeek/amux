@@ -205,6 +205,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("browser.started", "a browser was launched for a profile"),
     ("browser.stopped", "a browser was stopped"),
     ("browser.navigated", "a browser went to a url"),
+    ("email.received", "a new email arrived in a connected Gmail inbox: fields account (the inbox), from (\"Name <addr>\"), to, subject, snippet (the first lines), thread_id, message_id, unread. Match a sender with contains on from, a topic with contains on subject or snippet; judge when the request is about what the mail means"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),

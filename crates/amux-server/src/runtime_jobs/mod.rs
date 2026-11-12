@@ -78,6 +78,7 @@ pub mod goal_check;
 pub mod goal_keeper;
 pub mod task_titles;
 pub mod desc_refresh;
+pub mod email_events;
 pub mod event_dispatch;
 pub mod host_guard;
 pub mod host_metrics;
@@ -451,6 +452,7 @@ mod tests {
             ("heartbeat.rs", include_str!("heartbeat.rs")),
             ("status_history.rs", include_str!("status_history.rs")),
             ("board_hygiene.rs", include_str!("board_hygiene.rs")),
+            ("email_events.rs", include_str!("email_events.rs")),
         ];
         // The control first: this cell is worthless unless the literal it looks
         // for is one these files COULD contain, so prove the deriver produces
