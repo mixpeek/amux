@@ -2444,6 +2444,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "sso": super::sso::report(),
         "mfa": super::mfa::report(),
         "scim": super::scim::report(),
+        "compliance": super::compliance::report(),
         "ledger_checkpoints": super::ledger_checkpoint::report(),
         "trace": super::trace::report(),
         "cli_telemetry": super::cli_telemetry::report(),

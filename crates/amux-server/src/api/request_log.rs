@@ -2485,6 +2485,15 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/audit",
         methods: &["GET"],
     },
+    // -- compliance (governance PR 21)
+    RouteEntry {
+        path: "/api/compliance/access-review",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/compliance/timeline",
+        methods: &["GET"],
+    },
     // -- browser
     RouteEntry {
         path: "/api/browser/routing/config",

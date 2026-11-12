@@ -571,6 +571,8 @@ pub(crate) fn auditor_may(method: &Method, path: &str) -> bool {
         || path == "/api/audit"
         || path.starts_with("/api/audit/")
         || path == "/api/contract/counters"
+        // The compliance views (governance PR 21) are reads of the same record.
+        || path.starts_with("/api/compliance/")
 }
 
 /// Whether this member's session has proved a second factor (mfa.rs).

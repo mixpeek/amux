@@ -1948,6 +1948,203 @@ cmd_security() {
 
 # Governance PR 20: a second factor (TOTP) for the caller, and the owner's
 # step-up for the kill switch, holds, erasure and capability changes.
+# amux compliance access-review | timeline | evidence (governance PR 21). Reads
+# for the compliance skill (skills/compliance.md): the owner, an auditor or an
+# admin. Nothing here changes anything.
+cmd_compliance() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    access-review)
+      local days=90 raw=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --stale-days) days="${2:?--stale-days needs a number}"; shift 2 ;;
+          --json) raw=1; shift ;;
+          *) die "amux compliance access-review: unknown argument $1" ;;
+        esac
+      done
+      local out
+      out=$(_curl -sk -m 120 -G "$api/api/compliance/access-review" --data-urlencode "stale_days=$days") || die "server unreachable"
+      if [[ -n "$raw" ]]; then printf '%s\n' "$out"; return 0; fi
+      OUT="$out" python3 - <<'PYAR'
+import json, os
+try:
+    d = json.loads(os.environ["OUT"])
+except Exception:
+    print("amux compliance: the server did not answer with JSON"); raise SystemExit(1)
+if d.get("ok") is False or d.get("error"):
+    print("amux compliance:", d.get("error") or d.get("code")); raise SystemExit(1)
+led = d.get("ledger") or {}
+print("access review, window %s days, ledger %s" % (d.get("stale_days"),
+      "from %s (%s rows)" % (led.get("oldest_at"), led.get("rows")) if led.get("measured") else "NOT MEASURED"))
+idn = d.get("identity") or {}
+print("  mfa policy %s, enforce %s, step-up %s; sso %s; kill switch %s" % (
+    idn.get("mfa", {}).get("policy"), idn.get("mfa", {}).get("enforce"), idn.get("mfa", {}).get("step_up"),
+    "configured" if (idn.get("sso") or {}).get("configured") else "off",
+    "ENGAGED" if (idn.get("kill_switch") or {}).get("engaged") else "off"))
+for key in ("people", "workers", "apps", "scim_tokens", "standing_approvals"):
+    s = d.get(key) or {}
+    print("  %-19s %s" % (key, s.get("n_considered") if s.get("measured") else "not measured: " + str(s.get("why_unmeasured"))))
+f = d.get("findings") or []
+print("%d finding(s), recommendations only:" % len(f))
+for x in f:
+    print("  [%s] %s: %s\n      -> %s" % (x["rule"], x["subject"], x["detail"], x["recommend"]))
+PYAR
+      ;;
+    timeline)
+      local args=() raw=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --trace) args+=(--data-urlencode "trace=${2:?}"); shift 2 ;;
+          --worker) args+=(--data-urlencode "worker=${2:?}"); shift 2 ;;
+          --actor) args+=(--data-urlencode "actor=${2:?}"); shift 2 ;;
+          --since|--until)
+            local flag="${1#--}" v="${2:?$1 needs 24h, 7d or epoch ms}" ms
+            ms=$(python3 -c 'import re,sys,time
+v=sys.argv[1].strip()
+if v.isdigit(): print(v); sys.exit(0)
+m=re.fullmatch(r"(\d+(?:\.\d+)?)([smhd])",v)
+if not m: sys.exit(1)
+print(int((time.time()-float(m.group(1))*{"s":1,"m":60,"h":3600,"d":86400}[m.group(2)])*1000))' "$v") || die "$1 must be 30m, 2h, 7d or epoch ms"
+            args+=(--data-urlencode "$flag=$ms"); shift 2 ;;
+          --limit) args+=(--data-urlencode "limit=${2:?}"); shift 2 ;;
+          --no-commits) args+=(--data-urlencode "commits=false"); shift ;;
+          --json) raw=1; shift ;;
+          *) die "amux compliance timeline: unknown argument $1" ;;
+        esac
+      done
+      [[ ${#args[@]} -gt 0 ]] || die "usage: amux compliance timeline --trace ID | --worker W | --actor A | --since 24h [--until ...] [--no-commits] [--json]"
+      local out
+      out=$(_curl -sk -m 120 -G "$api/api/compliance/timeline" "${args[@]}") || die "server unreachable"
+      if [[ -n "$raw" ]]; then printf '%s\n' "$out"; return 0; fi
+      OUT="$out" python3 - <<'PYTL'
+import json, os
+try:
+    d = json.loads(os.environ["OUT"])
+except Exception:
+    print("amux compliance: the server did not answer with JSON"); raise SystemExit(1)
+if d.get("ok") is False or d.get("error"):
+    print("amux compliance:", d.get("error") or d.get("code")); raise SystemExit(1)
+c = d.get("chain") or {}
+src = d.get("sources") or {}
+print("chain: %s" % ("ok" if c.get("chain_ok") is True else "NOT VERIFIED " + json.dumps(c)[:200]))
+for k, v in src.items():
+    print("  %-8s %s" % (k, ("%s event(s)" % v.get("n")) if v.get("measured") else "not measured: %s" % v.get("why_unmeasured", "see --json")))
+for e in d.get("events") or []:
+    at = (e.get("at") or "")[:19]
+    if e.get("source") == "commit":
+        print("%s  commit  %s %s  %s" % (at, (e.get("commit") or "")[:9], e.get("author"), e.get("subject")))
+    elif e.get("source") == "ledger":
+        print("%s  ledger  #%s %s %s %s -> %s/%s" % (at, e.get("seq"), e.get("actor"), e.get("action") or e.get("kind"),
+              e.get("resource") or "", e.get("decision") or "", e.get("outcome") or ""))
+    else:
+        print("%s  %-6s  %s" % (at, e.get("source"), json.dumps({k: v for k, v in e.items() if k not in ("ts", "at", "source")})[:160]))
+PYTL
+      ;;
+    evidence)
+      local dir="" days=90
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --out|-o) dir="${2:?}"; shift 2 ;;
+          --stale-days) days="${2:?}"; shift 2 ;;
+          *) die "amux compliance evidence: unknown argument $1" ;;
+        esac
+      done
+      dir="${dir:-compliance-evidence-$(date -u +%Y%m%dT%H%M%SZ)}"
+      [[ -e "$dir" ]] && die "amux compliance evidence: $dir already exists; evidence is never overwritten"
+      mkdir -p "$dir"
+      local status_file="$dir/.status"; : > "$status_file"
+      local item file path code
+      # file|path. Each is an existing read route; the manifest records how each answered.
+      for item in \
+        "ledger-verify.json|/api/ledger/verify" \
+        "ledger-checkpoints.json|/api/ledger/checkpoints" \
+        "ledger-checkpoint-key.json|/api/ledger/checkpoints/key" \
+        "audit-export.csv|/api/audit/export?format=csv" \
+        "audit-export.ocsf.jsonl|/api/audit/export?format=ocsf" \
+        "at-rest.json|/api/security/at-rest" \
+        "access-review.json|/api/compliance/access-review?stale_days=$days" \
+        "kill-switch.json|/api/audit/kill-switch" \
+        "legal-holds.json|/api/audit/holds" \
+        "counters.json|/api/contract/counters"; do
+        file="${item%%|*}"; path="${item#*|}"
+        code=$(_curl -sk -m 300 -o "$dir/$file" -D "$dir/.hdr-$file" -w '%{http_code}' "$api$path" 2>/dev/null) || code=000
+        printf '%s\t%s\t%s\n' "$file" "$path" "$code" >> "$status_file"
+      done
+      DIR="$dir" API="$api" python3 - <<'PYEV'
+import hashlib, json, os, datetime
+d = os.environ["DIR"]
+items, missing = [], []
+chain_ok = None
+for line in open(os.path.join(d, ".status")):
+    f, path, code = line.rstrip("\n").split("\t")
+    p = os.path.join(d, f)
+    hdr = os.path.join(d, ".hdr-" + f)
+    headers = {}
+    if os.path.exists(hdr):
+        for h in open(hdr, errors="replace"):
+            if ":" in h:
+                k, v = h.split(":", 1); headers[k.strip().lower()] = v.strip()
+        os.remove(hdr)
+    body = open(p, "rb").read() if os.path.exists(p) else b""
+    measured = None
+    if f.endswith(".json"):
+        try:
+            j = json.loads(body); measured = j.get("measured") if isinstance(j, dict) else None
+            if f == "ledger-verify.json" and isinstance(j, dict): chain_ok = j.get("chain_ok") is True
+        except Exception:
+            measured = False
+    if f == "audit-export.csv":
+        measured = headers.get("x-amux-ledger-chain-ok") is not None
+    ok = code == "200"
+    if not ok:
+        missing.append({"file": f, "http_status": code})
+    items.append({"file": f, "route": path, "http_status": int(code) if code.isdigit() else 0,
+                  "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "measured": measured,
+                  "chain_ok_header": headers.get("x-amux-ledger-chain-ok")})
+os.remove(os.path.join(d, ".status"))
+controls = [
+    ("Audit logging and integrity (SOC 2 CC7.2, HIPAA 164.312(b))", ["ledger-verify.json", "ledger-checkpoints.json", "ledger-checkpoint-key.json", "audit-export.csv", "audit-export.ocsf.jsonl"]),
+    ("Logical access and least privilege (CC6.1, CC6.3; 164.308(a)(4))", ["access-review.json"]),
+    ("Authentication: second factor and SSO (CC6.1; 164.312(d))", ["access-review.json"]),
+    ("Periodic access review (CC6.2, CC6.3; 164.308(a)(3))", ["access-review.json"]),
+    ("Encryption at rest (CC6.1; 164.312(a)(2)(iv))", ["at-rest.json"]),
+    ("Retention and legal hold (CC7.4; 164.316(b)(2))", ["legal-holds.json", "ledger-verify.json"]),
+    ("Incident response: emergency stop (CC7.4, CC7.5; 164.308(a)(6))", ["kill-switch.json"]),
+    ("Monitoring of controls (CC4.1)", ["counters.json"]),
+]
+verdict = "complete" if not missing and chain_ok else "incomplete"
+manifest = {
+    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "server": os.environ["API"],
+    "verdict": verdict,
+    "ledger_chain_ok": chain_ok,
+    "missing": missing,
+    "items": items,
+    "controls": [{"control": c, "evidence": e} for c, e in controls],
+    "how_to_check": "sha256sum each file against items[].sha256; verify the ledger offline with `amux ledger verify --against <checkpoints>`",
+}
+mf = os.path.join(d, "manifest.json")
+open(mf, "w").write(json.dumps(manifest, indent=2) + "\n")
+lines = ["# Evidence pack", "", "Generated %s from %s. Verdict: **%s**." % (manifest["generated_at"], manifest["server"], verdict), ""]
+for c, e in controls:
+    lines.append("- %s: %s" % (c, ", ".join(e)))
+if missing:
+    lines += ["", "Missing: " + ", ".join("%s (HTTP %s)" % (m["file"], m["http_status"]) for m in missing)]
+open(os.path.join(d, "CONTROLS.md"), "w").write("\n".join(lines) + "\n")
+print("evidence pack: %s, %d file(s), %s; ledger chain %s; manifest sha256 %s" % (
+    d, len(items), verdict, "ok" if chain_ok else "NOT VERIFIED", hashlib.sha256(open(mf, "rb").read()).hexdigest()))
+raise SystemExit(0 if verdict == "complete" else 3)
+PYEV
+      ;;
+    *) echo "usage: amux compliance access-review [--stale-days 90] [--json]   who can do what, and what looks stale
+       amux compliance timeline --trace ID | --worker W | --actor A | --since 24h [--until ...] [--no-commits] [--json]
+       amux compliance evidence [--out DIR] [--stale-days 90]   a dated, hashed evidence pack (exit 3 if incomplete)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
 cmd_mfa() {
   local sub="${1:-}"; shift || true
   local api="${AMUX_API:-$(cmd_url)}"
@@ -7196,6 +7393,7 @@ ${BOLD}Interaction:${RESET}
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
   amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
   amux security at-rest | decrypt-grants   What is encrypted at rest; the owner's way back to plain grant files
+  amux compliance access-review | timeline | evidence   Access review, incident timeline, evidence pack (owner/auditor)
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
@@ -13189,6 +13387,7 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     ledger)           shift; cmd_ledger "$@" ;;
     security)         shift; cmd_security "$@" ;;
     mfa)              shift; cmd_mfa "$@" ;;
+    compliance)       shift; cmd_compliance "$@" ;;
     identity)         shift; cmd_identity "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
