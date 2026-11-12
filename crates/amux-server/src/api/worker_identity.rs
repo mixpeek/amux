@@ -304,16 +304,41 @@ pub async fn enforce(req: Request, next: Next) -> Response {
 pub async fn enforce_in(mode: Mode, req: Request, next: Next) -> Response {
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let socket = req.extensions().get::<ConnectInfo<SocketAddr>>().is_some();
-    let claimed = header(&req, "x-amux-session").or_else(|| header(&req, "x-amux-worker")).map(String::from);
-    if !mutating || !socket {
+    // Every lane the request names, in either header. Handlers do not agree on
+    // which one wins: `alerts::hdr_worker` (56 call sites) reads x-amux-worker
+    // first, others read x-amux-session first. Checking only one let a worker
+    // send its own name and token in one header and another lane's name in the
+    // other, pass this check, and be read as that lane. So each named lane must
+    // hold up, and the first that does not decides.
+    let mut lanes: Vec<String> = Vec::new();
+    for name in ["x-amux-worker", "x-amux-session"] {
+        if let Some(l) = header(&req, name).filter(|l| super::session_verbs::valid_session_name(l)) {
+            if !lanes.iter().any(|x| x == l) {
+                lanes.push(l.to_string());
+            }
+        }
+    }
+    if !mutating || !socket || lanes.is_empty() {
         return next.run(req).await;
     }
-    let Some(lane) = claimed.filter(|l| super::session_verbs::valid_session_name(l)) else {
+    let home = crate::config::amux_home();
+    let token = header(&req, TOKEN_HEADER).map(String::from);
+    if lanes.len() > 1 && first_time(&lanes.join("+"), "two_lanes") {
+        tracing::warn!(lanes = %lanes.join(","), path = %req.uri().path(), measured = true, n_considered = lanes.len(),
+            verdict = "worker_identity_two_lanes", "a request named two different lanes in its worker headers; each is checked");
+    }
+    let judged: Vec<(String, Coverage, Check)> = lanes
+        .into_iter()
+        .map(|l| {
+            let covered = coverage_with(&home, &l, mode);
+            let result = check_with(&home, &l, token.as_deref(), mode);
+            (l, covered, result)
+        })
+        .collect();
+    let pick = judged.iter().position(|(_, _, r)| *r == Check::Invalid).unwrap_or(0);
+    let Some((lane, covered, result)) = judged.into_iter().nth(pick) else {
         return next.run(req).await;
     };
-    let home = crate::config::amux_home();
-    let covered = coverage_with(&home, &lane, mode);
-    let result = check_with(&home, &lane, header(&req, TOKEN_HEADER), mode);
     if result != Check::Unenforced {
         counters::bump(&counters::CONSIDERED);
     }
@@ -632,6 +657,36 @@ mod tests {
         assert_eq!(r["measured"], true);
         assert!(r["n_considered"].as_u64().unwrap() >= 4);
         assert_eq!(r["lanes"]["minted"], json!(["w"]));
+    }
+
+    /// A worker named itself with its own token in x-amux-session and another
+    /// lane in x-amux-worker. The old check read only x-amux-session and
+    /// passed, while `hdr_worker` handlers then acted as the other lane. Each
+    /// named lane must now hold up, in enforce mode and (counted) in report.
+    #[tokio::test]
+    async fn a_token_for_one_lane_does_not_vouch_for_a_second_named_lane() {
+        use tower::ServiceExt;
+        let d = home_with("");
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let mine = mint(d.path(), "w").unwrap();
+        mint(d.path(), "v").unwrap();
+        let app = axum::Router::new()
+            .route("/x", axum::routing::post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(move |r, n| enforce_in(Mode::Enforce, r, n)));
+        let call = |session: &str, worker: &str| {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/x")
+                .header("x-amux-session", session)
+                .header("x-amux-worker", worker)
+                .header(TOKEN_HEADER, mine.as_str());
+            let mut req = req.body(axum::body::Body::empty()).unwrap();
+            req.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9))));
+            app.clone().oneshot(req)
+        };
+        assert_eq!(call("w", "v").await.unwrap().status(), StatusCode::FORBIDDEN, "w's token does not make it v");
+        assert_eq!(call("v", "w").await.unwrap().status(), StatusCode::FORBIDDEN, "either order");
+        assert_eq!(call("w", "w").await.unwrap().status(), StatusCode::OK, "the same lane twice is one claim");
     }
 
     #[test]

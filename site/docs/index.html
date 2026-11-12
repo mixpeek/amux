@@ -650,7 +650,7 @@ curl -sk -X POST -F "file=@local.txt" https://localhost:8824/api/fs/upload</code
 
 <h2 id="auth">Authentication</h2>
 
-<p>amux mints a bearer token at <code>~/.amux/auth_token</code> on first run. Requests from localhost are exempt; every other request needs the token, and requests from other websites are refused.</p>
+<p>amux mints a bearer token at <code>~/.amux/auth_token</code> on first run. Requests from localhost are exempt; every other request needs the token, and requests from other websites are refused. That covers anything that forwards to amux from the same machine, such as <code>tailscale serve</code> or a reverse proxy, so do not put one in front of amux: reach it over Tailscale with <code>tailscale cert</code> instead.</p>
 
 <pre><code># Read the token on the server
 cat ~/.amux/auth_token
