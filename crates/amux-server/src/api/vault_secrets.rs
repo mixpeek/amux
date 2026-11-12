@@ -602,6 +602,34 @@ pub(crate) fn deliver(home: &Path, worker: &str, path: DeliveryPath) -> Result<D
     Ok(out)
 }
 
+/// A Global secret's value, for the server's own use (owner, 2026-11-12: the
+/// vendor keys amux needs live in the Vault as secrets, not in a separate API
+/// Keys screen). Only a Global item answers: a group or worker secret was
+/// scoped away from everyone else, the server included. `None` when there is
+/// no such item or it does not open. Every read is audited by key and consumer.
+pub(crate) fn global_value(home: &Path, key: &str, consumer: &str) -> Option<String> {
+    let items = load(home).ok()?;
+    let item = items.iter().find(|it| it["key"].as_str() == Some(key) && matches!(item_scope(it), Some(Scope::Global)))?;
+    let opened = master_key(home, false)
+        .and_then(|m| m.ok_or_else(|| "the vault has items but no master key".to_string()))
+        .and_then(|m| open(&m, item));
+    let ok = opened.is_ok();
+    audit(home, json!({"ts": now_f64(), "event": "secret_read_by_server", "key": key, "item": item["id"],
+        "version": item_version(item), "consumer": consumer, "ok": ok}));
+    match opened {
+        Ok(v) => {
+            tracing::info!(key, consumer, item = %item["id"], measured = true, n_considered = 1,
+                verdict = "vault_server_read", "vault: the server read a Global secret for its own use");
+            Some(v)
+        }
+        Err(e) => {
+            tracing::warn!(key, consumer, item = %item["id"], error = %e, measured = true, n_considered = 1,
+                verdict = "vault_decrypt_failed", "vault: a Global secret the server needs did not open");
+            None
+        }
+    }
+}
+
 /// Prefix for a value staged in a one-shot process's environment. `valid_key`
 /// refuses `AMUX_` keys, so a staged name can never collide with a real one.
 pub(crate) const STAGE_PREFIX: &str = "AMUX_VAULT_STAGE_";
@@ -1810,6 +1838,20 @@ mod tests {
         assert!(audit.contains("secrets_delivered") && audit.contains("API_TOKEN"));
         assert!(audit.contains("\"path\":\"shell_schedule\""), "the path is named");
         assert!(!audit.contains("tok-123") && !audit.contains("tok-global"), "no value in the audit");
+    }
+
+    #[test]
+    fn the_server_reads_only_a_global_secret_and_audits_it() {
+        let h = home();
+        std::env::set_var("AMUX_VAULT_KEYSTORE", "file");
+        assert_eq!(global_value(h.path(), "OPENAI_API_KEY", "model_catalog"), None, "no store, no value");
+        create_item(h.path(), "OPENAI_API_KEY", &Scope::Group("ops".into()), "sk-group", "owner", "", None).unwrap();
+        assert_eq!(global_value(h.path(), "OPENAI_API_KEY", "model_catalog"), None, "a group secret is not the server's");
+        create_item(h.path(), "OPENAI_API_KEY", &Scope::Global, "sk-global", "owner", "", None).unwrap();
+        assert_eq!(global_value(h.path(), "OPENAI_API_KEY", "model_catalog").as_deref(), Some("sk-global"));
+        let audit = std::fs::read_to_string(h.path().join("logs/vault-audit.jsonl")).unwrap();
+        assert!(audit.contains("secret_read_by_server") && audit.contains("\"consumer\":\"model_catalog\""));
+        assert!(!audit.contains("sk-global"), "no value in the audit");
     }
 
     #[test]

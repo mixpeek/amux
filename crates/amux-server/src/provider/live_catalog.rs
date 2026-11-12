@@ -198,6 +198,16 @@ pub fn worker_model_ids(provider: &str) -> Vec<String> {
     }
 }
 
+/// A vendor's key: a Global Vault secret of that name, else server.env (or
+/// the process env). The Vault is where the owner keeps keys since its API
+/// Keys tab was removed (2026-11-11); server.env stays the fallback so an
+/// install that set the key there keeps its live list.
+fn vendor_key(home: &Path, env_key: &str) -> Option<String> {
+    crate::api::vault_secrets::global_value(home, env_key, "model_catalog")
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| crate::api::settings::effective_env(home, env_key).filter(|v| !v.trim().is_empty()))
+}
+
 /// Recompute the snapshot: probe every HTTP-listable vendor with a
 /// configured key, union each vendor's live ids over the static catalog
 /// (keyed by (provider, id) — a probe failure never removes a previously
@@ -231,8 +241,7 @@ pub async fn refresh(home: &Path) {
             match super::claude::probe_models_raw().await {
                 Ok(ids) => Some(Ok(ids)),
                 Err(oauth_err) => {
-                    let key = crate::api::settings::effective_env(home, env_key)
-                        .filter(|v| !v.trim().is_empty());
+                    let key = vendor_key(home, env_key);
                     match key {
                         Some(key) => Some(fetch_vendor(vendor, &key).await),
                         // "no_token" means not logged into Claude Code at all
@@ -248,8 +257,7 @@ pub async fn refresh(home: &Path) {
                 }
             }
         } else {
-            let key = crate::api::settings::effective_env(home, env_key)
-                .filter(|v| !v.trim().is_empty());
+            let key = vendor_key(home, env_key);
             match key {
                 Some(key) => Some(fetch_vendor(vendor, &key).await),
                 None => None,
