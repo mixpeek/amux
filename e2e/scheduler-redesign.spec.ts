@@ -48,6 +48,12 @@ async function openScheduler(page: Page, search?: string): Promise<void> {
   await expect(page.locator('#scheduler-view')).toBeVisible();
   if (search != null) await page.fill('#sched-search', search);
 }
+// New asks "At a time" or "When something happens" first (24ae224b1); a
+// schedule is the first.
+async function newSchedule(page: Page): Promise<void> {
+  await page.locator('.sx-new').click();
+  await page.locator('.sx-ev-choice-btn', { hasText: 'At a time' }).click();
+}
 async function expectNoOverflow(page: Page): Promise<void> {
   const o = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(o, 'page must not overflow horizontally').toBeLessThanOrEqual(1);
@@ -289,7 +295,7 @@ async function withSlowFrames(page: Page, script: string): Promise<void> {
 test('a form reopened inside the close fade stays visible when the frame is slow', async ({ page }) => {
   await settle(page);
   await openScheduler(page);
-  await page.locator('.sx-new').click();
+  await newSchedule(page);
   await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
   await withSlowFrames(page, 'closeSchedModal(); openSchedModal();');
   await page.waitForTimeout(600);   // past both the 250ms hide and the 400ms frame
@@ -358,7 +364,7 @@ test('create: a field entered right after open keeps focus', async ({ page }) =>
   await expect(page.locator('#sched-title')).toHaveValue('');
   // An untouched open still lands on Name.
   await page.locator('#sched-overlay .sched-modal-foot .btn', { hasText: 'Cancel' }).click();
-  await page.locator('.sx-new').click();
+  await newSchedule(page);
   await expect.poll(() => page.evaluate(() => document.activeElement && document.activeElement.id)).toBe('sched-title');
   await page.locator('#sched-overlay .sched-modal-foot .btn', { hasText: 'Cancel' }).click();
 });
@@ -389,7 +395,7 @@ test('create: every preset and both types save an expression the server parses',
     const shell = i % 2 === 0;
     // Re-added each time: a background session refresh replaces the list.
     await addWorker(page, 'e2e-target');
-    await page.locator('.sx-new').click();
+    await newSchedule(page);
     await expect(page.locator('#sched-overlay')).toHaveClass(/active/);
     await expect(page.locator('#sched-modal-title')).toHaveText('Create Schedule');
     if (i === 0) {
@@ -437,7 +443,7 @@ test('create: every preset and both types save an expression the server parses',
     if (!shell) expect(row.session).toBe('e2e-target');
   }
   // A worker trigger without a worker is refused in the form, not sent.
-  await page.locator('.sx-new').click();
+  await newSchedule(page);
   await page.fill('#sched-title', p + 'no-worker');
   await page.check('#sched-kind-tmux');
   await page.fill('#sched-command', 'hello');
