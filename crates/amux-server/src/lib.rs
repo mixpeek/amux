@@ -649,6 +649,8 @@ async fn async_main() {
     // and steers each to open one — server-side, so it reaches any group. One
     // nudge per lane per 24h. Held like board-drive so the loop is not dropped.
     drop(api::messages::accountability_spawn(state.clone()));
+    // Outcome threads (o:<id>) resolve their worker from this registry.
+    api::intent_store::load_registry(&state);
 
     // Pane-size restoration (AMUX-2634): a peek resizes the worker's tmux
     // window to the READER's viewport and tmux pins `window-size manual`, so

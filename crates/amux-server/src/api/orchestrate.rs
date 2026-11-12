@@ -27,6 +27,64 @@ pub fn routes() -> Router<AppState> {
     Router::new().route("/plan", post(plan))
 }
 
+/// One worker as a router sees it. Shared with `/api/intent/plan`, which also
+/// needs the worker's type, directory and isolation to decide where a request
+/// goes (an isolated worker is never routed to: A9).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct RosterEntry {
+    pub name: String,
+    pub groups: Vec<String>,
+    pub desc: String,
+    pub worker_type: String,
+    pub dir: String,
+    pub isolated: bool,
+}
+
+/// Every non-blocked, non-archived worker, from the same env files the fleet
+/// list reads.
+pub(crate) fn roster_entries(home: &Path) -> Vec<RosterEntry> {
+    let blocked = crate::api::groups::blocked_names(home);
+    let Ok(entries) = std::fs::read_dir(home.join("sessions")) else {
+        return vec![];
+    };
+    let mut rows: Vec<RosterEntry> = vec![];
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("env") {
+            continue;
+        }
+        let Some(name) = p.file_stem().and_then(|s| s.to_str()).map(String::from) else {
+            continue;
+        };
+        if blocked.contains(&name) {
+            continue;
+        }
+        let env = crate::config::parse_env_file(&p);
+        if env.get("CC_ARCHIVED").map(|v| v == "1").unwrap_or(false) {
+            continue;
+        }
+        let truthy = |k: &str| env.get(k).map(|v| matches!(v.trim(), "1" | "true" | "yes")).unwrap_or(false);
+        rows.push(RosterEntry {
+            groups: env
+                .get("CC_TAGS")
+                .map(String::as_str)
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(String::from)
+                .collect(),
+            desc: env.get("CC_DESC").cloned().unwrap_or_default(),
+            worker_type: env.get("CC_WORKER_TYPE").cloned().filter(|t| !t.is_empty()).unwrap_or_else(|| "coding".into()),
+            dir: env.get("CC_DIR").cloned().unwrap_or_default(),
+            isolated: truthy("CC_ISOLATED"),
+            name,
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
 /// (name, groups, description) for every non-blocked, non-archived worker — read
 /// from the same `~/.amux/sessions/*.env` files the fleet list uses, so the
 /// router reasons over exactly the workers a human sees.

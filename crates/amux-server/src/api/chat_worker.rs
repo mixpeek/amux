@@ -852,6 +852,11 @@ async fn run_turn(state: &AppState, name: &str, lane: &Lane, q: Queued) {
             // and is the source of the owner-relay origin stamp.
             ("chat_inflight_text", json!(super::session_verbs::redact_secrets(&q.text.chars().take(300).collect::<String>()))),
             ("chat_inflight_started", json!(crate::config::now_f64())),
+            // Where a Messages post asked to be answered (`amux post '<conv>'`),
+            // kept whole: the text above is cut to 300 characters.
+            ("chat_inflight_post", json!(if q.text.contains("amux Messages") {
+                q.text.rfind("amux post ").map(|i| q.text[i..].chars().take(200).collect::<String>()).unwrap_or_default()
+            } else { String::new() })),
         ],
     );
     report_state(state, name, "active", "UserPromptSubmit", &turn_id).await;
@@ -958,12 +963,21 @@ async fn finish_turn(
     )
     .await;
     let stem = meta_str(&load_meta(name), "chat_inflight_files");
+    // A turn that began with a Messages post (an outcome thread included)
+    // posts its answer there from here, with the text in hand. The turn-end
+    // hook's transcript read would do the same later and skips a thread that
+    // already has the answer (`relay_turn` checks).
+    let reply_to = meta_str(&load_meta(name), "chat_inflight_post");
+    if error.is_none() && !interrupted && !reply_to.is_empty() && !a.text.trim().is_empty() {
+        super::conversations::relay_turn(state, name, &format!("amux Messages\n{reply_to}"), &a.text).await;
+    }
     update_meta(
         name,
         &[
             ("chat_inflight_turn", json!("")),
             ("chat_inflight_origin", json!("")),
             ("chat_inflight_text", json!("")),
+            ("chat_inflight_post", json!("")),
             ("chat_inflight_files", json!("")),
             ("chat_inflight_pgid", json!(0)),
             ("chat_inflight_provider", json!("")),

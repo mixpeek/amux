@@ -108,6 +108,15 @@
 <!-- AMUX-BOOTSTRAP-END -->
 </head>
 <body>
+<script>
+// The intent Home decides a new person's first screen; until it answers, the
+// fleet is hidden so it never flashes first (docs/design/intent-first.md).
+(function(){try{var v=JSON.parse(localStorage.getItem('amux_ui_view')||'null');
+var fresh=v&&v.v&&(Date.now()-(v.ts||0)<86400000);
+var dl=/^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/.test(location.hash)||/[?&]view=/.test(location.search);
+if(!fresh&&!dl&&localStorage.getItem('amux_home_choice')!=='fleet'){document.documentElement.classList.add('boot-home-pending');
+setTimeout(function(){document.documentElement.classList.remove('boot-home-pending');},4000);}}catch(e){}})();
+</script>
 <div id="js-fallback" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:var(--space-4);z-index:99999;background:var(--bg);color:var(--dim);font-family:var(--font-ui);">
   <div style="font-size:var(--fs-3xl);">Loading amux...</div>
   <div id="js-fallback-retry" style="display:none;text-align:center;">
@@ -730,6 +739,7 @@
 </div>
 <div class="tab-bar-outer">
 <div class="tab-bar">
+  <button id="tab-home" title="Home: say what you want" onclick="switchView('home')"><span class="tab-ico">&#x2302;</span><span class="tab-lbl">Home</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
@@ -765,6 +775,28 @@
   <button class="tab-customize-btn" onclick="event.stopPropagation();toggleTabCustomizer()" title="Show/hide tabs">&#x229E;</button>
   <div class="tab-customizer-menu" id="tab-customizer-menu" style="display:none;"></div>
 </div>
+</div>
+<div id="home-view" class="home-view" style="display:none" aria-label="Home">
+  <div class="home-top"><span class="home-brand">amux</span></div>
+  <div class="home-main">
+    <section id="home-chat" class="home-pane"><div id="home-chat-body" class="home-pane-body"></div></section>
+    <section id="home-ideas" class="home-pane" hidden><div id="home-ideas-body" class="home-pane-body"></div></section>
+    <section id="home-goals" class="home-pane" hidden><div id="home-goals-body" class="home-pane-body"></div></section>
+  </div>
+  <form id="home-composer" class="home-composer" onsubmit="event.preventDefault();_homeSend()">
+    <div class="home-composer-row">
+      <textarea id="home-input" class="input home-input" rows="1" placeholder="Ask for anything: a reminder, a plan, something from your inbox" aria-label="What do you need?"
+        oninput="_homeGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_homeSend()}"></textarea>
+      <button id="home-send" type="submit" class="btn primary home-send">Send</button>
+    </div>
+    <div class="home-trust">Nothing is sent to anyone or paid for without your OK.</div>
+  </form>
+  <nav class="home-nav" aria-label="Home views">
+    <button type="button" id="home-nav-chat" class="home-nav-btn active" onclick="_homeSetPane('chat')"><span class="home-nav-ico">&#x1F4AC;</span><span>Chat</span></button>
+    <button type="button" id="home-nav-ideas" class="home-nav-btn" onclick="_homeSetPane('ideas')"><span class="home-nav-ico">&#x1F4A1;</span><span>Ideas</span></button>
+    <button type="button" id="home-nav-goals" class="home-nav-btn" onclick="_homeSetPane('goals')"><span class="home-nav-ico">&#x1F3AF;</span><span>Goals</span></button>
+    <button type="button" id="home-nav-workspace" class="home-nav-btn" onclick="_homeSetPane('workspace')"><span class="home-nav-ico">&#x25A6;</span><span>Workspace</span></button>
+  </nav>
 </div>
 <div id="session-view">
 <div style="padding:0 var(--space-3);margin-top:var(--space-1);display:flex;align-items:center;gap:var(--space-2);">
@@ -3334,6 +3366,7 @@
   </div>
   <!-- Tab bar -->
   <div class="peek-tabs" onwheel="_peekTabsWheel(event)">
+    <button class="peek-tab" id="peek-tab-outcomes" onclick="setPeekTab('outcomes')" title="What was asked of this worker from Home, and how it went"><span class="tab-ico">&#x2714;</span><span class="tab-lbl">Outcomes</span></button>
     <button class="peek-tab active" id="peek-tab-terminal" onclick="setPeekTab('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
     <button class="peek-tab" id="peek-tab-files" onclick="peekSession&&_browseWorkerFiles(peekSession,'peek-tab')" title="Open this worker's directory in Files (the same as clicking its path)"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
     <button class="peek-tab" id="peek-tab-simple" onclick="setPeekTab('simple')" title="Translate this worker's output — plain English by default, or your own prompt"><span class="tab-ico">◍</span><span class="tab-lbl">Translate</span></button>
@@ -3598,6 +3631,7 @@
   
   <!-- This worker's tasks, newest first and numbered: the Tasks view's list
        fixed to peekSession (app.js _tasksScopes.peek). -->
+  <div id="peek-outcomes-panel" class="peek-tasks-panel" style="overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
   <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope row-note-host" style="padding:0;gap:0;flex-direction:column;">
     <div class="tasks-bar">
       <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks, cards and messages" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">

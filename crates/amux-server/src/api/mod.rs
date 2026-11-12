@@ -182,6 +182,9 @@ pub mod verify;
 pub mod why;
 pub mod worker_create;
 pub mod outcome_plan;
+pub mod intent;
+pub mod intent_store;
+pub mod intent_items;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;
@@ -412,6 +415,9 @@ pub fn router_with_connector_transport(
         // The New Worker / Connect modals' supporting reads (AMUX-2871).
         .merge(worker_create::routes())
         .merge(outcome_plan::routes())
+        .merge(intent::routes())
+        .merge(intent_store::routes())
+        .merge(intent_items::routes())
         .merge(worker_exec::routes())
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())

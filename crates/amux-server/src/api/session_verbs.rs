@@ -19356,7 +19356,7 @@ async fn clear_stopped_report(state: &AppState, name: &str) -> anyhow::Result<()
     Ok(())
 }
 
-async fn stop_session_process(name: &str) -> (bool, String) {
+pub(crate) async fn stop_session_process(name: &str) -> (bool, String) {
     if !valid_session_name(name) {
         return (false, "invalid session name".into());
     }

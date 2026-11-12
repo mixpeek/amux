@@ -23,6 +23,7 @@ pub mod browser_logins;
 pub mod calendar;
 pub mod computer;
 pub mod email;
+pub mod local_mailbox;
 pub(crate) mod oauth_store;
 pub(crate) mod secure_store;
 pub mod gcal_sync;

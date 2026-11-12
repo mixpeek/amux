@@ -1685,6 +1685,16 @@ pub async fn inbox(
             }
         };
     let connected = ctx.client.connected_accounts();
+    // A file mailbox (integrations/local_mailbox.rs) answers beside Gmail.
+    let local_home = ctx.client.home().to_path_buf();
+    let local_accounts = crate::integrations::local_mailbox::accounts(&local_home);
+    if !account_filter.is_empty() && local_accounts.contains(&account_filter) && !connected.contains(&account_filter) {
+        let msgs = crate::integrations::local_mailbox::inbox(&local_home, &account_filter, count, lookback_days);
+        return reply_shape(msgs, false, None);
+    }
+    if account_filter.is_empty() && connected.is_empty() && !local_accounts.is_empty() {
+        return reply_shape(crate::integrations::local_mailbox::inbox(&local_home, "", count, lookback_days), false, None);
+    }
     if !account_filter.is_empty() && connected.contains(&account_filter) {
         let res = ctx
             .client
@@ -1746,6 +1756,7 @@ pub async fn inbox(
         if any_ok {
             ctx.registry.set("email", IntegrationState::Available);
         }
+        msgs.extend(crate::integrations::local_mailbox::inbox(&local_home, "", count, lookback_days));
         // Newest first; an unparseable date sinks, never errors.
         msgs.sort_by(|a, b| {
             recv_ts(b)
@@ -1799,6 +1810,9 @@ pub async fn message(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let explicit_account = !account.is_empty();
+    if let Some(m) = crate::integrations::local_mailbox::message(ctx.client.home(), &id) {
+        return Json(m).into_response();
+    }
     let connected = ctx.client.connected_accounts();
     let accounts: Vec<String> = if !account.is_empty() {
         if !connected.contains(&account) {
@@ -2008,6 +2022,17 @@ pub async fn search(
     let gq = gq.trim().to_string();
 
     let connected = ctx.client.connected_accounts();
+    let local_home = ctx.client.home().to_path_buf();
+    let local_accounts = crate::integrations::local_mailbox::accounts(&local_home);
+    if (!account.is_empty() && local_accounts.contains(&account) && !connected.contains(&account))
+        || (account.is_empty() && connected.is_empty() && !local_accounts.is_empty())
+    {
+        let mut q2 = q.clone();
+        if mb == "sent" || mb == "sent mail" {
+            q2.push_str(" label:sent");
+        }
+        return Json(Value::Array(crate::integrations::local_mailbox::search(&local_home, &q2, &account, limit, days))).into_response();
+    }
     if !account.is_empty() && connected.contains(&account) {
         let res = ctx
             .client
@@ -2035,6 +2060,7 @@ pub async fn search(
                 merged.extend(m.iter().cloned());
             }
         }
+        merged.extend(crate::integrations::local_mailbox::search(&local_home, &q, "", limit, days));
         merged.sort_by(|a, b| {
             recv_ts(b)
                 .partial_cmp(&recv_ts(a))

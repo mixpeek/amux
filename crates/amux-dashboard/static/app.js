@@ -9480,6 +9480,7 @@ function _renderSessionCard(s) {
         : '');
     })() : ''}
     ${isExp && s.preview ? `<div class="card-preview">${esc(s.preview)}</div>` : ''}
+    ${_homeCardOutcomes(s.name)}
     ${logSearchMode && _logMatches[s.name] ? (() => {
       const hits = _logMatches[s.name];
       const sq = searchQuery.replace(/'/g,"\\'");
@@ -10834,7 +10835,9 @@ function _peekTabsWheel(e) {
 // different class (tab-customize-btn, not peek-tab), so it is not picked up. DOM
 // order is the default order, matching what a fresh browser shows.
 const PEEK_TABS = (function _discoverPeekTabs() {
-  const PINNED = new Set(['terminal']);
+  // Outcomes leads (docs/design/intent-first.md): what was asked of this
+  // worker and how it went, before the machinery.
+  const PINNED = new Set(['terminal', 'outcomes']);
   const out = [];
   document.querySelectorAll('.peek-tabs button.peek-tab[id^="peek-tab-"]').forEach(b => {
     const id = b.id.slice('peek-tab-'.length);
@@ -12088,7 +12091,9 @@ async function _outcomeDefaults() {
     dir: d.dir || '',
     provider: d.provider || 'claude',
     model: d.model || '',
-    isolated: d.isolated !== false,
+    // Decided 2026-11-12 (docs/design/intent-first.md): routed and created
+    // workers are not isolated by default; isolation stays an explicit choice.
+    isolated: d.isolated === true,
     constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
   };
 }
@@ -12175,10 +12180,39 @@ async function _outcomePlan(text, files) {
   } catch (_) {}
   return null;
 }
+// One routing decision (POST /api/intent/plan): answer it, send it to the
+// worker that already owns this work, or create one. A failed router call
+// falls back to the create plan above, so the dialog never stalls.
+async function _intentRoute(text, extra) {
+  try {
+    const r = await fetch(API + '/api/intent/plan', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(Object.assign({ text }, extra || {})) });
+    if (r.ok) return await r.json();
+  } catch (_) {}
+  return null;
+}
 async function _outcomeStart(text, cfg, files) {
   files = files || [];
   showToast('Reading your description' + (files.length ? ' and attachments' : '') + '...');
-  const plan = await _outcomePlan(text, files);
+  const route = files.length || cfg.dir ? null : await _intentRoute(text);
+  if (route?.action === 'answer' && route.answer) {
+    localStorage.removeItem('amux_outcome_draft');
+    showFormModal(route.title || 'Answer', '<div class="outcome-answer">' + esc(route.answer).replace(/\n/g, '<br>') + '</div>', 'Done');
+    return '';
+  }
+  if (route?.action === 'send' && route.worker) {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(route.worker) + '/send', { method: 'POST',
+      headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify({ text, record_history: true }) }).catch(() => null);
+    if (r && (r.ok || _isLocallyQueued(r))) {
+      localStorage.removeItem('amux_outcome_draft');
+      showToast('Sent to ' + route.worker + (route.why ? ': ' + route.why : ''));
+      return route.worker;
+    }
+    showToast('Not sent to ' + route.worker + '. Your description is kept.');
+    return;
+  }
+  const spec = route?.action === 'create' ? (route.create || {}) : null;
+  const plan = spec ? { name: spec.name, dir: spec.dir, desc: spec.desc, groups: spec.groups } : await _outcomePlan(text, files);
   const name = plan?.name || _outcomeName(text, new Set((sessions || []).map(s => s.name)));
   const dir = cfg.dir || plan?.dir || (window._cloudEmail ? '/root' : '');
   const context = (plan?.attachments || []).map(a => a.transcript
@@ -12189,6 +12223,8 @@ async function _outcomeStart(text, cfg, files) {
     desc: plan?.desc || _outcomeDesc(text), prompt: _outcomePrompt(ask, cfg.constraints || '', false) };
   if (cfg.provider !== 'claude') body.provider = cfg.provider;
   if (cfg.model) body.model = cfg.model;
+  else if (spec?.model) body.model = spec.model;
+  if (spec?.worker_type === 'chat' && cfg.provider === 'claude') body.worker_type = 'chat';
   const groups = _createGroupsFrom(cfg.group || (plan?.groups || []).join(','));
   if (groups.length) body.tags = groups;
   if (cfg.isolated) body.isolated = true;
@@ -12215,6 +12251,343 @@ async function _outcomeStart(text, cfg, files) {
   await fetchSessions();
   document.querySelector('[data-session="' + CSS.escape(name) + '"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   return name;
+}
+
+// ── Home: say what you want (docs/design/intent-first.md) ──
+// The first screen for a new person: Chat (a composer and the outcomes it
+// started), Ideas, Goals, and Workspace (every other tab, unchanged). An
+// outcome is a Messages thread (o:<id>) the server routed to a worker; the
+// person reads results, not workers. Words on this path avoid the machinery
+// (worker, session, model, card, board, terminal): a worker is "a helper".
+const _home = { pane: 'chat', open: null, outcomes: [], ideas: null, goals: null, timer: null, sending: false, detail: null };
+function _homeEnter() {
+  document.body.classList.add('intent-home');
+  // A first-run tour of workers that opened before Home did is closed: Home
+  // is this person's first run.
+  if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
+  document.documentElement.classList.remove('boot-home-pending');
+  _homeSetPane(_home.pane === 'workspace' ? 'chat' : _home.pane, true);
+  if (!_home.timer) _home.timer = setInterval(() => { if (activeView === 'home' && !document.hidden) _homeRefresh(); }, 4000);
+}
+function _homeLeave() {
+  document.body.classList.remove('intent-home');
+  if (_home.timer) { clearInterval(_home.timer); _home.timer = null; }
+}
+function _homeSetPane(p) {
+  if (p === 'workspace') { _homeLeave(); switchView('sessions'); return; }
+  _home.pane = p;
+  for (const n of ['chat', 'ideas', 'goals']) {
+    const el = document.getElementById('home-' + n);
+    if (el) el.hidden = n !== p;
+    const b = document.getElementById('home-nav-' + n);
+    if (b) { b.classList.toggle('active', n === p); b.setAttribute('aria-current', n === p ? 'page' : 'false'); }
+  }
+  const comp = document.getElementById('home-composer');
+  if (comp) comp.hidden = p !== 'chat';
+  _homeRefresh();
+}
+async function _homeJson(path, opts) {
+  try {
+    const r = await fetch(API + path, Object.assign({ headers: _authHeaders({'Content-Type': 'application/json'}) }, opts || {}));
+    let v = null; try { v = await r.json(); } catch (_) {}
+    return { ok: r.ok, status: r.status, v: v || {} };
+  } catch (_) { return { ok: false, status: 0, v: {} }; }
+}
+async function _homeRefresh() {
+  if (_home.pane === 'chat') {
+    if (_home.open) return _homeLoadOutcome(_home.open, true);
+    const r = await _homeJson('/api/intent/outcomes');
+    if (r.ok) _home.outcomes = r.v.outcomes || [];
+    _homeRenderList();
+  } else if (_home.pane === 'ideas') {
+    const r = await _homeJson('/api/intent/ideas');
+    _home.ideas = r.ok ? (r.v.ideas || []) : [];
+    _homeRenderIdeas(r.ok ? r.v : null);
+  } else if (_home.pane === 'goals') {
+    const r = await _homeJson('/api/intent/goals');
+    _home.goals = r.ok ? (r.v.goals || []) : [];
+    _homeRenderGoals(r.ok ? r.v : null);
+  }
+}
+function _homeAgo(ms) {
+  if (!ms) return '';
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  return Math.round(s / 86400) + ' d ago';
+}
+function _homeStatusLabel(st) {
+  return st === 'ready' ? 'Ready' : 'Working on it';
+}
+function _homeRenderList() {
+  const el = document.getElementById('home-chat-body');
+  if (!el) return;
+  const list = _home.outcomes || [];
+  if (!list.length) {
+    el.innerHTML = '<div class="home-empty"><div class="home-empty-title">What can I help with?</div>'
+      + '<div class="home-empty-sub">Ask for a reminder, a plan, or something from your inbox or calendar. '
+      + 'You will see the result here, and nothing goes to anyone without your OK.</div>'
+      + '<div class="home-examples">' + ['Remind me to call the dentist on Friday', 'Plan dinners this week', 'Find anything I need to sign in my inbox']
+        .map(t => '<button type="button" class="btn home-example" onclick="_homeFill(this.textContent)">' + esc(t) + '</button>').join('') + '</div></div>';
+    return;
+  }
+  el.innerHTML = '<div class="home-list" role="list">' + list.map(o =>
+    '<button type="button" role="listitem" class="home-row" data-outcome="' + esc(o.id) + '" onclick="_homeOpenOutcome(this.dataset.outcome)">'
+    + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title || 'Request') + '</span>'
+    + '<span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
+    + '<span class="home-row-snip">' + esc((o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
+    + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + '</span></button>').join('') + '</div>';
+}
+function _homeFill(t) {
+  const i = document.getElementById('home-input');
+  if (i) { i.value = t; i.focus(); _homeGrow(i); }
+}
+function _homeGrow(i) {
+  i.style.height = 'auto';
+  i.style.height = Math.min(i.scrollHeight, 160) + 'px';
+}
+function _homeOpenOutcome(id) {
+  _home.open = id;
+  _home.detail = null;
+  _homeLoadOutcome(id, false);
+}
+function _homeBack() {
+  _home.open = null;
+  _home.detail = null;
+  _homeRefresh();
+}
+async function _homeLoadOutcome(id, quiet) {
+  const r = await _homeJson('/api/intent/outcomes/' + encodeURIComponent(id));
+  if (_home.open !== id) return;
+  if (!r.ok) { if (!quiet) showToast('That conversation could not be opened.'); _homeBack(); return; }
+  const sig = JSON.stringify([r.v.thread?.length, r.v.status, r.v.worker, r.v.thread?.[r.v.thread.length - 1]?.id]);
+  if (quiet && _home.detail === sig) return;
+  _home.detail = sig;
+  _homeRenderOutcome(r.v);
+}
+function _homeRenderOutcome(o) {
+  const el = document.getElementById('home-chat-body');
+  if (!el) return;
+  const posts = (o.thread || []).map(p => {
+    const mine = String(p.author_key || '').startsWith('person:');
+    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : renderMarkdown(String(p.body || ''), '');
+    return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
+      + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
+  }).join('');
+  const working = o.status !== 'ready';
+  const canChange = o.worker && o.action !== 'answer';
+  el.innerHTML = '<div class="home-thread">'
+    + '<div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeBack()" aria-label="Back to all requests">&#x2039; All</button>'
+    + '<span class="home-thread-title">' + esc(o.title || 'Request') + '</span></div>'
+    + '<div class="home-receipt" id="home-receipt">' + esc(o.receipt || '')
+    + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
+    + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(o.worker) + '\')">Show work</button>' : '')
+    + '</div>'
+    + '<div class="home-msgs" id="home-msgs">' + posts
+    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span></div></div>' : '')
+    + '</div></div>';
+  const m = document.getElementById('home-msgs');
+  if (m) m.lastElementChild?.scrollIntoView({ block: 'end' });
+  const i = document.getElementById('home-input');
+  if (i) i.placeholder = 'Reply or ask a follow-up';
+}
+function _homeShowWork(worker) {
+  _homeLeave();
+  switchView('sessions');
+  setTimeout(() => openPeek(worker), 50);
+}
+async function _homeSend() {
+  const i = document.getElementById('home-input');
+  const text = (i?.value || '').trim();
+  if (!text || _home.sending) return;
+  _home.sending = true;
+  const btn = document.getElementById('home-send');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending'; }
+  const body = { text };
+  if (_home.open) body.outcome = _home.open;
+  if (!_home.open) {
+    const el = document.getElementById('home-chat-body');
+    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs"><div class="home-msg mine"><div class="home-bubble">' + esc(text)
+      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Finding the right helper<span>.</span><span>.</span><span>.</span></div></div></div></div>';
+  }
+  const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
+  _home.sending = false;
+  if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+  if (!r.ok) { showToast('Not sent: ' + (r.v.error || 'please try again') + '. Your message is kept.'); _homeRefresh(); return; }
+  if (i) { i.value = ''; _homeGrow(i); }
+  const id = r.v.outcome?.id;
+  if (id) _homeOpenOutcome(id);
+}
+async function _homeChange(id) {
+  const r = await _homeJson('/api/intent/helpers');
+  const helpers = (r.ok ? r.v.helpers : []) || [];
+  const cur = _home.open && (_home.outcomes.find(o => o.id === id)?.worker);
+  const rows = helpers.filter(h => h.name !== cur).map((h, n) =>
+    '<label class="home-choice"><input type="radio" name="home-change" value="' + esc(h.name) + '"' + (n === 0 ? ' checked' : '') + '> <span><b>' + esc(h.name) + '</b>'
+    + (h.desc ? '<br><span class="ui-help">' + esc(h.desc) + '</span>' : '') + '</span></label>').join('');
+  const html = '<div class="home-change">' + rows
+    + '<label class="home-choice"><input type="radio" name="home-change" value="__new__"' + (rows ? '' : ' checked') + '> <span><b>A new helper</b><br><span class="ui-help">Start a fresh helper just for this.</span></span></label></div>';
+  const ok = await showFormModal('Who should handle this?', html, 'Move it');
+  if (!ok) return;
+  const pick = document.querySelector('input[name="home-change"]:checked')?.value;
+  if (!pick) return;
+  const res = await _homeJson('/api/intent/outcomes/' + encodeURIComponent(id) + '/change', { method: 'POST',
+    body: JSON.stringify(pick === '__new__' ? { new: true } : { worker: pick }) });
+  showToast(res.ok ? (res.v.receipt || 'Moved') : ('Not moved: ' + (res.v.error || 'error')));
+  _home.detail = null;
+  _homeRefresh();
+}
+function _homeSourcesText(sources) {
+  const kinds = { message: 'your message', email: 'an email', event: 'your calendar', outcome: 'an earlier request', request: 'your request', post: 'your message' };
+  const seen = [];
+  for (const s of sources || []) {
+    const label = kinds[s.kind] || s.kind;
+    const t = label + (s.text ? ': "' + String(s.text).slice(0, 60) + (String(s.text).length > 60 ? '...' : '') + '"' : '');
+    if (seen.length < 2 && !seen.includes(t)) seen.push(t);
+  }
+  return seen.length ? 'From ' + seen.join('; ') : '';
+}
+function _homeRenderIdeas(v) {
+  const el = document.getElementById('home-ideas-body');
+  if (!el) return;
+  const ideas = _home.ideas || [];
+  const head = '<div class="home-pane-head"><span class="home-pane-title">Ideas</span>'
+    + '<button type="button" class="btn" id="home-ideas-refresh" onclick="_homeIdeasRefresh()">Look for new ideas</button></div>';
+  if (!ideas.length) {
+    el.innerHTML = head + '<div class="home-empty"><div class="home-empty-sub">'
+      + (v && v.measured === false ? 'Ideas could not be checked just now.' : 'As you ask for things, ideas for the next useful step show up here.') + '</div></div>';
+    return;
+  }
+  el.innerHTML = head + '<div class="home-list">' + ideas.map(it =>
+    '<div class="home-card" data-idea="' + esc(it.id) + '"><div class="home-card-title">' + esc(it.title) + '</div>'
+    + '<div class="home-card-body">' + esc(it.body || '') + '</div>'
+    + '<div class="home-card-from">' + esc(_homeSourcesText(it.sources)) + '</div>'
+    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_homeIdeaStart(\'' + esc(it.id) + '\')">Do it</button>'
+    + '<button type="button" class="btn" onclick="_homeIdeaDismiss(\'' + esc(it.id) + '\')">Not now</button></div></div>').join('') + '</div>';
+}
+async function _homeIdeasRefresh() {
+  const b = document.getElementById('home-ideas-refresh');
+  if (b) { b.disabled = true; b.textContent = 'Looking...'; }
+  const r = await _homeJson('/api/intent/ideas/refresh', { method: 'POST', body: '{}' });
+  if (!r.ok) showToast('Could not look for ideas just now.');
+  _homeRefresh();
+}
+async function _homeIdeaStart(id) {
+  const r = await _homeJson('/api/intent/ideas/' + encodeURIComponent(id) + '/start', { method: 'POST', body: '{}' });
+  if (!r.ok) { showToast('Not started: ' + (r.v.error || 'error')); return; }
+  _homeSetPane('chat', true);
+  if (r.v.outcome?.id) _homeOpenOutcome(r.v.outcome.id);
+}
+async function _homeIdeaDismiss(id) {
+  await _homeJson('/api/intent/ideas/' + encodeURIComponent(id) + '/dismiss', { method: 'POST', body: '{}' });
+  _homeRefresh();
+}
+function _homeDaysLeft(due) {
+  if (!due) return '';
+  const d = Math.ceil((new Date(due + 'T23:59:59') - new Date()) / 86400000);
+  if (isNaN(d)) return '';
+  return d < 0 ? 'past due' : d === 0 ? 'due today' : d === 1 ? '1 day left' : d + ' days left';
+}
+function _homeGoalCard(g) {
+  const days = g.tier === 'tracking' ? _homeDaysLeft(g.due) : '';
+  const ask = g.pending_ask ? '<div class="home-ask"><div>' + esc(g.pending_ask) + '</div>'
+    + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Approve</button></div>' : '';
+  return '<div class="home-card" data-goal="' + esc(g.id) + '"><div class="home-card-top"><span class="home-card-title">' + esc(g.title) + '</span>'
+    + (days ? '<span class="home-pill working">' + esc(days) + '</span>' : '') + '</div>'
+    + '<div class="home-status-line">' + esc(g.status_line || 'Getting started...') + '</div>'
+    + (g.status_at ? '<div class="home-card-from">Checked ' + esc(_homeAgo(g.status_at)) + '</div>' : '')
+    + ask
+    + '<div class="home-card-actions">'
+    + (g.outcome_id ? '<button type="button" class="btn" onclick="_homeSetPane(\'chat\',true);_homeOpenOutcome(\'' + esc(g.outcome_id) + '\')">Open</button>' : '')
+    + '<button type="button" class="btn" onclick="_homeGoalRename(\'' + esc(g.id) + '\')">Reword</button>'
+    + '<button type="button" class="btn" onclick="_homeGoalDismiss(\'' + esc(g.id) + '\')">Stop</button></div></div>';
+}
+function _homeRenderGoals(v) {
+  const el = document.getElementById('home-goals-body');
+  if (!el) return;
+  const goals = _home.goals || [];
+  const tracking = goals.filter(g => g.tier === 'tracking');
+  const standing = goals.filter(g => g.tier !== 'tracking');
+  if (!goals.length) {
+    el.innerHTML = '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
+      + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
+    return;
+  }
+  el.innerHTML = (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+    + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
+}
+async function _homeGoalDismiss(id) {
+  if (!await showConfirm('Stop keeping track of this?', 'Stop')) return;
+  await _homeJson('/api/intent/goals/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ status: 'dismissed' }) });
+  _homeRefresh();
+}
+async function _homeGoalRename(id) {
+  const g = (_home.goals || []).find(x => x.id === id);
+  const t = await showPrompt('Reword this goal', g?.title || '');
+  if (!t || !t.trim()) return;
+  await _homeJson('/api/intent/goals/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
+  _homeRefresh();
+}
+async function _homeGoalApprove(id) {
+  const r = await _homeJson('/api/intent/goals/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: '{}' });
+  showToast(r.ok ? 'Approved' : ('Not approved: ' + (r.v.error || 'error')));
+  _homeRefresh();
+}
+// Each worker's outcomes, for its card line and its Outcomes tab. One fetch
+// of /api/intent/outcomes, refreshed at most every 20 seconds.
+let _homeOutcomeIndex = { at: 0, by: {}, loading: false };
+function _homeOutcomeIndexLoad(force) {
+  if (_homeOutcomeIndex.loading || (!force && Date.now() - _homeOutcomeIndex.at < 20000)) return;
+  _homeOutcomeIndex.loading = true;
+  fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }).then(r => r.ok ? r.json() : null).then(v => {
+    const by = {};
+    for (const o of (v && v.outcomes) || []) if (o.worker) (by[o.worker] = by[o.worker] || []).push(o);
+    const changed = JSON.stringify(Object.keys(by).map(k => [k, by[k].length])) !== JSON.stringify(Object.keys(_homeOutcomeIndex.by).map(k => [k, _homeOutcomeIndex.by[k].length]));
+    _homeOutcomeIndex = { at: Date.now(), by, loading: false };
+    if (changed && activeView === 'sessions') { try { render(); } catch (_) {} }
+  }).catch(() => { _homeOutcomeIndex.loading = false; });
+}
+function _homeCardOutcomes(name) {
+  _homeOutcomeIndexLoad(false);
+  const list = _homeOutcomeIndex.by[name] || [];
+  if (!list.length) return '';
+  const names = list.slice(0, 3).map(o => o.title).join(' · ');
+  return '<div class="card-outcomes" title="Outcomes routed to this worker">Outcomes: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
+}
+async function _peekOutcomesLoad() {
+  const el = document.getElementById('peek-outcomes-panel');
+  if (!el || !peekSession) return;
+  const who = peekSession;
+  _homeOutcomeIndexLoad(true);
+  let v = null;
+  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (_) {}
+  if (peekSession !== who) return;
+  const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
+  el.innerHTML = !v ? '<div class="ui-help">Outcomes could not be loaded.</div>'
+    : !mine.length ? '<div class="ui-help">Nothing has been routed to ' + esc(who) + ' from Home yet. Requests made in Home that this worker owns show up here.</div>'
+    : '<div class="home-list">' + mine.map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
+      + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title) + '</span><span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
+      + '<span class="home-row-snip">' + esc((o.latest_reply || '').slice(0, 160)) + '</span><span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
+}
+function _homeOpenFromPeek(id) {
+  closePeek();
+  switchView('home');
+  _homeSetPane('chat', true);
+  _homeOpenOutcome(id);
+}
+// Which screen a person lands on when nothing else names one: the `home`
+// pref, or intent for someone new (GET /api/intent/home decides).
+async function _homeBootChoice() {
+  let choice = null;
+  try { choice = localStorage.getItem('amux_home_choice'); } catch (_) {}
+  const r = await _homeJson('/api/intent/home');
+  if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (_) {} }
+  document.documentElement.classList.remove('boot-home-pending');
+  // Settled after the caller's switch (a microtask later): the first-run tour
+  // waits on this, so it never opens over a Home about to appear.
+  Promise.resolve().then(() => { window._homeChoiceSettled = true; });
+  return choice;
 }
 
 // ── Set default model label from server config ──
@@ -15090,6 +15463,12 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  document.getElementById('peek-tab-outcomes')?.classList.toggle('active', tab === 'outcomes');
+  const outcomesP = document.getElementById('peek-outcomes-panel');
+  if (outcomesP) {
+    if (tab === 'outcomes') { outcomesP.classList.add('active'); _peekOutcomesLoad(); }
+    else outcomesP.classList.remove('active');
+  }
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
@@ -42556,6 +42935,7 @@ function switchView(view) {
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
     ['calls', 'calls', 'flex'],
+    ['home', 'home', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -42563,6 +42943,7 @@ function switchView(view) {
     const te = document.getElementById('tab-' + name);
     if (te) te.classList.toggle('active', view === name);
   }
+  if (view === 'home') _homeEnter(); else _homeLeave();
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
@@ -59136,6 +59517,13 @@ function _restoreScreen(bootHash) {
       if (_v && _v.v && _v.v !== 'workers' && (Date.now() - (_v.ts || 0) < _UI_RESTORE_MAX_AGE)
           && document.getElementById('tab-' + _v.v)) {
         try { switchView(_v.v); } catch(e) {}
+        document.documentElement.classList.remove('boot-home-pending');
+        window._homeChoiceSettled = true;
+      } else {
+        // Nothing saved: the home pref (or, for someone new, the intent
+        // Home) picks the first screen. Hidden until it answers, so a new
+        // person never sees the fleet flash first.
+        _homeBootChoice().then(c => { if (c === 'intent' && activeView === 'sessions' && !peekSession) { try { switchView('home'); } catch(e) {} } });
       }
     } catch(e) {}
   }
@@ -59876,6 +60264,14 @@ async function pullFromRemote(btn) {
       return void setTimeout(_wtMaybeStart, 250);
     }
     if (typeof sessions !== 'undefined' && sessions && sessions.length > 0) return;
+    // The intent Home is a new person's first run (docs/design/intent-first.md):
+    // a tour of workers over it would put the machinery in front of someone who
+    // came to say what they want. Wait for Home to decide; skip when it shows.
+    if (!window._homeChoiceSettled) {
+      if (++_wtTries > 26 + 120) return;
+      return void setTimeout(_wtMaybeStart, 250);
+    }
+    if (typeof activeView !== 'undefined' && activeView === 'home') return;
     // One first-run thing at a time. A new amux Cloud server opens "Get started" (connect a
     // model) and this walkthrough together, and the window covered the walkthrough's Skip
     // (fresh server e2e, 2026-10-21). Connecting a model comes first; the tour waits.
