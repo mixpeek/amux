@@ -144,6 +144,7 @@ curl -sk -X POST -H 'Content-Type: application/json' https://localhost:8824/api/
 <li>Tailscale builds an encrypted WireGuard network between your own devices, so the server needs no open inbound port on your router or cloud firewall.</li>
 <li>The dashboard, the apps and the REST API all use the same HTTPS address, so there is no SSH tunnel to keep alive on your phone.</li>
 <li>Port 8824 stays private to your tailnet. Never expose it to the public internet.</li>
+<li>Use <code>tailscale cert</code> as above, not <code>tailscale serve</code> or another reverse proxy. A proxy on the same machine connects to amux from localhost, and requests from localhost need no token, so every device that can reach the proxy would get in without signing in.</li>
 <li>amux still checks its bearer token (or the Tailscale identity settings above) and refuses cross-site requests, so tailnet membership alone does not grant access.</li>
 </ul>
 
@@ -200,7 +201,7 @@ curl -sk -X POST -H 'Content-Type: application/json' https://localhost:8824/api/
       <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
     <nav class="site-foot-cols" aria-label="Footer">
-      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a><a href="/own-your-data/">Your data</a></div>
       <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
       <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
       <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>

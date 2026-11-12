@@ -6988,6 +6988,16 @@ pub struct CiRun {
     /// commits first. The finding routes to the first one: a flaky spec is
     /// fixed fastest by whoever wrote it (velocity audit 2026-10-22).
     pub test_owners: Vec<String>,
+    /// The commit the run tested.
+    pub head_sha: String,
+    /// For a failing run: the `Amux-Session` trailer on that commit, and
+    /// whether that lane is isolated. Read from the local checkout at fetch
+    /// time (no API call) so the card can say who turned the workflow red and
+    /// whether `amux send` can reach them. Main's `checks` was red 10 h on
+    /// 2026-11-10 with nobody told: its author and the card's route were both
+    /// lanes nobody could message.
+    pub head_lane: Option<String>,
+    pub head_lane_isolated: bool,
 }
 
 /// A workflow whose redness means MERGED AND DEPLOYED HAVE DIVERGED.
@@ -7416,6 +7426,7 @@ pub fn ci_findings(runs: &[CiRun], now: f64) -> (Vec<Finding>, Vec<Suppressed>) 
                 format!("{} (run {})", ci_when(first_seen), oldest.run_id),
             ),
             ("first_failure_url".into(), oldest.url.clone()),
+            ("first_red_commit".into(), ci_first_red_commit(oldest)),
             (
                 "failing_for".into(),
                 format!("{:.1}h", ((now - first_seen) / 3600.0).max(0.0)),
@@ -7638,7 +7649,7 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 "--limit".into(),
                 ci_run_limit().to_string(),
                 "--json".into(),
-                "databaseId,conclusion,createdAt,event,headBranch,url,workflowName,status".into(),
+                "databaseId,conclusion,createdAt,event,headBranch,headSha,url,workflowName,status".into(),
             ],
             timeout_s,
         )
@@ -7687,6 +7698,9 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 failing_step: None,
                 failing_tests: Vec::new(),
                 test_owners: Vec::new(),
+                head_sha: s("headSha"),
+                head_lane: None,
+                head_lane_isolated: false,
             });
         }
     }
@@ -7725,7 +7739,7 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 "--limit".into(),
                 ci_run_limit().to_string(),
                 "--json".into(),
-                "databaseId,conclusion,createdAt,event,headBranch,url,workflowName,status".into(),
+                "databaseId,conclusion,createdAt,event,headBranch,headSha,url,workflowName,status".into(),
             ],
             timeout_s,
         )
@@ -7768,6 +7782,9 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
                 failing_step: None,
                 failing_tests: Vec::new(),
                 test_owners: Vec::new(),
+                head_sha: s("headSha"),
+                head_lane: None,
+                head_lane_isolated: false,
             });
             added += 1;
         }
@@ -7836,10 +7853,54 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
         }
     }
 
+    ci_head_lanes(&mut runs).await;
+
     if let Ok(mut g) = ci_cache().write() {
         *g = Some((now, runs.clone(), suppressed.clone()));
     }
     (runs, suppressed)
+}
+
+/// Fill `head_lane` and `head_lane_isolated` for failing default-branch runs,
+/// from the `Amux-Session` trailer of each run's commit in the checkout this
+/// server was built from (the same history `ci_test_owners` reads). One
+/// `git log -1` per distinct sha; a sha the checkout does not have stays None.
+async fn ci_head_lanes(runs: &mut [CiRun]) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut seen: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for r in runs.iter_mut() {
+        if !r.on_default_branch || !ci_is_failure(&r.conclusion) || r.head_sha.is_empty() {
+            continue;
+        }
+        if !seen.contains_key(&r.head_sha) {
+            let lane = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["log", "-1", "--format=%(trailers:key=Amux-Session,valueonly,separator=,)", &r.head_sha])
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| ci_rank_owners(&String::from_utf8_lossy(&o.stdout)).into_iter().next());
+            seen.insert(r.head_sha.clone(), lane);
+        }
+        r.head_lane = seen.get(&r.head_sha).cloned().flatten();
+        r.head_lane_isolated = r.head_lane.as_deref().is_some_and(crate::api::session_verbs::session_is_isolated);
+    }
+}
+
+/// The card's `first_red_commit` line: the commit the streak's oldest failing
+/// run tested, the lane its trailer names, and whether that lane can be told.
+pub fn ci_first_red_commit(r: &CiRun) -> String {
+    if r.head_sha.is_empty() {
+        return "<not recorded>".into();
+    }
+    let sha = &r.head_sha[..r.head_sha.len().min(9)];
+    match (&r.head_lane, r.head_lane_isolated) {
+        (Some(l), true) => format!("{sha} by {l}, which is ISOLATED: `amux send` cannot reach it, so fix it here or ask the owner"),
+        (Some(l), false) => format!("{sha} by {l}"),
+        (None, _) => format!("{sha} (no Amux-Session trailer: a hand commit or a pull request merge)"),
+    }
 }
 
 /// The test FILES a failed-job log names as failing, in first-seen order.
@@ -7848,7 +7909,11 @@ async fn fetch_ci_runs(now: f64) -> (Vec<CiRun>, Vec<Suppressed>) {
 /// (`  1) [desktop] › e2e/map-manage.spec.ts:121:5 › title`) and a Rust panic
 /// location (`panicked at crates/amux-server/tests/x.rs:102:5`). Playwright's
 /// trailing list of flaky and skipped specs has no `N)` before its `[project]`,
-/// so it never matches `) [` and is not read as a failure.
+/// so it never matches `) [` and is not read as a failure. A third shape, from
+/// the `checks` catalogue: `node --test` names a failing test as
+/// `test at tests/site-header.test.mjs:13:1`. Main's `checks` was red for 15 h
+/// on 2026-11-09 with `failing_tests: <none named>`, because only the first
+/// two shapes were read.
 pub fn ci_failing_test_paths(log: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in log.lines() {
@@ -7858,6 +7923,8 @@ pub fn ci_failing_test_paths(log: &str) -> Vec<String> {
                 .and_then(|j| rest[j + "› ".len()..].split(':').next())
         } else if let Some(i) = line.find("panicked at ") {
             line[i + "panicked at ".len()..].split(':').next()
+        } else if let Some(i) = line.find("test at ") {
+            line[i + "test at ".len()..].split(':').next()
         } else {
             None
         };
@@ -17454,7 +17521,31 @@ mod tests {
             failing_step: None,
             failing_tests: Vec::new(),
             test_owners: Vec::new(),
+            head_sha: String::new(),
+            head_lane: None,
+            head_lane_isolated: false,
         }
+    }
+
+    #[test]
+    fn the_card_names_the_first_red_commit_and_whether_its_lane_can_be_told() {
+        let mut runs = vec![ci_run("checks", 1, "success", 300.0)];
+        for i in 0..3 {
+            runs.push(ci_run("checks", 10 + i, "failure", 200.0 - i as f64 * 50.0));
+        }
+        runs[1].head_sha = "2fd93f843deadbeef".into();
+        runs[1].head_lane = Some("amux-helper".into());
+        runs[1].head_lane_isolated = true;
+        runs[3].head_sha = "f3d3c6989cafe".into();
+        let (f, _) = ci_findings(&runs, unix_now());
+        let line = f[0].evidence.iter().find(|(k, _)| k == "first_red_commit").map(|(_, v)| v.clone());
+        assert_eq!(line.as_deref(), Some("2fd93f843 by amux-helper, which is ISOLATED: `amux send` cannot reach it, so fix it here or ask the owner"));
+        runs[1].head_lane_isolated = false;
+        let (g, _) = ci_findings(&runs, unix_now());
+        assert!(g[0].evidence.iter().any(|(k, v)| k == "first_red_commit" && v == "2fd93f843 by amux-helper"));
+        runs[1].head_lane = None;
+        let (h, _) = ci_findings(&runs, unix_now());
+        assert!(h[0].evidence.iter().any(|(k, v)| k == "first_red_commit" && v.starts_with("2fd93f843 (no Amux-Session")));
     }
 
     fn card_row(st: &AppState, id: &str) -> (String, String, String) {
@@ -17483,13 +17574,16 @@ mod tests {
             e2e-shards (14)\tGolden\t2026-10-22T04:20:01Z   [desktop] › board-activity-scrolls.spec.ts:16:5 › the worker activity banner scrolls away\n\
             e2e-shards (2)\tGolden\t2026-10-22T08:42:00Z   2) [ios-safari] › e2e/worker-configurations.spec.ts:10:5 › worker Configurations edits\n\
             test-shards (1)\tnextest\t2026-10-20T21:59:46Z     thread 'bilateral_peers' (6422) panicked at crates/amux-server/tests/bilateral_peers.rs:102:5:\n\
-            spa-gates\tunit\t2026-10-21T11:36:04Z not ok 90 - full history cannot block streaming\n";
+            spa-gates\tunit\t2026-10-21T11:36:04Z not ok 90 - full history cannot block streaming\n\
+            shard (17)\tChecks\t2026-11-10T03:24:10Z test at tests/site-header.test.mjs:13:1\n\
+            shard (17)\tChecks\t2026-11-10T03:24:10Z       at TestContext.<anonymous> (file:///home/runner/work/amux/amux/tests/site-header.test.mjs:17:10)\n";
         assert_eq!(
             ci_failing_test_paths(log),
             vec![
                 "e2e/map-manage.spec.ts".to_string(),
                 "e2e/worker-configurations.spec.ts".to_string(),
                 "crates/amux-server/tests/bilateral_peers.rs".to_string(),
+                "tests/site-header.test.mjs".to_string(),
             ]
         );
     }
