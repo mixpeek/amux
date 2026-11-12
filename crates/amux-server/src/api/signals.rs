@@ -866,11 +866,62 @@ async fn create_subscription(
     }
 }
 
+/// A worker may change or delete only a subscription it made, and an edit is
+/// held to the same rule as a create ([`refusal_for`]). Without this, PATCH
+/// re-opened what create refuses: a worker could point an owner's shell
+/// subscription at a command of its own, which the server then runs outside
+/// that worker's guard, or turn any send toward another worker. The owner (no
+/// worker header) is unchanged. `None` means go ahead.
+async fn worker_edit_refusal(
+    state: &AppState,
+    id: i64,
+    caller: &str,
+    new_target: Option<String>,
+) -> Option<Response> {
+    if caller.is_empty() {
+        return None;
+    }
+    let row = state
+        .store
+        .read_async(move |conn| {
+            ensure_subscription_tables(conn)?;
+            Ok(conn
+                .query_row(
+                    "SELECT created_by, action, action_target FROM signal_subscriptions WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                )
+                .optional()?)
+        })
+        .await;
+    let (created_by, action, target) = match row {
+        Ok(Some(r)) => r,
+        // Not found (or unreadable): let the handler give its own answer.
+        _ => return None,
+    };
+    let why = if created_by != caller {
+        Some(format!("subscription {id} belongs to {}, not {caller}",
+            if created_by.is_empty() { "the owner" } else { created_by.as_str() }))
+    } else {
+        let target = new_target.map(|t| t.trim().to_string()).unwrap_or(target);
+        refusal_for(caller, &action, &target)
+    }?;
+    tracing::warn!(target: "amux::signals", subscription_id = id, caller, measured = true, n_considered = 1,
+        verdict = "subscription_edit_refused", "{why}");
+    Some(reply(StatusCode::FORBIDDEN, json!({"error": why})))
+}
+
 async fn update_subscription(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
     Json(body): Json<Value>,
 ) -> Response {
+    let caller = actor_of(&headers);
+    let new_target = body.get("action_target").and_then(|v| v.as_str()).map(str::to_string);
+    if let Some(r) = worker_edit_refusal(&state, id, &caller, new_target).await {
+        return r;
+    }
     let res = state
         .store
         .write_async(move |conn| {
@@ -972,8 +1023,12 @@ async fn update_subscription(
 
 async fn delete_subscription(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
+    if let Some(r) = worker_edit_refusal(&state, id, &actor_of(&headers), None).await {
+        return r;
+    }
     let res = state
         .store
         .write_async(move |conn| {
@@ -1916,5 +1971,59 @@ pub(crate) mod tests {
             all_waits(&conn).unwrap().get("another").map(Vec::len),
             Some(1)
         );
+    }
+}
+
+#[cfg(test)]
+mod subscription_edit_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    async fn call(app: &axum::Router, method: &str, uri: &str, worker: Option<&str>, body: Value) -> (StatusCode, Value) {
+        let mut b = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+        if let Some(w) = worker {
+            b = b.header("x-amux-session", w);
+        }
+        let res = app.clone().oneshot(b.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let st = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (st, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// Create refuses a worker a shell subscription and a send to anyone but
+    /// itself; PATCH and DELETE used to take no caller at all, so a worker
+    /// could retarget the owner's shell subscription or turn its own send
+    /// toward another worker. The owner keeps every edit.
+    #[tokio::test]
+    async fn a_worker_edits_only_its_own_subscription_and_within_the_create_rule() {
+        let (state, _store) = super::tests::fixture();
+        let app = super::subscription_routes().with_state(state);
+        let (st, owner_sub) = call(&app, "POST", "/", None,
+            json!({"name": "owner-shell", "pattern": "board.*", "action": "shell", "action_target": "true"})).await;
+        assert_eq!(st, StatusCode::CREATED, "{owner_sub}");
+        let (st, own) = call(&app, "POST", "/", Some("lane-a"),
+            json!({"name": "lane-a-send", "pattern": "board.*", "action": "send", "action_target": "lane-a"})).await;
+        assert_eq!(st, StatusCode::CREATED, "{own}");
+        let (o, a) = (owner_sub["id"].as_i64().unwrap(), own["id"].as_i64().unwrap());
+
+        for (method, id, body) in [
+            ("PATCH", o, json!({"action_target": "echo changed"})),
+            ("DELETE", o, json!({})),
+            ("PATCH", a, json!({"action_target": "lane-b"})),
+        ] {
+            let (st, v) = call(&app, method, &format!("/{id}"), Some("lane-a"), body.clone()).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{method} {id} {body} as lane-a: {v}");
+        }
+        let (st, v) = call(&app, "GET", &format!("/{o}"), None, json!({})).await;
+        assert_eq!((st, v["action_target"].as_str()), (StatusCode::OK, Some("true")), "refused edit stored nothing: {v}");
+
+        let (st, v) = call(&app, "PATCH", &format!("/{a}"), Some("lane-a"), json!({"pattern": "board.moved"})).await;
+        assert_eq!(st, StatusCode::OK, "a worker edits its own: {v}");
+        let (st, v) = call(&app, "PATCH", &format!("/{o}"), None, json!({"action_target": "true # owner"})).await;
+        assert_eq!(st, StatusCode::OK, "the owner edits any: {v}");
+        let (st, _) = call(&app, "DELETE", &format!("/{a}"), Some("lane-a"), json!({})).await;
+        assert_eq!(st, StatusCode::OK, "a worker deletes its own");
     }
 }
