@@ -1050,6 +1050,15 @@ def classify(s: dict, cfg: dict) -> tuple[str, list[str]]:
     return ("ok" if measured else "unmeasured"), []
 
 
+def worker_identity_headers() -> dict:
+    """The lane's name and minted token (contract rule 10). Loopback is no
+    longer a credential (governance PR 3, api/loopback_trust.rs), so even this
+    hook's reads say who is asking."""
+    lane = os.environ.get("AMUX_SESSION") or os.environ.get("AMUX_WORKER") or ""
+    token = os.environ.get("AMUX_WORKER_TOKEN") or ""
+    return {k: v for k, v in (("X-Amux-Session", lane), ("X-Amux-Worker-Token", token)) if v}
+
+
 def my_usage(session: str) -> str:
     """This worker's footprint from the amux server, best effort (1.5s)."""
     url = os.environ.get("AMUX_URL")
@@ -1062,7 +1071,8 @@ def my_usage(session: str) -> str:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(f"{url}/api/resources?worker={session}", timeout=1.5, context=ctx) as r:
+        req = urllib.request.Request(f"{url}/api/resources?worker={session}", headers=worker_identity_headers())
+        with urllib.request.urlopen(req, timeout=1.5, context=ctx) as r:
             d = json.load(r)
         w = d.get("worker") or {}
         if w.get("measured"):
@@ -1496,7 +1506,8 @@ def usage_headroom() -> dict:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
-            with urllib.request.urlopen(f"{url}/api/usage", timeout=2, context=ctx) as r:
+            req = urllib.request.Request(f"{url}/api/usage", headers=worker_identity_headers())
+            with urllib.request.urlopen(req, timeout=2, context=ctx) as r:
                 body = json.load(r)
         except Exception as e:  # noqa: BLE001 - fail open, say why
             return {"measured": False, "why_unmeasured": f"GET /api/usage failed: {str(e)[:120]}"}
