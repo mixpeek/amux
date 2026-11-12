@@ -6194,6 +6194,9 @@ except Exception:
 if d.get("error"):
     print("amux browser for:", d["error"], file=sys.stderr); sys.exit(1)
 print(d["profile"])
+api = d.get("amux_api") or {}
+if api:
+    print(f"  NO BROWSER NEEDED: {api['product']} is reachable through amux: {api['use']}", file=sys.stderr)
 card = d.get("selection") or {}
 print("  identity: " + (card.get("identity") or "unknown") + "; role: " + (card.get("role") or "ordinary"), file=sys.stderr)
 print("  use for: " + (card.get("use_for") or "purpose not recorded"), file=sys.stderr)

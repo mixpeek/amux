@@ -2699,11 +2699,17 @@ async fn profile_for(headers: HeaderMap, Query(q): Query<ProfileForQuery>) -> Re
                     "hint": format!("Do not substitute another identity. Ask the owner to sync or sign in {names} (amux browser create {} <url>), then retry.", unsynced[0]),
                     "measured": true, "n_considered": n, "choices": cards, "unsynced": unsynced}));
             }
+            let api = bl::amux_api_for(&host);
             tracing::info!(target: "amux::browser", site = %site, worker = %worker, profile = %choice.profile,
-                signed_in = choice.signed_in, measured = true, n_considered = n,
-                verdict = "browser_profile_resolved", "browser profile chosen for a site");
+                signed_in = choice.signed_in, measured = true, n_considered = n, amux_api = api.map(|a| a.0).unwrap_or(""),
+                verdict = if api.is_some() { "browser_profile_resolved_api_named" } else { "browser_profile_resolved" },
+                "browser profile chosen for a site");
             let mut v = serde_json::to_value(&choice).unwrap_or(Value::Null);
             if let Some(o) = v.as_object_mut() {
+                if let Some((product, call)) = api {
+                    o.insert("amux_api".into(), json!({"product": product, "use": call}));
+                    o.insert("why".into(), json!(format!("{product} needs no browser: use {call}. {}", choice.why)));
+                }
                 o.insert("selection".into(),cards.iter().find(|c|c["name"]==choice.profile).cloned().unwrap_or(Value::Null));
                 o.insert("choices".into(),json!(cards));
                 o.insert("verified_live".into(),json!(false));

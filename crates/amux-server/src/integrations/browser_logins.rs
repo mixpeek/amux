@@ -238,6 +238,21 @@ pub struct Choice {
     pub alternatives: Vec<String>,
 }
 
+/// A Google product amux reaches through its own API, so no browser is needed
+/// (owner, 2026-11-12: a worker read Google Calendar through CDP because
+/// `amux browser for` named only the sign-in problem, while GET
+/// /api/gcal/events already read all five connected accounts). Returns the
+/// product and the call to make instead.
+pub fn amux_api_for(host: &str) -> Option<(&'static str, &'static str)> {
+    match host.trim().trim_start_matches("www.").to_ascii_lowercase().as_str() {
+        "calendar.google.com" => Some(("Google Calendar",
+            "GET /api/gcal/events?time_min=<RFC 3339>&time_max=<RFC 3339> reads every connected account (account_id= narrows to one); POST /api/gcal/events creates an event")),
+        "mail.google.com" | "gmail.com" => Some(("Gmail",
+            "the amux email API: GET /api/email/inbox, /api/email/search, /api/email/message/<id>; POST /api/email/send, /api/email/reply")),
+        _ => None,
+    }
+}
+
 /// The one profile to use for `site`. Order: a profile the worker may use
 /// that holds a LIVE login for the site, best role first; then one whose
 /// registry lists the site; then the default. Deprecated and test profiles
@@ -480,5 +495,17 @@ mod tests {
         assert_eq!(default_profile_for(Some("ethan-personal".into()), &reg).0, "ethan-personal");
         assert_eq!(default_profile_for(None, &reg).0, "ethan");
         assert_eq!(default_profile_for(Some("  ".into()), &serde_json::Map::new()).0, "default");
+    }
+
+    #[test]
+    fn google_calendar_and_gmail_name_the_amux_api_instead_of_a_browser() {
+        let (p, call) = amux_api_for("calendar.google.com").unwrap();
+        assert_eq!(p, "Google Calendar");
+        assert!(call.contains("/api/gcal/events"), "{call}");
+        assert_eq!(amux_api_for("Mail.Google.com").unwrap().0, "Gmail");
+        assert!(amux_api_for("mail.google.com").unwrap().1.contains("/api/email/"));
+        for other in ["accounts.google.com", "docs.google.com", "x.com", ""] {
+            assert!(amux_api_for(other).is_none(), "{other}");
+        }
     }
 }
