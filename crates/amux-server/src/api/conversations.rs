@@ -1202,15 +1202,25 @@ fn author_matches(p: &Value, who: &str) -> bool {
 
 // ---- writing -------------------------------------------------------------
 
-/// `--thread 4`, `--thread 12 --stdin`: a message that is nothing but the
-/// flags of `amux post`, which only a CLI that does not parse them sends.
+/// `--thread 4`, `--thread 12 --stdin`, `--file /tmp/report.txt`: a message
+/// that is nothing but the flags of `amux post`, which only a CLI that does not
+/// parse them sends. A CLI without `--file` posted "--file <path>" to the owner
+/// 21 times on 2026-11-09 and 11-10, and each was accepted.
 fn looks_like_cli_flags(body: &str) -> bool {
-    let mut w = body.split_whitespace().peekable();
-    if w.peek() != Some(&"--thread") {
+    let toks: Vec<&str> = body.split_whitespace().collect();
+    if !toks.first().is_some_and(|t| t.starts_with("--")) {
         return false;
     }
-    w.next();
-    w.next().is_some_and(|n| n.parse::<i64>().is_ok()) && w.all(|t| t == "--stdin" || t == "-")
+    let mut i = 0;
+    while i < toks.len() {
+        match toks[i] {
+            "--thread" if toks.get(i + 1).is_some_and(|n| n.parse::<i64>().is_ok()) => i += 2,
+            "--file" if toks.get(i + 1).is_some_and(|p| !p.starts_with("--")) => i += 2,
+            "--stdin" | "-" => i += 1,
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn body_text(headers: &HeaderMap, bytes: &Bytes) -> String {
@@ -1381,9 +1391,9 @@ async fn create_post(
     // and the chat bridge would forward "--thread 4" to WhatsApp (2026-10-27).
     if looks_like_cli_flags(&body) {
         tracing::warn!(author = %me.key(), body = %body, measured = true, n_considered = 1, verdict = "conversation_post_stale_cli",
-            "a post whose whole body is CLI flags was refused: the sender's amux CLI predates `post --thread`");
+            "a post whose whole body is CLI flags was refused: the sender's amux CLI does not parse `post --thread` or `--file`");
         return err(StatusCode::BAD_REQUEST,
-            "the message is only CLI flags: this amux CLI predates `amux post --thread`; run `make install-cli` and post again");
+            "the message is only CLI flags: this amux CLI does not parse `amux post --thread` or `--file`; run `make install-cli` and post again");
     }
     seen(&me.key());
     let (all, author_name) = {
@@ -2736,6 +2746,13 @@ mod tests {
         assert!(!looks_like_cli_flags("--thread 4 here is the answer"));
         assert!(!looks_like_cli_flags("use --thread 4 to reply"));
         assert!(!looks_like_cli_flags("--thread"));
+        assert!(looks_like_cli_flags("--file /tmp/report.txt"));
+        assert!(looks_like_cli_flags("--thread 7 --file /tmp/report.txt"));
+        assert!(looks_like_cli_flags("--stdin"));
+        assert!(!looks_like_cli_flags("--file"));
+        assert!(!looks_like_cli_flags("--file /tmp/report.txt and the summary"));
+        assert!(!looks_like_cli_flags("see /tmp/report.txt --file"));
+        assert!(!looks_like_cli_flags("--- heading"));
     }
 
     fn lane(name: &str, groups: &[&str]) -> Lane {

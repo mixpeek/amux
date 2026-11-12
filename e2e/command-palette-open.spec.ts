@@ -54,7 +54,10 @@ test('Cmd-K marks the worker open here and the ones open in other tabs', async (
     await page.locator('#cmdk-input').fill('cmdkopen-');
     await expect(row(closed).locator('.cmdk-open')).toHaveCount(0);
 
-    // The badge stays inside the row on a phone.
+    // The badge stays inside the row on a phone. The refill re-renders the
+    // list and the badge returns with the next places answer (async), so wait
+    // for it: measuring at once read a null box on iOS Safari (AMUX-6838).
+    await expect(row(other).locator('.cmdk-open')).toHaveText('Open');
     const box = await row(other).boundingBox();
     const badge = await row(other).locator('.cmdk-open').boundingBox();
     expect(badge!.x + badge!.width).toBeLessThanOrEqual(box!.x + box!.width + 1);

@@ -1,0 +1,33 @@
+# Public apps on a host of their own (`amux publish --origin <port>`,
+# crates/amux-server/src/api/static_files/public_origin.rs): https://<id>.<domain>/ serves
+# one app at its root, with its own cookies, isolated by origin instead of the /pub/ sandbox.
+#
+# NOT installed by bootstrap.sh or update.sh yet: it needs, per server,
+#   1. a wildcard DNS record *.<domain> pointing at this box,
+#   2. a certificate for *.<domain> (at the Cloudflare edge too when the record is proxied:
+#      Universal SSL covers only one level below amux.io, so *.sandbox.amux.io needs an
+#      Advanced certificate; the Origin CA certificate on the box must list *.<domain>),
+#   3. AMUX_PUBLIC_APPS_DOMAIN=<domain> in ~/.amux/server.env.
+# Then import this inside its own site block:
+#
+#   *.<domain> {
+#     tls /etc/amux/origin.crt /etc/amux/origin.key   # the fleet's Origin CA pair, with *.<domain>
+#     import /etc/caddy/amux-public-origins.caddy
+#   }
+#
+# No door: amux answers only for a live (owner-approved) link made with --origin, relays only
+# to that link's port, strips amux's cookies and the bearer, and keeps every cookie the app
+# sets to the app's own host. The app's own Cookie and Set-Cookie pass, unlike /pub/.
+request_header -X-Amux-Member
+request_header -X-Amux-Session
+request_header -X-Amux-Worker
+request_header -X-Amux-Worker-Token
+request_header -X-Door-User
+reverse_proxy https://127.0.0.1:8825 {
+  transport http {
+    tls_insecure_skip_verify
+  }
+  header_up Host {host}
+  header_up -Authorization
+  flush_interval -1
+}
