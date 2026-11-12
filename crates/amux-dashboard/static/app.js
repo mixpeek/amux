@@ -6010,7 +6010,12 @@ const _origFetch = window.fetch.bind(window);
 // got the synthetic 202, which has no authorize_url, so the button said
 // "Could not start the grant: unknown", and the queued POST would later
 // start a sign-in nobody was there to open.
-const _OUTBOX_SKIP = /\/api\/(connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
+// `email/(approve|reject)` joined 2026-11-12: a release that failed upstream
+// answered 502, the outbox queued it and handed back its synthetic 202, and the
+// banner said "Approved — sent for worker" while nothing was sent; the queue
+// then replayed the approval seven times. A human's release needs the server's
+// answer, never a promise to try later.
+const _OUTBOX_SKIP = /\/api\/(email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -6037,7 +6042,7 @@ function _outboxAccepted() {
 // copy already changed the node) and sits under Pending operations for good
 // (Ethan's screenshot, 2026-10-18). Its change either landed or is one press
 // away, so the entries are dropped once at load, and the count is reported.
-const _OUTBOX_ANSWER_NOW = /\/api\/files\/mdai\/(?:run|chat)(?:[?#]|$)/;
+const _OUTBOX_ANSWER_NOW = /\/api\/(?:files\/mdai\/(?:run|chat)(?:[?#]|$)|email\/(?:approve|reject)\/)/;
 function _outboxDropAnswerNow() {
   let dropped = 0, considered = 0;
   return _mutateQueue(current => {

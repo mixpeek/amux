@@ -543,6 +543,16 @@ fn applescript_not_ported(account: &str) -> Response {
 /// to send from a non-connected account" — the early-warning signal for the whole
 /// class (two-fixes rule). Read endpoints (inbox/search) keep the quiet refusal:
 /// a read from an unconnected account is benign and frequent, not an incident.
+/// The account a send with no `from` goes out from: the only connected one, when
+/// there is exactly one (a Cloud server has hello@amux.io and nothing else).
+/// With several, an empty `from` stays empty and the send is refused by name.
+fn default_from(connected: &[String], from: String) -> String {
+    match connected {
+        [only] if from.trim().is_empty() => only.clone(),
+        _ => from,
+    }
+}
+
 fn refuse_send(ctx: &EmailCtx, headers: &HeaderMap, endpoint: &str, account: &str) -> Response {
     tracing::warn!(
         endpoint, from = %account,
@@ -642,6 +652,13 @@ pub async fn send(
     }
 
     let connected = ctx.client.connected_accounts();
+    from_acct = default_from(&connected, from_acct);
+    // A send no connected account can make is refused HERE, before the hold:
+    // frozen with an empty `from`, the wexus worker's draft on sandbox failed
+    // every release with "invalid connector account or family" (2026-11-12).
+    if !connected.contains(&from_acct) {
+        return refuse_send(&ctx, &headers, "send", &from_acct);
+    }
 
     // EXTERNAL-SEND APPROVAL GATE (AMUX-3510) — before the etiquette guards:
     // a worker-originated send reaching any non-internal recipient is frozen
@@ -1482,11 +1499,14 @@ pub async fn approve(
             return err(StatusCode::BAD_REQUEST, json!({ "error": e, "approval_id": id }));
         }
     };
+    // A draft frozen before default_from existed carries an empty `from`; the
+    // only connected account is the one it would have gone out from.
+    let from = default_from(&ctx.client.connected_accounts(), p("from"));
     let res = match endpoint.as_str() {
         "send" => {
             ctx.client
                 .compose_send(
-                    &p("from"),
+                    &from,
                     &p("to"),
                     &p("subject"),
                     &p("body"),
@@ -1504,7 +1524,7 @@ pub async fn approve(
             let allow_self = payload.get("allow_self").map(truthy).unwrap_or(false);
             ctx.client
                 .reply_send_cc(
-                    &p("from"),
+                    &from,
                     &p("message_id"),
                     &p("body"),
                     include_sig,
@@ -1572,7 +1592,7 @@ pub async fn approve(
                     // below would attribute the approver's words to the lane.
                     "approver_edited": approver_edited,
                     "scheduled_for": scheduled_for,
-                    "from": p("from"),
+                    "from": from,
                     "to": resolved_envelope(&res, "to", &p("to")),
                     "cc": resolved_envelope(&res, "cc", &p("cc")),
                     "subject": resolved_envelope(&res, "subject", &p("subject")),
@@ -2361,6 +2381,57 @@ mod tests {
     }
 
     const ACCT: &str = "acct@example.com";
+
+    /// A worker's outside email with no `from` (sandbox, 2026-11-12: the wexus
+    /// worker's draft, approved seven times, failed every release with "invalid
+    /// connector account or family"). With one connected account it is held
+    /// FROM that account and goes out when an admin approves it; with two, it is
+    /// refused before anything is held, since no release could ever send it.
+    #[tokio::test]
+    async fn a_send_without_from_is_held_from_the_only_account_or_refused_before_the_hold() {
+        const ADMIN: [(&str, &str); 4] = [
+            ("x-amux-local-member-verified", "1"),
+            ("x-amux-local-member-actor", "member:ethan@x.com"),
+            ("x-amux-session", "member:ethan@x.com"),
+            ("x-amux-local-member-admin", "1"),
+        ];
+        let draft = json!({ "to": "cto@customer.com", "subject": "Q", "body": "draft",
+                            "force_new_thread": true });
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "x", "threadId": "t" })),
+        ]);
+        let (app, _d, _r) = app_with(http, home.path());
+        let (st, held) =
+            send_req(&app, "POST", "/api/email/send", Some(draft.clone()), &[("x-amux-session", "wexus")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "held for approval: {held}");
+        let id = held["approval_id"].as_str().expect("held, with an id").to_string();
+        let (st, ok) =
+            send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &ADMIN).await;
+        assert_eq!(st, StatusCode::OK, "the release sends from the only account: {ok}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 50, "");
+        let row = log["log"].as_array().cloned().unwrap_or_default().into_iter()
+            .find(|x| x.get("approved") == Some(&json!(true)))
+            .expect("the release is in the ledger");
+        assert_eq!(row["from"], json!(ACCT));
+
+        // Two accounts and no `from`: refused now, and nothing waits for a human.
+        let home = temp_home();
+        std::fs::copy(
+            home.path().join(format!("gmail-tokens/{ACCT}.json")),
+            home.path().join("gmail-tokens/other@example.com.json"),
+        )
+        .unwrap();
+        let http = MockHttp::new(vec![]);
+        let (app, _d, _r) = app_with(http, home.path());
+        let (st, e) =
+            send_req(&app, "POST", "/api/email/send", Some(draft), &[("x-amux-session", "wexus")]).await;
+        assert_ne!(st, StatusCode::OK, "{e}");
+        assert!(e.get("approval_id").is_none(), "no dead draft is held: {e}");
+        let (_, pending) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+        assert_eq!(pending["pending"], json!([]), "{pending}");
+    }
 
     /// Temp amux home with one connected account (PLACEHOLDER token values
     /// only — never real credentials).
