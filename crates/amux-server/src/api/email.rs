@@ -3651,9 +3651,11 @@ mod tests {
 
         // A MEMBER SCOPED TO alpha: a human, not a worker (its member:<email>
         // session marker used to read as a worker origin), held to its scope.
+        // An admin, since releasing mail takes one: the scope still limits it.
         let mut mh = HeaderMap::new();
         crate::api::org::stamp_member_headers(&mut mh, "m@example.com",
             &crate::api::org::MemberScope::Worker("alpha".into()));
+        mh.insert("x-amux-local-member-admin", "1".parse().unwrap());
         let mh: Vec<(String, String)> = mh.iter()
             .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap().to_string())).collect();
         let mh: Vec<(&str, &str)> = mh.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
