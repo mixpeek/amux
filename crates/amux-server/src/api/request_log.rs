@@ -4193,6 +4193,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/trace/{id}",
         methods: &["GET"],
     },
+    RouteEntry {
+        path: "/api/otel/v1/logs",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/otel/v1/metrics",
+        methods: &["POST"],
+    },
 ];
 
 /// Match `path` against an axum-style pattern, returning a specificity score
