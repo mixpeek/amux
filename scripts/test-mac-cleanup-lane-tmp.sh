@@ -95,6 +95,20 @@ out8="$(STATE_DIR="$ST8" LANE_TMP_ROOT="$R8" LANE_TMP_IDLE_MIN=1440 bash -c ". '
 [ -f "$R8/w/evalset2/labelled.json" ] && printf '%s' "$out8" | grep -q '1 marked .amux-keep' && echo "ok   a directory marked .amux-keep is kept and counted" || { echo "FAIL keep marker: $out8"; fail=1; }
 [ ! -e "$R8/w/scratchbuild" ] && printf '%s' "$out8" | grep -qF "lane tmp removed $R8/w/scratchbuild (1M, nothing changed in 1440 min) (verdict=lane_tmp_entry_removed)" && echo "ok   each removal is logged with its path, size and floor" || { echo "FAIL per-entry line: $out8"; fail=1; }
 grep -qF "$(printf 'w/scratchbuild\t')" "$ST8/lane-tmp-removed.log" 2>/dev/null && ! grep -q evalset2 "$ST8/lane-tmp-removed.log" && echo "ok   and appended to the removal ledger" || { echo "FAIL ledger: $(cat "$ST8/lane-tmp-removed.log" 2>&1)"; fail=1; }
+# amux, 2026-11-12: a worktree with a tested, uncommitted fix idled past the
+# floor and was removed. A checkout with edited tracked files or commits on no
+# remote is kept and named; a clean checkout of pushed commits still goes.
+R9="$T/root9"; mkdir -p "$R9/w"
+git init -q "$T/seed9" && git -C "$T/seed9" commit -q --allow-empty -m base && git clone -q --bare "$T/seed9" "$T/origin9"
+for d in dirty ahead clean; do git clone -q "$T/origin9" "$R9/w/$d"; head -c 2000000 /dev/zero > "$R9/w/$d/big.bin"; done
+git -C "$R9/w/dirty" add big.bin && git -C "$R9/w/dirty" commit -q -m big && git -C "$R9/w/dirty" push -q origin HEAD 2>/dev/null
+echo edit >> "$R9/w/dirty/big.bin"
+git -C "$R9/w/ahead" add big.bin && git -C "$R9/w/ahead" commit -q -m local
+find "$R9/w" -exec touch -t 202609300000 {} +
+out9="$(LANE_TMP_ROOT="$R9" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 0")"
+[ -d "$R9/w/dirty" ] && printf '%s' "$out9" | grep -qF "lane tmp kept $R9/w/dirty: a git checkout with unsaved work (uncommitted changes) (verdict=lane_tmp_unsaved_work_kept)" && echo "ok   a checkout with uncommitted changes is kept and named" || { echo "FAIL dirty checkout: $out9"; fail=1; }
+[ -d "$R9/w/ahead" ] && printf '%s' "$out9" | grep -qF "(commits on no remote)" && echo "ok   a checkout with commits on no remote is kept" || { echo "FAIL unpushed checkout: $out9"; fail=1; }
+[ ! -e "$R9/w/clean" ] && printf '%s' "$out9" | grep -q '2 git checkout(s) with unsaved work' && echo "ok   a clean checkout of pushed commits is still reaped, and the kept ones counted" || { echo "FAIL clean checkout: $out9"; fail=1; }
 kill "$holder" 2>/dev/null; wait 2>/dev/null
 rm -f "$F"; rm -rf -- "${T:?}"
 exit $fail

@@ -3121,7 +3121,7 @@ keep_docker_context() { # <profile>
 #    Every removal is now one line with path, size and idle floor, in the run's
 #    output and appended to $STATE_DIR/lane-tmp-removed.log.
 reap_lane_tmp() { # <dry:0|1>
-  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 ledger=""
+  local dry=$1 root="${LANE_TMP_ROOT%/}" e ce n=0 kb=0 k inuse capped=0 named db n_named=0 n_small=0 n_marked=0 n_unsaved=0 ledger=""
   [ -n "${STATE_DIR:-}" ] && ledger="$STATE_DIR/lane-tmp-removed.log"
   local small_kb=${LANE_TMP_KEEP_FILE_KB:-1024}
   # A directory of a few small files is kept like a small file (mxp-gs12,
@@ -3171,6 +3171,22 @@ reap_lane_tmp() { # <dry:0|1>
     [ -n "$out" ] && continue
     if printf '%s\n' "$named" | grep -qxF "${e#"$root"/}"; then n_named=$((n_named+1)); continue; fi
     if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.amux-keep" ]; then n_marked=$((n_marked+1)); continue; fi
+    # A git checkout holding work that exists nowhere else is kept (amux,
+    # 2026-11-12): ~/.amux/tmp/amux/wt-ui, a worktree with a tested, uncommitted
+    # dispatcher fix, idled past the floor and was removed. A worktree whose
+    # tracked files are edited or whose commits are on no remote is a lane's
+    # unsaved work; a clean checkout of pushed commits is still reaped. A git
+    # that cannot answer keeps it: unsaved work must not be guessed away.
+    if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.git" ]; then
+      local dirty ahead
+      dirty=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" status --porcelain --untracked-files=no 2>/dev/null) || dirty="?"
+      ahead=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" rev-list -n 1 HEAD --not --remotes 2>/dev/null) || ahead="?"
+      if [ -n "$dirty" ] || [ -n "$ahead" ]; then
+        n_unsaved=$((n_unsaved+1))
+        echo "mac-cleanup:   lane tmp kept $e: a git checkout with unsaved work ($([ -n "$dirty" ] && echo 'uncommitted changes')$([ -n "$dirty" ] && [ -n "$ahead" ] && echo ', ')$([ -n "$ahead" ] && echo 'commits on no remote')) (verdict=lane_tmp_unsaved_work_kept)"
+        continue
+      fi
+    fi
     if [ -f "$e" ] && [ ! -L "$e" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$small_kb" ] 2>/dev/null; then
       n_small=$((n_small+1)); continue
     fi
@@ -3202,7 +3218,7 @@ reap_lane_tmp() { # <dry:0|1>
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, none over ${small_kb}K), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
