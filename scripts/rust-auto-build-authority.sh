@@ -196,6 +196,15 @@ if r: print(int(min(dt.datetime.fromisoformat(x["created_at"].replace("Z","+00:0
 # commit, in a scratch worktree. A pass is the gate's verdict; a failure or an
 # error says nothing, and the walk waits for GitHub as before. Once per sha.
 # AMUX_DEPLOY_LOCAL_GATE=0 turns it off.
+# `timeout` is GNU coreutils: macOS has none on launchd's PATH, and the first
+# local gate on the Mac failed with "timeout: command not found" (2026-11-12).
+# Perl's alarm is on every macOS and Linux this runs on.
+bounded() { # <seconds> <cmd...>
+  local s="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"
+  else perl -e 'alarm shift; exec @ARGV or exit 127' "$s" "$@"; fi
+}
 local_gate() { # <sha>: prints green when gate.yml's steps pass here
   local sha="$1" mark d rc t0 parent
   [ "${AMUX_DEPLOY_LOCAL_GATE:-1}" = 1 ] || return 0
@@ -207,7 +216,10 @@ local_gate() { # <sha>: prints green when gate.yml's steps pass here
   t0=$(date +%s)
   if git -C "$REPO" worktree add --detach -q "$d/w" "$sha" 2>/dev/null \
      && [ -x "$d/w/scripts/ci-fast-gate.sh" ] && [ -x "$d/w/scripts/ci-secret-scan.sh" ]; then
-    if (cd "$d/w" && timeout "${AMUX_LOCAL_GATE_TIMEOUT_S:-150}" bash -c \
+    # launchd gives this job /usr/bin:/bin:/usr/sbin:/sbin; the gate's script
+    # tests expect the tools a CI runner has (node, Homebrew's coreutils).
+    if (cd "$d/w" && PATH="${AMUX_LOCAL_GATE_PATH-/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin}:$PATH" \
+          bounded "${AMUX_LOCAL_GATE_TIMEOUT_S:-150}" bash -c \
           'scripts/ci-secret-scan.sh && scripts/ci-fast-gate.sh "$1" "$2"' _ "$parent" "$sha") > "$d/log" 2>&1; then
       rc=green
     else

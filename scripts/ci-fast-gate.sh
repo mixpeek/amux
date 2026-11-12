@@ -34,14 +34,20 @@ ran=0 timed=0
 out=$(mktemp -d)
 if [ -n "$tests" ]; then
   # One job per CPU, each given the whole budget.
-  printf '%s' "$tests" | xargs -P "$(getconf _NPROCESSORS_ONLN)" -I{} bash -c '
-    t={}; log="$1/$(basename "$t").log"
-    timeout "$2" "$t" > "$log" 2>&1; echo $? > "$log.rc"' _ "$out" "$budget"
+  # Each test is the last argument ($3), not an -I{} substitution: BSD xargs
+  # (macOS, where the builder runs this gate) refuses an -I command over 255
+  # bytes and ran nothing.
+  printf '%s' "$tests" | xargs -P "$(getconf _NPROCESSORS_ONLN)" -n 1 bash -c '
+    t=$3; log="$1/$(basename "$t").log"
+    # No GNU timeout on macOS (the builder runs this gate there): Perl alarm,
+    # which ends the test with SIGALRM (142) where timeout says 124.
+    if command -v timeout >/dev/null 2>&1; then timeout "$2" "$t"; else perl -e "alarm shift; exec @ARGV or exit 127" "$2" "$t"; fi \
+      > "$log" 2>&1; echo $? > "$log.rc"' _ "$out" "$budget"
   for rc in "$out"/*.rc; do
     ran=$((ran+1)); log=${rc%.rc}
     case "$(cat "$rc")" in
       0) ;;
-      124) timed=$((timed+1)); echo "over ${budget}s: $(basename "$log" .log) (checks.yml runs it)" ;;
+      124|142) timed=$((timed+1)); echo "over ${budget}s: $(basename "$log" .log) (checks.yml runs it)" ;;
       *) fail=1; echo "FAILED $(basename "$log" .log)"; tail -15 "$log" ;;
     esac
   done

@@ -214,8 +214,10 @@ chmod +x "$TMP/fetch-queued"
   chmod +x scripts/ci-secret-scan.sh scripts/ci-fast-gate.sh )
 GATE_OK=$(commit_next gate-ok)
 PUSHED="$TMP/pushed-at"
+# launchd's PATH: no Homebrew, so no GNU timeout on a Mac (the first live local
+# gate failed with "timeout: command not found").
 run_gate() {
-  env AMUX_CI_REQUIRED_WORKFLOWS=gate AMUX_CI_PUSHED_AT_DIR="$PUSHED" \
+  env PATH=/usr/bin:/bin AMUX_LOCAL_GATE_PATH= AMUX_CI_REQUIRED_WORKFLOWS=gate AMUX_CI_PUSHED_AT_DIR="$PUSHED" \
   AMUX_AUTHORITY_REPO="$STALE" AMUX_AUTHORITY_WORKTREE="$WORK" AMUX_AUTHORITY_MARKER="$MARKER" \
   AMUX_AUTHORITY_LOG="$LOG" AMUX_RS_ACTIVATION_REF=origin/main AMUX_CI_VERDICT_CACHE="$CACHE" \
   AMUX_CI_FETCH_CMD="$TMP/fetch-queued" AMUX_RS_HEALTH_URL="file://$TMP/health.json" "$@" bash "$LAUNCHER"
