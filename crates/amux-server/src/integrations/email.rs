@@ -2084,7 +2084,7 @@ impl GmailClient {
         // Below the threshold the single path runs alone, so its test cells
         // stay pinned to real behavior.
         const BATCH_THRESHOLD: usize = 20;
-        const META_HEADERS: [&str; 5] = ["From", "To", "Subject", "Date", "Message-ID"];
+        const META_HEADERS: [&str; 8] = ["From", "To", "Subject", "Date", "Message-ID", "Cc", "List-Unsubscribe", "Precedence"];
         use futures::stream::{self, StreamExt};
         let mids: Vec<String> = ids
             .iter()
@@ -2140,6 +2140,13 @@ impl GmailClient {
                 "gmail_id": mid,
                 "read": !unread,
                 "body": full.get("snippet").cloned().unwrap_or(json!("")),
+                "cc": hv("cc"),
+                "labels": full.get("labelIds").cloned().unwrap_or(json!([])),
+                "internal_date": internal_date(&full),
+                // A mailing list or a bulk sender says so in its headers; an
+                // email.received subscriber filters newsletters on this.
+                "bulk": !hv("list-unsubscribe").is_empty()
+                    || matches!(hv("precedence").trim().to_ascii_lowercase().as_str(), "bulk" | "list" | "junk"),
             }));
         }
         // AF-704: `page_token` here is whatever the loop's LAST list_ids call

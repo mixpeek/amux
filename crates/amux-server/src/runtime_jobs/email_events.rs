@@ -7,8 +7,8 @@
 //! keyed `email:<account>:<gmail id>` so a re-read never fires twice. The
 //! first read of an account only records when watching began: mail already in
 //! the inbox is history, not news. The event carries the envelope and the
-//! snippet (account, from, to, subject, snippet, thread_id, message_id,
-//! unread); the body stays in Gmail, where `/api/email/message` reads it.
+//! snippet (account, from, from_address, from_domain, to, cc, subject, snippet,
+//! thread_id, message_id, labels, unread, bulk); the body stays in Gmail.
 //!
 //! Off with AMUX_EMAIL_EVENTS_SECS=0, and in an isolated (e2e) server.
 //! Verdicts: email_events_emitted, email_events_seeded, email_events_read_failed,
@@ -46,21 +46,40 @@ fn save_since(home: &Path, since: &serde_json::Map<String, Value>) -> Result<(),
 pub(crate) fn fresh(messages: &[Value], since_ms: i64) -> Vec<&Value> {
     messages
         .iter()
-        .filter(|m| m["internal_date"].as_i64().unwrap_or(0) >= since_ms && m["id"].as_str().is_some_and(|s| !s.is_empty()))
+        .filter(|m| m["internal_date"].as_i64().unwrap_or(0) >= since_ms && m["gmail_id"].as_str().is_some_and(|s| !s.is_empty()))
         .collect()
 }
 
-/// The event body for one inbox message.
+/// The bare address and its domain from a From header ("Alan <alan@acme.com>").
+pub(crate) fn sender_parts(from: &str) -> (String, String) {
+    let addr = match (from.rfind('<'), from.rfind('>')) {
+        (Some(a), Some(b)) if b > a => &from[a + 1..b],
+        _ => from,
+    }
+    .trim()
+    .to_ascii_lowercase();
+    let domain = addr.rsplit_once('@').map(|(_, d)| d.to_string()).unwrap_or_default();
+    (addr, domain)
+}
+
+/// The event body for one inbox message (a summary from `inbox_messages`).
 pub(crate) fn event_data(account: &str, m: &Value) -> Value {
+    let (from_address, from_domain) = sender_parts(m["from"].as_str().unwrap_or(""));
     json!({
         "account": account,
         "from": m["from"],
+        "from_address": from_address,
+        "from_domain": from_domain,
         "to": m["to"],
+        "cc": m["cc"],
         "subject": m["subject"],
-        "snippet": m["snippet"],
+        "snippet": m["body"],
         "thread_id": m["thread_id"],
-        "message_id": m["id"],
-        "unread": m["unread"],
+        "message_id": m["message_id"],
+        "gmail_id": m["gmail_id"],
+        "labels": m["labels"],
+        "unread": !m["read"].as_bool().unwrap_or(false),
+        "bulk": m["bulk"].as_bool().unwrap_or(false),
         "date": m["date"],
     })
 }
@@ -94,7 +113,7 @@ async fn tick(state: &AppState, client: &GmailClient) {
             }
         };
         for m in fresh(&messages, start) {
-            let id = m["id"].as_str().unwrap_or("");
+            let id = m["gmail_id"].as_str().unwrap_or("");
             crate::api::session_verbs::emit_event_store(
                 &state.store,
                 "",
@@ -143,22 +162,29 @@ mod tests {
     #[test]
     fn only_mail_that_arrived_after_watching_began_is_news() {
         let msgs = vec![
-            json!({"id": "old", "internal_date": 1_000}),
-            json!({"id": "new", "internal_date": 2_000}),
-            json!({"id": "", "internal_date": 3_000}),
+            json!({"gmail_id": "old", "internal_date": 1_000}),
+            json!({"gmail_id": "new", "internal_date": 2_000}),
+            json!({"gmail_id": "", "internal_date": 3_000}),
         ];
-        let ids: Vec<&str> = fresh(&msgs, 2_000).iter().map(|m| m["id"].as_str().unwrap()).collect();
+        let ids: Vec<&str> = fresh(&msgs, 2_000).iter().map(|m| m["gmail_id"].as_str().unwrap()).collect();
         assert_eq!(ids, vec!["new"]);
     }
 
     #[test]
     fn the_event_carries_the_envelope_a_filter_matches_on() {
-        let m = json!({"id": "m1", "thread_id": "t1", "from": "Alan <alan@acme.com>", "to": "ethan@mixpeek.com",
-            "subject": "Invoice 42", "snippet": "please pay", "unread": true, "date": "Thu", "internal_date": 5});
+        // The shape inbox_messages returns (integrations/email.rs), field for field.
+        let m = json!({"gmail_id": "g1", "message_id": "<m1@acme.com>", "thread_id": "t1",
+            "from": "Alan Smith <Alan@Acme.com>", "to": "ethan@mixpeek.com", "cc": "",
+            "subject": "Invoice 42", "body": "please pay", "read": false, "date": "Thu",
+            "labels": ["INBOX", "UNREAD"], "bulk": false, "internal_date": 5});
         let d = event_data("ethan@mixpeek.com", &m);
-        assert_eq!(d["from"], "Alan <alan@acme.com>");
+        assert_eq!(d["from_address"], "alan@acme.com");
+        assert_eq!(d["from_domain"], "acme.com");
         assert_eq!(d["subject"], "Invoice 42");
-        assert_eq!(d["account"], "ethan@mixpeek.com");
-        assert_eq!(d["message_id"], "m1");
+        assert_eq!(d["snippet"], "please pay");
+        assert_eq!(d["message_id"], "<m1@acme.com>");
+        assert_eq!(d["unread"], true);
+        assert_eq!(d["bulk"], false);
+        assert_eq!(sender_parts("bob@x.io"), ("bob@x.io".into(), "x.io".into()));
     }
 }
