@@ -55,7 +55,7 @@ async fn audit(State(state): State<AppState>, Query(q): Query<AuditQuery>) -> Re
     };
     let since_h = q.since_h.filter(|h| h.is_finite() && *h > 0.0).unwrap_or(24.0);
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let kinds: Vec<String> = q.kind.as_deref().unwrap_or("browser,tool,api").split(',')
+    let kinds: Vec<String> = q.kind.as_deref().unwrap_or("browser,tool,api,ledger").split(',')
         .map(|k| k.trim().to_ascii_lowercase()).filter(|k| !k.is_empty()).collect();
     let Ok(conn) = state.store.read() else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "store unavailable", "measured": false,
@@ -121,6 +121,30 @@ pub fn timeline(conn: &Connection, worker: &str, since: f64, kinds: &[String], l
                     "source": {"table": "_amux_request_log", "rowid": id}})))
             });
         sources.push(probe("_amux_request_log", "amux_session=worker AND ts>=since (REAL seconds; bodies are never stored)", rows.len(), total, err));
+        events.extend(rows);
+    }
+    if want("ledger") {
+        // The record (api/ledger.rs): what the worker was PROVEN to do, plus
+        // what was done under its name without proof (`claimed`), each with
+        // the authority that allowed or refused it.
+        let actor = format!("worker:{worker}");
+        let (rows, total, err) = read(conn,
+            "SELECT seq, ts, action, decision, outcome, authority, actor, claimed, resource, event_id FROM _amux_ledger
+             WHERE (actor=?1 OR claimed=?1) AND ts>=?2 ORDER BY seq DESC LIMIT ?3",
+            "SELECT COUNT(*) FROM _amux_ledger WHERE (actor=?1 OR claimed=?1) AND ts>=?2",
+            &actor, json!((since * 1000.0) as i64), limit,
+            |r| {
+                let seq: i64 = r.get(0)?;
+                let ts: i64 = r.get(1)?;
+                let action: Option<String> = r.get(2)?;
+                Ok((ts as f64 / 1000.0, json!({"kind": "ledger", "type": action,
+                    "detail": {"decision": r.get::<_, Option<String>>(3)?, "outcome": r.get::<_, Option<String>>(4)?,
+                        "authority": r.get::<_, Option<String>>(5)?, "actor": r.get::<_, String>(6)?,
+                        "claimed": r.get::<_, Option<String>>(7)?, "resource": r.get::<_, Option<String>>(8)?,
+                        "event_id": r.get::<_, String>(9)?},
+                    "source": {"table": "_amux_ledger", "rowid": seq}})))
+            });
+        sources.push(probe("_amux_ledger", "(actor='worker:'||worker OR claimed=it) AND ts>=since (INTEGER ms)", rows.len(), total, err));
         events.extend(rows);
     }
     events.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));

@@ -137,6 +137,7 @@ pub mod ids {
     pub const CONTEXT_HEALTH: &str = "context-health";
     pub const SUBSCRIPTION_RELAUNCH: &str = "subscription-relaunch";
     pub const DISK_WATCH: &str = "disk-watch";
+    pub const LEDGER_CHECKPOINT: &str = "ledger-checkpoint";
     pub const STATUS_HISTORY: &str = "status-history";
     pub const BROWSER_LOGIN_SYNC: &str = "browser-login-sync";
     pub const CONNECTOR_MAINTENANCE: &str = "connector-maintenance";
@@ -205,6 +206,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::CONTEXT_HEALTH,
     ids::SUBSCRIPTION_RELAUNCH,
     ids::DISK_WATCH,
+    ids::LEDGER_CHECKPOINT,
     ids::HOST_METRICS,
     ids::TRACE_ARCHIVE,
     ids::HOST_GUARD,
@@ -821,6 +823,20 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/traces"),
+    },
+    Doc {
+        id: ids::LEDGER_CHECKPOINT,
+        name: "Ledger checkpoints",
+        purpose: "Signs the ledger's head (seq and hash) with this host's Ed25519 key every interval and exports it to ~/.amux/ledger-checkpoints.jsonl, and to S3-compatible storage and a webhook when configured, so a rewrite of the ledger that re-hashes every row no longer matches what was signed and published. Measures whether the S3 copy is write-once rather than assuming it.",
+        env: &[
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINTS", effect: "off stops signing and exporting (the ledger itself keeps running)", off: Some("off") },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_SECS", effect: "0 disables the tick loop", off: Some("0") },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_INTERVAL_S", effect: "seconds between checkpoints, default 3600 (the job wakes every 300)", off: None },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_S3_ENDPOINT", effect: "with _BUCKET, _ACCESS_KEY_ID and _SECRET_ACCESS_KEY: export each checkpoint to S3-compatible storage (_REGION default auto, _PREFIX, _LOCK_DAYS and _LOCK_MODE for object lock)", off: None },
+            EnvControl { var: "AMUX_LEDGER_CHECKPOINT_WEBHOOK", effect: "POST each checkpoint as JSON to this URL", off: None },
+        ],
+        pref: None,
+        detail: Some("/api/ledger/checkpoints"),
     },
     Doc {
         id: ids::HOST_METRICS,

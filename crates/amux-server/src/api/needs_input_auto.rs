@@ -371,6 +371,14 @@ fn requires_explicit_approval(item: &Value) -> bool {
 /// seed-standing-approvals.sh`", was auto-approved although only the owner can
 /// run it.
 pub fn never_reason(item: &Value) -> Option<&'static str> {
+    // Governance PR 12: a spend grant, a publish, an owner-gated land and a
+    // capability are decided by a person (or a standing approval the person
+    // set), never by this policy. A held email keeps its own `outbound` switch.
+    if let Some(kind) = item["approval"]["kind"].as_str() {
+        if kind != "email" {
+            return Some("approval_card_needs_a_person");
+        }
+    }
     let at = item["ask_type"].as_str().unwrap_or("");
     // The QUESTION only. `unblocks` on a card the turn-end recorder filed is
     // boilerplate ("completes the sign-in, grant or credential step named in
@@ -1097,7 +1105,9 @@ impl Actions for RealActions {
             client: std::sync::Arc::new(crate::integrations::email::GmailClient::new_default()),
             registry: crate::integrations::global_registry().clone(),
         });
-        let mut h = HeaderMap::new();
+        // In-process and by the policy: the marker is what proves it
+        // (human_proof.rs); a name alone no longer would.
+        let mut h = crate::api::org::policy_headers(POLICY_ACTOR);
         h.insert("x-amux-approver", axum::http::HeaderValue::from_static(APPROVER));
         let resp = crate::api::email::approve(
             axum::Extension(ctx),

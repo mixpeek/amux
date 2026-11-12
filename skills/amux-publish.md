@@ -37,6 +37,20 @@ amux shows it in its file viewer. Do not start a web server for static files.
 - **A build step.** Build locally, then serve the output with the app or
   `amux publish --file <dist folder>`.
 
+## The app's own amux credential
+
+A published app gets its own credential, saved by the command to
+`~/.amux/app-tokens/<id>.token`. It has **no amux access** unless the owner
+allows some: anyone on the web can reach the app, so it must not act as you.
+
+- If the app needs to call amux (post to its worker, read the board), ask when
+  publishing: `amux publish PORT [TITLE] --api "POST /api/sessions/<worker>/send"`.
+  The owner sees exactly what you asked for in the Apps tab and approves it.
+- Start the app with `AMUX_APP_TOKEN` set to the saved credential and have it
+  send `X-Amux-App-Token` on its amux calls. Never give the app your own
+  `AMUX_WORKER_TOKEN` or the owner token: a call made with them from the app is
+  refused.
+
 ## After publishing
 
 1. Everything a worker adds is PENDING until the owner approves it in the Apps
