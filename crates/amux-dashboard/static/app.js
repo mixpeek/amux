@@ -39531,7 +39531,7 @@ function _ownPageLink(href) {
   try { u = new URL(href, location.href); } catch (_) { return null; }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
   const hosts = [location.hostname];
-  try { if (_deepLinkBase) hosts.push(new URL(_deepLinkBase).hostname); } catch (_) {}
+  try { if (_deepLinkBase) hosts.push(new URL(_deepLinkBase).hostname); } catch (e) { console.warn('[own-link] deep link base is not a URL', _deepLinkBase, e); }
   if (!hosts.includes(u.hostname)) return null;
   const ownOrigin = u.origin === location.origin || (_deepLinkBase && u.origin === _deepLinkBase.replace(/\/+$/, ''));
   if (!ownOrigin) return u; // an app on another port of this host
@@ -39542,14 +39542,14 @@ function _ownPageBeacon(verdict, how) {
     fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind: 'own-link', verdict, how, measured: true, n_considered: 1,
         ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
-  } catch (_) {}
+  } catch (e) { console.warn('[own-link] beacon not sent', verdict, e); }
 }
 async function _openOwnPage(href, how) {
   const u = _ownPageLink(href) || new URL(href, location.href);
   const m = u.pathname.match(/^\/pub\/([^/]+)/);
   if (m) {
     let links = _pubLinks;
-    try { links = (await _pubFetch('')).links || []; _pubLinks = links; } catch (_) {}
+    try { links = (await _pubFetch('')).links || []; _pubLinks = links; } catch (e) { console.warn('[own-link] published links not refreshed; using the cached list', e); }
     const l = links.find(x => x.id === m[1] || (x.aliases || []).includes(m[1]));
     if (l && l.pending) {
       _ownPageBeacon('pending_shown_in_apps', how);
@@ -39575,7 +39575,7 @@ function _ownPageOverlay(url) {
   el.setAttribute('role', 'dialog');
   el.setAttribute('aria-label', 'Page opened from amux');
   let shown = url;
-  try { const u = new URL(url); shown = (u.origin === location.origin ? '' : u.host) + u.pathname; } catch (_) {}
+  try { const u = new URL(url); shown = (u.origin === location.origin ? '' : u.host) + u.pathname; } catch (e) { console.warn('[own-link] showing the raw URL', url, e); }
   el.innerHTML = '<div class="own-page-bar">'
     + '<button type="button" class="btn own-page-back" aria-label="Back to amux">&#x2039; amux</button>'
     + '<span class="own-page-url" title="' + esc(url) + '">' + esc(shown) + '</span></div>'
