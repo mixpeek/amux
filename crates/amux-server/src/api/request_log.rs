@@ -1898,6 +1898,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/subscriptions/catalog",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/events",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/subscriptions/{id}",
         methods: &["GET", "PATCH", "DELETE"],
     },
@@ -4171,6 +4179,70 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/debug/storage",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger/verify",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/trace/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/otel/v1/logs",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/otel/v1/metrics",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/ledger/checkpoints",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/ledger/checkpoints/key",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger/at/{seq}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/workers/{name}/capabilities",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/approvals/decide",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/approvals/cards",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/land/approvals/reject",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/schedules/{id}/reown",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/workers/{name}/sponsor",
+        methods: &["PUT"],
+    },
+    RouteEntry {
+        path: "/api/org/members/{email}/offboard",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/workers/{name}/history",
         methods: &["GET"],
     },
 ];

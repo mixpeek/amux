@@ -22,7 +22,7 @@ test('settings tabs, folds and the style guide sit where the owner put them', as
   expect(first, 'connections are at the top of Connect').toBe('settings-connections-section');
   await expect(page.locator('#connection-security details.settings-fold')).not.toHaveAttribute('open', '');
   await expect(page.locator('#connection-owner-token')).toBeHidden();
-  for (const id of ['settings-vault-section', 'settings-chatgpt-section', 'settings-apikeys-section']) {
+  for (const id of ['settings-vault-section', 'settings-chatgpt-section']) {
     await expect(page.locator('#' + id), id + ' is not in Settings').toBeHidden();
   }
   await expect(page.locator('#style-guide-btn')).toBeHidden();

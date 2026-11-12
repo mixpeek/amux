@@ -18,6 +18,11 @@ def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
 
+
+# The board's done gates for the two types that matter here (crates/amux-server board contract).
+DONE_GATES = {"code": ["Implemented and merged", "Tests / lint pass"],
+              "decision": ["The decision is recorded on the card: what was chosen, by whom, and when"]}
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k):
         return None
@@ -51,6 +56,7 @@ class DoorAllowlist(unittest.TestCase):
                        DOOR_FAIL_LIMIT="50")
         alerts = cls.alerts = []
         cards, patches = cls.cards, cls.patches = [], []
+        types = {}
         class FakeAmux(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -59,11 +65,21 @@ class DoorAllowlist(unittest.TestCase):
                     alerts.append((self.headers.get("Content-Type"), json.loads(body)))
                 if self.path == "/api/board":
                     cards.append(json.loads(body))
+                    types["/api/board/T-%d" % len(cards)] = cards[-1].get("type", "code")
                     out = json.dumps({"id": "T-%d" % len(cards)}).encode()
                 self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
             def do_PATCH(self):
-                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-                patches.append((self.path, json.loads(body)))
+                # Like the real board: done is refused (409, whole body discarded) unless every item of
+                # the card's type's done gate is ticked. A code card's gate cannot be ticked truthfully.
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                if "type" in body:
+                    types[self.path] = body["type"]
+                gate = DONE_GATES.get(types.get(self.path, "code"))
+                if body.get("status") == "done" and not set(gate) <= set(body.get("gate_checked") or []):
+                    out = json.dumps({"error": "gate not acknowledged", "gate": gate}).encode()
+                    self.send_response(409); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
+                    return
+                patches.append((self.path, body))
                 self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
             def log_message(self, *a):
                 pass
@@ -321,8 +337,12 @@ class DoorAllowlist(unittest.TestCase):
         entry = [e for e in self.get_list()["entries"] if e["ip"] == new][0]
         self.assertEqual((entry["user"], entry["how"]), (MATE, "owner_approved"))
         card = [c for c in self.cards if new in c["title"]]
-        path, patch = self.wait_for(lambda: [p for p in self.patches if p[0] == "/api/board/T-%d" % (self.cards.index(card[0]) + 1)], "the close")[0]
+        self.assertEqual(card[0]["type"], "decision")
+        path, patch = self.wait_for(lambda: [p for p in self.patches if p[0] == "/api/board/T-%d" % (self.cards.index(card[0]) + 1)
+                                             and p[1].get("status")], "the close")[0]
         self.assertEqual(patch["status"], "done")
+        record = [p for p in self.patches if p[0] == path and "desc_append" in p[1]]
+        self.assertIn("allowed %s for %s" % (new, MATE), record[0][1]["desc_append"], "who decided what, on the card")
         self.assertTrue(patch["evidence"].startswith("none: "))
         self.assertEqual(self.admin_post(HOME, cookie, action="allow_request", ip=new, user=MATE)[0], 400, "answered once")
 
