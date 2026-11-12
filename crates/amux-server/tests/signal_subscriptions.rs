@@ -79,12 +79,14 @@ async fn get(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, v)
 }
 
+/// A PATCH from the owner (no worker header). Every caller here edits a
+/// subscription the owner made; a worker may edit only its own
+/// (`api::signals::subscription_edit_tests`).
 async fn patch_json(app: &axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("PATCH")
         .uri(uri)
         .header(header::CONTENT_TYPE, "application/json")
-        .header("X-Amux-Session", "test-worker")
         .body(Body::from(body.to_string()))
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
