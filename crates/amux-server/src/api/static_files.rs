@@ -389,6 +389,7 @@ pub(crate) mod app_ports;
 pub(crate) mod app_relay;
 pub(crate) mod apps_origin;
 pub(crate) mod public_links;
+pub(crate) mod public_origin;
 pub(crate) mod tailnet_auth;
 
 async fn serve_shell(

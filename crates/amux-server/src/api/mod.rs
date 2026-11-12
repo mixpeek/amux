@@ -156,6 +156,7 @@ pub mod simple;
 pub mod skill_examples;
 pub mod skills;
 pub mod signals;
+pub mod event_subs;
 pub mod standing_approvals;
 pub mod skin;
 pub mod speedtest;
@@ -420,6 +421,18 @@ pub fn router_with_connector_transport(
         .merge(habits::routes())
         .merge(observability::routes())
         .merge(scoreboard::routes())
+        // Writes that used to sit in the public debug routers below, where a LAN
+        // or tailnet peer reached them with no credential: the nudges switch sets
+        // CC_STANDING_ORDERS at any scope, and run ticks any system job.
+        .route(
+            "/api/board/nudges",
+            axum::routing::get(crate::runtime_jobs::board_drive::get_nudges)
+                .patch(crate::runtime_jobs::board_drive::patch_nudges),
+        )
+        .route(
+            "/api/system-jobs/{id}/run",
+            axum::routing::post(crate::runtime_jobs::registry::run_system_job),
+        )
         .merge(connectors::routes_with(connector_ctx.clone()))
         .nest("/api/telegram", telegram::routes_with(http))
         .merge(grants::routes())
@@ -1691,5 +1704,50 @@ mod ui_stuck_hidden_tests {
             "after_reset": 0, "waited_ms": 5000, "hidden": 0})));
         assert!(super::counts_as_stuck(&json!({"verdict": "message_queue_stalled_sent_direct", "waited_ms": 3000})));
         assert!(super::counts_as_stuck(&json!({"verdict": "outbox_flight_stalled", "hidden": 0})));
+    }
+}
+
+#[cfg(test)]
+mod public_write_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    /// The routers merged beside the public debug reads carried two writes: the
+    /// nudges switch, which sets CC_STANDING_ORDERS at any scope, and the
+    /// on-demand system-job tick. Both answered a LAN or tailnet peer with no
+    /// credential. Pinned through the real router, with bodies the handlers
+    /// refuse before writing anything, so the old code answers 400/404 here
+    /// and never touches the amux home.
+    #[tokio::test]
+    async fn public_debug_routers_carry_no_unauthenticated_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::db::Store::open(&dir.path().join("w.db")).unwrap();
+        let app = crate::api::router(super::AppState {
+            store: Arc::new(store),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: Some("test-bearer".into()),
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
+        let send = |method: &str, uri: &str, body: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        for (method, uri, body) in [
+            ("PATCH", "/api/board/nudges", r#"{"level":"worker","name":"","enabled":false}"#),
+            ("POST", "/api/system-jobs/no-such-job/run", "{}"),
+        ] {
+            let st = app.clone().oneshot(send(method, uri, body)).await.unwrap().status();
+            assert_eq!(st, StatusCode::UNAUTHORIZED, "{method} {uri} must need the bearer");
+        }
+        // The reads beside them stay public, as their comments promise.
+        let st = app.clone().oneshot(send("GET", "/api/system-jobs", "")).await.unwrap().status();
+        assert_ne!(st, StatusCode::UNAUTHORIZED, "GET /api/system-jobs stays public");
     }
 }

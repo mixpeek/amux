@@ -766,15 +766,27 @@ jobs:
         # azure.archive.ubuntu.com (exit 100) while security.ubuntu.com
         # answered. Retry, then fall back to archive.ubuntu.com and say so.
         run: |
-          pkgs="python3 tmux openssl lsof procps rsync"
+          # unzip: on Linux the file viewer lists a .zip with unzip or bsdtar
+          # (api/file_viewer/preview.rs), and this image has neither, so
+          # file-viewer-binary-previews failed on every run from 11-08 (AMUX-6795).
+          pkgs="python3 tmux openssl lsof procps rsync unzip"
           apt_install() {
             apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
               apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends $pkgs
           }
+          # 2026-11-11 from about 14:55Z: every *.ubuntu.com name stopped
+          # resolving (archive.ubuntu.com answered only its trafficmanager
+          # CNAME, security.ubuntu.com nothing), so all 16 shards exited 100
+          # here. Last resort: kernel.org's Ubuntu mirror, a different
+          # operator and DNS zone, for both the archive and security pockets.
           if ! apt_install; then
             echo "::warning title=apt mirror::azure.archive.ubuntu.com unreachable; retrying via archive.ubuntu.com"
             sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-            apt_install
+            if ! apt_install; then
+              echo "::warning title=apt mirror::ubuntu.com unreachable; retrying via mirrors.edge.kernel.org"
+              sed -i -E 's#https?://(archive|security)\.ubuntu\.com/ubuntu#https://mirrors.edge.kernel.org/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+              apt_install
+            fi
           fi
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           test "$(git rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
