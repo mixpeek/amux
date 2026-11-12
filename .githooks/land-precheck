@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# amux's land precheck: `<this> <base> <tip>`, run by `amux land` before the
+# land gate. It holds the checks that take seconds and refuse a push or a CI
+# shard, so a range they refuse comes back before the gate spends minutes on
+# a build and e2e. Measured 2026-11-12 on PR #448: the gate passed (rust 165 s,
+# e2e 66 s), then the slop ratchet refused at push in 2 s, and CI's shard 7
+# had already refused the teardown ratchet.
+#
+# Each check runs from the base's copy, so a change cannot loosen the check it
+# is judged by, against the tip's committed bytes, not the working tree.
+set -u
+base="${1:?base}" tip="${2:?tip}"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-precheck.XXXXXX")"
+trap 'rm -rf -- "$tmp"' EXIT
+fail=0
+
+# 1. The slop ratchet (the pre-push hook refuses on it).
+if git show "$base:scripts/check_slop_ratchet.py" > "$tmp/check_slop_ratchet.py" 2>/dev/null; then
+  if ! python3 "$tmp/check_slop_ratchet.py" --base "$base" --head "$tip"; then
+    echo "land-precheck: FAIL slop ratchet (scripts/check_slop_ratchet.py); add a Slop-Raise: <reason> trailer only when the raise is deliberate"
+    fail=1
+  fi
+else
+  echo "land-precheck: slop ratchet UNMEASURED (no scripts/check_slop_ratchet.py at $base)"
+fi
+
+# 2. The e2e teardown ratchet (CI's checks shard), only when e2e/ changes.
+if git diff --name-only "$base" "$tip" -- e2e | grep -q . \
+   && git cat-file -e "$base:tests/e2e-teardown-ratchet.test.mjs" 2>/dev/null; then
+  mkdir -p "$tmp/tree/tests"
+  git archive "$tip" e2e | tar -x -C "$tmp/tree"
+  git show "$base:tests/e2e-teardown-ratchet.test.mjs" > "$tmp/tree/tests/e2e-teardown-ratchet.test.mjs"
+  if ! node --test "$tmp/tree/tests/e2e-teardown-ratchet.test.mjs" > "$tmp/teardown.out" 2>&1; then
+    grep -aE 'unguarded|baseline|\.ts:[0-9]' "$tmp/teardown.out" | head -12
+    echo "land-precheck: FAIL e2e teardown ratchet (tests/e2e-teardown-ratchet.test.mjs); route the cleanup through e2e/teardown.ts's cleanup()"
+    fail=1
+  fi
+fi
+
+[ "$fail" = 0 ] && echo "land-precheck: ratchets passed"
+exit "$fail"

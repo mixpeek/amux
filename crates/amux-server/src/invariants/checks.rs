@@ -1358,6 +1358,8 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("signal_fires", "fired_at", false),
     ("signal_subscriptions", "created_at", false),
     ("signal_subscriptions", "last_fired_at", false),
+    // 0157: runtime_jobs/event_dispatch.rs writes epoch seconds.
+    ("event_dispatch_cursor", "updated_at", false),
     // SECONDS: DEFAULT (unixepoch('subsec')) in migration 0061.
     ("board_change_log", "changed_at", false),
     ("chatgpt_oauth_requests", "decided_at", false), // chatgpt_app.rs, REAL epoch seconds
