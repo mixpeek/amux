@@ -6939,7 +6939,7 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
 ${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
-  amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
+  amux publish [--internal|--origin] PORT [TITLE]   An app: public (--origin: on its own host), or inside amux only
   amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
 ${BOLD}Boundaries and resources:${RESET}
@@ -7232,7 +7232,7 @@ cmd_publish() {
   # app for anyone with the link, or a file or folder for anyone with the link
   # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
-  local kind=app target title
+  local kind=app target title origin=0
   case "${1:-}" in
     ""|-h|--help|help)
       cat <<EOF
@@ -7240,6 +7240,10 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
 
   amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
+  amux publish --origin PORT [TITLE]           The same, at the root of its own host
+                                               (https://<id>.<AMUX_PUBLIC_APPS_DOMAIN>/), with its
+                                               own cookies: for an app with a login or session
+                                               that breaks under /pub/<id>/
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
 
@@ -7290,6 +7294,7 @@ for l in links:
       return 0
       ;;
     --internal) kind=internal; shift ;;
+    --origin) origin=1; shift ;;
     --file) kind="file"; shift ;;
   esac
   local is_path=0
@@ -7306,13 +7311,15 @@ for l in links:
   local body
   body=$(python3 -c '
 import json, sys
-kind, target, title, is_path = sys.argv[1:5]
+kind, target, title, is_path, origin = sys.argv[1:6]
 d = {"kind": kind, "title": title}
+if origin == "1":
+    d["origin"] = True
 if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title" "$is_path")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin")
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$body" "$AMUX_API/api/page-links" | python3 -c '
 import json, sys
