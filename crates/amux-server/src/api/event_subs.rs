@@ -305,7 +305,22 @@ pub(crate) fn catalog(conn: &rusqlite::Connection, days: i64) -> rusqlite::Resul
     }))
 }
 
-fn entry(t: &str, n: i64, last: i64, fields: std::collections::BTreeSet<String>, example: Value) -> Value {
+/// The fields of a type amux itself emits, known before the first one fires.
+/// A filter is checked against a type's fields, and a type seen 0 times has
+/// none observed, so without this a subscription to it compiled and was then
+/// refused ("the filter reads fields email.received does not have").
+pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[(
+    "email.received",
+    &["account", "from", "from_address", "from_domain", "to", "cc", "subject", "snippet", "thread_id", "message_id",
+        "gmail_id", "labels", "unread", "bulk", "date"],
+)];
+
+fn entry(t: &str, n: i64, last: i64, mut fields: std::collections::BTreeSet<String>, example: Value) -> Value {
+    for (dt, df) in DECLARED_FIELDS {
+        if *dt == t {
+            fields.extend(df.iter().map(|f| f.to_string()));
+        }
+    }
     let mut fields: Vec<String> = fields.into_iter().collect();
     for base in ["type", "session", "source"] {
         if !fields.iter().any(|f| f == base) {

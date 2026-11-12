@@ -187,4 +187,18 @@ mod tests {
         assert_eq!(d["bulk"], false);
         assert_eq!(sender_parts("bob@x.io"), ("bob@x.io".into(), "x.io".into()));
     }
+
+    #[test]
+    fn the_catalog_declares_exactly_the_fields_the_event_carries() {
+        let d = event_data("a@b.c", &json!({}));
+        let mut carried: Vec<&str> = d.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut declared: Vec<&str> = crate::api::event_subs::DECLARED_FIELDS
+            .iter()
+            .find(|(t, _)| *t == "email.received")
+            .map(|(_, f)| f.to_vec())
+            .unwrap();
+        carried.sort();
+        declared.sort();
+        assert_eq!(carried, declared, "a filter on a field the event lacks never matches");
+    }
 }
