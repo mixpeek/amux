@@ -1009,7 +1009,13 @@ fi
   [ "$(git -C "$WORK" rev-parse HEAD)" = "$BUILD_SHA" ] || { echo "== build dir is not at $BUILD_SHA; refusing"; exit 1; }
   # The deploy profile's output. The remote-build path produces a release
   # binary at the release path, so it sets BUILT_BIN to that below.
-  BUILT_BIN="$HOME/.amux/rust-build-target/deploy/amux-server"
+  # The deploy build's own target directory, shared with rust-prebuild.sh,
+  # which already honoured AMUX_DEPLOY_TARGET_DIR while this hardcoded the
+  # fleet's directory: cargo locks a whole target directory, so a lane's
+  # `cargo test` there held a deploy compile (423 s against a usual 130 s,
+  # 2026-11-12). Default unchanged.
+  DEPLOY_TARGET="${AMUX_DEPLOY_TARGET_DIR:-$HOME/.amux/rust-build-target}"
+  BUILT_BIN="$DEPLOY_TARGET/deploy/amux-server"
   # CAPTURE THE WHOLE BUILD, THEN DECIDE WHAT TO KEEP (AMUX-2927).
   #
   # This was `cargo build ... 2>&1 | tail -3`, and on a FAILURE cargo's last
@@ -1082,9 +1088,9 @@ fi
   BUILD_OK=0
   if [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
     if "$REPO/scripts/rust-remote-build.sh" "$WORK" \
-        "$HOME/.amux/rust-build-target/release/amux-server" > "$BUILD_OUT" 2>&1; then
+        "$DEPLOY_TARGET/release/amux-server" > "$BUILD_OUT" 2>&1; then
       BUILD_OK=1
-      BUILT_BIN="$HOME/.amux/rust-build-target/release/amux-server"
+      BUILT_BIN="$DEPLOY_TARGET/release/amux-server"
     else
       { echo "== remote build on '$AMUX_REMOTE_BUILD_HOST' failed, falling back to local:"; \
         cat "$BUILD_OUT"; } > "${BUILD_OUT}.remote" 2>&1
@@ -1093,12 +1099,12 @@ fi
       # this script's — this unit already gets one via systemd (defense in
       # depth for the case where rust-auto-build.sh is invoked directly
       # from an interactive pane instead of via the timer).
-      if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
+      if (cd "$WORK" && CARGO_TARGET_DIR="$DEPLOY_TARGET" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
         BUILD_OK=1
       fi
     fi
   else
-    if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) > "$BUILD_OUT" 2>&1; then
+    if (cd "$WORK" && CARGO_TARGET_DIR="$DEPLOY_TARGET" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) > "$BUILD_OUT" 2>&1; then
       BUILD_OK=1
     fi
   fi
@@ -1111,11 +1117,11 @@ fi
   # holds the target) and build once more; dependency caches stay.
   if [ "$BUILD_OK" = 0 ] && grep -aqE 'symbol\(s\) not found|Undefined symbols for architecture|undefined reference to' "$BUILD_OUT"; then
     echo "== WARN deploy link failed on unresolved symbols; clearing the amux_server incremental trees and retrying once verdict=deploy_incremental_link_retry"
-    for _inc in "$HOME/.amux/rust-build-target/deploy/incremental"/amux_server-*; do
+    for _inc in "$DEPLOY_TARGET/deploy/incremental"/amux_server-*; do
       [ -d "$_inc" ] || continue
-      python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$HOME/.amux/rust-build-target" --path "$_inc" 2>&1 | sed 's/^/== /' || true
+      python3 "$REPO/scripts/cargo-target-guard.py" clear --target "$DEPLOY_TARGET" --path "$_inc" 2>&1 | sed 's/^/== /' || true
     done
-    if (cd "$WORK" && CARGO_TARGET_DIR="$HOME/.amux/rust-build-target" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
+    if (cd "$WORK" && CARGO_TARGET_DIR="$DEPLOY_TARGET" CARGO_INCREMENTAL=1 CARGO_BUILD_JOBS="$DEPLOY_JOBS" nice -n "$DEPLOY_NICE" "$REPO/scripts/safe-cargo.sh" build --profile deploy -p amux-server) >> "$BUILD_OUT" 2>&1; then
       BUILD_OK=1
     fi
     echo "== deploy_incremental_link_retry ok=$BUILD_OK"
@@ -1130,6 +1136,11 @@ fi
   kill "$HB_PID" 2>/dev/null || true; wait "$HB_PID" 2>/dev/null || true; HB_PID=
   DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_T0 ))
   echo "== deploy build elapsed_s=$DEPLOY_ELAPSED ok=$BUILD_OK jobs=$DEPLOY_JOBS"
+  # Cargo says when another build holds the target directory; that wait is
+  # part of elapsed_s, and BUILD_OUT is deleted, so name it here.
+  if grep -q "Blocking waiting for file lock" "$BUILD_OUT" 2>/dev/null; then
+    echo "== WARN deploy build waited for another cargo on $DEPLOY_TARGET (set AMUX_DEPLOY_TARGET_DIR to give deploys their own) verdict=deploy_build_lock_wait"
+  fi
   # A slow build is the regression this block exists to prevent, and nothing
   # else would say so: the deploy still lands, just minutes late.
   if [ "$BUILD_OK" = 1 ] && [ "$DEPLOY_ELAPSED" -gt "${AMUX_DEPLOY_SLOW_S:-180}" ]; then
@@ -1140,7 +1151,7 @@ fi
   # trees, 9 GB of them dead). Drop the trees of crates this build rewrote.
   if [ "$BUILD_OK" = 1 ]; then
     bash "$REPO/scripts/prune-superseded-incremental.sh" \
-      "$HOME/.amux/rust-build-target/deploy/incremental" "$DEPLOY_T0" 2>&1 | sed 's/^/== /' || true
+      "$DEPLOY_TARGET/deploy/incremental" "$DEPLOY_T0" 2>&1 | sed 's/^/== /' || true
   fi
   if [ "$BUILD_OK" = 1 ]; then
     tail -3 "$BUILD_OUT"
