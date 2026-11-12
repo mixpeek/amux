@@ -5070,6 +5070,7 @@
   .worker-config-note { color:var(--dim); font-size:var(--fs-3xs); line-height:1.35; overflow-wrap:anywhere; }
   .worker-config-actions { display:flex; align-items:center; gap:var(--space-1); flex:0 0 auto; }
   .worker-config-grid-board { margin-top:0; }
+  .worker-config-btn { font-size:var(--fs-2xs); min-height:32px; padding:var(--space-1) var(--space-2); }
   @media (min-width: 980px) {
     #peek-scope-panel .worker-config-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     #peek-scope-panel .worker-config-grid-board { grid-template-columns:minmax(0,1fr); }
@@ -5077,6 +5078,7 @@
   @media (max-width: 560px) {
     .worker-config-row { align-items:flex-start; flex-direction:column; }
     .worker-config-actions { width:100%; justify-content:flex-end; }
+    .worker-config-btn { min-height:44px; }
   }
   @media (max-width: 600px) {
     .scope-tile { min-width:118px; padding:var(--space-2) var(--space-2-5); }
@@ -8295,8 +8297,6 @@ select.input { height:var(--control-height); }
 body:not(.light) .vault-chip-global { color: color-mix(in srgb, var(--accent) 75%, var(--text)); }
 body:not(.light) .vault-chip-group { color: color-mix(in srgb, var(--purple) 65%, var(--on-solid)); }
 body:not(.light) .vault-chip-worker { color: color-mix(in srgb, var(--green) 61%, var(--text)); }
-.vault-chip-apikey { color: color-mix(in srgb, var(--yellow) 84%, var(--shade)); background: color-mix(in srgb, color-mix(in srgb, var(--yellow) 84%, var(--shade)) 14%, transparent); margin-left: var(--space-1-5); }
-body:not(.light) .vault-chip-apikey { color: color-mix(in srgb, var(--yellow) 64%, var(--on-solid)); }
 /* Payment method limits (vault_spend.rs): three optional windows side by side,
    stacked on a phone. */
 .vault-limits { border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-2) var(--space-3) var(--space-3); margin: var(--space-2) 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); min-width: 0; }
@@ -10545,6 +10545,16 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-empty-icon { font-size:var(--fs-5xl); }
 [data-search].pages-hidden { display:none !important; }
 .pub-app-frame { width:100%; height:100%; border:0; background:var(--on-solid); border-radius:var(--radius-lg); color-scheme:light; }
+/* A page on this amux opened from a link inside the app (app.js _ownPageOverlay): over the
+   dashboard, with a close bar, because an app window has no browser Back. */
+.own-page-overlay { position:fixed; top:max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)); left:0; right:0; bottom:0;
+  z-index:250; display:flex; flex-direction:column; background:var(--bg);
+  padding-bottom:env(safe-area-inset-bottom, 0px); box-sizing:border-box;
+  zoom: calc(1 / var(--root-zoom, 1)); }
+.own-page-bar { display:flex; align-items:center; gap:var(--space-2); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); }
+.own-page-back { min-height:44px; min-width:44px; font-weight:600; flex-shrink:0; }
+.own-page-url { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); font-size:var(--fs-sm); }
+.own-page-frame { flex:1; width:100%; border:0; background:var(--on-solid); color-scheme:light; }
 .pub-row { cursor:default; }
 .pub-url { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pub-note { padding:var(--space-2-5) var(--space-3-5); grid-column:1 / -1; }
@@ -11096,3 +11106,30 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .file-info-table { border-collapse: collapse; font-size: var(--fs-md); }
 .file-info-table th { text-align: left; color: var(--dim); font-weight: 500; padding: var(--space-1) var(--space-3) var(--space-1) 0; vertical-align: top; }
 .file-info-table td { padding: var(--space-1) 0; word-break: break-all; }
+
+/* Event subscriptions in the Scheduler (app.js _evRender). */
+.sx-events:empty { display: none; }
+.sx-ev-empty { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); margin-top: var(--space-2); border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--dim); font-size: var(--fs-sm); }
+.sx-ev-empty-text { min-width: 0; }
+.sx-ev-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border); }
+.sx-ev-row.sx-ev-off .sx-ev-title { color: var(--dim); }
+.sx-ev-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-0-5); background: none; border: 0; padding: 0; text-align: left; color: var(--text); cursor: pointer; font: inherit; }
+.sx-ev-title { font-weight: 600; overflow-wrap: anywhere; }
+.sx-ev-sub, .sx-ev-when { color: var(--dim); font-size: var(--fs-xs); }
+.sx-ev-toggle, .sx-ev-new { flex: none; min-height: 32px; font-size: var(--fs-xs); }
+.sx-ev-choice { display: flex; flex-direction: column; gap: var(--space-2); }
+.sx-ev-choice-btn { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-0-5); text-align: left; padding: var(--space-3); min-height: 56px; }
+.sx-ev-choice-btn span { color: var(--dim); font-size: var(--fs-xs); font-weight: 400; }
+.sx-ev-label { display: block; margin: var(--space-3) 0 var(--space-1); font-weight: 600; font-size: var(--fs-sm); }
+.sx-ev-radio { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; font-size: var(--fs-sm); flex-wrap: wrap; }
+.sx-ev-radio select { max-width: 60%; }
+.sx-ev-input { width: 100%; }
+.sx-ev-browse { display: inline-block; margin-top: var(--space-2); font-size: var(--fs-sm); }
+.sx-ev-preview { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--fs-sm); text-align: left; }
+.sx-ev-preview code { overflow-wrap: anywhere; }
+.sx-ev-examples { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); overflow-wrap: anywhere; }
+.sx-ev-catalog { max-height: 50vh; overflow-y: auto; }
+.sx-ev-actions { display: flex; gap: var(--space-2); }
+@media (max-width: 600px) {
+  .sx-ev-toggle, .sx-ev-new, .sx-ev-actions .btn { min-height: 44px; min-width: 44px; }
+}

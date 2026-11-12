@@ -4012,11 +4012,11 @@ pub fn list_body_known(row: &IssueRow, slim: bool, stale: bool, isolated: Option
 /// for 30 minutes. `working` is the derived active-session set — the SAME
 /// derivation the session list serves, so the two views cannot disagree.
 pub fn is_stale(row: &IssueRow, now: i64, working: &std::collections::BTreeSet<String>) -> bool {
-    stale_candidate(row, now)
-        && row
-            .session
-            .as_deref()
-            .is_some_and(|sess| !working.contains(sess))
+    stale_candidate(row, now) && owner_not_working(row.session.as_deref(), working)
+}
+
+fn owner_not_working(session: Option<&str>, working: &std::collections::BTreeSet<String>) -> bool {
+    session.is_some_and(|sess| !working.contains(sess))
 }
 
 /// Everything `is_stale` asks before it reads the active-session set: in
@@ -4024,10 +4024,51 @@ pub fn is_stale(row: &IssueRow, now: i64, working: &std::collections::BTreeSet<S
 /// list uses it to decide whether the set is worth deriving at all (AMUX-5374),
 /// and a second spelling would let the two disagree about which rows can be stale.
 fn stale_candidate(row: &IssueRow, now: i64) -> bool {
-    matches!(row.status.as_str(), "doing" | "review")
-        && row.session.as_deref().is_some_and(|s| !s.is_empty())
-        && row.updated != 0
-        && now - row.updated >= 1800
+    stale_candidate_parts(&row.status, row.session.as_deref(), row.updated, now)
+}
+
+/// [`stale_candidate`] over the three columns it reads, so the board ETag can
+/// ask it without hydrating rows.
+fn stale_candidate_parts(status: &str, session: Option<&str>, updated: i64, now: i64) -> bool {
+    matches!(status, "doing" | "review")
+        && session.is_some_and(|s| !s.is_empty())
+        && updated != 0
+        && now - updated >= 1800
+}
+
+/// The board ETag's stale component. The ETag is the store rev, but `stale`
+/// moves without a write: a card crosses the 30-minute line on the clock, or
+/// its owner stops working. With the rev alone, a poller holding the ETag from
+/// before got 304s and never saw the flag. This hashes the ids of the cards
+/// that are stale right now, board-wide (a superset of any filtered page, so
+/// it can only cost a 304, never serve a wrong one). Empty when nothing is
+/// stale, which keeps the plain `board-{rev}` ETag and its 304s for the
+/// common case. Reads only in-progress rows (idx_issues_status) and the
+/// cached active-session set, and that only when some row could be stale.
+fn stale_etag_part(conn: &rusqlite::Connection, now: i64) -> anyhow::Result<String> {
+    use sha2::Digest as _;
+    let candidates: Vec<bs::StaleProbeRow> = bs::in_progress_touch_rows(conn)?
+        .into_iter()
+        .filter(|r| stale_candidate_parts(&r.status, r.session.as_deref(), r.updated, now))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(String::new());
+    }
+    let working = crate::api::sessions_legacy::active_python_sessions_recent(conn);
+    let mut h = sha2::Sha256::new();
+    let mut any = false;
+    for r in &candidates {
+        if owner_not_working(r.session.as_deref(), &working) {
+            h.update(r.id.as_bytes());
+            h.update([0u8]);
+            any = true;
+        }
+    }
+    Ok(if any {
+        format!("-s{}", &hex::encode(h.finalize())[..12])
+    } else {
+        String::new()
+    })
 }
 
 /// The nightly perf gate's budget for a default board read (scripts/perf-baseline.sh).
@@ -4624,8 +4665,21 @@ pub async fn list_board(
             format!("-{}", &hex::encode(digest)[..12])
         })
         .unwrap_or_default();
-    let etag_val = format!("\"board-{}{scope_etag}\"", rev);
-    if let Some(inm) = headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+    // `stale` is time-based, so the rev alone cannot validate it. If the
+    // fingerprint cannot be read, skip the 304 and let the full read answer.
+    let stale_etag = state
+        .store
+        .read_async(|conn| stale_etag_part(conn, now_secs()))
+        .await;
+    let etag_val = format!(
+        "\"board-{}{scope_etag}{}\"",
+        rev,
+        stale_etag.as_deref().unwrap_or("")
+    );
+    if let (Ok(_), Some(inm)) = (
+        &stale_etag,
+        headers.get("if-none-match").and_then(|v| v.to_str().ok()),
+    ) {
         if inm == etag_val || inm == format!("W/{etag_val}") {
             let mut h = HeaderMap::new();
             if let Ok(v) = etag_val.parse() {

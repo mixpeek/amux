@@ -3,94 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agents That Keep Going | amux</title>
-<meta name="description" content="amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, and on macOS every worker comes back in its own conversation after a reboot.">
-  <link rel="canonical" href="https://amux.io/demos/tweet-4-self-healing/">
-<meta property="og:title" content="Agents That Keep Going | amux">
-<meta property="og:description" content="amux keeps agents going through usage limits and restarts: delivery is held and resumes at the provider&#x27;s reset, and on macOS every worker comes back in its own conversation after a reboot.">
-<meta property="og:image" content="https://amux.io/og-image.png">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://amux.io/og-image.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/nav.css?v=20261108">
-  <script src="/site.js?v=20261108"></script>
+<meta name="robots" content="noindex">
+<title>Agents that keep going: moved | amux</title>
+<link rel="canonical" href="https://amux.io/demos/self-healing-watchdog/">
+<meta http-equiv="refresh" content="0; url=/demos/self-healing-watchdog/">
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header class="site-header">
-    <a class="logo" href="/">amux</a>
-    <nav aria-label="Main">
-      <details class="nav-drop" data-cta-loc="nav-solutions">
-        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
-        <div class="nav-drop-menu">
-          <div class="nd-head">Solutions by industry</div>
-          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
-          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
-          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
-          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
-          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
-          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
-          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
-        </div>
-      </details>
-      <a href="/demos/" class="hide-mobile">demos</a>
-      <a href="/docs/" class="hide-mobile">docs</a>
-      <a href="/pricing/" class="hide-mobile">pricing</a>
-      <div class="theme-pick">
-        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
-        <div class="theme-menu" role="menu" hidden>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
-          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
-        </div>
-      </div>
-      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
-      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
-    </nav>
-  </header>
 <div class="wrap">
-  <div class="tweet-badge">🧵 4 of 7</div>
-  <h1>Agents That Keep Going</h1>
-  <p class="tagline">Your agents need you less than you think.</p>
-  <p class="body-text">amux keeps agents going through usage limits and restarts. Hit a usage limit? Delivery is held and the agent resumes at the provider's reset. Mac rebooted? Every worker comes back in its own conversation. Work stalled? You get an alert.
-
-The phone is for when you <em>want</em> to check in. Restarting a crashed agent process is not built into the amux server today. On macOS, an optional script, <code>scripts/tmux-watchdog.sh</code>, restarts crashed Claude Code workers; it runs as a separate launchd job that the installer does not set up. Nothing does this on Linux or for other providers.</p>
-
-  <ul><li>Usage limit → delivery held, agent resumes at the provider's reset (all platforms)</li>
-<li>Server exits → launchd or systemd restarts it</li>
-<li>macOS reboot → a login job brings every non-archived worker back, resumed in its own conversation</li>
-<li>Context fills → Claude Code compacts, at a threshold you can set</li>
-<li>Stalled board work or a stuck orchestrator → surfaced, and owner alerts fire</li></ul>
-  <div class="ctas">
-    <a class="btn btn-green" href="https://github.com/mixpeek/amux">Get amux →</a>
-    <a class="btn btn-gray" href="/demos/">All demos</a>
-    <a class="btn btn-gray" href="/demos/tweet-5-agent-orchestration/">Next: Agent Orchestration →</a>
-  </div>
-  <div class="nav">
-    <a href="/demos/tweet-1-agent-fleet/" >1. Agent Fleet Overview</a><a href="/demos/tweet-2-mobile-command-center/" >2. Mobile Command Center</a><a href="/demos/tweet-3-offline-sync/" >3. Offline-First Sync</a><a href="/demos/tweet-4-self-healing/" style="color:var(--c-green);font-weight:600;">4. Agents That Keep Going</a><a href="/demos/tweet-5-agent-orchestration/" >5. Agents That Coordinate Themselves</a><a href="/demos/tweet-6-power-features/" >6. Everything Else</a><a href="/demos/tweet-7-quick-start/" >7. Up and Running in 60 Seconds</a>
-  </div>
+<h1>Agents that keep going</h1>
+<p class="desc">The amux demos now show one feature each. <a href="/demos/self-healing-watchdog/">Go to Live Status and Restarts demo</a>.</p>
 </div>
-<footer class="site-foot">
-  <div class="site-foot-inner">
-    <div class="site-foot-brand">
-      <a href="/" class="site-foot-logo">amux</a>
-      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
-    </div>
-    <nav class="site-foot-cols" aria-label="Footer">
-      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
-      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
-      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
-      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
-    </nav>
-  </div>
-  <div class="site-foot-bottom">
-    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
-    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
-  </div>
-</footer>
-
-<script>fetch('https://api.github.com/repos/mixpeek/amux').then(function(r){return r.json()}).then(function(d){var el=document.getElementById('gh-stars');if(el&&d.stargazers_count) el.textContent='\u2605 '+d.stargazers_count}).catch(function(){})</script>
 </body>
 </html>

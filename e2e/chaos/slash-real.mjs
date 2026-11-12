@@ -27,7 +27,7 @@ const work = path.join(root, 'work'); fs.mkdirSync(work);
 const tmuxDir = fs.mkdtempSync('/tmp/amux-slash-tmux-');
 const port = await freePort(); const base = `https://localhost:${port}`;
 const env = testServerEnv();
-Object.assign(env, { AMUX_HOME: home, AMUX_RS_PORT: String(port), TMUX_TMPDIR: tmuxDir, AMUX_ISOLATED: '1', AMUX_NO_SELF_ADOPT: '1', AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME: '1' });
+Object.assign(env, { AMUX_HOME: home, AMUX_RS_PORT: String(port), AMUX_RS_BIND: '127.0.0.1', TMUX_TMPDIR: tmuxDir, AMUX_ISOLATED: '1', AMUX_NO_SELF_ADOPT: '1', AMUX_ALLOW_TMUX_SPAWN_FROM_TEST_HOME: '1' });
 const logf = fs.openSync(path.join(root, 'server.log'), 'a');
 const srv = spawn(process.env.AMUX_CHAOS_BINARY, [], { env, stdio: ['ignore', logf, logf], detached: true });
 const req = (m, p, b, t) => request(base, m, p, b, t);

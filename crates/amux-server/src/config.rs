@@ -43,6 +43,25 @@ pub const DEFAULT_PORT: u16 = 8823;
 /// so in a comment, naming this exact line. One env-derived accessor lets each
 /// deployment answer for itself, with no build-time branch (the single-codebase
 /// rule) and nothing to keep in step.
+/// The address to bind, from `AMUX_RS_BIND`, plus the raw value when it did
+/// not parse.
+///
+/// Unset keeps the old behaviour, every IPv4 interface, because the installed
+/// server is reached over the LAN and the tailnet. Test servers set
+/// `127.0.0.1`: the chaos harness used to start throwaway servers on every
+/// interface, which the network watch reported as new listeners and which a
+/// LAN host could reach while the run lasted.
+pub fn bind_address(env: &BTreeMap<String, String>) -> (std::net::IpAddr, Option<String>) {
+    let any = std::net::IpAddr::from([0, 0, 0, 0]);
+    match env.get("AMUX_RS_BIND").map(|v| v.trim()) {
+        None | Some("") => (any, None),
+        Some(v) => match v.parse() {
+            Ok(ip) => (ip, None),
+            Err(_) => (any, Some(v.to_string())),
+        },
+    }
+}
+
 pub fn canonical_port() -> u16 {
     std::env::var("AMUX_RS_PORT")
         .ok()
@@ -55,6 +74,12 @@ pub struct ServerConfig {
     /// `~/.amux` — sessions dir, DB, TLS material, tokens.
     pub amux_home: PathBuf,
     pub port: u16,
+    /// The address the listeners bind, from `AMUX_RS_BIND` (default every
+    /// IPv4 interface, as before). See [`bind_address`].
+    pub bind: std::net::IpAddr,
+    /// The `AMUX_RS_BIND` value that did not parse, when one did not, so boot
+    /// can say it fell back to the default instead of doing so silently.
+    pub bind_rejected: Option<String>,
     /// Path to the SQLite database (shared with the Python server).
     pub db_path: PathBuf,
     /// Everything from server.env plus process env overlays, for
@@ -248,6 +273,7 @@ impl ServerConfig {
             .get("AMUX_RS_PORT")
             .and_then(|p| p.parse().ok())
             .unwrap_or(DEFAULT_PORT);
+        let (bind, bind_rejected) = bind_address(&env);
         let db_path = env
             .get("AMUX_DB")
             .map(PathBuf::from)
@@ -255,6 +281,8 @@ impl ServerConfig {
         ServerConfig {
             amux_home: home,
             port,
+            bind,
+            bind_rejected,
             db_path,
             env,
         }
@@ -443,6 +471,25 @@ pub fn parse_env_file(path: &Path) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bind_defaults_to_every_interface_and_reports_a_bad_value() {
+        let any: std::net::IpAddr = "0.0.0.0".parse().unwrap();
+        assert_eq!(bind_address(&map(&[])), (any, None));
+        assert_eq!(bind_address(&map(&[("AMUX_RS_BIND", " ")])), (any, None));
+        assert_eq!(
+            bind_address(&map(&[("AMUX_RS_BIND", "127.0.0.1")])),
+            ("127.0.0.1".parse().unwrap(), None)
+        );
+        assert_eq!(
+            bind_address(&map(&[("AMUX_RS_BIND", "::1")])),
+            ("::1".parse().unwrap(), None)
+        );
+        assert_eq!(
+            bind_address(&map(&[("AMUX_RS_BIND", "localhost")])),
+            (any, Some("localhost".to_string()))
+        );
+    }
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
