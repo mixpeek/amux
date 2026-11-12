@@ -120,6 +120,9 @@ pub(crate) fn authorize_dispatch(
 }
 
 fn actor(headers: &HeaderMap) -> String {
+    if let Some(app) = super::app_identity::actor(headers) {
+        return app.to_string();
+    }
     headers
         .get("x-amux-session")
         .and_then(|v| v.to_str().ok())
@@ -338,8 +341,20 @@ async fn request_trust(state: &AppState, headers: &HeaderMap) -> Result<TrustLev
         return Ok(TrustLevel::Untrusted);
     }
     let actor_name = actor(headers);
+    // A published app answers to anyone on the web: never Trusted, whatever
+    // a person allowed it to call.
+    if actor_name.starts_with("app:") {
+        return Ok(TrustLevel::Untrusted);
+    }
     if actor_name == "api-anonymous" {
-        return Ok(TrustLevel::Trusted);
+        // No worker header used to mean Trusted on its own. Now only a
+        // credential the server verified is (human_proof.rs); in enforce mode
+        // the unproven rest is Untrusted, which asks before an external or
+        // irreversible action and never expands a capability.
+        return Ok(match super::human_proof::check(headers, "policy_trust") {
+            super::human_proof::Verdict::Refused => TrustLevel::Untrusted,
+            _ => TrustLevel::Trusted,
+        });
     }
     state
         .store

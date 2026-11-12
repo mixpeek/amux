@@ -23,6 +23,11 @@ pub mod land_approvals;
 pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
+pub mod app_identity;
+pub mod connector_scope;
+pub mod email_scope;
+pub mod human_proof;
+pub mod loopback_trust;
 pub mod contract_fresh;
 pub mod prod_change;
 pub mod runner;
@@ -84,6 +89,7 @@ pub mod history_ask;
 pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
+pub mod ledger;
 pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
@@ -482,6 +488,7 @@ pub fn router_with_connector_transport(
         // the structured request log + tracing tail (api/request_log.rs).
         .nest("/api/logs", request_log::routes())
         .merge(interactions::routes())
+        .merge(ledger::routes())
         .nest("/api/settings", settings::routes())
         .nest("/api/push", crate::push::routes())
         // Record tab (AMUX-4624): device recordings synced into a folder and
@@ -645,6 +652,15 @@ pub fn router_with_connector_transport(
             "/api/page-links/{id}/approve",
             axum::routing::post(static_files::public_links::approve),
         )
+        // A published app's own amux access and credential (app_identity.rs).
+        .route(
+            "/api/page-links/{id}/api",
+            axum::routing::post(static_files::public_links::set_api),
+        )
+        .route(
+            "/api/page-links/{id}/app-token",
+            axum::routing::post(static_files::public_links::new_app_token),
+        )
         // A one-time link that opens an app inside amux on the apps origin.
         .route(
             "/api/page-links/{id}/open",
@@ -666,6 +682,10 @@ pub fn router_with_connector_transport(
         // worker's minted token. Inside require_bearer, so it sees only
         // admitted requests.
         .layer(axum::middleware::from_fn(worker_identity::enforce))
+        // The ledger's actor (ledger.rs): resolved just inside auth, so the
+        // owner proof it stamps is visible, and carried out to the interaction
+        // receipt on the response.
+        .layer(axum::middleware::from_fn(ledger::stamp))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

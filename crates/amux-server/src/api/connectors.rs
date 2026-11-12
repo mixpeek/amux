@@ -2783,8 +2783,48 @@ async fn mint_connector_token(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Query(mut q): Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    // WHO IS THIS FOR (governance PR 4): resolved from what the server
+    // verified, never from whether a worker header is present. See
+    // `connector_scope.rs`; every mint below leaves a receipt.
+    let principal = super::connector_scope::resolve(&ctx.home, &headers);
+    let gate = super::connector_scope::gate(&principal);
+    let scopes = q.get("scopes").cloned();
+    if gate == super::connector_scope::Gate::Refuse {
+        let account = q.get("account").cloned();
+        super::connector_scope::record(&state, &id, &principal, &gate, account, scopes, 403).await;
+        return super::connector_scope::refusal(&id, &principal);
+    }
+    let (resp, account) = mint_for(&state, &ctx, &id, principal.lane(), &headers, q).await;
+    super::connector_scope::record(&state, &id, &principal, &gate, account, scopes, resp.status().as_u16()).await;
+    resp
+}
+
+/// The mint itself, for a principal already resolved. `lane` is the worker
+/// whose connector scope limits the bearer, or `None` for a verified human.
+/// Returns the account the mint was pinned to, for the receipt.
+async fn mint_for(
+    state: &AppState,
+    ctx: &Arc<ConnectorsCtx>,
+    id: &str,
+    lane: Option<&str>,
+    headers: &HeaderMap,
+    mut q: std::collections::HashMap<String, String>,
+) -> (Response, Option<String>) {
+    let resp = mint_for_inner(state, ctx, id, lane, headers, &mut q).await;
+    (resp, q.get("account").cloned())
+}
+
+async fn mint_for_inner(
+    state: &AppState,
+    ctx: &Arc<ConnectorsCtx>,
+    id: &str,
+    lane: Option<&str>,
+    headers: &HeaderMap,
+    q: &mut std::collections::HashMap<String, String>,
+) -> Response {
+    let id = id.to_string();
     let declared = def_of(&ctx.home, &id).filter(|d| !d.builtin);
     if provider(&id).is_none() && declared.is_none() {
         return (
@@ -2794,10 +2834,10 @@ async fn mint_connector_token(
             .into_response();
     }
     // ENTITLEMENT (APM-2): a live bearer is the actual secret — mint it only
-    // for a worker the `connectors` scope actually names. No X-Amux-Session
-    // header means the caller is the dashboard/human, not a worker, so the
-    // check does not apply (matches gmail_scope_check's shape in email.rs).
-    if let Some(lane) = super::email::hdr_worker(&headers) {
+    // for a worker the `connectors` scope actually names. `lane` comes from
+    // the resolved principal: a worker (proven or merely named, since the
+    // name only narrows) is held to its scope; a verified human is not.
+    if let Some(lane) = lane {
         let req_account = q
             .get("account")
             .map(|s| s.trim().to_string())
@@ -2806,7 +2846,7 @@ async fn mint_connector_token(
         match connector_entitlement_check(
             conn.as_deref(),
             &ctx.home,
-            &lane,
+            lane,
             &id,
             req_account.as_deref(),
         ) {
@@ -2824,7 +2864,7 @@ async fn mint_connector_token(
         }
     }
     if let Some(d) = declared {
-        return declared_oauth::mint(&ctx, &d, q.get("account").map(String::as_str)).await;
+        return declared_oauth::mint(ctx, &d, q.get("account").map(String::as_str)).await;
     }
     let p = provider(&id).expect("builtin was checked");
     // LoginPassword's mint has nothing in common with the Google-SA-impersonation
@@ -3021,12 +3061,12 @@ async fn mint_connector_token(
             )
                 .into_response();
         };
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
     if let Some(acct) = user_account {
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
-    let Some(subject) = impersonation_subject(&headers, &ctx.home) else {
+    let Some(subject) = impersonation_subject(headers, &ctx.home) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "status": "error", "detail": "no impersonation subject (GOOGLE_SA_SUBJECT unset and no X-Amux-User-Email)"})),
@@ -3827,9 +3867,13 @@ pub fn routes() -> Router<AppState> {
 /// A bearer for builtin connector `id`, resolved exactly as
 /// `POST /api/connectors/{id}/token?account=` resolves it (the account's stored
 /// grant, else the domain-wide service account), for server-side callers that
-/// spend the token and never return it (`api/social.rs`). `headers` carries the
-/// calling worker, so the same entitlement check applies; empty headers are the
-/// server itself. The error is the mint's JSON with any bearer removed.
+/// spend the token and never return it (`api/social.rs`). The principal is
+/// whoever `headers` proves, resolved exactly as for the HTTP route
+/// (`connector_scope::resolve`): the original request's verified owner, member
+/// or worker token, or, for a job running inside the server, the job's
+/// `org::policy_headers("job:<name>")` mark plus the worker it acts for. Empty
+/// headers prove nobody and count as anonymous. The error is the mint's JSON
+/// with any bearer removed.
 /// The requested scopes a stored grant (its JSON text) does not hold. A grant
 /// that names no scopes cannot be judged, so nothing reads as missing.
 fn grant_missing_scopes(grant: &str, requested: &str) -> Vec<String> {
@@ -5009,6 +5053,52 @@ mod tests {
         // Gone now, and an unknown account is a 404, not a fake success.
         let (st, _) = send_json(&app, "DELETE", "/api/connectors/google-gmail/accounts/info%40x.io").await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    /// Governance PR 4: who a mint is for comes from proof, not from whether a
+    /// worker header is present. A headerless call used to be taken for the
+    /// dashboard and handed an unscoped bearer.
+    #[tokio::test]
+    async fn a_mint_is_scoped_by_proof_and_every_mint_leaves_a_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let fam_dir = home.path().join("connectors").join("google");
+        std::fs::create_dir_all(&fam_dir).unwrap();
+        std::fs::write(
+            fam_dir.join(format!("{ACCT}.json")),
+            json!({"token": "PLACEHOLDER_FRESH", "scopes": "https://www.googleapis.com/auth/drive",
+                   "expires_at": now_ts() + 3000.0}).to_string(),
+        )
+        .unwrap();
+        let (app, d) = app_with(MockHttp::new(vec![]), home.path());
+        let _mode = super::super::connector_scope::test_override::set(
+            super::super::connector_scope::Mode::Enforce, true);
+        let path = "/api/connectors/google-drive/token?account=hello%40amux.io";
+
+        let (st, v) = send_json(&app, "POST", path).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "a headerless mint proves nobody: {v}");
+        assert_eq!(v["code"], "connector_token_refused", "{v}");
+        assert!(v.get("access_token").is_none(), "{v}");
+
+        let req = Request::builder().method("POST").uri(path)
+            .header(super::super::human_proof::OWNER_PROOF_HEADER, "1")
+            .body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the verified owner still mints");
+
+        let conn = rusqlite::Connection::open(d.path().join("c.db")).unwrap();
+        let rows: Vec<(String, String, String)> = conn
+            .prepare("SELECT actor,effect,rationale FROM _amux_policy_receipts
+                      WHERE action='connector_token_mint' ORDER BY created_at")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "both mints leave a receipt: {rows:?}");
+        assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), ("anonymous", "deny"), "{rows:?}");
+        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("owner-token", "allow"), "{rows:?}");
+        assert!(rows[1].2.contains("hello@amux.io"), "the receipt names the account: {rows:?}");
+        assert!(!rows.iter().any(|r| r.2.contains("PLACEHOLDER_FRESH")), "a receipt never holds a bearer");
     }
 
     #[tokio::test]
