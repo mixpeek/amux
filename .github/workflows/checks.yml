@@ -107,6 +107,10 @@ jobs:
         run: python3 scripts/test-ci-checks.py
       - name: the shared-checkout guard's own matrix
         run: python3 ./scripts/git-hooks/test_git_shared_guard.py
+      # A public repo: no job a pull request can trigger may run on a self-hosted
+      # runner (docs/design/cicd-two-minutes.md, Z9).
+      - name: no self-hosted job is reachable from a pull request
+        run: python3 scripts/ci-self-hosted-guard.py --self-test && python3 scripts/ci-self-hosted-guard.py
       - name: a land's push keeps its connection alive through a long hook
         run: bash scripts/test-land-ssh-keepalive.sh
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)

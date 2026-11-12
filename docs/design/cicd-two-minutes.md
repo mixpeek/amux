@@ -108,3 +108,100 @@ Also landed:
 - More or larger runners (money): the only way the full suite finishes in two minutes.
 - Pull request CI policy: run PR CI when a PR is ready or labelled, or merge the stacked PRs, so
   PRs stop starving main's verdicts.
+
+## The zero-spend plan (Ethan, 2026-11-12: "a plan without increasing any $ spend until cicd e2e is sub 2 min")
+
+### The target, defined
+
+For every push to main, p90 under 120 s from the push to BOTH:
+
+1. **Live**: every amux host this team runs (the Mac, sandbox, mixpeek-dev) serves the commit.
+2. **Verified**: a per-push verdict is in: the build, the Rust tests the diff selects, and the e2e
+   specs the diff selects (scripts/ci-affected.mjs), all green.
+
+Every test still runs: the full sweep runs on main's tip every two hours (rust.yml `schedule`).
+A sweep that goes red names the commits since the last green one. That is the trade for two
+minutes: a regression the selector misses shows up within two hours rather than on its push.
+
+### The resource nobody is using: mixpeek-dev
+
+An n2d-highmem-48 already paid for: 48 vCPU, 377 GB RAM, 887 GB free disk, load about 10.
+Ubuntu 24.04, glibc 2.39, the same as sandbox, so what it builds runs there.
+
+Measured on it (2026-11-12, throwaway containers from a fresh clone, nice 10, 40 CPUs):
+
+| step | seconds |
+|---|---|
+| every workspace test binary, cold | 315 |
+| every workspace test binary after a one-file change | 81 |
+| amux-server lib test binaries after a one-file change | 87 |
+| amux-server's 4655 lib tests, 40 threads | 248 to 305, of which ONE test is 227 to 280 |
+| deploy binary (`--profile deploy`), cold | 469 (stable), 321 to 396 (nightly) |
+| deploy binary, FIRST rebuild after the cold build | 126 to 154 |
+| deploy binary, a later one-file rebuild (warm incremental cache) | **43 to 46** |
+| the same with rustc's parallel front end (nightly `-Z threads=16`) | 46: no gain |
+
+Two findings change the plan:
+
+- **A warm cache is the lever, not more cores.** The first rebuild after a cold build is three
+  times a later one, and 40 cores do not shorten either: one 46k-line crate's front end runs on one
+  thread. A builder that keeps its target directory between pushes rebuilds in about 45 s. The
+  parallel front end gives nothing here, so stable stays.
+- **One test is the whole tail.** `request_log::over_cap_stats_samples_the_window_while_analyze_
+  truncates_and_both_report_it` inserts 260k rows to cross a 200k scan cap; every other lib test
+  finishes inside 20 s on 40 threads. Its time is the inserts (five indexes each, one a JSON
+  expression), not optimisation: compiling dependencies at opt-level 2 did not shorten it.
+
+GitHub's free plan runs 20 jobs at once across the org, shared with about 20 stacked PRs today.
+Moving main's per-push work off that pool is what makes two minutes reachable at no cost.
+
+### Steps
+
+| # | change | expected | how it is verified |
+|---|---|---|---|
+| Z1 | A self-hosted runner on mixpeek-dev, labelled `amux-main`, in a container per job, nice 10, capped at 24 CPUs. Used only by `push` to main and `schedule`; never by `pull_request`, so no fork can reach it. | no queue for main | a push's jobs start within 5 s (job created_at to started_at) |
+| Z2 | Per-push verdict on Z1: a target directory that persists between jobs (never cold), test binaries the diff selects, nextest at 40 threads, the selected e2e specs with Playwright workers in parallel. | test build 45 to 90 s warm, tests about 20 s once Z8 lands, e2e in parallel: under 120 s | push_to_verdict in /api/pull, p90 over 50 pushes |
+| Z3 | checks.yml for a push to main on Z1: 30 shards at once on 48 cores, planned longest 65 s | about 70 s | the checks run's wall time |
+| Z4 | Sandbox stops compiling: Z1 builds the deploy binary from its warm directory (43 to 46 s for a one-file change; same glibc, 2.39) and sandbox installs it. Sandbox cannot build main at all today: since 393951d4a one rustc peaks at 6.8 GB against its 6.5 GB limit, at 1, 2 or 3 jobs. | sandbox live about 60-90 s after the push, from about an hour | push_to_live on sandbox |
+| Z5 | The Mac: the gate runs locally (done), shell runs no longer hold deploys (done, 393951d4a), the compile starts at pickup (prebuild, done), the deploy compile gets its own target directory once every lane's tests unset AMUX_DEPLOY_TARGET_DIR (3283eeb11) and the builder refuses a binary under 1 MB, and runs at nice 0 if the benchmark shows it helps. | p90 compile from 284 s to under 100 s | push_to_live on the Mac (/api/pull, d461fb10a) |
+| Z6 | PRs stay on GitHub's free runners. They no longer delay main, so their policy stops being urgent. | no main run waits for a PR | queue time of main's jobs |
+| Z8 | The 227 s test crosses its cap with a test-only cap: the scan cap becomes a parameter the test sets to a few thousand, so the same edges are pinned at 1% of the rows. | lib tests from about 250 s to about 20 s | nextest's slowest test |
+| Z9 | A check in checks.yml (scripts/ci-self-hosted-guard.py) fails when any job that can run on `amux-main` is reachable from `pull_request`, `pull_request_target` or `workflow_run`, so the runner's safety is enforced, not remembered. | none on time | a mutation that adds `pull_request` to such a workflow turns checks red |
+| Z7 | Rollback stays as it is: an unhealthy build rolls back on the host (AMUX_ACTIVATION_ROLLBACK); a red verdict files the CI-red card. A revert of someone's commit stays a human call. | | |
+
+### The Mac: the one path the plan does not yet bring under two minutes
+
+A push that changes no Rust is live on the Mac in under a minute today (b8d48aeb5: 49 s). A push
+that changes Rust is pickup (about 20 s) plus the compile, and the compile is the Mac's own:
+nothing else here can build a macOS binary at no cost (a GitHub macOS runner starts cold and takes
+several minutes). Measured over 114 Mac deploys: compile p50 106 s, p90 284 s, minimum 72 s.
+
+What moves it, each measured after it lands rather than assumed:
+
+- **Lock contention.** de0fc8719 compiled for 423 s against a usual 130 s, behind a lane's `cargo
+  test` holding the shared target directory; the builder now logs `deploy_build_lock_wait`. A deploy
+  directory of its own (Z5) removes it once every lane runs tests that unset
+  AMUX_DEPLOY_TARGET_DIR (3283eeb11), and the builder refuses to install a binary under 1 MB.
+- **Load.** The Mac runs at load 25 to 95 on 28 cores and the deploy compile runs at nice 10. One
+  sample at nice 10 under load 94: 129 s for a first rebuild after a copy. The nice 0 comparison was
+  stopped because it would have taken CPU from the fleet at load 94; it is to be run when the Mac is
+  quiet, from the builder's own log (compile time by `nice=` in its settings line).
+- **The crate.** The floor under any load is the single-threaded front end of amux-server (43 to
+  46 s on mixpeek-dev for a one-file change). Splitting the crate would lower it for every host and
+  every test build; it is the largest change in this plan and is left for after Z1 to Z9.
+
+Expected after Z5: p50 about 90 s, p90 about 150 s from the push. **The Mac's Rust path is the
+remaining gap to two minutes at p90**, and this plan says so rather than counting it as done.
+
+### Risks
+
+- **A public repo with a self-hosted runner.** GitHub warns because a fork's pull request could run
+  code on it. Z1 takes only push and schedule events, which only people with write access cause;
+  `pull_request` workflows keep `runs-on: ubuntu-latest`, and Z9 fails checks if that ever changes.
+  The runner is registered to this repository only, runs as its own unprivileged user, starts a
+  fresh container for each job (`--ephemeral` registration, so a job cannot leave anything for the
+  next), and holds no credentials beyond the job's own GITHUB_TOKEN.
+- **mixpeek-dev is Mixpeek's dev box.** The cap (24 of 48 CPUs, nice 10) keeps its workers
+  responsive; the benchmark ran at load 11 to 13 with no effect on them that the box reported.
+- **Selection misses a regression.** The two-hourly sweep is the backstop; the land gate also runs
+  the selected tests before each push.
