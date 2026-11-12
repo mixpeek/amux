@@ -555,6 +555,7 @@ pub async fn local_member_identity(
     req.headers_mut().remove(MEMBER_TEAM_NAME_B64_HEADER);
     req.headers_mut().remove(MEMBER_ADMIN_HEADER);
     req.headers_mut().remove(POLICY_ACTOR_HEADER);
+    req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
     req.headers_mut().remove("x-amux-user-id");
     req.headers_mut().remove("x-amux-user-email");
     let token = match member_cookie(req.headers()).map(str::to_string) {

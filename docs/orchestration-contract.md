@@ -41,6 +41,31 @@ before. Other lanes follow `AMUX_WORKER_IDENTITY`: `report` (default, logs
 403) or `off` (the old opt-in behaviour). `GET /api/contract/counters` shows the
 counts under `worker_identity`; switch to `enforce` once `would_refuse` stays 0.
 
+Locality is no longer a credential either (2026-11-09, `api/loopback_trust.rs`).
+A request from this machine proves itself like any other: the owner bearer, a
+member cookie, a lane's minted token, or, on a host behind a sign-in door with no
+owner token, the front-door owner secret (`~/.amux/front-door-owner`, which the
+door returns to Caddy for the owner and the owner's own CLI reads). What an
+uncredentialed local request costs is `AMUX_LOOPBACK_TRUST`: `report` (default,
+admitted, counted and named by caller, `loopback_would_be_refused`), `enforce`
+(401 `loopback_not_trusted`; `AMUX_RS_NO_LOOPBACK_BYPASS=1` means this) or `off`.
+`GET /api/contract/counters` shows it under `loopback`, with
+`uncredentialed_callers` naming who still relies on locality.
+
+A connector token is minted for whoever the request proves, not for whoever a
+header names or omits (2026-11-09, `api/connector_scope.rs`). A lane's token
+holds the bearer to that worker's connectors scope; the owner, a member or an
+in-process job (its `org::policy_headers("job:<name>")` mark) prove themselves
+as for any other route; a request that proves nobody is anonymous. A worker
+header alone still narrows the bearer to that worker's scope, since a name can
+only restrict. `AMUX_CONNECTOR_TOKEN_SCOPE`: `report` (default, minted, counted,
+`connector_token_would_be_refused`), `enforce` (403 `connector_token_refused`
+with how to prove; a lane not yet minted a token is still served and counted) or
+`off`. Every mint writes a receipt (`GET /api/policy/receipts`, action
+`connector_token_mint`) with actor, on-behalf-of, account, scopes and verdict,
+never the bearer. Counts are under `connector_token` in
+`GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |
