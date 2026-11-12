@@ -71,6 +71,14 @@ print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 # away good builds: 6 rollbacks from 2026-10-30 to 11-02, c71df3ef9 among
 # them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
 # in flight, up to $2 plus the hold, and says so once.
+# Seconds since the push of $1, from the time the activation authority read off
+# its first workflow run (~/.amux/ci-pushed-at), or "unmeasured". push_to_live_s
+# counts from the commit, which is before the land gate ran.
+from_push_s() {
+  local at; at=$(cat "${AMUX_CI_PUSHED_AT_DIR:-$HOME/.amux/ci-pushed-at}/$1" 2>/dev/null)
+  case "$at" in ''|*[!0-9]*) echo unmeasured ;; *) echo $(( $(date +%s) - at )) ;; esac
+}
+
 wait_live_identity() {
   local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs="" released=0
   local grace="${AMUX_ADOPT_POST_HOLD_GRACE_S:-120}"
@@ -461,7 +469,7 @@ PYSTAMP
     printf '%s\n' "$PROV_JSON" > "$PROV_FILE" 2>/dev/null || true
     rm -f "${INSTALL}.identity.json.rollback"
     prune_dashboard_snapshots "$dash_dir"
-    echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) restamped=1 verdict=activation_healthy"
+    echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$sha") restamped=1 verdict=activation_healthy"
     return 0
   fi
   mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"
@@ -1255,7 +1263,7 @@ PYIDENTITY
       case "$limit" in ''|*[!0-9]*) limit=300 ;; esac
       if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
-        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) verdict=activation_healthy"
+        echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$built_sha") verdict=activation_healthy"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.

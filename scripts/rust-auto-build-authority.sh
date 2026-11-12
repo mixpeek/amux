@@ -88,6 +88,7 @@ CI_CACHE="$CI_CACHE/$(printf %s "${AMUX_CI_REQUIRED_WORKFLOWS:-checks}" | tr -c 
 # 2026-10-07 fork stayed live for hours. Verdicts are cached per sha, so a deep
 # walk costs API calls once. A green found deeper than CI_DEEP_WARN is still
 # activated and logged as ci_gate_green_deep: main has been red that long.
+PUSHED_AT="${AMUX_CI_PUSHED_AT_DIR:-$HOME/.amux/ci-pushed-at}"; mkdir -p "$PUSHED_AT" 2>/dev/null || true
 CI_DEPTH="${AMUX_CI_GATE_DEPTH:-300}"
 CI_DEEP_WARN="${AMUX_CI_GATE_DEEP_WARN:-40}"
 # The push workflow runs for one sha, as GitHub's JSON. AMUX_CI_FETCH_CMD
@@ -164,13 +165,63 @@ ci_verdict() {   # green | red | pending | none | unmeasured
       fi ;;
   esac
   local token v
-  v=$(ci_runs_json "$sha" | ci_judge_runs 2>>"$LOG") || v=unmeasured
+  local runs
+  if runs=$(ci_runs_json "$sha"); then
+    v=$(printf '%s' "$runs" | ci_judge_runs 2>>"$LOG") || v=unmeasured
+    # When it was PUSHED: the first workflow run's created_at. The commit time
+    # is before the land gate ran, so push_to_live counted from it read p50
+    # 342 s for deploys that took 35 s from the push.
+    [ -s "$PUSHED_AT/$sha" ] || printf '%s' "$runs" | python3 -c '
+import json,sys,datetime as dt
+r=json.load(sys.stdin).get("workflow_runs") or []
+if r: print(int(min(dt.datetime.fromisoformat(x["created_at"].replace("Z","+00:00")).timestamp() for x in r)))' \
+      > "$PUSHED_AT/.$sha" 2>/dev/null && [ -s "$PUSHED_AT/.$sha" ] && mv -f "$PUSHED_AT/.$sha" "$PUSHED_AT/$sha" \
+      || rm -f "$PUSHED_AT/.$sha"
+  else
+    v=unmeasured
+  fi
   # "none" is only final once the commit is old enough that CI would have started.
   if [ "$v" = green ] || [ "$v" = red ] || { [ "$v" = none ] && \
      [ $(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha") )) -gt 3600 ]; }; then
     mkdir -p "$CI_CACHE" && echo "$v" > "$CI_CACHE/$sha"
   fi
   echo "$v"
+}
+
+# THE GATE WITHOUT THE QUEUE (Ethan, 2026-11-12: "iterate until full amux cicd is
+# less than 2 mins"). gate.yml takes about 20 s to run but waits for one of the
+# repo's 20 concurrent runners behind the ~75 jobs every push starts: 137 s at
+# p90, 1269 s at worst. When the gate is the only required workflow and GitHub
+# has not answered for the tip yet, run gate.yml's two steps here, on the
+# commit, in a scratch worktree. A pass is the gate's verdict; a failure or an
+# error says nothing, and the walk waits for GitHub as before. Once per sha.
+# AMUX_DEPLOY_LOCAL_GATE=0 turns it off.
+local_gate() { # <sha>: prints green when gate.yml's steps pass here
+  local sha="$1" mark d rc t0 parent
+  [ "${AMUX_DEPLOY_LOCAL_GATE:-1}" = 1 ] || return 0
+  [ "${AMUX_CI_REQUIRED_WORKFLOWS:-checks}" = gate ] || return 0
+  mark="$CI_CACHE/$sha.local"
+  if [ -f "$mark" ]; then cat "$mark"; return 0; fi
+  parent=$(git -C "$REPO" rev-parse -q --verify "$sha^1" 2>/dev/null) || return 0
+  d=$(mktemp -d "${TMPDIR:-/tmp}/amux-local-gate.XXXXXX") || return 0
+  t0=$(date +%s)
+  if git -C "$REPO" worktree add --detach -q "$d/w" "$sha" 2>/dev/null \
+     && [ -x "$d/w/scripts/ci-fast-gate.sh" ] && [ -x "$d/w/scripts/ci-secret-scan.sh" ]; then
+    if (cd "$d/w" && timeout "${AMUX_LOCAL_GATE_TIMEOUT_S:-150}" bash -c \
+          'scripts/ci-secret-scan.sh && scripts/ci-fast-gate.sh "$1" "$2"' _ "$parent" "$sha") > "$d/log" 2>&1; then
+      rc=green
+    else
+      rc=failed
+    fi
+    mkdir -p "$CI_CACHE" && echo "$rc" > "$mark"
+    say "LOCAL GATE $sha $rc in $(( $(date +%s) - t0 ))s ($(tail -1 "$d/log" | cut -c1-160)) verdict=local_gate_$rc"
+  else
+    say "LOCAL GATE $sha could not check out the commit; waiting for GitHub verdict=local_gate_unmeasured"
+  fi
+  git -C "$REPO" worktree remove --force "$d/w" >/dev/null 2>&1 || true
+  rm -rf -- "${d:?}"
+  [ "${rc:-}" = green ] && echo green
+  return 0
 }
 
 # A gate that cannot measure cannot vouch for its own replacement either: the
@@ -210,6 +261,9 @@ if [ "${AMUX_DEPLOY_CI_GATE:-1}" != "0" ]; then
   target=""; tip_state=""; passed=0
   for sha in $(git -C "$REPO" rev-list --first-parent -n "$CI_DEPTH" "$tip"); do
     v=$(ci_verdict "$sha")
+    if [ "$sha" = "$tip" ] && { [ "$v" = pending ] || [ "$v" = none ]; }; then
+      [ "$(local_gate "$sha")" = green ] && v=green
+    fi
     [ -n "$tip_state" ] || tip_state="$v"
     if [ "$v" = green ]; then target="$sha"; break; fi
     if [ "$v" = unmeasured ]; then
