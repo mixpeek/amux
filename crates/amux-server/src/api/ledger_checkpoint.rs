@@ -977,7 +977,10 @@ async fn create_route(State(state): State<AppState>, headers: HeaderMap) -> Resp
 
 async fn key_route() -> Response {
     let home = crate::config::amux_home();
-    match public_key(&home, true) {
+    // A read never mints the key: on a Mac that is a Keychain write, which
+    // blocked this handler (tests/route_table.rs probes every route). The
+    // first checkpoint creates it.
+    match public_key(&home, false) {
         Ok(Some(pk)) => Json(json!({
             "algorithm": "ed25519",
             "public_key": pk,
@@ -987,7 +990,12 @@ async fn key_route() -> Response {
             "message_format": MESSAGE_FORMAT,
         }))
         .into_response(),
-        Ok(None) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "no signing key"}))).into_response(),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "no signing key yet; the first checkpoint (POST /api/ledger/checkpoints) creates it",
+                "keystore": keystore(), "measured": true})),
+        )
+            .into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": e}))).into_response(),
     }
 }

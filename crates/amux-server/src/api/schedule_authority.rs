@@ -478,15 +478,6 @@ pub async fn reown(State(state): State<AppState>, headers: HeaderMap, AxPath(id)
 
 // ── Sponsors ───────────────────────────────────────────────────────────────
 
-/// Who answers for `worker`: its row, else the owner.
-pub fn sponsor_of(conn: &Connection, worker: &str) -> String {
-    conn.query_row("SELECT sponsor FROM worker_sponsors WHERE worker=?1", [worker], |r| r.get(0))
-        .optional()
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "owner".into())
-}
-
 /// `PUT /api/workers/{name}/sponsor {"sponsor": "owner" | "member:<email>"}`,
 /// owner only (members cannot reach org administration).
 pub async fn set_sponsor(

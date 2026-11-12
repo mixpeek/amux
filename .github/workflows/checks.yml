@@ -640,6 +640,13 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/test-cli-stop-recorded.sh
+      # The server's stop keeps the pane (a bare shell), so `amux start` must
+      # tell an empty pane from a live worker. Real tmux on a private socket.
+      - name: amux start relaunches a stopped worker whose pane is still open
+        run: |
+          set -uo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update && sudo apt-get install -y tmux; } || exit 1
+          bash scripts/test-cli-start-after-stop.sh
       - name: the commit-intent manifest round-trips
         run: |
           set -uo pipefail
@@ -758,7 +765,7 @@ jobs:
       - name: land precheck verdict and attributed cancel (5/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh
+          bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-precheck-first.sh
       - name: land precheck verdict and attributed cancel (6/8)
         run: |
           set -uo pipefail
