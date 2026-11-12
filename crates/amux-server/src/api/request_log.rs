@@ -4213,6 +4213,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/ledger/at/{seq}",
         methods: &["GET"],
     },
+    RouteEntry {
+        path: "/api/workers/{name}/capabilities",
+        methods: &["GET"],
+    },
 ];
 
 /// Match `path` against an axum-style pattern, returning a specificity score
