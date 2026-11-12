@@ -116,6 +116,11 @@ pub(crate) fn caller_from_headers(h: &axum::http::HeaderMap) -> String {
     if let Some(actor) = super::org::local_member_actor(h) {
         return actor.to_string();
     }
+    // A published app proved by its own credential (app_identity.rs), which
+    // also dropped any worker header it sent.
+    if let Some(app) = super::app_identity::actor(h) {
+        return app.to_string();
+    }
     for k in ["x-amux-worker", "x-amux-session"] {
         if let Some(v) = h.get(k).and_then(|v| v.to_str().ok()) {
             let v = v.trim();
@@ -239,6 +244,13 @@ impl RequestLogger {
                                 (SELECT id FROM _amux_interactions WHERE updated_at < ?1)", [(cutoff * 1000.0) as i64])?;
                             let receipts = conn.execute("DELETE FROM _amux_interactions WHERE updated_at < ?1", [(cutoff * 1000.0) as i64])?;
                             if receipts > 0 { tracing::info!(verdict="interaction_retention", n_considered=receipts, "Expired interaction receipts removed"); }
+                            // The ledger keeps its own window (AMUX_LEDGER_RETAIN_DAYS,
+                            // default a year): the interaction rows above are working
+                            // state, the ledger rows written from them are the record.
+                            let ledger_cutoff = ((unix_now() - super::ledger::retain_days() * 86400.0) * 1000.0) as i64;
+                            if let Err(e) = super::ledger::prune(conn, ledger_cutoff) {
+                                tracing::warn!(verdict="ledger_retention_failed", error=%e, "ledger retention prune failed; rows kept");
+                            }
                             // CAPPED (AMUX-4750). This was an unbounded DELETE
                             // over a 3.2M-row table, so the size of one writer
                             // hold was however many rows happened to age out at
@@ -2431,6 +2443,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/page-links/{id}/api",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/app-token",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/page-links/{id}/open",
         methods: &["POST"],
     },
@@ -4160,6 +4180,26 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry {
         path: "/api/debug/storage",
         methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger/verify",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/trace/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/otel/v1/logs",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/otel/v1/metrics",
+        methods: &["POST"],
     },
 ];
 

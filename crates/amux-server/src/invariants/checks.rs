@@ -1216,6 +1216,10 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("message_pins", "pinned_at", true),
     // 0155: runtime_jobs/goal_check.rs writes the check's epoch seconds.
     ("goal_samples", "at", false),
+    // 0157: api/ledger.rs writes epoch milliseconds (the command's own ts;
+    // prune stamps Utc::now().timestamp_millis()).
+    ("_amux_ledger", "ts", true),
+    ("_amux_ledger_anchor", "pruned_at", true),
     // 0156: api/directive.rs writes now_f64() epoch seconds.
     ("directives", "issued_at", false),
     ("directives", "delivered_at", false),
