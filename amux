@@ -287,8 +287,19 @@ _curl() {
   [[ -f "$ep" ]] && canon=$(sed -n 's/.*"canonical_port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ep" 2>/dev/null)
   hp="${url#*://}"; hp="${hp%%/*}"; host="${hp%:*}"; port="${hp##*:}"
   [[ "$hp" == *:* && "$hp" != *"]" ]] || port=$([[ "$url" == https* ]] && echo 443 || echo 80)
+  local own=1
   if [[ -z "$canon" || "$port" != "$canon" ]] || ! [[ "$host" == localhost || "$host" == 127.0.0.1 || "$host" == "[::1]" ]]; then
-    wait_max=0
+    wait_max=0; own=0
+  fi
+  # OUTSIDE A WORKER THIS CLI IS THE OWNER AT THEIR OWN TERMINAL (governance
+  # PR 2): a request with no worker header no longer counts as the owner by
+  # itself, so it proves it with the owner bearer. Only to this machine's own
+  # server (a remote one has its own token), and never inside a lane, which
+  # names itself with its minted token instead.
+  if [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/auth_token" ]] \
+    && ! printf '%s\n' "$@" | grep -qi '^Authorization:'; then
+    local _owner_tok; _owner_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/auth_token" 2>/dev/null)"
+    [[ -n "$_owner_tok" ]] && _id+=(-H "Authorization: Bearer $_owner_tok")
   fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.

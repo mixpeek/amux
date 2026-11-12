@@ -65,7 +65,10 @@ const PUBLIC_PREFIXES: &[&str] = &[
     "/api/bridge/hook/",
 ];
 
-pub async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
+pub async fn require_bearer(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    // Only this function says a request presented the owner bearer
+    // (human_proof.rs). An inbound copy is never believed.
+    req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
     let Some(expected) = &state.auth_token else {
         // NO OWNER TOKEN IS NOT NO AUTHORIZATION. A host behind its own front
         // door runs with AMUX_AUTH_TOKEN=none, and member scopes must still
@@ -92,6 +95,10 @@ pub async fn require_bearer(State(state): State<AppState>, req: Request, next: N
     if provided_owner_token(req.headers(), req.uri())
         .is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
     {
+        req.headers_mut().insert(
+            super::human_proof::OWNER_PROOF_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
         return next.run(req).await;
     }
     // Local invitees authenticate through the revocable member cookie. Only
@@ -580,5 +587,43 @@ mod tests {
                 assert!(!rendered.contains(secret));
             }
         }
+    }
+
+    /// GOVERNANCE PR 2. Only require_bearer says a request presented the owner
+    /// bearer: a valid bearer is stamped, and a copy of the marker a client
+    /// sends itself is removed, on a loopback request and a public path alike.
+    #[tokio::test]
+    async fn only_a_verified_bearer_is_stamped_as_the_owner() {
+        use crate::api::human_proof::{proven, Proven, OWNER_PROOF_HEADER};
+        let st = state(Some("tok123"));
+        async fn echo(h: HeaderMap) -> &'static str {
+            if proven(&h) == Some(Proven::Owner) { "owner" } else { "unproven" }
+        }
+        let app = Router::new()
+            .route("/api/who", get(echo))
+            .route("/pub/who", get(echo))
+            .layer(axum::middleware::from_fn_with_state(st.clone(), require_bearer))
+            .with_state(st);
+        async fn ask(app: &Router, uri: &str, bearer: Option<&str>, forged: bool, peer: Option<&str>) -> String {
+            let mut b = HttpRequest::builder().uri(uri);
+            if let Some(t) = bearer {
+                b = b.header("authorization", format!("Bearer {t}"));
+            }
+            if forged {
+                b = b.header(OWNER_PROOF_HEADER, "1");
+            }
+            let mut req = b.body(Body::empty()).unwrap();
+            if let Some(ip) = peer {
+                let addr: SocketAddr = format!("{ip}:55555").parse().unwrap();
+                req.extensions_mut().insert(ConnectInfo(addr));
+            }
+            let r = app.clone().oneshot(req).await.unwrap();
+            String::from_utf8(axum::body::to_bytes(r.into_body(), 64).await.unwrap().to_vec()).unwrap()
+        }
+        assert_eq!(ask(&app, "/api/who", Some("tok123"), false, None).await, "owner");
+        assert_eq!(ask(&app, "/api/who", Some("tok123"), false, Some("127.0.0.1")).await, "owner");
+        assert_eq!(ask(&app, "/api/who", None, true, Some("127.0.0.1")).await, "unproven",
+            "a loopback caller is admitted but not proven, and its own marker is stripped");
+        assert_eq!(ask(&app, "/pub/who", None, true, None).await, "unproven", "public paths strip it too");
     }
 }
