@@ -39490,14 +39490,100 @@ document.addEventListener('click', e => {
   // A worker tagged in markdown has its own handler (_bindMdFileLinks): it
   // closes the file it sits in first, so the worker is not opened beneath it.
   if (a.classList.contains('md-worker-link')) return;
-  if (!_ownLinkHash(a.getAttribute('href'))) return;
-  e.preventDefault(); e.stopPropagation();
-  _openOwnLink(a.href, 'anchor');
+  if (_ownLinkHash(a.getAttribute('href'))) {
+    e.preventDefault(); e.stopPropagation();
+    _openOwnLink(a.href, 'anchor');
+    return;
+  }
+  if (_ownPageLink(a.href)) {
+    e.preventDefault(); e.stopPropagation();
+    _openOwnPage(a.href, 'anchor');
+  }
 }, true);
 // The terminal's links (xterm's web-links addon) open the same way.
 function _termLinkOpen(e, uri) {
-  if (!(e && (e.metaKey || e.ctrlKey)) && _openOwnLink(uri, 'terminal')) return;
+  const mod = !!(e && (e.metaKey || e.ctrlKey));
+  if (!mod && _openOwnLink(uri, 'terminal')) return;
+  if (!mod && _ownPageLink(uri)) { _openOwnPage(uri, 'terminal'); return; }
   window.open(uri, '_blank');
+}
+
+// A PAGE ON THIS AMUX THAT IS NOT THE DASHBOARD NEVER REPLACES IT IN THE APP.
+// In the iOS app (its web view loads window.open in place) and an installed
+// web app (a same-origin link opens inside the app window) there is no
+// browser Back. A worker's /pub/ link tapped in the terminal left the owner on
+// a bare "Link not found" page with no way back short of quitting the app
+// (Doron, 2026-11-12; the iOS back button from #410 only reaches new builds).
+// So in an app, a public link, an HTML page or an app on another port of this
+// host opens over the dashboard with a close bar, and a link still waiting for
+// approval opens Apps instead of a dead page. A browser tab keeps its new tab.
+function _inAppWindow() {
+  try {
+    return !!(navigator.standalone || /\bAmuxApp\b/.test(navigator.userAgent || '')
+      || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  } catch (_) { return false; }
+}
+// The link, as a URL, when it is a page on this amux outside the dashboard and
+// this is an app window; otherwise null.
+function _ownPageLink(href) {
+  if (!_inAppWindow()) return null;
+  let u;
+  try { u = new URL(href, location.href); } catch (_) { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const hosts = [location.hostname];
+  try { if (_deepLinkBase) hosts.push(new URL(_deepLinkBase).hostname); } catch (_) {}
+  if (!hosts.includes(u.hostname)) return null;
+  const ownOrigin = u.origin === location.origin || (_deepLinkBase && u.origin === _deepLinkBase.replace(/\/+$/, ''));
+  if (!ownOrigin) return u; // an app on another port of this host
+  return /^\/(pub|pages)\//.test(u.pathname) ? u : null;
+}
+function _ownPageBeacon(verdict, how) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'own-link', verdict, how, measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (_) {}
+}
+async function _openOwnPage(href, how) {
+  const u = _ownPageLink(href) || new URL(href, location.href);
+  const m = u.pathname.match(/^\/pub\/([^/]+)/);
+  if (m) {
+    let links = _pubLinks;
+    try { links = (await _pubFetch('')).links || []; _pubLinks = links; } catch (_) {}
+    const l = links.find(x => x.id === m[1] || (x.aliases || []).includes(m[1]));
+    if (l && l.pending) {
+      _ownPageBeacon('pending_shown_in_apps', how);
+      if (location.hash === '#view=apps') _pagesEnter(); else location.hash = '#view=apps';
+      showToast('Approve it first: "' + _pubName(l) + '" does not open until you do.');
+      return;
+    }
+  }
+  _ownPageBeacon('opened_over_dashboard', how);
+  _ownPageOverlay(u.href);
+}
+function _ownPageClose() {
+  const el = document.getElementById('own-page-overlay');
+  if (el) el.remove();
+  document.removeEventListener('keydown', _ownPageKey, true);
+}
+function _ownPageKey(e) { if (e.key === 'Escape') { e.stopPropagation(); _ownPageClose(); } }
+function _ownPageOverlay(url) {
+  _ownPageClose();
+  const el = document.createElement('div');
+  el.id = 'own-page-overlay';
+  el.className = 'own-page-overlay';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Page opened from amux');
+  let shown = url;
+  try { const u = new URL(url); shown = (u.origin === location.origin ? '' : u.host) + u.pathname; } catch (_) {}
+  el.innerHTML = '<div class="own-page-bar">'
+    + '<button type="button" class="btn own-page-back" aria-label="Back to amux">&#x2039; amux</button>'
+    + '<span class="own-page-url" title="' + esc(url) + '">' + esc(shown) + '</span></div>'
+    + '<iframe class="own-page-frame" title="' + esc(shown) + '"></iframe>';
+  el.querySelector('.own-page-back').onclick = _ownPageClose;
+  el.querySelector('iframe').src = url;
+  document.body.appendChild(el);
+  document.addEventListener('keydown', _ownPageKey, true);
 }
 
 function _copyFileDeeplink(path) {
@@ -64235,7 +64321,11 @@ function _pubMenu(e, id) {
     const it = ev.target.closest('[data-act]');
     if (!it) return;
     ev.stopPropagation(); _pubMenuClose();
-    if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
+    if (it.dataset.act === 'open') {
+      if (internal) _pubOpenInternal(id);
+      else if (_ownPageLink(l.url || l.path)) _openOwnPage(l.url || l.path, 'apps-menu');
+      else window.open(l.url || l.path, '_blank', 'noopener');
+    }
     else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
     else if (it.dataset.act === 'rename') _pubRename(id);
     else if (it.dataset.act === 'remove') _pubRevoke(id);

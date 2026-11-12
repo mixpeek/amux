@@ -10545,6 +10545,16 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .pages-empty-icon { font-size:var(--fs-5xl); }
 [data-search].pages-hidden { display:none !important; }
 .pub-app-frame { width:100%; height:100%; border:0; background:var(--on-solid); border-radius:var(--radius-lg); color-scheme:light; }
+/* A page on this amux opened from a link inside the app (app.js _ownPageOverlay): over the
+   dashboard, with a close bar, because an app window has no browser Back. */
+.own-page-overlay { position:fixed; top:max(var(--chrome-tab-h, 0px), env(safe-area-inset-top, 0px)); left:0; right:0; bottom:0;
+  z-index:250; display:flex; flex-direction:column; background:var(--bg);
+  padding-bottom:env(safe-area-inset-bottom, 0px); box-sizing:border-box;
+  zoom: calc(1 / var(--root-zoom, 1)); }
+.own-page-bar { display:flex; align-items:center; gap:var(--space-2); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); }
+.own-page-back { min-height:44px; min-width:44px; font-weight:600; flex-shrink:0; }
+.own-page-url { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); font-size:var(--fs-sm); }
+.own-page-frame { flex:1; width:100%; border:0; background:var(--on-solid); color-scheme:light; }
 .pub-row { cursor:default; }
 .pub-url { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pub-note { padding:var(--space-2-5) var(--space-3-5); grid-column:1 / -1; }
