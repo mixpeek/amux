@@ -206,7 +206,8 @@ export default defineConfig({
   // printed their `not ok` lines and counted nothing, so three of them were
   // red for a week inside green shards. They run as their own gated step
   // ("Dashboard client unit tests" in rust.yml).
-  testIgnore: ['**/lifecycle/live-*.spec.ts', '**/*.test.mjs'],
+  // e2e/intent has its own config (intent.config.ts: stand-in model, seeded household).
+  testIgnore: ['**/lifecycle/live-*.spec.ts', '**/*.test.mjs', '**/intent/**'],
   timeout: 30_000,
   retries: 0,
   use: {
