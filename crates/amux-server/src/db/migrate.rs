@@ -846,8 +846,13 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 157,
-        name: "0157_ledger",
-        sql: include_str!("../../migrations/0157_ledger.sql"),
+        name: "0157_event_subscriptions",
+        sql: include_str!("../../migrations/0157_event_subscriptions.sql"),
+    },
+    Migration {
+        version: 158,
+        name: "0158_ledger",
+        sql: include_str!("../../migrations/0158_ledger.sql"),
     },
 ];
 

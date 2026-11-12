@@ -24,7 +24,7 @@
 // 14  Dark/Light theme toggle                  localStorage amux_theme       TESTED (client-side by design)
 // 15  Tabs display select                      POST /api/prefs tabs_display  TESTED
 // 16  Zoom −/+/Reset                           localStorage amux_zoom        TESTED (client-side by design)
-// 17  Anthropic API key input + Save           GET+PATCH /api/settings/env   TESTED
+// 17  Anthropic API key input + Save           removed 2026-11-11 (an API key is a secret)
 // 18  Commit-guard toggle                      GET+PATCH /api/settings/commit-guard  TESTED
 // 19  Board-awareness (task-guard) toggle      GET+PATCH /api/settings/task-guard    TESTED
 // 20  Notes-folder row                         (no client wiring, no endpoint in EITHER server)  FIXME — not relevant
@@ -57,7 +57,6 @@
 // - Toggle inputs (.theme-toggle input) are opacity:0/size:0 — the USER
 //   clicks the visible .theme-track sibling, so the tests do too.
 import { test, expect } from './fixtures';
-import { E2E_ANTHROPIC_KEY } from './test-env';
 import { cleanup } from './teardown';
 import type { Page, APIRequestContext } from '@playwright/test';
 
@@ -118,12 +117,6 @@ async function openSettings(page: Page): Promise<void> {
   await page.addStyleTag({
     content: '#settings-menu .settings-tab-panel{display:block !important}',
   });
-}
-
-/** API Keys left Settings for the Vault page's API Keys tab (b15e61d9). */
-async function openApiKeys(page: Page): Promise<void> {
-  await page.evaluate(() => (window as any).openVault('apikeys'));
-  await expect(page.locator('#vault-panel-apikeys #settings-anthropic-key')).toBeVisible();
 }
 
 /** Bearer token as the SPA received it from the served bootstrap. */
@@ -371,153 +364,6 @@ test('settings_default_model', async ({ page, request }, testInfo) => {
   expect(res2.status()).toBe(200);
   const get3 = await request.get('/api/settings/default-model', { headers: authHeaders(token) });
   expect((await get3.json()).model).toBe('sonnet');
-});
-
-test('settings_api_key_anthropic', async ({ page, request }, testInfo) => {
-  // The only test in this file that calls settle() TWICE — it asserts the key
-  // survives a reload, so it pays the SPA's full boot cost (goto + bootstrap +
-  // walkthrough dismissal) twice where every sibling pays it once. On the 30s
-  // file-wide default that fits locally (measured: whole file, both projects,
-  // 1.7m) and does NOT fit on a CI runner, where 92 tests take 6.5m. It failed
-  // on five consecutive rust.yml runs — always this test, always as
-  // "Test timeout of 30000ms exceeded" surfacing at the longest await rather
-  // than as an assertion failure, which is the signature of a budget that is
-  // too small rather than a product defect.
-  //
-  // Sized to the work, not padded past a flake: same precedent as
-  // golden.spec.ts's heavy scenarios, which declare 120s.
-  test.setTimeout(60_000);
-  await settle(page);
-  const token = await appToken(page);
-
-  // Baseline BEFORE the write: effective_env falls back to the test-runner's
-  // process env, so the key may already read as set on a dev machine.
-  const before = (await (
-    await request.get('/api/settings/env', { headers: authHeaders(token) })
-  ).json()) as Record<string, string>;
-
-  await openApiKeys(page);
-  const input = page.locator('#settings-anthropic-key');
-  await input.fill('sk-ant-e2e-settings-spec-77xy');
-  const [res] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes('/api/settings/env') && r.request().method() === 'PATCH',
-    ),
-    // Scoped to the Anthropic row specifically: the API Keys section now has
-    // three Save buttons (Anthropic/OpenAI/Gemini, each feeding
-    // provider::live_catalog), so the old section-wide locator resolves to
-    // more than one element and Playwright's strict mode refuses to click.
-    page.locator('#settings-apikey-row-anthropic button', { hasText: 'Save' }).click(),
-  ]);
-  expect(res.status()).toBe(200);
-  expect(await res.json()).toMatchObject({ ok: true });
-
-  // UI reflects the save; the GET refresh serves the MASKED value (last 4 only).
-  await expect(page.locator('#settings-apikey-status')).toHaveText(/Key saved/);
-  await expect(input).toHaveAttribute('placeholder', /77xy$/);
-  const during = (await (
-    await request.get('/api/settings/env', { headers: authHeaders(token) })
-  ).json()) as Record<string, string>;
-  expect(during.ANTHROPIC_API_KEY).toMatch(/\*+77xy$/); // masked, never the value
-
-  // Persistence: reload, panel re-open re-fetches from server.env in the
-  // throwaway AMUX_HOME.
-  await settle(page);
-  await openApiKeys(page);
-  await expect(page.locator('#settings-anthropic-key')).toHaveAttribute('placeholder', /77xy$/);
-  await expect(page.locator('#settings-apikey-status')).toHaveText(/Key saved/);
-
-  // Restore: the UI has no "clear key" affordance (saveApiKey returns early on
-  // empty input), so restoration goes through the same endpoint the Save
-  // button uses. An empty persisted value SHADOWS the process prerequisite;
-  // restore that known non-secret value explicitly so later specs retain the
-  // same configured-install state this test received.
-  testInfo.annotations.push({
-    type: 'restore-via-api',
-    description:
-      'UI cannot clear a saved key (empty input is a no-op in saveApiKey); restored the isolated harness baseline via PATCH /api/settings/env',
-  });
-  const restore = await request.patch('/api/settings/env', {
-    headers: authHeaders(token),
-    data: { ANTHROPIC_API_KEY: E2E_ANTHROPIC_KEY },
-  });
-  expect(restore.status()).toBe(200);
-  const after = (await (
-    await request.get('/api/settings/env', { headers: authHeaders(token) })
-  ).json()) as Record<string, string>;
-  expect(after.ANTHROPIC_API_KEY).toBe(before.ANTHROPIC_API_KEY);
-});
-
-test('settings_api_key_survives_slow_env_refresh', async ({ page, request }) => {
-  // Regression for the settings_api_key_anthropic CI flake (6/8 runs red).
-  // loadApiKeys() runs async when the panel opens and used to do an
-  // unconditional `inp.value = ''` when its GET returned — so on a loaded
-  // runner where the fill BEAT the response, the response then wiped the
-  // typed key and Save hit its empty-value early return: no PATCH was ever
-  // sent, and the sibling test's waitForResponse hung to the 60s budget. The
-  // same race hits a fast human as "my key vanished while I typed".
-  //
-  // This test forces the losing interleaving deterministically: hold the GET
-  // for 800ms, type during the hold, let the delayed response land, and
-  // assert the field still holds the entry — a fast, legible failure
-  // (value '' vs the key) instead of a timeout, on exactly the incident's
-  // ordering.
-  await settle(page);
-  const token = await appToken(page);
-
-  let heldOnce = false;
-  await page.route('**/api/settings/env', async (route) => {
-    if (route.request().method() === 'GET' && !heldOnce) {
-      heldOnce = true;
-      await new Promise((r) => setTimeout(r, 800));
-    }
-    await route.continue();
-  });
-
-  const [delayedGet] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes('/api/settings/env') && r.request().method() === 'GET',
-    ),
-    (async () => {
-      await openApiKeys(page);
-      // Type while the GET is still held — the incident's interleaving.
-      await page.locator('#settings-anthropic-key').fill('sk-ant-e2e-race-77zz');
-    })(),
-  ]);
-  expect(delayedGet.ok()).toBeTruthy();
-  // The delayed refresh has landed and run its handler; the entry must survive.
-  await expect(page.locator('#settings-anthropic-key')).toHaveValue('sk-ant-e2e-race-77zz');
-
-  // And Save must actually send it.
-  const [res] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes('/api/settings/env') && r.request().method() === 'PATCH',
-    ),
-    // Scoped to the Anthropic row specifically: the API Keys section now has
-    // three Save buttons (Anthropic/OpenAI/Gemini, each feeding
-    // provider::live_catalog), so the old section-wide locator resolves to
-    // more than one element and Playwright's strict mode refuses to click.
-    page.locator('#settings-apikey-row-anthropic button', { hasText: 'Save' }).click(),
-  ]);
-  expect(res.status()).toBe(200);
-
-  // Restore the exact shared harness baseline. A present-but-empty value in
-  // server.env deliberately means CLEARED and shadows the process env; writing
-  // '' here used to remove the prerequisite for every later spec in this
-  // project's shared server. On a loaded CI runner settings finished before
-  // the terminal files, so one cleanup turned into 22 unrelated pointer-event
-  // timeouts behind the no-key banner. Keep the postcondition explicit so a
-  // future cleanup cannot silently poison the rest of the project again.
-  await page.unroute('**/api/settings/env');
-  const restore = await request.patch('/api/settings/env', {
-    headers: authHeaders(token),
-    data: { ANTHROPIC_API_KEY: E2E_ANTHROPIC_KEY },
-  });
-  expect(restore.status()).toBe(200);
-  const restored = (await (
-    await request.get('/api/settings/env', { headers: authHeaders(token) })
-  ).json()) as Record<string, string>;
-  expect(restored.ANTHROPIC_API_KEY).toMatch(/cret$/);
 });
 
 test('settings_commit_guard', async ({ page, request }) => {

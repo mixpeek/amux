@@ -269,6 +269,12 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Refresh | `_emailLoad` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | + esc(a) + (bad ?  ⚠️ : ) + | `_emailPick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Re-learn priorities | `_emailThemesRefresh` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
+| app.js | Browse all events | `_evCatalog` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | + New | `_evNew` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | + | `_evOpen` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Remove | `_evRemove` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | … | `_evSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | … | `_evSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Expand to full screen | `_expandPeekInput` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Export | `_exportMessageHistory` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Export message history (JSON) | `_exportMessageHistory` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -546,7 +552,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Retry | `_peekMessagesLoad` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_peekMsgGoToPage` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${lbl} ${_n(k)} | `_peekMsgSetFilter` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | + New | `_peekNewSchedule` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `_peekOpenLogAt` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | m.classList.toggle(current, Number(m.dataset.idx | `_peekOpenLogAt` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Run now | `_peekShellRun` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -689,6 +694,9 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Logs | `_sxDetailTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Runs | `_sxDetailTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Refresh | `_sxLoadDetailLog` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + New schedule | `_sxNew` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | + New | `_sxNew` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | New schedule | `_sxNew` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open ${esc(s.session)} | `_sxOpenWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open in worker | `_sxOpenWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | View in worker | `_sxOpenWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -765,7 +773,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Save limits | `_vaultSave` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Try again | `_vaultSecretsLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(card)}Payment Methods | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | ${_vaultIcon(key)}API Keys | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ${_vaultIcon(key)}Secrets | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Review in Payment Methods | `_vaultTab` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | All workers | `_velocityLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -922,9 +929,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ${id} | `openSchedDetail` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `openSchedDetail` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
-| app.js | + New schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | New schedule | `openSchedModal` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Team | `openTeamEditor` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | + Invite | `openTeamInvite` | async (writes) | no busy state (request after an await); disables itself; failure only in Recent actions; toast on success | yes | yes |
@@ -960,9 +965,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Run now | `runScheduleNow` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `runVisibleWorkerAction` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … … | `runWorkerGroupAction` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| index.html | Save | `saveApiKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Save | `saveApiKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
-| index.html | Save | `saveApiKey` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save | `saveBoardEdit` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Save branding | `saveBranding` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Add | `saveCustomChip` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1167,6 +1169,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | label | `` | onclick |
 | app.js | p.remove())&gt;Close | `` | onclick |
 | app.js | p.remove())&gt;✕ | `` | onclick |
+| app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
 | app.js | … | `` | onclick |
@@ -1500,6 +1503,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | button | `_sxCreateSection` | onclick |
 | index.html | button | `_sxCreateSection` | onclick |
 | index.html | sched-nav-template | `_sxCreateSection` | onclick |
+| app.js | button | `_sxNewPick` | onclick |
+| app.js | button | `_sxNewPick` | onclick |
 | app.js | More actions | `_sxOpenMenu` | onclick |
 | app.js | More actions for ${esc(s.title)} | `_sxOpenMenu` | onclick |
 | app.js | ${p.label}${p.n == null ?  : | `_sxSetGroup` | onclick |
@@ -1548,7 +1553,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Try confirmation dialog | `_uiGuideDialog` | onclick |
 | app.js | Preview next theme | `_uiGuideTheme` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Payment Method | `_vaultCardAdd` | onclick |
-| app.js | ${_vaultIcon(plus)}Add API Key | `_vaultEdit` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Secret | `_vaultEdit` | onclick |
 | app.js | …Add Secret | `_vaultEdit` | onclick |
 | app.js | Show value | `_vaultEye` | onclick |
