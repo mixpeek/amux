@@ -7391,10 +7391,12 @@ ${BOLD}Interaction:${RESET}
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
                                  worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
+                                 What a worker did: browser verbs (page before/after), tool calls, API calls
   amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
   amux security at-rest | decrypt-grants   What is encrypted at rest; the owner's way back to plain grant files
   amux compliance access-review | timeline | evidence   Access review, incident timeline, evidence pack (owner/auditor)
-                                 What a worker did: browser verbs (page before/after), tool calls, API calls
+  amux mfa status|enroll|confirm|verify|step-up   Your second factor (TOTP); the owner's five-minute step-up
+  amux identity sso|scim-token|scim-tokens|scim-revoke   Single sign-on status and the identity provider's SCIM tokens
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
                                  ${DIM}  fix the auth bug in login.ts${RESET}
@@ -7532,7 +7534,7 @@ ${BOLD}Browser:${RESET}
                                  ${DIM}Chrome beside their own and they look identical.${RESET}
 
 ${BOLD}Apps links (apps and files, managed in the Apps tab):${RESET}
-  amux publish [--internal] PORT [TITLE]   An app: public, or inside amux only
+  amux publish [--internal|--origin] PORT [TITLE]   An app: public (--origin: on its own host), or inside amux only
   amux publish [--internal] --file PATH    A file or folder: public, or inside amux only; --list, --revoke ID
 
 ${BOLD}Boundaries and resources:${RESET}
@@ -7825,7 +7827,7 @@ cmd_publish() {
   # app for anyone with the link, or a file or folder for anyone with the link
   # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
-  local kind=app target title
+  local kind=app target title origin=0
   # --api "METHOD /api/path" (repeatable): amux calls the app asks for. A
   # published app has no amux access otherwise (governance PR 5).
   local -a api_rules=() rest=()
@@ -7845,6 +7847,10 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
 
   amux publish --internal PORT [TITLE]         An app for you, opened inside amux (signed in)
   amux publish PORT [TITLE]                    An app for anyone with the link, no amux sign-in
+  amux publish --origin PORT [TITLE]           The same, at the root of its own host
+                                               (https://<id>.<AMUX_PUBLIC_APPS_DOMAIN>/), with its
+                                               own cookies: for an app with a login or session
+                                               that breaks under /pub/<id>/
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
   amux publish PORT [TITLE] --api "POST /api/sessions/NAME/send"
@@ -7902,6 +7908,7 @@ for l in links:
       return 0
       ;;
     --internal) kind=internal; shift ;;
+    --origin) origin=1; shift ;;
     --file) kind="file"; shift ;;
   esac
   local is_path=0
@@ -7918,13 +7925,15 @@ for l in links:
   local body
   body=$(python3 -c '
 import json, sys
-kind, target, title, is_path = sys.argv[1:5]
-d = {"kind": kind, "title": title, "api": sys.argv[5:]}
+kind, target, title, is_path, origin = sys.argv[1:6]
+d = {"kind": kind, "title": title, "api": sys.argv[6:]}
+if origin == "1":
+    d["origin"] = True
 if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "${api_rules[@]+"${api_rules[@]}"}")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin" "${api_rules[@]+"${api_rules[@]}"}")
   local token_dir="${AMUX_HOME:-$HOME/.amux}/app-tokens"
 
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \

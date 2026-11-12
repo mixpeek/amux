@@ -29260,6 +29260,14 @@ async fn post_dispatch(
                 tracing::warn!(session = %name, reason = %reason, "session_start_refused: /start cannot launch this session");
                 return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason}));
             }
+            // Same for a customer-boundary worker under enforce on a host with
+            // no isolation runner (governance PR 17).
+            if let Some(reason) = super::customer_isolation::start_refusal(&home(), name) {
+                tracing::warn!(session = %name, measured = true, n_considered = 1,
+                    verdict = "customer_isolation_start_refused", reason = %reason,
+                    "session_start_refused: /start cannot launch this session");
+                return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason, "code": "customer_isolation_no_runner"}));
+            }
             let prompt = body_str(body, "prompt");
             update_meta(name, &[("boot_start_scheduled", json!(true))]);
             if !prompt.is_empty() {
