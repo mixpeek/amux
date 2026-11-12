@@ -517,6 +517,10 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
             items.push(v);
         }
     }
+    // Governance PR 12: an approval card carries its approval (the decide
+    // action), and a held email's own card folds into the email item.
+    crate::api::approval_cards::annotate_in(conn, &mut items);
+    crate::api::approval_cards::annotate_in(conn, &mut snoozed);
     order_at(&mut items, now);
     order_at(&mut snoozed, now);
     Ok(Queue {
@@ -570,6 +574,20 @@ pub(crate) fn shared_queue(store: &crate::db::SharedStore, home: &Path, now: f64
 async fn get_queue(State(state): State<AppState>) -> Response {
     let home = crate::integrations::email::default_amux_home();
     let now = now_f64();
+    // An approval whose item ran out of time (a spend grant: 1h) is closed
+    // before the queue is read, so nobody is asked to decide a dead item.
+    let expired = state
+        .store
+        .write_async(move |conn| {
+            let closed = crate::api::approval_cards::expire_in(conn, now)?;
+            Ok(crate::db::WriteOutcome { applied: !closed.is_empty(), events: vec![] })
+        })
+        .await;
+    if let Ok(w) = &expired {
+        if w.applied {
+            invalidate_queue(&state.store);
+        }
+    }
     let store = state.store.clone();
     let res = tokio::task::spawn_blocking(move || shared_queue(&store, &home, now))
         .await

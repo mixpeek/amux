@@ -3023,12 +3023,40 @@ async fn fire_recorded(
     policy: MissedRunPolicy,
 ) -> anyhow::Result<bool> {
     use futures::FutureExt;
-    let result = std::panic::AssertUnwindSafe(fire_one(store, deliverer, id, now, policy))
+    // A firing is an origin: it starts its own trace, and everything the
+    // delivery records (the message row, the worker's trace file) descends
+    // from it (api/trace.rs).
+    let trace = crate::api::trace::TraceCtx::mint(format!("schedule:{id}"));
+    let fire = crate::api::trace::CURRENT.scope(trace.clone(), fire_one(store, deliverer, id, now, policy));
+    let result = std::panic::AssertUnwindSafe(fire)
         .catch_unwind().await.unwrap_or_else(|_| {
             tracing::warn!(schedule = id, verdict = "schedule_consumer_panicked",
                 measured = true, n_considered = 1, "schedule consumer panicked; outcome remains unknown");
             Err(anyhow::anyhow!("schedule consumer panicked; delivery outcome unknown"))
         });
+    // The firing is the root of its trace: record it, so the delivery that
+    // descends from it has a parent in the ledger rather than an orphan span.
+    if !matches!(result, Ok(false)) && crate::api::trace::enabled() {
+        let ev = crate::api::ledger::Event {
+            event_id: format!("sched:{id}:{}", trace.span_id),
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            kind: "schedule".into(),
+            actor: "policy:scheduler".into(),
+            authority: Some("schedule".into()),
+            action: Some("fire".into()),
+            resource: Some(format!("schedule:{id}")),
+            decision: Some(if result.is_ok() { "allowed" } else { "failed" }.into()),
+            outcome: Some(if result.is_ok() { "fired" } else { "failed" }.into()),
+            trace_id: Some(trace.trace_id.clone()),
+            span_id: Some(trace.span_id.clone()),
+            trace_source: Some(crate::api::trace::MINTED.into()),
+            ..Default::default()
+        };
+        let _ = store.write_async(move |conn| {
+            crate::api::ledger::append(conn, &ev);
+            Ok(WriteOutcome { applied: false, events: vec![] })
+        }).await;
+    }
     if let Err(e) = &result {
         tracing::warn!(schedule = id, error = %e, "fire failed");
         let eid = id.to_owned();

@@ -7669,6 +7669,15 @@ pub(crate) fn ensure_fleet_tables(conn: &rusqlite::Connection) -> rusqlite::Resu
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN queue_id TEXT", []);
     // Migration 0088 carries the same ADDCOL for migrated DBs (F8(e)).
     let _ = conn.execute("ALTER TABLE cmd_history ADD COLUMN repeat_of INTEGER", []);
+    // The trace a delivery ran under (governance PR 8, api/trace.rs): metadata
+    // only, never text in the message (A2, A9).
+    for col in ["trace_id", "span_id", "parent_span_id", "trace_source"] {
+        let _ = conn.execute(&format!("ALTER TABLE cmd_history ADD COLUMN {col} TEXT"), []);
+    }
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cmd_history_trace ON cmd_history(trace_id) WHERE trace_id IS NOT NULL",
+        [],
+    );
     // Dead-lettered vs delivered must be distinguishable in history
     // (AMUX-3110; migration 0024 carries the same ADDCOL for migrated DBs,
     // this covers a DB bootstrapped through this legacy path).
@@ -8987,6 +8996,10 @@ pub(crate) async fn cmd_hist_record_with_id(
                 && amux_core::board::reads_as_qualifier(&text)
                 && !amux_core::board::is_conversational_ack(&text)))
         && !amux_core::board::is_informational_query(&text);
+    // The span this delivery runs as, a child of the request or schedule
+    // firing that sent it; also written to the worker's trace file so the
+    // worker's own calls descend from it (trace.rs). Metadata, never text.
+    let delivery_trace = crate::api::trace::delivery(&session);
     let msg_row_id_w = msg_row_id.clone();
     let cap_session = session.clone();
     let truth_session = cap_session.clone();
@@ -9014,6 +9027,12 @@ pub(crate) async fn cmd_hist_record_with_id(
                 ],
             )?;
             let row_id = conn.last_insert_rowid();
+            if let Some(t) = &delivery_trace {
+                conn.execute(
+                    "UPDATE cmd_history SET trace_id=?2, span_id=?3, parent_span_id=?4, trace_source=?5 WHERE id=?1",
+                    rusqlite::params![row_id, t.trace_id, t.span_id, t.parent_span_id, crate::api::trace::DELIVERED],
+                )?;
+            }
             msg_row_id_w.store(row_id, std::sync::atomic::Ordering::SeqCst);
             // cmd_history is the durable Messages ledger, but this write used
             // to publish no StateEvent. A healthy SSE client therefore had no
@@ -17646,7 +17665,19 @@ pub(crate) async fn start_session(
     // Every lane by default, isolated ones too: the token is environment, not
     // a prompt or a route, so isolation (A9) is unchanged, and an isolated
     // worker's own `amux` calls prove who they are like anyone else's.
+    // The CLI's own OpenTelemetry (governance PR 9, cli_telemetry.rs): the
+    // exporter's headers carry this token, so they ride the vault channel too;
+    // the rest is plain configuration on the command line below. Isolated
+    // workers get it the same way (A9: environment, not a prompt).
+    let otel_plan = super::cli_telemetry::plan_for_launch(
+        &home(), name, &provider, cfg.get("CC_TAGS").unwrap_or(""));
+    let mut otel_prefix = String::new();
     if let Some(token) = super::worker_identity::mint(&home(), name) {
+        if let super::cli_telemetry::Plan::Wire { vars } = &otel_plan {
+            vault_values.push((super::cli_telemetry::HEADERS_ENV.to_string(),
+                super::cli_telemetry::headers_value(name, &token)));
+            otel_prefix = super::cli_telemetry::command_prefix(vars);
+        }
         vault_values.push((super::worker_identity::TOKEN_ENV.to_string(), token));
     }
     let vault_keys: Vec<String> = vault_values.iter().map(|(k, _)| k.clone()).collect();
@@ -18013,8 +18044,11 @@ pub(crate) async fn start_session(
     } else {
         String::new()
     };
-    let cmd =
-        provider_command_in_workspace(&work_dir, &format!("{observer_prefix}{cmd}"), isolated.then_some(name));
+    let cmd = provider_command_in_workspace(
+        &work_dir,
+        &format!("{observer_prefix}{otel_prefix}{cmd}"),
+        isolated.then_some(name),
+    );
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -29921,8 +29955,20 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
         return None;
     }
     let target_groups = lane_groups(target);
-    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &target_groups);
-    worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
+    let home = crate::config::amux_home();
+    // Governance PR 11: the owner can widen a worker's reach with
+    // AMUX_CAP_MESSAGE (workers or `group:<name>`), owner-only to set.
+    if let Some(grant) = super::capabilities::message_granted(&home, origin, target, &target_groups) {
+        tracing::info!(origin, target, grant = %grant, verdict = "message_capability_allowed", measured = true,
+            n_considered = 1, "worker input allowed outside a shared group: an owner-set message capability");
+        return None;
+    }
+    let open = super::worker_messaging::open_inbound_groups(&home, &target_groups);
+    let refusal = worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open);
+    if refusal.is_some() {
+        super::capabilities::existing_refusal(&home, origin, "message", &format!("worker {target}"), target);
+    }
+    refusal
 }
 
 /// Queue producers use an empty sender for system input and "owner" for saved
@@ -30657,10 +30703,12 @@ async fn send_post_detached(
     // Same identity send_post reserves: trimmed, first 64 chars.
     let flight_id: String = body_str(body, "msg_id").trim().chars().take(64).collect();
     let flight = InFlightSend::enter(name, &flight_id);
-    let joined = tokio::spawn(async move {
+    // The send runs detached from the client, and still inside the request's
+    // trace, so its delivery row descends from it (api/trace.rs).
+    let joined = tokio::spawn(crate::api::trace::carry(async move {
         let _flight = flight;
         send_post(&st, &n, &h, &b).await
-    })
+    }))
     .await;
     watch.answered = true;
     match joined {

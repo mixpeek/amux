@@ -241,6 +241,33 @@ fn non_owner_worker(headers: &HeaderMap, gate: &str) -> bool {
     is_worker_origin(headers) && super::session_verbs::admin_origin(headers, gate).is_none()
 }
 
+/// For a request with no worker origin: who the server verified, if anyone
+/// (human_proof.rs). `Err` is the enforce-mode refusal; an unproven caller
+/// allowed by report mode is recorded as unproven, never as "owner".
+#[allow(clippy::result_large_err)]
+fn owner_decider(headers: &HeaderMap, gate: &'static str) -> Result<String, Response> {
+    match super::human_proof::check(headers, gate) {
+        super::human_proof::Verdict::Refused => Err(super::human_proof::refusal(gate)),
+        super::human_proof::Verdict::Proven(p) => Ok(p.actor()),
+        super::human_proof::Verdict::Unproven => Ok("unproven (no worker header)".to_string()),
+    }
+}
+
+/// `create`'s split: a non-owner worker, or an unproven caller that enforce
+/// mode would refuse, adds the item as pending the owner's activation rather
+/// than being refused outright, so the item is kept and a person decides.
+fn creator(headers: &HeaderMap) -> (bool, String) {
+    if is_worker_origin(headers) {
+        // A worker: an admin-group worker acts with the owner's reach, any
+        // other is held to pending. Decided by admin_origin, as before.
+        return (non_owner_worker(headers, "vault_create"), origin_name(headers));
+    }
+    match owner_decider(headers, "vault_create") {
+        Ok(by) => (false, by),
+        Err(_) => (true, "unproven (no worker header)".to_string()),
+    }
+}
+
 fn origin_name(headers: &HeaderMap) -> String {
     headers
         .get("x-amux-session")
@@ -337,8 +364,7 @@ fn create_login(home: &Path, headers: &HeaderMap, name: String, body: &Value) ->
             "error": "rules.origins is required: the hosts this login may be typed into, e.g. [\"netsuite.com\"]",
             "why": "amux checks the page's host against it before every fill, so a worker cannot send the password to a page of its choosing"}));
     }
-    let from_worker = non_owner_worker(headers, "vault_create");
-    let by = origin_name(headers);
+    let (from_worker, by) = creator(headers);
     let item = json!({
         "id": new_id(),
         "name": name,
@@ -540,8 +566,7 @@ async fn create(headers: HeaderMap, Json(body): Json<Value>) -> Response {
             Err(e) => return err(StatusCode::BAD_REQUEST, json!({"error": e, "field": "spend_limits_usd"})),
         },
     };
-    let from_worker = non_owner_worker(&headers, "vault_create");
-    let by = origin_name(&headers);
+    let (from_worker, by) = creator(&headers);
     let item = json!({
         "id": new_id(),
         "name": name,
@@ -571,6 +596,14 @@ async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json
         return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not change a vault item or its rules",
             "why": "the rules exist to bound what workers can spend; only the owner (the dashboard) or an admin-group worker sets them"}));
     }
+    let by = if is_worker_origin(&headers) {
+        origin_name(&headers)
+    } else {
+        match owner_decider(&headers, "vault_update") {
+            Ok(by) => by,
+            Err(refused) => return refused,
+        }
+    };
     let home = amux_home();
     let mut items = load_items(&home);
     let Some(item) = items.iter_mut().find(|i| i["id"].as_str() == Some(id.as_str())) else {
@@ -595,7 +628,7 @@ async fn update(headers: HeaderMap, AxPath(id): AxPath<String>, Json(body): Json
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "by": origin_name(&headers), "change": body}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_updated", "item": id, "by": by, "change": body}));
     Json(json!({"ok": true, "item": view})).into_response()
 }
 
@@ -605,6 +638,14 @@ async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         return err(StatusCode::FORBIDDEN, json!({"error": "a worker may not delete a vault item",
             "why": "only the owner (the dashboard) or an admin-group worker removes vault items"}));
     }
+    let by = if is_worker_origin(&headers) {
+        origin_name(&headers)
+    } else {
+        match owner_decider(&headers, "vault_delete") {
+            Ok(by) => by,
+            Err(refused) => return refused,
+        }
+    };
     let home = amux_home();
     let mut items = load_items(&home);
     let before = items.len();
@@ -615,7 +656,7 @@ async fn remove(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
     if let Err(e) = save_items(&home, &items) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": format!("could not save vault: {e}")}));
     }
-    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id, "by": origin_name(&headers)}));
+    audit(&home, json!({"ts": now_f64(), "event": "item_removed", "item": id, "by": by}));
     Json(json!({"ok": true})).into_response()
 }
 
@@ -829,7 +870,22 @@ fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, 
     }
     if let SpendDecision::NeedsApproval { limit } = decision {
         let target = spend_target(id, amount, merchant);
-        if super::grants::take_allowance(home, session, &target).is_none() {
+        // A remembered decision for exactly this worker and merchant, up to
+        // the amount the owner approved, answers it without a grant
+        // (governance PR 12). The spending limits above still applied.
+        // take_allowance CONSUMES a one-shot approval: call it exactly once.
+        let allowed_once = super::grants::take_allowance(home, session, &target).is_some();
+        let remembered = (!allowed_once).then(|| {
+            super::approval_cards::standing_use_sync("grant", session, &super::approval_cards::grant_key(merchant),
+                Some(amount), &format!("grant:standing:{merchant}"), &format!("{currency} {amount:.2} at {merchant}: {purpose}"))
+        }).flatten();
+        if let Some(sa) = remembered {
+            let mut a = base_audit.clone();
+            a["decision"] = json!("standing_approval");
+            a["standing_approval"] = json!(sa);
+            audit(home, a);
+        }
+        if !allowed_once && remembered.is_none() {
             let view = public_view(item);
             let summary = format!(
                 "{session} wants to charge {currency} {amount:.2} to {} ending {} at {merchant}: {purpose} (rule: approval above ${limit:.0})",
@@ -838,6 +894,21 @@ fn gate_charge(home: &Path, id: &str, item: &Value, session: &str, amount: f64, 
                 "origin": session, "target": target, "item": id, "amount_usd": amount,
                 "currency": currency, "merchant": merchant, "purpose": purpose,
             }));
+            if let Some(g) = &grant {
+                super::approval_cards::file_spawn(super::approval_cards::Ask {
+                    kind: "grant",
+                    item_id: g.clone(),
+                    requester: session.to_string(),
+                    title: format!("Approve {session}'s charge of {currency} {amount:.2} at {merchant}"),
+                    question: format!("Let {session} charge {currency} {amount:.2} at {merchant} ({purpose})?"),
+                    unblocks: format!("Approving opens exactly this one charge; {session} retries it once."),
+                    desc: summary.clone(),
+                    ask_type: "budget",
+                    expires_at: Some(crate::config::now_f64() + 3600.0),
+                    meta: json!({"key": super::approval_cards::grant_key(merchant), "amount_usd": amount,
+                        "merchant": merchant, "currency": currency}),
+                });
+            }
             let mut a = base_audit.clone();
             a["decision"] = json!("needs_approval");
             a["grant"] = json!(grant);
@@ -1595,5 +1666,27 @@ setInterval(()=>{if(n.value&&!n.dataset.t)n.value=''},0);n.addEventListener('bef
             assert_eq!(parse_exp(s), Some((want.0.to_string(), want.1.to_string())), "{s}");
         }
         assert_eq!(parse_exp("13/28"), None);
+    }
+
+    /// GOVERNANCE PR 2. A request with no worker header and no proof does not
+    /// set the vault's rules in enforce mode, and a card it adds waits for the
+    /// owner's activation instead of going live.
+    #[tokio::test]
+    async fn an_unproven_request_is_not_the_owner_of_the_vault() {
+        use crate::api::human_proof::{test_override, Mode, OWNER_PROOF_HEADER};
+        let _g = test_override::set(Mode::Enforce, true);
+        let r = update(HeaderMap::new(), AxPath("vlt_nonexistent".into()), Json(json!({"activate": true}))).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let r = remove(HeaderMap::new(), AxPath("vlt_nonexistent".into())).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(creator(&HeaderMap::new()), (true, "unproven (no worker header)".to_string()),
+            "an unproven card is held for the owner, not refused and not live");
+        let mut owner = HeaderMap::new();
+        owner.insert(OWNER_PROOF_HEADER, axum::http::HeaderValue::from_static("1"));
+        assert_eq!(creator(&owner), (false, "owner-token".to_string()));
+        let _g = test_override::set(Mode::Report, true);
+        assert_eq!(creator(&HeaderMap::new()), (false, "unproven (no worker header)".to_string()),
+            "report mode keeps the old behaviour and records the caller as unproven, not 'owner'");
+        test_override::clear();
     }
 }
