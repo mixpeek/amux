@@ -433,5 +433,97 @@ rot._amux, rot.probe, rot.prompt_check = _real_amux, _real_probe, _real_check
 rot.save(rot.ACCOUNTS, _saved_accounts)
 rot.save(rot.STATE, _saved_state)
 
+
+# ---- usage API readings and free limit resets (2026-11-11)
+import datetime as _dt
+_api = rot.parse_api_usage({"five_hour": None,
+    "seven_day": {"utilization": 99.0, "resets_at": "2026-11-16T01:59:59.749569+00:00"},
+    "weekly_scoped_shares": [{"limit_index": 1, "used_percent_of_weekly": 50, "allowance_percent_of_weekly": 50}]})
+expect(_api == {"seven_day": {"used_percentage": 99.0, "resets_at": "2026-11-16T01:59:59+00:00"}, "fable_share": 50.0},
+       f"the usage API answer parses to the weekly window and Fable's share, got {_api}")
+# The API reads the account itself, so it outranks a higher status-line number in the same window.
+_m, _why = rot.merge_window({"used_percentage": 99, "resets_at": "2026-11-13T07:00:00-05:00"}, 0.0,
+                            "2026-11-13T07:00:00-05:00", "usage-api", at=_dt.datetime.fromisoformat("2026-11-11T10:00:00-05:00"))
+expect(_m["used_percentage"] == 0.0 and _why == "probe", f"a usage-API 0% replaces a stale 99%, got {(_m, _why)}")
+expect(rot.reset_profile("ethan@getmixpeek.com") == "meta-claude-getmixpeek", "profile name from the domain")
+_acc = rot.load(rot.ACCOUNTS, {"accounts": {}})
+_acc["accounts"]["hello@amux.io"] = dict(_acc["accounts"].get("hello@amux.io") or {}, browser_profile="hello-amux-e2e")
+rot.save(rot.ACCOUNTS, _acc)
+expect(rot.reset_profile("hello@amux.io") == "hello-amux-e2e", "accounts.json browser_profile wins")
+
+_at = _dt.datetime.fromisoformat("2026-11-11T10:00:00-05:00")
+_weekly = {"id": "full-reset-2611", "usable_now": True, "resets_left": 1, "clears": ["seven_day"],
+           "percent_used": {"seven_day": 100}, "ends_at": "2026-12-10T22:00:00+00:00", "gives_back_weekly": False}
+_fable = {"id": "launch-2610-fable", "usable_now": True, "resets_left": 1, "clears": ["seven_day_overage_included"],
+          "percent_used": {"seven_day": 100}, "ends_at": "2027-03-09T07:59:00+00:00", "gives_back_weekly": True}
+_far = {"seven_day": {"used_percentage": 100, "resets_at": "2026-11-17T10:00:00-05:00"}, "fable_share": 50}
+_near = {"seven_day": {"used_percentage": 100, "resets_at": "2026-11-12T10:00:00-05:00"}, "fable_share": 50}
+expect(rot.grant_value(_weekly, _far, _at) > rot.grant_value(_fable, _far, _at) > 0,
+       "a weekly reset wins back more than a Fable reset that returns half the week")
+expect(rot.grant_value(_weekly, _far, _at) > rot.grant_value(_weekly, _near, _at),
+       "the same reset is worth more on an account that renews later")
+expect(rot.grant_value(dict(_weekly, usable_now=False), _far, _at) == 0, "a grant that is not usable now is worth nothing")
+expect(rot.grant_value(dict(_weekly, resets_left=0), _far, _at) == 0, "a used grant is worth nothing")
+_pick = rot.best_grant({"near@x": {"eligible": True, "grants": [_weekly]}, "far@x": {"eligible": True, "grants": [_weekly, _fable]},
+                        "off@x": {"eligible": False, "grants": [_weekly]}},
+                       {"near@x": _near, "far@x": _far, "off@x": _far}, _at)
+expect(_pick and _pick[0] == "far@x" and _pick[1]["id"] == "full-reset-2611",
+       f"best_grant takes the weekly reset on the account that renews last, got {_pick and _pick[:2]}")
+_tie = rot.best_grant({"far@x": {"eligible": True, "grants": [dict(_weekly, id="late", ends_at="2027-01-01T00:00:00+00:00"),
+                                                              dict(_weekly, id="early")]}}, {"far@x": _far}, _at)
+expect(_tie and _tie[1]["id"] == "early", "between equal grants the one that expires first goes first")
+
+def _r(email, usable, avail, weekly=100):
+    return {"email": email, "usable": usable, "available_at": avail, "weekly": weekly, "weekly_resets": avail}
+_soon = (_at + _dt.timedelta(hours=1)).isoformat()
+_late = (_at + _dt.timedelta(hours=20)).isoformat()
+_real_time = rot.time.time
+expect(rot.reset_trigger([_r("a", False, _late), _r("b", False, _late)], "a", {}, _at) == "no_usable_account",
+       "every account spent and the next one 20h out: a reset is due")
+expect(rot.reset_trigger([_r("a", False, _soon), _r("b", False, _late)], "a", {}, _at) is None,
+       "an account frees up within RESET_WAIT_S: wait instead")
+expect(rot.reset_trigger([_r("a", True, "now", 10), _r("b", False, _late)], "a", {}, _at) is None,
+       "a usable account means no reset")
+expect(rot.reset_trigger([_r("a", False, _late)], "a", {"reset_used_at": _real_time()}, _at) is None,
+       "at most one reset per RESET_GAP_S")
+_exp = {"b": {"grants": [dict(_weekly, ends_at=(_at + _dt.timedelta(hours=5)).isoformat())]}}
+expect(rot.reset_trigger([_r("a", True, "now", 10), _r("b", False, _late, 60)], "a", {"reset_grants": _exp}, _at) == "grant_expiring",
+       "a grant expiring within a day on a half-spent account is used rather than lost")
+expect(rot.reset_trigger([_r("a", True, "now", 10), _r("b", True, "now", 20)], "a", {"reset_grants": _exp}, _at) is None,
+       "an expiring grant on an account barely used is left alone")
+
+# use_reset never posts as the wrong account, and reports the server's word.
+_real_cai = rot.claude_ai
+rot.claude_ai = lambda email, js: {"email": "someone@else"}
+expect(rot.use_reset("far@x", "full-reset-2611", "org") == "wrong_account", "a profile signed in elsewhere spends nothing")
+rot.claude_ai = lambda email, js: {"email": "far@x", "status": 200, "body": '{"result":"reset","reset":true}'}
+expect(rot.use_reset("far@x", "full-reset-2611", "org") == "reset", "a 200 with result reset is a reset")
+rot.claude_ai = lambda email, js: {"email": "far@x", "status": 429, "body": ""}
+expect(rot.use_reset("far@x", "full-reset-2611", "org") == "rate_limited", "a 429 is reported, not taken as a reset")
+_js = []
+rot.claude_ai = lambda email, js: _js.append(js) or {"email": "far@x", "status": 200, "body": '{"result":"reset"}'}
+rot.use_reset("far@x", "full-reset-2611", "org-1")
+expect('"far@x"' in _js[0] and '"full-reset-2611"' in _js[0] and "/api/organizations/org-1/reset_rate_limits" in _js[0]
+       and '"cedar_ember"' in _js[0], "the POST names the account, the grant, the org and the program")
+rot.claude_ai = _real_cai
+
+
+# After a reset whose API re-read failed, the 0% must land, not be dropped as stale.
+_m2, _why2 = rot.merge_window({"used_percentage": 100, "resets_at": "2026-11-16T02:00:00+00:00"}, 0.0,
+                              "2026-11-16T02:00:00+00:00", "limit-reset", at=_at)
+expect(_m2["used_percentage"] == 0.0, f"a limit-reset 0% replaces the known 100%, got {(_m2, _why2)}")
+# A machine without the profiles opens no browser and says why.
+_real_pd, _real_rs = rot.PROFILES_DIR, rot.reset_status
+rot.PROFILES_DIR = tempfile.mkdtemp()
+_opened = []
+rot.reset_status = lambda e: _opened.append(e) or (None, "x")
+rot.save(rot.STATE, {})
+expect(rot.maybe_reset([_r("far@x", False, _late)], "far@x", _at) is None and _opened == [],
+       f"no browser profile here: no status read, got {_opened}")
+os.makedirs(os.path.join(rot.PROFILES_DIR, "meta-claude-x"))
+rot.maybe_reset([_r("far@x", False, _late)], "far@x", _at)
+expect(_opened == ["far@x"], f"with the profile present the grants are read, got {_opened}")
+rot.PROFILES_DIR, rot.reset_status = _real_pd, _real_rs
+
 print(f"test-claude-rotate: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

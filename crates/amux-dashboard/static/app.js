@@ -14137,6 +14137,44 @@ async function _boardOneSet(name, on) {
   }
 }
 
+// Who wrote the description and whether amux keeps it current
+// (runtime_jobs/desc_refresh.rs). The owner's own edit locks it; Revert puts
+// back the text the last change replaced.
+function _descNote(s) {
+  if (s.isolated) return 'Description for the owner; isolated workers are hidden from peers.';
+  const m = s.desc_meta || {};
+  const when = m.at ? ' ' + timeAgo(m.at) : '';
+  const by = m.by === 'auto' ? 'Updated by amux from recent work' + when
+    : m.by === 'owner' ? 'Written by you' + when
+    : m.by ? 'Written by ' + m.by + when : '';
+  const keep = m.locked ? 'Locked: amux will not change it.' : 'amux keeps it current with this worker\'s work.';
+  return (by ? by + (m.prev ? ', was "' + m.prev + '"' : '') + '. ' : '') + 'Used by people and peer-worker discovery. ' + keep;
+}
+
+function _descControls(s, q) {
+  if (s.isolated) return '';
+  const m = s.desc_meta || {};
+  const b = (fn, label, extra) => ' <button class="btn worker-config-btn"'
+    + (extra || '') + ' onclick="event.stopPropagation();' + fn + '(\'' + q + '\')">' + label + '</button>';
+  return (m.prev ? b('_descRevert', 'Revert', ' title="Restore: ' + esc(m.prev) + '"') : '')
+    + b('_descLockToggle', m.locked ? 'Unlock' : 'Lock', ' aria-pressed="' + !!m.locked + '" title="' + (m.locked ? 'Let amux keep it current' : 'Stop amux changing it') + '"');
+}
+
+async function _descPatch(name, body, done) {
+  const r = await apiCall(API + '/api/sessions/' + encodeURIComponent(name) + '/config', {
+    method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (!r) return;  // apiCall already said why
+  const d = await r.json().catch(() => ({}));
+  showToast(d.message || done);
+  fetchSessions();
+}
+function _descRevert(name) { return _descPatch(name, { desc_revert: true }, 'Previous description restored'); }
+function _descLockToggle(name) {
+  const s = (sessions || []).find(x => x.name === name) || {};
+  return _descPatch(name, { desc_lock: !(s.desc_meta || {}).locked }, 'Saved');
+}
+
 function _workerConfigurationRow(key, label, value, note, controls) {
   return '<div class="worker-config-row" data-worker-config="' + esc(key) + '">'
     + '<div class="worker-config-copy"><div class="worker-config-label">'
@@ -14220,7 +14258,7 @@ function _workerPrimaryConfigurationsHTML(name) {
   const model = sessionConfiguredModel(s);
   const effort = flagValue(s.flags || '', '--effort') || ((s.flags || '').match(/model_reasoning_effort=["']?([a-z]+)/) || [])[1] || '';
   const q = escJs(name);
-  const edit = (field, current, extra) => '<button class="btn" style="font-size:var(--fs-2xs);min-height:32px;padding:var(--space-1) var(--space-2);"'
+  const edit = (field, current, extra) => '<button class="btn worker-config-btn"'
     + ' onclick="event.stopPropagation();editField(\'' + q + '\',\'' + field + '\',\''
     + escJs(current || '') + '\'' + (extra ? ',\'' + escJs(extra) + '\'' : '') + ')">Edit</button>';
   const sw = (on, fn, label) => '<button class="btn" role="switch" aria-checked="'
@@ -14229,7 +14267,7 @@ function _workerPrimaryConfigurationsHTML(name) {
     + (on ? 'On' : 'Off') + '</button>';
   const identity = [
     _workerConfigurationRow('name', 'Name', s.name || name, s.isolated ? 'Renaming preserves messages and worker identity.' : 'Renaming preserves tasks, messages, memory, and worker identity.', edit('name', s.name || name)),
-    _workerConfigurationRow('description', 'Description', s.desc || '', s.isolated ? 'Description for the owner; isolated workers are hidden from peers.' : 'Used by people and peer-worker discovery.', edit('desc', s.desc || '')),
+    _workerConfigurationRow('description', 'Description', s.desc || '', _descNote(s), edit('desc', s.desc || '') + _descControls(s, q)),
     _workerConfigurationRow('task_label', 'Task label override', s.task_override || '', s.isolated ? 'An owner-visible label; it does not create or select a board task.' : 'Blank returns the card to its board/source-derived label.', edit('task', s.task_override || '')),
     _workerConfigurationRow('groups', 'Groups', (s.tags || []).join(', '), 'Controls membership, inherited configuration, and default message reach.', edit('tags', (s.tags || []).join(', '))),
   ];
@@ -16540,7 +16578,7 @@ async function _peekLoadSchedules() {
     _peekColorSchedBadge(sched);   // active/inactive two-number badge
   };
   try {
-    await Promise.all([fetchSchedules(), fetchSchedulerRuns()]);
+    await Promise.all([fetchSchedules(), fetchSchedulerRuns(), _evSubsFetch()]);
     if (!peekSession) return;
     _idb.set('schedules_all', schedules);   // cache for offline reads
     _paint();
@@ -39452,14 +39490,100 @@ document.addEventListener('click', e => {
   // A worker tagged in markdown has its own handler (_bindMdFileLinks): it
   // closes the file it sits in first, so the worker is not opened beneath it.
   if (a.classList.contains('md-worker-link')) return;
-  if (!_ownLinkHash(a.getAttribute('href'))) return;
-  e.preventDefault(); e.stopPropagation();
-  _openOwnLink(a.href, 'anchor');
+  if (_ownLinkHash(a.getAttribute('href'))) {
+    e.preventDefault(); e.stopPropagation();
+    _openOwnLink(a.href, 'anchor');
+    return;
+  }
+  if (_ownPageLink(a.href)) {
+    e.preventDefault(); e.stopPropagation();
+    _openOwnPage(a.href, 'anchor');
+  }
 }, true);
 // The terminal's links (xterm's web-links addon) open the same way.
 function _termLinkOpen(e, uri) {
-  if (!(e && (e.metaKey || e.ctrlKey)) && _openOwnLink(uri, 'terminal')) return;
+  const mod = !!(e && (e.metaKey || e.ctrlKey));
+  if (!mod && _openOwnLink(uri, 'terminal')) return;
+  if (!mod && _ownPageLink(uri)) { _openOwnPage(uri, 'terminal'); return; }
   window.open(uri, '_blank');
+}
+
+// A PAGE ON THIS AMUX THAT IS NOT THE DASHBOARD NEVER REPLACES IT IN THE APP.
+// In the iOS app (its web view loads window.open in place) and an installed
+// web app (a same-origin link opens inside the app window) there is no
+// browser Back. A worker's /pub/ link tapped in the terminal left the owner on
+// a bare "Link not found" page with no way back short of quitting the app
+// (Doron, 2026-11-12; the iOS back button from #410 only reaches new builds).
+// So in an app, a public link, an HTML page or an app on another port of this
+// host opens over the dashboard with a close bar, and a link still waiting for
+// approval opens Apps instead of a dead page. A browser tab keeps its new tab.
+function _inAppWindow() {
+  try {
+    return !!(navigator.standalone || /\bAmuxApp\b/.test(navigator.userAgent || '')
+      || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  } catch (_) { return false; }
+}
+// The link, as a URL, when it is a page on this amux outside the dashboard and
+// this is an app window; otherwise null.
+function _ownPageLink(href) {
+  if (!_inAppWindow()) return null;
+  let u;
+  try { u = new URL(href, location.href); } catch (_) { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  const hosts = [location.hostname];
+  try { if (_deepLinkBase) hosts.push(new URL(_deepLinkBase).hostname); } catch (e) { console.warn('[own-link] deep link base is not a URL', _deepLinkBase, e); }
+  if (!hosts.includes(u.hostname)) return null;
+  const ownOrigin = u.origin === location.origin || (_deepLinkBase && u.origin === _deepLinkBase.replace(/\/+$/, ''));
+  if (!ownOrigin) return u; // an app on another port of this host
+  return /^\/(pub|pages)\//.test(u.pathname) ? u : null;
+}
+function _ownPageBeacon(verdict, how) {
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'own-link', verdict, how, measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (e) { console.warn('[own-link] beacon not sent', verdict, e); }
+}
+async function _openOwnPage(href, how) {
+  const u = _ownPageLink(href) || new URL(href, location.href);
+  const m = u.pathname.match(/^\/pub\/([^/]+)/);
+  if (m) {
+    let links = _pubLinks;
+    try { links = (await _pubFetch('')).links || []; _pubLinks = links; } catch (e) { console.warn('[own-link] published links not refreshed; using the cached list', e); }
+    const l = links.find(x => x.id === m[1] || (x.aliases || []).includes(m[1]));
+    if (l && l.pending) {
+      _ownPageBeacon('pending_shown_in_apps', how);
+      if (location.hash === '#view=apps') _pagesEnter(); else location.hash = '#view=apps';
+      showToast('Approve it first: "' + _pubName(l) + '" does not open until you do.');
+      return;
+    }
+  }
+  _ownPageBeacon('opened_over_dashboard', how);
+  _ownPageOverlay(u.href);
+}
+function _ownPageClose() {
+  const el = document.getElementById('own-page-overlay');
+  if (el) el.remove();
+  document.removeEventListener('keydown', _ownPageKey, true);
+}
+function _ownPageKey(e) { if (e.key === 'Escape') { e.stopPropagation(); _ownPageClose(); } }
+function _ownPageOverlay(url) {
+  _ownPageClose();
+  const el = document.createElement('div');
+  el.id = 'own-page-overlay';
+  el.className = 'own-page-overlay';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Page opened from amux');
+  let shown = url;
+  try { const u = new URL(url); shown = (u.origin === location.origin ? '' : u.host) + u.pathname; } catch (e) { console.warn('[own-link] showing the raw URL', url, e); }
+  el.innerHTML = '<div class="own-page-bar">'
+    + '<button type="button" class="btn own-page-back" aria-label="Back to amux">&#x2039; amux</button>'
+    + '<span class="own-page-url" title="' + esc(url) + '">' + esc(shown) + '</span></div>'
+    + '<iframe class="own-page-frame" title="' + esc(shown) + '"></iframe>';
+  el.querySelector('.own-page-back').onclick = _ownPageClose;
+  el.querySelector('iframe').src = url;
+  document.body.appendChild(el);
+  document.addEventListener('keydown', _ownPageKey, true);
 }
 
 function _copyFileDeeplink(path) {
@@ -42494,7 +42618,7 @@ function switchView(view) {
     // Only poll if SSE is not active (SSE pushes board updates)
     if (_sseFallback && !boardTimer) boardTimer = setInterval(fetchBoard, 5000);
   } else if (view === 'scheduler') {
-    Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit()])
+    Promise.all([fetchSchedules(), fetchSchedulerRuns(), fetchSchedulerAudit(), _evSubsFetch()])
       .then(() => { renderScheduler(); renderSchedulerAudit(); });
     // amux's own background jobs live under the user's schedules. Fetched
     // separately because they are a separate thing (see renderSystemJobs), and
@@ -45994,7 +46118,7 @@ function renderScheduler(opts) {
       <div class="sx-empty-ico">&#x23F0;</div>
       <div class="sx-empty-title">No schedules yet</div>
       <div>Run a shell command or send a worker a message on a timer.</div>
-      <button class="btn primary" onclick="${main ? 'openSchedModal()' : '_peekNewSchedule()'}">+ New schedule</button>
+      <button class="btn primary" onclick="${main ? '_sxNew()' : '_sxNew(peekSession)'}">+ New schedule</button>
     </div>`;
   } else if (main && f.group === 'system') {
     listEl.innerHTML = '';
@@ -46060,6 +46184,223 @@ function renderScheduler(opts) {
     }).join('');
   }
   if (_sxDetailId && document.getElementById('sched-detail') && !document.getElementById('sched-detail').hidden) _sxRenderDetail();
+  _evRender({ session: sessionFilter });
+}
+
+// ── Event subscriptions in the Scheduler (docs/design/event-subscriptions.md) ──
+// A subscription is a schedule whose trigger is an event instead of a time, so
+// it lives here: its own section under the schedules, the same New button, a
+// third type in the filter, and each worker's Schedules tab shows the ones that
+// wake it. The words are compiled and backtested by the server (dry_run) and
+// shown before anything is saved.
+let _evSubs = [];
+async function _evSubsFetch() {
+  const r = await apiCall(API + '/api/subscriptions');
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  _evSubs = d.subscriptions || [];
+}
+
+// Who a subscription is for: a worker it wakes, or the owner it tells.
+function _evWho(x) {
+  return x.action === 'send' ? x.action_target : (x.action === 'notify' ? '' : x.owner);
+}
+function _evThen(x) {
+  if (x.action === 'send') return 'wakes ' + x.action_target;
+  if (x.action === 'notify') return 'tells you';
+  return x.action + ' ' + x.action_target;
+}
+
+function _evRender(opts) {
+  opts = opts || {};
+  // In a worker's Schedules tab the section goes INSIDE the scrolling list,
+  // after the schedules: as a sibling box it sat on top of them (Ethan's
+  // screenshot, 2026-11-11, "in the way").
+  let el = document.getElementById('scheduler-events');
+  if (opts.session) {
+    const list = document.getElementById('peek-schedules-list');
+    if (!list) return;
+    el = list.querySelector(':scope > .sx-ev-wrap');
+    if (!el) { el = document.createElement('div'); el.className = 'sx-ev-wrap'; list.appendChild(el); }
+  }
+  if (!el) return;
+  const type = opts.session ? '' : (_sxFilters.type || '');
+  if (!opts.session && type === 'event') {
+    const list = document.getElementById('scheduler-list');
+    if (list) list.innerHTML = '';
+  }
+  if (type && type !== 'event') { el.innerHTML = ''; return; }
+  const q = ((opts.session ? _peekSchedSearch : schedSearchQuery) || '').trim().toLowerCase();
+  const rows = _evSubs.filter(x => (!opts.session || _evWho(x) === opts.session)
+    && (!q || ((x.criteria || '') + ' ' + x.name + ' ' + x.pattern).toLowerCase().includes(q)));
+  const target = opts.session ? '\'' + escJs(opts.session) + '\'' : '';
+  const newBtn = '<button class="btn sx-ev-new" onclick="_evNew(' + target + ')">+ New</button>';
+  if (!rows.length && type !== 'event') {
+    // None yet: one line, not a section that takes half a phone screen.
+    el.innerHTML = '<section class="sx-ev-empty" data-group="events">'
+      + '<span class="sx-ev-empty-text"><span aria-hidden="true">&#x26A1;</span> When something happens'
+      + (q ? ': nothing matches' : ' &middot; none yet') + '</span>' + newBtn + '</section>';
+    return;
+  }
+  el.innerHTML = '<section class="sx-group" data-group="events">'
+    + '<header class="sx-group-head"><span class="sx-group-ico" aria-hidden="true">&#x26A1;</span>'
+    + '<div class="sx-group-text"><h3>When something happens <span class="sx-count">' + rows.length + '</span></h3>'
+    + '<p>Runs when an event matches, not on a clock.</p></div>' + newBtn + '</header>'
+    + (rows.length ? rows.map(_evRowHTML).join('')
+      : '<div class="sx-group-empty">' + (q ? 'Nothing matches.' : 'None yet. Say what should start work, in plain words.') + '</div>')
+    + '</section>';
+}
+
+function _evRowHTML(x) {
+  const last = x.last_fired_at ? ' &middot; last ' + esc(timeAgo(x.last_fired_at)) : '';
+  return '<div class="sx-ev-row' + (x.enabled ? '' : ' sx-ev-off') + '" data-sub="' + x.id + '">'
+    + '<button class="sx-ev-main" onclick="_evOpen(' + x.id + ')">'
+    + '<span class="sx-ev-title">' + esc(x.criteria || x.name) + '</span>'
+    + '<span class="sx-ev-sub">' + esc(_evThen(x)) + ' &middot; fired ' + x.fire_count + '&times;' + last + (x.enabled ? '' : ' &middot; off') + '</span>'
+    + '</button>'
+    + '<button class="btn sx-ev-toggle" role="switch" aria-checked="' + !!x.enabled + '" aria-label="' + (x.enabled ? 'Turn off' : 'Turn on') + '"'
+    + ' onclick="_evSet(' + x.id + ',' + !x.enabled + ')">' + (x.enabled ? 'On' : 'Off') + '</button>'
+    + '</div>';
+}
+
+async function _evRefresh() {
+  await _evSubsFetch();
+  renderScheduler();
+  if (peekSession) _peekRenderSchedules();
+}
+
+async function _evSet(id, enabled) {
+  const r = await apiCall(API + '/api/subscriptions/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled }),
+  });
+  if (!r) return;
+  showToast(enabled ? 'Turned on' : 'Turned off');
+  _evRefresh();
+}
+
+async function _evRemove(id) {
+  if (!await showConfirm('Remove this subscription and its history?', 'Remove', true)) return;
+  const r = await apiCall(API + '/api/subscriptions/' + id, { method: 'DELETE' });
+  if (!r) return;
+  showToast('Subscription removed');
+  _evRefresh();
+}
+
+// New: a time or an event. The time path is the existing schedule dialog.
+async function _sxNew(worker) {
+  const pick = await new Promise(resolve => {
+    window._sxNewPick = (v) => { resolve(v); _modalClose(false); };
+    showFormModal('New', '<div class="sx-ev-choice">'
+      + '<button class="btn sx-ev-choice-btn" onclick="_sxNewPick(\'time\')"><b>&#x23F1; At a time</b><span>every day at 9, every 15 minutes, once on Friday</span></button>'
+      + '<button class="btn sx-ev-choice-btn" onclick="_sxNewPick(\'event\')"><b>&#x26A1; When something happens</b><span>a browser hits a CAPTCHA, a card moves to done</span></button>'
+      + '</div>', 'Cancel').then(() => resolve(null));
+  });
+  if (pick === 'time') return worker ? _peekNewSchedule() : openSchedModal();
+  if (pick === 'event') return _evNew(worker);
+}
+
+const _EV_EXAMPLES = [
+  'a browser hits a captcha and cannot continue',
+  'a card on my board moves to done',
+  'a worker finishes its turn',
+  'a new build goes live',
+  'a worker is low on context',
+];
+
+async function _evNew(worker) {
+  const workers = (sessions || []).filter(s => !s.isolated && !s.archived).map(s => s.name).sort();
+  const opt = (n) => '<option value="' + esc(n) + '"' + (n === worker ? ' selected' : '') + '>' + esc(n) + '</option>';
+  const ok = await showFormModal('When something happens',
+    '<label class="sx-ev-label" for="ev-words">When…</label>'
+    + '<input id="ev-words" class="input sx-ev-input" list="ev-examples" placeholder="a browser hits a captcha" autocomplete="off">'
+    + '<datalist id="ev-examples">' + _EV_EXAMPLES.map(e => '<option value="' + esc(e) + '">').join('') + '</datalist>'
+    + '<div class="sx-ev-label">Then</div>'
+    + '<label class="sx-ev-radio"><input type="radio" name="ev-then" value="notify"' + (worker ? '' : ' checked') + '> tell me</label>'
+    + '<label class="sx-ev-radio"><input type="radio" name="ev-then" value="send"' + (worker ? ' checked' : '') + '> wake worker '
+    + '<select id="ev-worker" class="input" onfocus="document.querySelector(\'input[name=ev-then][value=send]\').checked=true">' + workers.map(opt).join('') + '</select></label>'
+    + '<label class="sx-ev-radio"><input type="checkbox" id="ev-judge"> the helper model checks each match against my words</label>'
+    + '<a href="#" class="sx-ev-browse" onclick="event.preventDefault();_evCatalog()">Browse all events</a>',
+    'Preview');
+  if (!ok) return;
+  const words = (document.getElementById('ev-words')?.value || '').trim();
+  const then = (document.querySelector('input[name=ev-then]:checked') || {}).value || 'notify';
+  const who = document.getElementById('ev-worker')?.value || '';
+  const judge = !!document.getElementById('ev-judge')?.checked;
+  if (!words) { showToast('Say when, in plain words'); return; }
+  const base = { criteria: words, judge };
+  if (then === 'send') Object.assign(base, { action: 'send', action_target: who });
+  else Object.assign(base, { action: 'notify', action_target: 'owner' });
+  showToast('Reading “' + words + '”…');
+  // Not through the offline outbox (apiCall): the compile takes 15-20 s and the
+  // outbox aborted it and queued it for a replay (live, 2026-11-11: "Queued (1
+  // pending)" with no preview). A preview has to answer now, and a replayed
+  // save would add a second subscription.
+  const post = async (extra) => {
+    try {
+      const r = await fetch(API + '/api/subscriptions', { method: 'POST', _skipOutbox: true,
+        headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(Object.assign({}, base, extra)) });
+      if (!r.ok) { showToast(await _apiErrText(r)); return null; }
+      return r;
+    } catch (e) {
+      showToast('Could not reach amux: ' + (e.message || e));
+      return null;
+    }
+  };
+  const r = await post({ dry_run: true });
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  const c = d.compiled || {};
+  const b = d.backtest || {};
+  const ex = (b.examples || []).map(e => '<li>' + esc(new Date(e.ts * 1000).toLocaleString()) + ' &middot; '
+    + esc([e.event.session, e.event.title, e.event.url, e.event.status].filter(Boolean).join(' · ')) + '</li>').join('');
+  const save = await showFormModal('Save this?',
+    '<div class="sx-ev-preview">'
+    + '<div><b>' + esc(c.summary || words) + '</b></div>'
+    + '<div class="sx-ev-reads">Reads as: <code>' + esc(d.pattern) + '</code>'
+    + (d.filter && Object.keys(d.filter).length ? ' where <code>' + esc(JSON.stringify(d.filter)) + '</code>' : '') + '</div>'
+    + (b.measured ? '<div>Last 7 days: <b>' + b.matched + '</b> of ' + b.n_considered + ' events matched</div>' : '')
+    + (ex ? '<ul class="sx-ev-examples">' + ex + '</ul>' : '')
+    + (c.judge || judge ? '<div>The helper model checks each match against your words.</div>' : '')
+    + '<div>Then it ' + (then === 'send' ? 'wakes ' + esc(who) : 'tells you in #general') + '.</div>'
+    + '</div>', 'Save');
+  if (!save) return;
+  // Save exactly what was shown: a second compile could differ.
+  const r2 = await post({ pattern: d.pattern, filter: d.filter, judge: judge || !!c.judge, dedupe_key: c.dedupe_key || '' });
+  if (!r2) return;
+  showToast('Subscribed: ' + words);
+  _evRefresh();
+}
+
+async function _evOpen(id) {
+  const x = _evSubs.find(s => s.id === id);
+  if (!x) return;
+  const r = await apiCall(API + '/api/subscriptions/fires?limit=20&subscription_id=' + id);
+  const fires = r ? ((await r.json().catch(() => ({}))).fires || []) : [];
+  const hist = fires.length ? fires.map(f => {
+    const e = f.event_data || {};
+    return '<li><span class="sx-ev-when">' + esc(new Date(f.fired_at * 1000).toLocaleString()) + '</span> '
+      + esc([f.event_type, e.worker || e.session || e.lane, e.title, e.url].filter(Boolean).join(' · ')) + ' &rarr; ' + esc(f.outcome) + '</li>';
+  }).join('') : '<li>Not fired yet.</li>';
+  showFormModal(x.criteria || x.name,
+    '<div class="sx-ev-preview">'
+    + '<div>Reads as: <code>' + esc(x.pattern) + '</code>' + (x.filter && Object.keys(x.filter).length ? ' where <code>' + esc(JSON.stringify(x.filter)) + '</code>' : '') + '</div>'
+    + '<div>Then it ' + esc(_evThen(x)) + (x.judge ? '; the helper model checks each match' : '') + '.</div>'
+    + '<div>Fired ' + x.fire_count + '&times; &middot; ' + (x.enabled ? 'on' : 'off') + ' &middot; by ' + esc(x.owner || x.created_by || 'owner') + '</div>'
+    + '<div class="sx-ev-label">History</div><ul class="sx-ev-examples">' + hist + '</ul>'
+    + '<div class="sx-ev-actions">'
+    + '<button class="btn" onclick="_modalClose(false);_evSet(' + x.id + ',' + !x.enabled + ')">' + (x.enabled ? 'Turn off' : 'Turn on') + '</button> '
+    + '<button class="btn danger" onclick="_modalClose(false);_evRemove(' + x.id + ')">Remove</button>'
+    + '</div></div>', 'Done');
+}
+
+async function _evCatalog() {
+  const r = await apiCall(API + '/api/subscriptions/catalog');
+  if (!r) return;
+  const d = await r.json().catch(() => ({}));
+  const rows = (d.types || []).map(t => '<li><b>' + esc(t.type) + '</b> <span class="sx-ev-when">' + t.count + ' in 7 days</span>'
+    + (t.meaning ? '<div>' + esc(t.meaning) + '</div>' : '') + '</li>').join('');
+  showFormModal('Every event amux records', '<p>' + (d.count || 0) + ' types, ' + (d.n_considered || 0)
+    + ' events in the last 7 days. Describe one in plain words and amux matches it.</p><ul class="sx-ev-examples sx-ev-catalog">' + rows + '</ul>', 'Done');
 }
 
 // ── Row / detail "more" menu ────────────────────────────────────────────────
@@ -56218,7 +56559,6 @@ function _vaultEnsurePage() {
       <div class="vault-tabs" role="tablist" aria-label="Vault sections">
         <button class="vault-tab" role="tab" id="vault-tab-secrets" aria-controls="vault-panel-secrets" onclick="_vaultTab('secrets')">${_vaultIcon('key')}Secrets</button>
         <button class="vault-tab" role="tab" id="vault-tab-payments" aria-controls="vault-panel-payments" onclick="_vaultTab('payments')">${_vaultIcon('card')}Payment Methods<span id="vault-pending-count" class="vault-chip vault-chip-global" hidden></span></button>
-        <button class="vault-tab" role="tab" id="vault-tab-apikeys" aria-controls="vault-panel-apikeys" onclick="_vaultTab('apikeys')">${_vaultIcon('key')}API Keys</button>
       </div>
       <div class="vault-body">
         <div id="vault-panel-secrets" role="tabpanel" aria-labelledby="vault-tab-secrets">
@@ -56244,13 +56584,6 @@ function _vaultEnsurePage() {
           <p class="ui-help">Cards workers can use without seeing. amux types the card into the worker's checkout page; the number never reaches a prompt or a log. A charge above a card's approval threshold waits for your approval in the approvals banner. A charge that would pass a daily, monthly or yearly spending limit is refused outright.</p>
           <div class="vault-actions-row"><button class="btn primary" id="vault-card-add-btn" onclick="_vaultCardAdd()">${_vaultIcon('plus')}Add Payment Method</button></div>
           <div id="vault-items">Loading…</div>
-        </div>
-        <div id="vault-panel-apikeys" role="tabpanel" aria-labelledby="vault-tab-apikeys" hidden>
-          <div id="vault-apikeys-custom">
-            <p class="ui-help">API keys are key/value secrets: encrypted, scoped to everyone, chosen groups or one worker, and injected as environment variables when a worker starts. They follow the same scope, reveal, rotation and audit rules as every other secret.</p>
-            <div class="vault-actions-row"><button class="btn primary" id="vault-apikey-add-btn" onclick="_vaultEdit(null,'add',{kind:'api_key'})">${_vaultIcon('plus')}Add API Key</button></div>
-            <div id="vault-apikeys-table" aria-live="polite"></div>
-          </div>
         </div>
       </div>
     </section>`;
@@ -56294,7 +56627,6 @@ function _vaultPendingRender(items) {
 function _vaultLeave() {
   if (!document.getElementById('vault-view')?.firstElementChild) return;
   _vaultMaskAll();
-  _vaultApiKeysHome();
   document.querySelectorAll('.vault-sub').forEach(el => el.remove());
 }
 // Open the Vault tab on a given section, optionally filtered to a worker or
@@ -56304,7 +56636,7 @@ function openVault(tab, filter) {
   _vault.q = ''; _vault.scope = ''; _vault.group = ''; _vault.worker = ''; _vault.prov = null;
   if (filter && filter.group) _vault.group = String(filter.group).toLowerCase();
   if (filter && filter.worker) _vault.worker = filter.worker;
-  _vault.tab = ['payments', 'apikeys'].includes(tab) ? tab : 'secrets';
+  _vault.tab = tab === 'payments' ? tab : 'secrets';
   const q = document.getElementById('vault-q'); if (q) q.value = '';
   if (activeView !== 'vault') switchView('vault');
   else _vaultEnter();
@@ -56326,7 +56658,7 @@ function closeVault() {
 }
 function _vaultTab(name) {
   _vault.tab = name;
-  for (const t of ['secrets', 'payments', 'apikeys']) {
+  for (const t of ['secrets', 'payments']) {
     const on = t === name;
     const b = document.getElementById('vault-tab-' + t);
     if (b) { b.classList.toggle('active', on); b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; }
@@ -56334,23 +56666,6 @@ function _vaultTab(name) {
     if (p) p.hidden = !on;
   }
   if (name === 'payments') _vaultLoad();
-  if (name === 'apikeys') {
-    // Settings no longer shows API Keys (b15e61d9); the section's markup and
-    // handlers stay in #settings-moved-out, and this tab borrows the node so
-    // every id its scripts look up keeps working.
-    const sec = document.getElementById('settings-apikeys-section');
-    const panel = document.getElementById('vault-panel-apikeys');
-    if (sec && panel && sec.parentElement !== panel) panel.appendChild(sec);
-    loadApiKeys();
-    _vaultApiKeysRender();
-  }
-}
-// Return the borrowed API Keys section before the overlay is removed, or the
-// next openVault would find nothing to borrow.
-function _vaultApiKeysHome() {
-  const sec = document.getElementById('settings-apikeys-section');
-  const home = document.getElementById('settings-moved-out');
-  if (sec && home && sec.parentElement !== home) home.appendChild(sec);
 }
 async function _vaultSecretsLoad() {
   const table = document.getElementById('vault-secrets-table');
@@ -56447,7 +56762,6 @@ function _vaultVisible() {
 }
 function _vaultRender() {
   _vaultWorkerPanel();
-  _vaultApiKeysRender();
   const table = document.getElementById('vault-secrets-table');
   if (!table) return;
   if (_vault.loadErr) {
@@ -56464,8 +56778,6 @@ function _vaultRender() {
   if (!list.length) { table.innerHTML = '<div class="vault-empty"><b>No secrets match</b><p>Change the search or filters.</p></div>'; return; }
   table.innerHTML = _vaultTableHtml(list, 'vault-val-');
 }
-// One table markup for every list of secrets (the Secrets tab and the API
-// Keys tab), so a row action works the same wherever the row is shown.
 function _vaultTableHtml(list, idPrefix) {
   const effective = new Map((_vault.prov?.resolved || []).map(x => [x.id, x]));
   return '<table class="vault-table"><thead><tr><th scope="col">Name</th><th scope="col">Value</th><th scope="col">Scope</th><th scope="col">Provisioned to</th><th scope="col">Updated</th><th scope="col"><span class="sr-only">Actions</span><span aria-hidden="true">Actions</span></th></tr></thead><tbody>'
@@ -56473,7 +56785,7 @@ function _vaultTableHtml(list, idPrefix) {
       const shown = Object.prototype.hasOwnProperty.call(_vault.revealed, i.id);
       const forWorker = _vault.worker && _vault.prov ? (effective.has(i.id) ? _vaultStateBadge(effective.get(i.id).state) : _vaultStateBadge('overridden')) : '';
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
-        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.kind === 'api_key' ? '<span class="vault-chip vault-chip-apikey">API key</span>' : '') + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
+        + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
         + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="' + idPrefix + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
         + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
@@ -56482,16 +56794,6 @@ function _vaultTableHtml(list, idPrefix) {
         + '<td data-label="Actions" class="vault-actions-cell"><button class="vault-icon-btn vault-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(i.key) + '" onclick="_vaultMenu(event,\'' + escJs(i.id) + '\')">' + _vaultIcon('more') + '</button></td>'
         + '</tr>';
     }).join('') + '</tbody></table>';
-}
-// API Keys tab: the secrets filed as kind api_key. Same store, same scope,
-// same reveal, rotate, access and audit actions as any secret.
-function _vaultApiKeysRender() {
-  const el = document.getElementById('vault-apikeys-table');
-  if (!el) return;
-  if (_vault.loadErr) { el.innerHTML = '<div class="vault-empty" role="alert"><b>API keys unavailable</b><p>' + esc(_vault.loadErr) + '</p></div>'; return; }
-  const list = _vault.items.filter(i => i.kind === 'api_key').sort((a, b) => a.key.localeCompare(b.key));
-  el.innerHTML = list.length ? _vaultTableHtml(list, 'vault-akval-')
-    : '<div class="vault-empty"><b>No API keys yet</b><p>Add a key name and value, then choose which workers receive it.</p></div>';
 }
 function _vaultMenuClose() {
   document.querySelectorAll('.vault-menu').forEach(m => m.remove());
@@ -56567,11 +56869,11 @@ function _vaultSubClose(id) {
 }
 // Add, Edit and Rotate share one dialog. Edit never shows the stored value:
 // leaving Value blank keeps it, typing one rotates (version + 1).
-function _vaultEdit(id, mode, opts) {
+function _vaultEdit(id, mode) {
   const it = id ? _vault.items.find(x => x.id === id) : null;
   mode = it ? (mode || 'edit') : 'add';
-  const kind = it ? (it.kind || 'secret') : (opts?.kind === 'api_key' ? 'api_key' : 'secret');
-  const noun = kind === 'api_key' ? 'API Key' : 'Secret';
+  const kind = it ? (it.kind || 'secret') : 'secret';
+  const noun = 'Secret';
   const wg = _vaultWorkerGroups();
   const groups = [...new Set([..._vault.groups, ...Object.values(wg).flat()])].sort();
   const workers = Object.keys(wg).sort();
@@ -57511,71 +57813,6 @@ async function saveHelperModel(val) {
   } catch(e) { showToast('Error: ' + e.message); }
 }
 
-// ── API Keys ───────────────────────────────────────────────────────────────────
-// Same 3 keys provider::live_catalog (server) can probe for a real model
-// list; the placeholder/status ids match what api/settings.rs's PROVIDER_ENV_KEYS
-// allows it to read/write. ANTHROPIC_API_KEY keeps its ORIGINAL element ids
-// (settings-anthropic-key / settings-apikey-status, no suffix) — e2e/settings.spec.ts
-// locates them unsuffixed and saveApiKey() with no argument is a real call site
-// (index.html's own onclick used to omit it), so both stay working unchanged.
-const API_KEY_FIELDS = [
-  { key: 'ANTHROPIC_API_KEY', input: 'settings-anthropic-key', status: 'settings-apikey-status', placeholder: 'sk-ant-...' },
-  { key: 'OPENAI_API_KEY', input: 'settings-openai-key', status: 'settings-apikey-status-openai', placeholder: 'sk-...' },
-  { key: 'GEMINI_API_KEY', input: 'settings-gemini-key', status: 'settings-apikey-status-gemini', placeholder: 'AIza...' },
-];
-
-async function loadApiKeys() {
-  try {
-    const r = await fetch('/api/settings/env');
-    const data = await r.json();
-    for (const f of API_KEY_FIELDS) {
-      const inp = document.getElementById(f.input);
-      const st = document.getElementById(f.status);
-      if (!inp) continue;
-      inp.placeholder = data[f.key] ? data[f.key] : f.placeholder;
-      // Never clear a NON-EMPTY input: this callback is async and can land
-      // AFTER someone started typing into the field — the unconditional
-      // `inp.value = ''` here wiped the entry mid-flight, and Save then hit
-      // its empty-value early return as a silent no-op. That was the
-      // settings_api_key_anthropic CI flake (6/8 runs: fill won the race on a
-      // loaded runner, the refresh wiped it, waitForResponse hung 60s) and is
-      // the same bug a fast human hits as "my key vanished while I typed".
-      // The one writer that needs the field cleared — saveApiKey after a
-      // successful PATCH — clears it itself before calling us.
-      if (st) st.textContent = data[f.key] ? 'Key saved ✓' : 'No key set';
-    }
-  } catch(e) {}
-}
-
-async function saveApiKey(providerKey) {
-  const f = API_KEY_FIELDS.find(x => x.key === (providerKey || 'ANTHROPIC_API_KEY'));
-  if (!f) return;
-  const inp = document.getElementById(f.input);
-  const st = document.getElementById(f.status);
-  const val = inp ? inp.value.trim() : '';
-  if (!val) {
-    // Say so instead of silently no-oping: when the refresh race above wiped
-    // the field, Save "doing nothing" was indistinguishable from Save being
-    // broken — the e2e's only symptom was a 60s network wait on a request
-    // that was never sent.
-    if (st) st.textContent = 'Enter a key first';
-    return;
-  }
-  st && (st.textContent = 'Saving…');
-  try {
-    const body = {}; body[f.key] = val;
-    const r = await fetch('/api/settings/env', {method:'PATCH', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)});
-    if (r.ok) {
-      if (inp) inp.value = '';
-      if (st) st.textContent = 'Saved ✓';
-      await loadApiKeys();
-    } else {
-      if (st) st.textContent = 'Save failed';
-    }
-  } catch(e) { if (st) st.textContent = 'Error: ' + e.message; }
-}
-
 // ── Commit guard ─────────────────────────────────────────────────────────────
 let _peekCommitGuardOverride = null;  // null=global, true=on, false=off
 
@@ -58155,14 +58392,13 @@ async function openBillingPortal() {
   } catch(e) { alert('Connection error'); }
 }
 
-// Load team + API keys + billing whenever settings opens
+// Load team + billing whenever settings opens
 const _origToggleSettings = toggleSettings;
 toggleSettings = function() {
   _origToggleSettings();
   const menu = document.getElementById('settings-menu');
   if (menu && menu.style.display !== 'none') {
     loadTeamSection();
-    loadApiKeys();
     loadBillingSection();
   }
 };
@@ -64096,7 +64332,11 @@ function _pubMenu(e, id) {
     const it = ev.target.closest('[data-act]');
     if (!it) return;
     ev.stopPropagation(); _pubMenuClose();
-    if (it.dataset.act === 'open') { if (internal) _pubOpenInternal(id); else window.open(l.url || l.path, '_blank', 'noopener'); }
+    if (it.dataset.act === 'open') {
+      if (internal) _pubOpenInternal(id);
+      else if (_ownPageLink(l.url || l.path)) _openOwnPage(l.url || l.path, 'apps-menu');
+      else window.open(l.url || l.path, '_blank', 'noopener');
+    }
     else if (it.dataset.act === 'copy') _copyTextWithToast(l.url || l.path, 'Link copied');
     else if (it.dataset.act === 'rename') _pubRename(id);
     else if (it.dataset.act === 'remove') _pubRevoke(id);
@@ -70040,7 +70280,7 @@ document.addEventListener('keydown', e => {
 // ── Messages: conversations (server: api/conversations.rs) ──────────────────
 // Channels are groups; People are direct messages; Workers are each worker's
 // shared thread. "All messages" is the original message log, unchanged.
-const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null, pending: [], history: [],
+const _cv = { list: null, sel: null, posts: [], lastId: 0, info: null, pollT: null, pending: [], history: [], pin: null,
   listT: null, typingAt: 0, ac: { items: [], i: 0, open: false }, loading: false };
 function _cvViewOn() { const v = document.getElementById('messages-view'); return !!v && v.style.display !== 'none'; }
 function _cvMobile() { return window.matchMedia && window.matchMedia('(max-width: 600px)').matches; }
@@ -70413,6 +70653,7 @@ function _cvSelect(sel, auto) {
   setTimeout(_whereSoon, 0);
   if (_cv.thread && _cv.thread.conv !== sel) _cvCloseThread();
   if (_cv.sel !== sel) _cv.editing = null;
+  if (_cv.sel && _cv.sel !== sel) _cvSavePosition(document.getElementById('cv-posts'), true);
   _cv.sel = sel; try { localStorage.setItem('amux_cv_sel', sel); } catch (e) {}
   if (!auto) _cv.picked = true;
   if (!auto || !_cvMobile()) document.getElementById('messages-view').classList.add('cv-open');
@@ -70429,7 +70670,7 @@ function _cvSelect(sel, auto) {
   if (sel === '@unread') return _cvRenderUnread();
   if (sel.indexOf('@search:') === 0) return _cvSearchPage(sel.slice(8));
   _cv.posts = []; _cv.lastId = 0; _cv.readId = 0; _cv.info = null; _cv.history = [];
-  _cv.restoreScroll = true; _cv.unreadFrom = null;
+  _cv.restoreScroll = true; _cv.unreadFrom = null; _cv.pin = null;
   _cv.gen = (_cv.gen || 0) + 1;   // a page in flight for an earlier open of any conversation is dropped
   _cvRenderPinsBtn();
   if (sel.indexOf('w:') === 0) _cvLoadWorkerHistory(sel);
@@ -70750,7 +70991,12 @@ async function _cvPollOnce(full) {
   _cv.readId = Math.max(_cv.readId || 0, latest);
   _cvRenderHead(sel, d);
   _cvRenderPinsBtn();
-  if (full || grew || pending.length || pinsChanged) _cvRenderPosts(full || grew);
+  // A new post from someone else no longer pulls you down from where you are
+  // reading; one you sent still goes to the end (_cvRenderPosts keeps the end
+  // when you were already there). A full page merged into posts already on
+  // screen (the same conversation opened twice) keeps the place it restored.
+  const mineLast = grew && ((_cv.posts[_cv.posts.length - 1] || {}).author_key === _cvMeKey());
+  if (full || grew || pending.length || pinsChanged) _cvRenderPosts((full && !hadPosts) || mineLast);
   if (pinsChanged && !full && !grew && _cv.thread) _cvRenderThread();
   document.getElementById('cv-typing').innerHTML = (d.typing || []).length
     ? '<span class="cv-dot on" style="display:inline-block;margin-right:var(--space-1-5)"></span>' + esc(d.typing.join(', ')) + (d.typing.length > 1 ? ' are' : ' is') + ' typing…' : '';
@@ -71203,13 +71449,15 @@ async function _cvOpenThreadOrScroll(conv, id) {
   const top = _cv.posts.find(p => p.id === id);
   if (top && !top.reply_count) {
     const el = document.querySelector('#cv-posts .cv-post[data-id="' + id + '"]');
-    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('cv-flash'); setTimeout(() => el.classList.remove('cv-flash'), 1600); }
+    if (el) { _cv.pin = null; el.scrollIntoView({ block: 'center' }); el.classList.add('cv-flash'); setTimeout(() => el.classList.remove('cv-flash'), 1600); }
     return;
   }
   _cvOpenThread(id);
 }
 // ── Older history: scrolling to the top loads the page before it ──
 async function _cvOnScroll(box) {
+  // Any scroll the hold did not make is yours, and ends the hold.
+  if (_cv.pin && Math.abs(box.scrollTop - (_cv.pin.top ?? box.scrollTop)) > 2) _cv.pin = null;
   if (!_cv.restoreScroll) _cvSavePosition(box);
   if (box.scrollTop > 60 || _cv.loadingOlder || !_cv.info || !_cv.info.has_more || !_cv.posts.length || _cv.sel[0] === '@') return;
   _cv.loadingOlder = true;
@@ -71330,7 +71578,7 @@ async function _cvLoadWorkerHistory(sel) {
       author_name: h.author_name || (h.type === 'session' && h.origin ? h.origin : (h.type === 'schedule' ? 'scheduler' : (h.origin || 'owner'))),
       tag: h.type === 'schedule' ? 'scheduled' : h.type === 'session' ? 'from a worker' : 'sent from its page',
       mentions: [], deliveries: [] }));
-    _cvRenderPosts(true);
+    _cvRenderPosts(false);
   } catch (e) {}
 }
 function _cvRenderPosts(scroll) {
@@ -71355,11 +71603,17 @@ function _cvRenderPosts(scroll) {
     if (_cv.unreadFrom && p.id === _cv.unreadFrom) html += '<div class="cv-unread-line" role="separator"><span>New</span></div>';
     html += _cvPostHtml(p, false);
   }
+  // The post at the top of the view before this render, so a re-render (a
+  // reaction, an edit, a preview arriving) leaves you on the same post.
+  const keep = !scroll && !nearBottom && !_cv.restoreScroll ? _cvTopPost(box) : null;
   _cvEditBeforeRender();
   box.innerHTML = html;
   _cvEditAfterRender(box);
-  if (_cv.restoreScroll) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
-  if (scroll || nearBottom) box.scrollTop = box.scrollHeight;
+  // The place is chosen once the conversation's page is in (_cv.info): a
+  // worker's history can arrive first and would spend it on half the posts.
+  if (_cv.restoreScroll && _cv.info) { _cv.restoreScroll = false; _cvRestoreScroll(box); return; }
+  if (scroll || nearBottom) _cvPinTo(box, { bottom: true });
+  else if (keep) _cvPinTo(box, keep);
 }
 // WHERE YOU LEFT OFF (Ethan, 2026-10-29: "when i open messages it should scroll
 // to where i left off"). Opening a conversation goes, in order, to the first
@@ -71370,36 +71624,79 @@ function _cvPositions() { try { return JSON.parse(localStorage.getItem('amux_cv_
 function _cvRestoreScroll(box) {
   const pos = _cvPositions()[_cv.sel];
   const at = id => box.querySelector('.cv-post[data-id="' + CSS.escape(String(id)) + '"]');
-  const unread = _cv.unreadFrom && at(_cv.unreadFrom);
-  if (unread) { box.scrollTop += unread.getBoundingClientRect().top - box.getBoundingClientRect().top - 48; return; }
-  const el = pos && !pos.bottom && at(pos.id);
-  if (el) { box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - (pos.off || 0); return; }
-  box.scrollTop = box.scrollHeight;
+  let verdict;
+  if (_cv.unreadFrom && at(_cv.unreadFrom)) { verdict = 'unread'; _cvPinTo(box, { id: String(_cv.unreadFrom), off: 48 }); }
+  else if (pos && !pos.bottom && pos.id && at(pos.id)) { verdict = 'anchor'; _cvPinTo(box, { id: String(pos.id), off: pos.off || 0 }); }
+  else { verdict = pos && !pos.bottom ? 'anchor_missing' : 'bottom'; _cvPinTo(box, { bottom: true }); }
+  if (typeof window._clientDebug === 'function') window._clientDebug('messages-scroll-restored', { verdict, conv: String(_cv.sel || '').slice(0, 2), saved: !!pos, measured: true, n_considered: 1 });
+}
+// The first post whose bottom is inside the view, and how far its top sits
+// below the view's top: a place that survives posts landing above or below.
+function _cvTopPost(box) {
+  const top = box.getBoundingClientRect().top;
+  const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+  return el ? { id: el.dataset.id, off: Math.round(el.getBoundingClientRect().top - top) } : null;
+}
+// HELD WHILE IT SETTLES (Ethan, 2026-11-08: "it just scrolls to the bottom and
+// cuts off some shit"). Image previews and link cards get their height after
+// the posts are placed, so a conversation opened at its end showed the last
+// post half hidden behind the composer, and one opened at a saved post
+// drifted. The place chosen (the end, or a post at an offset) is put back each
+// time an image loads or the view resizes, until you scroll or 8 s pass.
+function _cvApplyPin(box) {
+  const p = _cv.pin; if (!p) return;
+  if (p.bottom) box.scrollTop = box.scrollHeight;
+  else {
+    const el = box.querySelector('.cv-post[data-id="' + CSS.escape(p.id) + '"]');
+    if (!el) { _cv.pin = null; return; }
+    box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - p.off;
+  }
+  p.top = box.scrollTop;
+}
+function _cvPinTo(box, pin) {
+  _cv.pin = { ...pin, until: Date.now() + 8000 };
+  _cvApplyPin(box);
+  if (box._cvPinWired) return;
+  box._cvPinWired = true;
+  const release = () => { _cv.pin = null; };
+  ['wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(t => box.addEventListener(t, release, { passive: true }));
+  // A frame later, so an image that failed has become its file chip first.
+  const hold = () => requestAnimationFrame(() => { if (_cv.pin && Date.now() < _cv.pin.until) _cvApplyPin(box); else _cv.pin = null; });
+  ['load', 'error', 'loadedmetadata'].forEach(t => box.addEventListener(t, e => { if (e.target !== box) hold(); }, true));
+  if (window.ResizeObserver) new ResizeObserver(hold).observe(box);
 }
 let _cvPosT = 0;
-function _cvSavePosition(box) {
+// `now` writes at once: leaving a conversation, or the page going away. The
+// conversation is read when the save is asked for, not when the timer fires:
+// a timer from the one you left used to store its place under the one you
+// opened. A hidden view has no geometry and is never saved.
+function _cvSavePosition(box, now) {
   clearTimeout(_cvPosT);
   // The conversation this scroll happened in. A switch inside the debounce
   // used to save the old list's place under the new conversation's name, so it
   // reopened at the bottom (CI, ios-safari, 2026-11-08).
   const sel = _cv.sel, gen = _cv.gen;
-  _cvPosT = setTimeout(() => {
-    if (_cv.sel !== sel || _cv.gen !== gen) {
+  const write = () => {
+    if (!now && (_cv.sel !== sel || _cv.gen !== gen)) {
       if (window._clientDebug) window._clientDebug('cv-position', { verdict: 'stale_save_dropped', measured: true, n_considered: 1 });
       return;
     }
-    if (!sel || sel[0] === '@') return;
-    const top = box.getBoundingClientRect().top;
-    const el = [...box.querySelectorAll('.cv-post[data-id]')].find(e => e.getBoundingClientRect().bottom > top + 4);
+    if (!box || !sel || sel[0] === '@' || _cv.restoreScroll || !box.clientHeight) return;
+    const t = _cvTopPost(box);
     const all = _cvPositions();
-    all[sel] = { id: el ? el.dataset.id : null, off: el ? Math.round(el.getBoundingClientRect().top - top) : 0,
+    all[sel] = { id: t ? t.id : null, off: t ? t.off : 0,
       bottom: box.scrollHeight - box.scrollTop - box.clientHeight < 80, at: Date.now() };
     // Keep the 200 most recent conversations.
     const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
     for (const k of keys.slice(200)) delete all[k];
     try { localStorage.setItem('amux_cv_pos', JSON.stringify(all)); } catch (e) {}
-  }, 300);
+  };
+  if (now) write(); else _cvPosT = setTimeout(write, 300);
 }
+['pagehide', 'visibilitychange'].forEach(ev => (ev === 'pagehide' ? window : document).addEventListener(ev, () => {
+  if (ev === 'visibilitychange' && document.visibilityState !== 'hidden') return;
+  if (_cvViewOn()) _cvSavePosition(document.getElementById('cv-posts'), true);
+}));
 async function _cvMarkRead() {
   if (!_cv.sel || _cv.sel[0] === '@' || document.hidden) return;
   try { await fetch(API + '/api/conversations/' + encodeURIComponent(_cv.sel) + '/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ last_id: Math.max(_cv.lastId, _cv.readId || 0) }) }); } catch (e) {}
@@ -75286,7 +75583,7 @@ async function _cmdkLoadLists() {
     group: get('/api/groups').then(d => (d.groups || []).map(g => { const about = [g.department, g.goal].filter(Boolean).join(' · '); return { kind: 'group', id: g.name, title: g.name, sub: about || 'Group', body: about }; })),
     pin: get('/api/pinned').then(d => (d || []).map(p => ({ kind: 'pin', id: p.id, title: p.title || String(p.file_path || '').split('/').pop(), sub: p.file_path || 'Pinned note', body: p.file_path || '' }))),
     // Names and scopes only; the vault never sends values here.
-    secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: (s.kind === 'api_key' ? 'API key' : 'Secret') + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
+    secret: get('/api/vault/secrets').then(d => (d.items || []).map(s => ({ kind: 'secret', id: s.key, title: s.key, sub: 'Secret' + (s.scope ? ' · ' + s.scope + (s.target ? ' ' + s.target : '') : '') }))),
     payment: get('/api/vault').then(d => (d.items || []).filter(p => p.kind !== 'login').map(p => ({ kind: 'payment', id: p.id, title: p.label || p.brand || 'Card', sub: 'Payment method' + (p.brand ? ' · ' + p.brand : '') }))),
     connector: get('/api/connectors').then(d => (d.connectors || []).map(c => ({ kind: 'connector', id: c.id, title: c.name || c.id, sub: c.category || 'Connector' }))),
     skill: get('/api/skills').then(d => (d || []).map(s => ({ kind: 'skill', id: s.name, title: '/' + s.name, sub: s.description || 'Skill', body: s.description || '' }))),

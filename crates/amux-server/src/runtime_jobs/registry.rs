@@ -97,6 +97,8 @@ pub mod ids {
     pub const HOST_GUARD: &str = "host-guard";
     pub const GOAL_KEEPER: &str = "goal-keeper";
     pub const TASK_TITLES: &str = "task-titles";
+    pub const DESC_REFRESH: &str = "desc-refresh";
+    pub const EVENT_DISPATCH: &str = "event-dispatch";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -209,6 +211,8 @@ pub const ALL_IDS: &[&str] = &[
     ids::HOST_GUARD,
     ids::GOAL_KEEPER,
     ids::TASK_TITLES,
+    ids::DESC_REFRESH,
+    ids::EVENT_DISPATCH,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -882,6 +886,26 @@ pub const CATALOG: &[Doc] = &[
             EnvControl { var: "AMUX_TASK_TITLE_SECS", effect: "seconds between ticks, default 60; 0 disables the refresh", off: Some("0") },
             EnvControl { var: "AMUX_TASK_TITLE_REFRESH_S", effect: "minimum age of a title before it is refreshed, default 900", off: None },
             EnvControl { var: "AMUX_TASK_TITLE_PER_TICK", effect: "titles generated per tick at most, default 3", off: None },
+        ],
+        pref: None,
+        detail: None,
+    },
+    Doc {
+        id: ids::EVENT_DISPATCH,
+        name: "Event subscriptions",
+        purpose: "Every second, reads the events written since its stored cursor (session_events, and board_change_log as board.card.* events) and fires each enabled subscription whose pattern, source, session and filter match: send, board, schedule, shell or notify. Dedupes per subscription (or per dedupe key), caps each subscription at 60 fires an hour, and asks the helper model only for subscriptions marked judge. A restart replays what it missed up to 5000 events.",
+        env: &[EnvControl { var: "AMUX_EVENT_DISPATCH_SECS", effect: "0 stops the dispatcher; no subscription fires", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/subscriptions/fires"),
+    },
+    Doc {
+        id: ids::DESC_REFRESH,
+        name: "Worker descriptions",
+        purpose: "Keeps each worker's description (CC_DESC, which peers route by) current with how it is used. Hourly, a few non-isolated, non-archived, non-paused workers with new owner messages or closed cards since their last check (at most daily) are read against their description; the helper model answers KEEP or a replacement in the same style. A replacement keeps the old text (Revert in Configuration), is marked auto, and refreshes the peer rosters. A locked description (CC_DESC_LOCK=1, set by the owner's own edit) is never changed.",
+        env: &[
+            EnvControl { var: "AMUX_DESC_REFRESH_SECS", effect: "seconds between ticks, default 3600; 0 disables the refresh", off: Some("0") },
+            EnvControl { var: "AMUX_DESC_REFRESH_INTERVAL_S", effect: "minimum seconds between checks of one worker, default 86400", off: None },
+            EnvControl { var: "AMUX_DESC_REFRESH_PER_TICK", effect: "workers checked per tick at most, default 3", off: None },
         ],
         pref: None,
         detail: None,
@@ -2135,13 +2159,9 @@ pub async fn system_jobs(
     (axum::http::StatusCode::OK, axum::Json(body)).into_response()
 }
 
+/// Public debug read. The on-demand run is routed behind the bearer in api/mod.rs.
 pub fn routes() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route("/api/system-jobs", axum::routing::get(system_jobs))
-        .route(
-            "/api/system-jobs/{id}/run",
-            axum::routing::post(run_system_job),
-        )
+    axum::Router::new().route("/api/system-jobs", axum::routing::get(system_jobs))
 }
 
 #[cfg(test)]
