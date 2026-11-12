@@ -3264,6 +3264,32 @@ fn light_rows_sql(lanes: usize) -> String {
     )
 }
 
+/// The columns the board's stale check reads, for its ETag.
+pub struct StaleProbeRow {
+    pub id: String,
+    pub status: String,
+    pub session: Option<String>,
+    pub updated: i64,
+}
+
+/// Every undeleted in-progress row, by id, as a [`StaleProbeRow`] (served by
+/// idx_issues_status, so a board poll does not scan the whole table).
+pub fn in_progress_touch_rows(conn: &Connection) -> rusqlite::Result<Vec<StaleProbeRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, status, session, updated FROM issues \
+         WHERE deleted IS NULL AND status IN ('doing','review') ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(StaleProbeRow {
+            id: r.get(0)?,
+            status: r.get(1)?,
+            session: r.get(2)?,
+            updated: ts_i64(r, 3)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// Pass 1 shared by the capped and quota lists: filter + sort over the
 /// no-prose columns. ONE loader on purpose — two spellings of the filter
 /// canon or the sort would drift exactly the way the predicate rule warns.
