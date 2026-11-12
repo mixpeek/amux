@@ -160,7 +160,7 @@ pub(crate) fn valid_key(k: &str) -> Result<(), String> {
 // Master key
 // ---------------------------------------------------------------------------
 
-fn keystore_is_file() -> bool {
+pub(crate) fn keystore_is_file() -> bool {
     match std::env::var("AMUX_VAULT_KEYSTORE").ok().as_deref().map(str::trim) {
         Some("file") => true,
         Some("keychain") => false,
@@ -191,8 +191,14 @@ fn parse_key_hex(s: &str) -> Option<[u8; 32]> {
 }
 
 fn read_keychain(home: &Path) -> Result<Option<[u8; 32]>, String> {
+    read_keychain_item(KEYCHAIN_SERVICE, home)
+}
+
+/// One 32-byte key from the login Keychain under `service`, per home. Shared
+/// with the ledger checkpoint signing key (governance PR 10).
+pub(crate) fn read_keychain_item(service: &str, home: &Path) -> Result<Option<[u8; 32]>, String> {
     let out = std::process::Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", &keychain_account(home), "-w"])
+        .args(["find-generic-password", "-s", service, "-a", &keychain_account(home), "-w"])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not run security: {e}"))?;
@@ -212,6 +218,10 @@ fn read_keychain(home: &Path) -> Result<Option<[u8; 32]>, String> {
 }
 
 fn write_keychain(home: &Path, key: &[u8; 32]) -> Result<(), String> {
+    write_keychain_item(KEYCHAIN_SERVICE, "amux vault master key", home, key)
+}
+
+pub(crate) fn write_keychain_item(service: &str, label: &str, home: &Path, key: &[u8; 32]) -> Result<(), String> {
     use std::io::Write;
     // `security -i` reads commands from stdin: the key never becomes an argv
     // element of any process.
@@ -223,7 +233,7 @@ fn write_keychain(home: &Path, key: &[u8; 32]) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("could not run security: {e}"))?;
     let line = format!(
-        "add-generic-password -U -s {KEYCHAIN_SERVICE} -a {} -l \"amux vault master key\" -w {}\n",
+        "add-generic-password -U -s {service} -a {} -l \"{label}\" -w {}\n",
         keychain_account(home),
         hex::encode(key)
     );

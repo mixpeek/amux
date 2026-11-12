@@ -43,7 +43,7 @@ fn default_kind() -> String {
     "app".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Link {
     pub id: String,
     /// `internal`, `app` or `file`. An `internal` link names a port (an app)
@@ -71,6 +71,18 @@ pub(crate) struct Link {
     /// keeps working.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// The sha256 of the app's own credential (governance PR 5,
+    /// app_identity.rs). The token itself is returned once, when it is minted,
+    /// and never stored. Empty for a file link or an app published before this.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_token_sha256: String,
+    /// amux calls the publisher asked for the app (`METHOD /api/path`).
+    /// Nothing until a person approves them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_requested: Vec<String>,
+    /// amux calls a person allowed the app. Empty: no amux access at all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_allow: Vec<String>,
     /// A public app served at the root of its own origin,
     /// `https://<id>.<AMUX_PUBLIC_APPS_DOMAIN>/`, with its own cookies and no
     /// opaque-origin sandbox (public_origin.rs), instead of under `/pub/<id>/`.
@@ -388,6 +400,10 @@ fn link_json(home: &Path, l: &Link) -> Value {
         "path": path,
         "url": origin_url.clone().or_else(|| base.as_ref().map(|b| format!("{b}{path}"))),
         "app_path": (!l.is_public()).then(|| format!("/app/{}/", l.id)),
+        // What amux the app itself may call (app_identity.rs): never its token.
+        "api_requested": l.api_requested,
+        "api_allow": l.api_allow,
+        "app_credential": !l.app_token_sha256.is_empty(),
         "origin": l.origin,
         "origin_url": origin_url,
     })
@@ -471,6 +487,10 @@ pub(crate) struct CreateBody {
     path: Option<String>,
     #[serde(default)]
     title: String,
+    /// amux calls the app will need (`METHOD /api/path`), asked for now and
+    /// allowed only when a person approves the link (app_identity.rs).
+    #[serde(default)]
+    api: Vec<String>,
     /// `amux publish --origin`: a public app on a host of its own.
     #[serde(default)]
     origin: bool,
@@ -522,6 +542,27 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
         }
         _ => return bad(StatusCode::BAD_REQUEST, "kind is internal, app or file"),
     };
+    // Governance PR 11: a worker's AMUX_CAP_PUBLISH (public, internal, none).
+    // A person publishing is not held to it.
+    if person_of(&state, &headers).is_none() {
+        let home = crate::config::amux_home();
+        if let Some(lane) = super::super::capabilities::acting_worker(&home, &headers) {
+            let (level, _) = super::super::capabilities::publish_level(&home, &lane);
+            if !super::super::capabilities::publish_allows(&level, &kind) {
+                let resource = format!("a {kind} link (AMUX_CAP_PUBLISH={level})");
+                if let Some(resp) = super::super::capabilities::cross(&home, &lane, "publish", &resource, &kind) {
+                    return resp;
+                }
+            }
+        }
+    }
+    let api_requested = match super::super::app_identity::parse_rules(&body.api) {
+        Ok(r) => r,
+        Err(e) => return bad(StatusCode::BAD_REQUEST, &format!("api: {e}")),
+    };
+    if port == 0 && !api_requested.is_empty() {
+        return bad(StatusCode::BAD_REQUEST, "api: only an app (a port) can be given amux access");
+    }
     if body.origin {
         if kind != "app" {
             return bad(StatusCode::BAD_REQUEST, "--origin is for a public app on a port");
@@ -536,6 +577,16 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     let Some(id) = new_id() else {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available; no link was made");
     };
+    // An app is its own principal: its credential is minted now and returned
+    // once (governance PR 5). A file link runs no code and gets none.
+    let minted = if port > 0 {
+        match super::super::app_identity::mint() {
+            Some(m) => Some(m),
+            None => return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available; no link was made"),
+        }
+    } else {
+        None
+    };
     let created_by = headers
         .get("x-amux-session")
         .and_then(|v| v.to_str().ok())
@@ -547,7 +598,15 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     // Every kind needs a person: a public link hands the app or file to
     // anyone, and an internal app runs with the owner's amux access.
     let approved_by = person.clone().unwrap_or_default();
-    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by, aliases: Vec::new(), origin: body.origin };
+    // A person publishing grants what they asked for; a worker only asks.
+    let api_allow = if person.is_some() { api_requested.clone() } else { Vec::new() };
+    let link = Link {
+        id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by,
+        aliases: Vec::new(),
+        app_token_sha256: minted.as_ref().map(|(_, h)| h.clone()).unwrap_or_default(),
+        api_requested, api_allow,
+        origin: body.origin,
+    };
     let home = crate::config::amux_home();
     {
         let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -562,8 +621,14 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
         public = link.is_public(), pending = link.is_pending(), origin = link.origin,
         measured = true, n_considered = 1, verdict = "public_link_created",
         "Apps link created; a public one asked for by a worker serves nobody until the owner approves it in Apps");
+    super::super::app_identity::forget_tree();
     let mut out = link_json(&home, &link);
     out["listening"] = json!(listening);
+    if let Some((token, _)) = minted {
+        // Shown once. The app sends it as X-Amux-App-Token (from AMUX_APP_TOKEN).
+        out["app_token"] = json!(token);
+        out["app_token_note"] = json!("the app's own amux credential, shown once: start the app with AMUX_APP_TOKEN set to it and send it as X-Amux-App-Token. It allows only the calls in api_allow (none until a person allows some).");
+    }
     (StatusCode::CREATED, Json(out)).into_response()
 }
 
@@ -582,6 +647,7 @@ pub(crate) async fn revoke(State(state): State<AppState>, headers: HeaderMap, Ax
     let who = person_of(&state, &headers)
         .or_else(|| headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::to_string))
         .unwrap_or_else(|| "unknown".into());
+    super::super::app_identity::forget_tree();
     tracing::warn!(id = %id, by = %who, measured = true, n_considered = 1, verdict = "public_link_revoked", "Apps link removed");
     Json(json!({ "ok": true })).into_response()
 }
@@ -601,12 +667,94 @@ pub(crate) async fn approve(State(state): State<AppState>, headers: HeaderMap, A
         return bad(StatusCode::NOT_FOUND, "no such link");
     };
     link.approved_by = person.clone();
+    // Approving the link approves exactly the amux access it asked for, which
+    // the Apps tab showed beside the button.
+    if !link.api_requested.is_empty() {
+        link.api_allow = std::mem::take(&mut link.api_requested);
+        tracing::warn!(id = %id, by = %person, allow = ?link.api_allow, measured = true, n_considered = 1,
+            verdict = "published_app_api_granted", "a person approved an app's amux access");
+    }
     let out = link_json(&home, link);
     if let Err(e) = save(&home, &links) {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
     }
     tracing::warn!(id = %id, by = %person, measured = true, n_considered = 1, verdict = "public_link_approved",
         "an Apps link was approved (a public one now opens for anyone with it)");
+    Json(out).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ApiBody {
+    #[serde(default)]
+    allow: Vec<String>,
+}
+
+/// Set exactly which amux calls an app may make (app_identity.rs). Only a
+/// person may: an app or the worker that published it can ask, never grant.
+/// An empty list takes all access away.
+pub(crate) async fn set_api(State(state): State<AppState>, headers: HeaderMap, AxPath(id): AxPath<String>, body: Option<Json<ApiBody>>) -> Response {
+    let Some(person) = person_of(&state, &headers) else {
+        tracing::warn!(id = %id, measured = true, n_considered = 1, verdict = "published_app_api_set_refused",
+            "an app's amux access was changed by something other than a signed-in person");
+        return bad(StatusCode::FORBIDDEN, "only the owner, signed in to the dashboard, can change what an app may call");
+    };
+    let Some(Json(body)) = body else { return bad(StatusCode::BAD_REQUEST, "send {\"allow\": [\"METHOD /api/path\", ...]}") };
+    let allow = match super::super::app_identity::parse_rules(&body.allow) {
+        Ok(r) => r,
+        Err(e) => return bad(StatusCode::BAD_REQUEST, &format!("allow: {e}")),
+    };
+    let home = crate::config::amux_home();
+    let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut links = load(&home);
+    let Some(link) = links.iter_mut().find(|l| l.id == id) else {
+        return bad(StatusCode::NOT_FOUND, "no such link");
+    };
+    if link.port == 0 {
+        return bad(StatusCode::BAD_REQUEST, "a file link runs no code; only an app can be given amux access");
+    }
+    link.api_allow = allow.clone();
+    link.api_requested.clear();
+    let out = link_json(&home, link);
+    if let Err(e) = save(&home, &links) {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
+    }
+    tracing::warn!(id = %id, by = %person, allow = ?allow, measured = true, n_considered = 1,
+        verdict = "published_app_api_granted", "a person set an app's amux access");
+    Json(out).into_response()
+}
+
+/// Issue the app a new credential (the old one stops working at once), for
+/// an app published before credentials existed or one whose token leaked. The
+/// owner, or the worker that published it, proved by its own token.
+pub(crate) async fn new_app_token(State(state): State<AppState>, headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
+    let person = person_of(&state, &headers);
+    let worker = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::to_string)
+        .filter(|_| crate::api::loopback_trust::worker_token_valid(&headers));
+    let home = crate::config::amux_home();
+    let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut links = load(&home);
+    let Some(link) = links.iter_mut().find(|l| l.id == id) else {
+        return bad(StatusCode::NOT_FOUND, "no such link");
+    };
+    let by = match (&person, &worker) {
+        (Some(p), _) => p.clone(),
+        (None, Some(w)) if *w == link.created_by => format!("worker:{w}"),
+        _ => return bad(StatusCode::FORBIDDEN, "only the owner, or the worker that published it (with its own AMUX_WORKER_TOKEN), can issue an app a new credential"),
+    };
+    if link.port == 0 {
+        return bad(StatusCode::BAD_REQUEST, "a file link runs no code and has no credential");
+    }
+    let Some((token, sha)) = super::super::app_identity::mint() else {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available; the credential was not changed");
+    };
+    link.app_token_sha256 = sha;
+    let mut out = link_json(&home, link);
+    if let Err(e) = save(&home, &links) {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not save: {e}"));
+    }
+    tracing::warn!(id = %id, by = %by, measured = true, n_considered = 1, verdict = "published_app_token_issued",
+        "a published app was issued a new credential; the previous one no longer works");
+    out["app_token"] = json!(token);
     Json(out).into_response()
 }
 
@@ -979,7 +1127,7 @@ mod tests {
     #[test]
     fn a_renamed_link_answers_to_its_new_name_first_and_its_old_names_after() {
         let mk = |id: &str, aliases: &[&str]| Link { id: id.into(), kind: "app".into(), port: 1, path: String::new(), title: String::new(),
-            created_by: String::new(), created_at: 0, approved_by: "owner".into(), aliases: aliases.iter().map(|a| a.to_string()).collect(), origin: false };
+            created_by: String::new(), created_at: 0, approved_by: "owner".into(), aliases: aliases.iter().map(|a| a.to_string()).collect(), ..Default::default() };
         let links = vec![mk("demo", &["0123456789abcdef0123456789abcdef"]), mk("other", &["demo-old"])];
         assert_eq!(lookup(links.clone(), "demo").unwrap().id, "demo");
         assert_eq!(lookup(links.clone(), "0123456789abcdef0123456789abcdef").unwrap().id, "demo", "the old id still opens it");
@@ -990,7 +1138,7 @@ mod tests {
     #[test]
     fn a_public_link_is_live_only_once_a_person_approved_it() {
         let mut l = Link { id: new_id().unwrap(), kind: "file".into(), port: 0, path: "/x".into(), title: String::new(), aliases: Vec::new(),
-            created_by: "mtp-demo".into(), created_at: 0, approved_by: String::new(), origin: false };
+            created_by: "mtp-demo".into(), created_at: 0, approved_by: String::new(), ..Default::default() };
         assert!(!l.is_live(), "asked for by a worker: pending, served to nobody");
         l.approved_by = "member:ethan@mixpeek.com".into();
         assert!(l.is_live());

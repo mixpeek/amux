@@ -328,6 +328,18 @@ pub(crate) fn authorize_local_member_request(
     if path == "/api/rt" || path == "/api/rt/events" || path == "/api/rt/send" {
         return None;
     }
+    // Held external email (governance PR 6, email_scope.rs): the list and the
+    // two decisions are admitted, and each handler filters and refuses by this
+    // member's scope. Every other /api/email/ route stays refused below.
+    // AMUX_EMAIL_APPROVAL_SCOPE=off keeps the previous refusal.
+    if super::email_scope::mode() != super::worker_identity::Mode::Off {
+        let held = (path == "/api/email/approvals" && *method == Method::GET)
+            || ((path.starts_with("/api/email/approve/") || path.starts_with("/api/email/reject/"))
+                && *method == Method::POST);
+        if held {
+            return None;
+        }
+    }
     // Messages (conversations.rs): every handler checks the conversation
     // against this member's scope before reading or writing.
     if path == "/api/conversations" || path.starts_with("/api/conversations/") {
@@ -555,6 +567,11 @@ pub async fn local_member_identity(
     req.headers_mut().remove(MEMBER_TEAM_NAME_B64_HEADER);
     req.headers_mut().remove(MEMBER_ADMIN_HEADER);
     req.headers_mut().remove(POLICY_ACTOR_HEADER);
+    req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
+    // A published app's credential (governance PR 5): resolved here, before
+    // the request logger and auth, so both see `app:<id>` as the caller and
+    // no handler ever sees the token.
+    super::app_identity::resolve(req.headers_mut());
     req.headers_mut().remove("x-amux-user-id");
     req.headers_mut().remove("x-amux-user-email");
     let token = match member_cookie(req.headers()).map(str::to_string) {
