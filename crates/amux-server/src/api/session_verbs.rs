@@ -2472,9 +2472,15 @@ pub(crate) fn codex_rollout_limit_reset(lines: &[Value]) -> Option<i64> {
     let full: Vec<&Value> = windows
         .iter()
         .copied()
-        .filter(|w| w.get("used_percent").and_then(Value::as_f64).is_some_and(|p| p >= 100.0))
+        .filter(|w| {
+            w.get("used_percent")
+                .and_then(Value::as_f64)
+                .is_some_and(|p| p >= 100.0)
+        })
         .collect();
-    let reached = snapshot.get("rate_limit_reached_type").is_some_and(|t| !t.is_null());
+    let reached = snapshot
+        .get("rate_limit_reached_type")
+        .is_some_and(|t| !t.is_null());
     let candidates = if !full.is_empty() {
         full
     } else if reached {
@@ -2489,26 +2495,20 @@ pub(crate) fn codex_rollout_limit_reset(lines: &[Value]) -> Option<i64> {
         .max()
 }
 
-/// A Codex worker showing its usage-limit message (the caller checked the
-/// screen with `adapter::codex_usage_limit_on_screen`), with the reset read
-/// from its rollout. An unknown reset stays 0, which holds the lane like a
-/// credit cap rather than inventing a clock.
-pub(crate) fn observe_codex_limit(
-    recorded_reset: i64,
-    rollout_reset: Option<i64>,
-    now: i64,
-) -> ClaudeLimitObservation {
-    ClaudeLimitObservation {
-        menu: false,
-        kind: "codex-limit",
-        reset_at: effective_rate_limit_reset(recorded_reset, rollout_reset.unwrap_or(0), now),
-    }
-}
+/// The `rate_limited_by` kind of a Codex usage limit.
+pub(crate) const CODEX_LIMIT_KIND: &str = "codex-limit";
 
 /// The sweep's Codex arm: a `codex` lane whose screen shows the usage-limit
-/// message is limited, with the reset `rollout_reset` reads (only called
-/// then, so an unlimited lane never pays for a rollout read). Every other
-/// lane and screen: `None`.
+/// message, AND whose rollout names the reset, is limited until that reset.
+/// `rollout_reset` is only called once the message is on screen, so an
+/// unlimited lane never pays for a rollout read.
+///
+/// No reset, no stamp. A stamp without a clock holds the lane in
+/// `lane_block_reason` until the message leaves the screen, and on an idle
+/// Codex lane nothing but a new prompt moves it: a held lane would wait for a
+/// human. Without a clock the lane keeps its pre-existing behaviour and the
+/// sweep logs `codex_limit_reset_unknown`. With one, the existing
+/// provider-clock rules release it at the reset.
 pub(crate) fn codex_sweep_observation(
     provider: &str,
     pane: &str,
@@ -2516,8 +2516,26 @@ pub(crate) fn codex_sweep_observation(
     now: i64,
     rollout_reset: impl FnOnce() -> Option<i64>,
 ) -> Option<ClaudeLimitObservation> {
-    (provider == "codex" && crate::backend::adapter::codex_usage_limit_on_screen(pane))
-        .then(|| observe_codex_limit(recorded_reset, rollout_reset(), now))
+    if provider != "codex" || !crate::backend::adapter::codex_usage_limit_on_screen(pane) {
+        return None;
+    }
+    let reset = rollout_reset()?;
+    Some(ClaudeLimitObservation {
+        menu: false,
+        kind: CODEX_LIMIT_KIND,
+        reset_at: effective_rate_limit_reset(recorded_reset, reset, now),
+    })
+}
+
+/// Does a Claude login switch release this lane's limit? Only a limit on the
+/// Claude account does: a Codex limit is the OpenAI account's, which the
+/// Claude rotator does not change.
+pub(crate) fn limit_released_by_account_switch(
+    kind: &str,
+    limited_since: i64,
+    account_changed_at: i64,
+) -> bool {
+    kind != CODEX_LIMIT_KIND && account_switched_since_limit(limited_since, account_changed_at)
 }
 
 /// Screen-only observation; production passes the transcript through
@@ -22603,7 +22621,7 @@ fn rate_limit_hold_for(name: &str, pane: &str) -> Option<RateLimitHold> {
     let meta = load_meta(name);
     let since = meta_i64(&meta, "rate_limited_since");
     let changed_at = observe_claude_account_change(chrono::Utc::now().timestamp());
-    if account_switched_since_limit(since, changed_at) {
+    if limit_released_by_account_switch(&meta_str(&meta, "rate_limited_by"), since, changed_at) {
         // mixpeek-frustrations, 2026-10-20: limited on one account at 10:30Z,
         // the rotator moved the login to an account with 97% left at 12:07Z,
         // and the owner's "continue" was still held for the OLD account's
@@ -22821,7 +22839,7 @@ pub(crate) async fn lane_block_reason(name: &str) -> Option<&'static str> {
         }
         // A limit recorded on the account the login has since moved away
         // from does not gate the queue either (same rule as the send path).
-        && !account_switched_since_limit(since, observe_claude_account_change(now_i64()));
+        && !limit_released_by_account_switch(&kind, since, observe_claude_account_change(now_i64()));
     lane_block_reason_from(env_exists, archived, paused, running, rate_limited)
 }
 
@@ -26337,7 +26355,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                         tracing::warn!(session = %name, rollout_resolved = rollout.is_some(),
                             measured = rollout.is_some(), n_considered = 1,
                             verdict = "codex_limit_reset_unknown",
-                            "Codex shows its usage limit but its rollout names no reset; the lane holds until the message clears");
+                            "Codex shows its usage limit but its rollout names no reset; the lane is not stamped limited without a clock");
                     }
                     reset
                 },
@@ -46022,36 +46040,95 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
 
     #[test]
     fn a_codex_limit_resets_when_codex_s_own_rollout_says() {
-        let week = |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":10080,"resets_at":at});
-        let five_h = |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":300,"resets_at":at});
+        let week =
+            |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":10080,"resets_at":at});
+        let five_h =
+            |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":300,"resets_at":at});
         let msg = json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}});
 
         // The 429 snapshot: the weekly window is full.
-        let limited = codex_token_count(week(100.0, 1_795_000_000), Value::Null, json!("rate_limit_reached"));
-        assert_eq!(codex_rollout_limit_reset(&[msg.clone(), limited.clone(), msg.clone()]), Some(1_795_000_000));
+        let limited = codex_token_count(
+            week(100.0, 1_795_000_000),
+            Value::Null,
+            json!("rate_limit_reached"),
+        );
+        assert_eq!(
+            codex_rollout_limit_reset(&[msg.clone(), limited.clone(), msg.clone()]),
+            Some(1_795_000_000)
+        );
         // Two windows, only the full one decides the reset.
-        let both = codex_token_count(five_h(100.0, 1_794_000_000), week(80.0, 1_795_000_000), json!("rate_limit_reached"));
+        let both = codex_token_count(
+            five_h(100.0, 1_794_000_000),
+            week(80.0, 1_795_000_000),
+            json!("rate_limit_reached"),
+        );
         assert_eq!(codex_rollout_limit_reset(&[both]), Some(1_794_000_000));
         // Codex says reached but no window reads 100: the latest window reset.
-        let reached = codex_token_count(five_h(97.0, 1_794_000_000), week(60.0, 1_795_000_000), json!("rate_limit_reached"));
+        let reached = codex_token_count(
+            five_h(97.0, 1_794_000_000),
+            week(60.0, 1_795_000_000),
+            json!("rate_limit_reached"),
+        );
         assert_eq!(codex_rollout_limit_reset(&[reached]), Some(1_795_000_000));
         // A newer, healthy snapshot (the limit reset early) ends it.
         let healthy = codex_token_count(week(3.0, 1_795_600_000), Value::Null, Value::Null);
         assert_eq!(codex_rollout_limit_reset(&[limited.clone(), healthy]), None);
-        assert_eq!(codex_rollout_limit_reset(&[msg]), None, "no snapshot, no reset");
+        assert_eq!(
+            codex_rollout_limit_reset(&[msg]),
+            None,
+            "no snapshot, no reset"
+        );
 
         // The sweep's decision: a codex lane showing the message is limited,
         // with the rollout's reset; nothing else is, and nothing else reads it.
         let now = 1_790_000_000;
         let pane = "\u{25a0} You\u{2019}ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 18th, 2026 4:59 PM.\n\n\u{203a} Ask Codex to do anything\n";
-        let seen = codex_sweep_observation("codex", pane, 0, now, || Some(1_795_000_000)).expect("limited");
+        let seen = codex_sweep_observation("codex", pane, 0, now, || Some(1_795_000_000))
+            .expect("limited");
         let unread = || -> Option<i64> { panic!("rollout read for a lane that is not limited") };
-        assert!(codex_sweep_observation("codex", "\u{203a} Ask Codex to do anything\n", 0, now, unread).is_none());
+        assert!(codex_sweep_observation(
+            "codex",
+            "\u{203a} Ask Codex to do anything\n",
+            0,
+            now,
+            unread
+        )
+        .is_none());
         assert!(codex_sweep_observation("claude", pane, 0, now, unread).is_none());
-        assert!(codex_sweep_observation("ollama", pane, 0, now, unread).is_none(), "local models have no account limit");
-        assert_eq!((seen.kind, seen.reset_at, seen.menu), ("codex-limit", 1_795_000_000, false));
-        assert_eq!(observe_codex_limit(0, None, now).reset_at, 0);
-        assert!(is_weekly_limit("", seen.reset_at, now), "a reset days out is the weekly limit");
+        assert!(
+            codex_sweep_observation("ollama", pane, 0, now, unread).is_none(),
+            "local models have no account limit"
+        );
+        assert_eq!(
+            (seen.kind, seen.reset_at, seen.menu),
+            ("codex-limit", 1_795_000_000, false)
+        );
+        assert!(
+            is_weekly_limit("", seen.reset_at, now),
+            "a reset days out is the weekly limit"
+        );
+        // No clock, no stamp: a clockless stamp would hold an idle lane until
+        // a human typed into it.
+        assert!(codex_sweep_observation("codex", pane, 0, now, || None).is_none());
+
+        // The stamp holds the lane until its reset, then releases it, on both
+        // gates that read it (send path and queue gate).
+        let since = now - 60;
+        assert!(rate_limit_delivery_hold(None, since, seen.reset_at, seen.kind, now).is_some());
+        assert!(rate_limit_still_blocks(since, seen.reset_at, now));
+        assert!(
+            rate_limit_delivery_hold(None, since, seen.reset_at, seen.kind, seen.reset_at + 1)
+                .is_none()
+        );
+        assert!(!rate_limit_still_blocks(
+            since,
+            seen.reset_at,
+            seen.reset_at + 1
+        ));
+        // A Claude login switch does not release it: the OpenAI account is
+        // still limited. It still releases a Claude limit.
+        assert!(!limit_released_by_account_switch(seen.kind, since, now));
+        assert!(limit_released_by_account_switch("transcript", since, now));
     }
 
     #[test]
