@@ -19,6 +19,10 @@ Subcommands:
   history [H]    Per-account usage history from the amux DB over the last H
                  hours (default 168): latest reading, burn rate, hours to full.
   on | off       Opt this machine in to (or out of) automatic switching.
+  usage          Read every account's usage from the usage API now.
+  resets [EMAIL...]   Each account's free limit-reset grants, read in its
+                 claude.ai browser profile (accounts.json browser_profile).
+  reset EMAIL [GRANT]  Use one grant now (default: the one worth most).
 
 Automatic switching is opt-in and off by default: tick only switches when
 ~/.amux/claude-usage/enabled exists (`on` writes it; the installer only with
@@ -40,6 +44,16 @@ wins, since its headroom is lost at that reset. tick switches when the current
 account stops being usable, or when another usable account's weekly reset is
 earlier than the current one's (spend expiring capacity first). Unknown
 accounts are used only after every known one.
+
+Readings come from the usage API (GET /api/oauth/usage with each account's
+saved login), the current account every tick and the rest every API_EVERY_S;
+the tmux /usage probe runs only when the API cannot read the current account.
+
+Free limit resets: when no account is usable and the next frees up more than
+RESET_WAIT_S away, or a grant is about to expire on a half-spent account, the
+tick reads grants in up to RESET_READS accounts' claude.ai browser profiles
+and uses the one that wins back the most weekly capacity before that account
+would renew anyway, at most one per RESET_GAP_S.
 """
 import datetime as dt
 import fcntl
@@ -180,6 +194,12 @@ def _reset(value):
         return None
 
 
+# Sources that read the account itself rather than a worker's last response.
+# "limit-reset" is the 0% a successful reset leaves when the API cannot be read
+# straight after; as "manual" it was dropped as lower than the known 100%.
+FIRST_HAND = ("usage-probe", "usage-api", "limit-reset")
+
+
 def merge_window(known, used, reset, source, at=None):
     """Fold one reading of a window into what is known for that account.
 
@@ -192,9 +212,9 @@ def merge_window(known, used, reset, source, at=None):
     /usage probe and manual records are first-hand and may move a reset."""
     at = at or now()
     new = {"used_percentage": used, "resets_at": reset}
-    if source == "usage-probe":
-        # The account's own /usage screen: it outranks whatever a status line
-        # left behind, including a higher number in the same window.
+    if source in FIRST_HAND:
+        # The account's own /usage screen or usage API: it outranks whatever a
+        # status line left behind, including a higher number in the same window.
         return new, "probe"
     known = known or {}
     k_reset, n_reset = _reset(known.get("resets_at")), _reset(reset)
@@ -246,7 +266,7 @@ def record(email, five=None, five_reset=None, week=None, week_reset=None, source
                     log("claude_rotate_reading_rejected", account=email, source=source, reason="contradicts_probe",
                         window=key, used=used, probed=acct["probed"][key]["used"])
                     return False
-        elif source == "usage-probe":
+        elif source in FIRST_HAND:
             probed = acct.setdefault("probed", {})
             for key, used in (("seven_day", week), ("five_hour", five)):
                 if used is not None:
@@ -900,6 +920,392 @@ def heal_stale(current, limit=1):
     return healed
 
 
+# ---------------------------------------------------------------- usage API
+
+# THE ACCOUNT'S OWN NUMBERS, BY API (Ethan, 2026-11-11: "make sure its programmatic
+# and optimized"). The /usage screen is read in a tmux session and stayed rate
+# limited for hours at a time (2026-11-07), and status lines repeat each worker's
+# own last response, so on 2026-11-11 ethan@mixpeek.com read 99% here while its
+# week was at 0%. GET /api/oauth/usage answers for any account whose saved login
+# holds an unexpired access token: no prompt, no quota, no tmux.
+USAGE_API = os.environ.get("CLAUDE_ROTATE_USAGE_API", "https://api.anthropic.com/api/oauth/usage")
+API_EVERY_S = int(os.environ.get("CLAUDE_ROTATE_API_EVERY_S", "900"))
+
+
+def api_token(email):
+    """An unexpired access token for `email`, from the shared login when it is
+    that account, else from its saved logins. Never refreshed here: a refresh
+    rotates the refresh token and would strand the copy the CLI keeps."""
+    soon = time.time() * 1000 + 60000
+    cands = []
+    if email == current_email():
+        try:
+            cands.append(json.loads(_kc_read(CRED_SVC, CRED_ACCT) or "{}").get("claudeAiOauth") or {})
+        except ValueError:
+            pass
+    cands += [s.get("claudeAiOauth") or {} for _via, s in login_candidates(email)]
+    return next((o["accessToken"] for o in cands
+                 if o.get("accessToken") and float(o.get("expiresAt") or 0) > soon), None)
+
+
+def _iso_s(value):
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).replace(microsecond=0).isoformat()
+    except (AttributeError, ValueError):
+        return None
+
+
+def parse_api_usage(d):
+    """The usage API's answer as {five_hour, seven_day: {used_percentage,
+    resets_at}} plus fable_share, the points of the week Fable has used (what a
+    Fable reset gives back)."""
+    out = {}
+    for key in ("five_hour", "seven_day"):
+        w = d.get(key)
+        if isinstance(w, dict) and w.get("utilization") is not None:
+            out[key] = {"used_percentage": float(w["utilization"]), "resets_at": _iso_s(w.get("resets_at"))}
+    shares = [s.get("used_percent_of_weekly") for s in d.get("weekly_scoped_shares") or []
+              if isinstance(s, dict) and s.get("used_percent_of_weekly") is not None]
+    if shares:
+        out["fable_share"] = float(max(shares))
+    return out
+
+
+def api_usage(email):
+    """(reading or None, why_unmeasured)."""
+    import urllib.request
+    token = api_token(email)
+    if not token:
+        return None, "no unexpired access token saved"
+    req = urllib.request.Request(USAGE_API, headers={"Authorization": "Bearer " + token,
+                                                     "anthropic-beta": "oauth-2025-04-20",
+                                                     "User-Agent": "amux-claude-rotate"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            reading = parse_api_usage(json.loads(r.read().decode()))
+    except Exception as e:
+        return None, ("http %s" % e.code) if hasattr(e, "code") else str(e)[:120]
+    return (reading, None) if "seven_day" in reading else (None, "no seven_day window in the answer")
+
+
+def api_read_all(current, state, at_s=None):
+    """Read every account the API can reach, the current one each tick and the
+    rest every API_EVERY_S. Returns {email: reading} for those read now."""
+    at_s = at_s or time.time()
+    last = state.setdefault("api_read", {})
+    emails = set(load(ACCOUNTS, {"accounts": {}})["accounts"]) | set(account_folders())
+    if current:
+        emails.add(current)
+    read, unread = {}, {}
+    for email in sorted(emails):
+        a = load(ACCOUNTS, {"accounts": {}})["accounts"].get(email) or {}
+        if a.get("disabled") or (email != current and at_s - float(last.get(email) or 0) < API_EVERY_S):
+            continue
+        reading, why = api_usage(email)
+        if reading is None:
+            unread[email] = why
+            continue
+        last[email] = at_s
+        five, week = reading.get("five_hour") or {}, reading["seven_day"]
+        record(email, five.get("used_percentage"), five.get("resets_at"),
+               week["used_percentage"], week["resets_at"], source="usage-api")
+        if "fable_share" in reading:
+            with locked(ACCOUNTS + ".lock"):
+                data = load(ACCOUNTS, {"accounts": {}})
+                data["accounts"].setdefault(email, {})["fable_share"] = reading["fable_share"]
+                save(ACCOUNTS, data)
+        read[email] = reading
+    if read or unread:
+        log("claude_rotate_api_usage", measured=bool(read), n_considered=len(read) + len(unread),
+            read={e: r["seven_day"]["used_percentage"] for e, r in read.items()}, unread=unread)
+    return read
+
+
+# ---------------------------------------------------------------- limit resets
+
+# FREE LIMIT RESETS (Ethan, 2026-11-11: "should we able to reset automatically",
+# then "make sure its programmatic and optimized"). claude.ai gives accounts
+# one-use grants ("One full limit reset (November 2026)", a Fable reset at a
+# model launch), each with an expiry. Only a claude.ai web session can read or
+# use them: the CLI's OAuth login is told cedar_ember.ineligible_reason
+# "surface". So each account's own saved amux browser profile makes the two
+# calls the settings page makes, from inside claude.ai:
+#   GET  /api/organizations/<org>/usage?cedar_ember=1&skip_spend=1   the grants
+#   POST /api/organizations/<org>/reset_rate_limits                  use one
+# Headless Chrome stops at Cloudflare's bot check, so the profile opens a window.
+RESET_PROGRAM = "cedar_ember"
+# Use one only when no account is usable and the next frees up later than this.
+RESET_WAIT_S = int(os.environ.get("CLAUDE_ROTATE_RESET_WAIT_S", str(3 * 3600)))
+# At most one reset per gap, so a switch that fails after a reset cannot spend a second.
+RESET_GAP_S = int(os.environ.get("CLAUDE_ROTATE_RESET_GAP_S", str(2 * 3600)))
+# Accounts whose grants are read per decision; each read opens a window for ~15s.
+RESET_READS = int(os.environ.get("CLAUDE_ROTATE_RESET_READS", "3"))
+# A grant this close to its expiry is used once its account is half spent, need or not.
+RESET_EXPIRING_S = int(os.environ.get("CLAUDE_ROTATE_RESET_EXPIRING_S", str(24 * 3600)))
+# One account's grants are re-read this often, oldest first, to see expiries coming.
+RESET_SWEEP_S = int(os.environ.get("CLAUDE_ROTATE_RESET_SWEEP_S", str(6 * 3600)))
+
+STATUS_JS = r"""(async () => {
+  const a = await (await fetch("/api/account")).json();
+  const out = {email: a.email_address, orgs: []};
+  for (const m of a.memberships || []) {
+    const o = m.organization;
+    const r = await fetch(`/api/organizations/${o.uuid}/usage?cedar_ember=1&skip_spend=1`);
+    let j = null; try { j = await r.json(); } catch (e) {}
+    out.orgs.push({uuid: o.uuid, status: r.status, seven_day: j && j.seven_day, cedar_ember: j && j.cedar_ember});
+  }
+  return JSON.stringify(out);
+})()"""
+
+USE_JS = r"""(async () => {
+  const a = await (await fetch("/api/account")).json();
+  if ((a.email_address || "").toLowerCase() !== %(email)s) return JSON.stringify({email: a.email_address});
+  const r = await fetch(`/api/organizations/%(org)s/reset_rate_limits`, {method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({program: %(program)s, grant_id: %(grant)s, request_id: crypto.randomUUID()})});
+  return JSON.stringify({email: a.email_address, status: r.status, body: (await r.text()).slice(0, 600)});
+})()"""
+
+
+PROFILES_DIR = os.environ.get("CLAUDE_ROTATE_PROFILES_DIR", os.path.join(HOME, ".amux", "playwright-auth", "profiles"))
+
+
+def has_profile(email):
+    """Whether this machine holds `email`'s claude.ai browser profile. The
+    mixpeek-dev VM shares the accounts but not the profiles; a grant belongs to
+    the account, so the machine that has them spends it for both."""
+    return os.path.isdir(os.path.join(PROFILES_DIR, reset_profile(email)))
+
+
+def reset_profile(email):
+    """The amux browser profile signed in to `email` on claude.ai: accounts.json
+    `browser_profile`, else meta-claude-<domain name> (ethan@getmixpeek.com ->
+    meta-claude-getmixpeek). The page's own email is checked before any use."""
+    a = load(ACCOUNTS, {"accounts": {}})["accounts"].get(email) or {}
+    return a.get("browser_profile") or "meta-claude-" + email.partition("@")[2].split(".")[0]
+
+
+def _route(*args):
+    # Owned by no worker, so a worker's own browser route is never taken over.
+    env = {k: v for k, v in os.environ.items() if k not in ("AMUX_SESSION", "AMUX_WORKER", "TMUX", "TMUX_PANE")}
+    p = subprocess.run(["amux", "browser", "route", *args], capture_output=True, text=True, timeout=150, env=env)
+    try:
+        return json.loads(p.stdout)
+    except ValueError:
+        return {"ok": False, "error": (p.stderr or p.stdout)[-300:]}
+
+
+def claude_ai(email, js):
+    """Run `js` inside claude.ai in `email`'s browser profile; its JSON result, or
+    {"error": ...}."""
+    profile = reset_profile(email)
+    start = _route("start", json.dumps({"profile": profile, "url": "https://claude.ai/settings/usage",
+                                        "headless": False}))
+    if not start.get("ok"):
+        return {"error": "browser %s did not start: %s" % (profile, str(start.get("error") or start)[:200])}
+    try:
+        # Wait out Cloudflare's check and claude.ai's own redirect
+        # (/settings/usage -> /new#settings/usage): an eval mid-navigation runs
+        # in a page with no origin and its fetch fails (2026-11-11).
+        settled = 0
+        for _ in range(30):
+            st = _route("state")
+            page = str(st.get("text") or "")
+            ready = str(st.get("url") or "").startswith("https://claude.ai/") and page.strip() \
+                and "security verification" not in page and not page.strip().startswith("Loading")
+            settled = settled + 1 if ready else 0
+            if settled >= 2:
+                break
+            time.sleep(2)
+        out = {"error": "claude.ai did not settle in %s" % profile}
+        for _ in range(2):
+            res = _route("action", json.dumps({"action": "eval", "script": js}))
+            raw = (res.get("data") or {}).get("result")
+            try:
+                out = json.loads(raw) if isinstance(raw, str) else {"error": str(res)[:300]}
+            except ValueError:
+                out = {"error": str(raw)[:300]}
+            if not out.get("error"):
+                break
+            time.sleep(3)
+        return out
+    finally:
+        _route("stop")
+
+
+def reset_status(email):
+    """(status, why). status: {org, eligible, at_limit, grants, weekly_resets_at,
+    cooldown_until, read_at}, from the claude.ai org that reports grants."""
+    d = claude_ai(email, STATUS_JS)
+    if d.get("error"):
+        return None, d["error"]
+    if (d.get("email") or "").lower() != email.lower():
+        return None, "profile %s is signed in as %s" % (reset_profile(email), d.get("email"))
+    for o in d.get("orgs") or []:
+        ce = o.get("cedar_ember")
+        if o.get("status") == 200 and isinstance(ce, dict):
+            return {"org": o["uuid"], "eligible": ce.get("eligible"), "ineligible_reason": ce.get("ineligible_reason"),
+                    "at_limit": ce.get("at_limit"), "grants": ce.get("grants") or [],
+                    "weekly_resets_at": ce.get("weekly_resets_at"), "cooldown_until": ce.get("cooldown_until"),
+                    "read_at": time.time()}, None
+    return None, "no organization reported reset grants"
+
+
+def grant_value(grant, acct, at):
+    """Points of weekly capacity a grant wins back, weighted by how much of a week
+    is left before the account would have them back anyway. A reset on an
+    account that renews tomorrow is mostly wasted."""
+    if not grant.get("usable_now") or grant.get("paused") or (grant.get("resets_left") or 0) < 1:
+        return 0.0
+    used = (grant.get("percent_used") or {}).get("seven_day")
+    if used is None:
+        used = (acct.get("seven_day") or {}).get("used_percentage") or 0
+    if "seven_day" in (grant.get("clears") or []):
+        back = float(used)
+    elif grant.get("gives_back_weekly"):
+        back = min(float(used), float(acct.get("fable_share") or 0))
+    else:
+        return 0.0
+    renew = _reset((acct.get("seven_day") or {}).get("resets_at"))
+    left_s = (renew - at).total_seconds() if renew else 7 * 86400
+    return round(back * max(0.0, min(left_s, 7 * 86400)) / (7 * 86400), 2)
+
+
+def best_grant(statuses, accounts, at):
+    """(email, grant, value) with the most capacity won back; on a tie the grant
+    that expires first goes first. None when no grant wins anything."""
+    best = None
+    for email, st in statuses.items():
+        if not st or not st.get("eligible"):
+            continue
+        for g in st.get("grants") or []:
+            v = grant_value(g, accounts.get(email) or {}, at)
+            key = (v, -(_reset(g.get("ends_at")) or at).timestamp())
+            if v > 0 and (best is None or key > best[0]):
+                best = (key, email, g, v)
+    return best and best[1:]
+
+
+def reset_trigger(rows, current, state, at):
+    """Why a reset is due now, or None. Due when no account is usable and the
+    first one frees up more than RESET_WAIT_S from now, or when a grant known to
+    expire inside RESET_EXPIRING_S sits on an account at least half spent."""
+    if time.time() - float(state.get("reset_used_at") or 0) < RESET_GAP_S:
+        return None
+    if not any(r["usable"] for r in rows):
+        nxt = min((_reset(r["available_at"]) for r in rows if r.get("available_at") not in (None, "now")
+                   and _reset(r["available_at"])), default=None)
+        if nxt is None or (nxt - at).total_seconds() > RESET_WAIT_S:
+            return "no_usable_account"
+    known = state.get("reset_grants") or {}
+    weekly = {r["email"]: r["weekly"] or 0 for r in rows}
+    for email, st in known.items():
+        for g in (st or {}).get("grants") or []:
+            ends = _reset(g.get("ends_at"))
+            if ends and 0 < (ends - at).total_seconds() < RESET_EXPIRING_S and g.get("usable_now") \
+                    and (g.get("resets_left") or 0) > 0 and weekly.get(email, 0) >= 50:
+                return "grant_expiring"
+    return None
+
+
+def use_reset(email, grant_id, org):
+    """POST one grant. Returns the result word (reset, already_used,
+    not_limited, ineligible, cooldown, unavailable, rate_limited, error)."""
+    js = USE_JS % {"email": json.dumps(email.lower()), "org": org, "program": json.dumps(RESET_PROGRAM),
+                   "grant": json.dumps(grant_id)}
+    d = claude_ai(email, js)
+    if (d.get("email") or "").lower() != email.lower():
+        result, detail = "wrong_account", d.get("error") or d.get("email")
+    elif d.get("status") == 200:
+        try:
+            body = json.loads(d.get("body") or "{}")
+        except ValueError:
+            body = {}
+        result, detail = body.get("result") or "error", body
+    else:
+        result, detail = ("rate_limited" if d.get("status") == 429 else "error"), d
+    log("claude_rotate_limit_reset", measured=result != "error", n_considered=1, account=email, grant=grant_id,
+        result=result, detail=str(detail)[:400])
+    return result
+
+
+def maybe_reset(rows, current, at=None):
+    """Spend one free limit reset when reset_trigger says so, on the grant that
+    wins back the most. Returns the account reset, or None."""
+    at = at or now()
+    state = load(STATE, {})
+    why = reset_trigger(rows, current, state, at)
+    if why is None:
+        return sweep_grants(state)
+    accounts = load(ACCOUNTS, {"accounts": {}})["accounts"]
+    # Furthest renewal first: that is where a reset is worth most.
+    order = sorted((r for r in rows if (not r["usable"] or why == "grant_expiring") and has_profile(r["email"])),
+                   key=lambda r: r.get("weekly_resets") or "", reverse=True)
+    if not order:
+        log("claude_rotate_reset_unavailable", measured=False, trigger=why,
+            why_unmeasured="no account's claude.ai browser profile is on this machine (%s)" % PROFILES_DIR)
+        return None
+    statuses = {}
+    for r in order[:RESET_READS]:
+        st, err = reset_status(r["email"])
+        if st is None:
+            log("claude_rotate_reset_status", measured=False, account=r["email"], why_unmeasured=err)
+            continue
+        statuses[r["email"]] = st
+    state = load(STATE, {})
+    state.setdefault("reset_grants", {}).update(statuses)
+    save(STATE, state)
+    pick = best_grant(statuses, accounts, at)
+    if pick is None:
+        log("claude_rotate_reset_none", measured=bool(statuses), n_considered=len(statuses), trigger=why,
+            why_unmeasured=None if statuses else "no grant status could be read")
+        return None
+    email, grant, value = pick
+    log("claude_rotate_reset_planned", measured=True, n_considered=len(statuses), trigger=why, account=email,
+        grant=grant["id"], value=value, ends_at=grant.get("ends_at"))
+    result = use_reset(email, grant["id"], statuses[email]["org"])
+    state = load(STATE, {})
+    if result in ("reset", "already_used", "cooldown"):
+        state["reset_used_at"] = time.time()
+    state.get("reset_grants", {}).pop(email, None)
+    save(STATE, state)
+    if result != "reset":
+        return None
+    reading, err = api_usage(email)
+    if reading:
+        five, week = reading.get("five_hour") or {}, reading["seven_day"]
+        record(email, five.get("used_percentage"), five.get("resets_at"),
+               week["used_percentage"], week["resets_at"], source="usage-api")
+    else:
+        # The reset cleared the week; until the API answers, say so rather than keep the full reading.
+        record(email, None, None, 0.0, (accounts.get(email, {}).get("seven_day") or {}).get("resets_at"),
+               source="limit-reset")
+    return email
+
+
+def sweep_grants(state):
+    """Re-read the grants of the account read longest ago, at most every
+    RESET_SWEEP_S, so reset_trigger can see a grant about to expire."""
+    if time.time() - float(state.get("reset_sweep_at") or 0) < RESET_SWEEP_S:
+        return None
+    known = state.get("reset_grants") or {}
+    emails = sorted((e for e in set(load(ACCOUNTS, {"accounts": {}})["accounts"]) | set(account_folders())
+                     if has_profile(e)), key=lambda e: float((known.get(e) or {}).get("read_at") or 0))
+    state["reset_sweep_at"] = time.time()
+    save(STATE, state)
+    if not emails:
+        return None
+    st, err = reset_status(emails[0])
+    state = load(STATE, {})
+    # A failed read is remembered too, so one unreachable profile cannot hold the sweep.
+    state.setdefault("reset_grants", {})[emails[0]] = st or {"read_at": time.time(), "error": err}
+    save(STATE, state)
+    log("claude_rotate_reset_status", measured=st is not None, n_considered=1, account=emails[0],
+        grants=[(g.get("id"), g.get("resets_left"), g.get("ends_at")) for g in (st or {}).get("grants") or []],
+        why_unmeasured=err)
+    return None
+
+
 ENABLED_FILE = os.path.join(DIR, "enabled")
 
 
@@ -925,10 +1331,19 @@ def cmd_tick():
         print(log("claude_rotate_paused", measured=False, why_unmeasured="paused"))
         return 0
     if not os.path.exists(LOCK) or not _switch_running():
+        read = {}
         try:
-            probe()
+            st = load(STATE, {})
+            read = api_read_all(current_email(), st)
+            save(STATE, st)
         except Exception as e:
-            log("claude_rotate_probe_failed", measured=False, why_unmeasured=str(e)[:200])
+            log("claude_rotate_api_usage", measured=False, why_unmeasured=str(e)[:200])
+        # The tmux /usage probe only when the API could not read the current account.
+        if current_email() not in read:
+            try:
+                probe()
+            except Exception as e:
+                log("claude_rotate_probe_failed", measured=False, why_unmeasured=str(e)[:200])
         try:
             capture_login()
         except Exception as e:
@@ -970,6 +1385,12 @@ def cmd_tick():
     if dead:
         log("claude_rotate_mailbox_dead", measured=True, n_considered=len(rows), accounts=sorted(dead),
             fix="GET /api/gmail/auth?account=<email>, open the url, approve")
+    if not os.path.exists(LOCK) or not _switch_running():
+        try:
+            if maybe_reset(rows, current):
+                rows, state = rank(), load(STATE, {})
+        except Exception as e:
+            log("claude_rotate_limit_reset", measured=False, why_unmeasured=str(e)[:200])
     target, reason = decide(current, rows, state, unreachable=dead)
     skipped = sorted((backed_off(state) | dead) - {current})
     if not target:
@@ -2041,6 +2462,38 @@ def main(argv):
         return 0
     if cmd == "probe":
         return 0 if probe() else 1
+    if cmd == "usage":
+        st = load(STATE, {})
+        st["api_read"] = {}
+        read = api_read_all(current_email(), st)
+        save(STATE, st)
+        print(json.dumps(read, indent=2))
+        return 0 if read else 1
+    if cmd == "resets":
+        emails = [e.lower() for e in argv[2:]] or sorted(set(load(ACCOUNTS, {"accounts": {}})["accounts"]) | set(account_folders()))
+        out = {}
+        for e in emails:
+            st, err = reset_status(e)
+            out[e] = st or {"error": err, "profile": reset_profile(e)}
+        state = load(STATE, {})
+        state.setdefault("reset_grants", {}).update({e: v for e, v in out.items() if "grants" in v})
+        save(STATE, state)
+        print(json.dumps(out, indent=2))
+        return 0
+    if cmd == "reset" and len(argv) in (3, 4):
+        email = argv[2].lower()
+        st, err = reset_status(email)
+        if st is None:
+            print(err, file=sys.stderr)
+            return 1
+        grant = next((g for g in st["grants"] if g["id"] == argv[3]), None) if len(argv) == 4 else \
+            (best_grant({email: st}, load(ACCOUNTS, {"accounts": {}})["accounts"], now()) or (None, None, None))[1]
+        if grant is None:
+            print("no usable grant on %s: %s" % (email, [g.get("id") for g in st["grants"]]), file=sys.stderr)
+            return 1
+        result = use_reset(email, grant["id"], st["org"])
+        print(result)
+        return 0 if result == "reset" else 1
     if cmd == "switch" and len(argv) == 3:
         return switch(argv[2])
     if cmd == "record" and len(argv) == 7:

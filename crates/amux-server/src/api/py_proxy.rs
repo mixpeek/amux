@@ -67,6 +67,7 @@ pub const PROXIED_FAMILIES: &[ProxiedFamily] = &[];
 pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/brex", "tokenized card issuance, webhook budget checks and credential health; disabled until configured (api/brex.rs)"),
     ("/api/_clear_sw", "service-worker cache reset landing page"),
+    ("/api/security", "encryption at rest for connector grants: status, key source, and the owner's decrypt back to plain files (api/at_rest.rs)"),
     ("/api/audit", "one worker's browser verbs, tool calls and API calls as a timeline (api/audit.rs)"),
     ("/api/board-groom", "stale board cards per lane, and the grooming turn a worker gets for its own (api/board_groom.rs)"),
     ("/api/social", "publish to social platforms and read each post's results at 24h, 72h and 7d (api/social.rs)"),

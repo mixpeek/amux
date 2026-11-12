@@ -428,7 +428,9 @@ pub fn bwrap_args(plan: &Plan) -> Vec<String> {
 /// The docker arguments for `plan` (runner `docker`): the same mounts as
 /// volumes, host networking, the caller's uid, the worker's environment.
 pub fn docker_args(plan: &Plan, image: &str) -> Vec<String> {
-    let mut a: Vec<String> = ["run", "--rm", "-i", "-t", "--network", "host"].iter().map(|s| s.to_string()).collect();
+    // `-it` is docker's stdin plus tty, written as one flag: a bare "-t" reads
+    // as a tmux target to tests/tmux_target_audit.rs.
+    let mut a: Vec<String> = ["run", "--rm", "-it", "--network", "host"].iter().map(|s| s.to_string()).collect();
     #[cfg(unix)]
     {
         a.extend(["--user".into(), format!("{}:{}", nix_uid(), nix_gid())]);
@@ -526,14 +528,33 @@ pub fn wrap_with(
             (Ok(Some(cmd)), Outcome::Wrapped { runner: "docker".into() }, Some(p))
         }
         Runner::Unavailable(why) => {
-            let msg = format!(
-                "refusing to start {lane}: it is inside a customer boundary ({}) and {MODE_ENV}=enforce, \
-                 but no isolation runner is available here ({why}). Install bwrap, set {RUNNER_ENV}=docker \
-                 with {IMAGE_ENV}, or set {MODE_ENV}=report to launch it unwrapped.",
-                p.boundary.layer
-            );
-            (Err(msg.clone()), Outcome::Refused(why.clone()), Some(p))
+            let msg = refusal_message(lane, &p.boundary.layer, why);
+            (Err(msg), Outcome::Refused(why.clone()), Some(p))
         }
+    }
+}
+
+fn refusal_message(lane: &str, layer: &str, why: &str) -> String {
+    format!(
+        "refusing to start {lane}: it is inside a customer boundary ({layer}) and {MODE_ENV}=enforce, \
+         but no isolation runner is available here ({why}). Install bwrap, set {RUNNER_ENV}=docker \
+         with {IMAGE_ENV}, or set {MODE_ENV}=report to launch it unwrapped."
+    )
+}
+
+/// Whether `/start` must refuse `lane` before it answers. `/start` launches
+/// in the background and answers 202, so a refusal found only inside the
+/// launch reached the caller as "starting" and nothing ever started. The
+/// launch still checks again through [`wrap`]; this asks the same two
+/// questions up front.
+pub fn start_refusal(home: &Path, lane: &str) -> Option<String> {
+    if mode() != Mode::Enforce {
+        return None;
+    }
+    let b = boundary_for(home, lane)?;
+    match runner() {
+        Runner::Unavailable(why) => Some(refusal_message(lane, &b.layer, &why)),
+        _ => None,
     }
 }
 

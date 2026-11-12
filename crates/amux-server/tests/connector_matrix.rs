@@ -351,7 +351,12 @@ impl Rig {
             .args(["--exact", "fixture_server_child", "--nocapture"])
             .env("AMUX_MATRIX_CHILD_HOME", &self.home)
             .env("AMUX_HOME", &self.home)
+            // The matrix edits grant files on disk (an expired token, a
+            // revoked grant), so they stay plaintext here; sealing is covered
+            // by e2e/chaos/encryption-at-rest.mjs (governance PR 18).
+            .env("AMUX_ENCRYPT_AT_REST", "off")
             .env("AMUX_RS_PORT", self.port.to_string())
+            .env("AMUX_RS_BIND", "127.0.0.1")
             .env("AMUX_MATRIX_CHILD_PORT", self.port.to_string())
             .env("AMUX_MATRIX_PROVIDER", &self.provider)
             .env("AMUX_NO_SELF_ADOPT", "1")
