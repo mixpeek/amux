@@ -224,7 +224,7 @@ const REGISTRY: &[Provider] = &[
             callback_path: "/api/connectors/slack/callback",
             scopes: "channels:read chat:write channels:history",
         },
-        setup_note: "Create a Slack app, add the redirect URI below, and paste its client id + secret.",
+        setup_note: "Create the Slack app with the link below (it fills in the redirect URI and scopes), then paste its client id + secret from the app's Basic Information page.",
         docs: "https://api.slack.com/apps",
         test_url: "https://slack.com/api/auth.test",
     },
@@ -554,6 +554,24 @@ fn env_keys(p: &Provider) -> Vec<&'static str> {
 /// localhost redirect reaches nothing there).
 fn origin() -> String {
     super::gmail_auth::oauth_origin().unwrap_or_else(|| format!("https://localhost:{}", canonical_port()))
+}
+
+/// Slack's create-from-manifest link for the `slack` connector, so setting it
+/// up is one click and a workspace pick: the redirect URI and the bot scopes
+/// both connectors need arrive filled in, where the owner used to copy them
+/// across by hand. Slack shows the manifest for review before it creates
+/// anything.
+fn slack_create_app_url(redirect_uri: &str) -> String {
+    let manifest = json!({
+        "display_information": {"name": "amux", "description": "amux workers in Slack"},
+        "features": {"bot_user": {"display_name": "amux", "always_online": true}},
+        "oauth_config": {
+            "redirect_urls": [redirect_uri],
+            "scopes": {"bot": ["channels:read", "chat:write", "channels:history", "im:history"]},
+        },
+        "settings": {"org_deploy_enabled": false, "socket_mode_enabled": false, "token_rotation_enabled": false},
+    });
+    format!("https://api.slack.com/apps?new_app=1&manifest_json={}", urlencode(&manifest.to_string()))
 }
 
 /// The redirect URI every google-family grant uses: the GMAIL one, on purpose
@@ -1156,6 +1174,11 @@ async fn list(Extension(ctx): Extension<Arc<ConnectorsCtx>>) -> Response {
                 },
                 "setup_note": p.setup_note,
                 "docs": p.docs,
+                "create_app": if p.id == "slack" {
+                    json!(slack_create_app_url(&format!("{}/api/connectors/slack/callback", origin())))
+                } else {
+                    Value::Null
+                },
             })
         })
         .collect();
@@ -6042,5 +6065,35 @@ mod connector_maintenance_regressions {
         );
         let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "rotated-refresh");
+    }
+}
+
+#[cfg(test)]
+mod slack_create_app_tests {
+    #[test]
+    fn the_manifest_link_carries_the_redirect_and_the_bot_scopes() {
+        let redirect = "https://localhost:8824/api/connectors/slack/callback";
+        let link = super::slack_create_app_url(redirect);
+        let (base, query) = link.split_once("&manifest_json=").expect("manifest param");
+        assert_eq!(base, "https://api.slack.com/apps?new_app=1");
+        let bytes = query.as_bytes();
+        let mut raw = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                raw.push(u8::from_str_radix(&query[i + 1..i + 3], 16).expect("hex escape"));
+                i += 3;
+            } else {
+                raw.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let decoded = String::from_utf8(raw).expect("utf-8");
+        let manifest: serde_json::Value = serde_json::from_str(&decoded).expect("manifest is JSON");
+        assert_eq!(manifest["oauth_config"]["redirect_urls"][0], redirect);
+        let bot = manifest["oauth_config"]["scopes"]["bot"].as_array().unwrap();
+        for scope in ["channels:read", "chat:write", "channels:history", "im:history"] {
+            assert!(bot.iter().any(|s| s == scope), "{scope} missing from {bot:?}");
+        }
     }
 }

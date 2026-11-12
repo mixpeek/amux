@@ -37201,7 +37201,7 @@ function _connDrawerRender() {
   h += '<div class="cx-tabs">' + tab('overview', 'Overview') + tab('connections', 'Connections' + (_connAcctsState === 'ok' ? ' (' + s.rows.length + ')' : '')) + tab('config', 'Configuration') + tab('perms', 'Permissions') + '</div>';
   h += '<div class="cx-dbody">';
   if (_connOpenTab === 'overview') {
-    if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
+    if (c.setup_note) h += '<p class="cx-p">' + esc(c.setup_note) + (c.create_app ? ' <a href="' + esc(c.create_app) + '" target="_blank" rel="noopener">Create the app ↗</a>' : '') + (c.docs ? ' <a href="' + esc(c.docs) + '" target="_blank" rel="noopener">Docs ↗</a>' : '') + '</p>';
     const caps = c.group ? [].concat(...c.services.map(sv => _CONN_CAPS[sv.id] || [])) : (_CONN_CAPS[c.id] || []);
     for (const cap of caps) h += '<div class="cx-cap"><span class="cx-cap-dot">●</span><span><b>' + esc(cap[0]) + '</b><br><span class="cx-dim">' + esc(cap[1]) + '</span></span></div>';
     if (c.group) {
