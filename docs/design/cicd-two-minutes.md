@@ -71,3 +71,40 @@ with a red full verdict rolling back what it let through.
 | 4 | sandbox: gate on `gate`, cooldown like the Mac, more build jobs | sandbox |
 | 5 | checks: no cross-machine yield for same-machine relands; split the long poles | full verdict |
 | 6 | a red full verdict on a live commit rolls back (revert on main, forward deploy) | rollback |
+
+## Results (2026-11-12, measured)
+
+| # | status | commit | measured |
+|---|---|---|---|
+| 1 | in progress (subagent) | | |
+| 2 | done | 375d3f20c, 2b82ca690 | b8d48aeb5 (no Rust change): local gate 35 s, push to live **49 s**. The first live run failed on launchd's PATH (no GNU `timeout`, BSD `xargs -I` limit); fixed in 2b82ca690. |
+| 3 | done in the builder log | 375d3f20c | `from_push_s` on every ACTIVATION HEALTHY line, from the commit's first workflow run. Not yet published by the server. |
+| 4 | done (host config, not in the repo) | | sandbox compile 3 min 53 s with 3 jobs (was 9 to 16 min with 1); cooldown 120 s (was 1800); its CI gate was OFF (`AMUX_DEPLOY_CI_GATE=0`), now on, with the local gate. |
+| 5 | done | 3efdcdbd9 | the lease yields only to a waiter that announced itself; long tests split; planned longest checks shard 65 s (was 434 s). |
+| 6 | not built | | Automatic revert of other lanes' commits is the human's call (ethos rule 8). A red main still files its card (SCHED-713). |
+
+Also landed:
+
+- **af50045f7** main was red on every push: scheduler-redesign.spec.ts still expected New to open the
+  form directly.
+- **b8d48aeb5** a push to main runs the e2e its diff selects (16 shards to 1 on recent commits);
+  every spec runs on main's tip every two hours (rust.yml `schedule`).
+- **0d5a19ab6** the deploy compile can use its own target directory (`AMUX_DEPLOY_TARGET_DIR`, set on
+  the Mac): de0fc8719 waited 423 s instead of 130 s for a lane's `cargo test` lock. Lock waits log
+  `deploy_build_lock_wait`.
+
+### Where the time goes now
+
+- **A push that changes no Rust: under a minute** to live on the Mac.
+- **A push that changes Rust:** pickup about 20 s, then the compile, 106 to 150 s on this Mac at load
+  25 to 36. The compile is the floor: one 46k-line crate, already incremental with no LTO. Splitting
+  the crate is the remaining lever.
+- **Full verdict:** bounded by runners, and shared with pull requests. On 2026-11-12 at 20:00 UTC, 47
+  amux runs were queued: about 20 `contrib/gov-*` PRs, each a rust run, ahead of main's checks (one
+  waited 72 min). Deploys no longer wait on that queue.
+
+### Needs the owner
+
+- More or larger runners (money): the only way the full suite finishes in two minutes.
+- Pull request CI policy: run PR CI when a PR is ready or labelled, or merge the stacked PRs, so
+  PRs stop starving main's verdicts.
