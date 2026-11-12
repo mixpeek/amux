@@ -1089,7 +1089,27 @@ fi
     done ) &
   HB_PID=$!
   BUILD_OK=0
-  if [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
+  # A BINARY ANOTHER HOST ALREADY BUILT FOR THIS COMMIT (docs/design/cicd-two-minutes.md,
+  # Z4). The sandbox cannot compile main at all: one rustc peaks at 6.8 GB against its
+  # 6.5 GB limit at any job count. mixpeek-dev builds each main commit from a warm cache
+  # (43 to 46 s) and pushes it here through scripts/amux-prebuilt-receive.sh. It is used
+  # only for this exact sha, only when it is a real executable, and it goes through the
+  # same install, identity stamp, health check and rollback as a local build. Absent, the
+  # build below runs as before.
+  PREBUILT="${AMUX_DEPLOY_PREBUILT_DIR:+$AMUX_DEPLOY_PREBUILT_DIR/$built_sha/amux-server}"
+  if [ -n "$PREBUILT" ] && [ -f "$PREBUILT" ] && [ -x "$PREBUILT" ] \
+     && [ "$(wc -c < "$PREBUILT" | tr -d ' ')" -gt 1048576 ]; then
+    mkdir -p "$DEPLOY_TARGET/deploy"
+    cp -f "$PREBUILT" "$DEPLOY_TARGET/deploy/amux-server.prebuilt.$$" \
+      && mv -f "$DEPLOY_TARGET/deploy/amux-server.prebuilt.$$" "$DEPLOY_TARGET/deploy/amux-server" \
+      && BUILD_OK=1 && BUILT_BIN="$DEPLOY_TARGET/deploy/amux-server"
+    echo "== deploy build used the prebuilt binary for $built_sha ($(wc -c < "$PREBUILT" | tr -d ' ') bytes) ok=$BUILD_OK verdict=deploy_prebuilt_used" | tee -a "$BUILD_OUT"
+  elif [ -n "$PREBUILT" ]; then
+    echo "== deploy build: no prebuilt binary for $built_sha in $AMUX_DEPLOY_PREBUILT_DIR; compiling here verdict=deploy_prebuilt_missing"
+  fi
+  if [ "$BUILD_OK" = 1 ]; then
+    :
+  elif [ -n "${AMUX_REMOTE_BUILD_HOST:-}" ]; then
     if "$REPO/scripts/rust-remote-build.sh" "$WORK" \
         "$DEPLOY_TARGET/release/amux-server" > "$BUILD_OUT" 2>&1; then
       BUILD_OK=1
