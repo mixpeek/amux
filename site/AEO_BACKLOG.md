@@ -540,3 +540,5 @@ AI agent server sizing guide + EXP-069 | /guides/ai-agent-server-sizing/
 | Scanner-only /start/ hits jumped to 39 people in a week (prior 6), so check whether anything new is fetching the Cloud box links | scripts/site-funnel.py | M | open |
 
 2026-11-11 run (light: weekly model usage under the subagent floor until 11-13, host near swap-critical). Funnel 11-04 to 11-11, scanners excluded: 1020 visitors (-11%), GitHub clicks 59 (5.8%, -37%), /start/ views 22 (-35%), form starts 5, submits 4, checkout 3, paid 0, install copies 14, new stars 5. No experiment due today; EXP-158 scores 11-12. No new page this run.
+
+2026-11-12 run (light, usage floor until 11-13). EXP-158 scored inconclusive (GitHub 2/33 vs 1/34, /start/ 0 vs 0); change kept. Terminal-agents roundup Warp section refreshed from the 11-06 amux-vs-Warp facts (~66k stars, 800k+ developers, Oz cloud agents, Factories, vertical tabs for Claude Code/Codex/OpenCode/Gemini CLI, Build $20/mo, up to $200/mo or $50 per seat), unverifiable benchmark claims dropped, em-dashes removed from the section, linked to /compare/amux-vs-warp/. No new page this run. Next: EXP-159 on 11-13.
