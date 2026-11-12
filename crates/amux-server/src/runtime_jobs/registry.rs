@@ -2143,13 +2143,18 @@ pub async fn system_jobs(
     (axum::http::StatusCode::OK, axum::Json(body)).into_response()
 }
 
+/// Public, beside the other debug reads.
 pub fn routes() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route("/api/system-jobs", axum::routing::get(system_jobs))
-        .route(
-            "/api/system-jobs/{id}/run",
-            axum::routing::post(run_system_job),
-        )
+    axum::Router::new().route("/api/system-jobs", axum::routing::get(system_jobs))
+}
+
+/// Behind the bearer: ticking a job on demand is an action, and it answered a
+/// LAN or tailnet peer with no credential while it sat in [`routes`].
+pub fn protected_routes() -> axum::Router<AppState> {
+    axum::Router::new().route(
+        "/api/system-jobs/{id}/run",
+        axum::routing::post(run_system_job),
+    )
 }
 
 #[cfg(test)]
