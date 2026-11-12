@@ -109,6 +109,7 @@ pub mod episodes;
 pub mod status_history;
 pub mod storage;
 pub mod trace_archive;
+pub mod ledger_checkpoint;
 pub mod tailnet_watch;
 pub mod telegram_poll;
 pub mod telegram_relay;

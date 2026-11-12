@@ -10990,6 +10990,19 @@ pub async fn patch_item(
             json!({ "error": "body must be a JSON object" }),
         );
     };
+    // Governance PR 12: an undecided approval card moves only through its
+    // item's own approve or reject path (done approves, discarded rejects),
+    // so the card and the item it surfaces cannot disagree.
+    if let Some(to) = map.get("status").and_then(Value::as_str) {
+        let reason = map
+            .get("reason")
+            .or_else(|| map.get("desc_append"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if let Some(resp) = super::approval_cards::board_move(&state, &headers, &id, to, reason).await {
+            return resp;
+        }
+    }
     if let Some(scope) = super::org::local_member_scope(&headers).filter(|scope| !scope.is_global())
     {
         if map.contains_key("session") {
