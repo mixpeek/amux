@@ -7196,6 +7196,8 @@ ${BOLD}Interaction:${RESET}
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
   amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
   amux security at-rest | decrypt-grants   What is encrypted at rest; the owner's way back to plain grant files
+  amux mfa status|enroll|confirm|verify|step-up   Your second factor (TOTP); the owner's five-minute step-up
+  amux identity sso|scim-token|scim-tokens|scim-revoke   Single sign-on status and the identity provider's SCIM tokens
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
