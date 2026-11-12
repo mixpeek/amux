@@ -417,9 +417,18 @@ pub fn router_with_connector_transport(
         .merge(habits::routes())
         .merge(observability::routes())
         .merge(scoreboard::routes())
-        // The writes that used to sit in the public debug routers below.
-        .merge(crate::runtime_jobs::board_drive::protected_routes())
-        .merge(crate::runtime_jobs::registry::protected_routes())
+        // Writes that used to sit in the public debug routers below, where a LAN
+        // or tailnet peer reached them with no credential: the nudges switch sets
+        // CC_STANDING_ORDERS at any scope, and run ticks any system job.
+        .route(
+            "/api/board/nudges",
+            axum::routing::get(crate::runtime_jobs::board_drive::get_nudges)
+                .patch(crate::runtime_jobs::board_drive::patch_nudges),
+        )
+        .route(
+            "/api/system-jobs/{id}/run",
+            axum::routing::post(crate::runtime_jobs::registry::run_system_job),
+        )
         .merge(connectors::routes_with(connector_ctx.clone()))
         .nest("/api/telegram", telegram::routes_with(http))
         .merge(grants::routes())

@@ -10430,22 +10430,9 @@ mod nudges_scope_tests {
     }
 }
 
-/// Public, beside the other debug reads.
+/// Public debug read. `/api/board/nudges` is routed behind the bearer in api/mod.rs.
 pub fn routes() -> axum::Router<AppState> {
-    axum::Router::new().route(
-        "/api/debug/board-drive",
-        axum::routing::get(debug_board_drive),
-    )
-}
-
-/// Behind the bearer: the PATCH writes CC_STANDING_ORDERS at any scope, and a
-/// LAN or tailnet peer reached it with no credential while it sat in
-/// [`routes`]. The dashboard already sends its auth headers for both verbs.
-pub fn protected_routes() -> axum::Router<AppState> {
-    axum::Router::new().route(
-        "/api/board/nudges",
-        axum::routing::get(get_nudges).patch(patch_nudges),
-    )
+    axum::Router::new().route("/api/debug/board-drive", axum::routing::get(debug_board_drive))
 }
 
 // ---------------------------------------------------------------------------

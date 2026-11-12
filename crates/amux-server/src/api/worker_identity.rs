@@ -336,7 +336,9 @@ pub async fn enforce_in(mode: Mode, req: Request, next: Next) -> Response {
         })
         .collect();
     let pick = judged.iter().position(|(_, _, r)| *r == Check::Invalid).unwrap_or(0);
-    let (lane, covered, result) = judged.into_iter().nth(pick).expect("at least one lane");
+    let Some((lane, covered, result)) = judged.into_iter().nth(pick) else {
+        return next.run(req).await;
+    };
     if result != Check::Unenforced {
         counters::bump(&counters::CONSIDERED);
     }

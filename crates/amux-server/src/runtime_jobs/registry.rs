@@ -2143,18 +2143,9 @@ pub async fn system_jobs(
     (axum::http::StatusCode::OK, axum::Json(body)).into_response()
 }
 
-/// Public, beside the other debug reads.
+/// Public debug read. The on-demand run is routed behind the bearer in api/mod.rs.
 pub fn routes() -> axum::Router<AppState> {
     axum::Router::new().route("/api/system-jobs", axum::routing::get(system_jobs))
-}
-
-/// Behind the bearer: ticking a job on demand is an action, and it answered a
-/// LAN or tailnet peer with no credential while it sat in [`routes`].
-pub fn protected_routes() -> axum::Router<AppState> {
-    axum::Router::new().route(
-        "/api/system-jobs/{id}/run",
-        axum::routing::post(run_system_job),
-    )
 }
 
 #[cfg(test)]
