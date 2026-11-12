@@ -102,6 +102,10 @@ MEMBERS_FILE = os.environ.get("DOOR_MEMBERS", "/etc/amux-door/members")
 JOINED_FILE = os.environ.get("DOOR_JOINED", "/etc/amux-door/joined")   # teammates' own passwords
 FLEET_ENV = os.environ.get("DOOR_FLEET_ENV", "/etc/amux/fleet.env")
 ENTRY_FILE = os.environ.get("DOOR_ENTRY", "/etc/amux-door/entry")    # standalone: this server's app sign-in key
+# The owner proof amux minted at ~/.amux/front-door-owner; update.sh copies it here (0600, this
+# user). Returned to Caddy for the owner only, so amux can tell the owner from a local process
+# (governance PR 3, crates/amux-server/src/api/loopback_trust.rs). Absent: no header, as before.
+OWNER_PROOF_FILE = os.environ.get("DOOR_OWNER_PROOF", "/etc/amux-door/front-door-owner")
 AMUX = os.environ.get("DOOR_AMUX_URL", "https://127.0.0.1:8824")
 MEMBER_RECHECK = float(os.environ.get("DOOR_MEMBER_RECHECK", "60"))
 # Wrong passwords from one address, form or Basic, before that address is refused for the rest
@@ -136,6 +140,29 @@ def users(path=None):
                 out[parts[0]] = parts[1]
     except FileNotFoundError:
         pass
+    return out
+
+
+def owner_proof():
+    """The front-door owner secret, or "" when update.sh has not copied it yet."""
+    try:
+        with open(OWNER_PROOF_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def check_headers(user, tok):
+    """What /_door/check hands Caddy for a signed-in person. A member gets their amux member
+    token; the owner (a password account with no member token, whom amux treats as the host
+    owner) gets the owner proof, so amux no longer has to infer the owner from an empty cookie."""
+    out = [("X-Door-User", user)]
+    if tok:
+        out.append(("X-Amux-Member", tok))
+    elif user in users():
+        proof = owner_proof()
+        if proof:
+            out.append(("X-Amux-Front-Door-Owner", proof))
     return out
 
 
@@ -1082,7 +1109,7 @@ class Door(BaseHTTPRequestHandler):
                     return self.send(302, headers=[("Location", loc), ("Cache-Control", "no-store")])
                 note_seen()
                 tok = members().get(user)
-                return self.send(200, headers=[("X-Door-User", user)] + ([("X-Amux-Member", tok)] if tok else []))
+                return self.send(200, headers=check_headers(user, tok))
             accept = self.headers.get("Accept", "")
             if method == "GET" and uri.startswith("/invite/"):
                 # A teammate's invite link (Settings > Team). They have no password yet.
