@@ -165,6 +165,26 @@ if [[ -f $CF ]] && grep -q 'header_up Cookie "amux_member=' $CF && ! grep -q 'he
   fi
 fi
 
+# The front-door owner proof (governance PR 3, api/loopback_trust.rs): amux mints the secret at
+# ~/.amux/front-door-owner; the door returns it to Caddy for the owner and Caddy forwards it, so
+# amux can tell the owner from a local process. Copied to the door (0600, amux-door) when it
+# changes; an older Caddyfile gains the strip and copy lines once, validated, reverted if refused.
+PROOF_SRC="$HOME_DIR/.amux/front-door-owner"
+if [[ -s "$PROOF_SRC" ]] && ! cmp -s "$PROOF_SRC" /etc/amux-door/front-door-owner; then
+  install -m 600 -o amux-door -g amux-door "$PROOF_SRC" /etc/amux-door/front-door-owner \
+    && say "verdict=front_door_owner_proof_installed"
+fi
+if [[ -f $CF ]] && grep -q 'copy_headers X-Door-User X-Amux-Member$' $CF; then
+  cp -p $CF $CF.prev
+  sed -i -e 's|^\( *\)request_header -X-Amux-Member$|\1request_header -X-Amux-Member\n\1request_header -X-Amux-Front-Door-Owner|' \
+         -e 's|copy_headers X-Door-User X-Amux-Member$|copy_headers X-Door-User X-Amux-Member X-Amux-Front-Door-Owner|' $CF
+  if runuser -u caddy -- caddy validate --config $CF --adapter caddyfile >/dev/null 2>&1 && systemctl reload caddy; then
+    say "verdict=caddy_front_door_owner_proof_forwarded"
+  else
+    mv $CF.prev $CF; systemctl reload caddy; say "WARN verdict=caddy_front_door_owner_proof_rejected previous Caddyfile kept"
+  fi
+fi
+
 # The "amux is restarting" page instead of a bare 502 (C14). The snippet is refreshed from the
 # checkout every run; a Caddyfile from before it gains the import line once.
 if [[ -f $CF && -f "$SRC/cloud/desktop/caddy-errors.caddy" ]] && ! cmp -s "$SRC/cloud/desktop/caddy-errors.caddy" /etc/caddy/amux-errors.caddy; then
