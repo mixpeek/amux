@@ -4201,6 +4201,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/otel/v1/metrics",
         methods: &["POST"],
     },
+    RouteEntry {
+        path: "/api/ledger/checkpoints",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/ledger/checkpoints/key",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/ledger/at/{seq}",
+        methods: &["GET"],
+    },
 ];
 
 /// Match `path` against an axum-style pattern, returning a specificity score
