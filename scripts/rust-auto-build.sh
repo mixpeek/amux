@@ -81,6 +81,14 @@ from_push_s() {
   case "$at" in ''|*[!0-9]*) echo unmeasured ;; *) echo $(( $(date +%s) - at )) ;; esac
 }
 
+# One JSON line per deploy for the server to report (GET /api/pull
+# push_to_live): the seconds from the push, or null when unmeasured.
+record_deploy_latency() { # <sha> <from_push_s>
+  local v="$2"; case "$v" in ''|*[!0-9]*) v=null ;; esac
+  printf '{"sha":"%s","at":%s,"from_push_s":%s}\n' "$1" "$(date +%s)" "$v" \
+    >> "${AMUX_DEPLOY_LATENCY_LOG:-$HOME/.amux/deploy-latency.jsonl}" 2>/dev/null || true
+}
+
 wait_live_identity() {
   local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-0}" said=0 runs="" released=0
   local grace="${AMUX_ADOPT_POST_HOLD_GRACE_S:-120}"
@@ -472,6 +480,7 @@ PYSTAMP
     rm -f "${INSTALL}.identity.json.rollback"
     prune_dashboard_snapshots "$dash_dir"
     echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$sha") restamped=1 verdict=activation_healthy"
+    record_deploy_latency "$sha" "$(from_push_s "$sha")"
     return 0
   fi
   mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"
@@ -1320,6 +1329,7 @@ PYIDENTITY
       if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
         echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$built_sha") verdict=activation_healthy"
+        record_deploy_latency "$built_sha" "$(from_push_s "$built_sha")"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.

@@ -73,6 +73,43 @@ pub(crate) fn gate_state() -> Option<serde_json::Value> {
     state
 }
 
+/// Push-to-live over the last deploys, from the builder's
+/// ~/.amux/deploy-latency.jsonl (one line per activation, seconds from the
+/// push). Ethan, 2026-11-12: "full amux cicd ... less than 2 mins ... metrics".
+/// `unmeasured` counts deploys whose push time was not known, so an empty
+/// percentile is never read as a fast one.
+pub(crate) fn push_to_live(raw: &str, last: usize) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = raw
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let recent = &rows[rows.len().saturating_sub(last)..];
+    let mut secs: Vec<i64> = recent.iter().filter_map(|r| r.get("from_push_s")?.as_i64()).collect();
+    secs.sort_unstable();
+    let pct = |p: usize| (!secs.is_empty()).then(|| secs[(secs.len() - 1) * p / 100]);
+    json!({
+        "measured": !secs.is_empty(),
+        "n_considered": recent.len(),
+        "unmeasured": recent.len() - secs.len(),
+        "p50_s": pct(50),
+        "p90_s": pct(90),
+        "max_s": secs.last(),
+        "under_120_s": secs.iter().filter(|s| **s < 120).count(),
+        "last": recent.last(),
+    })
+}
+
+fn push_to_live_now() -> serde_json::Value {
+    let path = std::env::var("AMUX_DEPLOY_LATENCY_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| crate::api::session_verbs::home().join("deploy-latency.jsonl"));
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => push_to_live(&raw, 50),
+        Err(_) => json!({"measured": false, "n_considered": 0,
+                         "why_unmeasured": format!("no deploy has been recorded at {}", path.display())}),
+    }
+}
+
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(9)]
 }
@@ -154,6 +191,7 @@ pub(crate) async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
         "on_main": on_main,
         "behind": behind,
         "gate": gate,
+        "push_to_live": push_to_live_now(),
         // The checkout this server builds from, so /amux-contribute can find it.
         "repo": dir.map(|d| d.display().to_string()),
     })
@@ -653,11 +691,34 @@ fn https_equiv(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod deploy_summary_tests {
-    use super::deploy_summary;
+    use super::{deploy_summary, push_to_live};
     use serde_json::json;
 
     const LIVE: &str = "08c8c6973e71ba5b391ec2a553c550e1fe350248";
     const TIP: &str = "3e0f0823a30bf324737e596bda94673ef82efea7";
+
+    /// push_to_live: percentiles over the measured deploys only, the rest
+    /// counted, and an empty log reads as unmeasured rather than fast.
+    #[test]
+    fn push_to_live_reports_percentiles_and_counts_the_unmeasured() {
+        let raw = (1..=10).map(|i| format!("{{\"sha\":\"s{i}\",\"at\":{i},\"from_push_s\":{}}}", i * 20))
+            .chain(["{\"sha\":\"x\",\"at\":11,\"from_push_s\":null}".to_string(), "not json".into()])
+            .collect::<Vec<_>>().join("\n");
+        let v = push_to_live(&raw, 50);
+        assert_eq!(v["measured"], json!(true));
+        assert_eq!(v["n_considered"], json!(11));
+        assert_eq!(v["unmeasured"], json!(1));
+        assert_eq!(v["p50_s"], json!(100));
+        assert_eq!(v["p90_s"], json!(180));
+        assert_eq!(v["max_s"], json!(200));
+        assert_eq!(v["under_120_s"], json!(5));
+        assert_eq!(v["last"]["sha"], json!("x"));
+        let last3 = push_to_live(&raw, 3);
+        assert_eq!(last3["n_considered"], json!(3));
+        let none = push_to_live("", 50);
+        assert_eq!(none["measured"], json!(false));
+        assert_eq!(none["p50_s"], json!(null));
+    }
 
     #[test]
     fn every_state_names_what_runs_and_why() {
