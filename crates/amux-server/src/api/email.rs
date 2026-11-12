@@ -243,6 +243,19 @@ pub(crate) fn hdr_worker(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// The worker a request comes from, or `None` when a person sent it. The member
+/// middleware (`org::local_member_identity`) stamps a signed-in member's own
+/// requests with `x-amux-session: member:<email>`, and strips inbound copies of
+/// the marker that proves it. `hdr_worker` read that stamp as a lane, so every
+/// member's Approve was refused as a worker approving itself, and every email a
+/// member wrote from the dashboard was held for approval (sandbox, 2026-11-12).
+/// Only the server-verified member's own actor counts: a lane that sends
+/// `member:<someone>` without the marker is still a lane.
+pub(crate) fn hdr_lane(headers: &HeaderMap) -> Option<String> {
+    let caller = hdr_worker(headers)?;
+    (super::org::local_member_actor(headers) != Some(caller.as_str())).then_some(caller)
+}
+
 /// Which Gmail accounts this lane is scoped to, or `None` for "unrestricted"
 /// (AMUX-3103).
 ///
@@ -598,7 +611,7 @@ pub async fn send(
     // the SERVER-VERIFIED caller header rather than anything in the body — a lane
     // must not be able to widen its own scope by claiming a different worker
     // (AMUX-1768 is the same principle for message provenance).
-    if let Some(lane) = hdr_worker(&headers) {
+    if let Some(lane) = hdr_lane(&headers) {
         match gmail_scope_check(&crate::api::session_verbs::home(), &lane, &from_acct) {
             Err(denial) => return err(StatusCode::FORBIDDEN, denial),
             Ok(Some(defaulted)) => from_acct = defaulted,
@@ -635,7 +648,7 @@ pub async fn send(
     // for a human, not sent. See email_approval.rs for the incident and the
     // full contract; the refusal is itself a ledger row so a gated send
     // nobody approves still left a trace.
-    if let Some(lane) = hdr_worker(&headers) {
+    if let Some(lane) = hdr_lane(&headers) {
         let home = ctx.client.home().to_path_buf();
         let externals = crate::api::email_approval::external_recipients(
             &format!("{to},{cc}"),
@@ -908,7 +921,7 @@ pub async fn reply(
         // the caller's: the incident's one call reached four people it never
         // named. Resolve the fan-out first (the same lookup + plan the send
         // runs), classify, and freeze for a human if anyone external is on it.
-        if let Some(lane) = hdr_worker(&headers) {
+        if let Some(lane) = hdr_lane(&headers) {
             let home = ctx.client.home().to_path_buf();
             if !crate::api::email_approval::external_email_allowed(&home, &lane) {
                 let (r_to, r_cc, r_subject) = match ctx
@@ -1208,7 +1221,7 @@ pub async fn approve(
     // the frozen draft exactly as before.
     body: Option<Json<Value>>,
 ) -> Response {
-    if let Some(lane) = hdr_worker(&headers) {
+    if let Some(lane) = hdr_lane(&headers) {
         tracing::warn!(
             session = %lane, approval = %id,
             "[email] a WORKER tried to approve a held external send — refused (AMUX-3510)"
@@ -1250,12 +1263,41 @@ pub async fn approve(
     //
     // A real boundary needs an auth distinction the localhost bypass currently
     // erases — see AMUX-3699. Fixing that is not a reason to leave this.
-    let approver = headers
-        .get("x-amux-approver")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string);
+    // A signed-in member is the one approver the server can PROVE: the marker is
+    // set by the member middleware and stripped from inbound requests. Anyone
+    // else is a named claim, recorded as such.
+    let member = super::org::local_member_actor(&headers).map(str::to_string);
+    // WHO MAY RELEASE MAIL: the existing member roles (Ethan, 2026-11-12: "We
+    // should have existing rbac levels for users in amux"). Any member can see a
+    // held draft; releasing one takes an admin, like the vault does.
+    if let Some(actor) = member.as_deref() {
+        if !super::org::local_member_is_admin(&headers) {
+            let email = actor.strip_prefix("member:").unwrap_or(actor);
+            tracing::warn!(
+                member = %actor, approval = %id,
+                "[email] approve refused: member is not an admin"
+            );
+            return err(
+                StatusCode::FORBIDDEN,
+                json!({
+                    "error": format!(
+                        "{email} can see this draft, but releasing email takes an admin. The \
+                         server owner can make them one under Members. The draft is still pending."
+                    ),
+                    "code": "member_not_admin",
+                }),
+            );
+        }
+    }
+    let approver_verified = member.is_some();
+    let approver = member.or_else(|| {
+        headers
+            .get("x-amux-approver")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    });
     let Some(approver) = approver else {
         tracing::warn!(
             approval = %id,
@@ -1311,7 +1353,7 @@ pub async fn approve(
                 json!({
                     "endpoint": "approve", "blocked": "creator_cannot_approve",
                     "approval_id": id, "session": creator, "approver_claimed": approver,
-                    "approver_verified": false,
+                    "approver_verified": approver_verified,
                 }),
             );
             return err(
@@ -1343,7 +1385,7 @@ pub async fn approve(
                     ctx.client.home(),
                     json!({
                         "endpoint": "approve", "scheduled": true, "approval_id": id,
-                        "send_at": send_at, "approved_by": approver, "approver_verified": false,
+                        "send_at": send_at, "approved_by": approver, "approver_verified": approver_verified,
                         "approver_edited": edit.is_some(),
                         "session": doc.get("session").cloned().unwrap_or(Value::Null),
                     }),
@@ -1523,7 +1565,7 @@ pub async fn approve(
                     // nothing here proved it, so a forensic reader weighs it as
                     // a claim rather than a finding.
                     "approved_by": approver,
-                    "approver_verified": false,
+                    "approver_verified": approver_verified,
                     // AN EDITED RELEASE IS NOT THE DRAFT THE WORKER WROTE
                     // (AMUX-5021). The ledger's whole job is that a reader can
                     // tell what actually left; without this the body_preview
@@ -3526,6 +3568,79 @@ mod tests {
             "an origin-less caller claiming to be the dashboard still succeeds — that IS the \
              open residual, and asserting it stops this test reading as a boundary: {ok}"
         );
+    }
+
+    /// A signed-in member is a person (sandbox, 2026-11-12). The member
+    /// middleware stamps `x-amux-session: member:<email>` beside its verified
+    /// marker, and reading that stamp as a lane refused Ethan's own Approve with
+    /// `worker_cannot_approve`. This router has no middleware, so the headers
+    /// below arrive exactly as the middleware leaves them on a member's request.
+    #[tokio::test]
+    async fn an_admin_member_approves_a_plain_member_cannot_and_a_bare_stamp_is_a_lane() {
+        const MEMBER: [(&str, &str); 3] = [
+            ("x-amux-local-member-verified", "1"),
+            ("x-amux-local-member-actor", "member:doron@x.com"),
+            ("x-amux-session", "member:doron@x.com"),
+        ];
+        const ADMIN: [(&str, &str); 4] = [
+            ("x-amux-local-member-verified", "1"),
+            ("x-amux-local-member-actor", "member:ethan@x.com"),
+            ("x-amux-session", "member:ethan@x.com"),
+            ("x-amux-local-member-admin", "1"),
+        ];
+        // A plain member sees the draft but cannot release it, and it stays pending.
+        let (app, _d, home, id) = held("autodesk").await;
+        let (st, e) =
+            send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &MEMBER).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
+        assert_eq!(e["code"], json!("member_not_admin"), "{e}");
+
+        let (st, ok) =
+            send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &ADMIN).await;
+        assert_eq!(st, StatusCode::OK, "an admin member releases the same draft: {ok}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 50, "");
+        let row = log["log"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|x| x.get("approved") == Some(&json!(true)))
+            .expect("the release is in the ledger");
+        assert_eq!(row["approved_by"], json!("member:ethan@x.com"));
+        assert_eq!(row["approver_verified"], json!(true), "proven by the marker, not claimed");
+        assert_eq!(row["session"], json!("autodesk"), "the draft stays the worker's");
+
+        // The stamp WITHOUT the marker is something a lane can send: still a lane.
+        let (app, _d, _h, id) = held("autodesk").await;
+        let (st, e) = send_req(
+            &app,
+            "POST",
+            &format!("/api/email/approve/{id}"),
+            None,
+            &[("x-amux-session", "member:ethan@x.com"), ("x-amux-approver", "dashboard")],
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{e}");
+        assert_eq!(e["code"], json!("worker_cannot_approve"), "{e}");
+
+        // A member writing an outside email from the dashboard sends it; only a
+        // lane's is held.
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+            ("POST", "/messages/send", 200, json!({ "id": "m1", "threadId": "t1" })),
+        ]);
+        let (app, _d, _r) = app_with(http, home.path());
+        let (st, res) = send_req(
+            &app,
+            "POST",
+            "/api/email/send",
+            Some(json!({ "to": "cto@customer.com", "subject": "Q", "body": "hi",
+                         "from": ACCT, "force_new_thread": true })),
+            &MEMBER,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "a member's own send is not held for approval: {res}");
     }
 
     /// Schedule instead of send (Ethan, 2026-11-08). The human's Schedule keeps
