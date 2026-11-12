@@ -757,7 +757,6 @@
   <button id="tab-metrics" onclick="switchView('metrics')"><span class="tab-ico">↗</span><span class="tab-lbl">Metrics</span></button>
   <button id="tab-disk" onclick="switchView('disk')"><span class="tab-ico">🖴</span><span class="tab-lbl">Disk</span></button>
   <button id="tab-cost" onclick="switchView('cost')"><span class="tab-ico">$</span><span class="tab-lbl">Cost</span></button>
-  <button id="tab-scoreboard" title="Scoreboard: goals, rates, CI, spend, host and what needs you" onclick="switchView('scoreboard')"><span class="tab-ico">&#x25C9;</span><span class="tab-lbl">Scoreboard</span></button>
   <button id="tab-torrents" onclick="switchView('torrents')"><span class="tab-ico">↓</span><span class="tab-lbl">Torrents</span></button>
   <button id="tab-terminal" onclick="switchView('terminal')"><span class="tab-ico">⮞</span><span class="tab-lbl">Terminal</span></button>
   <button id="tab-browser" onclick="switchView('browser')"><span class="tab-ico">◳</span><span class="tab-lbl">Browser</span></button>
@@ -1804,15 +1803,6 @@
 </div>
 
 <!-- Cost / observability view -->
-<div id="scoreboard-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:var(--space-3-5) var(--space-4) var(--space-16);">
-  <div id="sb-controls" class="sb-controls">
-    <span class="sb-title">Scoreboard</span>
-    <button id="sb-refresh" class="btn" onclick="_sbLoad()">Refresh</button>
-    <span id="sb-updated" class="sb-updated" aria-live="polite"></span>
-  </div>
-  <div id="sb-body"></div>
-</div>
-
 <div id="cost-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;padding:var(--space-3-5) var(--space-4) var(--space-16);">
   <div style="display:flex;align-items:center;gap:var(--space-2-5);flex-wrap:wrap;margin-bottom:var(--space-3);">
     <span style="font-size:var(--fs-3xl);font-weight:700;">Cost &amp; tokens</span>

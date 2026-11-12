@@ -32855,6 +32855,8 @@ pub fn compose_worker_context(name: &str, isolated: bool) -> String {
     let block = if roster.is_empty() { block } else { format!("{block}\n{roster}") };
     let velocity = crate::api::velocity::context_section(name);
     let block = if velocity.is_empty() { block } else { format!("{block}\n\n{velocity}") };
+    let goal = crate::api::velocity::goal_context_section(name);
+    let block = if goal.is_empty() { block } else { format!("{block}\n\n{goal}") };
     let file = worker_rules_file(name);
     format!(
         "{block}\n\n# Browser profile selection and recovery\n\n{}\n\n# Links to what you build\n\n{}\n\n# Keeping this scoped context current\n\n\

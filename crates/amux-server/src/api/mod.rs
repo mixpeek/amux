@@ -112,7 +112,6 @@ pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
 pub mod observability;
-pub mod scoreboard;
 pub mod offline_origin;
 pub mod orchestrate;
 pub mod orchestrations;
@@ -417,7 +416,6 @@ pub fn router_with_connector_transport(
         .nest("/api/saved-messages", saved_messages::routes())
         .merge(habits::routes())
         .merge(observability::routes())
-        .merge(scoreboard::routes())
         // Writes that used to sit in the public debug routers below, where a LAN
         // or tailnet peer reached them with no credential: the nudges switch sets
         // CC_STANDING_ORDERS at any scope, and run ticks any system job.

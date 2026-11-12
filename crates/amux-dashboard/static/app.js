@@ -9549,7 +9549,6 @@ function _renderSessionCard(s) {
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
-  try { _sbLiveTick(); } catch (e) { console.warn('[scoreboard] live refresh failed', e); }
   // THE PEEK HEADER UPDATES FIRST, ahead of the card-clobbering guard below.
   //
   // It used to sit AFTER that guard, so an open card menu / edit overlay froze
@@ -11387,7 +11386,7 @@ function _embedFitZoom() {
 const _EMBED_VIEW_EL = {
   sessions:'session-view', board:'board-view', groups:'groups-view', calendar:'calendar-view',
   scheduler:'scheduler-view', files:'files-view', logs:'logs-view',
-  messages:'messages-view', map:'map-view', metrics:'metrics-view', cost:'cost-view', scoreboard:'scoreboard-view',
+  messages:'messages-view', map:'map-view', metrics:'metrics-view', cost:'cost-view',
   torrents:'torrents-view', terminal:'terminal-view', browser:'browser-view', sql:'sql-view',
   graph:'graph-view', journal:'journal-view', habits:'habits-view', skills:'skills-view',
   draw:'draw-view'
@@ -42552,7 +42551,7 @@ function switchView(view) {
     ['files', 'files', 'flex'], ['scratchpad', 'scratchpad', 'flex'], ['record', 'record', 'flex'], ['mdai', 'mdai', 'flex'],
     ['logs', 'logs', 'flex'], ['messages', 'messages', 'flex'], ['skills', 'skills', 'flex'],
     ['sql', 'sql', 'flex'], ['map', 'map', 'flex'], ['metrics', 'metrics', 'flex'],
-    ['cost', 'cost', 'flex'], ['scoreboard', 'scoreboard', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
+    ['cost', 'cost', 'flex'], ['disk', 'disk', 'flex'], ['torrents', 'torrents', 'flex'], ['terminal', 'terminal', 'flex'],
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
@@ -42572,7 +42571,6 @@ function switchView(view) {
   if (view === 'map') { _mapLoad(); _mapInit(); if (_mapSwState()) _mapSwToggle(true); }
   if (view === 'metrics') { _metricsLoad(); _metricsApplySidebarState(); try { const m = localStorage.getItem('amux_metrics_mode'); if (m && ['system','host','resources','velocity','disk'].includes(m)) _metricsSetMode(m); } catch(e) {} } // always refresh on tab switch
   if (view === 'cost') _costLoad();
-  if (view === 'scoreboard') _sbLoad(); else _sbStop();
   if (view === 'disk') _reclaimLoad(); else { if (typeof _reclaimStopPolling === 'function') _reclaimStopPolling(); if (typeof _tierStopPolling === 'function') _tierStopPolling(); }
   if (view === 'browser') _bwInit(); else if (typeof _bwStopLive === 'function') _bwStopLive();
 
@@ -60352,131 +60350,6 @@ function _costLoad() {
     })
     .catch(() => { body.innerHTML = '<div style="color:var(--dim);padding:var(--space-5);">Failed to load cost data.</div>'; });
 }
-// ── Scoreboard (Z14) ──
-// One read of GET /api/debug/scoreboard, drawn with the Metrics classes. It
-// refreshes from render(), which the SSE stream and the polling fallback both
-// call, so it needs no source of its own there; the 15 s timer covers a quiet
-// fleet, where neither repaints but CI, spend and the host still move. A field
-// the server could not read draws as the word "unmeasured" with its reason in
-// the list below the table, so no blank or zero stands in for a missing number.
-const _SB_MIN_GAP_MS = 5000;
-const _SB_POLL_MS = 15000;
-let _sbTimer = null, _sbInFlight = false, _sbLastAt = 0;
-
-function _sbStop() {
-  if (_sbTimer) { clearTimeout(_sbTimer); _sbTimer = null; }
-}
-function _sbLiveTick() {
-  if (activeView !== 'scoreboard' || document.hidden) return;
-  if (Date.now() - _sbLastAt >= _SB_MIN_GAP_MS) _sbLoad();
-}
-async function _sbLoad() {
-  _sbStop();
-  if (activeView !== 'scoreboard' || _sbInFlight) return;
-  _sbInFlight = true;
-  _sbLastAt = Date.now();
-  const up = document.getElementById('sb-updated');
-  try {
-    const r = await fetch(API + '/api/debug/scoreboard');
-    if (!r.ok) throw new Error('error ' + r.status);
-    const d = await r.json();
-    if (activeView === 'scoreboard') {
-      // A refresh replaces the tables, so keep the owner's sideways scroll.
-      const wrap = () => document.getElementById('sb-workers')?.parentElement;
-      const left = wrap()?.scrollLeft || 0;
-      document.getElementById('sb-body').innerHTML = _sbRender(d);
-      if (wrap()) wrap().scrollLeft = left;
-      if (up) up.textContent = 'Updated ' + new Date().toLocaleTimeString();
-    }
-  } catch (e) {
-    // The last good numbers stay on screen; the line says they are old.
-    if (up) up.textContent = 'Refresh failed: ' + (e.message || 'no answer');
-  } finally {
-    _sbInFlight = false;
-    if (activeView === 'scoreboard') _sbTimer = setTimeout(_sbLoad, _SB_POLL_MS);
-  }
-}
-function _sbMissing(why) {
-  return '<span class="sb-unmeasured" title="' + esc(why || 'not read') + '">unmeasured</span>';
-}
-function _sbGoalCell(p) {
-  if (!p || !p.measured) return _sbMissing(p && p.why_unmeasured);
-  const when = p.at ? new Date(p.at * 1000).toLocaleString() : '';
-  return '<span title="' + esc(when) + '">' + esc(String(p.done)) + (p.total != null ? '<span class="sb-of">/' + esc(String(p.total)) + '</span>' : '') + '</span>';
-}
-function _sbRateCell(r) {
-  if (!r || !r.measured) return _sbMissing(r && r.why_unmeasured);
-  return (r.per_h > 0 ? '+' : '') + esc(String(r.per_h)) + '<span class="sb-of">/h</span>';
-}
-function _sbCard(title, value, sub, section) {
-  const off = section && !section.measured;
-  const v = off ? _sbMissing(section.why_unmeasured) : (value == null ? _sbMissing('the source returned no value') : esc(String(value)));
-  return '<div class="metrics-card"><div class="metrics-card-title">' + esc(title) + '</div><div class="metrics-card-value">' + v + '</div><div class="metrics-card-sub">' + esc(off ? '' : (sub || '')) + '</div></div>';
-}
-function _sbMoney(v) { return v == null ? null : '$' + Number(v).toFixed(2); }
-function _sbStateBadge(w) {
-  const cls = { active: 'active', waiting: 'waiting', idle: 'idle' }[w.status] || 'idle';
-  return '<span class="status-badge ' + cls + '">' + esc(w.running ? (w.status || 'unknown') : 'stopped') + '</span>';
-}
-function _sbRow(w) {
-  const g = w.goal || {};
-  const cells = g.configured
-    ? [_sbGoalCell(g.now), _sbGoalCell(g.hour_ago), _sbGoalCell(g.today_start), _sbGoalCell(g.peak), _sbRateCell(g.rate_1h)]
-    : ['<td colspan="5" class="sb-nogoal">' + _sbMissing(g.why_unmeasured) + '</td>'];
-  const tds = g.configured ? cells.map(c => '<td>' + c + '</td>').join('') : cells[0];
-  const wait = w.waiting_on || {};
-  const spend = w.spend_today_usd == null ? _sbMissing('the spend section is unmeasured') : esc(_sbMoney(w.spend_today_usd));
-  return '<tr data-worker="' + esc(w.name) + '"><th scope="row" class="sb-name">' + esc(w.name) + (w.isolated ? ' <span class="sb-of">isolated</span>' : '') + '</th>'
-    + tds + '<td>' + _sbStateBadge(w) + '</td>'
-    + '<td class="sb-wait">' + (wait.measured ? esc(wait.detail) : _sbMissing(wait.why_unmeasured)) + '</td>'
-    + '<td>' + spend + '</td></tr>';
-}
-function _sbRender(d) {
-  const ra = d.rates || {}, ci = d.ci || {}, sp = d.spend || {}, ho = d.host || {}, ny = d.needsyou || {};
-  const workers = d.workers || [];
-  let h = '';
-  h += '<div class="metrics-section-title">Now</div><div class="metrics-cards" id="sb-cards">';
-  h += _sbCard('Needs you', ny.total, ny.overdue ? ny.overdue + ' overdue' : 'open cards', ny);
-  h += _sbCard('Cards done', ra.cards_done_1h, (ra.cards_done_24h ?? '?') + ' in 24 h, last hour shown', ra);
-  h += _sbCard('Spend today', _sbMoney(sp.today_usd), _sbMoney(sp.last_hour_usd) + ' in the last hour', sp);
-  h += _sbCard('Main CI', ci.tip_state, ci.summary || '', ci);
-  h += _sbCard('Commits behind', ci.behind, 'server behind main', ci);
-  h += _sbCard('CI pass rate', null, '', ci.pass_rate || { measured: false });
-  h += _sbCard('Host', ho.level, ho.reasons && ho.reasons.length ? ho.reasons.join('; ') : 'load ' + (ho.load1 ?? '?') + ' on ' + (ho.ncpu ?? '?') + ' cores', ho);
-  h += _sbCard('Memory', ho.mem_percent == null ? null : ho.mem_percent + '%', ho.mem_pressure ? ho.mem_pressure + ' pressure' : '', ho);
-  h += _sbCard('Disk free', ho.disk_free_gb == null ? null : Math.round(ho.disk_free_gb) + ' GB', '', ho);
-  h += '</div>';
-  (ci.workflows || []).forEach(w => {
-    h += '<div class="metrics-card-sub">' + esc(w.name) + ': ' + (w.commits_since_green == null ? _sbMissing('git could not count from the last green commit') : esc(String(w.commits_since_green)) + ' commit(s) since last green') + '</div>';
-  });
-  h += '<div class="metrics-section-title">Workers (' + workers.length + ')</div>';
-  if (d.measured === false) {
-    h += '<div class="reclaim-warn">Workers ' + _sbMissing(d.why_unmeasured) + ': ' + esc(d.why_unmeasured || '') + '</div>';
-  } else {
-    h += '<div class="metrics-table-wrap"><table class="metrics-table sb-table" id="sb-workers"><thead><tr><th scope="col">Worker</th><th scope="col">Goal</th><th scope="col">1 h ago</th><th scope="col">Today start</th><th scope="col">Peak</th><th scope="col">Rate</th><th scope="col">State</th><th scope="col">Waiting on</th><th scope="col">Spend</th></tr></thead><tbody>'
-      + workers.map(_sbRow).join('') + '</tbody></table></div>';
-  }
-  h += '<div class="metrics-section-title">Needs you (' + (ny.measured ? esc(String(ny.total)) : 'unmeasured') + ')</div>';
-  if (!ny.measured) {
-    h += '<div class="metrics-card-sub">' + esc(ny.why_unmeasured || '') + '</div>';
-  } else if (!(ny.queue || []).length) {
-    h += '<div class="metrics-card-sub">Nothing is waiting on you.</div>';
-  } else {
-    h += '<div class="metrics-table-wrap"><table class="metrics-table" id="sb-needsyou"><thead><tr><th scope="col">Card</th><th scope="col">Worker</th><th scope="col">Age</th></tr></thead><tbody>'
-      + ny.queue.map(c => '<tr><td>' + esc(c.id) + ' ' + esc(c.title || '') + '</td><td>' + esc(c.session || '') + '</td><td>' + esc(String(c.age_days ?? '')) + ' d</td></tr>').join('')
-      + '</tbody></table></div>';
-    if (ny.hidden) h += '<div class="metrics-card-sub">' + esc(String(ny.hidden)) + ' more on the Board.</div>';
-  }
-  const un = d.unmeasured || [];
-  if (un.length) {
-    h += '<div class="metrics-section-title" id="sb-why">Unmeasured, and why</div><ul class="sb-why-list">'
-      + un.map(u => '<li><b>' + esc(u.field) + '</b>: ' + esc(u.why || 'no reason recorded')
-        + (u.workers && u.workers.length ? ' <span class="sb-of">(' + esc(u.workers.join(', ')) + ')</span>' : '') + '</li>').join('')
-      + '</ul>';
-  }
-  return h;
-}
-
 function _costOpenSession(name) {
   if (!name) return;
   switchView('sessions');
@@ -61067,6 +60940,29 @@ function _metricsSetMode(mode) {
 // its open cards land (docs/design/worker-velocity.md, /api/velocity). The
 // fleet list first; a row opens that worker's breakdown and projection.
 let _velocityWorker = null;
+// The fleet answer's `goals`: each worker with a goal checker and its number
+// now, an hour ago, at the start of today and its peak (from goal_samples).
+let _velocityGoals = [];
+
+// One goal reading: "44/56", or "unmeasured" with the reason on hover.
+function _velocityGoalPoint(p) {
+  if (!p || !p.measured) return `<span class="velocity-unmeasured" title="${esc((p && p.why_unmeasured) || 'not read')}">unmeasured</span>`;
+  const when = p.at ? new Date(p.at * 1000).toLocaleString() : '';
+  return `<span title="${esc(when)}">${esc(String(p.done))}${p.total != null ? '/' + esc(String(p.total)) : ''}</span>`;
+}
+function _velocityGoalText(g) {
+  const r = g.rate_1h || {};
+  const rate = r.measured ? ` · ${r.per_h > 0 ? '+' : ''}${esc(String(r.per_h))}/h` : '';
+  return `${_velocityGoalPoint(g.now)} now · ${_velocityGoalPoint(g.hour_ago)} 1 h ago · ${_velocityGoalPoint(g.today_start)} today start · peak ${_velocityGoalPoint(g.peak)}${rate}${g.met ? ' · met' : ''}${g.stalled ? ' · <span class="velocity-stalled">stalled</span>' : ''}`;
+}
+function _velocityGoalsHtml(goals) {
+  if (!goals || goals.measured === false) return `<div class="metrics-section-title">Goals</div><div class="metrics-card reclaim-safe-text">${esc((goals && goals.why_unmeasured) || 'Goal history did not load.')}</div>`;
+  const rows = (goals.workers || []).map(g => `<div class="metrics-card velocity-goal" data-velocity-worker="${esc(g.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)">
+      <div class="reclaim-safe-head">${esc(g.worker)}</div>
+      <div class="reclaim-safe-text velocity-goal-text">${_velocityGoalText(g)}</div>
+    </div>`).join('');
+  return rows ? `<div class="metrics-section-title">Goals (${goals.workers.length}) · now, 1 h ago, start of today, peak</div>${rows}` : '';
+}
 
 // The Usage tab (docs/design/usage-optimization.md): Metrics in its Usage mode.
 function openUsage() {
@@ -61106,11 +61002,12 @@ function _velocityLoad() {
     const o = null;
     opt.then(x => { const s = document.getElementById('usage-summary'); if (s && x && !_velocityWorker) s.innerHTML = _usageSummaryHtml(x); });
     if (!d || !Array.isArray(d.workers)) { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; return; }
+    _velocityGoals = (d.goals && d.goals.workers) || [];
     const rows = d.workers.map(w => `<div class="metrics-card velocity-row" data-velocity-worker="${esc(w.worker)}" onclick="_velocityShowWorker(this.dataset.velocityWorker)" style="cursor:pointer;">
         <div class="reclaim-safe-head">${esc(w.worker)}</div>
         <div class="reclaim-safe-text">${w.finished_cards} finished (${w.finished_per_day}/day) · ${w.finished_share_of_time}% of time on finished work · ${w.wasted_hours} h wasted · top: ${esc(w.top_bottleneck || '–')}</div>
       </div>`).join('');
-    el.innerHTML = `<div id="usage-summary">${_usageSummaryHtml(o) || '<div class="metrics-section-title">Usage & optimization: loading…</div>'}</div><div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
+    el.innerHTML = `<div id="usage-summary">${_usageSummaryHtml(o) || '<div class="metrics-section-title">Usage & optimization: loading…</div>'}</div>${_velocityGoalsHtml(d.goals)}<div class="metrics-section-title">Workers, last ${d.window_days} days · most wasted hours first</div>${rows || '<div class="metrics-card reclaim-safe-text">No worker has enough history yet.</div>'}`;
   }).catch(() => { el.innerHTML = '<div style="color:var(--red);padding:var(--space-5);">Velocity did not load.</div>'; });
 }
 
@@ -61140,8 +61037,10 @@ function _velocityShowWorker(name) {
     } else if (p) {
       proj = `<div class="metrics-card reclaim-safe-text">${esc(p.why_unmeasured || 'No projection.')}</div>`;
     }
+    const goal = _velocityGoals.find(g => g.worker === name);
+    const goalCard = goal ? `<div class="metrics-section-title">Goal</div><div class="metrics-card"><div class="reclaim-safe-text velocity-goal-text" id="velocity-goal">${_velocityGoalText(goal)}</div></div>` : '';
     el.innerHTML = `<div class="metrics-section-title" style="display:flex;align-items:center;gap:var(--space-2);">${back}<span>${esc(name)}, last ${s.window_days} days</span></div>
-      <div class="metrics-card"><div class="reclaim-safe-text" id="velocity-summary">Finished ${s.finished_cards} of ${s.cards} cards (${s.finished_per_day}/day), ${s.attempts_per_card} attempts per card. ${s.finished_share_of_time}% of ${s.hours.total} h went to attempts that finished. A finished card: ${fmt(m.p50)} min median (${fmt(m.p25)} to ${fmt(m.p75)}), ${fmt(t.p50)} tokens.</div></div>
+      ${goalCard}<div class="metrics-card"><div class="reclaim-safe-text" id="velocity-summary">Finished ${s.finished_cards} of ${s.cards} cards (${s.finished_per_day}/day), ${s.attempts_per_card} attempts per card. ${s.finished_share_of_time}% of ${s.hours.total} h went to attempts that finished. A finished card: ${fmt(m.p50)} min median (${fmt(m.p25)} to ${fmt(m.p75)}), ${fmt(t.p50)} tokens.</div></div>
       <div class="metrics-section-title">Waste, by who can fix it</div><div class="metrics-card">${waste || '<div class="reclaim-safe-text">None.</div>'}</div>
       ${waits ? `<div class="metrics-section-title">What parked work waited on</div><div class="metrics-card">${waits}</div>` : ''}
       ${proj}`;

@@ -161,7 +161,7 @@ pub(crate) fn deploy_summary(
     ("held", format!("Server runs {}, the newest main commit that passed CI. main is {behind} commit(s) ahead; they deploy once they pass CI ({why}).", short(live)))
 }
 
-pub(crate) async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
+async fn deploy_status(dir: Option<&Path>) -> serde_json::Value {
     let full = crate::activation::served().full.as_str();
     let live = full.trim_end_matches("-dirty");
     let gate = gate_state();
@@ -335,15 +335,6 @@ async fn pull() -> Response {
         v["contribute"] = contribute;
     }
     (parts.status, Json(v)).into_response()
-}
-
-/// Commits in `from..to`, or None when git could not say.
-pub(crate) async fn commits_between(dir: &Path, from: &str, to: &str) -> Option<u64> {
-    let out = git(dir, &["rev-list", "--count", &format!("{from}..{to}")], GIT_TIMEOUT).await?;
-    if !out.status.success() {
-        return None;
-    }
-    out_of(&out).parse().ok()
 }
 
 async fn git(dir: &Path, args: &[&str], timeout: Duration) -> Option<std::process::Output> {

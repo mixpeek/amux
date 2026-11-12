@@ -304,10 +304,10 @@ pub fn view(home: &Path, name: &str, now: f64) -> Value {
 }
 
 /// How long [`record_sample`] keeps a reading. Bounds the table and the
-/// scoreboard's "peak", which is a peak over this window.
+/// goal trend's "peak" (`api::velocity::goal_trend`), a peak over this window.
 pub const SAMPLE_RETENTION_DAYS: f64 = 14.0;
 
-/// Keep one run for the scoreboard's history and trim what has aged out.
+/// Keep one run for the goal trend's history and trim what has aged out.
 /// Returns false when the run carries no number to keep: a run with no verdict
 /// or no `done` stores nothing, so the gap reads as unmeasured, never as zero.
 pub fn record_sample(conn: &rusqlite::Connection, name: &str, last: &Last) -> rusqlite::Result<bool> {
@@ -338,7 +338,7 @@ async fn record_sample_logged(app: &crate::api::AppState, name: &str, last: &Las
     if let Err(why) = wrote.map_err(|e| e.to_string()).and_then(|r| r.map(|_| ()).map_err(|e| e.to_string())) {
         tracing::warn!(target: "amux::goal_check", session = %name, verdict = "goal_sample_write_failed",
             measured = false, n_considered = 1, why_unmeasured = %why,
-            "goal checker: the reading was not retained, so the scoreboard has a gap here");
+            "goal checker: the reading was not retained, so the goal trend has a gap here");
     }
 }
 

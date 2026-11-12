@@ -217,8 +217,8 @@ async fn needsyou_queue(
     (status, Json(body)).into_response()
 }
 
-/// The owner view's body, shared with the scoreboard so both rank one way.
-pub(crate) fn needsyou_payload(state: &AppState, want_all: bool, cap: usize) -> (StatusCode, Value) {
+/// The owner view's body.
+fn needsyou_payload(state: &AppState, want_all: bool, cap: usize) -> (StatusCode, Value) {
     let conn = match state.store.read() {
         Ok(c) => c,
         Err(e) => {

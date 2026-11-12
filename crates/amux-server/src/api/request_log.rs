@@ -1510,10 +1510,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/debug/scoreboard",
-        methods: &["GET"],
-    },
-    RouteEntry {
         path: "/api/system-jobs",
         methods: &["GET"],
     },

@@ -31,6 +31,10 @@
 //!   estimates summed, scaled by how the worker's past cards compared with
 //!   their own estimates) and calendar time at the worker's recent pace. A
 //!   dependency outside the queue that is not done is named, not dated.
+//!
+//! The fleet answer also carries `goals`: each worker with a goal checker,
+//! its number now, an hour ago, at the start of today and its peak, from
+//! `goal_samples`. The same trend reaches the worker as "# Your goal".
 
 use super::AppState;
 use axum::extract::{Path, Query, State};
@@ -366,11 +370,17 @@ pub(crate) fn context_section(worker: &str) -> String {
 /// file, compares contexts without it: with it, the first deploy after
 /// 140ff3b8b told 14 running workers to re-read their context, and every
 /// later deploy would have done the same for nearly all of them.
+/// The "# Your goal" section is stripped the same way: its numbers move on
+/// every checker run.
 pub(crate) fn without_section(context: &str) -> String {
-    let Some(start) = context.find("# Your velocity (") else { return context.to_string() };
-    let rest = &context[start..];
-    let end = rest[1..].find("\n# ").map(|i| start + 1 + i + 1).unwrap_or(context.len());
-    format!("{}{}", &context[..start], &context[end..])
+    let mut out = context.to_string();
+    for header in ["# Your velocity (", "# Your goal ("] {
+        let Some(start) = out.find(header) else { continue };
+        let rest = &out[start..];
+        let end = rest[1..].find("\n# ").map(|i| start + 1 + i + 1).unwrap_or(out.len());
+        out = format!("{}{}", &out[..start], &out[end..]);
+    }
+    out
 }
 
 pub(crate) fn context_lines(s: &Value, as_of: &str) -> String {
@@ -754,7 +764,14 @@ async fn fleet(State(state): State<AppState>, Query(q): Query<Q>) -> Response {
         })
         .collect();
     rows.sort_by(|a, b| b["wasted_hours"].as_f64().partial_cmp(&a["wasted_hours"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
-    Json(json!({"window_days": days, "measured": true, "n_considered": d.attempts.len(), "workers": rows,
+    let store = state.store.clone();
+    let goals = tokio::task::spawn_blocking(move || match store.read() {
+        Ok(conn) => goals(&conn),
+        Err(e) => json!({"measured": false, "n_considered": 0, "why_unmeasured": format!("store unavailable: {e}"), "workers": []}),
+    })
+    .await
+    .unwrap_or_else(|e| json!({"measured": false, "n_considered": 0, "why_unmeasured": e.to_string(), "workers": []}));
+    Json(json!({"window_days": days, "measured": true, "n_considered": d.attempts.len(), "workers": rows, "goals": goals,
                 "note": "per worker: GET /api/velocity/{worker}?card=ID"})).into_response()
 }
 
@@ -793,6 +810,214 @@ async fn worker(State(state): State<AppState>, Path(worker): Path<String>, Query
         out["estimate"] = e;
     }
     Json(out).into_response()
+}
+
+// ── Goal trend ──────────────────────────────────────────────────────────────
+// A worker with a goal checker (AMUX_GOAL_CHECK) gets its number over time:
+// now, 1 h ago, at the start of today and the peak, from `goal_samples`, which
+// `goal_check` writes on every run that prints a number. Shown in Metrics >
+// Velocity (the `goals` array of GET /api/velocity) and in the worker's own
+// context ("# Your goal"), so the worker reads its own trend without asking.
+// Moved here from the retired Scoreboard page (MSG-107389).
+
+/// How far a sample may sit before the moment it stands for. Past this the
+/// value is a guess about a gap, so it reads as unmeasured.
+const SAMPLE_TOLERANCE_S: f64 = 2.0 * 3600.0;
+const HOUR_S: f64 = 3600.0;
+
+/// One retained checker reading.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Sample {
+    pub at: f64,
+    pub done: u64,
+    pub total: Option<u64>,
+}
+
+/// Every worker's samples, oldest first; one worker's with `only`.
+pub(crate) fn load_samples(conn: &rusqlite::Connection, only: Option<&str>) -> rusqlite::Result<BTreeMap<String, Vec<Sample>>> {
+    let mut out: BTreeMap<String, Vec<Sample>> = BTreeMap::new();
+    if !table_exists(conn, "goal_samples") {
+        return Ok(out);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT session, at, done, total FROM goal_samples WHERE ?1 IS NULL OR session = ?1 ORDER BY session, at",
+    )?;
+    let rows = stmt.query_map([only], |r| {
+        Ok((r.get::<_, String>(0)?, Sample {
+            at: r.get(1)?,
+            done: r.get::<_, i64>(2)?.max(0) as u64,
+            total: r.get::<_, Option<i64>>(3)?.map(|t| t.max(0) as u64),
+        }))
+    })?;
+    for row in rows {
+        let (name, s) = row?;
+        out.entry(name).or_default().push(s);
+    }
+    Ok(out)
+}
+
+/// Local midnight, as the "start of today" a person means.
+pub(crate) fn local_day_start(now: f64) -> f64 {
+    chrono::Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|d| d.and_local_timezone(chrono::Local).earliest())
+        .map_or(now - 86_400.0, |d| d.timestamp() as f64)
+}
+
+fn point(s: &Sample) -> Value {
+    json!({"measured": true, "done": s.done, "total": s.total, "at": s.at})
+}
+
+fn missing(why: &str) -> Value {
+    json!({"measured": false, "why_unmeasured": why})
+}
+
+/// The reading that stood at `at`: the newest sample at or before it, unless
+/// that is older than the tolerance. Samples are oldest first.
+fn sample_at(samples: &[Sample], at: f64) -> Option<&Sample> {
+    samples.iter().rev().find(|s| s.at <= at).filter(|s| at - s.at <= SAMPLE_TOLERANCE_S)
+}
+
+/// The worker's goal trend from its checker's latest run (`checker` is
+/// `goal_check::view`) and its retained samples. None when the worker has no
+/// checker or no sample yet, so a worker without a goal shows nothing. Pure.
+pub(crate) fn goal_trend(checker: &Value, samples: &[Sample], now: f64, day_start: f64) -> Option<Value> {
+    if checker["configured"] != true || samples.is_empty() {
+        return None;
+    }
+    let current = match (checker["measured"] == true, checker["done"].as_u64()) {
+        (true, Some(done)) => json!({"measured": true, "done": done, "total": checker["total"], "at": checker["checked_at"]}),
+        (true, None) => missing("the checker's latest run gave a verdict with no N/M or done number"),
+        (false, _) => missing(checker["why_unmeasured"].as_str().unwrap_or("the checker's latest run produced no verdict")),
+    };
+    let hour_ago = sample_at(samples, now - HOUR_S)
+        .map_or_else(|| missing("no reading retained within 2 h before an hour ago"), point);
+    let today_start = sample_at(samples, day_start)
+        .or_else(|| samples.iter().find(|s| s.at >= day_start))
+        .map_or_else(|| missing("no reading retained since midnight"), point);
+    let mut peak = samples.iter().max_by_key(|s| s.done).map(point).unwrap_or_default();
+    if let Some(d) = current["done"].as_u64() {
+        if peak["done"].as_u64().is_none_or(|p| d > p) {
+            peak = current.clone();
+        }
+    }
+    let rate_1h = match (current["done"].as_f64(), current["at"].as_f64(), hour_ago["done"].as_f64(), hour_ago["at"].as_f64()) {
+        (Some(b), Some(at_b), Some(a), Some(at_a)) if at_b > at_a => {
+            json!({"measured": true, "per_h": ((b - a) / ((at_b - at_a) / HOUR_S) * 100.0).round() / 100.0})
+        }
+        _ => missing("needs a reading now and one an hour ago"),
+    };
+    let last = samples.last().map(point).unwrap_or_default();
+    Some(json!({
+        "measured": current["measured"],
+        "why_unmeasured": current["why_unmeasured"],
+        "met": checker["met"],
+        "summary": checker["summary"],
+        "command": checker["command"],
+        "stalled": checker["stalled"],
+        "now": current,
+        "last_sample": last,
+        "hour_ago": hour_ago,
+        "today_start": today_start,
+        "peak": peak,
+        "rate_1h": rate_1h,
+        "n_samples": samples.len(),
+        "retention_days": crate::runtime_jobs::goal_check::SAMPLE_RETENTION_DAYS,
+    }))
+}
+
+/// "44/56" or "44" for a measured point.
+fn reading(p: &Value) -> Option<String> {
+    let done = p["done"].as_u64().filter(|_| p["measured"] == true)?;
+    Some(match p["total"].as_u64() {
+        Some(t) => format!("{done}/{t}"),
+        None => done.to_string(),
+    })
+}
+
+/// The worker's "# Your goal" section from its trend. A clause whose reading
+/// is unmeasured is left out rather than stated as a number. Pure.
+pub(crate) fn goal_lines(t: &Value, as_of: &str) -> String {
+    let what = t["command"].as_str().map(str::trim).filter(|c| !c.is_empty())
+        .map_or_else(|| "Your goal checker".to_string(), |c| format!("Your goal checker (`{c}`)"));
+    let mut parts = Vec::new();
+    match reading(&t["now"]) {
+        Some(r) => parts.push(format!("{r} now")),
+        None => {
+            let why = t["now"]["why_unmeasured"].as_str().unwrap_or("no number");
+            let last = reading(&t["last_sample"]).map(|r| format!("; the last number it gave was {r}")).unwrap_or_default();
+            parts.push(format!("no number on its latest run ({why}{last})"));
+        }
+    }
+    if let Some(r) = reading(&t["hour_ago"]) {
+        parts.push(format!("{r} an hour ago"));
+    }
+    if let Some(r) = reading(&t["today_start"]) {
+        parts.push(format!("{r} at the start of today"));
+    }
+    let mut out = format!("# Your goal (as of {as_of})\n\n{what} reads {}", parts.join(", "));
+    if let Some(r) = reading(&t["peak"]) {
+        let days = t["retention_days"].as_f64().unwrap_or(0.0).round() as i64;
+        out.push_str(&format!(" (peak {r} over the last {days} days)"));
+    }
+    out.push('.');
+    if t["stalled"] == true {
+        out.push_str(" It has not moved for longer than its stall window.");
+    }
+    out
+}
+
+/// The section composed into a worker's context. Empty when the worker has
+/// no checker or no retained reading.
+pub(crate) fn goal_context_section(worker: &str) -> String {
+    let path = crate::config::ServerConfig::from_process_env().db_path;
+    let Ok(conn) = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        return String::new();
+    };
+    if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(2)) {
+        tracing::warn!(target: "amux::velocity", verdict = "goal_context_busy_timeout_unset", measured = false,
+            n_considered = 0, why_unmeasured = %e, "velocity: goal context reads without a busy timeout");
+    }
+    let mut samples = match load_samples(&conn, Some(worker)) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "amux::velocity", worker = %worker, verdict = "goal_context_samples_unread",
+                measured = false, n_considered = 0, why_unmeasured = %e, "velocity: no goal section, goal_samples could not be read");
+            return String::new();
+        }
+    };
+    let Some(samples) = samples.remove(worker) else { return String::new() };
+    let now = crate::config::now_f64();
+    let checker = crate::runtime_jobs::goal_check::view(&crate::api::session_verbs::home(), worker, now);
+    goal_trend(&checker, &samples, now, local_day_start(now))
+        .map(|t| goal_lines(&t, &chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()))
+        .unwrap_or_default()
+}
+
+/// Every worker with a checker and a retained reading, for Metrics > Velocity.
+fn goals(conn: &rusqlite::Connection) -> Value {
+    let samples = match load_samples(conn, None) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "amux::velocity", verdict = "goal_samples_unread", measured = false,
+                n_considered = 0, why_unmeasured = %e, "velocity: goal history could not be read");
+            return json!({"measured": false, "n_considered": 0, "why_unmeasured": format!("goal_samples could not be read: {e}"), "workers": []});
+        }
+    };
+    let (home, now) = (crate::api::session_verbs::home(), crate::config::now_f64());
+    let day_start = local_day_start(now);
+    let workers: Vec<Value> = samples
+        .iter()
+        .filter_map(|(name, s)| {
+            let checker = crate::runtime_jobs::goal_check::view(&home, name, now);
+            let mut t = goal_trend(&checker, s, now, day_start)?;
+            t["worker"] = json!(name);
+            Some(t)
+        })
+        .collect();
+    json!({"measured": true, "n_considered": samples.len(), "workers": workers,
+           "basis": "goal_samples (every checker run with a number), for workers whose AMUX_GOAL_CHECK is still set"})
 }
 
 #[cfg(test)]
@@ -890,6 +1115,77 @@ mod tests {
         assert_eq!(without_section(a), without_section(b), "moving numbers are not a change of instructions");
         assert_ne!(without_section(a), without_section(&a.replace("# Browser", "# Browsers")), "a real change still is");
         assert_eq!(without_section("# Rules\n\nx"), "# Rules\n\nx");
+    }
+
+    fn gs(at: f64, done: u64) -> Sample {
+        Sample { at, done, total: Some(56) }
+    }
+    fn checker(done: u64, at: f64) -> Value {
+        json!({"configured": true, "measured": true, "done": done, "total": 56, "checked_at": at, "met": false, "command": "scripts/check.sh"})
+    }
+
+    #[test]
+    fn the_goal_trend_reads_the_value_that_stood_at_each_moment() {
+        const NOW: f64 = 100_000.0;
+        const DAY: f64 = 60_000.0;
+        let samples = [gs(DAY - 600.0, 40), gs(DAY + 600.0, 41), gs(NOW - 4000.0, 50), gs(NOW - 3000.0, 49)];
+        let t = goal_trend(&checker(44, NOW), &samples, NOW, DAY).unwrap();
+        assert_eq!(t["now"]["done"], 44);
+        assert_eq!(t["hour_ago"]["done"], 50, "newest at or before now minus 1 h, {t}");
+        assert_eq!(t["today_start"]["done"], 40, "the value standing at midnight");
+        assert_eq!(t["peak"]["done"], 50, "the peak may be above the current number");
+        assert_eq!(t["rate_1h"]["per_h"], -5.4, "6 down over 4000 s, {t}");
+        let t = goal_trend(&checker(70, NOW), &samples, NOW, DAY).unwrap();
+        assert_eq!(t["peak"]["done"], 70, "the current reading can be the new peak");
+        // A gap reads as unmeasured, never as a number.
+        let t = goal_trend(&checker(44, NOW), &[gs(DAY + 600.0, 41)], NOW + 9.0 * 3600.0, DAY).unwrap();
+        assert_eq!(t["hour_ago"]["measured"], false, "{t}");
+        assert!(t["hour_ago"]["done"].is_null());
+        assert_eq!(t["today_start"]["done"], 41, "first reading today when none stood at midnight");
+        // No checker, or no sample yet: nothing at all.
+        assert!(goal_trend(&json!({"configured": false}), &samples, NOW, DAY).is_none());
+        assert!(goal_trend(&checker(44, NOW), &[], NOW, DAY).is_none());
+    }
+
+    #[test]
+    fn the_goal_section_states_the_trend_and_omits_what_it_could_not_read() {
+        const NOW: f64 = 100_000.0;
+        const DAY: f64 = 60_000.0;
+        let samples = [gs(DAY - 600.0, 40), gs(NOW - 3700.0, 42)];
+        let t = goal_trend(&checker(44, NOW), &samples, NOW, DAY).unwrap();
+        let text = goal_lines(&t, "2026-11-12 10:00");
+        assert!(text.starts_with("# Your goal (as of 2026-11-12 10:00)\n\n"), "{text}");
+        assert!(text.contains("Your goal checker (`scripts/check.sh`) reads 44/56 now, 42/56 an hour ago, 40/56 at the start of today (peak 44/56 over the last 14 days)."), "{text}");
+        // An hour with no reading drops its clause rather than inventing one.
+        let t = goal_trend(&checker(44, NOW), &[gs(DAY - 600.0, 40)], NOW, DAY).unwrap();
+        let text = goal_lines(&t, "x");
+        assert!(!text.contains("an hour ago"), "{text}");
+        // A failed latest run says so, with the last number it did give.
+        let failed = json!({"configured": true, "measured": false, "why_unmeasured": "checker exited 2"});
+        let text = goal_lines(&goal_trend(&failed, &samples, NOW, DAY).unwrap(), "x");
+        assert!(text.contains("no number on its latest run (checker exited 2; the last number it gave was 42/56)"), "{text}");
+    }
+
+    #[test]
+    fn the_reconcile_ignores_the_goal_numbers_too() {
+        let a = "# Rules\n\nx\n\n# Your velocity (last 30 days, as of 2026-10-30)\n\nYou finished 4.\n\n# Your goal (as of 2026-10-30 09:00)\n\nreads 4/9 now.\n\n# Browser\n\ny";
+        let b = "# Rules\n\nx\n\n# Your velocity (last 30 days, as of 2026-10-31)\n\nYou finished 9.\n\n# Your goal (as of 2026-10-31 10:00)\n\nreads 8/9 now.\n\n# Browser\n\ny";
+        assert_eq!(without_section(a), without_section(b));
+        assert_eq!(without_section(a), "# Rules\n\nx\n\n# Browser\n\ny");
+        let only_goal = "# Rules\n\nx\n\n# Your goal (as of t)\n\nreads 1 now.";
+        assert_eq!(without_section(only_goal), "# Rules\n\nx\n\n");
+    }
+
+    #[test]
+    fn goal_samples_load_per_worker_and_a_missing_table_is_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(load_samples(&conn, None).unwrap().is_empty());
+        conn.execute_batch("CREATE TABLE goal_samples (session TEXT, at REAL, done INTEGER, total INTEGER, met INTEGER);
+            INSERT INTO goal_samples VALUES ('a', 2.0, 5, 9, 0), ('a', 1.0, 4, NULL, 0), ('b', 1.0, 1, 2, 0);").unwrap();
+        let all = load_samples(&conn, None).unwrap();
+        assert_eq!(all["a"], vec![Sample { at: 1.0, done: 4, total: None }, Sample { at: 2.0, done: 5, total: Some(9) }]);
+        let one = load_samples(&conn, Some("b")).unwrap();
+        assert_eq!(one.keys().collect::<Vec<_>>(), ["b"]);
     }
 
     #[test]

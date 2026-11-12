@@ -10,6 +10,15 @@ const fleet = {
     { worker: 'tubescience-parity', attempts: 80, finished_cards: 12, finished_per_day: 0.4, finished_share_of_time: 31, attempts_per_card: 3.1, wasted_hours: 41.2, top_bottleneck: 'parked_waiting' },
     { worker: 'mxp-gs12', attempts: 40, finished_cards: 20, finished_per_day: 0.67, finished_share_of_time: 58, attempts_per_card: 1.6, wasted_hours: 25.3, top_bottleneck: 'review' },
   ],
+  // Each worker with a goal checker: its number over time (goal_samples).
+  goals: { measured: true, n_considered: 1, workers: [
+    { worker: 'tubescience-parity', measured: true, met: false, stalled: false,
+      now: { measured: true, done: 44, total: 56, at: 1762950000 },
+      hour_ago: { measured: true, done: 41, total: 56, at: 1762946400 },
+      today_start: { measured: false, why_unmeasured: 'no reading retained since midnight' },
+      peak: { measured: true, done: 47, total: 56, at: 1762900000 },
+      rate_1h: { measured: true, per_h: 3 } },
+  ] },
 };
 const detail = {
   worker: 'tubescience-parity', window_days: 30, attempts: 80, cards: 26, finished_cards: 12, finished_per_day: 0.4,
@@ -67,12 +76,20 @@ test('the fleet ranks by wasted hours and a worker opens its waste and projectio
   await expect(page.locator('#usage-finished')).toContainText('80% of 40');
   await expect(page.locator('#usage-savings')).toContainText('$96.4');
   await expect(page.locator('.usage-opportunity[data-owner="amux"]')).toContainText('$60.5/mo');
+  // The goal trend, moved here from the retired Scoreboard page.
+  const goal = page.locator('.velocity-goal[data-velocity-worker="tubescience-parity"]');
+  await expect(goal).toContainText('44/56 now');
+  await expect(goal).toContainText('41/56 1 h ago');
+  await expect(goal).toContainText('unmeasured today start');
+  await expect(goal).toContainText('peak 47/56');
+  await expect(goal).toContainText('+3/h');
   const rows = page.locator('.velocity-row');
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText('tubescience-parity');
   await expect(rows.first()).toContainText('41.2 h wasted');
   await rows.first().click();
   await expect(page.locator('#velocity-summary')).toContainText('Finished 12 of 26 cards');
+  await expect(page.locator('#velocity-goal')).toContainText('44/56 now');
   // Waste is listed biggest first, each with who can fix it.
   await expect(page.locator('.velocity-waste').first()).toHaveAttribute('data-kind', 'parked_waiting');
   await expect(page.locator('.velocity-waste').first()).toContainText('(dependency)');
