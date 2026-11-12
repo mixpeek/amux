@@ -11133,3 +11133,42 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 @media (max-width: 600px) {
   .sx-ev-toggle, .sx-ev-new, .sx-ev-actions .btn { min-height: 44px; min-width: 44px; }
 }
+/* Calls tab (api/calls.rs). One control row above the list; on a phone it
+   scrolls sideways instead of wrapping (css-mobile rule). Chips, status pills
+   and the drawer reuse the Connectors classes (.cx-filter, .cx-pill, .cx-drawer). */
+.calls-view { display: none; flex-direction: column; flex: 1; min-height: 0; max-width: 980px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.calls-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }
+.calls-bar::-webkit-scrollbar { display: none; }
+.calls-filters { display: flex; flex-wrap: nowrap; gap: var(--space-1-5); flex: 1 0 auto; }
+.calls-chip { white-space: nowrap; flex: 0 0 auto; text-transform: capitalize; }
+.calls-sep { flex: 0 0 1px; align-self: stretch; background: var(--border); margin: 0 var(--space-1); }
+.calls-refresh { flex: 0 0 auto; }
+.calls-note { margin: 0 var(--space-4) var(--space-2); color: var(--yellow); font-size: var(--fs-sm); }
+.calls-hidden { display: none; }
+.calls-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--space-4) var(--space-10); display: flex; flex-direction: column; gap: var(--space-2); }
+.calls-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); cursor: pointer; }
+.calls-row:hover, .calls-row:focus-visible { border-color: var(--accent); }
+.calls-row.calls-held { border-color: color-mix(in srgb, var(--yellow) 55%, var(--border)); }
+.calls-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.calls-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.calls-who { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calls-goal { font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calls-meta { color: var(--dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.calls-actions { display: flex; gap: var(--space-2); flex: 0 0 auto; }
+.calls-empty { color: var(--dim); font-size: var(--fs-md); padding: var(--space-6) 0; text-align: center; }
+.calls-dhead { display: flex; align-items: center; gap: var(--space-2); }
+.calls-dhead .calls-who { flex: 1; min-width: 0; }
+.calls-links { margin: var(--space-3) 0; }
+.calls-text { font-size: var(--fs-md); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.calls-transcript { display: flex; flex-direction: column; gap: var(--space-2); }
+.calls-turn { display: flex; flex-direction: column; gap: var(--space-0-5); padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: var(--card); border: 1px solid var(--border); }
+.calls-turn-who { font-size: var(--fs-xs); font-weight: 700; color: var(--dim); text-transform: uppercase; }
+.calls-turn-text { font-size: var(--fs-md); line-height: 1.45; word-break: break-word; }
+@media (max-width: 600px) {
+  .calls-bar { padding: var(--space-2) var(--space-3); }
+  .calls-chip, .calls-refresh { min-height: 44px; }
+  .calls-list { padding: 0 var(--space-3) var(--space-10); }
+  .calls-row { flex-wrap: wrap; }
+  .calls-actions { width: 100%; }
+  .calls-actions .btn { flex: 1; min-height: 44px; }
+}

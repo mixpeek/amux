@@ -1214,6 +1214,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
+    // 0158: api/calls.rs writes now_f64() epoch seconds.
+    ("calls", "requested_at", false),
+    ("calls", "approved_at", false),
+    ("calls", "started_at", false),
+    ("calls", "ended_at", false),
     // 0155: runtime_jobs/goal_check.rs writes the check's epoch seconds.
     ("goal_samples", "at", false),
     // 0156: api/directive.rs writes now_f64() epoch seconds.

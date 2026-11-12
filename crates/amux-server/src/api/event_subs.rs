@@ -220,6 +220,10 @@ const MEANINGS: &[(&str, &str)] = &[
     ("deploy.wake", "a new build went live and a worker was told to check its commits"),
     ("chat.message", "a message in a worker's Chat tab"),
     ("task.renamed", "a worker's card title changed"),
+    ("call.requested", "a worker asked amux to place a phone call (call_id, worker, to, contact, contact_name, goal)"),
+    ("call.held", "a requested call is waiting for the owner's approval because its number is not on the allowlist"),
+    ("call.started", "the call bridge accepted a call and is dialing (call_id, worker, to, contact)"),
+    ("call.completed", "a call ended: status is completed, no_answer, busy, failed, canceled or declined, with outcome, worker, to, contact, contact_name, goal and duration_s"),
 ];
 
 pub(crate) fn meaning(event_type: &str) -> Option<&'static str> {

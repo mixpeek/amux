@@ -20,6 +20,7 @@ pub(crate) mod send_profile;
 pub(crate) mod board_groom;
 pub mod prompt_block;
 pub mod land_approvals;
+pub mod calls;
 pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
@@ -441,6 +442,8 @@ pub fn router_with_connector_transport(
         .merge(directive::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
+        // Outbound phone calls (calls.rs, docs/design/phone-calls.md).
+        .merge(calls::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())

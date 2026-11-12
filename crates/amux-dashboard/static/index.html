@@ -744,6 +744,7 @@
   <button id="tab-pages" title="Apps: apps with a backend, and files shared outside amux" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Apps</span></button>
   <button id="tab-photos" onclick="switchView('photos')"><span class="tab-ico">&#x1F5BC;</span><span class="tab-lbl">Photos</span></button>
   <button id="tab-email" onclick="switchView('email')"><span class="tab-ico">📥</span><span class="tab-lbl">Email</span></button>
+  <button id="tab-calls" title="Calls: phone calls workers placed, held calls to approve, transcripts" onclick="switchView('calls')"><span class="tab-ico">&#x260E;</span><span class="tab-lbl">Calls</span></button>
   <button id="tab-connectors" onclick="switchView('connectors')"><span class="tab-ico">🔌</span><span class="tab-lbl">Connectors</span></button>
   <button id="tab-vault" onclick="switchView('vault')"><span class="tab-ico">&#x1F510;</span><span class="tab-lbl">Vault</span></button>
   <button id="tab-hotkeys" onclick="switchView('hotkeys')"><span class="tab-ico">&#x2318;</span><span class="tab-lbl">Hotkeys</span></button>
@@ -1446,6 +1447,14 @@
 </div>
 <!-- Photos: a media library on the owner's own Mixpeek (photos.js, loaded on first open). -->
 <div id="photos-view" class="ph-host" style="display:none;"></div>
+<div id="calls-view" class="calls-view">
+  <div id="calls-bar" class="calls-bar" role="toolbar" aria-label="Filter calls">
+    <div id="calls-filters" class="calls-filters"></div>
+    <button class="btn calls-refresh" onclick="_callsLoad()" aria-label="Refresh calls">&#x21BB;</button>
+  </div>
+  <div id="calls-note" class="calls-note"></div>
+  <div id="calls-list" class="calls-list"></div>
+</div>
 <div id="connectors-view" style="display:none;flex-direction:column;flex:1;min-height:0;overflow-y:auto;">
   <div class="cx-page">
     <div class="cx-top">

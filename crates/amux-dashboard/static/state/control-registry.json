@@ -684,6 +684,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_callsDecide": {
+      "kind": "command._callsDecide",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cancelUpload": {
       "kind": "command._cancelUpload",
       "feedback_required": true,

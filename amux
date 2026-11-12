@@ -6028,6 +6028,115 @@ print("merged into", d["pin"]["id"])'
 # and that is the whole reason CLAUDE.md tells agents to prefer `amux <verb>`
 # over a hand-rolled curl: a raw curl is unattributed by construction. Adding
 # the verb without the header would have rebuilt the trap it exists to close.
+cmd_call() {
+  # Outbound phone call (api/calls.rs, docs/design/phone-calls.md). The goal is
+  # read from stdin so quotes, backticks and $(...) arrive as written.
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local number="" ctx_file="" max="" use_stdin=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: amux call <number> --stdin [--context-file <path>] [--max-minutes N] <<'EOF'"
+        echo "  <the goal of the call>"
+        echo "  EOF"
+        echo "A number outside AMUX_CALL_ALLOWLIST waits for the owner's approval in the Calls tab."
+        echo "You get a message when the call ends, naming the outcome and the transcript file."
+        return 0 ;;
+      --stdin) use_stdin=1 ;;
+      --context-file) shift; ctx_file="${1:-}" ;;
+      --max-minutes) shift; max="${1:-}" ;;
+      -*) die "unknown option: $1 (amux call --help)" ;;
+      *) [ -z "$number" ] && number="$1" || die "one number per call: $1" ;;
+    esac
+    shift
+  done
+  [ -n "$number" ] || die "Usage: amux call <number> --stdin  (amux call --help)"
+  [ "$use_stdin" = 1 ] || die "the goal comes on stdin: amux call $number --stdin <<'EOF' ... EOF"
+  if [ -n "$ctx_file" ] && [ ! -r "$ctx_file" ]; then die "cannot read context file: $ctx_file"; fi
+  local body
+  body=$(python3 -c '
+import json, sys
+goal = sys.stdin.read().strip()
+if not goal:
+    sys.exit("the goal on stdin is empty: say what the call should achieve")
+ctx = ""
+if sys.argv[2]:
+    with open(sys.argv[2]) as f:
+        ctx = f.read()
+d = {"to": sys.argv[1], "goal": goal, "context": ctx}
+if sys.argv[3]:
+    d["max_minutes"] = int(sys.argv[3])
+print(json.dumps(d))' "$number" "$ctx_file" "$max") || exit 1
+  _curl -sk -m 60 -X POST -H 'Content-Type: application/json' \
+    -H "X-Amux-Session: ${AMUX_SESSION:-}" \
+    -d "$body" "$AMUX_API/api/calls" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+except ValueError:
+    sys.exit("amux server not responding")
+if not d.get("id"):
+    sys.exit("call refused: " + str(d.get("error") or raw[:200]))
+st = d.get("status")
+print(d["id"], st)
+if st == "held":
+    print("held for the owner'"'"'s approval in the Calls tab; you get a message when the call ends")
+elif st == "failed":
+    sys.exit("call failed: " + str(d.get("error") or ""))
+else:
+    print("dialing; you get a message when the call ends")'
+}
+
+cmd_calls() {
+  local AMUX_API="${AMUX_API:-https://localhost:8824}"
+  local sub="${1:-ls}"; shift 2>/dev/null || true
+  case "$sub" in
+    ls|list)
+      local q="limit=50"
+      [ -n "${1:-}" ] && q="$q&worker=$1"
+      _curl -sk -m 20 "$AMUX_API/api/calls?$q" | python3 -c '
+import json, sys, time
+d = json.load(sys.stdin)
+rows = d.get("calls") or []
+if not d.get("bridge_configured"):
+    print("note: no call bridge configured (AMUX_CALL_BRIDGE_URL); approved calls will fail", file=sys.stderr)
+for c in rows:
+    when = time.strftime("%m-%d %H:%M", time.localtime(c.get("requested_at") or 0))
+    who = c.get("contact_name") or c.get("to_number")
+    dur = c.get("duration_s")
+    dur = "%ds" % dur if dur is not None else "-"
+    print("%s  %s  %-11s %-14s %-22s %5s  %s" % (c["id"], when, c.get("status"), (c.get("worker") or "owner")[:14],
+                                               who[:22], dur, (c.get("goal") or "")[:60]))
+print("%d of %d calls" % (len(rows), d.get("n_considered", 0)))'
+      ;;
+    show)
+      [ -n "${1:-}" ] || die "Usage: amux calls show <id>"
+      _curl -sk -m 20 "$AMUX_API/api/calls/$1" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)
+if c.get("error"):
+    sys.exit(c["error"])
+for k in ("id", "status", "worker", "to_number", "contact_name", "duration_s", "error", "transcript_path"):
+    if c.get(k) not in (None, ""):
+        print("%-16s %s" % (k + ":", c[k]))
+print("\ngoal:\n  " + (c.get("goal") or ""))
+if c.get("outcome"):
+    print("\noutcome:\n  " + c["outcome"])
+if c.get("summary"):
+    print("\nsummary:\n  " + c["summary"])
+turns = c.get("transcript") or []
+if turns:
+    print("\ntranscript:")
+    for t in turns:
+        print("  %s: %s" % (t.get("who", "?"), t.get("text", "")))'
+      ;;
+    -h|--help|help)
+      echo "Usage: amux calls [ls [worker]] | amux calls show <id>" ;;
+    *) die "Usage: amux calls [ls [worker]] | amux calls show <id>" ;;
+  esac
+}
+
 cmd_crm() {
   local AMUX_API="${AMUX_API:-https://localhost:8824}"
   local sub="${1:-list}"; shift 2>/dev/null || true
@@ -6952,6 +7061,8 @@ ${BOLD}Boundaries and resources:${RESET}
   amux directive ack DIR-<id> "<what stopped, what still runs, first action>"
   amux directive ls [W] [--open]
   amux requests [W|--all] [--open] The owner's requests to a worker: open, on main, live, or closed
+  amux call <number> --stdin [--context-file F]  Phone a number with the goal on stdin; held for the owner unless allowlisted
+  amux calls [ls [W]|show <id>]  Calls placed for workers: status, outcome, transcript
 
 ${BOLD}Urgent owner alert (USE SPARINGLY — push + iMessage to the owner):${RESET}
   amux alert "message" [reason]  Fire an immediate alert to the amux owner
@@ -12863,6 +12974,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     delegate-job|dj) shift; cmd_delegate_job "$@" ;;
     get)              shift; cmd_get "$@" ;;
     crm)              shift; cmd_crm "$@" ;;
+    call)             shift; cmd_call "$@" ;;
+    calls)            shift; cmd_calls "$@" ;;
     map)              shift; cmd_map "$@" ;;
     order)            shift; cmd_order "$@" ;;
     resources|res)   shift; cmd_resources "$@" ;;

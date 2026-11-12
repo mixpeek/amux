@@ -3162,6 +3162,13 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     RouteEntry { path: "/api/bridge/outbound/{id}/approve", methods: &["POST"] },
     RouteEntry { path: "/api/bridge/hook/whatsapp", methods: &["GET", "POST"] },
     RouteEntry { path: "/api/bridge/hook/slack", methods: &["POST"] },
+    // Outbound phone calls (api/calls.rs).
+    RouteEntry { path: "/api/calls", methods: &["GET", "POST"] },
+    RouteEntry { path: "/api/calls/{id}", methods: &["GET"] },
+    RouteEntry { path: "/api/calls/{id}/approve", methods: &["POST"] },
+    RouteEntry { path: "/api/calls/{id}/decline", methods: &["POST"] },
+    RouteEntry { path: "/api/calls/{id}/events", methods: &["POST"] },
+    RouteEntry { path: "/api/calls/{id}/result", methods: &["POST"] },
     // The owner's approval of an owner-gated change (scripts/land_gate.py).
     RouteEntry {
         path: "/api/land/approvals",

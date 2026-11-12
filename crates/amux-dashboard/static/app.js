@@ -42556,6 +42556,7 @@ function switchView(view) {
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
+    ['calls', 'calls', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -42599,6 +42600,7 @@ function switchView(view) {
   if (view === 'record') _recorderInit();
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
+  if (view === 'calls') _callsLoad(); else if (typeof _callsClose === 'function' && _callsOpenId) _callsClose();
   if (view === 'connectors') _connectorsTabLoad();
   if (view === 'photos') _photosEnter(); else if (typeof _photosLeave === 'function') _photosLeave();
   if (view !== 'map' && typeof _mapMeStop === 'function') _mapMeStop();   // live location only while the map is open
@@ -42636,6 +42638,150 @@ function switchView(view) {
     if (boardTimer) { clearInterval(boardTimer); boardTimer = null; }
   }
   if (view !== 'scheduler') _stopSysJobsTimer();
+}
+
+// ── Calls tab (api/calls.rs, docs/design/phone-calls.md) ─────────────────────
+// Every call a worker asked for, newest first. A held call waits for the
+// owner's Approve here; a row opens a drawer with the goal and transcript.
+// Filters are client-side over one fetch: one row of chips that scrolls
+// sideways on a phone (css-mobile rule: one control row per view).
+let _callsData = null;
+let _callsWorker = '';
+let _callsStatus = '';
+let _callsOpenId = '';
+const _CALLS_PILL = {
+  completed: 'cx-ok', held: 'cx-warn', requested: 'cx-warn', approved: 'cx-warn', dialing: 'cx-warn',
+  in_progress: 'cx-warn', no_answer: 'cx-bad', busy: 'cx-bad', failed: 'cx-bad', canceled: 'cx-idle', declined: 'cx-idle',
+};
+
+async function _callsLoad() {
+  try {
+    const r = await fetch(API + '/api/calls?limit=500', { headers: _authHeaders() });
+    const d = await r.json().catch(() => ({}));
+    _callsData = r.ok ? d : { calls: [], error: d.error || ('HTTP ' + r.status) };
+  } catch (e) {
+    _callsData = { calls: [], error: e.message };
+  }
+  _callsRender();
+  if (_callsOpenId) _callsDrawerRender();
+}
+
+function _callsWho(c) { return c.contact_name || c.to_number || ''; }
+
+function _callsFilterSet(kind, v) {
+  if (kind === 'all') { _callsWorker = ''; _callsStatus = ''; }
+  else if (kind === 'worker') _callsWorker = _callsWorker === v ? '' : v;
+  else _callsStatus = _callsStatus === v ? '' : v;
+  _callsRender();
+}
+
+function _callsRender() {
+  const list = document.getElementById('calls-list');
+  const fl = document.getElementById('calls-filters');
+  const note = document.getElementById('calls-note');
+  if (!list || !fl || !note) return;
+  const d = _callsData || { calls: [] };
+  const all = d.calls || [];
+  const workers = [...new Set(all.map(c => c.worker || 'owner'))].sort();
+  const statuses = [...new Set(all.map(c => c.status))].sort();
+  const chip = (kind, v, label, on) => '<button class="cx-filter calls-chip' + (on ? ' on' : '') + '" data-kind="' + kind
+    + '" data-v="' + esc(v) + '" onclick="_callsFilterSet(this.dataset.kind,this.dataset.v)">' + esc(label) + '</button>';
+  fl.innerHTML = chip('all', '', 'All', !_callsWorker && !_callsStatus)
+    + statuses.map(s => chip('status', s, s.replace('_', ' '), _callsStatus === s)).join('')
+    + '<span class="calls-sep" aria-hidden="true"></span>'
+    + workers.map(w => chip('worker', w, w, _callsWorker === w)).join('');
+  const rows = all.filter(c => (!_callsWorker || (c.worker || 'owner') === _callsWorker) && (!_callsStatus || c.status === _callsStatus));
+  const notes = [];
+  if (d.error) notes.push('Could not load calls: ' + d.error);
+  else if (d.bridge_configured === false) notes.push('No call bridge is configured (AMUX_CALL_BRIDGE_URL under Connectors, Phone calls), so an approved call fails.');
+  note.textContent = notes.join(' ');
+  note.classList.toggle('calls-hidden', !notes.length);
+  if (!rows.length) {
+    list.innerHTML = '<div class="calls-empty">' + (all.length ? 'No calls match this filter.' : 'No calls yet. A worker places one with <code>amux call &lt;number&gt; --stdin</code>.') + '</div>';
+    return;
+  }
+  list.innerHTML = rows.map(c => {
+    const held = c.status === 'held';
+    const dur = c.duration_s != null ? fmtDuration(c.duration_s) : '';
+    return '<div class="calls-row' + (held ? ' calls-held' : '') + '" role="button" tabindex="0" data-id="' + esc(c.id) + '"'
+      + ' onclick="_callsOpen(this.dataset.id)" onkeydown="if(event.key===\'Enter\')_callsOpen(this.dataset.id)">'
+      + '<div class="calls-main">'
+      + '<div class="calls-line"><span class="calls-who">' + esc(_callsWho(c)) + '</span>'
+      + '<span class="cx-pill ' + (_CALLS_PILL[c.status] || 'cx-idle') + '">' + esc(c.status.replace('_', ' ')) + '</span></div>'
+      + '<div class="calls-goal">' + esc(c.goal || '') + '</div>'
+      + '<div class="calls-meta">' + esc(timeAgo(c.requested_at)) + ' · ' + esc(c.worker || 'owner')
+      + (dur ? ' · ' + esc(dur) : '') + (c.outcome ? ' · ' + esc(c.outcome) : (c.error ? ' · ' + esc(c.error) : '')) + '</div>'
+      + '</div>'
+      + (held ? '<div class="calls-actions">'
+        + '<button class="btn primary calls-approve" data-id="' + esc(c.id) + '" onclick="event.stopPropagation();_callsDecide(this.dataset.id,\'approve\')">Approve</button>'
+        + '<button class="btn calls-decline" data-id="' + esc(c.id) + '" onclick="event.stopPropagation();_callsDecide(this.dataset.id,\'decline\')">Decline</button>'
+        + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+
+async function _callsDecide(id, verb) {
+  const r = await fetch(API + '/api/calls/' + encodeURIComponent(id) + '/' + verb, {
+    method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: '{}',
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    showToast((verb === 'approve' ? 'Not approved: ' : 'Not declined: ') + (d.error || ('HTTP ' + r.status)));
+  } else if (verb === 'approve' && d.call && d.call.status === 'failed') {
+    showToast('Approved, but the call failed: ' + (d.call.error || 'unknown'));
+  } else {
+    showToast(verb === 'approve' ? 'Call approved' : 'Call declined');
+  }
+  await _callsLoad();
+}
+
+function _callsOpen(id) { _callsOpenId = id; _callsDrawerRender(); }
+
+function _callsClose() {
+  _callsOpenId = '';
+  const el = document.getElementById('calls-drawer');
+  if (el) el.remove();
+}
+
+async function _callsDrawerRender() {
+  const id = _callsOpenId;
+  if (!id) return;
+  let el = document.getElementById('calls-drawer');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'calls-drawer';
+    el.className = 'cx-drawer-wrap';
+    el.onclick = (e) => { if (e.target === el) _callsClose(); };
+    el.onkeydown = (e) => { if (e.key === 'Escape') _callsClose(); };
+    el.tabIndex = -1;
+    document.body.appendChild(el);
+    el.focus();
+  }
+  let c = null;
+  try {
+    const r = await fetch(API + '/api/calls/' + encodeURIComponent(id), { headers: _authHeaders() });
+    if (r.ok) c = await r.json();
+  } catch (e) {
+    console.warn('[calls] drawer fetch failed', e);
+  }
+  if (_callsOpenId !== id) return;
+  if (!c) { el.innerHTML = '<div class="cx-drawer" role="dialog" aria-label="Call"><div class="cx-dbody">This call could not be loaded.</div></div>'; return; }
+  const sec = (title, body) => body ? '<div class="cx-sec">' + title + '</div><div class="calls-text">' + esc(body) + '</div>' : '';
+  const turns = (c.transcript || []).map(t => '<div class="calls-turn"><span class="calls-turn-who">' + esc(t.who || '?') + '</span>'
+    + '<span class="calls-turn-text">' + esc(t.text || '') + '</span></div>').join('');
+  let h = '<div class="cx-drawer" role="dialog" aria-label="Call ' + esc(c.id) + '">';
+  h += '<div class="cx-dhead calls-dhead"><span class="calls-who">' + esc(_callsWho(c)) + '</span>'
+    + '<span class="cx-pill ' + (_CALLS_PILL[c.status] || 'cx-idle') + '">' + esc(c.status.replace('_', ' ')) + '</span>'
+    + '<button class="cx-x" aria-label="Close" onclick="_callsClose()">&#x2715;</button></div>';
+  h += '<div class="cx-dbody">';
+  h += '<div class="calls-meta">' + esc(c.to_number) + ' · ' + esc(c.worker || 'owner') + ' · ' + esc(timeAgo(c.requested_at))
+    + (c.duration_s != null ? ' · ' + esc(fmtDuration(c.duration_s)) : '') + '</div>';
+  if (c.worker) h += '<div class="calls-links"><button class="btn" data-w="' + esc(c.worker) + '" onclick="_callsClose();openPeek(this.dataset.w)">Open worker</button></div>';
+  h += sec('Goal', c.goal) + sec('Outcome', c.outcome) + sec('Summary', c.summary) + sec('Error', c.error) + sec('Context', c.context);
+  h += '<div class="cx-sec">Transcript</div><div class="calls-transcript">' + (turns || '<div class="calls-empty">No transcript yet.</div>') + '</div>';
+  if (c.transcript_path) h += '<div class="calls-meta">Saved to ' + esc(c.transcript_path) + '</div>';
+  h += '</div></div>';
+  el.innerHTML = h;
 }
 
 // ── Habits tab ───────────────────────────────────────────────────────────────

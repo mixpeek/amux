@@ -532,6 +532,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         "telegram",
         "mattermost",
         "devto",
+        "phone",
     ];
     let (_, list) = rig
         .call(reqwest::Method::GET, "/api/connectors", json!({}), false)
@@ -567,6 +568,8 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         ("whatsapp", vec!["WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"]),
         ("slack-bot", vec!["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]),
         ("discord", vec!["DISCORD_BOT_TOKEN", "DISCORD_CHANNELS"]),
+        // Outbound calls (api/calls.rs): the bridge's keys, no test endpoint.
+        ("phone", vec!["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "XAI_API_KEY", "AMUX_CALL_BRIDGE_URL"]),
     ] {
         let mut body = serde_json::Map::new();
         for k in &keys {
@@ -575,7 +578,9 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         assert_eq!(rig.post(&format!("/api/connectors/{id}/credentials"), Value::Object(body)).await.0, 200, "{id} keys");
         let (_, list) = rig.call(reqwest::Method::GET, "/api/connectors", json!({}), false).await;
         let row = list["connectors"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap().clone();
-        assert!(!row.to_string().contains("matrix-WHATSAPP_TOKEN"), "{id}: a pasted key is never echoed");
+        for k in &keys {
+            assert!(!row.to_string().contains(&format!("matrix-{k}")), "{id}: a pasted {k} is never echoed");
+        }
         assert_eq!(rig.post(&format!("/api/connectors/{id}/auth"), json!({})).await.1["auth"], "apikey", "{id}");
         assert_eq!(rig.post(&format!("/api/connectors/{id}/token"), json!({})).await.0, 400, "{id}: no token to mint");
         if id != "slack-bot" {
@@ -1004,7 +1009,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
     );
 
     for id in ids {
-        if id == "whatsapp" || id == "discord" || id == "devto" {
+        if id == "whatsapp" || id == "discord" || id == "devto" || id == "phone" {
             // No test endpoint: the keys surviving SIGKILL is what "untested"
             // (not "needs_credentials") proves here.
             assert_eq!(
@@ -1104,7 +1109,7 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
     );
     for id in ids {
         let (_, t) = rig.post(&format!("/api/connectors/{id}/test"), json!({})).await;
-        if id == "whatsapp" || id == "discord" || id == "devto" {
+        if id == "whatsapp" || id == "discord" || id == "devto" || id == "phone" {
             assert_eq!(t["status"], "untested", "{id}: keys kept, no test endpoint");
         } else {
             assert_eq!(t["ok"], true, "{id}: {t}");

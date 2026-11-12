@@ -309,6 +309,20 @@ const REGISTRY: &[Provider] = &[
         // bearer Test would report a working key as broken.
         test_url: "",
     },
+    // Outbound phone calls (api/calls.rs, docs/design/phone-calls.md). The
+    // Twilio and xAI keys are read by the call bridge; amux itself only needs
+    // AMUX_CALL_BRIDGE_URL to place a call.
+    Provider {
+        id: "phone",
+        label: "Phone calls",
+        category: "Voice",
+        auth: Auth::ApiKeys {
+            keys: &["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "XAI_API_KEY", "AMUX_CALL_BRIDGE_URL"],
+        },
+        setup_note: "A Twilio account SID, auth token and the number calls come from (E.164, e.g. +15551234567), an xAI API key with realtime voice, and the URL of the call bridge on the amux cloud host. A worker places a call with `amux call <number> --stdin`; numbers outside AMUX_CALL_ALLOWLIST wait for your approval in the Calls tab.",
+        docs: "https://www.twilio.com/docs/voice/media-streams",
+        test_url: "",
+    },
 ];
 
 fn provider(id: &str) -> Option<&'static Provider> {
