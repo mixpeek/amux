@@ -97,6 +97,7 @@ pub mod recordings_transcribe;
 pub mod recordings_live;
 pub mod registry;
 pub mod scheduler;
+pub mod shell_detached;
 pub mod schedule_failure;
 pub mod schedule_wake;
 /// Owner card for queued messages held behind a composer draft (called from

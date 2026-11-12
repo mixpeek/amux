@@ -1128,10 +1128,13 @@ async fn async_main() {
                             std::fs::metadata(&receipt).ok().and_then(|m| m.modified().ok()));
             let mut observed = stamp();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            // An in-flight shell schedule run holds adoption, for at most
-            // AMUX_ADOPT_SHELL_DEFER_MAX_S (default 900, like the builder's).
+            // An in-flight shell schedule run used to hold adoption (up to
+            // 900s), because an exec killed it. A shell run is now detached
+            // and adopted by the next process (runtime_jobs/shell_detached.rs),
+            // so the hold defaults to 0. AMUX_ADOPT_SHELL_DEFER_MAX_S=<s>
+            // brings it back if adoption ever has to be bypassed.
             let defer_max = std::time::Duration::from_secs(
-                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
+                std::env::var("AMUX_ADOPT_SHELL_DEFER_MAX_S").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
             let mut defer_since: Option<std::time::Instant> = None;
             let mut defer_logged: Option<std::time::Instant> = None;
             loop {

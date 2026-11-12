@@ -211,6 +211,17 @@ pub struct RunToken {
     pub value: String,
 }
 
+impl RunToken {
+    /// Keep the hash past this value's life (a detached shell run outlives
+    /// the server that minted it) and return its path, for the caller to
+    /// remove when the run is recorded. Stale ones still age out.
+    pub fn keep(self) -> PathBuf {
+        let mut me = std::mem::ManuallyDrop::new(self);
+        drop(std::mem::take(&mut me.value));
+        std::mem::take(&mut me.path)
+    }
+}
+
 impl Drop for RunToken {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);

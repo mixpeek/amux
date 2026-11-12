@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Real cron dispatcher, independent shell children, durable claims, SIGKILL.
+// A shell run is detached from the server (shell_detached.rs): a SIGKILL of the
+// server's process group leaves it running, and the next server adopts it.
 import fs from 'node:fs';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
@@ -28,33 +30,51 @@ try {
   const unsafe = path.join(amux.root, 'unsafe-after-interruption');
   const fastDone = path.join(amux.root, 'fast-done');
   const lateDone = path.join(amux.root, 'late-done');
+  const slowGate = path.join(amux.root, 'slow-gate');
+  const slowDone = path.join(amux.root, 'slow-done');
+  const lostStarted = path.join(amux.root, 'lost-started');
+  const lostPid = path.join(amux.root, 'lost.pid');
   const backgroundPid = path.join(amux.root, 'background.pid');
-  const slow = await create('slow first', `echo started > ${quote(slowStarted)}; sleep 120; echo unsafe > ${quote(unsafe)}`);
+  const slow = await create('slow first', `echo started > ${quote(slowStarted)}; while [ ! -f ${quote(slowGate)} ]; do sleep 0.1; done; echo once >> ${quote(slowDone)}; echo adopted-output; exit 4`);
+  const lost = await create('killed while down', `echo $$ > ${quote(lostPid)}; echo started > ${quote(lostStarted)}; sleep 120; echo unsafe > ${quote(unsafe)}`);
   const fast = await create('independent fast', `echo completed >> ${quote(fastDone)}`);
   const pipe = await create('detached pipe holder', `sleep 120 & echo $! > ${quote(backgroundPid)}; echo parent-exited`);
   const disabled = await create('disabled remains disabled', `echo unsafe > ${quote(unsafe)}`);
-  await amux.down(); due([slow, fast, pipe]);
+  await amux.down(); due([slow, fast, pipe, lost]);
   amux.env.AMUX_RS_SCHEDULER = '1'; await amux.up();
-  await waitFor('actual long shell child started', () => fs.existsSync(slowStarted), 15000);
+  await waitFor('actual long shell child started', () => fs.existsSync(slowStarted) && fs.existsSync(lostStarted), 15000);
   await waitFor('independent scheduled shell completes despite long first job', () => runs(fast).some(x => x.status === 'ok'), 8000);
   check('slow job cannot block unrelated schedule', runs(slow).some(x => x.status === 'running')
     && fs.readFileSync(fastDone, 'utf8').trim() === 'completed' && !fs.existsSync(unsafe));
-  await waitFor('direct shell exit completes despite descendant-held pipes', () => runs(pipe).some(x => x.status === 'ok'), 5000);
+  await waitFor('direct shell exit completes despite a running descendant', () => runs(pipe).some(x => x.status === 'ok'), 5000);
   const childPid = Number(fs.readFileSync(backgroundPid, 'utf8').trim());
-  check('pipe cutoff uses actual parent exit while descendant remains alive', (() => {try {process.kill(childPid, 0); return true;} catch {return false;}})()
-    && runs(pipe)[0].exit_code === 0 && runs(pipe)[0].output_tail.includes('output capture incomplete')
-    && fs.readFileSync(amux.serverLog, 'utf8').includes('shell_descendant_pipes_closed'));
+  check('a run ends at its shell\'s exit while a descendant it started remains alive', (() => {try {process.kill(childPid, 0); return true;} catch {return false;}})()
+    && runs(pipe)[0].exit_code === 0 && runs(pipe)[0].output_tail.includes('parent-exited'));
   const late = await create('next tick independent', `echo completed >> ${quote(lateDone)}`);
   due([late]);
   await waitFor('next scheduler tick runs while earlier slow job remains active', () => runs(late).some(x => x.status === 'ok'), 40000);
   check('future ticks keep progressing', runs(slow).some(x => x.status === 'running') && !fs.existsSync(unsafe));
   check('disabled schedule did not acquire a claim', runs(disabled).length === 0);
-  await amux.down(); await amux.up();
-  // A run cut off by a restart reads 'interrupted', distinct from a real
+  await amux.down();
+  // The server is gone (its process group SIGKILLed). The slow run survives;
+  // the other is killed while no server watches, so it writes no exit code.
+  const lostChild = Number(fs.readFileSync(lostPid, 'utf8').trim());
+  check('the slow run outlives a SIGKILL of the server', (() => {try {process.kill(lostChild, 0); return true;} catch {return false;}})());
+  try {process.kill(-Number(fs.readFileSync(path.join(amux.home, 'shell-runs', lost, fs.readdirSync(path.join(amux.home, 'shell-runs', lost)).find(f => f.endsWith('.pid'))), 'utf8').trim()), 'SIGKILL');} catch {}
+  await amux.up();
+  await waitFor('startup reconciles shell runs', () => fs.readFileSync(amux.serverLog, 'utf8').includes('shell_runs_reconciled_at_startup'), 10000);
+  check('a surviving run is adopted, not interrupted', runs(slow).length === 1 && runs(slow)[0].status === 'running'
+    && fs.readFileSync(amux.serverLog, 'utf8').includes('shell_run_adopted'), runs(slow));
+  fs.writeFileSync(slowGate, '');
+  await waitFor('the adopted run records its real result', () => runs(slow)[0].status !== 'running', 10000);
+  check('adopted result is the run\'s own exit code and output, recorded once', runs(slow).length === 1 && runs(slow)[0].exit_code === 4
+    && runs(slow)[0].status === 'error' && runs(slow)[0].output_tail.includes('adopted-output')
+    && fs.readFileSync(slowDone, 'utf8').trim() === 'once', runs(slow));
+  // A run cut off with no exit code reads 'interrupted', distinct from a real
   // failure (gs12 review finding 5).
-  await waitFor('interrupted cron claim is reconciled on restart', () => runs(slow).some(x => x.status === 'interrupted'), 10000);
-  check('interrupted result is explicit and never success', runs(slow).length === 1 && runs(slow)[0].status === 'interrupted'
-    && !fs.existsSync(unsafe));
+  await waitFor('a run killed while the server was down is reconciled', () => runs(lost).some(x => x.status === 'interrupted'), 10000);
+  check('lost result is explicit and never success', runs(lost).length === 1 && runs(lost)[0].status === 'interrupted'
+    && !fs.existsSync(unsafe) && fs.readFileSync(amux.serverLog, 'utf8').includes('shell_run_lost'));
   check('completed receipts adopted without duplicate external effects', [fast, late, pipe].every(id => runs(id).length === 1 && runs(id)[0].status === 'ok')
     && fs.readFileSync(fastDone, 'utf8').trim() === 'completed'
     && fs.readFileSync(lateDone, 'utf8').trim() === 'completed');
@@ -62,6 +82,6 @@ try {
 } catch (e) {checks.push({name: 'scenario completed', ok: false, detail: String(e.stack || e)});}
 finally {await amux.stop();}
 const receipt = {measured: true, n_considered: checks.length, failed: checks.filter(x => !x.ok).length,
-  artifacts: amux.root, fixture_boundary: 'real cron dispatch and shell commands; only private due times seeded; long first job, detached inherited pipes, a later natural tick, actual controller SIGKILL/restart; durable interrupted result and no duplicate completed effects', checks};
+  artifacts: amux.root, fixture_boundary: 'real cron dispatch and shell commands; only private due times seeded; long first job, a descendant outliving its run, a later natural tick, actual controller SIGKILL/restart; a surviving run adopted with its real result, a run killed while down recorded interrupted, no duplicate completed effects', checks};
 fs.writeFileSync(path.join(amux.root, 'recovery-receipt.json'), JSON.stringify(receipt, null, 2));
 console.log(JSON.stringify(receipt, null, 2)); process.exit(receipt.failed ? 1 : 0);

@@ -295,6 +295,18 @@ pub trait Deliverer: Send + Sync {
     /// than by polling an endpoint (AMUX-1998).
     async fn deliver(&self, sched: &DurableSchedule, source: &str) -> RunOutcome;
 
+    /// Finish a shell run a previous server process started (see
+    /// [`reconcile_shell_runs_at_startup`]). `None`: this deliverer cannot
+    /// adopt runs, and the row is recorded as lost.
+    async fn adopt_shell(
+        &self,
+        _sched: &DurableSchedule,
+        _files: super::shell_detached::RunFiles,
+        _meta: super::shell_detached::RunMeta,
+    ) -> Option<RunOutcome> {
+        None
+    }
+
     /// When the plan window the background reserve gates on will reset, if
     /// amux has seen it. A reserve refusal aims its retry here. Overridable so
     /// tests inject a reset instead of reading the process-wide reading.
@@ -1692,31 +1704,6 @@ pub(crate) fn shell_schedule_command(cmd: &str) -> tokio::process::Command {
     command
 }
 
-/// Kills a shell schedule's whole process group if the run is dropped before
-/// it finishes, which is what the timeout does. Declared after the child, so
-/// it drops first: the group is killed while its leader is still unreaped and
-/// the id cannot have been reused. A run that finishes disarms it, so a
-/// daemon a schedule starts on purpose (`nohup x &`) outlives the run as before.
-struct ShellGroupKill {
-    pgid: i32,
-    armed: bool,
-}
-impl ShellGroupKill {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-impl Drop for ShellGroupKill {
-    fn drop(&mut self) {
-        if self.armed && self.pgid > 0 {
-            // SAFETY: the group was created for this run by process_group(0)
-            // and its leader has not been reaped yet (see the type's comment).
-            unsafe {
-                libc::kill(-self.pgid, libc::SIGKILL);
-            }
-        }
-    }
-}
 
 /// How much of a shell run's output the run ROW keeps (AMUX-5241). The full
 /// stream is in `~/.amux/shell-runs/<schedule>/`; the row keeps enough to read a
@@ -1879,26 +1866,20 @@ pub fn shell_runs_dir(schedule_id: &str) -> std::path::PathBuf {
     let safe: String = schedule_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     crate::config::amux_home().join("shell-runs").join(safe)
 }
-fn shell_run_log_path(schedule_id: &str) -> Option<std::path::PathBuf> {
-    let dir = shell_runs_dir(schedule_id);
-    std::fs::create_dir_all(&dir).ok()?;
-    let mut logs: Vec<_> = std::fs::read_dir(&dir).ok()?.flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "log")).map(|e| e.path()).collect();
-    logs.sort();
-    while logs.len() >= SHELL_RUN_LOGS_KEPT {
-        let _ = std::fs::remove_file(logs.remove(0));
-    }
-    Some(dir.join(format!("{}.log", chrono::Utc::now().timestamp_millis())))
-}
 /// Append-only, size-capped writer; silently inert when there is no file.
-struct ShellRunLog { f: Option<std::fs::File>, written: u64, capped: bool }
+pub(crate) struct ShellRunLog { f: Option<std::fs::File>, written: u64, capped: bool }
 impl ShellRunLog {
-    fn open(p: Option<&std::path::Path>) -> Self {
+    /// Start the log empty (a fresh run, or an adopted one rebuilt from its raw output).
+    pub(crate) fn create(p: Option<&std::path::Path>) -> Self {
+        if let Some(p) = p { let _ = std::fs::write(p, b""); }
+        Self::open(p)
+    }
+    pub(crate) fn open(p: Option<&std::path::Path>) -> Self {
         let f = p.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
         let written = f.as_ref().and_then(|f| f.metadata().ok()).map(|m| m.len()).unwrap_or(0);
         Self { f, written, capped: false }
     }
-    fn write(&mut self, b: &[u8]) {
+    pub(crate) fn write(&mut self, b: &[u8]) {
         use std::io::Write;
         let Some(f) = self.f.as_mut() else { return };
         if self.written >= SHELL_RUN_LOG_CAP {
@@ -2074,6 +2055,168 @@ pub fn fail_orphaned_manual_shell_runs(conn: &Connection) -> rusqlite::Result<us
     )
 }
 
+/// A running shell row a starting server takes over instead of failing.
+#[derive(Debug)]
+pub struct ShellAdoption {
+    pub run_id: i64,
+    pub schedule_id: String,
+    /// A cron fire's row (finished by `finish_cron_run`), not a Run-now row.
+    pub cron: bool,
+    /// The provisional row's note, kept beside the outcome for a cron row.
+    pub note: Option<String>,
+    pub files: super::shell_detached::RunFiles,
+    pub meta: super::shell_detached::RunMeta,
+    /// The exit code was already on disk: it ended while no server watched.
+    pub finished_while_down: bool,
+}
+
+/// What [`reconcile_shell_runs_at_startup`] decided.
+#[derive(Debug, Default)]
+pub struct ShellReconcile {
+    pub adopted: Vec<ShellAdoption>,
+    /// Rows marked interrupted: no files, or a dead process with no exit code.
+    pub lost: Vec<(i64, String)>,
+    /// Rows this same process is still watching (the loop restarted in-process).
+    pub watched: Vec<(i64, String)>,
+}
+
+/// THE STARTUP SWEEP FOR SHELL RUNS (cicd-two-minutes item 1). A shell run is
+/// a detached process with its result in files (shell_detached.rs), so a
+/// `running` shell row at startup is usually NOT lost: if its process is alive
+/// or its exit code is on disk, adopt it and record the real result. Only a
+/// row whose process is gone with no exit code, or that has no run files at
+/// all, is marked `interrupted`. Covers Run-now rows (`delivery='shell'`) and
+/// cron fires of shell schedules (`delivery IS NULL`, schedule `kind='shell'`);
+/// cron rows of tmux schedules stay with [`fail_orphaned_cron_runs`].
+///
+/// An adopted cron row is stamped `delivery='shell'` so the cron reconciler,
+/// which runs after this, leaves it alone.
+pub fn reconcile_shell_runs_at_startup(conn: &Connection) -> rusqlite::Result<ShellReconcile> {
+    let rows: Vec<(i64, String, Option<String>, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.schedule_id, r.delivery, r.note FROM schedule_runs r
+             LEFT JOIN schedules s ON s.id = r.schedule_id
+             WHERE r.status='running'
+               AND (r.delivery='shell' OR (r.delivery IS NULL AND s.kind='shell'))
+             ORDER BY r.id",
+        )?;
+        let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        it.collect::<rusqlite::Result<_>>()?
+    };
+    let mut out = ShellReconcile::default();
+    for (run_id, schedule_id, delivery, note) in rows {
+        let cron = delivery.is_none();
+        if super::shell_detached::is_watched(run_id) {
+            if cron {
+                conn.execute("UPDATE schedule_runs SET delivery='shell' WHERE id=?1 AND status='running'", [run_id])?;
+            }
+            out.watched.push((run_id, schedule_id));
+            continue;
+        }
+        match super::shell_detached::inspect(&shell_runs_dir(&schedule_id), run_id) {
+            Some(found) => {
+                if cron {
+                    conn.execute("UPDATE schedule_runs SET delivery='shell' WHERE id=?1 AND status='running'", [run_id])?;
+                }
+                tracing::info!(run_id, schedule = %schedule_id, pid = ?found.pid, exit_code = ?found.rc,
+                    attempt = found.meta.attempt, measured = true, n_considered = 1, verdict = "shell_run_adopted",
+                    "startup: a shell run survived the restart; this server records its result");
+                out.adopted.push(ShellAdoption {
+                    run_id,
+                    schedule_id,
+                    cron,
+                    note: note.filter(|n| cron && n != "fired; delivery pending"),
+                    finished_while_down: found.rc.is_some(),
+                    files: found.files,
+                    meta: found.meta,
+                });
+            }
+            None => {
+                conn.execute(
+                    "UPDATE schedule_runs
+                     SET status='interrupted', note='interrupted: the shell run''s process ended during a server restart without recording an exit code',
+                         delivery='shell', submission=NULL
+                     WHERE id=?1 AND status='running'",
+                    [run_id],
+                )?;
+                tracing::warn!(run_id, schedule = %schedule_id, measured = true, n_considered = 1, verdict = "shell_run_lost",
+                    "startup: a shell run's process is gone with no exit code (or it left no run files); recorded interrupted");
+                out.lost.push((run_id, schedule_id));
+            }
+        }
+    }
+    let keep: Vec<i64> = out.adopted.iter().map(|a| a.run_id).collect();
+    let swept = super::shell_detached::sweep_leftovers(&crate::config::amux_home().join("shell-runs"), &keep);
+    tracing::info!(adopted = out.adopted.len(), lost = out.lost.len(), watched = out.watched.len(), swept,
+        measured = true, n_considered = out.adopted.len() + out.lost.len() + out.watched.len(),
+        verdict = "shell_runs_reconciled_at_startup",
+        "startup: shell runs in flight at the restart were adopted, or recorded lost when their process was gone");
+    Ok(out)
+}
+
+/// Record an adopted shell run's real result on its row, once. Guarded on
+/// `status='running'` by both finish functions, so a row another path already
+/// finished is never overwritten. Returns the rows updated.
+pub fn finish_adopted_shell_run(conn: &Connection, a: &ShellAdoption, outcome: &RunOutcome) -> rusqlite::Result<usize> {
+    if !a.cron {
+        return finish_manual_shell_run(conn, a.run_id, outcome);
+    }
+    let n = finish_cron_run(conn, a.run_id, outcome, a.note.as_deref())?;
+    if n > 0 {
+        conn.execute(
+            "UPDATE schedules SET last_delivery=?1, last_refusal_reason=?2 WHERE id=?3",
+            rusqlite::params![outcome.status(), outcome.refusal_reason(), a.schedule_id],
+        )?;
+    }
+    Ok(n)
+}
+
+/// Watch an adopted run to its end and record it. A deliverer that cannot
+/// adopt (a test stub) records the row lost rather than leaving it running.
+pub async fn complete_adopted_shell_run(store: SharedStore, deliverer: std::sync::Arc<dyn Deliverer>, a: ShellAdoption) {
+    let sched = store.read().ok().and_then(|c| get_schedule(&c, &a.schedule_id).ok().flatten());
+    let outcome = match &sched {
+        Some(s) => deliverer.adopt_shell(s, a.files.clone(), a.meta.clone()).await,
+        None => None,
+    }
+    .unwrap_or_else(|| RunOutcome::Failed {
+        reason: "interrupted: the server restarted and this run could not be adopted".into(),
+    });
+    let status = outcome.status();
+    let for_notice = outcome.clone();
+    let (run_id, sid, finished_while_down) = (a.run_id, a.schedule_id.clone(), a.finished_while_down);
+    let files = a.files.clone();
+    let res = store
+        .write_async(move |conn| {
+            let n = finish_adopted_shell_run(conn, &a, &outcome)?;
+            Ok(WriteOutcome {
+                applied: n > 0,
+                events: vec![PendingEvent {
+                    entity_type: EntityType::Schedule,
+                    entity_id: a.schedule_id.clone(),
+                    mutation: MutationKind::Updated,
+                    payload: None,
+                }],
+            })
+        })
+        .await;
+    match res {
+        Ok(r) => {
+            files.remove_all_but_log();
+            tracing::info!(run_id, schedule = %sid, status, recorded = r.applied, finished_while_down,
+                measured = true, n_considered = 1, verdict = "shell_run_adopted_recorded",
+                "an adopted shell run's real result is on its row");
+            if r.applied {
+                if let Some(s) = &sched {
+                    super::schedule_failure::on_run_outcome(&store, s, &for_notice, "cron-rs").await;
+                }
+            }
+        }
+        Err(e) => tracing::error!(run_id, schedule = %sid, error = %e, verdict = "shell_run_adopted_unrecorded",
+            measured = true, n_considered = 1, "could not record an adopted shell run's result"),
+    }
+}
+
 /// Delivers through the REAL send path.
 ///
 /// Two kinds, one type: `kind=shell` runs the command as a subprocess and
@@ -2097,8 +2240,24 @@ impl LiveDeliverer {
     /// alert-dispatched run that reads identically to a generic failure is why
     /// mvs-infra concluded dispatch was bypassed when it had run (rule 4).
     async fn run_shell(&self, sched: &DurableSchedule) -> RunOutcome {
+        self.run_shell_from(sched, None).await
+    }
+
+    /// Finish a shell run a previous server process started: watch it to its
+    /// end (or read the exit code it already wrote), then map it through the
+    /// schedule's `exit_actions` exactly as a run this process started is.
+    pub async fn adopt_shell_run(&self, sched: &DurableSchedule, files: super::shell_detached::RunFiles, meta: super::shell_detached::RunMeta) -> RunOutcome {
+        self.run_shell_from(sched, Some((files, meta))).await
+    }
+
+    async fn run_shell_from(
+        &self,
+        sched: &DurableSchedule,
+        adopted: Option<(super::shell_detached::RunFiles, super::shell_detached::RunMeta)>,
+    ) -> RunOutcome {
+        use super::shell_detached as det;
         let command = sched.str_field("command").to_string();
-        if command.trim().is_empty() {
+        if adopted.is_none() && command.trim().is_empty() {
             return RunOutcome::Refused {
                 reason: "shell schedule has no command".into(),
             };
@@ -2111,11 +2270,14 @@ impl LiveDeliverer {
 
         // OUTPUT IS STREAMED TO A FILE AS IT IS PRODUCED (Ethan 2026-09-25:
         // "i need to be able to see it ... maybe there should be a shell tab
-        // assigned to each worker"). `.output()` held everything in memory
-        // until exit and kept a 480-char note, so a running job was invisible
-        // and a finished one mostly lost. Each run now tees stdout+stderr, in
-        // arrival order, to ~/.amux/shell-runs/<schedule>/<start_ms>.log,
-        // which the worker's Shell tab tails. Same timeout and kill_on_drop.
+        // assigned to each worker"). Each run's stdout and stderr are copied,
+        // redacted, to ~/.amux/shell-runs/<schedule>/<start_ms>.log, which the
+        // worker's Shell tab tails.
+        //
+        // THE RUN OUTLIVES THIS PROCESS (cicd-two-minutes item 1). The child is
+        // detached (its own session, output in files, exit code in a file), so
+        // a deploy that restarts the server no longer kills it and no longer
+        // has to wait for it: the next server adopts it (shell_detached.rs).
         let sched_id = sched.id().to_string();
         // The run speaks AS the schedule's owner. Without this a shell run had
         // no AMUX_SESSION, and the CLI's tmux fallback named whichever session
@@ -2145,142 +2307,109 @@ impl LiveDeliverer {
                 }
             }
         });
-        let run_once = |cmd: String| {
+        let run_id = adopted.as_ref().and_then(|(_, m)| m.run_id).or_else(det::current_run_id);
+        // One attempt: spawn it (or take over the adopted one) and watch it.
+        let run_once = |cmd: String, attempt: u32, adopt: Option<(det::RunFiles, det::RunMeta)>| {
             let sid = sched_id.clone();
             let owner = owner.clone();
             let vault_vals = vault_vals.clone();
             async move {
                 let _in_flight = ShellRunInFlight::enter(&sid);
-                let path = shell_run_log_path(&sid);
-                let fut = async {
-                    use tokio::io::AsyncReadExt;
-                    let mut command = shell_schedule_command(&cmd);
-                    for (k, v) in vault_vals.iter() {
-                        command.env(k, v);
+                let _watched = det::Watched::enter(run_id);
+                let (files, meta, proc, mut log) = match adopt {
+                    Some((files, meta)) => {
+                        // Rebuild the log from the raw files when they are
+                        // still there; otherwise keep what the old process wrote.
+                        let raw_kept = files.stdout().exists() || files.stderr().exists();
+                        let log = if raw_kept { ShellRunLog::create(Some(&files.log())) } else { ShellRunLog::open(Some(&files.log())) };
+                        let pid = files.read_pid().unwrap_or(0);
+                        (files, meta, det::Proc::Pid(pid), log)
                     }
-                    if owner.is_empty() {
-                        command.env_remove("AMUX_SESSION");
-                    } else {
-                        command.env("AMUX_SESSION", &owner);
-                    }
-                    // Its own worker token for the life of the run (rule 10),
-                    // removed when `_run_token` drops after the child exits.
-                    let _run_token = (!owner.is_empty())
-                        .then(|| crate::api::worker_identity::mint_run(&crate::config::amux_home(), &owner))
-                        .flatten();
-                    match &_run_token {
-                        Some(t) => { command.env(crate::api::worker_identity::TOKEN_ENV, &t.value); }
-                        None => { command.env_remove(crate::api::worker_identity::TOKEN_ENV); }
-                    }
-                    let mut child = command
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
-                        .kill_on_drop(true)
-                        .spawn()
-                        .map_err(|e| format!("could not spawn /bin/bash: {e}"))?;
-                    let mut group = ShellGroupKill { pgid: child.id().map(|p| p as i32).unwrap_or(0), armed: true };
-                    let log = std::sync::Arc::new(std::sync::Mutex::new(ShellRunLog::open(path.as_deref())));
-                    // Both streams in ARRIVAL order, bounded, for the run row's
-                    // tail (AMUX-5241). (bytes kept, bytes dropped off the front)
-                    let combined = std::sync::Arc::new(std::sync::Mutex::new((Vec::<u8>::new(), 0usize)));
-                    let pump = |mut r: Box<dyn tokio::io::AsyncRead + Unpin + Send>, log: std::sync::Arc<std::sync::Mutex<ShellRunLog>>, combined: std::sync::Arc<std::sync::Mutex<(Vec<u8>, usize)>>, vv: std::sync::Arc<Vec<(String, String)>>| async move {
-                        let mut all = Vec::new();
-                        let mut buf = [0u8; 8192];
-                        loop {
-                            match r.read(&mut buf).await {
-                                Ok(0) | Err(_) => break,
-                                Ok(n) => {
-                                    all.extend_from_slice(&buf[..n]);
-                                    if all.len() > SHELL_COMBINED_KEEP {
-                                        all.drain(..all.len() - SHELL_COMBINED_KEEP);
-                                    }
-                                    if let Ok(mut l) = log.lock() {
-                                        if vv.is_empty() { l.write(&buf[..n]); } else { l.write(&crate::api::vault_secrets::redact_bytes(&buf[..n], &vv)); }
-                                    }
-                                    if let Ok(mut c) = combined.lock() {
-                                        c.0.extend_from_slice(&buf[..n]);
-                                        if c.0.len() > SHELL_COMBINED_KEEP {
-                                            let cut = c.0.len() - SHELL_COMBINED_KEEP;
-                                            c.0.drain(..cut);
-                                            c.1 += cut;
-                                        }
-                                    }
-                                }
+                    None => {
+                        let files = det::new_run_files(&shell_runs_dir(&sid), SHELL_RUN_LOGS_KEPT)
+                            .ok_or_else(|| format!("could not create {}", shell_runs_dir(&sid).display()))?;
+                        let mut command = det::detached_command(&cmd, &files)
+                            .map_err(|e| format!("could not prepare the run's output files: {e}"))?;
+                        for (k, v) in vault_vals.iter() {
+                            command.env(k, v);
+                        }
+                        if owner.is_empty() {
+                            command.env_remove("AMUX_SESSION");
+                        } else {
+                            command.env("AMUX_SESSION", &owner);
+                        }
+                        // Its own worker token for the life of the run (rule
+                        // 10). Kept on disk past this process, so an adopted
+                        // run keeps its identity; removed when it is recorded.
+                        let token = (!owner.is_empty())
+                            .then(|| crate::api::worker_identity::mint_run(&crate::config::amux_home(), &owner))
+                            .flatten();
+                        match &token {
+                            Some(t) => { command.env(crate::api::worker_identity::TOKEN_ENV, &t.value); }
+                            None => { command.env_remove(crate::api::worker_identity::TOKEN_ENV); }
+                        }
+                        let meta = det::RunMeta {
+                            run_id,
+                            schedule_id: sid.clone(),
+                            started_ms: chrono::Utc::now().timestamp_millis(),
+                            attempt,
+                            token_path: token.map(|t| t.keep()),
+                        };
+                        if let Err(e) = files.write_meta(&meta) {
+                            // Unadoptable but still runnable: say so, and run.
+                            tracing::warn!(schedule = %sid, error = %e, verdict = "shell_run_meta_unwritten", measured = true, n_considered = 1,
+                                "shell run starts without its meta file; a restart during it will record it lost");
+                        }
+                        let log = ShellRunLog::create(Some(&files.log()));
+                        let child = match command.spawn() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                if let Some(t) = &meta.token_path { let _ = std::fs::remove_file(t); }
+                                files.remove_all_but_log();
+                                return Err(format!("could not spawn /bin/bash: {e}"));
                             }
-                        }
-                        all
-                    };
-                    let out = child.stdout.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
-                    let err = child.stderr.take().map(|o| Box::new(o) as Box<dyn tokio::io::AsyncRead + Unpin + Send>);
-                    let drains = async {
-                        tokio::join!(
-                            async { match out { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
-                            async { match err { Some(r) => pump(r, log.clone(), combined.clone(), vault_vals.clone()).await, None => Vec::new() } },
-                        )
-                    };
-                    tokio::pin!(drains);
-                    let waited = child.wait();
-                    tokio::pin!(waited);
-                    let (status, o, e) = tokio::select! {
-                        (o, e) = &mut drains => {
-                            let status = waited.await.map_err(|e| format!("wait failed: {e}"))?;
-                            (status, o, e)
-                        }
-                        status = &mut waited => {
-                            let status = status.map_err(|e| format!("wait failed: {e}"))?;
-                            match tokio::time::timeout(std::time::Duration::from_secs(1), &mut drains).await {
-                                Ok((o, e)) => (status, o, e),
-                                Err(_) => {
-                                    // Detached descendants can retain inherited pipes after the
-                                    // actual command exits. Keep its real exit code and captured
-                                    // output; never hold the scheduler until the shell deadline.
-                                    tracing::warn!(schedule = %sid, verdict = "shell_descendant_pipes_closed",
-                                        measured = true, n_considered = 1,
-                                        "shell exited; stopped draining descendant-held pipes after one second");
-                                    let captured = combined.lock().map(|c| c.0.clone()).unwrap_or_default();
-                                    let marker = b"\n[output capture incomplete: descendant-held pipes closed after shell exit]\n";
-                                    if let Ok(mut l) = log.lock() { l.write(marker); }
-                                    if let Ok(mut c) = combined.lock() { c.0.extend_from_slice(marker); }
-                                    (status, captured, Vec::new())
-                                }
-                            }
-                        }
-                    };
-                    group.disarm();
-                    let code = status.code().unwrap_or(-1);
-                    if let Ok(mut l) = log.lock() { l.write(format!("\n[exit {code}]\n").as_bytes()); }
-                    let tail = combined
-                        .lock()
-                        .map(|c| shell_output_tail(&c.0, c.1, SHELL_OUTPUT_TAIL_BYTES))
-                        .unwrap_or_default();
-                    if !vault_vals.is_empty() {
-                        // A value split across two reads escaped the per-chunk
-                        // mask; one pass over the whole file catches it.
-                        if let Some(p) = &path {
-                            if let Ok(bytes) = std::fs::read(p) {
-                                let clean = crate::api::vault_secrets::redact_bytes(&bytes, &vault_vals);
-                                if clean != bytes {
-                                    let _ = std::fs::write(p, clean);
-                                }
-                            }
-                        }
+                        };
+                        (files, meta, det::Proc::Child(child), log)
                     }
-                    let r = |b: &[u8]| crate::api::vault_secrets::redact(&String::from_utf8_lossy(b), &vault_vals);
-                    Ok::<_, String>((code, r(&o), r(&e), crate::api::vault_secrets::redact(&tail, &vault_vals)))
                 };
-                match tokio::time::timeout(std::time::Duration::from_secs(SHELL_TIMEOUT_S), fut).await {
-                    Ok(r) => r,
-                    Err(_) => {
-                        if let Some(p) = &path { ShellRunLog::open(Some(p)).write(format!("\n[timed out after {SHELL_TIMEOUT_S}s; its process group was killed]\n").as_bytes()); }
+                let end = det::watch(&files, meta.started_ms, proc, vault_vals.clone(), &mut log, SHELL_TIMEOUT_S,
+                    SHELL_COMBINED_KEEP, SHELL_OUTPUT_TAIL_BYTES).await;
+                if let Some(t) = &meta.token_path {
+                    let _ = std::fs::remove_file(t);
+                }
+                // Raw output may hold a vault value; the redacted log stays.
+                files.remove_raw();
+                if run_id.is_none() {
+                    files.remove_all_but_log();
+                }
+                if !vault_vals.is_empty() {
+                    // A value split across two reads escaped the per-chunk
+                    // mask; one pass over the whole file catches it.
+                    if let Ok(bytes) = std::fs::read(files.log()) {
+                        let clean = crate::api::vault_secrets::redact_bytes(&bytes, &vault_vals);
+                        if clean != bytes {
+                            let _ = std::fs::write(files.log(), clean);
+                        }
+                    }
+                }
+                match end {
+                    det::WatchEnd::Exited(code, o, e, tail) => Ok::<_, String>((code, o, e, tail)),
+                    det::WatchEnd::TimedOut => {
                         tracing::warn!(schedule = %sid, verdict = "shell_schedule_timed_out_group_killed", measured = true, n_considered = 1,
                             "shell schedule timed out after {SHELL_TIMEOUT_S}s; killed its whole process group, so nothing it started keeps running");
                         Err(format!("timed out after {SHELL_TIMEOUT_S}s"))
+                    }
+                    det::WatchEnd::Vanished => {
+                        tracing::warn!(schedule = %sid, verdict = "shell_run_lost", measured = true, n_considered = 1,
+                            "shell run's process ended without writing an exit code");
+                        Err("the run's process ended without recording an exit code".into())
                     }
                 }
             }
         };
 
-        let (mut code, mut stdout, mut stderr, mut tail) = match run_once(command.clone()).await {
+        let first_attempt = adopted.as_ref().map(|(_, m)| m.attempt).unwrap_or(1);
+        let (mut code, mut stdout, mut stderr, mut tail) = match run_once(command.clone(), first_attempt, adopted).await {
             Ok(t) => t,
             Err(e) => return RunOutcome::Failed { reason: e },
         };
@@ -2289,8 +2418,12 @@ impl LiveDeliverer {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        if act == "retry_once_then_alert" && code != 0 {
-            match run_once(command).await {
+        if first_attempt >= 2 {
+            // Adopted the retry of `retry_once_then_alert`: the first attempt
+            // already failed, so this one decides alert or noop.
+            act = if code != 0 { "alert".into() } else { "noop".into() };
+        } else if act == "retry_once_then_alert" && code != 0 {
+            match run_once(command, 2, None).await {
                 Ok(t) => {
                     (code, stdout, stderr, tail) = t;
                     act = if code != 0 {
@@ -2550,6 +2683,15 @@ pub fn reserve_applies_to(source: &str) -> bool {
 
 #[async_trait::async_trait]
 impl Deliverer for LiveDeliverer {
+    async fn adopt_shell(
+        &self,
+        sched: &DurableSchedule,
+        files: super::shell_detached::RunFiles,
+        meta: super::shell_detached::RunMeta,
+    ) -> Option<RunOutcome> {
+        Some(self.adopt_shell_run(sched, files, meta).await)
+    }
+
     async fn deliver(&self, sched: &DurableSchedule, source: &str) -> RunOutcome {
         if sched.str_field("kind") == "shell" {
             // NOT GATED BY THE RESERVE, and the exemption is the point: a shell
@@ -3223,10 +3365,17 @@ async fn fire_one(
         None => None,
     };
     let mut outcomes: Vec<RunOutcome> = Vec::with_capacity(claim.notes.len());
-    for _ in 0..claim.notes.len() {
-        outcomes.push(match &when_skip {
-            Some(reason) => RunOutcome::Refused { reason: reason.clone() },
-            None => deliverer.deliver(&claim.sched, "cron-rs").await,
+    for i in 0..claim.notes.len() {
+        outcomes.push(match (&when_skip, claim.run_ids.get(i)) {
+            (Some(reason), _) => RunOutcome::Refused { reason: reason.clone() },
+            // The row id travels with the delivery, so a shell run's files
+            // name the row a restarted server finishes (shell_detached.rs).
+            (None, Some(id)) => {
+                super::shell_detached::SHELL_RUN_ID
+                    .scope(*id, deliverer.deliver(&claim.sched, "cron-rs"))
+                    .await
+            }
+            (None, None) => deliverer.deliver(&claim.sched, "cron-rs").await,
         });
     }
     let when_skipped_all = when_skip.is_some();
@@ -3444,13 +3593,28 @@ pub async fn run_scheduler(
     enabled: bool,
     deliverer: std::sync::Arc<dyn Deliverer>,
 ) {
+    let adoptions: std::sync::Arc<std::sync::Mutex<Vec<ShellAdoption>>> = Default::default();
+    let adoptions_w = adoptions.clone();
     let reconciled = store
-        .write_async(|conn| {
+        .write_async(move |conn| {
             // GS-12 finding 5: 276 runs in flight at a restart read as `error`,
             // the word a real failure uses. They are `interrupted` now, and each
             // schedule gets its own WARN line and a stamp on its row.
-            let affected = super::schedule_lifecycle::running_rows_by_schedule(conn)?;
-            let n = fail_orphaned_manual_shell_runs(conn)?;
+            let mut affected = super::schedule_lifecycle::running_rows_by_schedule(conn)?;
+            // A shell run survives a restart (shell_detached.rs): adopt the
+            // ones whose process lives on or whose exit code is on disk, and
+            // fail only the ones that are really gone. Adopted and still
+            // watched rows are not interrupted, so their schedules are not
+            // stamped as if they were.
+            let shell = reconcile_shell_runs_at_startup(conn)?;
+            for (sid, _) in shell.adopted.iter().map(|a| (&a.schedule_id, a.run_id)).chain(shell.watched.iter().map(|(id, s)| (s, *id))) {
+                if let Some(row) = affected.iter_mut().find(|r| &r.0 == sid) {
+                    row.1 -= 1;
+                }
+            }
+            affected.retain(|(_, n)| *n > 0);
+            let n = shell.lost.len();
+            *adoptions_w.lock().unwrap_or_else(|e| e.into_inner()) = shell.adopted;
             // AF-515: cron fires now write a provisional row too, so a restart
             // mid-delivery can orphan one of those as well. Counted separately
             // because the two mean different things: a shell orphan lost a child
@@ -3490,6 +3654,9 @@ pub async fn run_scheduler(
         }
         Err(e) => tracing::error!(error = %e, "scheduler could not reconcile orphaned runs"),
         _ => {}
+    }
+    for a in std::mem::take(&mut *adoptions.lock().unwrap_or_else(|e| e.into_inner())) {
+        tokio::spawn(complete_adopted_shell_run(store.clone(), deliverer.clone(), a));
     }
     let policy = missed_policy_from_env();
     let retry = RetryPolicy::default();
@@ -3722,10 +3889,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_timed_out_run_kills_what_its_shell_started_and_a_finished_one_does_not() {
-        // Timed out: the run future drops with the guard armed.
+        // Timed out: the watcher kills the run's whole group.
         let (child, sleeper) = shell_with_grandchild().await;
-        let group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
-        drop(group);
+        super::super::shell_detached::kill_group(child.id().unwrap() as i32);
         drop(child);
         let mut gone = false;
         for _ in 0..50 {
@@ -3734,11 +3900,8 @@ mod tests {
         }
         assert!(gone, "pid {sleeper}, started by a timed-out run, is still running");
 
-        // Finished: disarmed, a process the run started on purpose outlives it.
+        // Finished: nothing kills the group, so a daemon it started outlives it.
         let (child, sleeper) = shell_with_grandchild().await;
-        let mut group = ShellGroupKill { pgid: child.id().unwrap() as i32, armed: true };
-        group.disarm();
-        drop(group);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert!(alive(sleeper), "a finished run must not kill a daemon it started");
         // SAFETY: the sleeper is this test's own grandchild.
@@ -5068,6 +5231,207 @@ mod tests {
         assert_eq!(o.exit_code, 0, "the run had a token: {}", o.tail);
         assert!(o.tail.contains("runs=1"), "one run hash while it ran: {}", o.tail);
         assert_eq!(std::fs::read_dir(&runs).map(|d| d.count()).unwrap_or(0), 0, "and none after");
+    }
+
+    // ---- cicd-two-minutes item 1: a shell run survives a server restart ----
+
+    fn shell_test_state(store: &SharedStore) -> crate::api::AppState {
+        crate::api::AppState {
+            store: store.clone(),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    /// A shell schedule whose command waits for `gate` to exist, so the test
+    /// decides when the run ends relative to the "restart".
+    fn gated_shell_row(id: &str, gate: &std::path::Path, tail: &str) -> DurableSchedule {
+        let mut row = make_row(id, "", None, "2020-01-01T00:00");
+        row.raw.insert("kind".into(), Value::from("shell"));
+        row.raw.insert("command".into(), Value::from(format!(
+            "echo before-restart; while [ ! -f '{}' ]; do sleep 0.05; done; {tail}", gate.display())));
+        row
+    }
+
+    async fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Start the run as the server would, wait until its process is up and has
+    /// printed, then drop the watcher the way a dying server drops it.
+    async fn start_then_kill_the_server(store: &SharedStore, row: &DurableSchedule, run_id: i64) -> super::super::shell_detached::RunFiles {
+        let live = LiveDeliverer::new(shell_test_state(store));
+        let row_bg = row.clone();
+        let task = tokio::spawn(async move {
+            super::super::shell_detached::SHELL_RUN_ID.scope(run_id, async move { live.deliver(&row_bg, "cron-rs").await }).await
+        });
+        let dir = shell_runs_dir(row.id());
+        let mut found = None;
+        wait_for("the run's pid and first output", || {
+            found = super::super::shell_detached::find_run(&dir, run_id).map(|(f, _)| f);
+            found.as_ref().is_some_and(|f| f.read_pid().is_some()
+                && std::fs::read_to_string(f.stdout()).unwrap_or_default().contains("before-restart"))
+        })
+        .await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled(), "the old server's watcher is gone");
+        found.unwrap()
+    }
+
+    fn reconcile(store: &SharedStore) -> ShellReconcile {
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let w = slot.clone();
+        store.write(move |conn| {
+            *w.lock().unwrap() = Some(reconcile_shell_runs_at_startup(conn)?);
+            // The cron reconciler runs after it at startup and must not take an adopted row.
+            assert_eq!(fail_orphaned_cron_runs(conn)?, 0, "an adopted cron shell row is not an orphaned delivery");
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let r = slot.lock().unwrap().take().unwrap();
+        r
+    }
+
+    fn run_row(store: &SharedStore, sid: &str) -> (i64, String, Option<i64>, String, String) {
+        let conn = store.read().unwrap();
+        conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM schedule_runs WHERE schedule_id=?1), status, exit_code,
+                    COALESCE(output_tail,''), COALESCE(note,'') FROM schedule_runs WHERE schedule_id=?1 ORDER BY id DESC LIMIT 1",
+            [sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
+    }
+
+    /// The server dies mid-run; the child keeps going; the next server adopts
+    /// it, and the run's REAL exit code and output land on its one row.
+    #[tokio::test]
+    async fn a_shell_run_still_running_at_a_restart_is_adopted_and_recorded_once() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let gate = home.path().join("go");
+        let (store, _dir) = store();
+        let row = gated_shell_row("SCHED-ADOPT", &gate, "echo after-restart; echo why >&2; exit 7");
+        let row_w = row.clone();
+        let slot = Arc::new(std::sync::Mutex::new(None));
+        let w = slot.clone();
+        store.write(move |conn| {
+            insert_schedule(conn, &row_w)?;
+            conn.execute("UPDATE schedules SET kind='shell' WHERE id='SCHED-ADOPT'", [])?;
+            *w.lock().unwrap() = Some(claim_manual_shell_run(conn, "SCHED-ADOPT", "manual:test")?);
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let run_id = slot.lock().unwrap().unwrap().run_id();
+
+        let files = start_then_kill_the_server(&store, &row, run_id).await;
+        let pid = files.read_pid().unwrap();
+        assert!(super::super::shell_detached::pid_alive(pid), "the child outlives the server that started it");
+        assert!(files.read_rc().is_none());
+
+        let r = reconcile(&store);
+        assert_eq!((r.adopted.len(), r.lost.len()), (1, 0), "{r:?}");
+        assert!(!r.adopted[0].finished_while_down);
+        assert_eq!(run_row(&store, "SCHED-ADOPT").1, "running", "an adopted run is not interrupted");
+
+        std::fs::write(&gate, b"").unwrap();
+        let a = r.adopted.into_iter().next().unwrap();
+        complete_adopted_shell_run(store.clone(), Arc::new(LiveDeliverer::new(shell_test_state(&store))), a).await;
+
+        let (count, status, code, tail, note) = run_row(&store, "SCHED-ADOPT");
+        assert_eq!(count, 1, "no duplicate row");
+        assert_eq!((status.as_str(), code), ("error", Some(7)), "the real exit code, not interrupted: {note}");
+        assert!(tail.contains("before-restart") && tail.contains("after-restart") && tail.contains("why"), "{tail}");
+        assert!(!note.contains("interrupted"), "{note}");
+        let log = std::fs::read_to_string(files.log()).unwrap();
+        assert!(log.contains("after-restart") && log.contains("[exit 7]"), "{log}");
+        assert!(!files.stdout().exists() && !files.meta().exists(), "run files are cleaned once recorded");
+
+        // A second startup finds nothing to adopt or lose: recorded once.
+        let again = reconcile(&store);
+        assert_eq!((again.adopted.len(), again.lost.len()), (0, 0));
+        assert_eq!(run_row(&store, "SCHED-ADOPT").0, 1);
+    }
+
+    /// The run ended while no server was up: its exit code is on disk and is
+    /// what gets recorded. A cron fire's row (delivery NULL) this time.
+    #[tokio::test]
+    async fn a_shell_run_that_finished_while_the_server_was_down_records_its_exit_code() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let gate = home.path().join("go");
+        let (store, _dir) = store();
+        let row = gated_shell_row("SCHED-DOWN", &gate, "echo finished-while-down; exit 3");
+        let row_w = row.clone();
+        let slot = Arc::new(std::sync::Mutex::new(0i64));
+        let w = slot.clone();
+        store.write(move |conn| {
+            insert_schedule(conn, &row_w)?;
+            conn.execute("UPDATE schedules SET kind='shell' WHERE id='SCHED-DOWN'", [])?;
+            conn.execute("INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source, delivery)
+                          VALUES ('SCHED-DOWN', 1, 'running', 'fired; delivery pending', 'cron-rs', NULL)", [])?;
+            *w.lock().unwrap() = conn.last_insert_rowid();
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let run_id = *slot.lock().unwrap();
+
+        let files = start_then_kill_the_server(&store, &row, run_id).await;
+        std::fs::write(&gate, b"").unwrap();
+        wait_for("the exit code on disk", || files.read_rc().is_some()).await;
+
+        let r = reconcile(&store);
+        assert_eq!((r.adopted.len(), r.lost.len()), (1, 0), "{r:?}");
+        assert!(r.adopted[0].finished_while_down && r.adopted[0].cron);
+        let a = r.adopted.into_iter().next().unwrap();
+        complete_adopted_shell_run(store.clone(), Arc::new(LiveDeliverer::new(shell_test_state(&store))), a).await;
+
+        let (count, status, code, tail, note) = run_row(&store, "SCHED-DOWN");
+        assert_eq!(count, 1);
+        assert_eq!((status.as_str(), code), ("error", Some(3)), "{note}");
+        assert!(tail.contains("finished-while-down"), "{tail}");
+        let last: String = store.read().unwrap()
+            .query_row("SELECT last_delivery FROM schedules WHERE id='SCHED-DOWN'", [], |r| r.get(0)).unwrap();
+        assert_eq!(last, "error", "the schedule row carries the adopted run's outcome");
+    }
+
+    /// Only a run whose process is gone with no exit code (or that left no
+    /// files) is lost, and it is recorded interrupted, not left running.
+    #[tokio::test]
+    async fn a_shell_run_whose_process_died_without_an_exit_code_is_lost() {
+        let home = tempfile::tempdir().unwrap();
+        let _guard = crate::api::settings::test_env::set_home(home.path());
+        let (store, _dir) = store();
+        let ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = ids.clone();
+        store.write(move |conn| {
+            for sid in ["SCHED-DEAD", "SCHED-NOFILES"] {
+                conn.execute("INSERT INTO schedule_runs (schedule_id, ran_at, status, note, source, delivery)
+                              VALUES (?1, 1, 'running', 'started on host; result pending', 'manual:t', 'shell')", [sid])?;
+                w.lock().unwrap().push(conn.last_insert_rowid());
+            }
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let dead_id = ids.lock().unwrap()[0];
+        // A process that has exited, as the dead run's pid.
+        let mut gone = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let gone_pid = gone.id() as i32;
+        gone.wait().unwrap();
+        let files = super::super::shell_detached::new_run_files(&shell_runs_dir("SCHED-DEAD"), 30).unwrap();
+        files.write_meta(&super::super::shell_detached::RunMeta {
+            run_id: Some(dead_id), schedule_id: "SCHED-DEAD".into(), started_ms: 1, attempt: 1, token_path: None,
+        }).unwrap();
+        std::fs::write(files.pid(), gone_pid.to_string()).unwrap();
+
+        let r = reconcile(&store);
+        assert_eq!((r.adopted.len(), r.lost.len()), (0, 2), "{r:?}");
+        for sid in ["SCHED-DEAD", "SCHED-NOFILES"] {
+            let (_, status, _, _, note) = run_row(&store, sid);
+            assert_eq!(status, "interrupted", "{sid}: {note}");
+        }
+        assert!(!files.meta().exists(), "a lost run's leftovers are swept");
     }
 
     #[tokio::test]
@@ -6486,6 +6850,10 @@ mod tests {
 /// hold (rust-auto-build.sh SHELL-RUN DEFER) looks only before it builds, and
 /// SCHED-465 fired during the build at 17:18 and 18:18 on 2026-10-17, so both
 /// runs died at the adoption that followed.
+///
+/// Since shell runs are detached and adopted across a restart
+/// (shell_detached.rs), that hold defaults to 0; the registry stays for the
+/// `AMUX_ADOPT_SHELL_DEFER_MAX_S` override.
 static SHELL_RUNS_IN_FLIGHT: std::sync::Mutex<Vec<(u64, String, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
 static SHELL_RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

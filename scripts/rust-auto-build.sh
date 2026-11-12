@@ -65,9 +65,11 @@ print(",".join(sorted(set(ids))))' "$window" 2>/dev/null || true
 }
 
 # Wait for the server to report $1 live, for $2 seconds; sets $waited and
-# returns 0 once it does. The server holds adoption of a new binary while a
+# returns 0 once it does. The server can hold adoption of a new binary while a
 # shell schedule run is in flight, for up to AMUX_ADOPT_SHELL_DEFER_MAX_S
-# (lib.rs SELF_ADOPT, default 900). Rolling back at $2 during that hold threw
+# (lib.rs SELF_ADOPT). That defaults to 0 since shell runs survive a restart
+# (runtime_jobs/shell_detached.rs, cicd-two-minutes item 1); this wait honours
+# whatever the server is set to. Rolling back at $2 during that hold threw
 # away good builds: 6 rollbacks from 2026-10-30 to 11-02, c71df3ef9 among
 # them while SCHED-662 ran. So past $2 the wait goes on while a shell run is
 # in flight, up to $2 plus the hold, and says so once.
@@ -80,9 +82,9 @@ from_push_s() {
 }
 
 wait_live_identity() {
-  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-900}" said=0 runs="" released=0
+  local sha="$1" limit="$2" hold="${AMUX_ADOPT_SHELL_DEFER_MAX_S:-0}" said=0 runs="" released=0
   local grace="${AMUX_ADOPT_POST_HOLD_GRACE_S:-120}"
-  case "$hold" in ''|*[!0-9]*) hold=900 ;; esac
+  case "$hold" in ''|*[!0-9]*) hold=0 ;; esac
   case "$grace" in ''|*[!0-9]*) grace=120 ;; esac
   waited=0
   while :; do
@@ -581,17 +583,18 @@ if [ "${AMUX_RS_BUILD_PROVENANCE_ONLY:-}" != "1" ] \
       exit 0
     fi
   fi
-  # A DEPLOY WAITS FOR AN IN-FLIGHT SHELL SCHEDULE (RCA self 20261015-182512).
-  # A restart closes a shell run's output pipes, and the scheduler records it
-  # as "server restarted before the shell result was recorded": 4 of
-  # SCHED-465's 25 runs in 24h died that way while deploys landed inside its
-  # up-to-10-minute window. Hold the rebuild while a shell run started in the
-  # last AMUX_RS_SHELL_DEFER_MAX_S is still running, for at most that long, so
-  # a busy scheduler can delay a deploy but never block it.
+  # A DEPLOY USED TO WAIT FOR AN IN-FLIGHT SHELL SCHEDULE (RCA self
+  # 20261015-182512): a restart closed a shell run's output pipes and the run
+  # was recorded "server restarted before the shell result was recorded". A
+  # shell run is now a detached process the next server adopts
+  # (runtime_jobs/shell_detached.rs), so the hold defaults to 0 and a deploy
+  # waits for nothing (cicd-two-minutes item 1: this held 16 of 109 deploys,
+  # up to 530s). AMUX_RS_SHELL_DEFER_MAX_S=<s> brings it back.
   if [ "$head" != "$last" ]; then
-    SHELL_DEFER_MAX_S="${AMUX_RS_SHELL_DEFER_MAX_S:-900}"
+    SHELL_DEFER_MAX_S="${AMUX_RS_SHELL_DEFER_MAX_S:-0}"
     SHELL_DEFER_FILE="${STAMP}.shell_defer_since"
-    in_flight=$(shell_runs_in_flight "$SHELL_DEFER_MAX_S")
+    in_flight=""
+    if [ "$SHELL_DEFER_MAX_S" -gt 0 ] 2>/dev/null; then in_flight=$(shell_runs_in_flight "$SHELL_DEFER_MAX_S"); fi
     if [ -n "$in_flight" ] && [ "$SHELL_DEFER_MAX_S" -gt 0 ] 2>/dev/null; then
       now_epoch=$(date +%s)
       since=$(cat "$SHELL_DEFER_FILE" 2>/dev/null || echo "$now_epoch")

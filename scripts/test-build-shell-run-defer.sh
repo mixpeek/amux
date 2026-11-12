@@ -29,6 +29,8 @@ got=$(runs 'not json')
 expect test -z "$got"
 # The hold itself is wired into the build path with its verdicts.
 expect grep -q 'in_flight=$(shell_runs_in_flight "$SHELL_DEFER_MAX_S")' "$ROOT/scripts/rust-auto-build.sh"
+# Shell runs survive a restart now (shell_detached.rs): no hold unless asked for.
+expect grep -q 'SHELL_DEFER_MAX_S="${AMUX_RS_SHELL_DEFER_MAX_S:-0}"' "$ROOT/scripts/rust-auto-build.sh"
 expect grep -q 'verdict=activation_deferred_shell_run' "$ROOT/scripts/rust-auto-build.sh"
 expect grep -q 'verdict=activation_shell_defer_expired' "$ROOT/scripts/rust-auto-build.sh"
 echo "test-build-shell-run-defer: $PASS passed, $FAIL failed"

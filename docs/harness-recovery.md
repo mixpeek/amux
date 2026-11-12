@@ -97,6 +97,9 @@ scratch source does not change the bound revision; bind a new revision explicitl
 This snapshots one script, not its interpreter, imports, data or credentials.
 Use durable paths for those inputs. Shell pipelines enable `pipefail`, and full
 output streams to the existing shell-run log while in-memory tails stay bounded.
+A run is a detached process (own session, output and exit code in files under
+`~/.amux/shell-runs/<schedule>/`), so a server restart neither kills it nor has
+to wait for it: the next server adopts it.
 
 ## Proof and token efficiency
 
@@ -153,7 +156,8 @@ that no test ran. Retry after those consumers finish.
 | --- | --- |
 | Board, worker configuration, schedules, messages, steering, journal, history, request log | Existing real-process restart persistence matrix |
 | Provider conversations, leases, media-job metadata | Explicitly labelled seeded persistence cases in that matrix |
-| Interrupted manual shell and cron delivery | Real restart: error/unknown result retained, no false pass or automatic replay |
+| Shell schedule runs across a restart | Real SIGKILL of the server: a detached run that survives is adopted and its own exit code and output recorded once; a run that ended while the server was down is recorded from its exit-code file; one gone with no exit code reads interrupted, never success or replay (`runtime_jobs/shell_detached.rs`) |
+| Interrupted cron delivery (tmux) | Real restart: unknown result retained, no false pass or automatic replay |
 | Native lifecycle spool and installed observer | Hooks run during downtime; boot consumes edges once and repairs installed bytes |
 | Pending independent review | Cached results and a real detached reviewer surviving SIGKILL are adopted without a second CLI launch; full evidence retained |
 | Reviewer provider capacity | A nonzero quota exit creates a durable capacity wait without reopening work or spending a quality round; SIGKILL retains the deadline, unknown readings respect backoff, and the normal consumer retries once. A positive fresh model-scoped capacity reading releases the wait earlier. Completion reviews get shared slots before advisory pre-run reviews. |

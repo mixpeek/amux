@@ -2245,8 +2245,8 @@ pub async fn run_now(
             let source_bg = source.clone();
             let run_id = claim.run_id();
             crate::db::interactions::spawn(async move {
-                let outcome = LiveDeliverer::new(state_bg.clone())
-                    .deliver(&sched_bg, &source_bg)
+                let outcome = crate::runtime_jobs::shell_detached::SHELL_RUN_ID
+                    .scope(run_id, LiveDeliverer::new(state_bg.clone()).deliver(&sched_bg, &source_bg))
                     .await;
                 let status = outcome.status().to_string();
                 let sid_done = sched_bg.id().to_string();
