@@ -1306,16 +1306,45 @@ fn render_template(template: &str, event_type: &str, data: &Value) -> String {
 /// The notice for a fire when the subscription has no template: what
 /// happened, for whom, and where, in one readable line.
 fn default_text(sub: &LiveSub, event_type: &str, ev: &Value) -> String {
-    let pick = |k: &str| ev.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
-    let mut parts = vec![format!("{event_type}")];
-    for k in ["reason", "provider", "worker", "session", "title", "status", "url"] {
-        if let Some(v) = pick(k) {
-            parts.push(format!("{k}: {v}"));
+    // The wake is all a woken worker has to act on, so it carries the event's
+    // fields, the common ones first. A fixed list used to stop at reason,
+    // worker, title and url, so an email.received wake read only
+    // "email.received": no sender, no subject, no message id (live,
+    // 2026-11-12).
+    const FIRST: [&str; 7] = ["reason", "provider", "worker", "session", "title", "status", "url"];
+    const SKIP: [&str; 2] = ["type", "source"];
+    let scalar = |v: &Value| match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Array(a) if !a.is_empty() && a.iter().all(|x| x.is_string()) => {
+            Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
         }
+        _ => None,
+    };
+    let clip = |s: String| if s.chars().count() > 200 { format!("{}…", s.chars().take(200).collect::<String>()) } else { s };
+    let mut parts = vec![event_type.to_string()];
+    let obj = ev.as_object().cloned().unwrap_or_default();
+    for k in FIRST {
+        if let Some(v) = obj.get(k).and_then(scalar) {
+            parts.push(format!("{k}: {}", clip(v)));
+        }
+    }
+    for (k, v) in &obj {
+        if FIRST.contains(&k.as_str()) || SKIP.contains(&k.as_str()) {
+            continue;
+        }
+        if let Some(v) = scalar(v) {
+            parts.push(format!("{k}: {}", clip(v)));
+        }
+    }
+    let mut body = parts.join(" · ");
+    if body.chars().count() > 1500 {
+        body = format!("{}…", body.chars().take(1500).collect::<String>());
     }
     // A blank line: a single newline runs the two together in a Messages post.
     let head = if sub.criteria.is_empty() { String::new() } else { format!("{}\n\n", sub.criteria) };
-    format!("{head}{}", parts.join(" · "))
+    format!("{head}{body}")
 }
 
 /// One event through every live subscription. `subs` is the batch's list and
@@ -1621,6 +1650,27 @@ async fn execute_shell_action(command: &str, _text: &str) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_wake_carries_the_fields_a_worker_acts_on() {
+        let sub = LiveSub {
+            id: 1, name: "mail".into(), pattern: "email.received".into(), source_filter: String::new(),
+            session_filter: String::new(), action: "send".into(), action_target: "w".into(),
+            action_template: String::new(), dedupe_window_s: 0, last_fired_at: None,
+            criteria: "a customer emails me".into(), filter: Value::Null, judge: false,
+            dedupe_key: String::new(), notify_post: None,
+        };
+        let ev = json!({"type": "email.received", "source": "email", "session": "",
+            "from": "Alan <alan@acme.com>", "subject": "Invoice 42", "message_id": "<m1@acme.com>",
+            "bulk": false, "labels": ["INBOX", "UNREAD"], "snippet": "x".repeat(400)});
+        let t = default_text(&sub, "email.received", &ev);
+        assert!(t.starts_with("a customer emails me\n\nemail.received"), "{t}");
+        for want in ["from: Alan <alan@acme.com>", "subject: Invoice 42", "message_id: <m1@acme.com>", "bulk: false", "labels: INBOX, UNREAD"] {
+            assert!(t.contains(want), "{want} missing from {t}");
+        }
+        assert!(!t.contains("source: email"), "noise fields stay out: {t}");
+        assert!(t.contains(&format!("snippet: {}…", "x".repeat(200))), "a long field is clipped: {t}");
+    }
 
     #[test]
     fn names_are_lowercase_slugs() {
