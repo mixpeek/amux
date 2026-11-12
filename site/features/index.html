@@ -4,21 +4,62 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#1e2330">
-  <title>Features — amux</title>
+  <title>amux Features: Every Feature in One List</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Explore amux features: web dashboard, recovery from usage limits and reboots, mobile PWA, agent coordination, one Rust binary plus SQLite, and amux Cloud.">
+  <meta name="description" content="Every amux feature in one list: worker cards, board, messages, scheduler, file viewer, apps, phone app, offline sync, email, browser automation and 31 more. Self-hosted or amux Cloud.">
   <link rel="canonical" href="https://amux.io/features/">
-  <meta property="og:title" content="Features — amux">
-  <meta property="og:description" content="Explore amux features: web dashboard, recovery from usage limits and reboots, mobile PWA, agent coordination, and more.">
+  <meta property="og:title" content="amux Features: Every Feature in One List">
+  <meta property="og:description" content="Every amux feature in one list: worker cards, board, messages, scheduler, file viewer, apps, phone app, offline sync, email, browser automation and 31 more. Self-hosted or amux Cloud.">
   <meta property="og:url" content="https://amux.io/features/">
   <meta property="og:image" content="https://amux.io/og-image.png">
   <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux Features: Every Feature in One List">
+  <meta name="twitter:description" content="Every amux feature in one list: worker cards, board, messages, scheduler, file viewer, apps, phone app, offline sync, email, browser automation and 31 more. Self-hosted or amux Cloud.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"amux","item":"https://amux.io/"},{"@type":"ListItem","position":2,"name":"Features","item":"https://amux.io/features/"}]}</script>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"amux Features","description":"Core features of the amux self-hosted AI agent control plane","url":"https://amux.io/features/","itemListElement":[{"@type":"ListItem","position":1,"name":"Web Dashboard","url":"https://amux.io/features/web-dashboard/","description":"Session cards, peek mode, workspace, board, and reports in a single-page PWA."},{"@type":"ListItem","position":2,"name":"Recovery","url":"https://amux.io/features/self-healing/","description":"Resumes agents after usage limits, restarts the server through launchd or systemd, and on macOS brings every worker back after a reboot."},{"@type":"ListItem","position":3,"name":"Remote Control iOS App & PWA","url":"https://amux.io/features/mobile-pwa/","description":"Remote control for your AI engineering team — native iOS app and PWA. Monitor sessions, approve actions, manage board from anywhere."},{"@type":"ListItem","position":4,"name":"Agent Coordination","url":"https://amux.io/features/agent-coordination/","description":"REST API orchestration with atomic task claiming via SQLite CAS."},{"@type":"ListItem","position":5,"name":"Single-File Architecture","url":"https://amux.io/features/single-file-architecture/","description":"One Rust binary plus SQLite; needs only tmux."}]}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","name":"amux features","description":"The 41 features of amux, the self-hosted control plane for Claude Code, Codex and Gemini CLI agents.","url":"https://amux.io/features/","numberOfItems":41,"itemListElement":[{"@type":"ListItem","position":1,"name":"Worker cards","description":"Every agent is a live card showing its status, current task and model.","url":"https://amux.io/demos/session-cards-overview/"},{"@type":"ListItem","position":2,"name":"Send to any worker","description":"Type to any agent from the laptop or the phone and watch the reply stream in.","url":"https://amux.io/demos/send-command-dashboard/"},{"@type":"ListItem","position":3,"name":"Any model, per worker","description":"Run Claude Code, Codex, Gemini CLI, OpenCode or Ollama, and switch a worker between them.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":4,"name":"Steering","description":"Add a note to a running agent and it changes course mid-task.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":5,"name":"Translate","description":"A plain-English summary of what a terminal is doing, for people who do not read code.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":6,"name":"Git panel","description":"Read an agent's diff and commit it from the browser.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":7,"name":"Separate checkouts","description":"Each worker can get its own git worktree, so parallel agents never overwrite each other's files.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":8,"name":"Terminal","description":"A real shell on your amux machine, in the browser.","url":"https://amux.io/features/#run"},{"@type":"ListItem","position":9,"name":"Board","description":"A shared kanban board. Claiming a card is atomic, so two agents never grab the same task.","url":"https://amux.io/demos/kanban-board-overview/"},{"@type":"ListItem","position":10,"name":"Gates and evidence","description":"A card cannot be marked done until the agent attaches proof that the work passed.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":11,"name":"Messages","description":"Channels and direct messages between you and your agents, and between agents.","url":"https://amux.io/demos/messages/"},{"@type":"ListItem","position":12,"name":"Groups","description":"Organize workers by team or project, each with its own board, channel and rules.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":13,"name":"Memory and rules","description":"Agents remember how your team works, with rules set per worker, per group or everywhere.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":14,"name":"Needs-you inbox","description":"When an agent needs a decision you get one notification and answer it in a tap.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":15,"name":"Long-running goals","description":"Give a worker a goal and a check, and it keeps working until the check passes.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":16,"name":"Land gate","description":"Tests and a fresh review run on an agent's commits before anything reaches main.","url":"https://amux.io/features/#coordinate"},{"@type":"ListItem","position":17,"name":"Scheduler","description":"Write \"every weekday at 9am\" and a worker runs the job on time, without you.","url":"https://amux.io/demos/scheduler/"},{"@type":"ListItem","position":18,"name":"Calendar","description":"Events land in a calendar feed your Google or Apple calendar can subscribe to.","url":"https://amux.io/demos/ical-calendar-sync/"},{"@type":"ListItem","position":19,"name":"Keeps going through limits","description":"When a usage limit hits, delivery waits and resumes at the reset. On macOS, workers come back after a reboot.","url":"https://amux.io/demos/self-healing-watchdog/"},{"@type":"ListItem","position":20,"name":"File viewer","description":"Open markdown, code, PDFs and slide decks in the browser, and edit them in place.","url":"https://amux.io/demos/file-viewer/"},{"@type":"ListItem","position":21,"name":"MDAI docs","description":"Write a document with an agent beside it that applies your requested changes in place.","url":"https://amux.io/features/#files"},{"@type":"ListItem","position":22,"name":"Draw","description":"A whiteboard that syncs live between your laptop and phone.","url":"https://amux.io/demos/draw-realtime-sync/"},{"@type":"ListItem","position":23,"name":"Apps","description":"Publish a page or app an agent built to a link, after you approve it.","url":"https://amux.io/demos/apps/"},{"@type":"ListItem","position":24,"name":"Scratchpad","description":"Quick notes, saved as plain markdown files you own.","url":"https://amux.io/features/#files"},{"@type":"ListItem","position":25,"name":"Record","description":"Record a conversation, get a live transcript and notes, and send them to a worker.","url":"https://amux.io/features/#files"},{"@type":"ListItem","position":26,"name":"Phone app","description":"The iPhone and iPad app, or install the dashboard on any phone as an app.","url":"https://amux.io/demos/mobile-pwa/"},{"@type":"ListItem","position":27,"name":"Offline sync","description":"Messages you send without a connection are saved on your device and delivered when you reconnect.","url":"https://amux.io/features/#devices"},{"@type":"ListItem","position":28,"name":"Mac app","description":"A native Mac app with tiled windows, floating notes, a menu bar readout and a Dock badge.","url":"https://amux.io/features/#devices"},{"@type":"ListItem","position":29,"name":"Voice","description":"Dictate to a worker, talk with one out loud, or have its output read to you.","url":"https://amux.io/features/#devices"},{"@type":"ListItem","position":30,"name":"Hotkeys and Cmd-K","description":"Keyboard shortcuts, text triggers and a command palette that jumps anywhere.","url":"https://amux.io/features/#devices"},{"@type":"ListItem","position":31,"name":"Email","description":"Agents read and draft email. Nothing goes to an outside address until you approve it.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":32,"name":"Browser automation","description":"Agents use websites with your saved sign-ins, including sites with no API.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":33,"name":"Connectors","description":"Connect the services you use once, and every worker can use them.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":34,"name":"Vault","description":"Store credentials agents can use without ever seeing the values.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":35,"name":"Computer use","description":"Agents drive desktop software inside a sandboxed computer.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":36,"name":"Skills","description":"Reusable instructions any agent can run, searchable by name.","url":"https://amux.io/features/#connect"},{"@type":"ListItem","position":37,"name":"Usage and cost","description":"See where the spend goes, what it produced and what to change.","url":"https://amux.io/features/#operate"},{"@type":"ListItem","position":38,"name":"Logs","description":"One searchable record of board, worker, memory, file and HTTP activity.","url":"https://amux.io/features/#operate"},{"@type":"ListItem","position":39,"name":"Self-hosted","description":"One Rust binary and SQLite on your own Mac or Linux machine. Your data stays there.","url":"https://amux.io/features/#operate"},{"@type":"ListItem","position":40,"name":"amux Cloud","description":"Your own always-on amux server at yourname.amux.io, from $39/mo.","url":"https://amux.io/features/#operate"},{"@type":"ListItem","position":41,"name":"CLI","description":"The amux command does everything the dashboard does, for scripts and agents.","url":"https://amux.io/features/#operate"}]}</script>
+  <style>
+    main.feat-main { max-width: 72rem; }
+    .feat-main .subtitle { max-width: 42rem; }
+    .fjump { display:flex; flex-wrap:nowrap; overflow-x:auto; gap:.5rem; margin:1.25rem 0 .5rem; padding-bottom:.25rem; scrollbar-width:none; }
+    .fjump::-webkit-scrollbar { display:none; }
+    .fjump a { flex:0 0 auto; font-size:.85rem; padding:0 .9rem; min-height:44px; display:inline-flex; align-items:center; border:1px solid var(--border); border-radius:999px; color:var(--fg-dim); text-decoration:none; background:var(--surface); }
+    .fjump a:hover { color:var(--fg); border-color:var(--accent); }
+    .fs { margin-top:2.75rem; scroll-margin-top:5rem; }
+    .fs-head h2 { margin:0 0 .25rem; }
+    .fs-head p { margin:0 0 1rem; color:var(--fg-dim); }
+    .fs-head .fs-why { margin:0 0 .25rem; color:var(--fg); }
+    .fs-head .fs-what { margin:0 0 1rem; font-size:.8rem; text-transform:uppercase; letter-spacing:.06em; color:var(--fg-dim); }
+    .fi .fi-why { margin:0; color:var(--fg); }
+    .fi .fi-what { margin:0; font-size:.85rem; color:var(--fg-dim); }
+    .fg { list-style:none; margin:0; padding:0; display:grid; gap:.85rem; grid-template-columns:repeat(auto-fill,minmax(15.5rem,1fr)); }
+    .fi { position:relative; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.1rem 1.1rem 1rem; display:flex; flex-direction:column; gap:.4rem; min-width:0; margin:0; }
+    .fi-has-demo { border-color:color-mix(in srgb, var(--accent) 45%, var(--border)); }
+    .fi-has-demo:hover { border-color:var(--accent); }
+    .fi-badge { width:2.4rem; height:2.4rem; border-radius:10px; display:grid; place-items:center; background:var(--accent-dim); color:var(--accent); }
+    .fi-ico { width:1.3rem; height:1.3rem; }
+    .fi h3 { margin:.35rem 0 0; font-size:1rem; line-height:1.3; }
+    .fi p { margin:0; font-size:.9rem; line-height:1.5; color:var(--fg-dim); }
+    .fi-demo { margin-top:auto; padding-top:.35rem; font-size:.85rem; font-weight:600; color:var(--accent); text-decoration:none; min-height:44px; display:inline-flex; align-items:flex-end; gap:.35rem; }
+    .fi-demo:hover { text-decoration:underline; }
+    .fi-demo::after { content:""; position:absolute; inset:0; border-radius:12px; }
+    .fcount { color:var(--fg-mute); font-size:.9rem; margin-top:.25rem; }
+    .feat-main .cta-box { margin-top:3.5rem; }
+    .feat-main .cta-box pre { overflow-x:auto; }
+    @media (max-width:600px) {
+      main.feat-main { padding-left:18px; padding-right:18px; }
+      .fg { grid-template-columns:1fr; gap:.6rem; }
+      .fi { display:grid; grid-template-columns:2.4rem 1fr; column-gap:.85rem; row-gap:.2rem; padding:.85rem .9rem; align-items:start; }
+      .fi-badge { grid-row:1 / span 3; }
+      .fi h3, .fi p, .fi-demo { grid-column:2; }
+      .fi h3 { margin:0; }
+      .fi-demo { min-height:44px; padding-top:0; align-items:center; margin-top:-.2rem; margin-bottom:-.6rem; }
+      .fs { margin-top:2rem; }
+    }
+  </style>
   <link rel="stylesheet" href="/nav.css?v=20261108">
   <script src="/site.js?v=20261108"></script>
 </head>
@@ -54,25 +95,317 @@
       <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
     </nav>
   </header>
-  <main>
+  <main class="feat-main">
     <div class="breadcrumb"><a href="/">amux</a> <span class="sep">></span> <span>Features</span></div>
     <h1>Features</h1>
-    <p class="subtitle">Everything amux adds on top of Claude Code.</p>
+    <p class="subtitle">Get more done without hiring. amux runs AI agents for you around the clock and asks you only for the calls that are yours to make. For each feature: what you get, why it matters, and what it is.</p>
+    <p class="fcount">41 features in 7 groups. The 11 highlighted ones have a short demo video.</p>
+    <nav class="fjump" aria-label="Feature groups"><a href="#run">Run agents</a><a href="#coordinate">Coordinate the team</a><a href="#schedule">Schedule and keep going</a><a href="#files">Files, docs and apps</a><a href="#devices">Phone, Mac and voice</a><a href="#connect">Connect your tools</a><a href="#operate">Cost and control</a></nav>
 
-    <h2>Core features</h2>
-    <ul>
-      <li><a href="/features/web-dashboard/"><strong>Web Dashboard</strong></a> -- session cards, peek mode, workspace, board, and reports in a single-page PWA.</li>
-      <li><a href="/features/self-healing/"><strong>Recovery</strong></a> -- resumes agents after usage limits, restarts the server through launchd or systemd, and on macOS brings every worker back after a reboot.</li>
-      <li><a href="/features/mobile-pwa/"><strong>Remote Control iOS App &amp; PWA</strong></a> — <a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">native iOS app</a> + PWA. Monitor sessions, approve actions, steer agents from anywhere.</li>
-      <li><a href="/features/agent-coordination/"><strong>Agent Coordination</strong></a> -- REST API orchestration with atomic task claiming via SQLite CAS.</li>
-      <li><a href="/features/single-file-architecture/"><strong>Single-File Architecture</strong></a> -- one Rust binary plus SQLite; needs only tmux.</li>
-    </ul>
+    <section class="fs" id="run" aria-labelledby="run-h">
+      <div class="fs-head"><h2 id="run-h">Run many agents without losing track</h2><p class="fs-why">Ten terminals is chaos. One view shows what every agent is doing, so you step in only where it counts.</p><p class="fs-what">Run agents</p></div>
+      <ul class="fg">
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
+          <h3>Know what every agent is doing at a glance</h3>
+          <p class="fi-why">Spot a stuck or finished agent in seconds instead of checking each terminal.</p>
+          <p class="fi-what"><strong>Worker cards.</strong> Every agent is a live card showing its status, current task and model.</p>
+          <a class="fi-demo" href="/demos/session-cards-overview/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>
+          <h3>Give instructions from anywhere</h3>
+          <p class="fi-why">Work keeps moving when you are away from your desk.</p>
+          <p class="fi-what"><strong>Send to any worker.</strong> Type to any agent from the laptop or the phone and watch the reply stream in.</p>
+          <a class="fi-demo" href="/demos/send-command-dashboard/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 10.7 15.4 7.3M8.6 13.3l6.8 3.4"/></svg></span>
+          <h3>Use the best model for each job</h3>
+          <p class="fi-why">No lock-in. Pick cost or quality per task, and switch when a better model ships.</p>
+          <p class="fi-what"><strong>Any model, per worker.</strong> Run Claude Code, Codex, Gemini CLI, OpenCode or Ollama, and switch a worker between them.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M12 3v7M5.6 16.4l4.9-3M18.4 16.4l-4.9-3"/></svg></span>
+          <h3>Correct course without starting over</h3>
+          <p class="fi-why">A wrong turn costs one sentence, not a redone task.</p>
+          <p class="fi-what"><strong>Steering.</strong> Add a note to a running agent and it changes course mid-task.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h8M8 3v2M6 5c0 4 2.5 7 5 8M10 5c0 4-3 7-6 9"/><path d="m13 21 4-9 4 9M14.5 18h5"/></svg></span>
+          <h3>Understand the work without reading code</h3>
+          <p class="fi-why">People who don't code can follow and direct technical agents.</p>
+          <p class="fi-what"><strong>Translate.</strong> A plain-English summary of what a terminal is doing, for people who do not read code.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 8.5v7M18 11.5c0 3-3 3.5-6 4.5"/></svg></span>
+          <h3>Review and ship code from the browser</h3>
+          <p class="fi-why">Approve changes without opening an editor or a terminal.</p>
+          <p class="fi-what"><strong>Git panel.</strong> Read an agent&#x27;s diff and commit it from the browser.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M8 14h8"/></svg></span>
+          <h3>Run agents side by side safely</h3>
+          <p class="fi-why">Agents never overwrite each other, so more agents means more output, not more conflicts.</p>
+          <p class="fi-what"><strong>Separate checkouts.</strong> Each worker can get its own git worktree, so parallel agents never overwrite each other&#x27;s files.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></span>
+          <h3>Step in directly when you need to</h3>
+          <p class="fi-why">You are never locked out of your own machine.</p>
+          <p class="fi-what"><strong>Terminal.</strong> A real shell on your amux machine, in the browser.</p>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="coordinate" aria-labelledby="coordinate-h">
+      <div class="fs-head"><h2 id="coordinate-h">Agents work as a team and ask you only for decisions</h2><p class="fs-why">Your time goes to decisions, not to handing out work and checking up on it.</p><p class="fs-what">Coordinate the team</p></div>
+      <ul class="fg">
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18"/></svg></span>
+          <h3>No duplicated or dropped work</h3>
+          <p class="fi-why">Every task has exactly one owner, so nothing is done twice or missed.</p>
+          <p class="fi-what"><strong>Board.</strong> A shared kanban board. Claiming a card is atomic, so two agents never grab the same task.</p>
+          <a class="fi-demo" href="/demos/kanban-board-overview/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <h3>Done means done</h3>
+          <p class="fi-why">Nothing is marked finished without proof, so you don't find out later that it wasn't.</p>
+          <p class="fi-what"><strong>Gates and evidence.</strong> A card cannot be marked done until the agent attaches proof that the work passed.</p>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg></span>
+          <h3>Talk to your agents like teammates</h3>
+          <p class="fi-why">Ask, assign and get updates in one place, the way you already work with people.</p>
+          <p class="fi-what"><strong>Messages.</strong> Channels and direct messages between you and your agents, and between agents.</p>
+          <a class="fi-demo" href="/demos/messages/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.2c2.8.4 5 2.8 5 5.8"/></svg></span>
+          <h3>Keep each customer and project separate</h3>
+          <p class="fi-why">Each team gets its own board, channel and rules, so work and data don't mix.</p>
+          <p class="fi-what"><strong>Groups.</strong> Organize workers by team or project, each with its own board, channel and rules.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a3 3 0 0 0-5.6-1.5A3 3 0 0 0 4 8a3 3 0 0 0 0 5 3 3 0 0 0 3 5 3 3 0 0 0 5 1z"/><path d="M12 5a3 3 0 0 1 5.6-1.5A3 3 0 0 1 20 8a3 3 0 0 1 0 5 3 3 0 0 1-3 5 3 3 0 0 1-5 1z"/></svg></span>
+          <h3>Teach it once</h3>
+          <p class="fi-why">Agents remember how you work, so you stop repeating yourself.</p>
+          <p class="fi-what"><strong>Memory and rules.</strong> Agents remember how your team works, with rules set per worker, per group or everywhere.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg></span>
+          <h3>Answer only what needs you, in one tap</h3>
+          <p class="fi-why">Agents handle the rest, so your attention goes where it matters most.</p>
+          <p class="fi-what"><strong>Needs-you inbox.</strong> When an agent needs a decision you get one notification and answer it in a tap.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg></span>
+          <h3>Hand off a goal, not a to-do list</h3>
+          <p class="fi-why">The agent keeps going until the result checks out, without you pushing it.</p>
+          <p class="fi-what"><strong>Long-running goals.</strong> Give a worker a goal and a check, and it keeps working until the check passes.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v13M7 10l5 5 5-5"/><path d="M4 21h16"/></svg></span>
+          <h3>Nothing broken reaches production</h3>
+          <p class="fi-why">Every change is tested and reviewed first, so speed doesn't cost quality.</p>
+          <p class="fi-what"><strong>Land gate.</strong> Tests and a fresh review run on an agent&#x27;s commits before anything reaches main.</p>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="schedule" aria-labelledby="schedule-h">
+      <div class="fs-head"><h2 id="schedule-h">Work happens on time, even while you sleep</h2><p class="fs-why">Routine work runs itself and keeps going through usage limits and restarts.</p><p class="fs-what">Schedule and keep going</p></div>
+      <ul class="fg">
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+          <h3>Recurring work runs itself</h3>
+          <p class="fi-why">Reports, follow-ups and checks happen on time without anyone remembering them.</p>
+          <p class="fi-what"><strong>Scheduler.</strong> Write &quot;every weekday at 9am&quot; and a worker runs the job on time, without you.</p>
+          <a class="fi-demo" href="/demos/scheduler/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg></span>
+          <h3>See scheduled work where you already look</h3>
+          <p class="fi-why">It shows up in your own calendar, with no new tool to check.</p>
+          <p class="fi-what"><strong>Calendar.</strong> Events land in a calendar feed your Google or Apple calendar can subscribe to.</p>
+          <a class="fi-demo" href="/demos/ical-calendar-sync/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+          <h3>Work survives limits and restarts</h3>
+          <p class="fi-why">A usage cap or a reboot pauses the work instead of losing it.</p>
+          <p class="fi-what"><strong>Keeps going through limits.</strong> When a usage limit hits, delivery waits and resumes at the reset. On macOS, workers come back after a reboot.</p>
+          <a class="fi-demo" href="/demos/self-healing-watchdog/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="files" aria-labelledby="files-h">
+      <div class="fs-head"><h2 id="files-h">Get finished deliverables, not just chat</h2><p class="fs-why">Agents produce documents, pages and apps you can open, edit and share right away.</p><p class="fs-what">Files, docs and apps</p></div>
+      <ul class="fg">
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg></span>
+          <h3>Check any deliverable in the browser</h3>
+          <p class="fi-why">Open and fix what an agent made without downloads or extra apps.</p>
+          <p class="fi-what"><strong>File viewer.</strong> Open markdown, code, PDFs and slide decks in the browser, and edit them in place.</p>
+          <a class="fi-demo" href="/demos/file-viewer/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
+          <h3>Edit documents by asking</h3>
+          <p class="fi-why">Describe the change and see it applied, instead of rewriting by hand.</p>
+          <p class="fi-what"><strong>MDAI docs.</strong> Write a document with an agent beside it that applies your requested changes in place.</p>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17c3-3 5 2 8-1s1-7 4-8 4 3 6 2"/><circle cx="19" cy="18" r="2"/></svg></span>
+          <h3>Sketch an idea on any device</h3>
+          <p class="fi-why">Explain it visually, then pick it up on your phone where you left off.</p>
+          <p class="fi-what"><strong>Draw.</strong> A whiteboard that syncs live between your laptop and phone.</p>
+          <a class="fi-demo" href="/demos/draw-realtime-sync/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span>
+          <h3>Ship what agents build to a link</h3>
+          <p class="fi-why">Share a working page or app with a customer the same day, once you approve it.</p>
+          <p class="fi-what"><strong>Apps.</strong> Publish a page or app an agent built to a link, after you approve it.</p>
+          <a class="fi-demo" href="/demos/apps/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h10l4 4v14H5z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg></span>
+          <h3>Capture a thought before it's lost</h3>
+          <p class="fi-why">Notes stay plain files that you own.</p>
+          <p class="fi-what"><strong>Scratchpad.</strong> Quick notes, saved as plain markdown files you own.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+          <h3>Turn a meeting into action</h3>
+          <p class="fi-why">The transcript and notes go straight to the agent that does the follow-up.</p>
+          <p class="fi-what"><strong>Record.</strong> Record a conversation, get a live transcript and notes, and send them to a worker.</p>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="devices" aria-labelledby="devices-h">
+      <div class="fs-head"><h2 id="devices-h">Run your business from your phone</h2><p class="fs-why">You are not tied to a desk to keep work moving.</p><p class="fs-what">Phone, Mac and voice</p></div>
+      <ul class="fg">
+        <li class="fi fi-has-demo">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span>
+          <h3>Everything, in your pocket</h3>
+          <p class="fi-why">Check, approve and direct from anywhere.</p>
+          <p class="fi-what"><strong>Phone app.</strong> The iPhone and iPad app, or install the dashboard on any phone as an app.</p>
+          <a class="fi-demo" href="/demos/mobile-pwa/">Watch the demo <span aria-hidden="true">&rarr;</span></a>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/></svg></span>
+          <h3>Nothing you send gets lost</h3>
+          <p class="fi-why">A bad signal never drops an instruction.</p>
+          <p class="fi-what"><strong>Offline sync.</strong> Messages you send without a connection are saved on your device and delivered when you reconnect.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+          <h3>Keep every agent one glance away</h3>
+          <p class="fi-why">A native app on your desktop, always within reach.</p>
+          <p class="fi-what"><strong>Mac app.</strong> A native Mac app with tiled windows, floating notes, a menu bar readout and a Dock badge.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg></span>
+          <h3>Talk instead of type</h3>
+          <p class="fi-why">Give instructions while you walk or drive.</p>
+          <p class="fi-what"><strong>Voice.</strong> Dictate to a worker, talk with one out loud, or have its output read to you.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></span>
+          <h3>Get anywhere in one keystroke</h3>
+          <p class="fi-why">Less clicking, faster decisions.</p>
+          <p class="fi-what"><strong>Hotkeys and Cmd-K.</strong> Keyboard shortcuts, text triggers and a command palette that jumps anywhere.</p>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="connect" aria-labelledby="connect-h">
+      <div class="fs-head"><h2 id="connect-h">Agents work in the tools you already use</h2><p class="fs-why">No migration. They use your email, websites and software the way your team does.</p><p class="fs-what">Connect your tools</p></div>
+      <ul class="fg">
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span>
+          <h3>Email handled, with nothing sent behind your back</h3>
+          <p class="fi-why">Agents read and draft. Anything to an outside address waits for your approval.</p>
+          <p class="fi-what"><strong>Email.</strong> Agents read and draft email. Nothing goes to an outside address until you approve it.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg></span>
+          <h3>Automate websites that have no API</h3>
+          <p class="fi-why">If you can do it in a browser, an agent can do it for you.</p>
+          <p class="fi-what"><strong>Browser automation.</strong> Agents use websites with your saved sign-ins, including sites with no API.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5M6 7h12v4a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg></span>
+          <h3>Connect a service once, and every agent can use it</h3>
+          <p class="fi-why">No setup per agent.</p>
+          <p class="fi-what"><strong>Connectors.</strong> Connect the services you use once, and every worker can use them.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+          <h3>Agents use your accounts without seeing your passwords</h3>
+          <p class="fi-why">Credentials stay protected even while agents use them.</p>
+          <p class="fi-what"><strong>Vault.</strong> Store credentials agents can use without ever seeing the values.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m9 8 2 2-2 2M13 12h3M8 21h8M12 17v4"/></svg></span>
+          <h3>Automate desktop software too</h3>
+          <p class="fi-why">Older apps with no web version are not a dead end.</p>
+          <p class="fi-what"><strong>Computer use.</strong> Agents drive desktop software inside a sandboxed computer.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+          <h3>Reuse what works</h3>
+          <p class="fi-why">One good process becomes something every agent can run.</p>
+          <p class="fi-what"><strong>Skills.</strong> Reusable instructions any agent can run, searchable by name.</p>
+        </li>
+      </ul>
+    </section>
+    <section class="fs" id="operate" aria-labelledby="operate-h">
+      <div class="fs-head"><h2 id="operate-h">Know what you spend and keep control of your data</h2><p class="fs-why">You see what the spend produced, and your data stays where you choose.</p><p class="fs-what">Cost and control</p></div>
+      <ul class="fg">
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/></svg></span>
+          <h3>See what you pay for and what it produced</h3>
+          <p class="fi-why">Cut waste without guessing.</p>
+          <p class="fi-what"><strong>Usage and cost.</strong> See where the spend goes, what it produced and what to change.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h10M4 18h7"/></svg></span>
+          <h3>Answer “what happened?” in one search</h3>
+          <p class="fi-why">Every action is recorded, so any problem is easy to trace.</p>
+          <p class="fi-what"><strong>Logs.</strong> One searchable record of board, worker, memory, file and HTTP activity.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span>
+          <h3>Your data stays on your machine</h3>
+          <p class="fi-why">Nothing leaves unless you send it.</p>
+          <p class="fi-what"><strong>Self-hosted.</strong> One Rust binary and SQLite on your own Mac or Linux machine. Your data stays there, and <a href="/own-your-data/">you can export it any time</a>.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.5 4.5 0 0 1-.5-9A6 6 0 0 1 18 8a4 4 0 0 1 0 10z"/></svg></span>
+          <h3>Always on, nothing to maintain</h3>
+          <p class="fi-why">No machine of your own to keep running.</p>
+          <p class="fi-what"><strong>amux Cloud.</strong> Your own always-on amux server at yourname.amux.io, from $39/mo.</p>
+        </li>
+        <li class="fi">
+          <span class="fi-badge"><svg class="fi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 7 5 5-5 5M12 19h7"/></svg></span>
+          <h3>Automate amux itself</h3>
+          <p class="fi-why">Scripts and agents can do anything you can do in the dashboard.</p>
+          <p class="fi-what"><strong>CLI.</strong> The amux command does everything the dashboard does, for scripts and agents.</p>
+        </li>
+      </ul>
+    </section>
 
-    <div class="cta-box">
+    <p class="fcount" style="margin-top:2.5rem;">Deep dives: <a href="/features/web-dashboard/">the dashboard</a>, <a href="/features/agent-coordination/">agent coordination</a>, <a href="/features/self-healing/">recovery</a> and <a href="/features/mobile-pwa/">the phone app</a>.</p>
+
+    <div class="cta-box" data-cta-loc="features-get-started">
       <h3>Get started with amux</h3>
-      <p>Run an AI engineering team of Claude Code, Codex and Gemini CLI agents from one dashboard or your phone. One Rust binary. Free to self-host.</p>
-      <pre><code>git clone https://github.com/mixpeek/amux &amp;&amp; cd amux &amp;&amp; ./install.sh</code></pre>
-      <a class="btn btn-primary" href="https://github.com/mixpeek/amux">View on GitHub</a>
+      <p>Self-host free with one command, or let us run an always-on server for you.</p>
+      <pre><code>curl -fsSL https://amux.io/install.sh | bash</code></pre>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=features" data-cta-loc="features-cloud">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" data-cta-loc="features-github">Star on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Running agents for a small team? <a href="/start/?plan=team&amp;source=features" style="color:var(--accent);">Cloud Team</a> is $69/mo for one shared server with 8 vCPU and 16 GB RAM, at a flat price per server instead of per seat.</p>
     </div>
   </main>
   <footer class="site-foot">
@@ -82,7 +415,7 @@
       <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
     </div>
     <nav class="site-foot-cols" aria-label="Footer">
-      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a></div>
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a><a href="/own-your-data/">Your data</a></div>
       <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
       <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
       <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>

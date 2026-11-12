@@ -620,46 +620,6 @@
           <p class="connection-help ui-help">Connect ChatGPT to this amux so it can list workers, read their output, message them and manage board cards. Nothing can delete or stop a worker from ChatGPT. Every connection waits here for your approval.</p>
           <div id="chatgpt-app">Loading…</div>
         </section>
-        <div class="settings-sep"></div>
-        <div class="settings-section" id="settings-apikeys-section">
-          <div class="settings-section-label">API Keys</div>
-          <div style="font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--space-1-5);">Also used to fetch each vendor's own live model list instead of amux's static fallback.</div>
-          <div style="display:flex;flex-direction:column;gap:var(--space-2);">
-            <div id="settings-apikey-row-anthropic">
-              <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-0-5);">Anthropic</div>
-              <div style="display:flex;gap:var(--space-1-5);align-items:center;">
-                <input id="settings-anthropic-key" type="password" autocomplete="off"
-                  class="search-input" placeholder="sk-ant-..."
-                  style="flex:1;font-size:var(--fs-base);padding:var(--space-1) var(--space-2);box-sizing:border-box;min-width:0;">
-                <button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);white-space:nowrap;"
-                  onclick="saveApiKey('ANTHROPIC_API_KEY')">Save</button>
-              </div>
-              <div id="settings-apikey-status" style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-0-5);"></div>
-            </div>
-            <div id="settings-apikey-row-openai">
-              <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-0-5);">OpenAI</div>
-              <div style="display:flex;gap:var(--space-1-5);align-items:center;">
-                <input id="settings-openai-key" type="password" autocomplete="off"
-                  class="search-input" placeholder="sk-..."
-                  style="flex:1;font-size:var(--fs-base);padding:var(--space-1) var(--space-2);box-sizing:border-box;min-width:0;">
-                <button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);white-space:nowrap;"
-                  onclick="saveApiKey('OPENAI_API_KEY')">Save</button>
-              </div>
-              <div id="settings-apikey-status-openai" style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-0-5);"></div>
-            </div>
-            <div id="settings-apikey-row-gemini">
-              <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-0-5);">Gemini</div>
-              <div style="display:flex;gap:var(--space-1-5);align-items:center;">
-                <input id="settings-gemini-key" type="password" autocomplete="off"
-                  class="search-input" placeholder="AIza..."
-                  style="flex:1;font-size:var(--fs-base);padding:var(--space-1) var(--space-2);box-sizing:border-box;min-width:0;">
-                <button class="btn" style="font-size:var(--fs-xs);padding:var(--space-0-5) var(--space-2-5);white-space:nowrap;"
-                  onclick="saveApiKey('GEMINI_API_KEY')">Save</button>
-              </div>
-              <div id="settings-apikey-status-gemini" style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-0-5);"></div>
-            </div>
-          </div>
-        </div>
         </div>
         <div class="settings-tab-panel" id="stab-device" data-stab="device">
         <div class="settings-section" style="padding:var(--space-2-5) var(--space-3-5);">
@@ -919,7 +879,7 @@
       <h2>Scheduler</h2>
       <span id="sched-stats" class="sx-summary"></span>
     </div>
-    <button class="btn primary sx-new" onclick="openSchedModal()" aria-label="New schedule">+<span class="sx-new-text"> New schedule</span></button>
+    <button class="btn primary sx-new" onclick="_sxNew()" aria-label="New schedule">+<span class="sx-new-text"> New schedule</span></button>
   </div>
   <!-- Segmented filter: one pill per group, with counts. Rendered by
        _sxRenderPills so the counts come from the same predicate the groups use. -->
@@ -935,6 +895,7 @@
       <option value="">All types</option>
       <option value="tmux">Trigger a worker</option>
       <option value="shell">Run a command</option>
+      <option value="event">When something happens</option>
     </select>
     <select id="sched-f-status" class="input sx-filter" aria-label="Filter by status" onchange="_sxFilters.status=this.value;renderScheduler()">
       <option value="">All statuses</option>
@@ -956,6 +917,7 @@
     <button class="btn" onclick="_sxClearSelection()">Clear</button>
   </div>
   <div id="scheduler-list" class="sx-list"></div>
+  <div id="scheduler-events" class="sx-list sx-events"></div>
   <!-- SYSTEM JOBS (AMUX-2703) — amux's own background loops, below the user's
        schedules and visually separated from them. They are NOT schedules:
        no run-now, no edit, no delete. See runtime_jobs/registry.rs. -->
@@ -3841,7 +3803,7 @@
         <button class="search-clear" onclick="document.getElementById('peek-sched-search').value='';_peekSchedSearch='';document.getElementById('peek-sched-search-wrap').classList.remove('has-value');_peekRenderSchedules()">&#x2715;</button>
       </div>
       <span id="peek-sched-stats" style="font-size:var(--fs-xs);color:var(--dim);white-space:nowrap;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"></span>
-      <button class="btn" onclick="_peekNewSchedule()" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);flex:none;min-height:36px;">+ New</button>
+      <button class="btn" onclick="_sxNew(peekSession)" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);flex:none;min-height:36px;">+ New</button>
     </div>
     <div class="sx-bulk" id="peek-sched-bulk" hidden>
       <span id="peek-sched-bulk-n"></span>
