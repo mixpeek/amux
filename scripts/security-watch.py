@@ -224,12 +224,35 @@ def src_pip(repo):
     # Every requirements/constraints file, so `-r other.txt` includes resolve.
     materialize(repo, tracked(repo, r"(requirements|constraints)[^/]*\.txt$"), Path(td.name))
 
+    uv = shutil.which("uv") or str(HOME / ".local/bin/uv")
+
     def one(rel):
         try:
-            # Wheels only: an unpinned file whose newest release has no wheel for this Intel Mac
-            # otherwise builds it from source and runs past the timeout (amux-GTM, 2026-11-10).
-            _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
-                           env={"PIP_ONLY_BINARY": ":all:"})
+            # Resolve for the platform the code ships to, then audit those pins. Resolving on this
+            # Intel Mac picked the last release with a Mac x86_64 wheel (cryptography 48.0.1 where
+            # Linux installs 50.0.2) and reported 18 advisories production does not have (2026-11-11).
+            text = (Path(td.name) / rel).read_text(errors="replace")
+            if any(l.lstrip().startswith("^") for l in text.splitlines()):
+                return [], None  # grep patterns named like a requirements file (mixpeek requirements_hand_carried.txt)
+            pinned, rc = f"{rel}.pins", 1
+            # Linux on the production Python first; then a newer Python and Apple silicon, for files that
+            # need them (mixpeek roboforce requirements-arm64.txt: av needs 3.12, mlx runs only on arm64 Macs).
+            for plat, py in (("x86_64-manylinux_2_28", "3.11"), ("x86_64-manylinux_2_28", "3.12"),
+                             ("aarch64-apple-darwin", "3.12")):
+                if rc == 0 or not Path(uv).exists():
+                    break
+                rc, _, _ = run([uv, "pip", "compile", "-q", "--python-platform", plat, "--python-version", py,
+                                rel, "-o", pinned], cwd=td.name, timeout=300,
+                               env={"MACOSX_DEPLOYMENT_TARGET": "15.0"})  # uv's default 13.0 has no mlx wheel
+            if rc == 0:
+                _, j, se = run([pa, "-r", pinned, "--no-deps", "--disable-pip", "-f", "json",
+                                "--progress-spinner", "off"], cwd=td.name, timeout=600)
+            else:
+                # No Linux resolution (a Mac-only file such as amux procwarden's rumps): resolve here,
+                # preferring wheels so an unpinned package without one for this Mac takes an older
+                # wheel instead of building from source past the timeout (amux-GTM, 2026-11-10).
+                _, j, se = run([pa, "-r", rel, "-f", "json", "--progress-spinner", "off"], cwd=td.name, timeout=600,
+                               env={"PIP_PREFER_BINARY": "1"})
             rep = json.loads(j)
         except Exception as e:
             return [], f"{rel}: {e}"[:200]

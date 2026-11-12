@@ -1898,6 +1898,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/subscriptions/catalog",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/subscriptions/events",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/subscriptions/{id}",
         methods: &["GET", "PATCH", "DELETE"],
     },

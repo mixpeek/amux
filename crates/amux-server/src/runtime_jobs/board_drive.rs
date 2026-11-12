@@ -10430,16 +10430,9 @@ mod nudges_scope_tests {
     }
 }
 
+/// Public debug read. `/api/board/nudges` is routed behind the bearer in api/mod.rs.
 pub fn routes() -> axum::Router<AppState> {
-    axum::Router::new()
-        .route(
-            "/api/debug/board-drive",
-            axum::routing::get(debug_board_drive),
-        )
-        .route(
-            "/api/board/nudges",
-            axum::routing::get(get_nudges).patch(patch_nudges),
-        )
+    axum::Router::new().route("/api/debug/board-drive", axum::routing::get(debug_board_drive))
 }
 
 // ---------------------------------------------------------------------------
