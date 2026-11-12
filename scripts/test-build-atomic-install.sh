@@ -4,6 +4,9 @@
 # reveal it with one rename; writing the watched path directly creates a window
 # where every client, including the Tailscale URL, can lose the server.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILDER="$ROOT/scripts/rust-auto-build.sh"

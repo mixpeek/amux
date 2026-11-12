@@ -3,6 +3,9 @@
 # 20261015-182512: 4 of SCHED-465's 25 runs were killed by restarts). Runs the
 # shipped shell_runs_in_flight against canned /api/schedules/runs payloads.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0

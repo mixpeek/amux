@@ -3,6 +3,9 @@
 # and installs nothing; it never runs beside the builder, never twice for one
 # commit, and says what it did.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PRE="$ROOT/scripts/rust-prebuild.sh"

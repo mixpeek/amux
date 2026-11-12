@@ -8,6 +8,9 @@
 #   2. if an old process did replace it, a matching local stamp does not make
 #      the elected builder exit early — /api/health forces re-adoption.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 # Never the real amux on this machine: its in-flight shell schedules would defer
 # this fixture's build, and the test fails only while one is running (AF-1129).
 export AMUX_RS_RUNS_URL=http://127.0.0.1:9/none

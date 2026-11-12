@@ -4,6 +4,9 @@
 # exercises the shipped launcher and tiny fake builders rather than copying its
 # Git selection into a unit test.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LAUNCHER="$ROOT/scripts/rust-auto-build-authority.sh"

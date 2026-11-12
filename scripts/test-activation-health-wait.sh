@@ -6,6 +6,9 @@
 # a build that never goes live is still rolled back at the limit. Runs the
 # shipped function lifted from rust-auto-build.sh, not a paraphrase.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0

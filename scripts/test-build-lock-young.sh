@@ -5,6 +5,9 @@
 # guard's rm could race a live one. A young empty lock is now respected; one
 # over a minute old is still broken as stale.
 set -euo pipefail
+# The deploy target directory comes from the environment (server.env reaches
+# every process the server starts); a test's fake cargo must never write there.
+unset AMUX_DEPLOY_TARGET_DIR
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILDER="$ROOT/scripts/rust-auto-build.sh"
