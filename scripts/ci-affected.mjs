@@ -278,12 +278,24 @@ export function pathNeedles(p) {
 // ---------- the classifier ----------
 // repo: { read(path) -> string|null, specs() -> [paths rel to e2e/], rustFiles() -> [repo paths],
 //         durations: {}, pkgOf(crateDir) -> name, espree }
-export function classify({ event, files, repo }) {
+export function classify({ event, files, repo, pushBase }) {
   const reasons = { rust: [], e2e: [], spa: [] };
   const allPaths = files.map(f => f.path);
   const verdictBase = { verdict: 'ci_affected', measured: true, event, n_considered: allPaths.length };
+  // A PUSH TO MAIN SCOPES ITS E2E LIKE A PR (Ethan, 2026-11-12: "full amux cicd
+  // less than 2 mins"). Every push ran all 16 e2e shards, about 105 of the 157
+  // runner-minutes a push costs on a plan with 20 runners, so main's verdicts
+  // queued behind each other. The land gate already ran these specs before the
+  // push. Rust stays full on a push; e2e runs what the diff selects; the
+  // scheduled run (rust.yml `schedule`) runs every spec on main's tip every two
+  // hours. A push with no usable base (a new branch, a force push) is full.
+  if (event === 'push' && pushBase) {
+    const v = classify({ event: 'pull_request', files, repo });
+    const f = full({ ...verdictBase, reason: 'push: Rust runs in full on main' });
+    return { ...v, event, scoped_push: pushBase, none: false, rust: f.rust };
+  }
   if (event !== 'pull_request') {
-    return full({ ...verdictBase, reason: `${event}: the full suite runs on every push to main` });
+    return full({ ...verdictBase, reason: `${event}: the full suite runs (no diff base, or a scheduled full run)` });
   }
 
   // ---- Rust ----
@@ -535,15 +547,26 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const args = Object.fromEntries(process.argv.slice(2).reduce((a, x, i, all) => (x.startsWith('--') ? [...a, [x.slice(2), all[i + 1]]] : a), []));
   const event = args.event || process.env.GITHUB_EVENT_NAME || 'pull_request';
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  let files = [];
+  let files = [], pushBase = null;
   if (event === 'pull_request') {
     const base = args.base || 'origin/main', head = args.head || 'HEAD';
     const diff = execFileSync('git', ['-C', root, 'diff', '-U0', '--no-renames', '--no-color', `${base}...${head}`],
       { encoding: 'utf8', maxBuffer: 1 << 30 });
     files = parseDiff(diff);
+  } else if (event === 'push' && args.base && !/^0+$/.test(args.base)) {
+    // github.event.before: the tip this push moved from. Unusable (missing from
+    // the clone, or not an ancestor after a force push) means the full suite.
+    const head = args.head || 'HEAD';
+    try {
+      execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', args.base, head], { stdio: 'ignore' });
+      const diff = execFileSync('git', ['-C', root, 'diff', '-U0', '--no-renames', '--no-color', `${args.base}..${head}`],
+        { encoding: 'utf8', maxBuffer: 1 << 30 });
+      files = parseDiff(diff);
+      pushBase = args.base;
+    } catch (_) { files = []; }
   }
   const espree = await import('espree');
-  const verdict = classify({ event, files, repo: gitRepo(root, espree) });
+  const verdict = classify({ event, files, repo: gitRepo(root, espree), pushBase });
   const out = outputs(verdict);
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(out).map(([k, v]) => `${k}=${v}`).join('\n') + '\n');
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary(verdict, out));

@@ -11,6 +11,11 @@ on:
   # ci_gate_held_back until somebody happens to push Rust. Dispatch is the
   # way out: gh workflow run rust.yml --ref main.
   workflow_dispatch:
+  # Every spec on main's tip every two hours: a push runs only the e2e its
+  # diff selects (scripts/ci-affected.mjs), so this is where a break the
+  # selector missed turns main red.
+  schedule:
+    - cron: '23 */2 * * *'
   push:
     branches: [main]
     # `amux` + `scripts/**` are here so the CLI gates below (shellcheck + the AF-78
@@ -113,10 +118,14 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           if [ "$EVENT" = pull_request ]; then
             node scripts/ci-affected.mjs --event pull_request --base "origin/$BASE_REF" --head HEAD > affected.json
+          elif [ "$EVENT" = push ] && [ -n "$BEFORE" ]; then
+            # e2e scoped to this push's diff; Rust in full (ci-affected.mjs).
+            node scripts/ci-affected.mjs --event push --base "$BEFORE" --head HEAD > affected.json
           else
             node scripts/ci-affected.mjs --event "$EVENT" > affected.json
           fi

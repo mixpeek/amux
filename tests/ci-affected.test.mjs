@@ -33,6 +33,27 @@ const change = (p, added = [], removed = [], extra = {}) =>
   ({ path: p, deleted: false, hunks: [{ newStart: 1, newCount: added.length, added, removed }], ...extra });
 const pr = (files, repo) => classify({ event: 'pull_request', files, repo });
 
+test('a push with its base runs Rust in full and only the e2e its diff selects; a scheduled run is full', () => {
+  const repo = fakeRepo({
+    'crates/amux-server/src/api/mod.rs': '.nest("/api/board", board::routes())',
+    'crates/amux-server/src/api/board.rs': '.route("/", get(list))',
+    'e2e/board-thing.spec.ts': "await page.request.get('/api/board?all=1')",
+    'e2e/other-thing.spec.ts': "await page.request.get('/api/other')",
+  });
+  const v = classify({ event: 'push', files: [change('crates/amux-server/src/api/board.rs', ['// x'])], repo, pushBase: 'abc123' });
+  const o = outputs(v);
+  assert.equal(o.rust, 'full', 'Rust stays full on main');
+  assert.deepEqual(JSON.parse(o.rust_shards), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(o.full_e2e, 'false');
+  assert.ok(v.e2e.specs.includes('board-thing.spec.ts'));
+  assert.ok(!v.e2e.specs.includes('other-thing.spec.ts'));
+  assert.equal(v.scoped_push, 'abc123');
+  // A docs-only push still runs Rust, never "none" on main.
+  assert.equal(outputs(classify({ event: 'push', files: [change('README.md')], repo, pushBase: 'abc123' })).none, 'false');
+  // The two-hourly backstop runs every spec.
+  assert.equal(outputs(classify({ event: 'schedule', files: [], repo })).full_e2e, 'true');
+});
+
 test('push to main runs everything at full width, whatever changed', () => {
   const v = classify({ event: 'push', files: [change('README.md')], repo: fakeRepo({}) });
   const o = outputs(v);
