@@ -855,9 +855,9 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0158_ledger.sql"),
     },
     Migration {
-        version: 158,
-        name: "0158_trace",
-        sql: include_str!("../../migrations/0158_trace.sql"),
+        version: 159,
+        name: "0159_trace",
+        sql: include_str!("../../migrations/0159_trace.sql"),
     },
 ];
 
