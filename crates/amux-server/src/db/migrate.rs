@@ -885,9 +885,9 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/0164_audit_governance.sql"),
     },
     Migration {
-        version: 164,
-        name: "0164_sso_mfa_scim",
-        sql: include_str!("../../migrations/0164_sso_mfa_scim.sql"),
+        version: 165,
+        name: "0165_sso_mfa_scim",
+        sql: include_str!("../../migrations/0165_sso_mfa_scim.sql"),
     },
 ];
 
