@@ -757,11 +757,27 @@ jobs:
       - name: land precheck verdict and attributed cancel (3/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-remote-lease.sh
+          bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-fast-gate.sh
+      - name: two machines share one remote land lease (1/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-remote-lease.sh "" a
+      - name: two machines share one remote land lease (2/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-remote-lease.sh "" b
       - name: land precheck verdict and attributed cancel (4/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-merge-queue.sh && bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh
+          bash scripts/test-land-fix-forward.sh && bash scripts/test-land-net-retry.sh && bash scripts/test-land-regenerate-scoped.sh && bash scripts/test-land-regenerate-reuse.sh
+      - name: a land through the merge queue (1/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-merge-queue.sh "" a
+      - name: a land through the merge queue (2/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-merge-queue.sh "" b
       - name: land precheck verdict and attributed cancel (5/8)
         run: |
           set -uo pipefail
@@ -769,7 +785,15 @@ jobs:
       - name: land precheck verdict and attributed cancel (6/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-guards.sh && bash scripts/test-land-queue-policy.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh
+          bash scripts/test-land-queue-policy.sh && bash scripts/test-ci-wait.sh && bash scripts/test-board-close-tracking.sh && bash scripts/test-cli-stale-url.sh
+      - name: the land guards (freeze, reused message, --json, config, regenerate) hold (1/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-guards.sh "" a
+      - name: the land guards (freeze, reused message, --json, config, regenerate) hold (2/2)
+        run: |
+          set -uo pipefail
+          bash scripts/test-land-guards.sh "" b
       - name: land precheck verdict and attributed cancel (7/8)
         run: |
           set -uo pipefail

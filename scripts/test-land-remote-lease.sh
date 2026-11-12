@@ -23,7 +23,11 @@
 #  10. a lease taken over on the remote while the heartbeat stalls refuses the
 #      push, read before the push (item 2)
 #  11. back-to-back lands on one machine yield to the other machine's waiter,
-#      so the two alternate (item 4)
+#      so the two alternate (item 4); the waiter announces itself on
+#      refs/amux/land-wait/<branch>/ and removes the announcement after
+#  16. a back-to-back land with no announced waiter takes the lease at once
+#      (the unconditional yield cost every reland 20-40 s, 2026-11-12)
+#  17. the heartbeat's nap dies with the heartbeat
 #  12. a timeout on the remote lease alerts (item 5)
 #  14. a renewal pushed between the pre-push check's two reads is our own lease,
 #      not someone else's: the land pushes and releases it (mxp-gs12,
@@ -36,6 +40,10 @@
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
+# [part]: a or b runs that half of the cases (checks.yml runs the halves as two
+# checks, in parallel); none runs them all.
+PART="${2:-}"; part() { [ -z "$PART" ] || [ "$PART" = "$1" ]; }
+case "$PART" in ''|a|b) ;; *) echo "FAIL unknown part '$PART' (a, b or none)"; exit 2 ;; esac
 H="$(mktemp -d "${TMPDIR:-/tmp}/lrl.XXXXXX")"; mkdir -p "$H/.amux/logs/land"
 trap 'cd / && rm -rf -- "${H:?}"' EXIT
 cd "$H" || exit 1
@@ -50,6 +58,7 @@ mk() { # <dir>: a checkout whose hook records the lease and sleeps $H/gate-s sec
 echo hook >> "$H/hook-runs"
 git ls-remote "$H/origin.git" $REF | awk '{print \$1}' > "$H/lease-during-gate"
 sleep "\$(cat "$H/gate-s" 2>/dev/null || echo 0)"
+while [ -e "$H/hold" ]; do sleep 0.2; done
 exit 0
 EOF
   chmod +x "$1/.git/hooks/pre-push"
@@ -71,6 +80,7 @@ commit() { # <checkout> <file> <content>
 }
 main_has() { git -C "$H/a" fetch -q origin; git -C "$H/a" show "origin/main:$1" 2>/dev/null; }
 lease_now() { git -C "$H/a" ls-remote origin "$REF" | awk '{print $1}'; }
+waiters() { git -C "$H/a" ls-remote origin 'refs/amux/land-wait/*'; }   # announced waiters
 other_lease() { # <holder> <expires_at>: a lease written by someone else
   local t c; t="$(git -C "$H/a" mktree </dev/null)"
   c="$(printf 'amux land lease\n\nholder=%s\nlane=vm-lane\nhead=abc1234\ntaken_at=%s\nexpires_at=%s\n' "$1" "$(( $(date +%s) - 90 ))" "$2" | git -C "$H/a" commit-tree "$t")"
@@ -79,6 +89,7 @@ other_lease() { # <holder> <expires_at>: a lease written by someone else
 L="$H/.amux/logs/land.log"
 printf '#!/bin/sh\necho "$*" >> "%s/alert.log"\n' "$H" > "$H/alert"; chmod +x "$H/alert"
 
+if part a; then
 # 1
 commit a f b; : > "$H/hook-runs"
 land a one; rc=$?
@@ -87,11 +98,28 @@ held="$(cat "$H/lease-during-gate" 2>/dev/null)"
 [ -z "$(lease_now)" ] && ok "and releases it after the push" || bad "1: lease left behind"
 [ "$(wc -l < "$H/hook-runs" | tr -d ' ')" = 1 ] && ok "the lease pushes skip the hook (it ran once)" || bad "1: hook ran $(wc -l < "$H/hook-runs") times"
 
+# 16: a back-to-back land with nobody waiting takes the lease at once (it
+# used to yield 20-40 s on every reland). A 30 s poll keeps case 1's release
+# inside the yield window, so only the missing waiter can explain no yield.
+commit a f b2
+nap=$(( 40000 + $$ % 9000 ))   # a renewal interval no other run uses, so pgrep counts only ours
+land a sixteen AMUX_LAND_REMOTE_LEASE_POLL_S=30 AMUX_LAND_REMOTE_LEASE_RENEW_S=$nap; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = b2 ] && grep -q 'verdict=land_remote_lease_no_yield' "$H/sixteen.out" && ! grep -q 'verdict=land_remote_lease_yield' "$H/sixteen.out" \
+  && ok "a back-to-back land with no other waiter does not yield" || bad "16: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/sixteen.out" | head -3)"
+# 17: the heartbeat's nap dies with it: an orphaned `sleep RENEW_S` held the
+# land's descriptors for up to five minutes after it exited.
+n17="$(pgrep -f "^sleep $nap\$" | wc -l | tr -d ' ')"
+[ "$n17" = 0 ] && ok "the heartbeat leaves no sleeping child behind" || bad "17: $n17 'sleep $nap' process(es) outlived the land"
+
 # 2
-commit a f c; commit b g one; echo 4 > "$H/gate-s"
+# The first's gate holds until the second is waiting on its lease: a fixed
+# 4 s gate let a loaded box start the second only after the first was done.
+commit a f c; commit b g one; : > "$H/hold"
 land a first & pa=$!
-for _ in $(seq 1 40); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
-land b second; rb=$?; wait "$pa"; ra=$?; echo 0 > "$H/gate-s"
+for _ in $(seq 1 240); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+land b second & pb2=$!
+for _ in $(seq 1 480); do grep -q 'verdict=land_remote_lease_wait' "$H/second.out" 2>/dev/null && break; sleep 0.25; done
+rm -f "$H/hold"; wait "$pb2"; rb=$?; wait "$pa"; ra=$?
 if [ "$ra" = 0 ] && [ "$rb" = 0 ] && [ "$(main_has f)" = c ] && [ "$(main_has g)" = one ]; then ok "two checkouts: both land, the second after the first"
 else bad "2: ra=$ra rb=$rb f=$(main_has f) g=$(main_has g)"; fi
 grep -q 'verdict=land_remote_lease_wait' "$H/second.out" && ok "the second waited on the first's lease" || bad "2: the second never waited: $(tail -3 "$H/second.out")"
@@ -103,6 +131,7 @@ land a three AMUX_LAND_REMOTE_LEASE_WAIT_S=3; rc=$?
 [ "$rc" != 0 ] && [ "$(main_has f)" = c ] && [ "$(lease_now)" = "$theirs" ] && ok "a fresh lease held elsewhere keeps this land out and is left alone" || bad "3: rc=$rc f=$(main_has f)"
 grep -q 'verdict=land_remote_lease_wait: main is being landed elsewhere by vm-host:4242 (vm-lane, head abc1234), lease age 9[0-9]s' "$L" \
   && ok "the wait names the holder and the lease's age" || bad "3: wait line: $(grep lease_wait "$L" | tail -1)"
+[ -z "$(waiters)" ] && ok "a waiter that gave up removed its announcement" || bad "3: waiter refs left: $(waiters)"
 
 # 4
 other_lease vm-host:4242 $(( $(date +%s) - 5 )) >/dev/null
@@ -137,6 +166,8 @@ mv "$H/origin.git" "$H/origin.away"; sleep 2.5; mv "$H/origin.away" "$H/origin.g
 wait "$p8"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" = 0 ] && [ "$(main_has f)" = outage ] && ! grep -q 'land_remote_lease_lost' "$H/eight.out" && ok "an unreadable remote for a few beats is not a lost lease" || bad "8: rc=$rc f=$(main_has f): $(grep -m1 lease_lost "$H/eight.out")"
 
+fi
+if part b; then
 # 9
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
 commit a f nine
@@ -171,23 +202,36 @@ wait "$p10"; rc=$?
 
 # 11
 git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
-commit a f m1-first; commit b g m2; echo 3 > "$H/gate-s"
+commit a f m1-first; commit b g m2; echo 0 > "$H/gate-s"
 # An 8 s remote poll (production: 20 s), slower than the 5 s local lock poll,
 # as in production: without the yield m1-second takes the lease before m2 polls.
+# m1-first's gate holds until m2 has announced that it waits, as a real
+# waiter has long before a 10-minute gate ends (on a loaded box m2 could
+# reach the lease only after m1-first had released it).
+: > "$H/hold"
 land a m1-first AMUX_LAND_REMOTE_LEASE_POLL_S=8 & pa1=$!
-for _ in $(seq 1 40); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+for _ in $(seq 1 240); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
 land b m2 AMUX_LAND_REMOTE_LEASE_POLL_S=8 & pb=$!
-sleep 1
+for _ in $(seq 1 240); do [ -n "$(waiters)" ] && break; sleep 0.25; done
+[ -n "$(waiters)" ] && ok "a land waiting on the lease announces itself" || bad "11: m2 never announced: $(grep 'lease_' "$H/m2.out" | head -3)"
 git -C "$H/c" fetch -q origin 2>/dev/null || mk c
 git -C "$H/c" fetch -q origin; git -C "$H/c" reset -q --hard origin/main
 echo m1-second > "$H/c/h"; git -C "$H/c" add h; git -C "$H/c" commit -qm "h=m1-second"
 (cd "$H/c" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER=m1-second AMUX_LAND_REMOTE_LEASE_POLL_S=8 bash "$AM" land --tries 3 --no-batch >"$H/m1-second.out" 2>&1) & pa2=$!
+# m1-second queues on the local lock behind m1-first, then that gate ends.
+for _ in $(seq 1 120); do [ -s "$H/m1-second.out" ] && break; sleep 0.25; done
+sleep 2; rm -f "$H/hold"
 wait "$pa1" "$pb" "$pa2"; echo 0 > "$H/gate-s"
 order="$(git -C "$H/a" log --format=%s origin/main -3 2>/dev/null | tr '\n' ' ')"
 git -C "$H/a" fetch -q origin; order="$(git -C "$H/a" log --format=%s origin/main -3 | tr '\n' ' ')"
 case "$order" in "h=m1-second g=m2 f=m1-first "*) ok "back-to-back lands on one machine yield: the other machine's waiter lands in between" ;;
   *) bad "11: order on main (newest first): $order" ;; esac
-grep -q 'verdict=land_remote_lease_yield' "$H/m1-second.out" && ok "the yield is logged" || bad "11: no yield line"
+# m2 polls every 8 s and m1-second's local lock every 5 s, so m2 can take the
+# lease before m1-second reaches it; then m1-second waits on m2, and there is
+# nothing to yield. Otherwise m1-second must have yielded, naming m2.
+if grep -q 'verdict=land_remote_lease_wait: .*(m2, ' "$H/m1-second.out"; then ok "m2 took the lease first; m1-second waited on it"
+else grep -q 'verdict=land_remote_lease_yield: .* and .*(m2) waits' "$H/m1-second.out" && ok "the yield is logged and names the waiter" || bad "11: no yield line: $(grep 'lease_' "$H/m1-second.out" | head -3)"; fi
+[ -z "$(waiters)" ] && ok "every waiter removed its announcement" || bad "11: waiter refs left: $(waiters)"
 
 # 13
 # cancel: `amux land --cancel` on a detached land. INT: a land started the way a
@@ -240,4 +284,5 @@ commit a f off
 mine="$(lease_now)"
 land a seven AMUX_LAND_REMOTE_LEASE=off; rc=$?
 [ "$rc" = 0 ] && [ "$(main_has f)" = off ] && [ "$(lease_now)" = "$mine" ] && ok "AMUX_LAND_REMOTE_LEASE=off lands and leaves the ref alone" || bad "7: rc=$rc"
+fi
 exit $fail

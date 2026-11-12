@@ -11006,6 +11006,49 @@ p.communicate(msg.encode())
     _st="$(ps -o lstart= -p "$_p" 2>/dev/null | tr -s ' ')"
     [ -n "$(_land_rl_field "$1" holder_start)" ] && [ "$_st" != "$(_land_rl_field "$1" holder_start)" ]
   }
+  # A WAITER ANNOUNCES ITSELF. A land blocked on a lease held elsewhere keeps
+  # refs/amux/land-wait/<branch>/<host-pid> on the remote, a lease-shaped
+  # commit whose expires_at it pushes forward every two polls while it waits
+  # and deletes when it takes the lease or exits. The fairness yield below
+  # reads these refs and yields only when one belongs to another land: the
+  # yield used to fire on every back-to-back land from one machine, 20-40 s
+  # each, whether or not anyone else was waiting (about 280 s of the 467 s
+  # test-land-guards.sh run, and the same on every real reland).
+  _land_rl_wref() { # <branch>: this land's waiter ref
+    printf 'refs/amux/land-wait/%s/%s' "$1" "$(printf '%s' "$_LAND_RL_ID" | tr -c 'A-Za-z0-9._-' '-')"
+  }
+  _land_rl_announce() { # <remote> <branch> <now>: say on the remote that this land waits
+    local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _exp _c
+    _exp="$(cat "$_LAND_RL_DIR/rl-wait" 2>/dev/null)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
+    [ $(( _exp - $3 )) -ge $(( _poll * 2 )) ] && return 0
+    _exp=$(( $3 + _poll * 4 ))
+    if _c="$(_land_rl_commit "$_exp")" && git push --no-verify --porcelain --force "$1" "$_c:$(_land_rl_wref "$2")" >/dev/null 2>&1; then
+      echo "$_exp" > "$_LAND_RL_DIR/rl-wait"
+    else
+      # The holder's machine then sees no waiter and may land twice in a row:
+      # slower for this land, never unsafe, and said here.
+      _land_rl_say "WARN verdict=land_remote_lease_announce_failed: could not push $(_land_rl_wref "$2"); the holder's machine will not yield to this waiter"
+    fi
+  }
+  _land_rl_unannounce() { # <remote> <branch>: delete this land's waiter ref, if it pushed one
+    [ -n "${_LAND_RL_DIR:-}" ] && [ -e "$_LAND_RL_DIR/rl-wait" ] || return 0
+    rm -f -- "$_LAND_RL_DIR/rl-wait"
+    git push --no-verify --porcelain "$1" ":$(_land_rl_wref "$2")" >/dev/null 2>&1 || true
+  }
+  _land_rl_other_waiter() { # <remote> <branch>: prints the waiter, 0 when another land announced it waits
+    local _ls _sha _name _mine _exp _pre="refs/amux/land-wait/$2"
+    _ls="$(git ls-remote "$1" "$_pre/*" 2>/dev/null)" || return 1
+    _mine="$(_land_rl_wref "$2")"
+    while read -r _sha _name; do
+      [ -n "$_sha" ] && [ "$_name" != "$_mine" ] && [ "${_name%/*}" = "$_pre" ] || continue
+      git fetch -q --no-tags "$1" "+$_name:refs/amux/land-wait-seen/$2/${_name##*/}" 2>/dev/null || continue
+      _exp="$(_land_rl_field "$_sha" expires_at)"; case "$_exp" in ''|*[!0-9]*) continue ;; esac
+      # A waiter that stopped refreshing (killed) is gone past its expiry and the skew.
+      [ "$(date +%s)" -le $(( _exp + ${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120} )) ] || continue
+      echo "$(_land_rl_field "$_sha" holder) ($(_land_rl_field "$_sha" lane))"; return 0
+    done <<< "$_ls"
+    return 1
+  }
   _land_rl_take() { # <remote> <branch> <lock dir>: 0 holding (or off), 7 not held: nothing may be pushed
     [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
     local _r="$1" _ref _ttl _cap _skew _w=0 _cur _exp _age _who _new _said="" _now _yielded="" _cas_fail=0
@@ -11019,6 +11062,7 @@ p.communicate(msg.encode())
     _LAND_RL_START="$(ps -o lstart= -p $$ 2>/dev/null | tr -s ' ')"
     _LAND_RL_ME="$me"; _LAND_RL_LOG="$log"; _LAND_RL_KEY="$key"
     _LAND_RL_HEAD="$(git rev-parse --short HEAD 2>/dev/null)"
+    _LAND_RL_TAKEN=""   # set when taken; a waiter's announcement is written before that (set -u)
     while :; do
       _now="$(date +%s)"
       if ! _cur="$(_land_rl_ls "$_r" "$_ref")"; then
@@ -11043,27 +11087,35 @@ p.communicate(msg.encode())
           # lands from one machine wait for the remote lease (review item 1).
           date +%s > "$_LAND_RL_LOCK/since" 2>/dev/null || true
           [ "$_said" = "$_cur" ] || _land_rl_say "verdict=land_remote_lease_wait: $2 is being landed elsewhere by $_who, lease age $_age, expires $(( _exp - _now ))s from now; waiting"
+          _land_rl_announce "$_r" "$2" "$_now"
           _said="$_cur"; sleep "${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}"; _w=$(( _w + ${AMUX_LAND_REMOTE_LEASE_POLL_S:-20} )); continue
         fi
         _land_rl_say "verdict=land_remote_lease_takeover: $_ref held by $_who, lease age $_age, $( _land_rl_dead_here "$_cur" && echo "whose process on this machine is gone" || echo "expired $(( _now - _exp ))s ago" ); taking it over"
       fi
       # Fairness (review item 4): right after this machine released, a waiter
       # here would take the lease at once while the other machine polls every
-      # POLL_S, so back-to-back lands here could starve it. Yield once.
+      # POLL_S, so back-to-back lands here could starve it. Yield once, and
+      # only to a waiter that announced itself (_land_rl_announce).
       local _rel; _rel="$(cat "$_LAND_RL_LOCK.rl-released" 2>/dev/null || echo 0)"; case "$_rel" in ''|*[!0-9]*) _rel=0 ;; esac
-      local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}"
+      local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _waiter
       if [ -z "${_yielded:-}" ] && [ $(( _now - _rel )) -lt $(( _poll * 2 )) ]; then
         _yielded=1
-        local _y=$(( _poll + RANDOM % (_poll + 1) ))
-        _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago; yielding ${_y}s so another machine's waiter can take it first"
-        sleep "$_y"; continue
+        if _waiter="$(_land_rl_other_waiter "$_r" "$2")"; then
+          local _y=$(( _poll + RANDOM % (_poll + 1) ))
+          _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago and $_waiter waits; yielding ${_y}s so it can take it first"
+          sleep "$_y"; continue
+        fi
+        _land_rl_say "verdict=land_remote_lease_no_yield: this machine released the lease $(( _now - _rel ))s ago and no other land waits; taking it now"
       fi
       _LAND_RL_TAKEN="$_now"
       _new="$(_land_rl_commit $(( _now + _ttl )))" || { _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not write a lease commit; nothing pushed"; return 7; }
       if _land_rl_push "$_r" "$_ref" "$_cur" "$_new"; then
         echo "$_new" > "$_LAND_RL_DIR/rl-sha"; rm -f -- "$_LAND_RL_DIR/rl-lost"
         _land_rl_say "verdict=land_remote_lease_taken: $_ref for ${_ttl}s, renewed every ${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}s while held"
-        _land_rl_heartbeat "$_r" "$_ref" &
+        _land_rl_unannounce "$_r" "$2"
+        # No stdin or stdout: a caller reading this land's stdout to EOF
+        # must not wait on the heartbeat.
+        _land_rl_heartbeat "$_r" "$_ref" </dev/null >/dev/null &
         echo $! > "$_LAND_RL_DIR/rl-hb.pid"
         return 0
       fi
@@ -11080,8 +11132,16 @@ p.communicate(msg.encode())
     done
   }
   _land_rl_heartbeat() { # <remote> <ref>: renew by CAS while the land lives; a lost CAS stops its push
-    local _parent=$$ _cur _new
-    while sleep "${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}"; do
+    local _parent=$$ _cur _new _nap=""
+    # The nap is a child this shell waits on and kills on TERM: a bare
+    # `sleep 300` outlived the release's kill by up to five minutes, holding
+    # whatever descriptors it inherited. `jobs -p`, not $_nap: a TERM between
+    # the `&` and the assignment found $_nap empty and left the nap running.
+    trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM
+    while :; do
+      sleep "${AMUX_LAND_REMOTE_LEASE_RENEW_S:-300}" & _nap=$!
+      wait "$_nap" || exit 0
+      _nap=""
       kill -0 "$_parent" 2>/dev/null || exit 0
       _cur="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"; [ -n "$_cur" ] || exit 0
       _new="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" || continue
@@ -11143,11 +11203,12 @@ p.communicate(msg.encode())
     # second TERM ended this trap mid-release with the lease still held. The
     # ignore is inherited by the git push below.
     trap '' TERM INT HUP
-    local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null)"
+    local _hb _sha; _hb="$(cat "$_LAND_RL_DIR/rl-hb.pid" 2>/dev/null || true)"
     # `|| true`: the CLI runs under set -e, and wait reports the killed
     # heartbeat as 143, which ended the EXIT trap before the release.
     if [ -n "$_hb" ]; then kill "$_hb" 2>/dev/null || true; wait "$_hb" 2>/dev/null || true; fi
-    _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null)"
+    _land_rl_unannounce "$1" "$2"
+    _sha="$(cat "$_LAND_RL_DIR/rl-sha" 2>/dev/null || true)"
     rm -f -- "$_LAND_RL_DIR/rl-sha" "$_LAND_RL_DIR/rl-hb.pid"
     if [ -z "$_sha" ] || [ -e "$_LAND_RL_DIR/rl-lost" ]; then
       [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_rl_say "verdict=land_remote_lease_not_released: $(_land_rl_ref "$2") is not ours; left for its holder"

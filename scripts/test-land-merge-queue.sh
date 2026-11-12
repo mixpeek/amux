@@ -21,6 +21,10 @@
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
+# [part]: a or b runs that half of the cases (checks.yml runs the halves as two
+# checks, in parallel); none runs them all.
+PART="${2:-}"; part() { [ -z "$PART" ] || [ "$PART" = "$1" ]; }
+case "$PART" in ''|a|b) ;; *) echo "FAIL unknown part '$PART' (a, b or none)"; exit 2 ;; esac
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
@@ -92,7 +96,15 @@ main_has() { git --git-dir="$H/origin.git" cat-file -e "main:$1" 2>/dev/null; }
 mq_refs() { git --git-dir="$H/origin.git" for-each-ref --format='%(refname)' refs/heads/mq/ | grep -c . ; }
 dispatches() { cat "$H/dispatched" 2>/dev/null | grep -c . ; }
 done_case() { cd / && rm -rf -- "${H:?}"; }
+plant() { # <name> <file> [content] -> a ticket behind the holder for a commit on origin/main
+  git checkout -q -b "$1" origin/main; commit_file "$2" "${3:-x}"
+  local sha pid common; sha="$(git rev-parse HEAD)"; git checkout -q main
+  sleep 300 & pid=$!; PIDS="${PIDS:-} $pid"
+  common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
+  printf '%s\n%s\n%s\n1\nx\n\n' "$1" "$sha" "$common" > "$q/$(printf '%012d' $(( $(date +%s) + 100 + ${#PIDS} )))-$pid"
+}
 
+if part a; then
 # --- off: unchanged behaviour
 setup; commit_file g1 x
 land; rc=$?
@@ -118,13 +130,6 @@ grep -q "candidate red (https://ci/runs/[0-9]*); this lane's change is refused" 
 done_case
 
 # --- enforce, red batch: holder h, waiters w1, w2 (bad), w3
-plant() { # <name> <file> [content] -> a ticket behind the holder for a commit on origin/main
-  git checkout -q -b "$1" origin/main; commit_file "$2" "${3:-x}"
-  local sha pid common; sha="$(git rev-parse HEAD)"; git checkout -q main
-  sleep 300 & pid=$!; PIDS="${PIDS:-} $pid"
-  common="$(cd "$(git rev-parse --git-common-dir)" && pwd -P)"
-  printf '%s\n%s\n%s\n1\nx\n\n' "$1" "$sha" "$common" > "$q/$(printf '%012d' $(( $(date +%s) + 100 + ${#PIDS} )))-$pid"
-}
 setup; queue_on; commit_file h x
 key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
@@ -165,6 +170,8 @@ land; rc=$?
 grep -q "candidate not measured (unmeasured - - dispatch_failed" "$H/.amux/logs/land.log" && ok "enforce dispatch failure: land.log says why" || bad "no unmeasured line"
 done_case
 
+fi
+if part b; then
 # --- enforce, a stack of only no-code paths
 nocode() { git config --add amux.landMergeQueueNoCodePath 'research/*'; git config --add amux.landMergeQueueNoCodePath '!research/cicd/*'; }
 setup; queue_on; nocode; commit_file research/notes.md x
@@ -243,5 +250,6 @@ land; rc=$?
 { [ "$rc" = 0 ] && main_has g1 && [ ! -f "$H/gh.log" ] && grep -q "verdict=mq_misconfigured" "$H/.amux/logs/land.log"; } \
   && ok "misconfigured: lands directly and logs verdict=mq_misconfigured" || bad "misconfigured rc=$rc"
 done_case
+fi
 
 exit $fail

@@ -17,6 +17,10 @@
 # Each refusal case has an allow twin, so a guard that refuses everything fails.
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"; AM="$(cd "$(dirname "$AM")" && pwd)/$(basename "$AM")"
+# [part]: a or b runs that half of the cases (checks.yml runs the halves as two
+# checks, in parallel); none runs them all.
+PART="${2:-}"; part() { [ -z "$PART" ] || [ "$PART" = "$1" ]; }
+case "$PART" in ''|a|b) ;; *) echo "FAIL unknown part '$PART' (a, b or none)"; exit 2 ;; esac
 T="$(mktemp -d "${TMPDIR:-/tmp}/lguard.XXXXXX")"
 trap 'rm -rf -- "${T:?}"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME/.amux/logs"
@@ -51,6 +55,7 @@ git config user.email t@t; git config user.name t
 land() { bash "$AM" land "$@" >"$T/out" 2>&1; echo $?; }
 on_origin() { git fetch -q origin main; git merge-base --is-ancestor "$1" origin/main 2>/dev/null || [ -z "$(git cherry origin/main "$1" | grep '^+')" ]; }
 
+if part a; then
 # 1. freeze refuses
 echo x >> proofs/row1.json; git commit -qam "proofs: touch row1"
 c1="$(git rev-parse HEAD)"
@@ -87,6 +92,8 @@ if [ "$rc" = 0 ] && on_origin "$c4" && grep -aq "land_message_reused_allowed" "$
 else bad "reused message allow: rc=$rc: $(tail -3 "$T/out")"; fi
 git fetch -q origin main; git reset -q --hard origin/main
 
+fi
+if part b; then
 # 5. same message over the same file passes (ledger appends)
 echo l2 >> ledger.md; git commit -qam "ledger: lane lines (auto-land)"; land --sha HEAD >/dev/null
 git fetch -q origin main; git reset -q --hard origin/main
@@ -139,5 +146,6 @@ done
 if [ "$rcs" = " 0 5" ] && grep -aq "ERROR verdict=land_regenerate_failing consecutive=2 source=.amux/land.conf" "$LOG"; then ok "a failing versioned regenerate is ERROR from the 2nd land in a row and refuses the 3rd (rc 5)"
 else bad "regenerate streak: rcs=$rcs: $(grep -a regenerate "$LOG" | tail -3)"; fi
 
+fi
 echo "$n case(s), $([ "$fail" = 0 ] && echo all passed || echo FAILURES above)"
 exit "$fail"
