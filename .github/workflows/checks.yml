@@ -765,7 +765,7 @@ jobs:
       - name: land precheck verdict and attributed cancel (5/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh
+          bash scripts/test-land-leg-summary.sh && bash scripts/test-land-window.sh && bash scripts/test-land-inflight-fixes.sh && bash scripts/test-lane-efficiency.sh && bash scripts/test-land-precheck-base.sh && bash scripts/test-land-precheck-first.sh
       - name: land precheck verdict and attributed cancel (6/8)
         run: |
           set -uo pipefail

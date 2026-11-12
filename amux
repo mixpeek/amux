@@ -10688,6 +10688,18 @@ cmd_land() {
       }
     fi
   fi
+  # PRECHECK FIRST: the repository's land precheck takes seconds and the gate
+  # takes minutes, so a range the precheck refuses comes back before the gate
+  # builds anything. On 2026-11-12 PR #448 passed a full gate and was then
+  # refused at push in 2 s by the slop ratchet. The queue path below skips it
+  # once it has run here (AMUX_LAND_PRECHECKED); --detach runs it in the
+  # detached process, as before.
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ -z "$land_sha" ] \
+     && [ "$detach" != 1 ] && [ "${AMUX_LAND_PRECHECKED:-}" != 1 ]; then
+    mkdir -p "$HOME/.amux/logs"
+    _land_precheck "$remote" "$branch" HEAD "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$HOME/.amux/logs/land.log" || return 3
+    export AMUX_LAND_PRECHECKED=1
+  fi
   # LAND GATE (scripts/land_gate.py): in a repo whose origin/main has one, run
   # the checks main runs on origin/main plus this change before it queues, so
   # a red result comes back here instead of turning main red for every lane.
