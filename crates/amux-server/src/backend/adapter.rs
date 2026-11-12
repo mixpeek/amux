@@ -148,7 +148,11 @@ const GEMINI_PATTERNS: &[&str] = &[P_GEMINI_QUOTA_EXCEEDED, P_GEMINI_QUOTA_REACH
 /// reading HEALTHY while the agent was hard-stopped until Aug 27). The
 /// Python deliberately does NOT lift a reset time from it — that is the
 /// wrong-provider-reset bug — so `reset_at` stays `None` here too.
-const P_CODEX_USAGE_LIMIT: &str = r"(?is)You've hit your usage limit\..{0,160}?(?:Codex|ChatGPT)"; // py 6304
+///
+/// Both apostrophes: Codex has written "You’ve" (curly) since openai/codex
+/// 8c72f2ff56 (2026-09-09); the straight one is the older wording. Matching
+/// only the straight one missed every current Codex limit.
+const P_CODEX_USAGE_LIMIT: &str = r"(?is)You['’]ve hit your usage limit\..{0,160}?(?:Codex|ChatGPT)"; // py 6304
 
 const CODEX_PATTERNS: &[&str] = &[P_CODEX_USAGE_LIMIT];
 
@@ -1410,6 +1414,15 @@ pub(crate) fn codex_pane_background_working(captured: &str) -> bool {
         .is_some_and(codex_background_status_line)
 }
 
+/// Is Codex's usage-limit message among the last lines of the pane? The same
+/// pattern `scan_codex` uses, scoped to the bottom of the frame so a limit
+/// quoted further up in scrollback does not count.
+pub(crate) fn codex_usage_limit_on_screen(pane: &str) -> bool {
+    let clean = strip_ansi(pane);
+    let lines: Vec<_> = clean.trim_end().lines().collect();
+    RE_CODEX_USAGE_LIMIT.is_match(&lines[lines.len().saturating_sub(12)..].join("\n"))
+}
+
 fn scan_codex(clean: &str, provider: &ProviderId) -> Vec<WorkerEvent> {
     let mut events = Vec::new();
     let tail30 = last_n_raw_lines(clean, 30);
@@ -1673,6 +1686,11 @@ gemini-2.5-pro";
     // Banner shape from the AMUX-2088 incident (py 6296-6300).
     const FX_CODEX_LIMIT: &str = "\
 ■ You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 4 days 2 hours.";
+    // Codex's own wording since openai/codex 8c72f2ff56 (2026-09-09): a
+    // CURLY apostrophe. Copied from
+    // codex-rs/protocol/src/error.rs `UsageLimitReachedError` (Pro plans).
+    const FX_CODEX_LIMIT_CURLY: &str = "\
+■ You\u{2019}ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 18th, 2026 4:59 PM.";
     const FX_CODEX_IDLE: &str = "\
 › implement {feature}
   gpt-5.5 xhigh · ~/Dev/amux";
@@ -2019,6 +2037,40 @@ gemini-2.5-pro";
             rl[0].reset_at, None,
             "never lift a reset from the codex banner (AMUX-2088)"
         );
+    }
+
+    #[test]
+    fn codex_usage_limit_in_current_wording_is_seen() {
+        for p in ["codex", "ollama"] {
+            let ev = adapter(p).scan(FX_CODEX_LIMIT_CURLY);
+            let rl = limits(&ev);
+            assert_eq!(rl.len(), 1, "{p}: {ev:?}");
+            assert_eq!(
+                rl[0].reset_at, None,
+                "{p}: still no reset lifted from the text"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_usage_limit_on_screen_reads_the_bottom_of_the_frame() {
+        let idle = "\n\u{203a} Ask Codex to do anything\n\n  gpt-5.5 xhigh \u{b7} ~/Dev/amux\n\n\n";
+        assert!(codex_usage_limit_on_screen(&format!(
+            "{FX_CODEX_LIMIT_CURLY}{idle}"
+        )));
+        assert!(
+            codex_usage_limit_on_screen(&format!("{FX_CODEX_LIMIT}{idle}")),
+            "the older wording"
+        );
+        let scrolled = format!(
+            "{FX_CODEX_LIMIT_CURLY}\n{}{idle}",
+            "\u{2022} ran cargo test\n".repeat(12)
+        );
+        assert!(
+            !codex_usage_limit_on_screen(&scrolled),
+            "a limit in scrollback is over"
+        );
+        assert!(!codex_usage_limit_on_screen(FX_CODEX_IDLE));
     }
 
     #[test]

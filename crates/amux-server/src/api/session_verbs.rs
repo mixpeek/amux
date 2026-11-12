@@ -2441,6 +2441,85 @@ pub(crate) fn transcript_rate_limit_hit_at(records: &[Value]) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| d.timestamp())
 }
 
+/// When the limit a Codex worker stopped on resets, from Codex's own rollout.
+///
+/// Codex writes the account's rate-limit snapshot on every `token_count`
+/// event (`payload.rate_limits`, with `primary`/`secondary` windows of
+/// `used_percent`, `window_minutes` and `resets_at` in epoch seconds), and on a
+/// usage-limit 429 it writes the snapshot from that response, with
+/// `rate_limit_reached_type` set (codex-rs core `UsageLimitReached` ->
+/// `update_rate_limits`). Only the NEWEST snapshot counts: an older one
+/// describes an earlier state of the account.
+///
+/// The reset is the latest `resets_at` among the windows at 100%, or among
+/// all windows when Codex says a limit was reached without a full window.
+/// `None` when the newest snapshot shows no limit, or there is no snapshot.
+/// This replaces reading the English "try again at Nov 18th, 2026 4:59 PM"
+/// (local time, no zone), which AMUX-2088 rightly refused to guess-parse.
+pub(crate) fn codex_rollout_limit_reset(lines: &[Value]) -> Option<i64> {
+    let snapshot = lines.iter().rev().find_map(|l| {
+        let token_count = l.get("type").and_then(Value::as_str) == Some("event_msg")
+            && l.pointer("/payload/type").and_then(Value::as_str) == Some("token_count");
+        token_count
+            .then(|| l.pointer("/payload/rate_limits"))
+            .flatten()
+            .filter(|v| v.is_object())
+    })?;
+    let windows: Vec<&Value> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|k| snapshot.get(*k).filter(|w| w.is_object()))
+        .collect();
+    let full: Vec<&Value> = windows
+        .iter()
+        .copied()
+        .filter(|w| w.get("used_percent").and_then(Value::as_f64).is_some_and(|p| p >= 100.0))
+        .collect();
+    let reached = snapshot.get("rate_limit_reached_type").is_some_and(|t| !t.is_null());
+    let candidates = if !full.is_empty() {
+        full
+    } else if reached {
+        windows
+    } else {
+        return None;
+    };
+    candidates
+        .iter()
+        .filter_map(|w| w.get("resets_at").and_then(Value::as_i64))
+        .filter(|t| *t > 0)
+        .max()
+}
+
+/// A Codex worker showing its usage-limit message (the caller checked the
+/// screen with `adapter::codex_usage_limit_on_screen`), with the reset read
+/// from its rollout. An unknown reset stays 0, which holds the lane like a
+/// credit cap rather than inventing a clock.
+pub(crate) fn observe_codex_limit(
+    recorded_reset: i64,
+    rollout_reset: Option<i64>,
+    now: i64,
+) -> ClaudeLimitObservation {
+    ClaudeLimitObservation {
+        menu: false,
+        kind: "codex-limit",
+        reset_at: effective_rate_limit_reset(recorded_reset, rollout_reset.unwrap_or(0), now),
+    }
+}
+
+/// The sweep's Codex arm: a `codex` lane whose screen shows the usage-limit
+/// message is limited, with the reset `rollout_reset` reads (only called
+/// then, so an unlimited lane never pays for a rollout read). Every other
+/// lane and screen: `None`.
+pub(crate) fn codex_sweep_observation(
+    provider: &str,
+    pane: &str,
+    recorded_reset: i64,
+    now: i64,
+    rollout_reset: impl FnOnce() -> Option<i64>,
+) -> Option<ClaudeLimitObservation> {
+    (provider == "codex" && crate::backend::adapter::codex_usage_limit_on_screen(pane))
+        .then(|| observe_codex_limit(recorded_reset, rollout_reset(), now))
+}
+
 /// Screen-only observation; production passes the transcript through
 /// `observe_claude_limit_with`.
 #[cfg(test)]
@@ -26234,6 +26313,36 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
             chrono::Local::now(),
             transcript_reset,
         );
+        // A CODEX worker at its usage limit. Every detector above reads
+        // Claude's wording, so a limited Codex lane read idle: no stamp, no
+        // dispatch hold, no reset. The screen says it is limited; Codex's own
+        // rollout says until when.
+        let observation = observation.or_else(|| {
+            codex_sweep_observation(
+                &provider_of(&cfg),
+                &pane,
+                meta_i64(&load_meta(name), "rate_limited_until"),
+                now_i64(),
+                || {
+                    let rollout = codex_rollout_path(name);
+                    let reset = rollout
+                        .as_ref()
+                        .and_then(|p| codex_rollout_limit_reset(&iter_jsonl_tail(p, 1024 * 1024)));
+                    if reset.is_none()
+                        && crate::log_dedupe::first_this_bucket(
+                            &format!("codex-limit-no-reset:{name}"),
+                            crate::log_dedupe::hour_bucket(now_f64()),
+                        )
+                    {
+                        tracing::warn!(session = %name, rollout_resolved = rollout.is_some(),
+                            measured = rollout.is_some(), n_considered = 1,
+                            verdict = "codex_limit_reset_unknown",
+                            "Codex shows its usage limit but its rollout names no reset; the lane holds until the message clears");
+                    }
+                    reset
+                },
+            )
+        });
         // AUTOMATIC RESUME (AMUX-5235): decided here, before the stamps below
         // move, so the account rule reads the `since` of a limit that predates
         // this tick. See `auto_resume_decision`.
@@ -45899,6 +46008,50 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         assert!(observe_claude_limit(pane, 0, now).is_none(), "the screen alone cannot see it");
         let seen = observe_claude_limit_with(pane, 0, now, Some(1790280600)).expect("transcript sees it");
         assert_eq!((seen.kind, seen.reset_at, seen.menu), ("transcript", 1790280600, false));
+    }
+
+    /// One rollout `token_count` line in the shape Codex 0.160 writes.
+    fn codex_token_count(primary: Value, secondary: Value, reached: Value) -> Value {
+        json!({"timestamp":"2026-11-12T18:00:00.000Z","type":"event_msg","payload":{
+            "type":"token_count","info":null,"rate_limits":{
+                "limit_id":"codex","limit_name":null,"primary":primary,"secondary":secondary,
+                "credits":{"has_credits":false,"unlimited":false,"balance":"0"},
+                "individual_limit":null,"spend_control_reached":null,"plan_type":"prolite",
+                "rate_limit_reached_type":reached}}})
+    }
+
+    #[test]
+    fn a_codex_limit_resets_when_codex_s_own_rollout_says() {
+        let week = |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":10080,"resets_at":at});
+        let five_h = |pct: f64, at: i64| json!({"used_percent":pct,"window_minutes":300,"resets_at":at});
+        let msg = json!({"type":"event_msg","payload":{"type":"agent_message","message":"done"}});
+
+        // The 429 snapshot: the weekly window is full.
+        let limited = codex_token_count(week(100.0, 1_795_000_000), Value::Null, json!("rate_limit_reached"));
+        assert_eq!(codex_rollout_limit_reset(&[msg.clone(), limited.clone(), msg.clone()]), Some(1_795_000_000));
+        // Two windows, only the full one decides the reset.
+        let both = codex_token_count(five_h(100.0, 1_794_000_000), week(80.0, 1_795_000_000), json!("rate_limit_reached"));
+        assert_eq!(codex_rollout_limit_reset(&[both]), Some(1_794_000_000));
+        // Codex says reached but no window reads 100: the latest window reset.
+        let reached = codex_token_count(five_h(97.0, 1_794_000_000), week(60.0, 1_795_000_000), json!("rate_limit_reached"));
+        assert_eq!(codex_rollout_limit_reset(&[reached]), Some(1_795_000_000));
+        // A newer, healthy snapshot (the limit reset early) ends it.
+        let healthy = codex_token_count(week(3.0, 1_795_600_000), Value::Null, Value::Null);
+        assert_eq!(codex_rollout_limit_reset(&[limited.clone(), healthy]), None);
+        assert_eq!(codex_rollout_limit_reset(&[msg]), None, "no snapshot, no reset");
+
+        // The sweep's decision: a codex lane showing the message is limited,
+        // with the rollout's reset; nothing else is, and nothing else reads it.
+        let now = 1_790_000_000;
+        let pane = "\u{25a0} You\u{2019}ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 18th, 2026 4:59 PM.\n\n\u{203a} Ask Codex to do anything\n";
+        let seen = codex_sweep_observation("codex", pane, 0, now, || Some(1_795_000_000)).expect("limited");
+        let unread = || -> Option<i64> { panic!("rollout read for a lane that is not limited") };
+        assert!(codex_sweep_observation("codex", "\u{203a} Ask Codex to do anything\n", 0, now, unread).is_none());
+        assert!(codex_sweep_observation("claude", pane, 0, now, unread).is_none());
+        assert!(codex_sweep_observation("ollama", pane, 0, now, unread).is_none(), "local models have no account limit");
+        assert_eq!((seen.kind, seen.reset_at, seen.menu), ("codex-limit", 1_795_000_000, false));
+        assert_eq!(observe_codex_limit(0, None, now).reset_at, 0);
+        assert!(is_weekly_limit("", seen.reset_at, now), "a reset days out is the weekly limit");
     }
 
     #[test]
