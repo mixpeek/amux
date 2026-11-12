@@ -26343,9 +26343,19 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                 now_i64(),
                 || {
                     let rollout = codex_rollout_path(name);
-                    let reset = rollout
+                    let lines = rollout
                         .as_ref()
-                        .and_then(|p| codex_rollout_limit_reset(&iter_jsonl_tail(p, 1024 * 1024)));
+                        .map(|p| iter_jsonl_tail(p, 1024 * 1024))
+                        .unwrap_or_default();
+                    let reset = codex_rollout_limit_reset(&lines);
+                    // The snapshots read, so a rollout with none reads as
+                    // that rather than as one healthy snapshot.
+                    let snapshots = lines
+                        .iter()
+                        .filter(|l| {
+                            l.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
+                        })
+                        .count();
                     if reset.is_none()
                         && crate::log_dedupe::first_this_bucket(
                             &format!("codex-limit-no-reset:{name}"),
@@ -26353,7 +26363,7 @@ async fn rate_limit_sweep(state: &AppState) -> usize {
                         )
                     {
                         tracing::warn!(session = %name, rollout_resolved = rollout.is_some(),
-                            measured = rollout.is_some(), n_considered = 1,
+                            measured = rollout.is_some(), n_considered = snapshots,
                             verdict = "codex_limit_reset_unknown",
                             "Codex shows its usage limit but its rollout names no reset; the lane is not stamped limited without a clock");
                     }
