@@ -929,6 +929,7 @@ pub async fn handler(State(state): State<AppState>, req: Request) -> Response {
 
 async fn put_scope(state: AppState, req: Request) -> Response {
     let actor = super::groups::hdr_worker(req.headers());
+    let headers = req.headers().clone();
     // A verified invited member is a HUMAN, though the member middleware stamps
     // x-amux-session = "member:<email>" for attribution, which made this guard
     // read Ethan on sandbox.amux.io as a worker reconfiguring a peer
@@ -984,6 +985,18 @@ async fn put_scope(state: AppState, req: Request) -> Response {
                 "capabilities": SCOPE_CAPS.iter().map(|c| c.key).collect::<Vec<_>>(),
             }),
         );
+    }
+    // A capability grant (AMUX_CAP_*) is one of the owner's governance powers:
+    // it asks for a fresh second factor (mfa.rs, AMUX_MFA_STEP_UP).
+    if capability == "env" {
+        if let Some(v) = body.get("value") {
+            let home = super::groups::amux_home();
+            if let Some(k) = key_changed_where(&home, &level, &name, v, |k| k.starts_with("AMUX_CAP_")) {
+                if let Some(r) = super::mfa::step_up_gate(&headers, &format!("changing the capability {k}")) {
+                    return r;
+                }
+            }
+        }
     }
     scope_write(
         &state,
@@ -1209,6 +1222,11 @@ const OWNER_ONLY_ENV_PREFIXES: &[&str] = &[
     "AMUX_EMAIL_EXTERNAL_ALLOW",
     // Governance PR 11: a capability is a grant, so only the owner sets one.
     "AMUX_CAP_",
+    // Governance PR 20: who signs in, how, and with what second factor.
+    "AMUX_OIDC_",
+    "AMUX_SSO_",
+    "AMUX_MFA_",
+    "AMUX_SCIM_",
 ];
 
 fn is_owner_only_env_key(k: &str) -> bool {
@@ -1223,6 +1241,11 @@ pub(crate) fn is_owner_only_env_key_pub(k: &str) -> bool {
 /// The first owner-only key whose value this write would change, if any.
 /// Handles both write shapes: a full-text replace and a key/value merge.
 pub(crate) fn owner_only_key_changed(home: &Path, level: &str, name: &str, value: &Value) -> Option<String> {
+    key_changed_where(home, level, name, value, is_owner_only_env_key)
+}
+
+/// The first key matching `pick` whose value this write would change.
+pub(crate) fn key_changed_where(home: &Path, level: &str, name: &str, value: &Value, pick: fn(&str) -> bool) -> Option<String> {
     let parse = |text: &str| -> std::collections::BTreeMap<String, String> {
         text.lines()
             .filter_map(|l| {
@@ -1239,12 +1262,12 @@ pub(crate) fn owner_only_key_changed(home: &Path, level: &str, name: &str, value
             let next = parse(text);
             let keys: BTreeSet<String> = current.keys().chain(next.keys()).cloned().collect();
             keys.into_iter()
-                .find(|k| is_owner_only_env_key(k) && current.get(k) != next.get(k))
+                .find(|k| pick(k) && current.get(k) != next.get(k))
         }
         Value::Object(obj) => obj
             .iter()
             .find(|(k, v)| {
-                is_owner_only_env_key(k) && {
+                pick(k) && {
                     let nv = match v {
                         Value::Null => None,
                         Value::String(s) => Some(s.clone()),

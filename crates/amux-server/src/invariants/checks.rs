@@ -1230,6 +1230,15 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // prune stamps Utc::now().timestamp_millis()).
     ("_amux_ledger", "ts", true),
     ("_amux_ledger_anchor", "pruned_at", true),
+    // 0164: api/mfa.rs, api/sso.rs and api/scim.rs write chrono::Utc::now().timestamp() epoch seconds.
+    ("org_invites", "mfa_at", false),
+    ("mfa_factors", "created_at", false),
+    ("mfa_factors", "confirmed_at", false),
+    ("mfa_recovery_codes", "created_at", false),
+    ("mfa_recovery_codes", "used_at", false),
+    ("scim_tokens", "created_at", false),
+    ("scim_tokens", "last_used_at", false),
+    ("scim_tokens", "revoked_at", false),
     // 0163: api/governance.rs writes epoch milliseconds (now_ms).
     ("_amux_ledger", "redacted_at", true),
     ("_amux_ledger_holds", "placed_at", true),

@@ -56,6 +56,7 @@ CHAOS_SCENARIOS=(
   e2e/chaos/customer-isolation.mjs customer-isolation
   e2e/chaos/encryption-at-rest.mjs encryption-at-rest
   e2e/chaos/audit-governance.mjs audit-governance
+  e2e/chaos/sso-mfa-scim.mjs sso-mfa-scim
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot

@@ -300,6 +300,23 @@ worker, app and policy publish, email send, connector mint and git push until li
 (`AMUX_KILL_SWITCH=off` makes it inert). Each use is a `governance` ledger row; counters are
 under `governance`. `docs/ops/audit-governance.md`.
 
+Who signs in, and how (governance PR 20, `api/sso.rs`, `api/mfa.rs`, `api/scim.rs`): an OIDC
+sign-in (code flow, PKCE S256, single-use state, nonce, signature, issuer, audience, expiry,
+`email_verified`) signs in an existing member by email through the same member cookie and
+`org_invites` row an invite makes (`via = 'sso'`, 12-hour expiry, `mfa_at` when `amr` names a
+factor); a stranger is refused unless their domain is in `AMUX_OIDC_JIT_DOMAINS`, and then
+starts with no access. `AMUX_SSO_REQUIRED` (report/enforce/off) sends a member session that did
+not come through SSO to `/sso/login`; the owner's own credential is never sent there. TOTP
+(`/api/mfa/*`, the page `/mfa`) for members and the owner: secret sealed with the at-rest key,
+recovery codes hashed, a code good once. `AMUX_MFA_POLICY` (off/optional/required) says who owes
+a factor per session and `AMUX_MFA_ENFORCE` (report/enforce/off) what owing one costs;
+`AMUX_MFA_STEP_UP` (report/enforce/off) puts the kill switch, holds, erasure, capability
+changes, SCIM tokens and a member's factor reset behind a five-minute `X-Amux-Step-Up` token.
+SCIM 2.0 (`/scim/v2/Users`, `/Groups`, a bearer the owner issues, hash kept): a User is a member,
+a Group a team; deactivate or delete runs the PR 13 offboarding. Sign-ins, factors, step-ups and
+provisioning are `identity` ledger rows; counters are under `sso`, `mfa` and `scim`. The sign-in
+door has its own TOTP (`door.py totp <user>`, `DOOR_MFA`). `docs/ops/identity-sso-mfa-scim.md`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

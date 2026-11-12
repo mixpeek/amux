@@ -110,6 +110,9 @@ pub mod social_browser;
 pub mod social_devto;
 pub mod social_publish;
 pub mod governance;
+pub mod mfa;
+pub mod scim;
+pub mod sso;
 pub mod log_search;
 pub mod lookup;
 pub mod location;
@@ -457,6 +460,9 @@ pub fn router_with_connector_transport(
         .merge(land_approvals::routes())
         .merge(approval_cards::routes())
         .merge(schedule_authority::routes())
+        .merge(mfa::routes())
+        .merge(sso::routes())
+        .merge(scim::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
@@ -796,6 +802,12 @@ pub fn router_with_connector_transport(
         // a revocable member cookie; the outer identity layer below resolves
         // it before auth and request logging.
         .merge(org::public_routes())
+        // Single sign-on, the second-factor page and SCIM provisioning
+        // (governance PR 20): each authenticates for itself (single-use
+        // state + PKCE, the caller's own session, the provider's SCIM token).
+        .merge(sso::public_routes())
+        .merge(mfa::public_routes())
+        .merge(scim::public_routes())
         // Copied file links (/f/<path>) and the file that lets the iOS app
         // claim them; neither reveals anything (deep_links.rs).
         .merge(deep_links::public_routes())

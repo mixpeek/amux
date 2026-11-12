@@ -262,6 +262,10 @@ _curl() {
   # Kept out of "$@" so the transport breadcrumb below never writes it to disk.
   local _id=()
   [[ -n "${AMUX_WORKER_TOKEN:-}" ]] && _id=(-H "X-Amux-Worker-Token: ${AMUX_WORKER_TOKEN}")
+  # Governance PR 20: an owner's step-up token (amux mfa step-up <code>) rides
+  # every request while it is exported; the server reads it only on the owner's
+  # governance powers.
+  [[ -n "${AMUX_STEP_UP:-}" ]] && _id+=(-H "X-Amux-Step-Up: ${AMUX_STEP_UP}")
   # RIDE OUT A RESTART (NetSuite worker, 2026-10-26: while the server
   # restarted, the CLI handed back empty output and the caller's JSON parse
   # failed with nothing saying why). A refused connection (exit 7) never sent
@@ -1891,6 +1895,55 @@ cmd_security() {
     decrypt-grants) _curl -sk -m 120 -X POST "$api/api/security/at-rest/decrypt" || die "server unreachable"; echo ;;
     *) echo "usage: amux security at-rest          what is encrypted at rest, and where the key lives
        amux security decrypt-grants   rewrite sealed connector grants as plain files (owner; needs AMUX_ENCRYPT_AT_REST=off)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
+# Governance PR 20: a second factor (TOTP) for the caller, and the owner's
+# step-up for the kill switch, holds, erasure and capability changes.
+cmd_mfa() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  local body
+  case "$sub" in
+    status) _curl -sk -m 30 "$api/api/mfa/status" || die "server unreachable"; echo ;;
+    enroll) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d '{}' "$api/api/mfa/enroll" || die "server unreachable"; echo ;;
+    confirm|verify|step-up|recovery-codes)
+      [[ -n "${1:-}" ]] || die "usage: amux mfa $sub <code>"
+      body=$(python3 -c 'import json,sys; print(json.dumps({"code": sys.argv[1]}))' "$1")
+      local path="$sub"; [[ "$sub" == confirm ]] && path="enroll/confirm"
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/mfa/$path" || die "server unreachable"; echo
+      [[ "$sub" == step-up ]] && echo "export AMUX_STEP_UP=<token above> for five minutes of the owner's governance powers" >&2 ;;
+    reset)
+      body=$(python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"subject": a[0]} if a and not a[0].isdigit() else {"code": a[0] if a else ""}))' "$@")
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/mfa/reset" || die "server unreachable"; echo ;;
+    *) echo "usage: amux mfa status                 your second factor, the policy and the step-up switch
+       amux mfa enroll                 start: prints a key and an otpauth link for an authenticator app
+       amux mfa confirm <code>         finish enrolling; prints ten recovery codes once
+       amux mfa verify <code>          prove a factor (a code or a recovery code)
+       amux mfa step-up <code>         owner: a five-minute token for the kill switch, holds, erasure, capabilities
+       amux mfa recovery-codes <code>  new recovery codes
+       amux mfa reset <code>|<subject> reset your own (with a code) or, as owner, a member's (member:<email>)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
+# Governance PR 20: SSO status and the identity provider's SCIM tokens (owner).
+cmd_identity() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    sso) _curl -sk -m 30 "$api/api/sso/status" || die "server unreachable"; echo ;;
+    scim-tokens) _curl -sk -m 30 "$api/api/scim/tokens" || die "server unreachable"; echo ;;
+    scim-token)
+      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"label": " ".join(sys.argv[1:])}))' "$@")
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/scim/tokens" || die "server unreachable"; echo ;;
+    scim-revoke) [[ -n "${1:-}" ]] || die "usage: amux identity scim-revoke <id>"
+      _curl -sk -m 30 -X DELETE "$api/api/scim/tokens/$1" || die "server unreachable"; echo ;;
+    *) echo "usage: amux identity sso                 single sign-on settings and counts
+       amux identity scim-token [label]  issue a token for the identity provider (shown once)
+       amux identity scim-tokens         list them (no secrets)
+       amux identity scim-revoke <id>    revoke one"
        [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
   esac
 }
@@ -12949,6 +13002,8 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     audit)            shift; cmd_audit "$@" ;;
     ledger)           shift; cmd_ledger "$@" ;;
     security)         shift; cmd_security "$@" ;;
+    mfa)              shift; cmd_mfa "$@" ;;
+    identity)         shift; cmd_identity "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;

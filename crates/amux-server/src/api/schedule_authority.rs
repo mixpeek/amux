@@ -594,13 +594,25 @@ pub async fn offboard(
         Err(r) => return *r,
     };
     let dry = q.dry_run.as_deref().is_some_and(|v| matches!(v, "1" | "true" | "yes"));
+    match offboard_run(&state, &email, &who, dry).await {
+        Ok(Some(shown)) => Json(json!({"ok": true, "dry_run": dry, "member": email, "items": shown,
+            "measured": true, "n_considered": shown.len()})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"error": "no such member"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))).into_response(),
+    }
+}
+
+/// Offboard `email` as `who` (or only plan it, `dry`). `None` when there is
+/// no such member. Shared by the handler above and SCIM deprovisioning
+/// (scim.rs), so an identity provider's "deactivate" is the same act.
+pub async fn offboard_run(state: &AppState, email: &str, who: &str, dry: bool) -> Result<Option<Vec<Value>>, String> {
     let home = crate::config::amux_home();
-    let (e, h) = (email.clone(), home.clone());
+    let (e, h) = (email.to_string(), home.clone());
     let plan = state.store.read_async(move |c| Ok(offboard_plan(c, &h, &e)?)).await;
     let (mid, items) = match plan {
         Ok(Some(p)) => p,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(json!({"error": "no such member"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
     };
     let shown: Vec<Value> = items
         .iter()
@@ -613,13 +625,12 @@ pub async fn offboard(
         })
         .collect();
     if dry {
-        return Json(json!({"ok": true, "dry_run": true, "member": email, "items": shown,
-            "measured": true, "n_considered": shown.len()})).into_response();
+        return Ok(Some(shown));
     }
     // Published apps live in their own file: return them to pending first.
     let actor = format!("member:{email}");
     let apps_paused = super::static_files::public_links::return_to_pending(&home, &actor);
-    let (e, who_w, items_w) = (email.clone(), who.clone(), items.clone());
+    let (e, who_w, items_w) = (email.to_string(), who.to_string(), items.clone());
     let res = state
         .store
         .write_async(move |conn| {
@@ -681,10 +692,9 @@ pub async fn offboard(
             counters::bump("offboarded");
             tracing::warn!(member = %email, by = %who, items = items.len(), apps = apps_paused.len(), measured = true,
                 n_considered = items.len(), verdict = "member_offboarded", "a member was offboarded; their work was paused, not deleted");
-            Json(json!({"ok": true, "dry_run": false, "member": email, "items": shown,
-                "measured": true, "n_considered": shown.len()})).into_response()
+            Ok(Some(shown))
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => Err(e.to_string()),
     }
 }
 
