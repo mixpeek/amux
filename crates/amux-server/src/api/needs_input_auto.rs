@@ -1097,7 +1097,9 @@ impl Actions for RealActions {
             client: std::sync::Arc::new(crate::integrations::email::GmailClient::new_default()),
             registry: crate::integrations::global_registry().clone(),
         });
-        let mut h = HeaderMap::new();
+        // In-process and by the policy: the marker is what proves it
+        // (human_proof.rs); a name alone no longer would.
+        let mut h = crate::api::org::policy_headers(POLICY_ACTOR);
         h.insert("x-amux-approver", axum::http::HeaderValue::from_static(APPROVER));
         let resp = crate::api::email::approve(
             axum::Extension(ctx),

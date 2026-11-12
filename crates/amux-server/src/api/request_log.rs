@@ -116,6 +116,11 @@ pub(crate) fn caller_from_headers(h: &axum::http::HeaderMap) -> String {
     if let Some(actor) = super::org::local_member_actor(h) {
         return actor.to_string();
     }
+    // A published app proved by its own credential (app_identity.rs), which
+    // also dropped any worker header it sent.
+    if let Some(app) = super::app_identity::actor(h) {
+        return app.to_string();
+    }
     for k in ["x-amux-worker", "x-amux-session"] {
         if let Some(v) = h.get(k).and_then(|v| v.to_str().ok()) {
             let v = v.trim();
@@ -2428,6 +2433,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/page-links/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/api",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/page-links/{id}/app-token",
         methods: &["POST"],
     },
     RouteEntry {

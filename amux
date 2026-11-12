@@ -287,8 +287,26 @@ _curl() {
   [[ -f "$ep" ]] && canon=$(sed -n 's/.*"canonical_port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ep" 2>/dev/null)
   hp="${url#*://}"; hp="${hp%%/*}"; host="${hp%:*}"; port="${hp##*:}"
   [[ "$hp" == *:* && "$hp" != *"]" ]] || port=$([[ "$url" == https* ]] && echo 443 || echo 80)
+  local own=1
   if [[ -z "$canon" || "$port" != "$canon" ]] || ! [[ "$host" == localhost || "$host" == 127.0.0.1 || "$host" == "[::1]" ]]; then
-    wait_max=0
+    wait_max=0; own=0
+  fi
+  # OUTSIDE A WORKER THIS CLI IS THE OWNER AT THEIR OWN TERMINAL (governance
+  # PR 2): a request with no worker header no longer counts as the owner by
+  # itself, so it proves it with the owner bearer. Only to this machine's own
+  # server (a remote one has its own token), and never inside a lane, which
+  # names itself with its minted token instead.
+  if [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/auth_token" ]] \
+    && ! printf '%s\n' "$@" | grep -qi '^Authorization:'; then
+    local _owner_tok; _owner_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/auth_token" 2>/dev/null)"
+    [[ -n "$_owner_tok" ]] && _id+=(-H "Authorization: Bearer $_owner_tok")
+  elif [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/front-door-owner" ]]; then
+    # A HOST BEHIND A SIGN-IN DOOR has no owner token (AMUX_AUTH_TOKEN=none);
+    # there the owner's credential is the secret the door returns for them
+    # (governance PR 3, api/loopback_trust.rs), and the owner's own terminal
+    # presents the same one. Again only to this machine's own server.
+    local _door_tok; _door_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/front-door-owner" 2>/dev/null)"
+    [[ -n "$_door_tok" ]] && _id+=(-H "X-Amux-Front-Door-Owner: $_door_tok")
   fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.
@@ -7233,6 +7251,18 @@ cmd_publish() {
   # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local kind=app target title origin=0
+  # --api "METHOD /api/path" (repeatable): amux calls the app asks for. A
+  # published app has no amux access otherwise (governance PR 5).
+  local -a api_rules=() rest=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --api ]]; then
+      [[ -n "${2:-}" ]] || die "usage: --api \"METHOD /api/path\""
+      api_rules+=("$2"); shift 2
+    else
+      rest+=("$1"); shift
+    fi
+  done
+  set -- "${rest[@]+"${rest[@]}"}"
   case "${1:-}" in
     ""|-h|--help|help)
       cat <<EOF
@@ -7246,6 +7276,9 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
                                                that breaks under /pub/<id>/
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
+  amux publish PORT [TITLE] --api "POST /api/sessions/NAME/send"
+                                               Ask for amux calls the app needs
+                                               (none otherwise; the owner approves)
 
 This is the default host for anything you publish. Do not deploy to Netlify,
 Vercel, Cloudflare Pages, GitHub Pages or another outside host unless the owner
@@ -7260,6 +7293,10 @@ start a web server for static files: it serves every file beside them.
 
 Anything a worker adds stays PENDING (a public link serves nobody, an app
 inside amux does not open) until the owner approves it in the Apps tab.
+
+An app gets its own amux credential, saved to ~/.amux/app-tokens/ID.token.
+Start the app with AMUX_APP_TOKEN set to it; the app sends it as
+X-Amux-App-Token and may make only the calls the owner allowed.
 EOF
       return 0
       ;;
@@ -7312,17 +7349,19 @@ for l in links:
   body=$(python3 -c '
 import json, sys
 kind, target, title, is_path, origin = sys.argv[1:6]
-d = {"kind": kind, "title": title}
+d = {"kind": kind, "title": title, "api": sys.argv[6:]}
 if origin == "1":
     d["origin"] = True
 if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin" "${api_rules[@]+"${api_rules[@]}"}")
+  local token_dir="${AMUX_HOME:-$HOME/.amux}/app-tokens"
+
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$body" "$AMUX_API/api/page-links" | python3 -c '
-import json, sys
+import json, os, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
@@ -7330,6 +7369,24 @@ except ValueError:
 if "error" in d:
     sys.exit("not published: " + str(d["error"]))
 print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
+tok = d.pop("app_token", None)
+if tok:
+    # The app credential is shown once; keep it out of the transcript.
+    tdir = sys.argv[1]
+    os.makedirs(tdir, mode=0o700, exist_ok=True)
+    tpath = os.path.join(tdir, d["id"] + ".token")
+    fd = os.open(tpath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok + "\n")
+    print("app credential: %s (start the app with AMUX_APP_TOKEN=\"$(cat %s)\"; it sends it as X-Amux-App-Token)" % (tpath, tpath), file=sys.stderr)
+    asked = d.get("api_requested") or []
+    allowed = d.get("api_allow") or []
+    if allowed:
+        print("amux access: " + "; ".join(allowed), file=sys.stderr)
+    elif asked:
+        print("amux access asked for (allowed when the owner approves): " + "; ".join(asked), file=sys.stderr)
+    else:
+        print("amux access: none (ask with --api \"METHOD /api/path\")", file=sys.stderr)
 if not d.get("file") and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
 if d.get("pending"):
@@ -7339,7 +7396,7 @@ elif d.get("public"):
 else:
     print("only you, signed in.", file=sys.stderr)
 print("Listed in the Apps tab; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
-'
+' "$token_dir"
 }
 
 cmd_pin() {
