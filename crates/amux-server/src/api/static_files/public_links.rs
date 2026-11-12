@@ -71,6 +71,11 @@ pub(crate) struct Link {
     /// keeps working.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// A public app served at the root of its own origin,
+    /// `https://<id>.<AMUX_PUBLIC_APPS_DOMAIN>/`, with its own cookies and no
+    /// opaque-origin sandbox (public_origin.rs), instead of under `/pub/<id>/`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub origin: bool,
 }
 
 impl Link {
@@ -83,6 +88,10 @@ impl Link {
     }
     fn is_pending(&self) -> bool {
         self.approved_by.is_empty()
+    }
+    /// A live public app made with `--origin`: served on its own host.
+    pub(crate) fn serves_on_origin(&self) -> bool {
+        self.origin && self.kind == "app" && self.is_live()
     }
 }
 
@@ -320,6 +329,13 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          /#view=apps, and say the address is unknown. Do not guess it from an IP address."
             .to_string()
     };
+    let origin = match super::public_origin::domain(home) {
+        Some(d) => format!(" A public app that keeps a login or session cookie, or builds its URLs in \
+             JavaScript (a Rails, Django or single-page app that breaks under /pub/<id>/): \
+             `amux publish --origin <port> [title]`, which prints https://<id>.{d}/, the app at the root of \
+             its own host."),
+        None => String::new(),
+    };
     format!(
         "{address}\n\n\
          A file for the owner (a workbook, a report, a deck, an HTML page) is not an App. Name each file \
@@ -335,7 +351,7 @@ pub(crate) fn worker_links_guide(home: &Path) -> String {
          {base}/#view=apps&open=<id>, with the id `amux publish` prints. Never hand the owner localhost \
          or a port. An HTML app whose backend is a worker is {base}/pages/<name>.\n\
          - An app for anyone with the link (no amux sign-in): `amux publish <port> [title]`, which prints \
-         {base}/pub/<id>/.\n\
+         {base}/pub/<id>/.{origin}\n\
          - A file or folder for anyone with the link: `amux publish --file <absolute path> [title]`. Never \
          link a file as {base}/api/file/...: that needs the owner's sign-in.\n\
          Anything you add stays pending until the owner approves it in the Apps tab; tell them it is waiting \
@@ -360,6 +376,9 @@ fn link_json(home: &Path, l: &Link) -> Value {
     // #view=apps is the Apps tab's address; the dashboard still accepts the
     // older #view=pages that earlier links carry.
     let path = if l.is_public() { format!("/pub/{}/", l.id) } else { format!("/#view=apps&open={}", l.id) };
+    // An app on its own origin is linked by that origin; /pub/<id>/ redirects
+    // there. With no apps domain configured it says so, and /pub/ serves it.
+    let origin_url = if l.origin { super::public_origin::domain(home).and_then(|d| super::public_origin::origin_url(&d, &l.id)).map(|u| format!("{u}/")) } else { None };
     json!({
         "id": l.id, "kind": l.kind, "port": l.port, "file": l.path, "title": l.title,
         "created_by": l.created_by, "created_at": l.created_at,
@@ -367,8 +386,10 @@ fn link_json(home: &Path, l: &Link) -> Value {
         "pending": l.is_pending(),
         "approved_by": l.approved_by,
         "path": path,
-        "url": base.as_ref().map(|b| format!("{b}{path}")),
+        "url": origin_url.clone().or_else(|| base.as_ref().map(|b| format!("{b}{path}"))),
         "app_path": (!l.is_public()).then(|| format!("/app/{}/", l.id)),
+        "origin": l.origin,
+        "origin_url": origin_url,
     })
 }
 
@@ -450,6 +471,9 @@ pub(crate) struct CreateBody {
     path: Option<String>,
     #[serde(default)]
     title: String,
+    /// `amux publish --origin`: a public app on a host of its own.
+    #[serde(default)]
+    origin: bool,
 }
 
 pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, body: Option<Json<CreateBody>>) -> Response {
@@ -498,6 +522,17 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
         }
         _ => return bad(StatusCode::BAD_REQUEST, "kind is internal, app or file"),
     };
+    if body.origin {
+        if kind != "app" {
+            return bad(StatusCode::BAD_REQUEST, "--origin is for a public app on a port");
+        }
+        if super::public_origin::domain(&crate::config::amux_home()).is_none() {
+            tracing::warn!(port, measured = true, n_considered = 1, verdict = "public_origin_unconfigured",
+                "an app on its own origin was asked for, but this server has no domain for public apps");
+            return bad(StatusCode::BAD_REQUEST, "this amux has no domain for apps on their own origin: AMUX_PUBLIC_APPS_DOMAIN in server.env \
+                names it, and it needs a wildcard DNS record and certificate for *.<that domain>. Publish without --origin to use /pub/<id>/.");
+        }
+    }
     let Some(id) = new_id() else {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, "no secure randomness available; no link was made");
     };
@@ -512,7 +547,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     // Every kind needs a person: a public link hands the app or file to
     // anyone, and an internal app runs with the owner's amux access.
     let approved_by = person.clone().unwrap_or_default();
-    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by, aliases: Vec::new() };
+    let link = Link { id, kind: kind.clone(), port, path, title, created_by: created_by.clone(), created_at: crate::config::now_f64() as i64, approved_by, aliases: Vec::new(), origin: body.origin };
     let home = crate::config::amux_home();
     {
         let _g = WRITE.lock().unwrap_or_else(|e| e.into_inner());
@@ -524,7 +559,7 @@ pub(crate) async fn create(State(state): State<AppState>, headers: HeaderMap, bo
     }
     let listening = port > 0 && app_relay::local_listener(port).await.is_some();
     tracing::warn!(id = %link.id, kind = %kind, port, created_by = %created_by, by_person = person.is_some(), listening,
-        public = link.is_public(), pending = link.is_pending(),
+        public = link.is_public(), pending = link.is_pending(), origin = link.origin,
         measured = true, n_considered = 1, verdict = "public_link_created",
         "Apps link created; a public one asked for by a worker serves nobody until the owner approves it in Apps");
     let mut out = link_json(&home, &link);
@@ -604,6 +639,9 @@ pub(crate) async fn rename(State(state): State<AppState>, headers: HeaderMap, Ax
     if new == id {
         return Json(link_json(&home, &links[i])).into_response();
     }
+    if links[i].origin && !super::public_origin::fits_label(&new) {
+        return bad(StatusCode::BAD_REQUEST, "an app on its own origin is named by a host label, at most 63 characters");
+    }
     if links.iter().enumerate().any(|(j, l)| j != i && (l.id == new || l.aliases.contains(&new))) {
         return bad(StatusCode::CONFLICT, "another link already has that name");
     }
@@ -638,7 +676,7 @@ pub(crate) fn parse_pub(uri: &Uri) -> Option<(String, String)> {
 /// Plain text, not an HTML page: a 404 text/html is the SPA shell's signature,
 /// and tests/route_table.rs reads it as "this route fell through to the
 /// dashboard" (it did not, and the plain sentence reads the same to a person).
-fn not_found() -> Response {
+pub(crate) fn not_found() -> Response {
     (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         "Link not found. It does not exist or was turned off by the person who shared it.\n").into_response()
 }
@@ -732,7 +770,7 @@ fn sandbox_all(mut r: Response) -> Response {
 /// (2026-10-25: a link to a page with real names was live for hours and the
 /// server could not say whether anyone had opened it). Bounded: rotated at
 /// 5 MB, one previous file kept.
-fn access_log(id: &str, status: StatusCode, headers: &HeaderMap, path: &str) {
+pub(crate) fn access_log(id: &str, status: StatusCode, headers: &HeaderMap, path: &str) {
     let dir = crate::config::amux_home().join("logs");
     let file = dir.join("public-links-access.jsonl");
     if std::fs::metadata(&file).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
@@ -840,6 +878,15 @@ async fn serve_inner(method: Method, headers: &HeaderMap, uri: &Uri, body: Body)
     if link.kind == "file" {
         return serve_link_file(&link, uri.path(), &tail, &method, &headers).await;
     }
+    // An app on its own origin: a /pub/ link someone already has goes there.
+    if link.origin {
+        if let Some(to) = super::public_origin::domain(&home).and_then(|d| super::public_origin::origin_url(&d, &link.id)) {
+            let rest = tail.strip_prefix('/').unwrap_or(&tail);
+            return axum::response::Redirect::temporary(&format!("{to}/{rest}")).into_response();
+        }
+        tracing::warn!(id = %link.id, measured = true, n_considered = 1, verdict = "public_origin_unconfigured",
+            "an app made for its own origin was opened while this server has no AMUX_PUBLIC_APPS_DOMAIN; served under /pub/");
+    }
     if refused_port(link.port).is_some() {
         return not_found();
     }
@@ -932,7 +979,7 @@ mod tests {
     #[test]
     fn a_renamed_link_answers_to_its_new_name_first_and_its_old_names_after() {
         let mk = |id: &str, aliases: &[&str]| Link { id: id.into(), kind: "app".into(), port: 1, path: String::new(), title: String::new(),
-            created_by: String::new(), created_at: 0, approved_by: "owner".into(), aliases: aliases.iter().map(|a| a.to_string()).collect() };
+            created_by: String::new(), created_at: 0, approved_by: "owner".into(), aliases: aliases.iter().map(|a| a.to_string()).collect(), origin: false };
         let links = vec![mk("demo", &["0123456789abcdef0123456789abcdef"]), mk("other", &["demo-old"])];
         assert_eq!(lookup(links.clone(), "demo").unwrap().id, "demo");
         assert_eq!(lookup(links.clone(), "0123456789abcdef0123456789abcdef").unwrap().id, "demo", "the old id still opens it");
@@ -943,7 +990,7 @@ mod tests {
     #[test]
     fn a_public_link_is_live_only_once_a_person_approved_it() {
         let mut l = Link { id: new_id().unwrap(), kind: "file".into(), port: 0, path: "/x".into(), title: String::new(), aliases: Vec::new(),
-            created_by: "mtp-demo".into(), created_at: 0, approved_by: String::new() };
+            created_by: "mtp-demo".into(), created_at: 0, approved_by: String::new(), origin: false };
         assert!(!l.is_live(), "asked for by a worker: pending, served to nobody");
         l.approved_by = "member:ethan@mixpeek.com".into();
         assert!(l.is_live());

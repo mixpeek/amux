@@ -82,9 +82,8 @@ const TARGETS = [
 // click test into a 30s pointer-interception timeout. `/api/identity`
 // intentionally ignores process-injected keys, so seed an obviously non-secret
 // value in each isolated project's durable server.env: the exact configuration
-// surface the product checks. settings_api_key_anthropic still
-// overwrites/restores it through the real endpoint, while unrelated specs run
-// in the configured-install state they actually assume.
+// surface the product checks, so specs run in the configured-install state
+// they actually assume.
 
 // One temp home per TARGET, created eagerly so each server and its tests agree.
 // Reap what earlier (usually interrupted) runs left behind before minting more

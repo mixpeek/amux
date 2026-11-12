@@ -6205,3 +6205,25 @@ CARD: none (author cannot file on amux-frustrations: `amux board request amux-fr
 SYMPTOM: `amux board review AUTHO-1 --checked "Committed on the worktree branch" "npm test passes"` printed "the card moved to review, but the REVIEWER WAS NOT TOLD ... worker group boundary refused: author [{}] -> reviewer [{}]. Worker messages must stay within a shared group." The card is in review with reviewer=reviewer, and no review request reached them. Nothing nudged author or reviewer afterwards, and the card shows as a healthy review.
 COST: the card sat in review with no reviewer able to receive the request. It was not caught until the owner noticed. The move reported success, so the author had no signal to act on.
 FIX: (1) the review handoff should fail at the move when the named reviewer is outside the author's group, or route through a shared-group path. (2) A card in review whose reviewer was never notified should show as blocked on the reviewer, not as a healthy review. (3) A designated cross-lane reviewer should carry CC_RECEIVE_ANY=1, which the refusal text itself recommends.
+
+## amux post posted "--file /path" as the message and answered "posted"
+AREA: cli
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-11-10
+SESSION: mixpeek-meta-worker
+CARD: none (amux-frustrations has every board switch off; reported to it by message)
+SYMPTOM: `amux post p:owner --file /path/report.txt` posted the literal text "--file /path/report.txt" and printed "posted to d:...|owner (your direct message with owner)". amux post had no --file, read --stdin only as the first argument, and took any other argument after <conv> as the text. The server refused a body of only `--thread N`, but not `--file <path>`.
+COST: 21 of mixpeek-meta-worker's posts to the owner (11-09 03:3xZ to 11-10 16:2xZ) arrived as bare paths, among them two daily reports, decision asks, a capacity ask and a date-slip notice. The owner found out by asking where the DM was. The fix could not be sent back to the reporter: `amux send` refused amux-frustrations [amux] -> mixpeek-meta-worker [admin, infra] at the worker group boundary, though the report came the other way.
+FIX: 8b71e3e62 (CLI: --file and --stdin, an unknown --flag refused, `--` ends the flags; tests/cli_post.py, in checks) and 9a89b6420 (server: a body of only `amux post` flags, --file included, is refused with verdict conversation_post_stale_cli).
+
+## The resource guard refuses heavy commands on pinned swap while memory pressure is low
+AREA: resources
+SEVERITY: slows
+STATUS: open
+DATE: 2026-11-11
+SESSION: amux-security
+CARD: none (amux-security has every board switch off)
+SYMPTOM: from about 18:10 to 19:40 the boundary guard refused a one-crate cargo test at -j 2, the land gate, a `git worktree add` and even a heredoc append to this file with "the machine is critical (swap 97% used)". Over the same window `memory_pressure` reported 68% of memory free, load was 0.34 per core, and `amux resources` printed `level ok`. macOS keeps pages in swap until they are touched again, so swap use can sit near full for hours after the pressure that put it there has gone. The guard and `amux resources` disagreed about the same machine at the same time, and the guard's notion of "heavy" caught commands that use no memory to speak of.
+COST: a security fix (4b7c85965, test servers bind loopback only) waited about 70 minutes and two scheduled resumes, each a full model turn, while three more network-watch alerts fired for the exposure it fixes. It landed only with AMUX_RESOURCES_ACK. The override is recorded, but while swap stays pinned it is the routine path for every heavy command.
+FIX: judge "critical" on current pressure (the kernel memory-pressure level, or free plus compressible memory) rather than on swap used; treat swap as critical only while it is growing. `amux resources` and the guard should read the same verdict.

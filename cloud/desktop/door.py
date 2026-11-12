@@ -656,7 +656,10 @@ def request_access(user, ip, now=None):
 
 
 def access_card_body(user, ip):
-    return {"title": "Let %s sign in from %s?" % (user, ip), "status": "needsyou", "tags": ["door-access"],
+    # A decision card: the board's default type is code, whose done gate ("Implemented and merged") no
+    # allowlist answer can truthfully tick, so closing it was refused with 409 on every server.
+    return {"title": "Let %s sign in from %s?" % (user, ip), "status": "needsyou", "type": "decision",
+            "tags": ["door-access"],
             "ask_type": "access", "ask_actor": "server owner",
             "ask_question": "Let %s sign in to this server from the new address %s?" % (user, ip),
             "ask_unblocks": "Allowing it adds %s to the address allowlist, and %s can sign in from it." % (ip, user),
@@ -681,20 +684,41 @@ def _file_access_card(user, ip):
         log(event="allowlist", user=user, ip=ip, verdict="door_access_card_failed", reason=str(e)[:120])
 
 
+ACCESS_DONE_GATE = "The decision is recorded on the card: what was chosen, by whom, and when"
+
+
+def _board_refusal(e):
+    """The board's own reason for an HTTP error (its code and gate), never just "409: Conflict"."""
+    try:
+        body = json.loads(e.read() or b"{}")
+        return "%s %s %s" % (getattr(e, "code", ""), body.get("code") or body.get("error") or "", body.get("gate") or "")
+    except Exception:
+        return str(e)
+
+
 def close_access_card(card, how):
+    """Record the owner's answer on the card, then close it under the decision gate it was filed with.
+    Two writes: the board discards a refused transition's whole body, so the record goes first."""
     if not card:
         return
+    path = "/api/board/" + urllib.parse.quote(card, safe="")
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     try:
-        _, out = _amux("PATCH", "/api/board/" + urllib.parse.quote(card, safe=""), timeout=10,
-                       content_type="application/json",
-                       data=json.dumps({"status": "done", "evidence": "none: %s at /_door/allowlist; an allowlist "
-                                                                      "change leaves no artifact" % how}).encode())
+        # type too: cards filed before the type was set are code cards, and the close resolves the gate
+        # from the card's type at that moment.
+        _amux("PATCH", path, timeout=10, content_type="application/json",
+              data=json.dumps({"type": "decision", "desc_append": "Decided: %s, %s." % (how, when)}).encode())
+        _, out = _amux("PATCH", path, timeout=10, content_type="application/json",
+                       data=json.dumps({"status": "done", "gate_checked": [ACCESS_DONE_GATE],
+                                        "evidence": "none: %s at /_door/allowlist; an allowlist change leaves "
+                                                    "no artifact" % how}).encode())
         resp = json.loads(out or b"{}")
         if resp.get("ok") is False or resp.get("error"):
             raise ValueError(str(resp.get("code") or resp.get("error"))[:80])
         log(event="allowlist", card=card, verdict="door_access_card_closed")
     except Exception as e:
-        log(event="allowlist", card=card, verdict="door_access_card_close_failed", reason=str(e)[:120])
+        reason = _board_refusal(e) if hasattr(e, "read") else str(e)
+        log(event="allowlist", card=card, verdict="door_access_card_close_failed", reason=reason[:160])
 
 
 def take_request(ip, user):

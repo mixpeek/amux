@@ -162,13 +162,17 @@ pub(crate) async fn open(State(state): State<AppState>, headers: HeaderMap, uri:
     Json(json!({ "url": url, "expires_in_s": TOKEN_TTL.as_secs() })).into_response()
 }
 
-/// The apps listener's whole router: `/app/<id>/...` and nothing else.
+/// The apps listener's whole router: `/app/<id>/...`, and public apps on a
+/// host of their own (`<id>.<AMUX_PUBLIC_APPS_DOMAIN>`), and nothing else.
 pub(crate) fn router() -> Router {
     Router::new()
         .route("/app/{id}", axum::routing::any(serve))
         .route("/app/{id}/", axum::routing::any(serve))
         .route("/app/{id}/{*rest}", axum::routing::any(serve))
         .fallback(|| async { (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Not found.\n") })
+        // A public app on a host of its own (public_origin.rs) is told apart
+        // by its Host before any /app/ route is tried.
+        .layer(axum::middleware::from_fn(super::public_origin::dispatch))
 }
 
 fn refuse(status: StatusCode, title: &str, body: &str, why: &'static str, id: &str) -> Response {
@@ -491,6 +495,7 @@ async fn serve_view(id: &str, root: &str, uri: &Uri, tail: &str, method: &Method
         created_at: 0,
         approved_by: "owner".into(),
         aliases: Vec::new(),
+        origin: false,
     };
     let r = public_links::serve_link_file(&link, uri.path(), tail, method, headers).await;
     if r.status() == StatusCode::NOT_FOUND {

@@ -1386,6 +1386,24 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_descLockToggle": {
+      "kind": "command._descLockToggle",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_descPatch": {
+      "kind": "command._descPatch",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_descRevert": {
+      "kind": "command._descRevert",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictAddWord": {
       "kind": "command._dictAddWord",
       "feedback_required": true,
@@ -2018,6 +2036,48 @@
     },
     "_ensureArchivedCount": {
       "kind": "command._ensureArchivedCount",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evCatalog": {
+      "kind": "command._evCatalog",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evNew": {
+      "kind": "command._evNew",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evOpen": {
+      "kind": "command._evOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evRefresh": {
+      "kind": "command._evRefresh",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evRemove": {
+      "kind": "command._evRemove",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evSet": {
+      "kind": "command._evSet",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_evSubsFetch": {
+      "kind": "command._evSubsFetch",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3582,6 +3642,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_openOwnPage": {
+      "kind": "command._openOwnPage",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_openPathFromOutput": {
       "kind": "command._openPathFromOutput",
       "feedback_required": true,
@@ -3746,6 +3812,12 @@
     },
     "_outcomeStart": {
       "kind": "command._outcomeStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ownPageBeacon": {
+      "kind": "command._ownPageBeacon",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3932,6 +4004,12 @@
     },
     "_peekLoadKindHints": {
       "kind": "command._peekLoadKindHints",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekLoadSchedules": {
+      "kind": "command._peekLoadSchedules",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -5336,6 +5414,12 @@
     },
     "_sxModalBeacon": {
       "kind": "command._sxModalBeacon",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_sxNew": {
+      "kind": "command._sxNew",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6968,12 +7052,6 @@
     },
     "saveAlertConfig": {
       "kind": "command.saveAlertConfig",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "saveApiKey": {
-      "kind": "command.saveApiKey",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
