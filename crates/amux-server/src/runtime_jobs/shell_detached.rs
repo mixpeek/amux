@@ -210,6 +210,13 @@ pub fn detached_command(cmd: &str, files: &RunFiles) -> std::io::Result<tokio::p
 /// Is `pid` a live process? Reaps it first when it is this process's own
 /// child (an exec'd server inherits the old image's children), so a zombie
 /// never reads as alive.
+///
+/// A run started by an EARLIER server is not our child: when that server is
+/// SIGKILLed the run is reparented to PID 1, and a container whose PID 1 does
+/// not reap (CI's job containers) keeps a killed run as a zombie, which
+/// `kill(pid, 0)` still finds. On Linux `/proc` says so, and a zombie is dead.
+/// Without this, harness recovery's scheduler-dispatch and orchestration cases
+/// adopted a run killed while the server was down and never recorded it lost.
 pub fn pid_alive(pid: i32) -> bool {
     if pid <= 1 {
         return false;
@@ -221,7 +228,26 @@ pub fn pid_alive(pid: i32) -> bool {
     }
     // SAFETY: signal 0 only checks that the pid exists.
     let r = unsafe { libc::kill(pid, 0) };
-    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let exists = r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    if cfg!(target_os = "linux") && exists {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            if stat_says_ended(&stat) {
+                tracing::info!(pid, measured = true, n_considered = 1, verdict = "shell_run_pid_zombie",
+                    "a shell run's pid is a zombie nobody reaped; it reads as ended");
+                return false;
+            }
+        }
+    }
+    exists
+}
+
+/// Does a `/proc/<pid>/stat` line describe a process that has ended (zombie
+/// `Z` or dead `X`)? The state follows the LAST `)`, since the command name in
+/// parentheses may itself contain spaces and parentheses.
+fn stat_says_ended(stat: &str) -> bool {
+    stat.rfind(')')
+        .and_then(|i| stat[i + 1..].split_whitespace().next())
+        .is_some_and(|s| s == "Z" || s == "X")
 }
 
 /// SIGKILL a run's whole process group, only if `pid` still leads one.
@@ -463,4 +489,21 @@ pub fn sweep_leftovers(root: &Path, keep_run_ids: &[i64]) -> usize {
         }
     }
     n
+}
+
+#[cfg(test)]
+mod zombie_tests {
+    use super::stat_says_ended;
+
+    #[test]
+    fn a_zombie_or_dead_stat_line_reads_as_ended() {
+        assert!(stat_says_ended("4242 (sh) Z 1 4242 4242 0 -1 4194572 0"));
+        assert!(stat_says_ended("4242 (sh) X 1 4242 4242 0 -1"));
+        assert!(!stat_says_ended("4242 (sh) S 1 4242 4242 0 -1"));
+        assert!(!stat_says_ended("4242 (sleep) R 1"));
+        // A command name with spaces and a ')' of its own.
+        assert!(stat_says_ended("77 (a b) c) Z 1 77"));
+        assert!(!stat_says_ended("77 (a b) c) S 1 77"));
+        assert!(!stat_says_ended(""), "an unreadable line is not evidence of an end");
+    }
 }
