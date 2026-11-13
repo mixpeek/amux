@@ -23,6 +23,17 @@ pub mod land_approvals;
 pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
+pub mod app_identity;
+pub mod capabilities;
+pub mod cli_sandbox;
+pub mod customer_isolation;
+pub mod at_rest;
+pub mod approval_cards;
+pub mod schedule_authority;
+pub mod connector_scope;
+pub mod email_scope;
+pub mod human_proof;
+pub mod loopback_trust;
 pub mod contract_fresh;
 pub mod prod_change;
 pub mod runner;
@@ -84,6 +95,12 @@ pub mod history_ask;
 pub mod history_ask_rank;
 pub mod history_backfill;
 pub mod interactions;
+pub mod ledger;
+pub mod ledger_checkpoint;
+pub mod trace;
+pub mod instruction_provenance;
+pub mod agent_commit;
+pub mod cli_telemetry;
 pub mod invariants_api;
 pub mod journal;
 pub mod launch_context;
@@ -92,6 +109,7 @@ pub mod social;
 pub mod social_browser;
 pub mod social_devto;
 pub mod social_publish;
+pub mod governance;
 pub mod log_search;
 pub mod lookup;
 pub mod location;
@@ -233,6 +251,9 @@ pub fn router_with_connector_transport(
     // For the request-log layer below — `state` itself is consumed by
     // `.with_state` before the outermost wrap.
     let store_for_reqlog = state.store.clone();
+    capabilities::install_store(state.store.clone());
+    approval_cards::install_store(state.store.clone());
+    schedule_authority::install_store(state.store.clone());
     let state_for_member_identity = state.clone();
     let protected = Router::new()
         .route("/api/sync", axum::routing::get(sync::delta_sync))
@@ -382,7 +403,13 @@ pub fn router_with_connector_transport(
         // field, open/mkdir/rename/read/list/search/delete on ABSOLUTE
         // paths) — a different contract from /api/files above. NATIVE port
         // of the python handlers (api/fs.rs), same wire shapes.
-        .nest("/api/fs", fs::routes())
+        .nest("/api/fs", fs::routes().layer(axum::middleware::from_fn(capabilities::fs_gate)))
+        .route("/api/workers/{name}/capabilities", axum::routing::get(capabilities::view))
+        .route("/api/workers/{name}/sandbox", axum::routing::get(cli_sandbox::view))
+        .route("/api/workers/{name}/isolation", axum::routing::get(customer_isolation::view))
+        .route("/api/security/at-rest", axum::routing::get(at_rest::view))
+        .route("/api/security/at-rest/decrypt", axum::routing::post(at_rest::decrypt))
+        .route("/api/workers/{name}/history", axum::routing::get(instruction_provenance::view))
         // The SPA Files BROWSER's listing + dir autocomplete — native, same
         // module (top-level paths in python, so top-level here).
         .route("/api/ls", axum::routing::any(fs::ls))
@@ -441,6 +468,8 @@ pub fn router_with_connector_transport(
         .merge(directive::routes())
         .merge(contract::routes())
         .merge(land_approvals::routes())
+        .merge(approval_cards::routes())
+        .merge(schedule_authority::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
@@ -482,6 +511,9 @@ pub fn router_with_connector_transport(
         // the structured request log + tracing tail (api/request_log.rs).
         .nest("/api/logs", request_log::routes())
         .merge(interactions::routes())
+        .merge(ledger::routes())
+        .merge(trace::routes())
+        .merge(cli_telemetry::routes())
         .nest("/api/settings", settings::routes())
         .nest("/api/push", crate::push::routes())
         // Record tab (AMUX-4624): device recordings synced into a folder and
@@ -645,6 +677,15 @@ pub fn router_with_connector_transport(
             "/api/page-links/{id}/approve",
             axum::routing::post(static_files::public_links::approve),
         )
+        // A published app's own amux access and credential (app_identity.rs).
+        .route(
+            "/api/page-links/{id}/api",
+            axum::routing::post(static_files::public_links::set_api),
+        )
+        .route(
+            "/api/page-links/{id}/app-token",
+            axum::routing::post(static_files::public_links::new_app_token),
+        )
         // A one-time link that opens an app inside amux on the apps origin.
         .route(
             "/api/page-links/{id}/open",
@@ -662,10 +703,17 @@ pub fn router_with_connector_transport(
             state.clone(),
             policy::enforce,
         ))
+        // The owner's kill switch (governance.rs): while engaged, no worker,
+        // app or policy publishes, sends email or mints a connector token.
+        .layer(axum::middleware::from_fn(governance::kill_gate))
         // Contract rule 10 (AH-387): a claimed worker identity carries that
         // worker's minted token. Inside require_bearer, so it sees only
         // admitted requests.
         .layer(axum::middleware::from_fn(worker_identity::enforce))
+        // The ledger's actor (ledger.rs): resolved just inside auth, so the
+        // owner proof it stamps is visible, and carried out to the interaction
+        // receipt on the response.
+        .layer(axum::middleware::from_fn(ledger::stamp))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -817,6 +865,10 @@ pub fn router_with_connector_transport(
         store_for_reqlog.clone(),
         interactions::middleware,
     ));
+    // Every request runs inside its trace (trace.rs): inherited from its
+    // `traceparent`, else minted here at the origin. Outside the interaction
+    // receipt so the ledger row it writes carries the trace.
+    let app = app.layer(axum::middleware::from_fn(trace::layer));
 
     // Transparent gzip compression for every response whose client sends
     // Accept-Encoding: gzip. Board slim drops from 690KB to 162KB,

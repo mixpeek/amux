@@ -495,7 +495,7 @@ async fn serve_view(id: &str, root: &str, uri: &Uri, tail: &str, method: &Method
         created_at: 0,
         approved_by: "owner".into(),
         aliases: Vec::new(),
-        origin: false,
+        ..Default::default()
     };
     let r = public_links::serve_link_file(&link, uri.path(), tail, method, headers).await;
     if r.status() == StatusCode::NOT_FOUND {

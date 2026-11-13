@@ -618,6 +618,30 @@ def _land_gate_leg(stdin_text):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _kill_switch_engaged():
+    """The reason, if the owner's kill switch is engaged; None if it is not.
+    AMUX_KILL_SWITCH=off makes it inert. A file that exists but cannot be
+    read reads as engaged: a stop the owner asked for fails closed."""
+    if os.environ.get("AMUX_KILL_SWITCH", "").strip().lower() in ("off", "0", "false", "no"):
+        return None
+    home = os.environ.get("AMUX_HOME") or os.path.join(os.environ.get("HOME", ""), ".amux")
+    path = os.path.join(home, "governance", "kill-switch.json")
+    try:
+        with open(path) as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return "kill-switch file unreadable"
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return "kill-switch file unreadable"
+    if isinstance(d, dict) and d.get("engaged") is True:
+        return str(d.get("reason") or "")
+    return None
+
+
 def main():
     # DATA-LOSS GUARD FIRST, and BEFORE the session early-returns: a stale
     # shared-file republish (MG-1483 — 10 pushed entry-lines silently reverted,
@@ -625,6 +649,19 @@ def main():
     # append-only guard runs for humans and AMUX_ALLOW_FOREIGN pushes too.
     # Stdin is consumed once here and shared with the attribution walk below.
     stdin_text = sys.stdin.read()
+    # THE OWNER'S KILL SWITCH (governance PR 19) comes before everything else
+    # and no override skips it. It reads the file the server writes
+    # (<AMUX_HOME>/governance/kill-switch.json), so it holds with the server
+    # down. A person pushing outside a worker ($AMUX_SESSION unset) is never
+    # stopped: the switch stops automation, not the people cleaning up.
+    killed = _kill_switch_engaged()
+    if killed is not None and os.environ.get("AMUX_SESSION"):
+        sys.stderr.write(
+            "amux pre-push: REFUSED. The owner's kill switch is engaged (%s); no worker\n"
+            "pushes until the owner lifts it (amux audit kill-switch off). Nothing was pushed.\n"
+            "verdict=kill_switch_refused\n" % (killed or "no reason given"))
+        _audit("kill_switch", "verdict=kill_switch_refused")
+        return 1
     try:
         guard = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                              "append-only-push-guard")

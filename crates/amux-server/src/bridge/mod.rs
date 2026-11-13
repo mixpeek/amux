@@ -207,7 +207,22 @@ pub async fn post_inbound(state: &AppState, m: &Inbound, owner: bool, conv: &str
 }
 
 /// The same, as a reply in `parent`'s thread when there is one.
+/// Where relayed words came from, as `cmd_history.relayed_from` records them
+/// (instruction_provenance): the email's sender and message id, or the
+/// platform and its sender for every other bridge.
+pub fn relay_ref(m: &Inbound) -> String {
+    if m.platform == email::PLATFORM {
+        format!("email:{} {}", m.sender_id, m.platform_msg_id)
+    } else {
+        format!("webhook:{}:{}", m.platform, m.sender_id)
+    }
+}
+
 pub async fn post_inbound_in(state: &AppState, m: &Inbound, owner: bool, conv: &str, parent: Option<i64>) -> Outcome {
+    crate::api::instruction_provenance::relayed(relay_ref(m), post_inbound_in_inner(state, m, owner, conv, parent)).await
+}
+
+async fn post_inbound_in_inner(state: &AppState, m: &Inbound, owner: bool, conv: &str, parent: Option<i64>) -> Outcome {
     let place = label(&m.platform);
     let back = if self_chat::is_self_chat(&m.platform) {
         "Your reply in this thread is sent back there.".to_string()

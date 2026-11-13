@@ -1,0 +1,1267 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "amux.worker",
+      "value": {
+       "stringValue": "probe"
+      }
+     },
+     {
+      "key": "amux.group",
+      "value": {
+       "stringValue": "amux"
+      }
+     },
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.8.0-138-generic"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.319"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.events",
+      "version": "2.1.319"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1794277078134000000",
+       "observedTimeUnixNano": "1794277078134000000",
+       "body": {
+        "stringValue": "claude_code.hook_execution_start"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "hook_execution_start"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.134Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 27
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "hook_event",
+         "value": {
+          "stringValue": "PreToolUse"
+         }
+        },
+        {
+         "key": "hook_name",
+         "value": {
+          "stringValue": "PreToolUse:Bash"
+         }
+        },
+        {
+         "key": "num_hooks",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "managed_only",
+         "value": {
+          "stringValue": "false"
+         }
+        },
+        {
+         "key": "hook_source",
+         "value": {
+          "stringValue": "merged"
+         }
+        },
+        {
+         "key": "safe_mode",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078141000000",
+       "observedTimeUnixNano": "1794277078141000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.141Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 28
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-5-5"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 74
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 11382
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 11120
+         }
+        },
+        {
+         "key": "cache_creation_5m_tokens",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "cache_creation_1h_tokens",
+         "value": {
+          "intValue": 11120
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.00237502
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 2375
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1588
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 1229
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgtSkrsXED3jctNmbQNZr"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "efcf7bc5-fe21-40f2-80be-1b3404d8f854"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "sdk"
+         }
+        },
+        {
+         "key": "effort",
+         "value": {
+          "stringValue": "medium"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078201000000",
+       "observedTimeUnixNano": "1794277078201000000",
+       "body": {
+        "stringValue": "claude_code.hook_execution_complete"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "hook_execution_complete"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.201Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 29
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "hook_event",
+         "value": {
+          "stringValue": "PreToolUse"
+         }
+        },
+        {
+         "key": "hook_name",
+         "value": {
+          "stringValue": "PreToolUse:Bash"
+         }
+        },
+        {
+         "key": "num_hooks",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "num_success",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "num_blocking",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_non_blocking_error",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_cancelled",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "total_duration_ms",
+         "value": {
+          "stringValue": "66"
+         }
+        },
+        {
+         "key": "stdout_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "additional_context_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "system_message_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "initial_user_message_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_outputs_persisted",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "managed_only",
+         "value": {
+          "stringValue": "false"
+         }
+        },
+        {
+         "key": "hook_source",
+         "value": {
+          "stringValue": "merged"
+         }
+        },
+        {
+         "key": "safe_mode",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078211000000",
+       "observedTimeUnixNano": "1794277078211000000",
+       "body": {
+        "stringValue": "claude_code.tool_decision"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "tool_decision"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.211Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 30
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Bash"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_01FoZn33WD2ZfNdHJqFtvhSM"
+         }
+        },
+        {
+         "key": "tool_source",
+         "value": {
+          "stringValue": "builtin"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "{\"bash_command\":\"echo\",\"full_command\":\"echo hi\",\"description\":\"Print hi\"}"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "default"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgtSkrsXED3jctNmbQNZr"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078242000000",
+       "observedTimeUnixNano": "1794277078242000000",
+       "body": {
+        "stringValue": "claude_code.tool_result"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "tool_result"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.242Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 31
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Bash"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_01FoZn33WD2ZfNdHJqFtvhSM"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "30"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "{\"bash_command\":\"echo\",\"full_command\":\"echo hi\",\"description\":\"Print hi\"}"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "{\"command\":\"echo hi\",\"description\":\"Print hi\"}"
+         }
+        },
+        {
+         "key": "tool_input_size_bytes",
+         "value": {
+          "stringValue": "46"
+         }
+        },
+        {
+         "key": "tool_result_size_bytes",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgtSkrsXED3jctNmbQNZr"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078243000000",
+       "observedTimeUnixNano": "1794277078243000000",
+       "body": {
+        "stringValue": "claude_code.hook_execution_start"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "hook_execution_start"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.243Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 32
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "hook_event",
+         "value": {
+          "stringValue": "PostToolUse"
+         }
+        },
+        {
+         "key": "hook_name",
+         "value": {
+          "stringValue": "PostToolUse:Bash"
+         }
+        },
+        {
+         "key": "num_hooks",
+         "value": {
+          "stringValue": "3"
+         }
+        },
+        {
+         "key": "managed_only",
+         "value": {
+          "stringValue": "false"
+         }
+        },
+        {
+         "key": "hook_source",
+         "value": {
+          "stringValue": "merged"
+         }
+        },
+        {
+         "key": "safe_mode",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1794277078282000000",
+       "observedTimeUnixNano": "1794277078282000000",
+       "body": {
+        "stringValue": "claude_code.hook_execution_complete"
+       },
+       "attributes": [
+        {
+         "key": "amux.worker",
+         "value": {
+          "stringValue": "probe"
+         }
+        },
+        {
+         "key": "amux.group",
+         "value": {
+          "stringValue": "amux"
+         }
+        },
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "cc0e5b37-0d7e-419a-bece-5e032bcdedc3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000001"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "owner@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-0000-0000-000000000000"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_FIXTURE"
+         }
+        },
+        {
+         "key": "anthropic.provider",
+         "value": {
+          "stringValue": "firstParty"
+         }
+        },
+        {
+         "key": "anthropic.custom_base_url",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "anthropic.plan",
+         "value": {
+          "stringValue": "max"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "tmux"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "hook_execution_complete"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-10T02:17:58.282Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 33
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "58eaffbc-d5bf-4c80-9aeb-a8adea879c39"
+         }
+        },
+        {
+         "key": "hook_event",
+         "value": {
+          "stringValue": "PostToolUse"
+         }
+        },
+        {
+         "key": "hook_name",
+         "value": {
+          "stringValue": "PostToolUse:Bash"
+         }
+        },
+        {
+         "key": "num_hooks",
+         "value": {
+          "stringValue": "3"
+         }
+        },
+        {
+         "key": "num_success",
+         "value": {
+          "stringValue": "3"
+         }
+        },
+        {
+         "key": "num_blocking",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_non_blocking_error",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_cancelled",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "total_duration_ms",
+         "value": {
+          "stringValue": "37"
+         }
+        },
+        {
+         "key": "stdout_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "additional_context_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "system_message_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "initial_user_message_chars",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "num_outputs_persisted",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "managed_only",
+         "value": {
+          "stringValue": "false"
+         }
+        },
+        {
+         "key": "hook_source",
+         "value": {
+          "stringValue": "merged"
+         }
+        },
+        {
+         "key": "safe_mode",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
