@@ -3023,6 +3023,70 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/intent/plan",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/outcomes",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/outcomes/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/outcomes/{id}/change",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/stats",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/home",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/helpers",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/tidy",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/ideas",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/ideas/refresh",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/ideas/{id}/start",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/ideas/{id}/dismiss",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/goals",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/intent/goals/{id}",
+        methods: &["PATCH"],
+    },
+    RouteEntry {
+        path: "/api/intent/goals/{id}/check",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/intent/goals/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/tmux-sessions",
         methods: &["GET"],
     },

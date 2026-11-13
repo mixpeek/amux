@@ -563,13 +563,16 @@ pub(crate) fn override_hints(state: &AppState) -> String {
     lines.join("\n")
 }
 
-/// Which first screen: the `home` pref when set (`intent` or `fleet`),
-/// otherwise intent for a new person (fewer than five workers) and the fleet
-/// for someone already running one.
-pub(crate) fn home_choice(pref: Option<&str>, n_workers: usize) -> (&'static str, &'static str) {
-    match pref.map(str::trim) {
-        Some("intent") => ("intent", "pref"),
-        Some("fleet") => ("fleet", "pref"),
+/// Which first screen: the `home` pref when set (`intent` or `fleet`), then
+/// the `AMUX_HOME_DEFAULT` environment default (a test harness or a hosted
+/// install sets it), otherwise intent for a new person (fewer than five
+/// workers) and the fleet for someone already running one.
+pub(crate) fn home_choice(pref: Option<&str>, env_default: Option<&str>, n_workers: usize) -> (&'static str, &'static str) {
+    match (pref.map(str::trim), env_default.map(str::trim)) {
+        (Some("intent"), _) => ("intent", "pref"),
+        (Some("fleet"), _) => ("fleet", "pref"),
+        (_, Some("intent")) => ("intent", "env"),
+        (_, Some("fleet")) => ("fleet", "env"),
         _ if n_workers < 5 => ("intent", "default_new"),
         _ => ("fleet", "default_existing"),
     }
@@ -580,7 +583,8 @@ async fn home(State(state): State<AppState>) -> Response {
         c.query_row("SELECT value FROM prefs WHERE key='home'", [], |r| r.get::<_, String>(0)).ok()
     });
     let n = super::orchestrate::roster_entries(&crate::config::amux_home()).len();
-    let (home, source) = home_choice(pref.as_deref(), n);
+    let env_default = std::env::var("AMUX_HOME_DEFAULT").ok();
+    let (home, source) = home_choice(pref.as_deref(), env_default.as_deref(), n);
     Json(json!({"home": home, "source": source, "measured": true, "n_considered": n})).into_response()
 }
 
@@ -621,11 +625,13 @@ mod tests {
 
     #[test]
     fn the_home_pref_wins_and_new_people_get_intent() {
-        assert_eq!(home_choice(Some("fleet"), 0), ("fleet", "pref"));
-        assert_eq!(home_choice(Some("intent"), 90), ("intent", "pref"));
-        assert_eq!(home_choice(None, 2), ("intent", "default_new"));
-        assert_eq!(home_choice(None, 40), ("fleet", "default_existing"));
-        assert_eq!(home_choice(Some("garbage"), 40), ("fleet", "default_existing"));
+        assert_eq!(home_choice(Some("fleet"), None, 0), ("fleet", "pref"));
+        assert_eq!(home_choice(Some("intent"), Some("fleet"), 90), ("intent", "pref"), "the pref beats the environment");
+        assert_eq!(home_choice(None, Some("fleet"), 0), ("fleet", "env"));
+        assert_eq!(home_choice(None, Some("intent"), 90), ("intent", "env"));
+        assert_eq!(home_choice(None, None, 2), ("intent", "default_new"));
+        assert_eq!(home_choice(None, None, 40), ("fleet", "default_existing"));
+        assert_eq!(home_choice(Some("garbage"), Some(""), 40), ("fleet", "default_existing"));
     }
 
     #[test]

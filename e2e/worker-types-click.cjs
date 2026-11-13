@@ -6,7 +6,7 @@
 // Run it against an ISOLATED server, never the live one: it creates workers
 // and spends real model turns.
 //
-//   AMUX_HOME=$tmp/home TMUX_TMPDIR=$(mktemp -d /tmp/amuxt.XXXX) AMUX_RS_PORT=18824 //     env -u TMUX -u TMUX_PANE -u AMUX_SESSION -u AMUX_URL amux-server
+//   AMUX_HOME=$tmp/home TMUX_TMPDIR=$(mktemp -d /tmp/amuxt.XXXX) AMUX_RS_PORT=18824 AMUX_HOME_DEFAULT=fleet //     env -u TMUX -u TMUX_PANE -u AMUX_SESSION -u AMUX_URL amux-server
 //
 // Unset TMUX: with it set, tmux ignores TMUX_TMPDIR and the test server
 // reaches the real fleet's panes (2026-09-24, see frustrations.md).

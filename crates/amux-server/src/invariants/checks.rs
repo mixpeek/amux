@@ -1214,6 +1214,12 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
+    // 0159: api/intent_store.rs and intent_items.rs write epoch milliseconds.
+    ("intent_outcomes", "created_ms", true),
+    ("intent_outcomes", "updated_ms", true),
+    ("intent_items", "created_ms", true),
+    ("intent_items", "updated_ms", true),
+    ("intent_items", "status_at", true),
     // 0158: api/calls.rs writes now_f64() epoch seconds.
     ("calls", "requested_at", false),
     ("calls", "approved_at", false),

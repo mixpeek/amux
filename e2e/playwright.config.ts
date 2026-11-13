@@ -342,6 +342,9 @@ export default defineConfig({
     env: {
       AMUX_HOME: homes[t.name],
       AMUX_RS_PORT: String(t.port),
+      // The broad suite tests the fleet screen. A fresh server would open a new
+      // person's intent Home instead; that has its own set (e2e/intent).
+      AMUX_HOME_DEFAULT: 'fleet',
       // A browser test necessarily connects over loopback, which the server
       // deliberately auth-bypasses (Python parity). Without this, every
       // "rejects a bad token" assertion is a check that cannot pass — it was

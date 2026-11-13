@@ -37,6 +37,8 @@ const env = {};
 for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('AMUX_')) env[k] = v;
 Object.assign(env, {
   AMUX_HOME: home, AMUX_RS_PORT: String(port), AMUX_RS_BIND: '127.0.0.1', AMUX_NO_SELF_ADOPT: '1',
+  // These pages test the fleet; the intent Home (a new person's default) is e2e/intent.
+  AMUX_HOME_DEFAULT: 'fleet',
   AMUX_CHAT_CLAUDE_BIN: path.join(repo, 'e2e/fixtures/fake-claude-stream.py'),
   // Slow enough that a loaded CI box still samples several frames per turn.
   FAKE_CLAUDE_DELAY_MS: process.env.FAKE_CLAUDE_DELAY_MS || '80',
