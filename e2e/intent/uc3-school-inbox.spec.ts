@@ -16,6 +16,11 @@ test('school items now, and a standing goal for school forms', async ({ page, re
   const goal = goals.find((g: { title: string }) => /school form/i.test(g.title));
   expect(goal.sources.length, 'the goal records what it came from').toBeGreaterThan(0);
   expect(goal.schedule_id, 'the goal is checked on a schedule').toBeTruthy();
+  // A goal is a board card on its helper's board, tagged goal, owned by her.
+  const card0 = await (await request.get('/api/board/' + encodeURIComponent(goal.id))).json();
+  expect(card0.status, 'an active goal is in progress').toBe('doing');
+  expect(card0.session, 'on the board of the helper it went to').toBe(goal.worker);
+  expect(card0.owner_type).toBe('human');
   await pane(page, 'goals');
   const card = page.locator('.home-card').filter({ hasText: /never miss a school form/i }).first();
   await expect(card).toBeVisible();

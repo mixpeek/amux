@@ -40,6 +40,9 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
     expect(rem.some((x: { title: string }) => /goal inputs/i.test(x.title)), 'a shell check is not a reminder').toBeFalsy();
     // A fresh render of the conversation, so the check reads current data.
     const id = outcomes.find((o: { title: string }) => /camp/i.test(o.title))?.id;
+    // A reload with a saved view and no remembered choice: the server's answer
+    // alone has to bring simple mode back (her helpers do not count as a fleet).
+    await page.evaluate(() => localStorage.removeItem('amux_home_choice'));
     await openHome(page);
     await page.locator(`.home-row[data-outcome="${id}"]`).click();
     await expect(page.locator('.home-reminder').filter({ hasText: /camp/i })).toBeVisible({ timeout: 30_000 });
@@ -58,12 +61,27 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
   await expect(card).toContainText(/draft/i);
   await expect(card.locator('.home-card-from')).toContainText(/email/i);
   await noJargon(page);
-  // Doing the idea gives a draft Dana sends from her own mail; amux sends nothing.
+  // An idea is a board card, tagged idea, kept off any helper's queue.
+  const board = await (await request.get('/api/board?all=1&slim=0')).json();
+  const ideaCard = (Array.isArray(board) ? board : []).find((c: { id: string }) => c.id === idea.id);
+  expect(ideaCard, 'the idea is a board card').toBeTruthy();
+  expect(ideaCard.status).toBe('backlog');
+  expect(ideaCard.owner_type, 'owned by her, so nothing dispatches it').toBe('human');
+  // Doing the idea: her helper writes the email through the email API, which
+  // holds it for her OK. It shows in the conversation with Send and Discard.
   await card.getByRole('button', { name: 'Do it' }).click();
   const draft = page.locator('.home-draft').first();
   await expect(draft).toBeVisible({ timeout: 60_000 });
-  await expect(draft).toContainText(/not sent/i);
-  await expect(draft.getByRole('link', { name: 'Open in Mail' })).toHaveAttribute('href', /^mailto:marcy%40campkaylie\.test\?subject=Re/);
+  await expect(draft).toContainText(/waiting for your OK/i);
+  await expect(draft).toContainText('marcy@campkaylie.test');
+  await expect(draft.getByRole('button', { name: 'Send' })).toBeVisible();
+  const held = (await (await request.get('/api/email/approvals')).json()).pending || [];
+  expect(held.some((p: { preview?: { subject?: string } }) => /Rafi Levin/.test(p.preview?.subject || '')), 'held by the email API').toBeTruthy();
   await noJargon(page);
+  // Discard: the draft goes, and nothing was sent.
+  await draft.getByRole('button', { name: 'Discard' }).click();
+  await expect(page.locator('.home-draft')).toHaveCount(0, { timeout: 20_000 });
+  const after = (await (await request.get('/api/email/approvals')).json()).pending || [];
+  expect(after.some((p: { preview?: { subject?: string } }) => /Rafi Levin/.test(p.preview?.subject || '')), 'discarded').toBeFalsy();
   expect(await deliveredSends(request), 'nothing was sent outside').toBe(sends);
 });

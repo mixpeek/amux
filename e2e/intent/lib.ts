@@ -25,15 +25,21 @@ export async function deliveredSends(request: APIRequestContext): Promise<number
   return Number(v.delivered_count ?? (v.log || []).filter((x: { delivered?: boolean }) => x.delivered).length);
 }
 
+/** A new person lands in Chat, a tab in the normal tab bar, with only Chat,
+ * Ideas, Goals and "Everything else" showing. */
 export async function openHome(page: Page) {
   await page.goto('/');
   await expect(page.locator('#home-view')).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('.tab-bar-outer')).toBeHidden();
+  await expect(page.locator('#tab-home')).toBeVisible();
+  await expect(page.locator('#tab-home')).toHaveClass(/active/);
+  for (const t of ['#tab-ideas', '#tab-goals', '#tab-everything']) await expect(page.locator(t)).toBeVisible();
+  await expect(page.locator('#tab-sessions'), 'the worker tabs are hidden for a new person').toBeHidden();
+  await expect(page.locator('#tab-board')).toBeHidden();
 }
 
 /** Say something in Chat and land in its thread. */
 export async function ask(page: Page, text: string) {
-  if (await page.locator('#home-composer').isHidden()) await page.locator('#home-nav-chat').click();
+  if (await page.locator('#home-composer').isHidden()) await page.locator('#tab-home').click();
   if (await page.locator('.home-back').isVisible()) await page.locator('.home-back').click();
   await page.locator('#home-input').fill(text);
   await page.locator('#home-send').click();
@@ -49,18 +55,27 @@ export async function reply(page: Page, re: RegExp) {
 /** The default path shows no machinery words. amux's own words are checked;
  * the family's messages and answers about them (a camp's "Session 2") are not. */
 export async function noJargon(page: Page) {
-  const text = await page.locator('#home-view').evaluate((root) => {
-    const c = root.cloneNode(true) as HTMLElement;
-    c.querySelectorAll('.home-bubble, .home-row-snip, .home-card-from').forEach((n) => n.remove());
-    return c.innerText;
+  // The visible tab bar and whichever of Chat, Ideas or Goals is open.
+  const text = await page.evaluate(() => {
+    const roots = [document.querySelector('.tab-bar'), ...['home-view', 'ideas-view', 'goals-view'].map((id) => document.getElementById(id))]
+      .filter((r): r is HTMLElement => !!r && (r as HTMLElement).offsetParent !== null);
+    return roots.map((root) => {
+      // Only what shows: a hidden tab's label is not on the default path.
+      const hidden = Array.from(root.querySelectorAll('button')).map((b) => (b as HTMLElement).offsetParent === null);
+      const c = root.cloneNode(true) as HTMLElement;
+      const btns = Array.from(c.querySelectorAll('button'));
+      hidden.forEach((h, i) => { if (h) btns[i]?.remove(); });
+      c.querySelectorAll('.home-bubble, .home-row-snip, .home-card-from, .home-draft-meta, .home-draft-body').forEach((n) => n.remove());
+      return c.innerText;
+    }).join('\n');
   });
   const hit = text.match(JARGON);
   expect(hit?.[0] ?? null, `jargon on the default path: "${hit?.[0]}" in: ${text.slice(Math.max(0, (hit?.index ?? 0) - 60), (hit?.index ?? 0) + 60)}`).toBeNull();
 }
 
 export async function pane(page: Page, name: 'chat' | 'ideas' | 'goals') {
-  await page.locator('#home-nav-' + name).click();
-  await expect(page.locator('#home-' + name)).toBeVisible();
+  await page.locator(name === 'chat' ? '#tab-home' : '#tab-' + name).click();
+  await expect(page.locator(name === 'chat' ? '#home-view' : `#${name}-view`)).toBeVisible();
 }
 
 /** Poll an API until `ok` holds (the ideas pass runs in the background). */

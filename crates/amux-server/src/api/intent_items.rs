@@ -13,15 +13,15 @@
 //! Every idea and goal records the sources it came from; one whose sources do
 //! not exist is dropped and counted (`dropped_unsourced`), never kept.
 //!
-//! A goal is composed from primitives (A1): a versioned goal contract
-//! (`planning.rs`, `_amux_goal_contracts`), an outcome thread routed to a
-//! worker, and a schedule running a cheap shell check
-//! (`POST /api/intent/goals/{id}/check`). The check fingerprints the goal's
-//! inputs and calls a model only when they changed; then the status line is
-//! rewritten and, when the change needs work, the goal's worker is asked to
-//! prepare it. Goals start on their own (decided 2026-11-12) but only read and
-//! draft: the worker is told so, and the first outside action waits for the
-//! owner's Approve (`outside_ok`).
+//! Both are board cards (A1): an idea is a backlog card tagged `idea`, a goal
+//! a card tagged `goal` on its helper's board, `owner_type: human` so nothing
+//! dispatches them. A goal also has a conversation (an outcome thread with its
+//! helper) and a scheduled shell check (`POST /api/intent/goals/{id}/check`)
+//! that fingerprints its inputs and asks the helper only when they changed.
+//! The status line is the helper's newest STATUS: line in that conversation.
+//! Goals start on their own but only read and draft: an outside email is a
+//! held email-API send the owner approves, and any other outside step is an
+//! ASK: line the owner answers in the conversation.
 
 use super::AppState;
 use axum::extract::{Path, Query, State};
@@ -43,6 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/intent/goals/{id}/check", post(check_goal))
         .route("/api/intent/goals/{id}/approve", post(approve_goal))
         .route("/api/intent/reminders", get(reminders))
+        .route("/api/intent/todos", post(add_todo))
 }
 
 /// Reminders a helper set for an outcome (`amux wake` one-time schedules on
@@ -421,12 +422,12 @@ pub(crate) fn validate_offers(raw: &Value, srcs: &[Src], taken: &BTreeSet<String
     (out, c)
 }
 
+/// Every idea and goal card ever offered (any status), as `kind:fingerprint`,
+/// and their titles for the pass prompt, so nothing is offered twice.
 fn existing_fingerprints(state: &AppState) -> (BTreeSet<String>, Vec<String>) {
-    let Ok(c) = state.store.read() else { return (BTreeSet::new(), vec![]) };
-    let Ok(mut st) = c.prepare("SELECT kind, fingerprint, title FROM intent_items") else { return (BTreeSet::new(), vec![]) };
-    let rows: Vec<(String, String, String)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map(|r| r.flatten().collect()).unwrap_or_default();
-    (rows.iter().map(|(k, f, _)| format!("{k}:{f}")).collect(), rows.iter().map(|(_, _, t)| t.clone()).collect())
+    let all: Vec<Value> = ["idea", "goal"].iter().flat_map(|k| all_items(state, k)).collect();
+    (all.iter().map(|v| format!("{}:{}", v["kind"].as_str().unwrap_or(""), fingerprint(v["title"].as_str().unwrap_or("")))).collect(),
+     all.iter().map(|v| v["title"].as_str().unwrap_or("").to_string()).collect())
 }
 
 /// Run one pass. `focus` is an outcome just started, read first.
@@ -490,82 +491,183 @@ fn extract_array(s: &str) -> Option<Vec<Value>> {
     serde_json::from_str::<Value>(s.get(a..=b)?).ok()?.as_array().cloned()
 }
 
-fn item_id(kind: &str) -> String {
-    format!("{}{}", if kind == "goal" { "g" } else { "i" }, ulid::Ulid::new().to_string().to_lowercase())
+// ---- ideas and goals are board cards ----------------------------------------------
+//
+// An idea is a backlog card tagged `idea`; a goal is a card tagged `goal` on
+// its helper's board. Both are `owner_type: human` (the owner's own), so no
+// dispatcher picks them up, prompts the helper about them or promotes them
+// (board_drive filters on owner_type agent). The request starting one is the
+// card's `next_action`; what it came from is listed in its description; a
+// goal's due date is the card's `due`, which makes it Tracking.
+
+const CREATOR: &str = "amux-intent";
+
+/// The card statuses each item status is, both ways.
+fn card_status(kind: &str, status: &str) -> &'static str {
+    match (kind, status) {
+        ("idea", "offered") => "backlog",
+        ("idea", "started") => "done",
+        ("goal", "active") => "doing",
+        ("goal", "paused") => "backlog",
+        ("goal", "done") => "done",
+        _ => "discarded",
+    }
 }
 
-/// Store an idea, or store and start a goal.
-async fn store_offer(state: &AppState, o: &Offer) -> Result<String, String> {
-    let id = item_id(o.kind);
-    let (o2, id2) = (o.clone(), id.clone());
-    let status = if o.kind == "goal" { "active" } else { "offered" };
-    state.store.write_async(move |c| {
-        c.execute(
-            "INSERT OR IGNORE INTO intent_items (id, kind, tier, title, body, request, status, why, sources, due, status_line, status_at, fingerprint, created_ms, updated_ms) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",
-            rusqlite::params![id2, o2.kind, o2.tier, o2.title, o2.body, o2.request, status, o2.why,
-                Value::Array(o2.sources.clone()).to_string(), o2.due, o2.status_line,
-                (!o2.status_line.is_empty()).then(now_ms), fingerprint(&o2.title), now_ms()],
-        )?;
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await.map_err(|e| e.to_string())?;
-    if o.kind == "goal" {
-        if let Err(e) = start_goal(state, &id).await {
-            tracing::warn!(goal = %id, error = %e, measured = true, n_considered = 1, verdict = "intent_goal_not_started",
-                "intent: an inferred goal was stored but could not be started");
+fn item_status(kind: &str, card: &str) -> &'static str {
+    match (kind, card) {
+        ("idea", "backlog" | "todo") => "offered",
+        ("idea", "done" | "verified" | "doing" | "review") => "started",
+        ("goal", "doing" | "todo" | "review") => "active",
+        ("goal", "backlog") => "paused",
+        ("goal", "done" | "verified") => "done",
+        _ => "dismissed",
+    }
+}
+
+/// The card's description: what it offers, why, its status line, and the
+/// sources it came from, one per line, so a person reading the board sees them
+/// and `parse_desc` reads them back.
+pub(crate) fn card_desc(body: &str, why: &str, status_line: &str, sources: &[Value]) -> String {
+    let mut d = body.trim().to_string();
+    if !why.trim().is_empty() {
+        d.push_str(&format!("\n\nWhy: {}", why.trim()));
+    }
+    if !status_line.trim().is_empty() {
+        d.push_str(&format!("\n\nNow: {}", status_line.trim()));
+    }
+    if !sources.is_empty() {
+        d.push_str("\n\nFrom:");
+        for s in sources {
+            let text: String = s["text"].as_str().unwrap_or("").replace('\n', " ").chars().take(200).collect();
+            d.push_str(&format!("\n- {} {}: {}", s["kind"].as_str().unwrap_or("message"),
+                s["id"].as_str().map(str::to_string).unwrap_or_else(|| s["id"].to_string()), text));
         }
     }
-    Ok(id)
+    d
 }
 
-// ---- items ----------------------------------------------------------------------
+/// `card_desc` read back: (body, why, status line, sources).
+pub(crate) fn parse_desc(desc: &str) -> (String, String, String, Vec<Value>) {
+    let (main, from) = match desc.split_once("\n\nFrom:") { Some((m, f)) => (m, f), None => (desc, "") };
+    let mut parts = main.split("\n\n");
+    let mut body = vec![];
+    let (mut why, mut now) = (String::new(), String::new());
+    for p in parts.by_ref() {
+        if let Some(w) = p.strip_prefix("Why: ") { why = w.to_string(); }
+        else if let Some(n) = p.strip_prefix("Now: ") { now = n.to_string(); }
+        else { body.push(p); }
+    }
+    let sources = from.lines().filter_map(|l| {
+        let l = l.strip_prefix("- ")?;
+        let (head, text) = l.split_once(": ")?;
+        let (kind, id) = head.split_once(' ')?;
+        Some(json!({"kind": kind, "id": id, "text": text}))
+    }).collect();
+    (body.join("\n\n"), why, now, sources)
+}
+
+/// Every card of a kind (tag `idea` or `goal`), newest first, as the item
+/// the routes return. Archived cards are left out.
+fn all_items(state: &AppState, kind: &str) -> Vec<Value> {
+    let Ok(c) = state.store.read() else { return vec![] };
+    let Ok(mut st) = c.prepare(
+        "SELECT i.id, i.title, COALESCE(i.desc,''), i.status, COALESCE(i.session,''), i.due, COALESCE(i.next_action,''), \
+         i.created, i.updated FROM issues i JOIN issue_tags t ON t.issue_id = i.id \
+         WHERE t.tag = ?1 AND COALESCE(i.archived,0) = 0 AND i.deleted IS NULL ORDER BY i.created DESC LIMIT 300") else {
+        return vec![];
+    };
+    let rows: Vec<Value> = st.query_map([kind], |r| {
+        let desc: String = r.get(2)?;
+        let (body, why, now, sources) = parse_desc(&desc);
+        let card: String = r.get(3)?;
+        let due: Option<String> = r.get(5)?;
+        let ms = |v: i64| if v < 1_000_000_000_000 { v * 1000 } else { v };
+        Ok(json!({
+            "id": r.get::<_, String>(0)?, "kind": kind, "title": r.get::<_, String>(1)?, "body": body, "why": why,
+            "status_line": now, "sources": sources, "status": item_status(kind, &card), "card_status": card,
+            "worker": r.get::<_, String>(4)?, "tier": if due.is_some() { "tracking" } else { "standing" }, "due": due,
+            "request": r.get::<_, String>(6)?, "created_ms": ms(r.get::<_, f64>(7).map(|v| v as i64).unwrap_or(0)),
+            "updated_ms": ms(r.get::<_, f64>(8).map(|v| v as i64).unwrap_or(0)),
+        }))
+    }).map(|r| r.flatten().collect()).unwrap_or_default();
+    rows
+}
 
 pub(crate) fn get_item(state: &AppState, id: &str) -> Option<Value> {
-    let c = state.store.read().ok()?;
-    c.query_row(
-        "SELECT id, kind, tier, title, body, request, status, why, sources, due, status_line, status_at, worker, outcome_id, goal_id, schedule_id, outside_ok, created_ms, updated_ms \
-         FROM intent_items WHERE id=?1",
-        [id],
-        item_row,
-    ).ok()
-}
-
-fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
-    Ok(json!({
-        "id": r.get::<_, String>(0)?, "kind": r.get::<_, String>(1)?, "tier": r.get::<_, String>(2)?,
-        "title": r.get::<_, String>(3)?, "body": r.get::<_, String>(4)?, "request": r.get::<_, String>(5)?,
-        "status": r.get::<_, String>(6)?, "why": r.get::<_, String>(7)?,
-        "sources": serde_json::from_str::<Value>(&r.get::<_, String>(8)?).unwrap_or(json!([])),
-        "due": r.get::<_, Option<String>>(9)?, "status_line": r.get::<_, String>(10)?, "status_at": r.get::<_, Option<i64>>(11)?,
-        "worker": r.get::<_, String>(12)?, "outcome_id": r.get::<_, Option<String>>(13)?, "goal_id": r.get::<_, Option<String>>(14)?,
-        "schedule_id": r.get::<_, Option<String>>(15)?, "outside_ok": r.get::<_, i64>(16)? != 0,
-        "created_ms": r.get::<_, i64>(17)?, "updated_ms": r.get::<_, i64>(18)?,
-    }))
+    ["idea", "goal"].iter().flat_map(|k| all_items(state, k)).find(|v| v["id"] == id)
 }
 
 fn items(state: &AppState, kind: &str, statuses: &[&str]) -> Result<Vec<Value>, String> {
-    let c = state.store.read().map_err(|e| e.to_string())?;
-    let mut st = c.prepare(
-        "SELECT id, kind, tier, title, body, request, status, why, sources, due, status_line, status_at, worker, outcome_id, goal_id, schedule_id, outside_ok, created_ms, updated_ms \
-         FROM intent_items WHERE kind=?1 ORDER BY created_ms DESC LIMIT 200",
-    ).map_err(|e| e.to_string())?;
-    let rows: Vec<Value> = st.query_map([kind], item_row).map_err(|e| e.to_string())?.flatten()
-        .filter(|v| statuses.contains(&v["status"].as_str().unwrap_or(""))).collect();
-    Ok(rows)
+    Ok(all_items(state, kind).into_iter().filter(|v| statuses.contains(&v["status"].as_str().unwrap_or(""))).collect())
 }
 
-async fn set_fields(state: &AppState, id: &str, fields: Vec<(&'static str, rusqlite::types::Value)>) -> Result<(), String> {
-    let id = id.to_string();
-    state.store.write_async(move |c| {
-        for (k, v) in fields {
-            c.execute(&format!("UPDATE intent_items SET {k}=?2, updated_ms=?3 WHERE id=?1"), rusqlite::params![id, v, now_ms()])?;
+/// Every goal card's id, any status.
+pub(crate) fn goal_ids(state: &AppState) -> BTreeSet<String> {
+    all_items(state, "goal").into_iter().filter_map(|g| g["id"].as_str().map(str::to_string)).collect()
+}
+
+/// The helpers of active goals (tidying never stops one).
+pub(crate) fn active_goal_workers(state: &AppState) -> Vec<String> {
+    items(state, "goal", &["active"]).unwrap_or_default().iter()
+        .filter_map(|g| g["worker"].as_str().filter(|w| !w.is_empty()).map(str::to_string)).collect()
+}
+
+/// A response body from a board handler called in-process.
+async fn body_of(resp: Response) -> (bool, Value) {
+    let ok = resp.status().is_success();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
+    (ok, serde_json::from_slice(&bytes).unwrap_or(json!({})))
+}
+
+/// Create the card through the board's own create (attributed to amux-intent,
+/// tagged, so intake never folds it into another card).
+async fn create_card(state: &AppState, body: Value) -> Result<String, String> {
+    let (ok, v) = body_of(super::board::create_item(State(state.clone()), HeaderMap::new(), Json(body)).await).await;
+    if !ok || v.get("card_created") == Some(&json!(false)) {
+        return Err(format!("the board did not create the card: {}", v["error"].as_str().unwrap_or(&v.to_string())));
+    }
+    v["id"].as_str().map(str::to_string).ok_or_else(|| "the board answered with no card id".into())
+}
+
+/// Change a card through the board's own update. Done carries its evidence.
+async fn patch_card(state: &AppState, id: &str, mut body: Value) -> Result<(), String> {
+    if body["status"] == "done" && body.get("evidence").is_none() {
+        body["evidence"] = json!("none: the owner closed it from Home");
+    }
+    if body.get("status").is_some() {
+        body["gate_ack"] = json!(true);
+    }
+    let (ok, v) = body_of(super::board::patch_item(State(state.clone()), Path(id.to_string()),
+        super::org::policy_headers(CREATOR), Json(body)).await).await;
+    if ok { Ok(()) } else { Err(format!("the board refused the change to {id}: {}", v["error"].as_str().unwrap_or(&v.to_string()))) }
+}
+
+/// Store an idea as a backlog card, or a goal as a card on its helper's
+/// board (and start it). A title already offered, under any status, is not
+/// offered again.
+async fn store_offer(state: &AppState, o: &Offer) -> Result<String, String> {
+    let fp = fingerprint(&o.title);
+    if all_items(state, o.kind).iter().any(|v| fingerprint(v["title"].as_str().unwrap_or("")) == fp) {
+        return Err(format!("already offered: {}", o.title));
+    }
+    let mut body = json!({
+        "title": o.title, "desc": card_desc(&o.body, &o.why, &o.status_line, &o.sources),
+        "status": card_status(o.kind, if o.kind == "goal" { "active" } else { "offered" }),
+        "session": "", "owner_type": "human", "creator": CREATOR, "type": "chore",
+        "tags": [o.kind], "next_action": o.request,
+    });
+    if let Some(d) = o.due.as_deref().filter(|d| !d.is_empty()) {
+        body["due"] = json!(d);
+    }
+    let id = create_card(state, body).await?;
+    if o.kind == "goal" {
+        if let Err(e) = start_goal(state, &id).await {
+            tracing::warn!(goal = %id, error = %e, measured = true, n_considered = 1, verdict = "intent_goal_not_started",
+                "intent: an inferred goal was carded but could not be started");
         }
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await.map(|_| ()).map_err(|e| e.to_string())
-}
-
-fn txt(s: impl Into<String>) -> rusqlite::types::Value {
-    rusqlite::types::Value::Text(s.into())
+    }
+    Ok(id)
 }
 
 /// A pass runs when the owner opens Ideas with none offered, on refresh, and
@@ -589,7 +691,11 @@ fn new_since_last_pass(state: &AppState) -> i64 {
     let last: i64 = c.query_row("SELECT value FROM prefs WHERE key='intent_last_pass_ms'", [], |r| r.get::<_, String>(0))
         .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let m: i64 = c.query_row("SELECT COUNT(*) FROM cmd_history WHERE type='user' AND ts > ?1", [last], |r| r.get(0)).unwrap_or(0);
-    let o: i64 = c.query_row("SELECT COUNT(*) FROM intent_outcomes WHERE created_ms > ?1", [last], |r| r.get(0)).unwrap_or(0);
+    // A new outcome is its first record post (`"outcome"` in its attachment).
+    let o: i64 = c.query_row(
+        "SELECT COUNT(*) FROM conversation_posts WHERE author_key=?1 AND conv LIKE 'o:%' AND ts > ?2 \
+         AND attachments LIKE '%\"outcome\"%' AND deleted_at IS NULL",
+        rusqlite::params![super::intent_record::AUTHOR, last], |r| r.get(0)).unwrap_or(0);
     m + o
 }
 
@@ -696,8 +802,10 @@ async fn start_idea(State(state): State<AppState>, Path(id): Path<String>) -> Re
     let title = it["title"].as_str().map(str::to_string);
     match super::intent_store::start_outcome(&state, &req, None, Some(id.clone()), title, it["sources"].clone()).await {
         Ok(v) => {
+            // The card moves to the helper it went to, closed with where the request now lives.
             let oid = v["outcome"]["id"].as_str().unwrap_or("").to_string();
-            logged("idea started", set_fields(&state, &id, vec![("status", txt("started")), ("outcome_id", txt(oid))]).await);
+            logged("idea started", patch_card(&state, &id, json!({"status": "done", "session": v["outcome"]["worker"],
+                "evidence": format!("none: started as a request in Chat (o:{oid})")})).await);
             remember_feedback(&state, &fingerprint(it["title"].as_str().unwrap_or("")),
                 format!("Owner STARTED the idea: {}", it["title"].as_str().unwrap_or(""))).await;
             Json(v).into_response()
@@ -708,7 +816,7 @@ async fn start_idea(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 async fn dismiss_idea(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(it) = get_item(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no idea {id}")) };
-    if let Err(e) = set_fields(&state, &id, vec![("status", txt("dismissed"))]).await {
+    if let Err(e) = patch_card(&state, &id, json!({"status": "discarded"})).await {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     remember_feedback(&state, &fingerprint(it["title"].as_str().unwrap_or("")),
@@ -735,47 +843,35 @@ pub(crate) fn goal_brief(title: &str, request: &str, tier: &str, due: Option<&st
     )
 }
 
+/// Start a goal: its conversation, routed like any request, then the card
+/// moves to that helper's board, and a cheap check goes on the scheduler.
 async fn start_goal(state: &AppState, id: &str) -> Result<(), String> {
     let it = get_item(state, id).ok_or("goal vanished")?;
     let title = it["title"].as_str().unwrap_or("").to_string();
     let request = it["request"].as_str().unwrap_or("").to_string();
-    // 1. The versioned goal intent (planning.rs).
-    let contract = amux_core::harness::GoalContract {
-        id: format!("goal_{id}"),
-        objective: title.clone(),
-        non_goals: vec!["Sending, buying or changing anything outside amux before the owner approves".into()],
-        success_metrics: vec![request.clone()],
-        performance_requirements: vec![],
-        resource_constraints: vec!["Read and draft only until the owner approves the first outside action".into()],
-        dependency_policy: "inferred by amux from the owner's requests".into(),
-        release_policy: "the owner approves every outside action".into(),
-        expected_scope_min: 1,
-        expected_scope_max: 1,
-        version: 0,
-        updated_by: "amux:intent".into(),
-        updated_at: chrono::Utc::now(),
-    };
-    let gid = contract.id.clone();
-    state.store.write_async(move |c| {
-        crate::db::harness_store::put_goal_contract(c, &contract)?;
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await.map_err(|e| e.to_string())?;
-    // 2. Its outcome thread, routed like any request.
     let brief = goal_brief(&title, &request, it["tier"].as_str().unwrap_or(""), it["due"].as_str());
     let started = super::intent_store::start_outcome(state, &brief, None, Some(id.to_string()), Some(title.clone()), it["sources"].clone())
         .await.map_err(|(_, e)| e)?;
-    let oid = started["outcome"]["id"].as_str().unwrap_or("").to_string();
     let worker = started["outcome"]["worker"].as_str().unwrap_or("").to_string();
-    // 3. The cheap check, on the scheduler.
-    let sched = create_check_schedule(state, id, &title).await;
-    let mut fields = vec![("goal_id", txt(gid)), ("outcome_id", txt(oid)), ("worker", txt(worker))];
-    if let Some(s) = sched {
-        fields.push(("schedule_id", txt(s)));
+    if !worker.is_empty() {
+        patch_card(state, id, json!({"session": worker})).await?;
     }
-    set_fields(state, id, fields).await?;
-    tracing::info!(goal = %id, measured = true, n_considered = 1, verdict = "intent_goal_started",
-        "intent: an inferred goal started (read and draft only until the owner approves)");
+    create_check_schedule(state, id, &title).await;
+    tracing::info!(goal = %id, worker = %worker, measured = true, n_considered = 1, verdict = "intent_goal_started",
+        "intent: an inferred goal started on its helper's board (read and draft only until the owner approves)");
     Ok(())
+}
+
+/// A goal's conversation: the outcome its card started.
+fn goal_outcome(state: &AppState, id: &str) -> Option<String> {
+    super::intent_store::all_outcomes(state).ok()?.into_iter().find(|o| o.item_id.as_deref() == Some(id)).map(|o| o.id)
+}
+
+/// A goal's scheduled check, found by the route it calls.
+fn goal_schedule(state: &AppState, id: &str) -> Option<String> {
+    let c = state.store.read().ok()?;
+    c.query_row("SELECT id FROM schedules WHERE deleted IS NULL AND command LIKE ?1 LIMIT 1",
+        [format!("%/api/intent/goals/{id}/check%")], |r| r.get(0)).ok()
 }
 
 async fn create_schedule(state: &AppState, body: Value) -> Option<String> {
@@ -835,28 +931,69 @@ pub(crate) fn status_from_posts(posts: &[Value]) -> Option<(String, i64)> {
     })
 }
 
-/// A pending ask: the newest worker post's ASK: line, when the owner has not
-/// approved outside actions for this goal.
+/// A pending ask: the ASK: line of the helper's post, while that post is the
+/// newest one (the owner's answer, an OK or anything else, closes it).
 pub(crate) fn ask_from_posts(posts: &[Value]) -> Option<String> {
-    let last = posts.iter().rev().find(|p| p["author_key"].as_str().unwrap_or("").starts_with("worker:"))?;
+    let last = posts.last().filter(|p| p["author_key"].as_str().unwrap_or("").starts_with("worker:"))?;
     last["body"].as_str()?.lines().find_map(|l| l.trim().trim_start_matches(['*', ' ']).strip_prefix("ASK:")).map(|s| s.trim().to_string())
 }
 
 fn goal_view(state: &AppState, g: &Value) -> Value {
     let mut g = g.clone();
-    if let Some(oid) = g["outcome_id"].as_str() {
-        let posts = super::intent_store::posts_of(state, oid);
+    g["schedule_id"] = json!(goal_schedule(state, g["id"].as_str().unwrap_or("")));
+    if let Some(oid) = goal_outcome(state, g["id"].as_str().unwrap_or("")) {
+        let posts = super::intent_store::posts_of(state, &oid);
         if let Some((line, ts)) = status_from_posts(&posts) {
-            if ts >= g["status_at"].as_i64().unwrap_or(0) {
-                g["status_line"] = json!(line);
-                g["status_at"] = json!(ts);
-            }
+            g["status_line"] = json!(line);
+            g["status_at"] = json!(ts);
         }
-        if !g["outside_ok"].as_bool().unwrap_or(false) {
-            g["pending_ask"] = json!(ask_from_posts(&posts));
-        }
+        g["pending_ask"] = json!(ask_from_posts(&posts));
+        g["outcome_id"] = json!(oid);
     }
     g
+}
+
+/// A to-do she asked a helper for: a card on her own board (unassigned,
+/// `owner_type: human`, tagged `todo`), made through the board's own create.
+/// A helper cannot write to its board (new workers have their board switches
+/// off, owner ruling 2026-11-02), so it asks here (owner, 2026-11-13).
+/// The caller is the helper (`X-Amux-Session`); its name goes in the card.
+async fn add_todo(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    let title: String = body["title"].as_str().unwrap_or("").trim().chars().take(120).collect();
+    if title.is_empty() {
+        return bad(StatusCode::BAD_REQUEST, "say what the to-do is (title)");
+    }
+    let helper = super::email::hdr_lane(&headers).unwrap_or_default();
+    let mut card = json!({"title": title, "status": "todo", "session": "", "owner_type": "human", "creator": CREATOR,
+        "type": "chore", "tags": ["todo"],
+        "desc": if helper.is_empty() { "Asked for in Chat.".to_string() } else { format!("Asked for in Chat; noted by {helper}.") }});
+    if let Some(d) = body["due"].as_str().filter(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_ok()) {
+        card["due"] = json!(d);
+    }
+    match create_card(&state, card).await {
+        Ok(id) => {
+            tracing::info!(card = %id, helper = %helper, measured = true, n_considered = 1, verdict = "intent_todo_added",
+                "intent: a to-do she asked for is a card on her board");
+            Json(json!({"ok": true, "id": id, "title": title})).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, helper = %helper, measured = true, n_considered = 1, verdict = "intent_todo_not_added",
+                "intent: a to-do could not be carded");
+            bad(StatusCode::BAD_GATEWAY, e)
+        }
+    }
+}
+
+/// Her open to-dos (cards tagged `todo`), newest first.
+pub(crate) fn todos(state: &AppState) -> Vec<Value> {
+    let Ok(c) = state.store.read() else { return vec![] };
+    let Ok(mut st) = c.prepare(
+        "SELECT i.id, i.title, i.status, i.due FROM issues i JOIN issue_tags t ON t.issue_id = i.id \
+         WHERE t.tag = 'todo' AND i.status IN ('backlog','todo','doing','review') AND COALESCE(i.archived,0) = 0 \
+         AND i.deleted IS NULL ORDER BY i.created DESC LIMIT 50") else { return vec![] };
+    st.query_map([], |r| Ok(json!({"id": r.get::<_, String>(0)?, "title": r.get::<_, String>(1)?,
+        "status": r.get::<_, String>(2)?, "due": r.get::<_, Option<String>>(3)?})))
+        .map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
 async fn list_goals(State(state): State<AppState>) -> Response {
@@ -865,63 +1002,52 @@ async fn list_goals(State(state): State<AppState>) -> Response {
         Ok(v) => {
             let n = v.len();
             let goals: Vec<Value> = v.iter().map(|g| goal_view(&state, g)).collect();
-            Json(json!({"goals": goals, "measured": true, "n_considered": n})).into_response()
+            Json(json!({"goals": goals, "todos": todos(&state), "measured": true, "n_considered": n})).into_response()
         }
         Err(e) => Json(json!({"goals": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
     }
 }
 
 async fn patch_goal(State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
-    let Some(g) = get_item(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no goal {id}")) };
-    let mut fields = vec![];
-    if let Some(t) = body["title"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
-        fields.push(("title", txt(t.chars().take(90).collect::<String>())));
-        // A reworded goal is a new version of its goal contract.
-        if let Some(gid) = g["goal_id"].as_str() {
-            let (gid, t) = (gid.to_string(), t.to_string());
-            logged("store write", state.store.write_async(move |c| {
-                if let Ok(Some(mut gc)) = crate::db::harness_store::get_goal_contract(c, &gid) {
-                    gc.objective = t;
-                    gc.updated_by = "owner".into();
-                    gc.updated_at = chrono::Utc::now();
-                    crate::db::harness_store::put_goal_contract(c, &gc)?;
-                }
-                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-            }).await);
-        }
+    if get_item(&state, &id).is_none() {
+        return bad(StatusCode::NOT_FOUND, format!("no goal {id}"));
     }
-    if let Some(s) = body["status"].as_str() {
-        if !["active", "paused", "done", "dismissed"].contains(&s) {
+    let mut change = json!({});
+    if let Some(t) = body["title"].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+        change["title"] = json!(t.chars().take(90).collect::<String>());
+    }
+    if let Some(st) = body["status"].as_str() {
+        if !["active", "paused", "done", "dismissed"].contains(&st) {
             return bad(StatusCode::BAD_REQUEST, "status is active, paused, done or dismissed");
         }
-        fields.push(("status", txt(s)));
-        if let Some(sid) = g["schedule_id"].as_str() {
-            let on = if s == "active" { 1 } else { 0 };
-            let sid = sid.to_string();
+        change["status"] = json!(card_status("goal", st));
+        // Its check runs only while it is active.
+        if let Some(sid) = goal_schedule(&state, &id) {
+            let on = if st == "active" { 1 } else { 0 };
             logged("store write", state.store.write_async(move |c| {
                 c.execute("UPDATE schedules SET enabled=?2 WHERE id=?1", rusqlite::params![sid, on])?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
             }).await);
         }
     }
-    if let Err(e) = set_fields(&state, &id, fields).await {
+    if let Err(e) = patch_card(&state, &id, change).await {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     Json(json!({"ok": true, "goal": get_item(&state, &id).map(|g| goal_view(&state, &g))})).into_response()
 }
 
+/// The owner's OK for the step a goal's helper asked about (its ASK: line):
+/// said in the goal's own conversation, so the helper reads it there. An
+/// email still goes through the email API's own approval.
 async fn approve_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let Some(g) = get_item(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no goal {id}")) };
-    if let Err(e) = set_fields(&state, &id, vec![("outside_ok", rusqlite::types::Value::Integer(1))]).await {
-        return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
-    }
-    if let Some(oid) = g["outcome_id"].as_str() {
-        logged("approval delivered", super::intent_store::start_outcome(&state,
-            "I approve what you asked to do for this goal. Go ahead with that one step; any outside email still goes through amux's own approval.",
-            Some(oid), None, None, json!([])).await.map_err(|(_, e)| e));
+    let Some(oid) = goal_outcome(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no goal {id}")) };
+    if let Err((code, e)) = super::intent_store::start_outcome(&state,
+        "I approve what you asked to do for this goal. Go ahead with that one step; any outside email still goes through amux's own approval.",
+        Some(&oid), None, None, json!([])).await {
+        return bad(code, e);
     }
     tracing::info!(goal = %id, measured = true, n_considered = 1, verdict = "intent_goal_approved",
-        "intent: the owner approved an inferred goal's first outside action");
+        "intent: the owner approved the step a goal's helper asked about");
     Json(json!({"ok": true})).into_response()
 }
 
@@ -960,13 +1086,12 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     }).await);
     let mut delivered = false;
-    if let Some(oid) = g["outcome_id"].as_str() {
+    if let Some(oid) = goal_outcome(&state, &id).as_deref() {
         delivered = super::intent_store::start_outcome(&state,
             "Something changed in my email or calendar since your last update on this goal. Check what it means for the goal, \
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    logged("goal checked", set_fields(&state, &id, vec![("status_at", rusqlite::types::Value::Integer(now_ms()))]).await);
     tracing::info!(goal = %id, delivered, measured = true, n_considered = n, verdict = "intent_goal_changed",
         "intent: a goal's inputs changed; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "measured": true, "n_considered": n, "mail_measured": mail_measured})).into_response()
@@ -974,6 +1099,40 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_card_description_reads_back_as_the_idea() {
+        use super::{card_desc, parse_desc};
+        use serde_json::json;
+        let src = vec![json!({"kind": "email", "id": "<m1@camp>", "text": "Rafi is #4 on the waitlist"}),
+            json!({"kind": "outcome", "id": "o:o1", "text": "camp | asked: call"})];
+        let d = card_desc("I can draft a second nudge.", "No reply in 12 days.", "", &src);
+        let (body, why, now, sources) = parse_desc(&d);
+        assert_eq!((body.as_str(), why.as_str(), now.as_str()), ("I can draft a second nudge.", "No reply in 12 days.", ""));
+        assert_eq!(sources, src, "the sources it came from survive the card: {d}");
+        let (_, _, now, _) = parse_desc(&card_desc("Keep school forms done.", "", "3 forms open", &[]));
+        assert_eq!(now, "3 forms open");
+    }
+
+    #[test]
+    fn an_ask_waits_only_until_she_answers() {
+        use super::ask_from_posts;
+        use serde_json::json;
+        let w = json!({"author_key": "worker:family", "body": "STATUS: ready\nASK: May I sign Rafi up for the waitlist call?"});
+        let me = json!({"author_key": "person:owner", "body": "I approve"});
+        assert_eq!(ask_from_posts(std::slice::from_ref(&w)).as_deref(), Some("May I sign Rafi up for the waitlist call?"));
+        assert_eq!(ask_from_posts(&[w.clone(), me.clone()]), None, "her answer closes it");
+        assert_eq!(ask_from_posts(&[w, me, json!({"author_key": "worker:family", "body": "Done."})]), None, "no new ask");
+    }
+
+    #[test]
+    fn idea_and_goal_states_map_to_card_statuses_and_back() {
+        use super::{card_status, item_status};
+        for (kind, st) in [("idea", "offered"), ("idea", "started"), ("idea", "dismissed"),
+            ("goal", "active"), ("goal", "paused"), ("goal", "done"), ("goal", "dismissed")] {
+            assert_eq!(item_status(kind, card_status(kind, st)), st, "{kind} {st}");
+        }
+    }
+
     #[tokio::test]
     async fn overlapping_passes_fold_into_one_more_run() {
         use std::sync::atomic::{AtomicUsize, Ordering};
