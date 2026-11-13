@@ -6120,6 +6120,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_wfwCreateWorker": {
+      "kind": "command._wfwCreateWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_whereReport": {
       "kind": "command._whereReport",
       "feedback_required": true,

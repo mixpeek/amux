@@ -3132,6 +3132,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
 <div id="create-overlay" class="edit-overlay" onclick="if(event.target===this)closeCreate()">
   <div class="edit-box">
     <h3>New worker</h3>
+    <div class="field-optional" style="margin-bottom:var(--space-2);">Not sure what to write? <button type="button" class="btn" id="create-open-wizard" onclick="openWorkflowWizard()">Use the workflow wizard</button></div>
     <div class="field-group">
       <label class="field-label">Name</label>
       <input id="create-name" type="text" placeholder="my-project" autocomplete="off" autocorrect="off"
@@ -3245,6 +3246,11 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
       <button class="btn" onclick="closeCreate()">Cancel</button>
       <button class="btn primary" onclick="submitCreate()">Create</button>
     </div>
+  </div>
+</div>
+<div id="wfw-overlay" class="edit-overlay" onclick="if(event.target===this)closeWorkflowWizard()">
+  <div class="edit-box" id="wfw-box" role="dialog" aria-labelledby="wfw-q">
+    <div id="wfw-body"></div>
   </div>
 </div>
 

@@ -41072,6 +41072,232 @@ function closeCreate() {
   if (gs) gs.classList.remove('open');
 }
 
+// ── Workflow wizard (#457, Doron) ──
+// A non-technical person describes a job one plain question at a time; the
+// answers become a workflow brief that the New Worker dialog starts a worker
+// on. No server side: the brief is the worker's first prompt, and the worker
+// saves it as WORKFLOW.md. A skipped question is listed as an open question
+// the worker asks about first, so "I don't know yet" is always honest.
+const _WFW_KEY = 'amux-workflow-wizard';
+const _WFW_STEPS = [
+  { id: 'outcome', title: 'Outcome', q: 'What outcome are you trying to achieve?', required: true,
+    help: 'Say what is true when the job is done, in your own words.',
+    ex: 'Every customer payment from last week is matched to its invoice, and anything that does not match is listed with the reason.' },
+  { id: 'success', title: 'How you will know it worked', q: 'How will you know it worked?',
+    help: 'A check, a number, or the person who signs off.',
+    ex: 'Elliot reviews the list and finds nothing missed. It takes him under 30 minutes instead of 8 hours.' },
+  { id: 'when', title: 'When it runs', q: 'When should it run, and how much work is it?',
+    help: 'Only when you ask, daily, weekly, or when something arrives. Roughly how many items each time.',
+    ex: 'Every Monday morning, about 200 payments.' },
+  { id: 'systems', title: 'Systems it needs', q: 'What systems does it need to get into?',
+    help: 'Pick any that apply, and say whether it only reads or can also change things.',
+    chips: ['Email', 'Calendar', 'Google Drive', 'Spreadsheets', 'Accounting software', 'CRM', 'A website', 'Files on this computer'],
+    ex: 'NetSuite, read only. The shared Google Sheet, can edit.' },
+  { id: 'inputs', title: 'Where the information comes from', q: 'Where does the information come from?',
+    help: 'The reports, emails, exports or files it starts from, and where they live.',
+    ex: 'The payments export from NetSuite and the invoices tab of the shared sheet.' },
+  { id: 'examples', title: 'Examples of good work', q: 'Are there examples of good work?',
+    help: 'Paste one, or say where past results are (a folder, a file name, a link).',
+    ex: 'Last month\'s finished sheet is in Drive under Reconciliations/October.' },
+  { id: 'rules', title: 'Rules', q: 'What rules must it always follow?',
+    help: 'One per line. The way you would explain the job to a new hire.',
+    ex: 'Amazon under $20 is office supplies.\nA payment that says "prior virtual payment" went to court.' },
+  { id: 'exceptions', title: 'Known exceptions', q: 'What are the known exceptions to those rules?',
+    help: 'Cases where the rules do not apply, and what to do instead.',
+    ex: 'Coeur Wine Co pays several invoices in one payment: split it by invoice amount.' },
+  { id: 'tools', title: 'Tools', q: 'What tools or software should it use?',
+    help: 'Anything it should use to do the work, or must not use.',
+    ex: 'Excel for the final file. No new software.' },
+  { id: 'approval', title: 'Needs your OK first', q: 'What needs your OK first, and what must it never do?',
+    help: 'Pick what it must ask you about first, and add anything it must never do.',
+    chips: ['Sending email or messages', 'Contacting customers', 'Spending money', 'Changing records', 'Deleting anything'],
+    ex: 'Never email a client directly. Never change an invoice in NetSuite.' },
+  { id: 'sensitive', title: 'Sensitive information', q: 'Does it handle sensitive information?',
+    help: 'So it knows what to keep private.',
+    chips: ['Personal details', 'Health information', 'Bank or card details', 'Passwords or logins', 'None'],
+    ex: 'Client names and amounts. Never paste them into an outside tool.' },
+  { id: 'output', title: 'Where the result goes', q: 'Where should the result go, and who should be told?',
+    help: 'A file, a spreadsheet, an email draft. Who hears when it is done.',
+    ex: 'A new tab in the shared sheet. Message me a two-line summary.' },
+  { id: 'stuck', title: 'When it gets stuck', q: 'If it gets stuck, what should it do?',
+    help: 'Who to ask, and whether to wait or carry on with the rest.',
+    ex: 'Ask me in Messages and carry on with the other payments.' },
+];
+let _wfw = null;   // { step, answers: {id: text}, chips: {id: [labels]}, name }
+
+function _wfwLoad() {
+  try { const s = JSON.parse(localStorage.getItem(_WFW_KEY) || 'null'); if (s && s.answers) return s; } catch (e) {}
+  return { step: 0, answers: {}, chips: {}, name: '' };
+}
+function _wfwSave() { try { localStorage.setItem(_WFW_KEY, JSON.stringify(_wfw)); } catch (e) {} }
+
+function _wfwSlug(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .split('-').slice(0, 4).join('-');
+}
+
+// The brief, from the answers alone: pure, so a spec can check it directly.
+function _wfwBrief(answers, chips) {
+  answers = answers || {}; chips = chips || {};
+  const open = [];
+  const parts = ['# Workflow', '',
+    'Save this brief as WORKFLOW.md in your folder. Before you start, ask me about every item under "Open questions". '
+    + 'Do nothing listed under "Needs my OK first" without asking me, and if you are unsure whether something needs my OK, ask.', ''];
+  for (const s of _WFW_STEPS) {
+    const picked = (chips[s.id] || []).filter(Boolean);
+    const text = String(answers[s.id] || '').trim();
+    if (!picked.length && !text) { open.push(s.q); continue; }
+    parts.push('## ' + s.title);
+    if (picked.length) parts.push(picked.map(c => '- ' + c).join('\n'));
+    if (text) parts.push(text);
+    parts.push('');
+  }
+  parts.push('## Open questions');
+  parts.push(open.length ? open.map(q => '- ' + q).join('\n') : '- None. Confirm the brief back to me in two lines, then start.');
+  return parts.join('\n').trim() + '\n';
+}
+
+function openWorkflowWizard() {
+  if (typeof closeCreate === 'function') closeCreate();
+  _wfw = _wfwLoad();
+  document.getElementById('wfw-overlay').classList.add('active');
+  _wfwRender();
+}
+function closeWorkflowWizard() {
+  if (_wfw) _wfwCapture();
+  document.getElementById('wfw-overlay').classList.remove('active');
+}
+
+// Read the visible step's fields into the draft before moving away from it.
+function _wfwCapture() {
+  const s = _WFW_STEPS[_wfw.step];
+  const ta = document.getElementById('wfw-answer');
+  if (s && ta) _wfw.answers[s.id] = ta.value;
+  const nm = document.getElementById('wfw-name');
+  if (nm) _wfw.name = nm.value;
+  _wfwSave();
+}
+
+function _wfwRender() {
+  const body = document.getElementById('wfw-body');
+  const n = _WFW_STEPS.length;
+  if (_wfw.step >= n) {
+    const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+    const name = _wfw.name || _wfwSlug(_wfw.answers.outcome);
+    body.innerHTML =
+      '<div class="field-optional" id="wfw-progress">Review</div>'
+      + '<h3 id="wfw-q">Here is your workflow</h3>'
+      + '<div class="field-optional">Read it through. Go back to change an answer, or start a worker on it.</div>'
+      + '<pre id="wfw-brief" style="white-space:pre-wrap;max-height:40vh;overflow:auto;font-size:var(--fs-sm);'
+      + 'background:var(--bg-inset);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-2);">'
+      + esc(brief) + '</pre>'
+      + '<div class="field-group"><label class="field-label" for="wfw-name">Worker name</label>'
+      + '<input id="wfw-name" type="text" autocomplete="off" autocorrect="off" value="' + esc(name) + '"></div>'
+      + '<div class="edit-actions" style="flex-wrap:wrap;">'
+      + '<button type="button" class="btn" onclick="_wfwBack()">Back</button>'
+      + '<button type="button" class="btn" onclick="_wfwCopy()">Copy</button>'
+      + '<button type="button" class="btn" onclick="_wfwDownload()">Download</button>'
+      + '<button type="button" class="btn primary" id="wfw-create" onclick="_wfwCreateWorker()">Create worker</button>'
+      + '</div>'
+      + '<div style="text-align:right;margin-top:var(--space-1);"><button type="button" class="btn" onclick="_wfwStartOver()">Start over</button></div>';
+    return;
+  }
+  const s = _WFW_STEPS[_wfw.step];
+  const picked = _wfw.chips[s.id] || [];
+  const chips = s.chips ? '<div id="wfw-chips" style="display:flex;flex-wrap:wrap;gap:var(--space-1-5);margin-bottom:var(--space-2);">'
+    + s.chips.map((c, i) => '<button type="button" class="btn provider-btn' + (picked.includes(c) ? ' selected' : '')
+      + '" style="flex:0 1 auto;white-space:nowrap;min-height:44px;" aria-pressed="' + picked.includes(c) + '" onclick="_wfwToggleChip(' + i + ')">' + esc(c) + '</button>').join('')
+    + '</div>' : '';
+  body.innerHTML =
+    '<div class="field-optional" id="wfw-progress">Step ' + (_wfw.step + 1) + ' of ' + n + '</div>'
+    + '<h3 id="wfw-q">' + esc(s.q) + '</h3>'
+    + '<div class="field-optional" style="margin-bottom:var(--space-2);">' + esc(s.help) + '</div>'
+    + chips
+    + '<textarea id="wfw-answer" rows="5" style="width:100%;" placeholder="' + esc('For example: ' + s.ex) + '"'
+    + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_wfwNext();}">'
+    + esc(_wfw.answers[s.id] || '') + '</textarea>'
+    + '<div id="wfw-error" class="field-optional" style="display:none;color:var(--red);"></div>'
+    + '<div class="edit-actions" style="flex-wrap:wrap;">'
+    + (_wfw.step > 0 ? '<button type="button" class="btn" onclick="_wfwBack()">Back</button>' : '<button type="button" class="btn" onclick="closeWorkflowWizard()">Cancel</button>')
+    + (s.required ? '' : '<button type="button" class="btn" id="wfw-skip" onclick="_wfwSkip()">I don\'t know yet</button>')
+    + '<button type="button" class="btn primary" id="wfw-next" onclick="_wfwNext()">Next</button>'
+    + '</div>';
+  setTimeout(() => { const ta = document.getElementById('wfw-answer'); if (ta && matchMedia('(min-width: 601px)').matches) ta.focus({ preventScroll: true }); }, 50);
+}
+
+function _wfwToggleChip(i) {
+  const s = _WFW_STEPS[_wfw.step];
+  _wfwCapture();
+  const cur = _wfw.chips[s.id] || [];
+  const c = s.chips[i];
+  _wfw.chips[s.id] = cur.includes(c) ? cur.filter(x => x !== c) : cur.concat([c]);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwNext() {
+  _wfwCapture();
+  const s = _WFW_STEPS[_wfw.step];
+  if (s && s.required && !String(_wfw.answers[s.id] || '').trim()) {
+    const er = document.getElementById('wfw-error');
+    er.textContent = 'This one is needed: everything else follows from it. A sentence is enough.';
+    er.style.display = '';
+    return;
+  }
+  _wfw.step = Math.min(_wfw.step + 1, _WFW_STEPS.length);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwSkip() {
+  const s = _WFW_STEPS[_wfw.step];
+  _wfw.answers[s.id] = ''; _wfw.chips[s.id] = [];
+  const ta = document.getElementById('wfw-answer'); if (ta) ta.value = '';
+  _wfwNext();
+}
+function _wfwBack() {
+  _wfwCapture();
+  _wfw.step = Math.max(0, _wfw.step - 1);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwStartOver() {
+  showConfirm('Clear all your answers and start over?', 'Start over', true).then(ok => {
+    if (!ok) return;
+    _wfw = { step: 0, answers: {}, chips: {}, name: '' };
+    _wfwSave();
+    _wfwRender();
+  });
+}
+function _wfwCopy() {
+  const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+  (navigator.clipboard ? navigator.clipboard.writeText(brief) : Promise.reject())
+    .then(() => showToast('Workflow copied'), () => showToast('Could not copy. Select the text and copy it instead.'));
+}
+function _wfwDownload() {
+  _wfwCapture();
+  const blob = new Blob([_wfwBrief(_wfw.answers, _wfw.chips)], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (_wfw.name || _wfwSlug(_wfw.answers.outcome) || 'workflow') + '-WORKFLOW.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+// Hand off to the New Worker dialog (A8: one way to create a worker), with
+// the name and the brief as its first prompt. The person still picks the
+// folder there. The draft is kept until they start over, so cancelling the
+// dialog loses nothing.
+function _wfwCreateWorker() {
+  _wfwCapture();
+  const name = _wfwSlug(_wfw.name) || _wfwSlug(_wfw.answers.outcome) || 'workflow';
+  const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+  document.getElementById('wfw-overlay').classList.remove('active');
+  openCreate();
+  const nm = document.getElementById('create-name');
+  nm.value = name; _createNameChanged(name);
+  document.getElementById('create-prompt').value = brief;
+  if (typeof amuxTrack === 'function') amuxTrack('workflow_wizard_handoff', { answered: _WFW_STEPS.filter(s => String(_wfw.answers[s.id] || '').trim() || (_wfw.chips[s.id] || []).length).length,
+    of: _WFW_STEPS.length, measured: true });
+}
+
 function _showGroupSuggestions() {
   const el = document.getElementById('create-groups-suggestions');
   if (!el) return;
@@ -76669,6 +76895,7 @@ const _CMDK_WEIGHT = { worker: 220, group: 200, view: 160, action: 140, card: 60
 function _cmdkActions() {
   return [
     { title: 'New worker', sub: 'Create or connect', run: () => openCreate() },
+    { title: 'New workflow (guided)', sub: 'Answer a few plain questions, then start a worker on it', run: () => openWorkflowWizard() },
     { title: 'New card', sub: 'Add a card to the board', run: () => { switchView('board'); openBoardAdd(); } },
     { title: 'New schedule', sub: 'Run a prompt or command on a timer', run: () => { switchView('scheduler'); openSchedModal(); } },
     { title: 'New scratchpad note', sub: 'Scratchpad', run: () => { switchView('scratchpad'); _scratchpadNewNote(); } },
