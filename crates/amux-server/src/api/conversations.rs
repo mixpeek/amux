@@ -1317,7 +1317,7 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
                      amux get 'api/email/inbox?count=20&days=14', amux get api/cal-events). For a reminder, set it with \
                      amux wake <YYYY-MM-DDTHH:MM> --title \"<what to remember, in their words>\" --stdin, telling yourself to post \
                      the reminder here with amux post 'o:{id}', \
-                     and say when it will come. Answer with the result first, in one to three short lines, then only the \
+                     and make the first line of your answer say when it is set. Answer with the result first, in one to three short lines, then only the \
                      details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. Anything that \
                      would go to someone outside stays a draft for them to send themselves: never send it, never spend money. \
                      Write each email draft as a block starting with a line ```draft, then To: <address>, Subject: <subject>, a \

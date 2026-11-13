@@ -12432,6 +12432,13 @@ async function _homeLoadOutcome(id, quiet) {
   if (quiet && _home.detail === sig) return;
   _home.detail = sig;
   _home.openStatus = r.v.status;
+  // Reminders its helper set since this request: shown in the conversation,
+  // so a promised reminder can be seen saved (asked for in four runs).
+  const rm = await _homeJson('/api/intent/reminders');
+  const asked = (r.v.thread || [])[0]?.ts || 0;
+  r.v.reminders = (rm.ok ? rm.v.reminders || [] : []).filter(x => x.worker === r.v.worker
+    && Number(x.created) * (Number(x.created) < 1e12 ? 1000 : 1) >= asked - 5000);
+  if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
 }
 function _homeRenderOutcome(o) {
@@ -12457,6 +12464,8 @@ function _homeRenderOutcome(o) {
     + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
+    + (o.reminders || []).map(x => '<div class="home-reminder">&#x23F0; Reminder set: ' + esc(x.title) + ' · '
+      + esc(new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</div>').join('')
     + '<div class="home-msgs" id="home-msgs">' + posts
     + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
     + '</div></div>';

@@ -54,20 +54,21 @@ async fn reminders(State(state): State<AppState>) -> Response {
         Err(e) => return Json(json!({"reminders": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
     };
     let now = chrono::Local::now().naive_local();
-    let rows: Vec<(String, String, String, Option<String>)> = state.store.read().ok().and_then(|c| {
-        let mut st = c.prepare("SELECT id, title, session, next_run FROM schedules WHERE enabled=1 AND sched_type='once'").ok()?;
-        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?))).ok()?;
+    let rows: Vec<(String, String, String, Option<String>, i64)> = state.store.read().ok().and_then(|c| {
+        let mut st = c.prepare("SELECT id, title, session, next_run, created FROM schedules WHERE enabled=1 AND sched_type='once' AND deleted IS NULL").ok()?;
+        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?, r.get::<_, i64>(4)?))).ok()?;
         Some(r.flatten().collect())
     }).unwrap_or_default();
     let n = rows.len();
     let mut out: Vec<Value> = rows.into_iter()
-        .filter(|(_, _, sess, _)| helpers.contains(sess))
-        .filter_map(|(id, title, _, next)| {
+        .filter(|(_, _, sess, _, _)| helpers.contains(sess))
+        .filter_map(|(id, title, sess, next, created)| {
             let next = next?;
             let when = chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M:%S")
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M"))
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%d %H:%M:%S")).ok()?;
-            (when > now).then(|| json!({"id": id, "title": reminder_title(&title), "when": when.format("%Y-%m-%dT%H:%M").to_string()}))
+            (when > now).then(|| json!({"id": id, "title": reminder_title(&title), "when": when.format("%Y-%m-%dT%H:%M").to_string(),
+                "worker": sess, "created": created}))
         })
         .collect();
     out.sort_by(|a, b| a["when"].as_str().cmp(&b["when"].as_str()));

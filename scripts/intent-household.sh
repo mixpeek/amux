@@ -62,8 +62,10 @@ start() {
   # --dangerously-skip-permissions, CC_DIR, CC_TAGS, CC_SEND_ALLOW, the AMUX_*
   # of the lane that runs this) must not become the demo's defaults. Measured:
   # inherited, a demo helper's Claude ran in the caller's Vault directory.
+  # TZ is passed only when set: TZ="" means UTC, which put a 10am reminder
+  # at 5am Eastern in the final uc1 run.
   env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" SHELL="${SHELL:-/bin/bash}" PATH="$PATH" \
-    LANG="${LANG:-en_US.UTF-8}" TMPDIR="${TMPDIR:-/tmp}" TZ="${TZ:-}" \
+    LANG="${LANG:-en_US.UTF-8}" TMPDIR="${TMPDIR:-/tmp}" ${TZ:+TZ="$TZ"} \
     AMUX_HOME="$HOME_DIR" CC_HOME="$HOME_DIR" AMUX_RS_PORT="$PORT" AMUX_RS_BIND=127.0.0.1 \
     AMUX_NO_SELF_ADOPT=1 TMUX_TMPDIR="$HOME_DIR/tmux" AMUX_VAULT_KEYSTORE=file \
     ${AMUX_DASHBOARD_DIR:+AMUX_DASHBOARD_DIR="$AMUX_DASHBOARD_DIR"} \
