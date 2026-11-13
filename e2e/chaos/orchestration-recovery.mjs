@@ -74,9 +74,17 @@ try {
   const begun = await amux.req('POST', `/api/schedules/${interrupted.body.id}/run`, {});
   check('long job accepted', begun.status < 300, begun.body);
   await waitFor('in-flight run persisted', async () => (await runs(interrupted.body.id)).some(r => r.status === 'running'), 15000);
-  await amux.down(); await amux.up();
+  await amux.down();
+  // A shell run outlives the server now (393951d4a) and is adopted on restart.
+  // Kill this one while no server watches, so it ends with no exit code: the
+  // lost-run path, recorded interrupted, which is what this case checks.
+  const runDir = path.join(amux.home, 'shell-runs', interrupted.body.id);
+  const pidFile = fs.readdirSync(runDir).find(f => f.endsWith('.pid'));
+  check('in-flight run left its pid', !!pidFile, fs.readdirSync(runDir));
+  try {process.kill(-Number(fs.readFileSync(path.join(runDir, pidFile), 'utf8').trim()), 'SIGKILL');} catch {}
+  await amux.up();
   const orphan = await waitFor('in-flight result reconciled', async () => (await runs(interrupted.body.id)).find(r => r.status === 'interrupted'), 20000);
-  check('crashed execution stays explicitly unmeasured', /restarted/.test(orphan.note), orphan);
+  check('crashed execution stays explicitly unmeasured', /restart/.test(orphan.note), orphan);
   check('uncertain side effect not blindly replayed', !fs.existsSync(never) && (await runs(interrupted.body.id)).length === 1);
 
   await waitFor('installed bundled observer', () => fs.existsSync(path.join(amux.home, 'native-status.py')), 20000);
