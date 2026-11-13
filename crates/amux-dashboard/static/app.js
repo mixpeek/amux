@@ -32246,6 +32246,8 @@ function _mdxShow(data, mode) {
 function _mdxHide() {
   const { root, wrap, body } = _mdxEls();
   if (!root || root.hidden) return;
+  _mdxSlash = null;
+  _mdxMenuClose();
   const ov = document.getElementById('file-overlay');
   const search = document.getElementById('md-search-row');
   if (ov && body && search) search.after(body);
@@ -32474,7 +32476,10 @@ function _mdxStatus() {
   const col = at - (at > 0 ? v.lastIndexOf('\n', at - 1) : -1);
   document.getElementById('mdx-pos').textContent = 'Ln ' + ln + ', Col ' + col;
   const n = ta.value.length;
-  document.getElementById('mdx-chars').textContent = n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
+  // Words are counted up to 200k characters; past that a keystroke would pay for the scan.
+  const w = n <= 200000 ? (v.match(/\S+/g) || []).length : -1;
+  document.getElementById('mdx-chars').textContent = (w >= 0 ? w.toLocaleString() + ' word' + (w === 1 ? '' : 's') + ' · ' : '')
+    + n.toLocaleString() + ' character' + (n === 1 ? '' : 's');
   const d = document.getElementById('mdx-dirty');
   const dirty = _fileEditDirty();
   if (!dirty) _mdx.base = ta.value;
@@ -32569,14 +32574,6 @@ function _mdxPrefix(fn) {
   _mdxReplace(s, e, out, s, s + out.length);
 }
 const _mdxTools = {
-  heading() {
-    _mdxPrefix(ls => ls.map(l => {
-      const m = /^(#{1,6})\s+/.exec(l);
-      const n = m ? m[1].length : 0;
-      const rest = m ? l.slice(m[0].length) : l;
-      return n >= 3 ? rest : '#'.repeat(n + 1) + ' ' + rest;
-    }));
-  },
   bold() { _mdxWrap('**', '**', 'bold text'); },
   italic() { _mdxWrap('*', '*', 'italic text'); },
   ul() {
@@ -32621,11 +32618,285 @@ const _mdxTools = {
   },
 };
 
+// The editor's toolbar, its + menu and the / menu (owner, 2026-11-13: "Update the md editor
+// toolbar", from a mockup). One icon set and one list of blocks feed all three.
+const _MDX_SVG = {
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
+  bold: '<path d="M7 5h6a3.5 3.5 0 0 1 0 7H7z"/><path d="M7 12h7a3.5 3.5 0 0 1 0 7H7z"/>',
+  italic: '<path d="M14 5h-4M14 19h-4M15 5 9 19" transform="translate(1 0)"/>',
+  strike: '<path d="M5 12h14"/><path d="M16 7.5C15.4 6 13.9 5 12 5c-2.5 0-4 1.3-4 3.2 0 1.5 1 2.4 3 3"/><path d="M8 16.5c.6 1.6 2.1 2.5 4 2.5 2.5 0 4-1.3 4-3.2 0-.6-.1-1.1-.4-1.6"/>',
+  code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13.5 6l-3 12"/>',
+  ul: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r=".9" fill="currentColor"/><circle cx="4.5" cy="12" r=".9" fill="currentColor"/><circle cx="4.5" cy="18" r=".9" fill="currentColor"/>',
+  ol: '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 5l1.5-1v5M3.5 14.2c.3-.6.9-1 1.6-1 .9 0 1.5.6 1.5 1.3 0 1.2-3 2.2-3 3.5h3"/>',
+  task: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  quote: '<path d="M10 7H6.5A1.5 1.5 0 0 0 5 8.5V12h4v1c0 2-1 3-3 3.5M19 7h-3.5A1.5 1.5 0 0 0 14 8.5V12h4v1c0 2-1 3-3 3.5"/>',
+  hr: '<path d="M4 12h16"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m20.5 16-5-5-9 8.5"/>',
+  table: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 4.5v15M15 4.5v15"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  heading: '<path d="M6 5v14M18 5v14M6 12h12"/>',
+  callout: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>',
+  details: '<path d="m9 6 6 6-6 6"/>',
+  worker: '<circle cx="12" cy="12" r="3.5"/><path d="M15.5 12v1.5a2.5 2.5 0 0 0 5 0V12a8.5 8.5 0 1 0-3.4 6.8"/>',
+  chev: '<path d="m7 10 5 5 5-5"/>',
+  next: '<path d="m10 7 5 5-5 5"/>',
+};
+function _mdxIcon(k) {
+  return '<svg class="mdx-svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (_MDX_SVG[k] || '') + '</svg>';
+}
+// The bar, in groups. '|' is a separator; 'block' is the heading dropdown; 'insert' the + menu.
+const _MDX_BAR = [
+  ['undo', 'Undo (⌘Z)'], ['redo', 'Redo (⇧⌘Z)'], '|',
+  ['block', 'Text style'], '|',
+  ['bold', 'Bold (⌘B)'], ['italic', 'Italic (⌘I)'], ['strike', 'Strikethrough (⇧⌘X)'], ['code', 'Code'], '|',
+  ['ul', 'Bulleted list'], ['ol', 'Numbered list'], ['task', 'Checklist'], ['quote', 'Blockquote'], ['hr', 'Divider'], '|',
+  ['link', 'Link (⌘K)'], ['image', 'Image'], ['table', 'Table'], '|',
+  ['insert', 'Insert a block (or type / on a new line)'],
+];
+const _MDX_CALLOUTS = [['NOTE', 'Note'], ['TIP', 'Tip'], ['IMPORTANT', 'Important'], ['WARNING', 'Warning'], ['CAUTION', 'Caution']];
+// What + and / offer. `sub` opens a second list beside the row.
+const _MDX_BLOCKS = [
+  { k: 'heading', icon: 'heading', label: 'Heading', sub: [1, 2, 3, 4, 5, 6].map(n => ({ k: 'h' + n, mark: 'H' + n, label: 'Heading ' + n })) },
+  { k: 'task', icon: 'task', label: 'Checklist' },
+  { k: 'ul', icon: 'ul', label: 'Bulleted list' },
+  { k: 'ol', icon: 'ol', label: 'Numbered list' },
+  '|',
+  { k: 'quote', icon: 'quote', label: 'Blockquote' },
+  { k: 'codeblock', icon: 'code', label: 'Code block' },
+  { k: 'hr', icon: 'hr', label: 'Divider' },
+  '|',
+  { k: 'table', icon: 'table', label: 'Table' },
+  { k: 'image', icon: 'image', label: 'Image' },
+  { k: 'callout', icon: 'callout', label: 'Callout', sub: _MDX_CALLOUTS.map(([t, l]) => ({ k: 'callout:' + t, icon: 'callout', label: l })) },
+  { k: 'details', icon: 'details', label: 'Collapsible section' },
+  { k: 'worker', icon: 'worker', label: 'Tag a worker' },
+];
+// A block on its own lines: a blank line before it unless the caret already starts one.
+function _mdxBlock(text, selOff, selLen) {
+  const ta = document.getElementById('file-edit-ta');
+  const a = ta.selectionStart, v = ta.value;
+  const ls = v.lastIndexOf('\n', a - 1) + 1;
+  const lineEmpty = !v.slice(ls, a).trim() && (v.indexOf('\n', a) === -1 ? !v.slice(a).trim() : !v.slice(a, v.indexOf('\n', a)).trim());
+  const start = lineEmpty ? ls : a, end = lineEmpty ? (v.indexOf('\n', a) === -1 ? v.length : v.indexOf('\n', a)) : ta.selectionEnd;
+  const pre = start === 0 ? '' : v.slice(0, start).endsWith('\n\n') ? '' : v.slice(0, start).endsWith('\n') ? '\n' : '\n\n';
+  const post = v.slice(end).startsWith('\n') ? '' : '\n';
+  const at = start + pre.length + (selOff || 0);
+  _mdxReplace(start, end, pre + text + post, at, at + (selLen || 0));
+}
+// Set the heading level of the selected lines: 0 is plain text.
+function _mdxSetLevel(n) {
+  const ta = document.getElementById('file-edit-ta');
+  const caret = ta.selectionStart === ta.selectionEnd;
+  _mdxPrefix(ls => ls.map(l => { const rest = l.replace(/^#{1,6}\s+/, ''); return n ? '#'.repeat(n) + ' ' + rest : rest; }));
+  // A caret stays a caret, at the end of the line: the next keystroke types the heading.
+  if (caret) ta.setSelectionRange(ta.selectionEnd, ta.selectionEnd);
+}
+function _mdxLevelAt() {
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta) return 0;
+  const v = ta.value, s = v.lastIndexOf('\n', ta.selectionStart - 1) + 1;
+  const m = /^(#{1,6})\s/.exec(v.slice(s, s + 8));
+  return m ? m[1].length : 0;
+}
+Object.assign(_mdxTools, {
+  undo() { const ta = document.getElementById('file-edit-ta'); ta.focus(); document.execCommand('undo'); },
+  redo() { const ta = document.getElementById('file-edit-ta'); ta.focus(); document.execCommand('redo'); },
+  strike() { _mdxWrap('~~', '~~', 'struck text'); },
+  quote() {
+    _mdxPrefix(ls => { const all = ls.every(l => /^\s*>/.test(l) || !l.trim()); return ls.map(l => !l.trim() ? l : all ? l.replace(/^(\s*)>\s?/, '$1') : '> ' + l); });
+  },
+  hr() { _mdxBlock('---', 4); },
+  codeblock() {
+    const ta = document.getElementById('file-edit-ta');
+    if (ta.selectionEnd > ta.selectionStart) { const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd); if (!sel.includes('\n')) { _mdxReplace(ta.selectionStart, ta.selectionEnd, '```\n' + sel + '\n```\n', ta.selectionStart + 4, ta.selectionStart + 4 + sel.length); return; } this.code(); return; }
+    _mdxBlock('```\ncode\n```', 4, 4);
+  },
+  details() { _mdxBlock('<details>\n<summary>Summary</summary>\n\nContent\n\n</details>', 19, 7); },
+  callout(kind) { const k = kind || 'NOTE'; _mdxBlock('> [!' + k + ']\n> Text', k.length + 8, 4); },
+  table() { _mdxBlock('| Column | Column |\n| --- | --- |\n| Cell | Cell |', 2, 6); },
+});
+// Run a block key from either menu: h1..h6, callout:KIND, or a tool name.
+function _mdxRunBlock(k) {
+  const h = /^h([1-6])$/.exec(k);
+  if (h) _mdxSetLevel(+h[1]);
+  else if (k.startsWith('callout:')) _mdxTools.callout(k.slice(8));
+  else if (k === 'p') _mdxSetLevel(0);
+  else _mdxTools[k]?.();
+  _mdxBeacon('tool', { tool: k });
+  _mdxLevelSync();
+}
+function _mdxToolbar() {
+  const bar = document.getElementById('mdx-tools');
+  if (!bar || bar.childElementCount) return;
+  bar.innerHTML = _MDX_BAR.map(t => {
+    if (t === '|') return '<span class="mdx-tsep" aria-hidden="true"></span>';
+    const [k, title] = t;
+    if (k === 'block') return '<button type="button" class="mdx-level" data-menu="block" title="' + title + '" aria-label="' + title + '" aria-haspopup="menu"><span id="mdx-level">Text</span>' + _mdxIcon('chev') + '</button>';
+    if (k === 'insert') return '<button type="button" class="mdx-plus" data-menu="insert" title="' + title + '" aria-label="Insert" aria-haspopup="menu">' + _mdxIcon('plus') + '</button>';
+    return '<button type="button" data-t="' + k + '" title="' + title + '" aria-label="' + title.replace(/ \(.*/, '') + '">' + _mdxIcon(k) + '</button>';
+  }).join('');
+}
+function _mdxLevelSync() {
+  const el = document.getElementById('mdx-level');
+  if (el) { const n = _mdxLevelAt(); el.textContent = n ? 'H' + n : 'Text'; }
+}
+// One menu open at a time. `at` is the element (or a caret box) it hangs from.
+let _mdxMenu = null;
+function _mdxMenuClose() {
+  document.querySelectorAll('.mdx-menu').forEach(el => el.remove());
+  _mdxMenu = null;
+  document.querySelectorAll('#mdx-tools [data-menu]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+}
+function _mdxMenuRow(it, active) {
+  if (it === '|') return '<div class="mdx-menu-sep" role="separator"></div>';
+  const lead = it.mark ? '<span class="mdx-mi-mark">' + it.mark + '</span>' : it.icon ? _mdxIcon(it.icon) : '<span class="mdx-mi-mark"></span>';
+  return '<button type="button" class="explore-menu-item mdx-menu-item' + (active ? ' on' : '') + '" role="menuitem" data-k="' + it.k + '"' + (it.sub ? ' aria-haspopup="menu"' : '') + '>'
+    + lead + '<span class="mdx-mi-label">' + esc(it.label) + '</span>' + (it.sub ? _mdxIcon('next') : '') + '</button>';
+}
+function _mdxMenuOpen(items, at, opts) {
+  opts = opts || {};
+  if (!opts.sub) _mdxMenuClose(); else document.querySelectorAll('.mdx-menu.mdx-sub').forEach(el => el.remove());
+  const m = document.createElement('div');
+  m.className = 'explore-menu-popup mdx-menu' + (opts.sub ? ' mdx-sub' : '');
+  m.setAttribute('role', 'menu');
+  m.innerHTML = items.map((it, i) => _mdxMenuRow(it, opts.active === i)).join('');
+  // Keep the textarea's selection (and a phone's keyboard) while the menu is used.
+  for (const ev of ['pointerdown', 'mousedown']) m.addEventListener(ev, e => e.preventDefault());
+  m.addEventListener('click', e => {
+    const b = e.target.closest('[data-k]');
+    if (!b) return;
+    const it = _mdxFlat(items).find(x => x.k === b.dataset.k);
+    if (it && it.sub) { _mdxMenuOpen(it.sub, b, { sub: true, side: true, onPick: opts.onPick }); return; }
+    _mdxMenuClose();
+    (opts.onPick || _mdxRunBlock)(b.dataset.k);
+  });
+  m.addEventListener('pointerover', e => {
+    const b = e.target.closest('[data-k]');
+    if (!b || e.pointerType === 'touch') return;
+    const it = _mdxFlat(items).find(x => x.k === b.dataset.k);
+    if (it && it.sub) _mdxMenuOpen(it.sub, b, { sub: true, side: true, onPick: opts.onPick });
+    else if (!opts.sub) document.querySelectorAll('.mdx-menu.mdx-sub').forEach(el => el.remove());
+  });
+  document.body.appendChild(m);
+  const r = at.getBoundingClientRect ? _cssRect(at) : at;
+  const z = _uiZoomFactor(), vw = window.innerWidth / z, vh = window.innerHeight / z;
+  const pw = m.offsetWidth, ph = m.offsetHeight;
+  // A phone has no room beside the row: the second list drops below it instead.
+  const side = opts.side && (r.right + 4 + pw <= vw - 8 || r.left - pw - 4 >= 8);
+  let left = side ? r.right + 4 : (opts.alignRight ? r.right - pw : opts.side ? r.left + 24 : r.left);
+  if (side && left + pw > vw - 8) left = r.left - pw - 4;
+  left = Math.max(8, Math.min(left, vw - pw - 8));
+  let top = side ? r.top - 4 : r.bottom + 4;
+  if (top + ph > vh - 8) top = side ? vh - ph - 8 : r.top - ph - 4;
+  m.style.left = left + 'px';
+  m.style.top = Math.max(8, top) + 'px';
+  if (!opts.sub) {
+    _mdxMenu = { el: m, items, opts };
+    // Esc closes the menu, not the file under it. The / menu handles its own keys.
+    // On window, in capture, from the start: the overlay's own Esc must not see it first.
+    const esc = e => {
+      if (!m.isConnected) { window.removeEventListener('keydown', esc, true); return; }
+      if (e.key !== 'Escape' || m.classList.contains('mdx-slash')) return;
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      window.removeEventListener('keydown', esc, true);
+      _mdxMenuClose();
+    };
+    window.addEventListener('keydown', esc, true);
+    setTimeout(() => {
+      const off = () => document.removeEventListener('pointerdown', dismiss, true);
+      const dismiss = e => {
+        if (!m.isConnected) { off(); return; }
+        if (e.target.closest && (e.target.closest('.mdx-menu') || (opts.keepOn && opts.keepOn.contains(e.target)))) return;
+        off();
+        if (_mdxMenu && _mdxMenu.el === m) _mdxMenuClose();
+      };
+      document.addEventListener('pointerdown', dismiss, true);
+    }, 0);
+  }
+  return m;
+}
+function _mdxFlat(items) { return items.filter(x => x !== '|'); }
+const _MDX_LEVELS = [{ k: 'p', mark: '¶', label: 'Text' }].concat([1, 2, 3, 4, 5, 6].map(n => ({ k: 'h' + n, mark: 'H' + n, label: 'Heading ' + n })));
+
+// The / menu: a / at the start of a line opens the blocks at the caret; typing
+// narrows them, arrows move, Enter or Tab picks, Esc or a space closes.
+let _mdxSlash = null;   // { at: index of the '/', sel: highlighted row }
+function _mdxSlashItems(q) {
+  const all = [];
+  for (const it of _mdxFlat(_MDX_BLOCKS)) { if (it.sub) all.push(...it.sub.map(s => it.k === 'callout' ? Object.assign({}, s, { label: 'Callout: ' + s.label }) : s)); else all.push(it); }
+  q = q.toLowerCase();
+  if (!q) return _MDX_BLOCKS;
+  return all.filter(it => it.label.toLowerCase().split(/[\s:]+/).some(w => w.startsWith(q)) || it.label.toLowerCase().startsWith(q) || it.k === q);
+}
+function _mdxSlashRender() {
+  const ta = document.getElementById('file-edit-ta');
+  const q = ta.value.slice(_mdxSlash.at + 1, ta.selectionStart);
+  const items = _mdxSlashItems(q);
+  const flat = _mdxFlat(items);
+  if (!flat.length) { _mdxSlashClose(); return; }
+  _mdxSlash.sel = Math.min(_mdxSlash.sel, flat.length - 1);
+  const c = _caretXY(ta), tr = _cssRect(ta), z = _uiZoomFactor();
+  const box = { left: tr.left + c.x / z, right: tr.left + c.x / z, top: tr.top + c.y / z, bottom: tr.top + (c.y + c.h) / z };
+  const m = _mdxMenuOpen(items, box, { keepOn: ta, onPick: k => _mdxSlashPick(k) });
+  m.classList.add('mdx-slash');
+  const rows = m.querySelectorAll('[data-k]');
+  rows.forEach((b, i) => b.classList.toggle('on', i === _mdxSlash.sel));
+  rows[_mdxSlash.sel]?.scrollIntoView({ block: 'nearest' });
+}
+function _mdxSlashClose() { _mdxSlash = null; if (_mdxMenu && _mdxMenu.el.classList.contains('mdx-slash')) _mdxMenuClose(); }
+function _mdxSlashPick(k) {
+  const ta = document.getElementById('file-edit-ta');
+  const s = _mdxSlash;
+  _mdxSlash = null;
+  if (s) _mdxReplace(s.at, ta.selectionStart, '', s.at);
+  _mdxRunBlock(k);
+}
+// From the textarea's input: open on a '/' typed at a line start, re-filter while open.
+function _mdxSlashInput() {
+  const ta = document.getElementById('file-edit-ta');
+  const a = ta.selectionStart, v = ta.value;
+  if (_mdxSlash) {
+    if (a <= _mdxSlash.at || v[_mdxSlash.at] !== '/' || /\s/.test(v.slice(_mdxSlash.at + 1, a))) { _mdxSlashClose(); return; }
+    _mdxSlashRender();
+    return;
+  }
+  if (a > 0 && v[a - 1] === '/' && ta.selectionStart === ta.selectionEnd && !v.slice(v.lastIndexOf('\n', a - 2) + 1, a - 1).trim()) {
+    _mdxSlash = { at: a - 1, sel: 0 };
+    _mdxSlashRender();
+  }
+}
+// From the textarea's keydown; true when the menu took the key.
+function _mdxSlashKey(e) {
+  if (!_mdxSlash) return false;
+  const ta = e.target, flat = _mdxFlat(_mdxSlashItems(ta.value.slice(_mdxSlash.at + 1, ta.selectionStart)));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    _mdxSlash.sel = (_mdxSlash.sel + (e.key === 'ArrowDown' ? 1 : -1) + flat.length) % flat.length;
+    _mdxSlashRender();
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    const it = flat[_mdxSlash.sel];
+    if (!it) return false;
+    e.preventDefault();
+    if (it.sub) { const row = _mdxMenu?.el.querySelectorAll('[data-k]')[_mdxSlash.sel]; if (row) _mdxMenuOpen(it.sub, row, { sub: true, side: true, onPick: k => { _mdxMenuClose(); _mdxSlashPick(k); } }); return true; }
+    _mdxMenuClose();
+    _mdxSlashPick(it.k);
+    return true;
+  }
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _mdxSlashClose(); return true; }
+  return false;
+}
+
 // Enter carries a list on; Enter on an empty item ends it. Tab and ⇧Tab indent.
 function _mdxKeydown(e) {
   const ta = e.target;
   if (ta.readOnly) return;
+  if (_mdxSlashKey(e)) return;
   const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'x') { e.preventDefault(); _mdxTools.strike(); return; }
   if (mod && !e.altKey && !e.shiftKey) {
     const k = e.key.toLowerCase();
     if (k === 'b') { e.preventDefault(); _mdxTools.bold(); return; }
@@ -32853,14 +33124,27 @@ function _mdxBind() {
   if (_mdxBound) return;
   _mdxBound = true;
   const ta = document.getElementById('file-edit-ta');
-  ta.addEventListener('input', e => { if (_mdxActive()) { if (e.isTrusted) _mdx.tickSaving = false; _mdxChanged(); } });
+  ta.addEventListener('input', e => { if (_mdxActive()) { if (e.isTrusted) _mdx.tickSaving = false; _mdxChanged(); _mdxSlashInput(); } });
   ta.addEventListener('scroll', () => { if (_mdxActive()) _mdxSyncScroll(); });
-  ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) _mdxStatus(); }));
+  ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) { _mdxStatus(); _mdxLevelSync(); } }));
+  ta.addEventListener('blur', () => { if (_mdxSlash) _mdxSlashClose(); });
+  _mdxToolbar();
   ta.addEventListener('keydown', e => { if (_mdxActive()) _mdxKeydown(e); });
   _atAttach(ta);   // @ offers the workers
   // Keep the selection, and on a phone the keyboard: a tap reaches pointerdown before mousedown.
-  for (const ev of ['pointerdown', 'mousedown']) document.getElementById('mdx-tools').addEventListener(ev, e => { if (e.target.closest('[data-t]')) e.preventDefault(); });
+  for (const ev of ['pointerdown', 'mousedown']) document.getElementById('mdx-tools').addEventListener(ev, e => { if (e.target.closest('[data-t],[data-menu]')) e.preventDefault(); });
   document.getElementById('mdx-tools').addEventListener('click', e => {
+    const mb = e.target.closest('[data-menu]');
+    if (mb && !ta.readOnly) {
+      if (_mdxMenu && _mdxMenu.opts.anchor === mb) { _mdxMenuClose(); return; }
+      if (_mdx.mode === 'preview') _mdxSetMode('edit', false);
+      _mdxSlash = null;
+      const block = mb.dataset.menu === 'block';
+      const m = _mdxMenuOpen(block ? _MDX_LEVELS : _MDX_BLOCKS, mb, { alignRight: !block, keepOn: mb, anchor: mb, active: block ? _mdxLevelAt() : undefined });
+      m.dataset.menu = mb.dataset.menu;
+      mb.setAttribute('aria-expanded', 'true');
+      return;
+    }
     const b = e.target.closest('[data-t]');
     if (!b || ta.readOnly) return;
     if (_mdx.mode === 'preview') _mdxSetMode('edit', false);

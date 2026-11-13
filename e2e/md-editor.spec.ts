@@ -74,8 +74,10 @@ test('the formatting bar and keys edit the source, and ⌘Z undoes them', async 
   await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(6, 11); });
   await page.locator('#mdx-tools [data-t="bold"]').click();
   await expect(ta).toHaveValue('hello **world**\n');
-  await page.locator('#mdx-tools [data-t="heading"]').click();
+  await page.locator('#mdx-tools [data-menu="block"]').click();
+  await page.locator('.mdx-menu [data-k="h1"]').click();
   await expect(ta).toHaveValue('# hello **world**\n');
+  await expect(page.locator('#mdx-level')).toHaveText('H1');
   await page.keyboard.press('ControlOrMeta+z');
   // ⌘Z takes back the heading alone, or both edits when the browser grouped
   // them into one undo step. WebKit groups them only when they land close
@@ -313,4 +315,74 @@ test('the freshness label says Offline when the server fails, and never carries 
   release();
   await expect(page.locator('#mdx-out-host #file-body h1')).toHaveText(/B/);
   await expect(page.locator('#file-fresh')).toBeHidden();
+});
+
+// Owner, 2026-11-13 (MSG on the md editor toolbar, with a mockup): undo and redo, a text-style
+// list, strikethrough, quote and divider in the bar, a + menu of blocks with Heading and Callout
+// lists beside it, a / menu at the caret, and a word count.
+test('the toolbar: text style list, + menu with sub-lists, / menu at the caret, word count', async ({ page }) => {
+  const f = freshFile('tb.md', 'one two\n');
+  await open(page, f);
+  await mode(page, 'edit');
+  const ta = page.locator('#file-edit-ta');
+  for (const t of ['undo', 'redo', 'bold', 'italic', 'strike', 'code', 'ul', 'ol', 'task', 'quote', 'hr', 'link', 'image', 'table'])
+    await expect(page.locator('#mdx-tools [data-t="' + t + '"] svg'), t).toHaveCount(1);
+  await expect(page.locator('#mdx-chars')).toHaveText('2 words · 8 characters');
+  // Text style: H2, then back to Text.
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(0, 0); });
+  await page.locator('#mdx-tools [data-menu="block"]').click();
+  await expect(page.locator('.mdx-menu [data-k]')).toHaveCount(7);
+  await page.locator('.mdx-menu [data-k="h2"]').click();
+  await expect(ta).toHaveValue('## one two\n');
+  await expect(page.locator('#mdx-level')).toHaveText('H2');
+  await page.locator('#mdx-tools [data-menu="block"]').click();
+  await page.locator('.mdx-menu [data-k="p"]').click();
+  await expect(ta).toHaveValue('one two\n');
+  // Strikethrough wraps the selection; undo takes it back.
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(4, 7); });
+  await page.locator('#mdx-tools [data-t="strike"]').click();
+  await expect(ta).toHaveValue('one ~~two~~\n');
+  await page.locator('#mdx-tools [data-t="undo"]').click();
+  await expect(ta).toHaveValue('one two\n');
+  // + menu: Callout opens its own list; Warning inserts a GitHub callout on its own lines.
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
+  await page.locator('#mdx-tools [data-menu="insert"]').click();
+  await expect(page.locator('#mdx-tools [data-menu="insert"]')).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('.mdx-menu [data-k="callout"]').click();
+  await page.locator('.mdx-menu.mdx-sub [data-k="callout:WARNING"]').click();
+  await expect(ta).toHaveValue('one two\n\n> [!WARNING]\n> Text\n');
+  await expect(page.locator('.mdx-menu')).toHaveCount(0);
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('file-edit-ta');
+  // Esc closes the menu and leaves the file open.
+  await page.locator('#mdx-tools [data-menu="insert"]').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.mdx-menu')).toHaveCount(0);
+  await expect(page.locator('#mdx')).toBeVisible();
+  // / at a line start: typing narrows the list, Enter picks, and the / is gone.
+  await ta.evaluate((el: HTMLTextAreaElement) => { el.focus(); el.setSelectionRange(el.value.length, el.value.length); });
+  await page.keyboard.type('/');
+  await expect(page.locator('.mdx-menu.mdx-slash')).toBeVisible();
+  await page.keyboard.type('div');
+  await expect(page.locator('.mdx-menu.mdx-slash [data-k]')).toHaveCount(1);
+  await page.keyboard.press('Enter');
+  await expect(ta).toHaveValue('one two\n\n> [!WARNING]\n> Text\n\n---\n');
+  await expect(page.locator('.mdx-menu')).toHaveCount(0);
+  // / mid-line is plain text, and a space closes an open / menu.
+  await page.keyboard.type('a/b /h');
+  await expect(page.locator('.mdx-menu')).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('/h3');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('Enter');
+  await expect(ta).toHaveValue(/a\/b \/h\n### $/);
+  await page.keyboard.type('Done');
+  await expect(ta).toHaveValue(/a\/b \/h\n### Done$/);
+  await page.screenshot({ path: test.info().outputPath('md-toolbar.png') });
+  // On a phone the bar stays one row that scrolls sideways.
+  if (!wide(page)) {
+    const bar = await page.locator('#mdx-src-bar').evaluate(el => ({ h: el.getBoundingClientRect().height, wrap: getComputedStyle(el).flexWrap }));
+    expect(bar.wrap).toBe('nowrap');
+    expect(bar.h).toBeLessThanOrEqual(60);
+  }
 });

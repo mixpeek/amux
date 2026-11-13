@@ -10884,10 +10884,26 @@ body:not(.native-panes) #peek-split-toggle { display: none !important; }
 .mdx-seg .mdx-split { margin-left: var(--space-1); padding: var(--space-1) var(--space-2); }
 .mdx-preview-acts { display: inline-flex; align-items: center; gap: var(--space-1-5); flex-shrink: 0; }
 .mdx-preview-acts[hidden] { display: none; }
-.mdx-tools { display: inline-flex; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
+.mdx-tools { display: inline-flex; align-items: center; gap: var(--space-0-5); flex-shrink: 0; padding-left: var(--space-1-5); border-left: 1px solid var(--border); }
 .mdx-tools button, .mdx-icon { border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); min-width: 30px; min-height: 30px;
   border-radius: var(--radius-sm); cursor: pointer; padding: 0 var(--space-1); }
-.mdx-tools button:hover, .mdx-icon:hover { background: var(--bg-inset); }
+.mdx-tools button { display: inline-flex; align-items: center; justify-content: center; color: var(--dim); }
+.mdx-tools button:hover, .mdx-icon:hover { background: var(--bg-inset); color: var(--text); }
+.mdx-tools .mdx-svg { display: block; }
+.mdx-tsep { width: 1px; height: 20px; background: var(--border); margin: 0 var(--space-1); flex-shrink: 0; }
+.mdx-tools .mdx-level { gap: var(--space-0-5); padding: 0 var(--space-1-5); font-weight: 600; color: var(--text); min-width: 52px; }
+.mdx-tools .mdx-level .mdx-svg { width: 14px; height: 14px; }
+.mdx-tools .mdx-plus { border: 1px solid var(--border); color: var(--text); }
+.mdx-tools .mdx-plus[aria-expanded="true"], .mdx-tools .mdx-plus:focus-visible { border-color: var(--accent); color: var(--accent); }
+/* The + menu, the text-style list and the / menu: the shared popup, with an icon per row. */
+.mdx-menu { min-width: 200px; max-height: min(420px, 70vh); overflow-y: auto; padding: var(--space-1) 0; }
+.mdx-menu .mdx-menu-item { display: flex; align-items: center; gap: var(--space-2-5); padding: var(--space-1-5) var(--space-3); font-size: var(--fs-md); }
+.mdx-menu .mdx-menu-item .mdx-svg { flex-shrink: 0; color: var(--dim); }
+.mdx-menu .mdx-menu-item .mdx-svg:last-child:not(:first-child) { margin-left: auto; width: 14px; height: 14px; }
+.mdx-menu .mdx-menu-item.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.mdx-mi-mark { width: 18px; flex-shrink: 0; text-align: center; font-weight: 700; font-size: var(--fs-sm); color: var(--dim); }
+.mdx-mi-label { flex: 1; }
+.mdx-menu-sep { height: 1px; background: var(--border); margin: var(--space-1) var(--space-2); }
 .mdx-readonly .mdx-tools { opacity: 0.4; pointer-events: none; }
 .mdx-spacer { flex: 1; }
 .mdx-copy-as { font: inherit; font-size: var(--fs-sm); color: var(--text); background: var(--bg); border: 1px solid var(--border);
@@ -10999,6 +11015,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   .mdx-editor.mdx-phone .file-edit-ta { color: var(--text); font-family: var(--font-ui); font-size: var(--fs-2xl);
     line-height: 1.55; padding: var(--space-3) var(--space-3) var(--space-12); }
   .mdx-tools button, .mdx-icon, .mdx-seg button { min-width: 44px; min-height: 44px; }
+  .mdx-menu .mdx-menu-item { min-height: 44px; }
 }
 
 /* Ask: the closest matches under an answer, one tappable row each. */

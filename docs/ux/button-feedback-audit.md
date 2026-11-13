@@ -1694,6 +1694,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | a | `e` | addEventListener |
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
+| app.js | m | `e` | addEventListener |
 | app.js | mdx-alt | `e` | addEventListener |
 | app.js | mdx-out-host | `e` | addEventListener |
 | app.js | mdx-tools | `e` | addEventListener |

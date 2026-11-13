@@ -3354,6 +3354,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxKeydown": {
+      "kind": "command._mdxKeydown",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxRenderHistory": {
       "kind": "command._mdxRenderHistory",
       "feedback_required": true,
@@ -3362,6 +3368,12 @@
     },
     "_mdxRenderPreview": {
       "kind": "command._mdxRenderPreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxRunBlock": {
+      "kind": "command._mdxRunBlock",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3380,6 +3392,30 @@
     },
     "_mdxShow": {
       "kind": "command._mdxShow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSlashInput": {
+      "kind": "command._mdxSlashInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSlashKey": {
+      "kind": "command._mdxSlashKey",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSlashPick": {
+      "kind": "command._mdxSlashPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdxSlashRender": {
+      "kind": "command._mdxSlashRender",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

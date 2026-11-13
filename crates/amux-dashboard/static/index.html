@@ -4294,19 +4294,8 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
           <button type="button" role="tab" data-m="history" onclick="_mdxView('history')" title="Earlier versions from git">History</button>
           <button type="button" class="mdx-split" data-m="split" onclick="_mdxToggleSplit()" aria-pressed="false" title="Show the preview beside the source" aria-label="Side by side">&#x25EB;</button>
         </div>
-        <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting">
-          <button type="button" data-t="heading" title="Heading (cycles # to ###)" aria-label="Heading"><b>H</b></button>
-          <button type="button" data-t="bold" title="Bold (⌘B)" aria-label="Bold"><b>B</b></button>
-          <button type="button" data-t="italic" title="Italic (⌘I)" aria-label="Italic"><i>I</i></button>
-          <button type="button" data-t="ul" title="Bulleted list" aria-label="Bulleted list">&#x2022;&#x2261;</button>
-          <button type="button" data-t="ol" title="Numbered list" aria-label="Numbered list">1&#x2261;</button>
-          <button type="button" data-t="task" title="Task" aria-label="Task">&#x2611;</button>
-          <button type="button" data-t="code" title="Code" aria-label="Code">&lt;/&gt;</button>
-          <button type="button" data-t="link" title="Link (⌘K)" aria-label="Link">&#x1F517;</button>
-          <button type="button" data-t="image" title="Image" aria-label="Image">&#x1F5BC;</button>
-          <button type="button" data-t="table" title="Table" aria-label="Table">&#x229E;</button>
-          <button type="button" data-t="worker" title="Tag a worker (@)" aria-label="Tag a worker">@</button>
-        </div>
+        <!-- Filled by _mdxToolbar (app.js) from _MDX_BAR, so the bar, the + menu and the / menu share one icon set. -->
+        <div class="mdx-tools" id="mdx-tools" role="toolbar" aria-label="Formatting"></div>
       </div>
       <div class="mdx-edit" id="mdx-edit-host"></div>
       <div class="mdx-status" id="mdx-status" aria-live="polite">
