@@ -473,13 +473,15 @@ pub fn verify(conn: &Connection) -> Value {
 async fn verify_route(State(state): State<AppState>) -> Response {
     // Seal first: a row appended by the receipt trigger since the last command
     // is pending, not broken.
-    let _ = state
+    if let Err(e) = state
         .store
         .write_async(|conn| {
             seal(conn)?;
             Ok(WriteOutcome { applied: false, events: vec![] })
         })
-        .await;
+        .await {
+        tracing::warn!(error = %e, verdict = "ledger_seal_failed", "sealing before verify failed; pending rows read as unsealed");
+    }
     match state.store.read_async(|conn| Ok(verify(conn))).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "measured": false,
