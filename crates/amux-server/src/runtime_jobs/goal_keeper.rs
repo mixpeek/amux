@@ -426,12 +426,19 @@ pub(crate) fn goal_view(goal: Option<Goal>, footer: impl FnOnce() -> Option<bool
             "state": res.state, "state_why": res.why});
     };
     let by_error = g.cleared.as_ref().is_some_and(|c| c.by_error);
+    let cleared = res.state == "cleared" || by_error;
     serde_json::json!({
         "measured": true,
-        "active": res.active,
+        // `active` is "Claude Code's /goal is set". After a clear by error it
+        // is not, though the keeper still pursues it (`keeper_pursuing`): a
+        // re-arm loop that read `active` true beside cleared_by_error never
+        // re-sent /goal (mxp-gs12, mxp-gs12-soak, tubescience-parity,
+        // 2026-11-13, after an account move).
+        "active": res.active && !cleared,
+        "keeper_pursuing": res.active,
         "met": res.state == "met",
         "evaluator_met": g.met,
-        "cleared": res.state == "cleared" || by_error,
+        "cleared": cleared,
         "cleared_by_error": by_error,
         "state": res.state,
         "state_why": res.why,
@@ -1157,6 +1164,16 @@ mod tests {
     /// read inactive and say why; an unmet goal WITH the footer stays active;
     /// a met goal never consults the footer.
     #[test]
+    fn a_goal_cleared_by_an_error_reads_inactive_while_the_keeper_still_pursues_it() {
+        let g = Some(super::Goal { met: false, condition: "ship it".into(), ts: 2.0,
+            cleared: Some(super::Cleared { by_error: true, why: "Goal cleared after an unrecoverable error (authentication failed)".into() }) });
+        let v = super::goal_view(g, || None, &serde_json::json!({"configured": false}));
+        assert_eq!(v["active"], false, "a re-arm loop must see the /goal is gone: {v}");
+        assert_eq!(v["cleared_by_error"], true, "{v}");
+        assert_eq!(v["keeper_pursuing"], true, "the keeper still keeps it: {v}");
+    }
+
+    #[test]
     fn a_cleared_goal_reads_inactive_and_the_footer_is_only_read_for_an_unmet_one() {
         let unmet = || Some(super::Goal { met: false, condition: "use the bumble app".into(), ts: 1.0, cleared: None });
         let v = super::goal_view(unmet(), || Some(false), &serde_json::json!({"configured": false}));
@@ -1378,7 +1395,9 @@ mod tests {
             assert_eq!((r.state, r.active), ("unknown", true), "{r:?}");
             assert!(r.why.contains("authentication failed"), "{r:?}");
             let v = goal_view(Some(g.clone()), || None, &no);
-            assert_eq!((v["met"].clone(), v["state"].clone(), v["active"].clone()), (json!(false), json!("unknown"), json!(true)), "{v}");
+            // The /goal itself is gone (active false); the keeper still continues it.
+            assert_eq!((v["met"].clone(), v["state"].clone(), v["active"].clone(), v["keeper_pursuing"].clone()),
+                (json!(false), json!("unknown"), json!(false), json!(true)), "{v}");
             // The keeper continues it, quoting the goal without the `continue:` prefix.
             let mut k = Keep::default();
             match decide(&mut k, &g, &r, &[], 1e9) {
