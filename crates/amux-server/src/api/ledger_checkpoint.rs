@@ -222,10 +222,16 @@ fn host_id(home: &Path) -> String {
         }
     }
     let mut b = [0u8; 8];
-    let _ = getrandom::fill(&mut b);
+    if let Err(e) = getrandom::fill(&mut b) {
+        tracing::warn!(error = %e, verdict = "ledger_host_id_random_failed", "no OS randomness for the host id");
+    }
     let id = hex::encode(b);
-    let _ = std::fs::create_dir_all(ledger_dir(home));
-    let _ = std::fs::write(&p, &id);
+    if let Err(e) = std::fs::create_dir_all(ledger_dir(home)) {
+        tracing::warn!(error = %e, verdict = "ledger_host_id_unsaved", "the ledger folder could not be created; the host id is not kept");
+    }
+    if let Err(e) = std::fs::write(&p, &id) {
+        tracing::warn!(error = %e, verdict = "ledger_host_id_unsaved", "the host id was not saved; the next read mints another");
+    }
     id
 }
 
@@ -586,11 +592,13 @@ pub async fn verify_external(v: &mut Value) {
 // ── Sinks ──────────────────────────────────────────────────────────────────
 
 fn record_export(conn: &Connection, cp: &str, sink: &str, ok: bool, worm: &str, location: &str, detail: &str) {
-    let _ = conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT OR REPLACE INTO _amux_ledger_checkpoint_exports (checkpoint_hash, sink, ok, worm, location, detail, ts)
          VALUES (?1,?2,?3,?4,?5,?6,?7)",
         rusqlite::params![cp, sink, ok as i64, worm, location, detail, chrono::Utc::now().timestamp_millis()],
-    );
+    ) {
+        tracing::warn!(error = %e, verdict = "ledger_export_unrecorded", "a checkpoint export result was not recorded");
+    }
 }
 
 fn sink_result(sink: &str, ok: bool, detail: &str) {
@@ -878,7 +886,7 @@ pub async fn export(state: &AppState, home: &Path) -> Value {
     }
     if !results.is_empty() {
         let h = last.checkpoint_hash.clone();
-        let _ = state
+        if let Err(e) = state
             .store
             .write_async(move |conn| {
                 for (sink, ok, worm, loc, detail) in &results {
@@ -886,7 +894,9 @@ pub async fn export(state: &AppState, home: &Path) -> Value {
                 }
                 Ok(WriteOutcome { applied: false, events: vec![] })
             })
-            .await;
+            .await {
+            tracing::warn!(error = %e, verdict = "ledger_export_unrecorded", "checkpoint export results were not recorded");
+        }
     }
     out
 }
@@ -908,7 +918,7 @@ pub async fn tick(state: &AppState, force: bool) -> Value {
                 || latest(conn)?.map(|l| now - l.ts >= due_after_ms).unwrap_or(true);
             let r = if due { create(conn, &h2, now, force) } else { Ok(None) };
             let applied = matches!(r, Ok(Some(_)));
-            *s2.lock().expect("slot") = Some(r);
+            *s2.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
             Ok(WriteOutcome { applied, events: vec![] })
         })
         .await;

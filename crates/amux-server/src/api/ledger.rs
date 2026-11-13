@@ -491,13 +491,15 @@ pub fn verify_capturing(
 async fn verify_route(State(state): State<AppState>) -> Response {
     // Seal first: a row appended by the receipt trigger since the last command
     // is pending, not broken.
-    let _ = state
+    if let Err(e) = state
         .store
         .write_async(|conn| {
             seal(conn)?;
             Ok(WriteOutcome { applied: false, events: vec![] })
         })
-        .await;
+        .await {
+        tracing::warn!(error = %e, verdict = "ledger_seal_failed", "sealing before verify failed; pending rows read as unsealed");
+    }
     let home = crate::config::amux_home();
     match state.store.read_async(move |conn| Ok(super::ledger_checkpoint::verify_all(conn, &home))).await {
         Ok(mut v) => {
