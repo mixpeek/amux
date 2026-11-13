@@ -16,7 +16,7 @@
 # Fail-open by design: any error lets the push proceed. Outside amux
 # ($AMUX_SESSION unset) it is a no-op — the human is always allowed to push.
 # Intentional cross-session push: AMUX_ALLOW_FOREIGN=1 git push ...
-import datetime, glob, json, os, re, shutil, ssl, subprocess, sys, tempfile, urllib.parse, urllib.request
+import datetime, glob, json, os, re, shutil, ssl, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 
 ZERO = "0" * 40
 
@@ -452,9 +452,10 @@ def _script_tests_for(sha, touched):
     return picked, len(wired)
 
 
-def _script_test_failures(sha, tests):
+def _script_test_failures(sha, tests, secs=None):
     """Run `tests` on `sha`'s tree with no amux session in the environment, so
-    a test cannot reach the live server. Returns failing names, or None."""
+    a test cannot reach the live server. Returns failing names, or None.
+    `secs`, when given, gets each test's wall time."""
     tmp = tempfile.mkdtemp(prefix="amux-script-tests-")
     try:
         arch = subprocess.run("git archive %s | tar -x -C %s" % (sha, tmp), shell=True,
@@ -469,6 +470,7 @@ def _script_test_failures(sha, tests):
         for t in tests:
             if not os.path.exists(os.path.join(tmp, t)):
                 continue
+            t0 = time.monotonic()
             try:
                 run = [sys.executable, t] if t.endswith(".py") else ["bash", t]
                 r = subprocess.run(run, cwd=tmp, env=env, capture_output=True, text=True,
@@ -478,6 +480,8 @@ def _script_test_failures(sha, tests):
                                     _failing_cases(r.stdout + r.stderr, tmp)))
             except subprocess.TimeoutExpired:
                 failing.append((t, "did not finish in %ds" % _SCRIPT_TEST_TIMEOUT_S, set()))
+            if secs is not None:
+                secs[t] = secs.get(t, 0) + time.monotonic() - t0
         return failing
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -496,7 +500,11 @@ def _script_tests_gate(refs):
         dropped = tests[_SCRIPT_TESTS_MAX:]
         tests = tests[:_SCRIPT_TESTS_MAX]
         t0 = datetime.datetime.now()
-        failing = _script_test_failures(local, tests)
+        # Per test, both trees: lanes skipped this leg after runs of 1,391 to
+        # 1,779 s that logged no test names, so nobody could say which test
+        # was slow (AF-1197). The audit line and the summary now name them.
+        per = {}
+        failing = _script_test_failures(local, tests, per)
         if failing is None:
             sys.stderr.write("amux pre-push: script tests on %s could not run (git archive failed); "
                              "CI's checks still runs them verdict=script_tests_unmeasured\n" % short)
@@ -507,7 +515,7 @@ def _script_tests_gate(refs):
             base = remote if remote != ZERO else subprocess.run(
                 ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
                 text=True, timeout=10).stdout.strip()
-            was = _script_test_failures(base, [t for t, _, _ in failing]) if base else None
+            was = _script_test_failures(base, [t for t, _, _ in failing], per) if base else None
             if was is None:
                 # A first push, or a base tree that cannot be read: this leg
                 # blocks only what it can show is new, so CI decides (AF-1128).
@@ -526,14 +534,16 @@ def _script_tests_gate(refs):
                  "new failing case(s), the remote fails only the others:\n" + "\n".join(sorted(new_cases[t])))
                 for t, why, _ in failing if t not in inherited]
         secs = (datetime.datetime.now() - t0).total_seconds()
+        slowest = ",".join("%s:%.0f" % (os.path.basename(t), n) for t, n in
+                           sorted(per.items(), key=lambda x: -x[1])[:3])
         verdict = "script_tests_fail" if mine else "script_tests_pass"
         sys.stderr.write("amux pre-push: script tests on %s: %d of %d wired tests name a "
                          "changed script or hook, %d failing from this push, %d already failing on the remote, "
-                         "%d not run (cap %d), %.0fs verdict=%s\n"
+                         "%d not run (cap %d), %.0fs (slowest %s) verdict=%s\n"
                          % (short, len(tests), wired, len(mine), len(inherited), len(dropped),
-                            _SCRIPT_TESTS_MAX, secs, verdict))
-        _audit("script_tests", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f"
-               % (verdict, short, len(tests), len(mine), len(inherited), secs))
+                            _SCRIPT_TESTS_MAX, secs, slowest or "-", verdict))
+        _audit("script_tests", "verdict=%s sha=%s tests=%d mine=%d inherited=%d secs=%.0f slowest=%s"
+               % (verdict, short, len(tests), len(mine), len(inherited), secs, slowest or "-"))
         if mine:
             sys.stderr.write("\nBLOCKED: this push fails tests that CI runs:\n")
             for t, why in mine:

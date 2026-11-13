@@ -185,6 +185,8 @@ def main():
         check("a push whose only red is inherited is allowed", r.returncode, 0)
         check("and says the tests ran", "verdict=script_tests_pass" in r.stderr, True)
         check("and how many it selected", "3 of 4 wired tests" in r.stderr, True)
+        # Which test took the time is in the summary (AF-1197).
+        check("and names its slowest tests", "(slowest test-" in r.stderr, True)
 
         # A changed hook runs the hook tests that name it (AF-1128), and one
         # that names another hook stays out.
