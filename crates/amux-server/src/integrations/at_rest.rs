@@ -183,7 +183,7 @@ pub(crate) fn seal(home: &Path, path: &Path, plain: &[u8]) -> Result<Vec<u8>, St
     let key = purpose_key(home, true)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
     let mut nonce = [0u8; 12];
-    getrandom::fill(&mut nonce).expect("OS random source");
+    getrandom::fill(&mut nonce).map_err(|e| format!("no OS randomness for the nonce: {e}"))?;
     let a = aad(home, path);
     let ct = cipher
         .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad: a.as_bytes() })
