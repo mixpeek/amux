@@ -818,6 +818,21 @@ fi
     echo "== cargo_build_backoff trigger=$head retry_in_s=$((retry_s - retry_now + failed_at))"
     exit 0
   fi
+  # WAIT FOR THE BINARY ANOTHER HOST IS BUILDING (Z4). With a prebuilt directory set,
+  # the build host is compiling this sha too, and a local compile here is the one that
+  # OOMs on the sandbox. Each pass that finds no binary yet comes back on the next one,
+  # for at most AMUX_DEPLOY_PREBUILT_WAIT_S (600); past that it compiles here and says so.
+  if [ -n "${AMUX_DEPLOY_PREBUILT_DIR:-}" ] && [ "${AMUX_RS_DISK_CLEAR_ONLY:-0}" != 1 ] \
+     && [ ! -s "$AMUX_DEPLOY_PREBUILT_DIR/$built_sha/amux-server" ]; then
+    _pw="${STAMP}.prebuilt_wait.$built_sha"
+    [ -f "$_pw" ] || date +%s > "$_pw"
+    _waited=$(( $(date +%s) - $(cat "$_pw" 2>/dev/null || date +%s) ))
+    if [ "$_waited" -lt "${AMUX_DEPLOY_PREBUILT_WAIT_S:-600}" ]; then
+      echo "== $(date '+%F %T') waiting ${_waited}s for the prebuilt binary of $built_sha verdict=deploy_prebuilt_waiting"
+      exit 0
+    fi
+    echo "== WARN no prebuilt binary for $built_sha after ${_waited}s; compiling here verdict=deploy_prebuilt_timeout"
+  fi
   echo "== $(date '+%F %T') building $built_sha (trigger: $head, previous stamp: ${last:-none})"
   if [ "$on_main" != "yes" ]; then
     echo "== !! OFF-MAIN: $built_sha is on '$head_ref', which is not contained in main."
