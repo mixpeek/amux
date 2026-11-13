@@ -32870,7 +32870,23 @@ function _mdxSlashPick(k) {
   const ta = document.getElementById('file-edit-ta');
   const s = _mdxSlash;
   _mdxSlash = null;
-  if (s) _mdxReplace(s.at, ta.selectionStart, '', s.at);
+  // Remove exactly the typed '/word'. WebKit's insertText of '' over a selection
+  // that starts a line also ate the newline before it, so the block landed on the
+  // line above. 'delete' removes the selection alone and keeps undo; if an engine
+  // still removes more, the text is put right and the editor beacon says so.
+  if (s) {
+    const end = ta.selectionStart, want = ta.value.slice(0, s.at) + ta.value.slice(end);
+    ta.focus();
+    ta.setSelectionRange(s.at, end);
+    let ok = false;
+    try { ok = document.execCommand('delete'); } catch (e) { console.warn('[mdx] delete failed', e); }
+    if (ta.value !== want) {
+      if (ok) _mdxBeacon('slash_delete_mismatch', { engine_removed: want.length - ta.value.length });
+      ta.value = want;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    ta.setSelectionRange(s.at, s.at);
+  }
   _mdxRunBlock(k);
 }
 // From the textarea's input: open on a '/' typed at a line start, re-filter while open.
