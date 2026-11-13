@@ -399,7 +399,20 @@ def _harness_guard_gate(refs):
 # behind `run:`, chained with `&&`, with arguments or an env prefix. A test
 # with arguments runs here without them; if that makes it fail, it fails on
 # the remote's tip the same way and counts as inherited (review F1).
-_SCRIPT_TEST_STEP = re.compile(r"(?:\./|\bbash\s+)(scripts/test-[A-Za-z0-9_.-]+\.sh)\b")
+# And `python3 scripts/test-x.py`: bfc81b6d5 broke scripts/test-cargo-budget.py,
+# which this pattern did not match, and main's checks was red 8 hours (AF-1197).
+_SCRIPT_TEST_STEP = re.compile(r"(?:\./|\bbash\s+|\bpython3\s+)(scripts/test-[A-Za-z0-9_.-]+\.(?:sh|py))\b")
+# The failing cases a test names: unittest's `FAIL: test_x (...)` and
+# `ERROR: ...`, and the `FAIL: ...` lines of the shell tests. A test that
+# already fails on the remote for one case must not hide a new case: on a Mac
+# test-cargo-budget.py always fails its /proc case, which made bfc81b6d5's new
+# failure in the same file read as inherited (AF-1197).
+_FAIL_CASE = re.compile(r"^(?:FAIL|ERROR)\b:?\s*(.+)$", re.M)
+_TMP_PATH = re.compile(r"(?:/private)?/var/folders/\S+|/tmp/\S+")
+
+
+def _failing_cases(out, tree):
+    return {_TMP_PATH.sub("<tmp>", m.replace(tree, "<tree>")).strip() for m in _FAIL_CASE.findall(out)}
 _SCRIPT_TESTS_MAX = 12
 _SCRIPT_TEST_TIMEOUT_S = 300
 
@@ -461,9 +474,10 @@ def _script_test_failures(sha, tests):
                 r = subprocess.run(run, cwd=tmp, env=env, capture_output=True, text=True,
                                    timeout=_SCRIPT_TEST_TIMEOUT_S)
                 if r.returncode != 0:
-                    failing.append((t, "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:])))
+                    failing.append((t, "\n".join((r.stdout + r.stderr).strip().splitlines()[-6:]),
+                                    _failing_cases(r.stdout + r.stderr, tmp)))
             except subprocess.TimeoutExpired:
-                failing.append((t, "did not finish in %ds" % _SCRIPT_TEST_TIMEOUT_S))
+                failing.append((t, "did not finish in %ds" % _SCRIPT_TEST_TIMEOUT_S, set()))
         return failing
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -488,12 +502,12 @@ def _script_tests_gate(refs):
                              "CI's checks still runs them verdict=script_tests_unmeasured\n" % short)
             _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
             continue
-        inherited = []
+        inherited, new_cases = [], {}
         if failing:
             base = remote if remote != ZERO else subprocess.run(
                 ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
                 text=True, timeout=10).stdout.strip()
-            was = _script_test_failures(base, [t for t, _ in failing]) if base else None
+            was = _script_test_failures(base, [t for t, _, _ in failing]) if base else None
             if was is None:
                 # A first push, or a base tree that cannot be read: this leg
                 # blocks only what it can show is new, so CI decides (AF-1128).
@@ -503,9 +517,14 @@ def _script_tests_gate(refs):
                                     if base else "no remote tip"))
                 _audit("script_tests", "verdict=script_tests_unmeasured sha=%s" % short)
                 continue
-            was_names = {t for t, _ in was}
-            inherited = [t for t, _ in failing if t in was_names]
-        mine = [(t, why) for t, why in failing if t not in inherited]
+            was_cases = {t: cases for t, _, cases in was}
+            # Inherited only when the remote fails it too, and for every case
+            # this push fails it for. A test that names no case compares whole.
+            inherited = [t for t, _, cases in failing if t in was_cases and cases <= was_cases[t]]
+            new_cases = {t: cases - was_cases.get(t, set()) for t, _, cases in failing}
+        mine = [(t, why if not (new_cases.get(t) and t in was_cases) else
+                 "new failing case(s), the remote fails only the others:\n" + "\n".join(sorted(new_cases[t])))
+                for t, why, _ in failing if t not in inherited]
         secs = (datetime.datetime.now() - t0).total_seconds()
         verdict = "script_tests_fail" if mine else "script_tests_pass"
         sys.stderr.write("amux pre-push: script tests on %s: %d of %d wired tests name a "
@@ -556,7 +575,7 @@ def _spa_gates(refs):
             _audit("spa_gates", "verdict=spa_gates_unmeasured sha=%s" % short)
             continue
         tests, failing = got
-        inherited = []
+        inherited, new_cases = [], {}
         if failing:
             base = remote if remote != ZERO else subprocess.run(
                 ["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True,
