@@ -22,6 +22,11 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
     const outcomes = (await (await request.get('/api/intent/outcomes')).json()).outcomes || [];
     const worker = outcomes.find((o: { title: string }) => /camp/i.test(o.title))?.worker;
     expect(worker, 'the camp request has a helper').toBeTruthy();
+    // Set by the same helper inside this turn, but for ANOTHER conversation
+    // (its prompt names that one): it stays out of this one.
+    const soon = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 16);
+    expect((await request.post('/api/schedules', { data: { title: 'Reminder: Hudson Prep statement', session: worker,
+      kind: 'tmux', once: soon, command: "Post the reminder here with amux post 'o:oelsewhere1'" } })).ok()).toBeTruthy();
     await page.waitForTimeout(16_000);
     const when = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 16);
     expect((await request.post('/api/schedules', { data: { title: 'Reminder: renew the car registration', session: worker,
@@ -34,7 +39,13 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
       schedule_expr: 'weekly on Sunday at 18:00', command: 'Post the reminder' } })).ok(), 'a repeating reminder').toBeTruthy();
     expect((await request.post('/api/schedules', { data: { title: 'check: goal inputs', session: worker, kind: 'shell',
       schedule_expr: 'every 2h', command: 'true' } })).ok(), 'a check').toBeTruthy();
-    const rem = (await (await request.get('/api/intent/reminders')).json()).reminders || [];
+    // The same reminder set twice is listed once.
+    expect((await request.post('/api/schedules', { data: { title: 'Reminder: put the bins out', session: worker,
+      schedule_expr: 'weekly on Sunday at 18:00', command: 'Post the reminder' } })).ok(), 'the same again').toBeTruthy();
+    const remBody = await (await request.get('/api/intent/reminders')).json();
+    const rem = remBody.reminders || [];
+    expect(rem.filter((x: { title: string }) => /bins/i.test(x.title)).length, 'one row per reminder').toBe(1);
+    expect(remBody.folded, 'and the repeat is counted').toBeGreaterThan(0);
     const bins = rem.find((x: { title: string }) => /bins/i.test(x.title));
     expect(bins?.every, 'listed, with how often it repeats').toBeTruthy();
     expect(rem.some((x: { title: string }) => /goal inputs/i.test(x.title)), 'a shell check is not a reminder').toBeFalsy();
@@ -47,6 +58,7 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
     await page.locator(`.home-row[data-outcome="${id}"]`).click();
     await expect(page.locator('.home-reminder').filter({ hasText: /camp/i })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('.home-reminder').filter({ hasText: /registration/i })).toHaveCount(0);
+    await expect(page.locator('.home-reminder').filter({ hasText: /hudson/i }), 'another conversation\'s reminder').toHaveCount(0);
   }
   await noJargon(page);
   const ideas = await until(async () => (await (await request.get('/api/intent/ideas')).json()).ideas || [],
