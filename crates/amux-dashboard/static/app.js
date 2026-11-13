@@ -12367,6 +12367,26 @@ function _homeRenderList() {
     + '<span class="home-row-snip">' + esc((o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
     + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + '</span></button>').join('') + '</div>';
 }
+// An answer, with each ```draft block (To:, Subject:, blank line, body) shown
+// as a card the person sends from their own mail: amux never sends it.
+function _homeAnswerHtml(text) {
+  const drafts = [];
+  const md = text.replace(/```draft\s*\n([\s\S]*?)```/g, (m, d) => { drafts.push(d); return '\n\nHOMEDRAFT' + (drafts.length - 1) + '\n\n'; });
+  let h = renderMarkdown(md, '');
+  drafts.forEach((d, i) => {
+    const to = (d.match(/^To:\s*(.+)$/mi) || [])[1] || '';
+    const subject = (d.match(/^Subject:\s*(.+)$/mi) || [])[1] || '';
+    const body = d.replace(/^(To|Subject|Cc):.*\n?/gmi, '').replace(/^\s*\n/, '').trim();
+    const href = 'mailto:' + encodeURIComponent(to.trim()) + '?subject=' + encodeURIComponent(subject.trim()) + '&body=' + encodeURIComponent(body);
+    const card = '<div class="home-draft"><div class="home-draft-head">Draft email, not sent</div>'
+      + (to ? '<div class="home-draft-meta">To: ' + esc(to) + '</div>' : '') + (subject ? '<div class="home-draft-meta">Subject: ' + esc(subject) + '</div>' : '')
+      + '<div class="home-card-actions"><a class="btn primary" href="' + esc(href) + '" onclick="showToast(\'Opening your mail app with this draft\')">Open in Mail</a>'
+      + '<button type="button" class="btn" data-copy="' + esc(body) + '" onclick="navigator.clipboard?.writeText(this.dataset.copy).then(() => showToast(\'Copied\'))">Copy</button></div>'
+      + '<div class="home-draft-body">' + esc(body).replace(/\n/g, '<br>') + '</div></div>';
+    h = h.replace(new RegExp('<p>\\s*HOMEDRAFT' + i + '\\s*</p>|HOMEDRAFT' + i), card);
+  });
+  return h;
+}
 // A helper's name as words, the way the receipt says it: family-admin -> Family admin.
 function _homePlainName(n) {
   const w = String(n || '').replace(/[-_]+/g, ' ');
@@ -12407,7 +12427,7 @@ function _homeRenderOutcome(o) {
   if (!el) return;
   const posts = (o.thread || []).map(p => {
     const mine = String(p.author_key || '').startsWith('person:');
-    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : renderMarkdown(String(p.body || ''), '');
+    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(String(p.body || ''));
     return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
       + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
   }).join('');
@@ -12454,7 +12474,7 @@ async function _homeSend() {
   if (!_home.open) {
     const el = document.getElementById('home-chat-body');
     if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs"><div class="home-msg mine"><div class="home-bubble">' + esc(text)
-      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Finding the right helper<span>.</span><span>.</span><span>.</span></div></div></div></div>';
+      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Getting started<span>.</span><span>.</span><span>.</span></div></div></div></div>';
   }
   const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
   _home.sending = false;

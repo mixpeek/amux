@@ -28,5 +28,12 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
   await expect(card).toContainText(/draft/i);
   await expect(card.locator('.home-card-from')).toContainText(/email/i);
   await noJargon(page);
+  // Doing the idea gives a draft Dana sends from her own mail; amux sends nothing.
+  await card.getByRole('button', { name: 'Do it' }).click();
+  const draft = page.locator('.home-draft').first();
+  await expect(draft).toBeVisible({ timeout: 60_000 });
+  await expect(draft).toContainText(/not sent/i);
+  await expect(draft.getByRole('link', { name: 'Open in Mail' })).toHaveAttribute('href', /^mailto:marcy%40campkaylie\.test\?subject=Re/);
+  await noJargon(page);
   expect(await deliveredSends(request), 'nothing was sent outside').toBe(sends);
 });

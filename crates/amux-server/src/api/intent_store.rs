@@ -436,16 +436,13 @@ pub(crate) fn plain_name(worker: &str) -> String {
 
 pub(crate) fn receipt(plan: &Value, worker: &str) -> String {
     let worker = &plain_name(worker);
-    let why = plan["why"].as_str().unwrap_or("").trim().trim_end_matches('.');
-    let lower = |s: &str| {
-        let mut c = s.chars();
-        c.next().map(|f| f.to_lowercase().collect::<String>() + c.as_str()).unwrap_or_default()
-    };
     match plan["action"].as_str().unwrap_or("") {
         "answer" => "Answered right away".to_string(),
         "continue" => format!("{worker} is already on this"),
-        "create" => format!("{worker} is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
-        _ => format!("{worker} is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
+        // The router's reason stays in the decision (and the Change sheet): read
+        // aloud to the person it explained the plumbing ("no existing helper
+        // handles family admin yet"), which the fourth Dana run tripped on.
+        _ => format!("{worker} is on it"),
     }
 }
 
@@ -645,7 +642,7 @@ mod tests {
     #[test]
     fn receipts_say_where_it_went_in_plain_words() {
         assert_eq!(receipt(&json!({"action": "send", "why": "It handles family errands."}), "family"),
-            "Family is on it: it handles family errands");
+            "Family is on it", "the reason stays out of the receipt");
         assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meal-planner"), "Meal planner is on it");
         assert_eq!(receipt(&json!({"action": "answer"}), ""), "Answered right away");
     }

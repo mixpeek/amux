@@ -11226,3 +11226,8 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-choice { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-lg); min-height: 44px; cursor: pointer; }
 .outcome-answer { font-size: var(--fs-xl); line-height: 1.5; }
 .card-outcomes { font-size: var(--fs-sm); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 var(--space-3); }
+.home-draft { border: 1px solid var(--border); border-radius: var(--radius-2xl); padding: var(--space-3); margin: var(--space-2) 0; background: var(--bg); display: flex; flex-direction: column; gap: var(--space-1); }
+.home-draft-head { font-weight: 600; font-size: var(--fs-lg); color: var(--dim); }
+.home-draft-meta { font-size: var(--fs-lg); }
+.home-draft-body { font-size: var(--fs-xl); line-height: 1.5; white-space: normal; }
+.home-draft .btn { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; }

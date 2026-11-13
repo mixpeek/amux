@@ -78,8 +78,9 @@ elif "hudson prep" in b and ("done or missing" in b or "confirmation" in b):
     answer = ("**Verdict: missing.** There is no \"Application received\" email from Hudson Prep. Their reminder says the parent "
               "statement is still missing (the teacher recommendation arrived). The deadline is in 9 days." if not got else "**Verdict: done.**")
 elif "nudge" in b and "camp" in b:
-    answer = ("Here is a draft for Marcy Feld (not sent):\n\n> Hi Marcy, I wanted to check in again on Rafi's spot on the Session 2 "
-              "waitlist. He is still very excited about camp. Is there any news, or anything we can do? Thanks so much, Dana\n\nSay the word and I'll keep it ready to send.")
+    answer = ("Here is a second nudge for Marcy Feld, ready for you to send:\n\n```draft\nTo: marcy@campkaylie.test\n"
+              "Subject: Re: Rafi Levin - Session 2 waitlist\n\nHi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 "
+              "waitlist. He is still very excited about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana\n```")
 elif "school" in b and "inbox" in b:
     answer = ("I found 4 school items:\n\n1. **Rafi's field trip permission slip** and $15, due Friday (Ms. Ortiz).\n2. **Picture day** order form, due on picture day.\n"
               "3. **Ezra's emergency contact form**, update in the parent portal in 4 days.\n4. **Conference sign-ups** open in 2 days at 7pm.")
