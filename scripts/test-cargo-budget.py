@@ -534,7 +534,9 @@ class BuildRetryTests(unittest.TestCase):
             commit()
             env = os.environ | dict(HOME=str(base), AMUX_REPO=str(repo), ATTEMPTS=str(trace),
                 AMUX_RS_BUILD_STAMP=str(base / 'stamp'), AMUX_RS_BUILD_LOG=str(base / 'build.log'),
-                AMUX_RS_ACTIVATION_REF='HEAD', AMUX_BUILD_MIN_FREE_GB='0', AMUX_BUILD_FAILURE_RETRY_SECS='900')
+                AMUX_RS_ACTIVATION_REF='HEAD', AMUX_BUILD_MIN_FREE_GB='0', AMUX_BUILD_FAILURE_RETRY_SECS='900',
+                # The stub server is a few bytes; bfc81b6d5 refuses one under 1 MB.
+                AMUX_DEPLOY_MIN_BIN_BYTES='0')
             def run():
                 subprocess.run(['bash', str(ROOT / 'rust-auto-build.sh')], env=env,
                                check=True, capture_output=True, timeout=30)
