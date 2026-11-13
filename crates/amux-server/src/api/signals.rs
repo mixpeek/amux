@@ -1243,13 +1243,15 @@ pub(crate) struct LiveSub {
     pub judge: bool,
     pub dedupe_key: String,
     pub notify_post: Option<i64>,
+    /// Who made it: "owner" for the human, else the worker. A send runs as them.
+    pub owner: String,
 }
 
 pub(crate) fn load_live_subs(conn: &Connection) -> rusqlite::Result<Vec<LiveSub>> {
     ensure_subscription_tables(conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, name, pattern, source_filter, session_filter, action, action_target, action_template, \
-         dedupe_window_s, last_fired_at, criteria, filter, judge, dedupe_key, notify_post \
+         dedupe_window_s, last_fired_at, criteria, filter, judge, dedupe_key, notify_post, owner \
          FROM signal_subscriptions WHERE enabled = 1 ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -1270,6 +1272,7 @@ pub(crate) fn load_live_subs(conn: &Connection) -> rusqlite::Result<Vec<LiveSub>
             judge: r.get::<_, i64>(12)? != 0,
             dedupe_key: r.get(13)?,
             notify_post: r.get(14)?,
+            owner: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
         })
     })?;
     rows.collect()
@@ -1429,7 +1432,7 @@ async fn act(state: &AppState, sub: &mut LiveSub, event_id: Option<i64>, event_t
         super::event_subs::fill(&render_template(&sub.action_template, event_type, data), ev)
     };
     let outcome = match sub.action.as_str() {
-        "send" => execute_send_action(state, &sub.action_target, &text).await,
+        "send" => execute_send_action(state, &sub.action_target, &send_sender(&sub.owner, &sub.action_target), &text).await,
         "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
         "schedule" => execute_schedule_action(state, &sub.action_target).await,
         "shell" => execute_shell_action(&sub.action_target, &text).await,
@@ -1504,7 +1507,21 @@ async fn record_fire(state: &AppState, sub: &LiveSub, event_id: Option<i64>, eve
         .await;
 }
 
-async fn execute_send_action(state: &AppState, target: &str, text: &str) -> String {
+/// Who a subscription's send speaks as. It used to be a fixed "signal-dispatcher",
+/// which the steering gate read as a worker in no group, so every send was refused
+/// with worker_group_boundary (gtm-engine's #15 refused 20 of 20 on 2026-11-13).
+/// The owner's subscriptions, and a worker's wake to itself, are harness input; a
+/// worker's send to another worker carries that worker's name, so the same group
+/// rules hold as if it had sent the message itself.
+pub(crate) fn send_sender(owner: &str, target: &str) -> String {
+    if owner.is_empty() || owner == "owner" || owner == target {
+        "harness:signal-subscription".to_string()
+    } else {
+        owner.to_string()
+    }
+}
+
+async fn execute_send_action(state: &AppState, target: &str, sender: &str, text: &str) -> String {
     let home = crate::config::amux_home();
     let sessions_dir = home.join("sessions");
     if !sessions_dir.join(format!("{target}.env")).exists() {
@@ -1515,7 +1532,7 @@ async fn execute_send_action(state: &AppState, target: &str, text: &str) -> Stri
         target,
         text,
         "signal-subscription",
-        "signal-dispatcher",
+        sender,
         &format!("signal-sub:{}:{}", target, chrono::Utc::now().timestamp()),
     )
     .await
@@ -1651,6 +1668,22 @@ async fn execute_shell_action(command: &str, _text: &str) -> String {
 pub(crate) mod tests {
     use super::*;
 
+    // gtm-engine's #15 (email.received -> send to gtm-engine) was refused 20 of 20
+    // times as worker_group_boundary: the send went out as "signal-dispatcher", a
+    // name in no group. Run the real steering gate on what each kind of
+    // subscription now sends as.
+    #[test]
+    fn a_subscription_send_speaks_as_its_owner() {
+        for (owner, target) in [("owner", "w1"), ("", "w1"), ("gtm-engine", "gtm-engine")] {
+            let sender = send_sender(owner, target);
+            assert_eq!(sender, "harness:signal-subscription", "{owner} -> {target}");
+            assert!(crate::api::session_verbs::queued_peer_input_refusal(&sender, target).is_none(),
+                "the steering gate lets {owner}'s subscription reach {target}");
+        }
+        // A worker waking a different worker sends as itself, so its groups decide.
+        assert_eq!(send_sender("gtm-engine", "amux"), "gtm-engine");
+    }
+
     #[test]
     fn a_wake_carries_the_fields_a_worker_acts_on() {
         let sub = LiveSub {
@@ -1658,7 +1691,7 @@ pub(crate) mod tests {
             session_filter: String::new(), action: "send".into(), action_target: "w".into(),
             action_template: String::new(), dedupe_window_s: 0, last_fired_at: None,
             criteria: "a customer emails me".into(), filter: Value::Null, judge: false,
-            dedupe_key: String::new(), notify_post: None,
+            dedupe_key: String::new(), notify_post: None, owner: "owner".into(),
         };
         let ev = json!({"type": "email.received", "source": "email", "session": "",
             "from": "Alan <alan@acme.com>", "subject": "Invoice 42", "message_id": "<m1@acme.com>",

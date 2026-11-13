@@ -30065,7 +30065,7 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
 /// Queue producers use an empty sender for system input and "owner" for saved
 /// owner rules. Internal producer names are explicit; a retired worker without
 /// an env file cannot turn its pending message into owner input.
-fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
+pub(crate) fn queued_peer_input_refusal(sender: &str, target: &str) -> Option<PeerInputRefusal> {
     if sender.is_empty() || sender == "owner" || sender.starts_with("harness:") || sender == "browser-reaper" { return None; }
     if speaks_for_owner(sender) { return None; }
     peer_input_refusal(sender, target)
