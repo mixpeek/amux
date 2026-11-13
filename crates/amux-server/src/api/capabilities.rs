@@ -57,7 +57,9 @@ static STORE: OnceLock<crate::db::SharedStore> = OnceLock::new();
 
 /// Called once by the router so refusals can file their card.
 pub fn install_store(store: crate::db::SharedStore) {
-    let _ = STORE.set(store);
+    if STORE.set(store).is_err() {
+        tracing::debug!("store already installed; keeping the first");
+    }
 }
 
 // ── Layers ──────────────────────────────────────────────────────────────────
@@ -416,7 +418,9 @@ pub fn clear_ask(home: &Path, lane: &str, capability: &str) {
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
     if all.remove(&ask_key(lane, capability)).is_some() {
-        let _ = crate::integrations::secure_store::write(&f, Value::Object(all).to_string().as_bytes());
+        if let Err(e) = crate::integrations::secure_store::write(&f, Value::Object(all).to_string().as_bytes()) {
+            tracing::warn!(error = %e, verdict = "capability_ask_unsaved", "clearing the capability ask was not saved; the worker may not be asked again");
+        }
     }
 }
 
@@ -596,7 +600,9 @@ fn file_card(home: &Path, lane: &str, capability: &str, resource: &str, hint: &s
                 if let Some(Value::Object(row)) = all.get_mut(&ask_key(&lane, &capability)) {
                     row.insert("card".into(), json!(id));
                 }
-                let _ = crate::integrations::secure_store::write(&f, Value::Object(all).to_string().as_bytes());
+                if let Err(e) = crate::integrations::secure_store::write(&f, Value::Object(all).to_string().as_bytes()) {
+                    tracing::warn!(error = %e, verdict = "capability_ask_unsaved", "the capability card id was not saved with its ask");
+                }
                 tracing::info!(worker = %lane, capability = %capability, card = %id, measured = true, n_considered = 1,
                     verdict = "capability_card_filed", "asked the owner to grant a capability");
             }
