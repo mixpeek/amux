@@ -12366,7 +12366,7 @@ function _homeRenderList() {
     '<button type="button" role="listitem" class="home-row" data-outcome="' + esc(o.id) + '" onclick="_homeOpenOutcome(this.dataset.outcome)">'
     + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title || 'Request') + '</span>'
     + '<span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
-    + '<span class="home-row-snip">' + esc((o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
+    + '<span class="home-row-snip">' + esc(_homePlainReply(o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
     + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + '</span></button>').join('') + '</div>';
 }
 // An answer, with each ```draft block (To:, Subject:, blank line, body) shown
@@ -12389,6 +12389,11 @@ function _homeAnswerHtml(text) {
     h = h.replace(new RegExp('<p>\\s*HOMEDRAFT' + i + '\\s*</p>|HOMEDRAFT' + i), card);
   });
   return h;
+}
+// A goal's helper starts its answer with a STATUS: line (the status line
+// Goals reads); on screen it is just the first sentence.
+function _homePlainReply(t) {
+  return String(t || '').replace(/^\s*\**STATUS:\**\s*/i, '').replace(/^\s*\**ASK:\**\s*/gim, '');
 }
 // A helper's name as words, the way the receipt says it: family-admin -> Family admin.
 function _homePlainName(n) {
@@ -12414,6 +12419,8 @@ function _homeOpenOutcome(id) {
 function _homeBack() {
   _home.detailsFor = null;
   _home.open = null;
+  const i = document.getElementById('home-input');
+  if (i) i.placeholder = 'Ask for anything: a reminder, a plan, something from your inbox';
   _home.detail = null;
   _homeRefresh();
 }
@@ -12432,7 +12439,7 @@ function _homeRenderOutcome(o) {
   if (!el) return;
   const posts = (o.thread || []).map(p => {
     const mine = String(p.author_key || '').startsWith('person:');
-    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(String(p.body || ''));
+    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(_homePlainReply(String(p.body || '')));
     return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
       + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
   }).join('');

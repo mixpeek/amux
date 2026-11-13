@@ -11188,7 +11188,7 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-pill { flex: none; font-size: var(--fs-sm); padding: var(--space-0-5) var(--space-2); border-radius: var(--radius-pill); border: 1px solid var(--border); }
 .home-pill.ready { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, transparent); }
 .home-pill.working { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 50%, transparent); }
-.home-thread-head { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
+.home-thread-head { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); padding: var(--space-2) 0; position: sticky; top: 0; z-index: 1; background: var(--bg); }
 .home-back { min-height: 44px; flex: none; }
 .home-thread-title { font-weight: 700; font-size: var(--fs-3xl); min-width: 0; overflow-wrap: anywhere; }
 .home-receipt { color: var(--dim); font-size: var(--fs-lg); margin-bottom: var(--space-3); line-height: 1.6; }
