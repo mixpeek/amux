@@ -18,6 +18,13 @@ import * as path from 'path';
 import { buildHousehold } from './household.mjs';
 
 const LIVE = process.env.AMUX_INTENT_URL || '';
+// The servers below inherit this process's env (Playwright merges webServer.env
+// over it), and a worker lane running the specs carries its OWN board switches:
+// AMUX_BOARD_FORCE_ADHERENCE=0 at process level turned every helper's board off,
+// so a helper's `amux board add` was refused with board_off. An empty value
+// still reads as off, so the keys are removed, the same ones `amux land` unsets.
+for (const k of ['AMUX_BOARD_FORCE_ADHERENCE', 'AMUX_BOARD_DELEGATION', 'AMUX_BOARD_STEERS', 'CC_AUTO_PICKUP',
+  'CC_AUTO_CONTINUE', 'CC_STANDING_ORDERS', 'CC_BOARD_CONTINUE', 'AMUX_COMMAND_LIFECYCLE', 'AMUX_DISPATCH_BACKLOG_WHEN_IDLE']) delete process.env[k];
 const OFFSET = Number(process.env.AMUX_E2E_PORT_OFFSET || 0) || 0;
 const TARGETS = [
   { name: 'desktop', port: 18923 + OFFSET, viewport: { width: 1280, height: 800 } },

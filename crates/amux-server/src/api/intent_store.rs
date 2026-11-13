@@ -10,9 +10,9 @@
 //! the outcome to another worker, re-delivers the request there, and is logged
 //! as an override: the override rate is the router's accuracy.
 //!
-//! No new primitive (A1): the thread is `conversation_posts`, the worker is a
-//! worker, and `intent_outcomes` only links them and keeps the decision and the
-//! messages it came from.
+//! No new primitive (A1): the thread is a Messages thread, the worker is a
+//! worker, and where it went and why is a record post in that same thread
+//! (`intent_record.rs`).
 //!
 //! Routes:
 //! - `POST /api/intent/outcomes {text, outcome?}`: start one, or follow up.
@@ -63,19 +63,13 @@ async fn tidy(State(state): State<AppState>, axum::extract::Query(q): axum::extr
     let idle_days: i64 = q.get("idle_days").and_then(|v| v.parse().ok()).unwrap_or(7).max(1);
     let home = crate::config::amux_home();
     let mine: Vec<String> = super::orchestrate::roster_entries(&home).into_iter()
-        .filter(|w| !w.isolated)
-        .filter(|w| crate::config::parse_env_file(&home.join("sessions").join(format!("{}.env", w.name)))
-            .get("CC_CREATOR").map(|c| c == "amux").unwrap_or(false))
+        .filter(|w| !w.isolated && created_by_amux(&home, &w.name))
         .map(|w| w.name).collect();
     let rows = match all_outcomes(&state) {
         Ok(r) => r,
         Err(e) => return Json(json!({"stopped": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
     };
-    let goal_workers: Vec<String> = state.store.read().ok().and_then(|c| {
-        let mut st = c.prepare("SELECT worker FROM intent_items WHERE kind='goal' AND status='active'").ok()?;
-        let r = st.query_map([], |r| r.get::<_, String>(0)).ok()?;
-        Some(r.flatten().collect())
-    }).unwrap_or_default();
+    let goal_workers = super::intent_items::active_goal_workers(&state);
     let idle = idle_helpers(&mine, &rows, &goal_workers, now_ms(), idle_days);
     let mut stopped = vec![];
     for w in &idle {
@@ -87,6 +81,19 @@ async fn tidy(State(state): State<AppState>, axum::extract::Query(q): axum::extr
     tracing::info!(considered = mine.len(), idle = idle.len(), stopped = stopped.len(), measured = true, n_considered = mine.len(),
         verdict = "intent_tidy", "intent: idle helpers created for outcomes were stopped");
     Json(json!({"stopped": stopped, "idle": idle, "idle_days": idle_days, "measured": true, "n_considered": mine.len()})).into_response()
+}
+
+/// (workers she runs herself, every worker): helpers amux made for her
+/// requests are not hers to count.
+pub(crate) fn own_workers(home: &std::path::Path) -> (usize, usize) {
+    let roster = super::orchestrate::roster_entries(home);
+    (roster.iter().filter(|w| !created_by_amux(home, &w.name)).count(), roster.len())
+}
+
+/// A helper amux created for a request (`creator: amux` at create).
+pub(crate) fn created_by_amux(home: &std::path::Path, worker: &str) -> bool {
+    crate::config::parse_env_file(&home.join("sessions").join(format!("{worker}.env")))
+        .get("CC_CREATOR").is_some_and(|c| c == "amux")
 }
 
 /// The workers an outcome may be moved to ("Change"): every routable worker
@@ -102,8 +109,8 @@ async fn helpers() -> Response {
 // ---- the outcome -> worker registry -----------------------------------------
 
 /// Which worker each outcome is routed to, read by `Conv::parse` (which has no
-/// store). Loaded from `intent_outcomes` at boot and written through on every
-/// create and change, so the table stays the one source (A10).
+/// store). Loaded from the outcome threads' record posts at boot and written
+/// through on every route and change, so the posts stay the one source (A10).
 fn registry() -> &'static RwLock<HashMap<String, String>> {
     static R: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
     R.get_or_init(|| RwLock::new(HashMap::new()))
@@ -124,27 +131,18 @@ pub(crate) fn test_route(id: &str, worker: &str) {
     remember(id, worker);
 }
 
-/// Fill the registry from the table. Called once at boot.
+/// Fill the registry from the record posts. Called once at boot.
 pub(crate) fn load_registry(state: &AppState) {
-    let rows: Vec<(String, String)> = state
-        .store
-        .read()
-        .ok()
-        .and_then(|c| {
-            let mut st = c.prepare("SELECT id, worker FROM intent_outcomes").ok()?;
-            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).ok()?;
-            Some(rows.flatten().collect())
-        })
-        .unwrap_or_default();
+    let rows = all_outcomes(state).unwrap_or_default();
     let n = rows.len();
-    for (id, w) in rows {
-        remember(&id, &w);
+    for o in &rows {
+        remember(&o.id, &o.worker);
     }
     tracing::info!(measured = true, n_considered = n, verdict = "intent_registry_loaded",
-        "intent: outcome routing loaded from intent_outcomes");
+        "intent: outcome routing loaded from the outcome threads");
 }
 
-// ---- storage -----------------------------------------------------------------
+// ---- storage: record posts in each outcome's own thread ------------------------
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -167,85 +165,101 @@ pub(crate) struct OutcomeRow {
     pub updated_ms: i64,
 }
 
-fn parse_json(s: String, empty: Value) -> Value {
-    serde_json::from_str(&s).unwrap_or(empty)
+/// One outcome from its thread's records, oldest first: the first record
+/// (`outcome`) starts it, a `route` moves it, a `change` moves it and counts
+/// as the owner's override. Pure, so the rule is tested without a store.
+pub(crate) fn outcome_of(id: &str, recs: &[&super::intent_record::Rec], updated_ms: i64) -> Option<OutcomeRow> {
+    let first = recs.iter().find(|r| r.data.get("outcome").is_some())?;
+    let d = &first.data["outcome"];
+    let mut o = OutcomeRow {
+        id: id.to_string(),
+        title: d["title"].as_str().unwrap_or("").to_string(),
+        worker: d["worker"].as_str().unwrap_or("").to_string(),
+        decision: d["decision"].clone(),
+        sources: if d["sources"].is_array() { d["sources"].clone() } else { json!([]) },
+        overrides: json!([]),
+        item_id: d["item_id"].as_str().map(str::to_string),
+        created_ms: first.ts,
+        updated_ms: updated_ms.max(first.ts),
+    };
+    for r in recs.iter().filter(|r| r.post_id > first.post_id) {
+        if let Some(rt) = r.data.get("route") {
+            o.worker = rt["worker"].as_str().unwrap_or("").to_string();
+            o.decision = rt["decision"].clone();
+        }
+        if let Some(ch) = r.data.get("change") {
+            o.worker = ch["to"].as_str().unwrap_or("").to_string();
+            if let Some(a) = o.overrides.as_array_mut() {
+                a.push(ch.clone());
+            }
+        }
+    }
+    Some(o)
 }
 
-fn row_of(r: &rusqlite::Row) -> rusqlite::Result<OutcomeRow> {
-    Ok(OutcomeRow {
-        id: r.get(0)?,
-        title: r.get(1)?,
-        worker: r.get(2)?,
-        decision: parse_json(r.get(3)?, json!({})),
-        sources: parse_json(r.get(4)?, json!([])),
-        overrides: parse_json(r.get(5)?, json!([])),
-        item_id: r.get(6)?,
-        created_ms: r.get(7)?,
-        updated_ms: r.get(8)?,
-    })
+/// What it came from: the request and anything that started it (in its first
+/// record), then every message the owner posted in the thread.
+fn with_thread_sources(mut o: OutcomeRow, posts: &[Value]) -> OutcomeRow {
+    for p in posts.iter().filter(|p| p["author_key"] == "person:owner") {
+        push_source(&mut o.sources, json!({"kind": "post", "id": p["id"], "text": p["body"]}));
+    }
+    o
 }
-
-const COLS: &str = "id, title, worker, decision, sources, overrides, item_id, created_ms, updated_ms";
 
 pub(crate) fn get_outcome(state: &AppState, id: &str) -> Option<OutcomeRow> {
-    let c = state.store.read().ok()?;
-    c.query_row(&format!("SELECT {COLS} FROM intent_outcomes WHERE id=?1"), [id], row_of).ok()
+    let recs = super::intent_record::of_conv(state, &format!("o:{id}")).ok()?;
+    let posts = posts_of(state, id);
+    let updated = posts.last().and_then(|p| p["ts"].as_i64()).unwrap_or(0);
+    let o = outcome_of(id, &recs.iter().collect::<Vec<_>>(), updated)?;
+    Some(with_thread_sources(o, &posts))
 }
 
+/// Every outcome, newest activity first (at most 500).
 pub(crate) fn all_outcomes(state: &AppState) -> Result<Vec<OutcomeRow>, String> {
-    let c = state.store.read().map_err(|e| e.to_string())?;
-    let mut st = c
-        .prepare(&format!("SELECT {COLS} FROM intent_outcomes ORDER BY updated_ms DESC LIMIT 500"))
-        .map_err(|e| e.to_string())?;
-    let rows = st.query_map([], row_of).map_err(|e| e.to_string())?;
-    Ok(rows.flatten().collect())
-}
-
-pub(crate) async fn insert_outcome(state: &AppState, o: OutcomeRow) -> Result<(), String> {
-    remember(&o.id, &o.worker);
-    state
-        .store
-        .write_async(move |c| {
-            c.execute(
-                "INSERT INTO intent_outcomes (id, title, worker, decision, sources, overrides, item_id, created_ms, updated_ms) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                rusqlite::params![o.id, o.title, o.worker, o.decision.to_string(), o.sources.to_string(),
-                    o.overrides.to_string(), o.item_id, o.created_ms, o.updated_ms],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+    let recs = super::intent_record::of_outcomes(state)?;
+    let last = super::intent_record::last_activity(state);
+    let mut by: std::collections::BTreeMap<&str, Vec<&super::intent_record::Rec>> = Default::default();
+    for r in &recs {
+        by.entry(r.conv.as_str()).or_default().push(r);
+    }
+    let mut out: Vec<OutcomeRow> = by.iter()
+        .filter_map(|(conv, rs)| {
+            let id = conv.strip_prefix("o:")?;
+            outcome_of(id, rs, last.get(*conv).copied().unwrap_or(0))
         })
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .collect();
+    out.sort_by_key(|o| std::cmp::Reverse(o.updated_ms));
+    out.truncate(500);
+    Ok(out)
 }
 
-async fn update_outcome(state: &AppState, o: OutcomeRow) -> Result<(), String> {
+/// Start an outcome's record: who it went to and why. Remembered first, so
+/// the owner's post that follows is delivered to that worker.
+pub(crate) async fn insert_outcome(state: &AppState, o: &OutcomeRow) -> Result<(), String> {
     remember(&o.id, &o.worker);
-    state
-        .store
-        .write_async(move |c| {
-            c.execute(
-                "UPDATE intent_outcomes SET title=?2, worker=?3, decision=?4, sources=?5, overrides=?6, updated_ms=?7 WHERE id=?1",
-                rusqlite::params![o.id, o.title, o.worker, o.decision.to_string(), o.sources.to_string(),
-                    o.overrides.to_string(), now_ms()],
-            )?;
-            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let data = json!({"outcome": {"title": o.title, "worker": o.worker, "decision": o.decision,
+        "sources": o.sources, "item_id": o.item_id}});
+    super::intent_record::write(state, &format!("o:{}", o.id), &receipt(&o.decision, &o.worker), data).await.map(|_| ())
 }
 
-/// The posts of one outcome thread, oldest first.
+/// A re-route (the worker it was on is gone): a new record naming where it went.
+async fn record_route(state: &AppState, o: &OutcomeRow) -> Result<(), String> {
+    remember(&o.id, &o.worker);
+    let data = json!({"route": {"worker": o.worker, "decision": o.decision}});
+    super::intent_record::write(state, &format!("o:{}", o.id), &receipt(&o.decision, &o.worker), data).await.map(|_| ())
+}
+
+/// The posts of one outcome thread, oldest first: what was said in it, not
+/// the record posts about it.
 pub(crate) fn posts_of(state: &AppState, id: &str) -> Vec<Value> {
     let Ok(c) = state.store.read() else { return vec![] };
     let Ok(mut st) = c.prepare(
         "SELECT id, author_key, author_name, body, ts FROM conversation_posts \
-         WHERE conv=?1 AND deleted_at IS NULL ORDER BY id ASC LIMIT 400",
+         WHERE conv=?1 AND author_key<>?2 AND deleted_at IS NULL ORDER BY id ASC LIMIT 400",
     ) else {
         return vec![];
     };
-    st.query_map([format!("o:{id}")], |r| {
+    st.query_map([format!("o:{id}"), super::intent_record::AUTHOR.to_string()], |r| {
         Ok(json!({"id": r.get::<_, i64>(0)?, "author_key": r.get::<_, String>(1)?,
             "author_name": r.get::<_, String>(2)?, "body": r.get::<_, String>(3)?, "ts": r.get::<_, i64>(4)?}))
     })
@@ -339,10 +353,8 @@ pub(crate) async fn start_outcome(state: &AppState, text: &str, outcome: Option<
         };
         let plan = super::intent::plan_request(text, Some((&o.id, &o.worker)), "").await;
         if plan["action"] == "continue" {
-            let post = super::conversations::owner_post_to_outcome(state, &o.id, text).await
+            super::conversations::owner_post_to_outcome(state, &o.id, text).await
                 .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-            push_source(&mut o.sources, json!({"kind": "post", "id": post["id"], "text": text}));
-            update_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
             return Ok(json!({"ok": true, "outcome": summary(&o, &posts_of(state, &o.id)), "decision": plan,
                 "receipt": receipt(&plan, &o.worker), "measured": true, "n_considered": 1}));
         }
@@ -351,11 +363,9 @@ pub(crate) async fn start_outcome(state: &AppState, text: &str, outcome: Option<
         let (worker, plan) = resolve_target(state, text, plan).await?;
         o.worker = worker.clone();
         o.decision = plan.clone();
-        update_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        let post = super::conversations::owner_post_to_outcome(state, &o.id, text).await
+        record_route(state, &o).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        super::conversations::owner_post_to_outcome(state, &o.id, text).await
             .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-        push_source(&mut o.sources, json!({"kind": "post", "id": post["id"], "text": text}));
-        update_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         return Ok(json!({"ok": true, "outcome": summary(&o, &posts_of(state, &o.id)), "decision": plan,
             "receipt": receipt(&plan, &worker), "measured": true, "n_considered": 1}));
     }
@@ -373,21 +383,19 @@ pub(crate) async fn start_outcome(state: &AppState, text: &str, outcome: Option<
     } else {
         resolve_target(state, text, plan).await?
     };
-    let mut o = OutcomeRow {
+    let o = OutcomeRow {
         id: id.clone(), title, worker: worker.clone(), decision: plan.clone(), sources,
         overrides: json!([]), item_id, created_ms: now_ms(), updated_ms: now_ms(),
     };
-    insert_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let post = super::conversations::owner_post_to_outcome(state, &id, text).await
+    insert_outcome(state, &o).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    super::conversations::owner_post_to_outcome(state, &id, text).await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
-    push_source(&mut o.sources, json!({"kind": "post", "id": post["id"], "text": text}));
     if plan["action"] == "answer" {
         if let Err(e) = super::conversations::amux_post_to_outcome(state, &id, plan["answer"].as_str().unwrap_or("")).await {
             tracing::warn!(outcome = %id, error = %e, measured = true, n_considered = 1, verdict = "intent_answer_not_posted",
                 "intent: the router answered but the answer could not be posted to the outcome");
         }
     }
-    update_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     tracing::info!(outcome = %id, action = %plan["action"], worker = %worker, measured = true, n_considered = 1,
         verdict = "intent_outcome_started", "intent: an outcome was started and its request delivered");
     Ok(json!({"ok": true, "outcome": summary(&o, &posts_of(state, &id)), "decision": plan,
@@ -510,7 +518,15 @@ async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Respon
 async fn list(State(state): State<AppState>) -> Response {
     match all_outcomes(&state) {
         Ok(rows) => {
-            let items: Vec<Value> = rows.iter().map(|o| summary(o, &posts_of(&state, &o.id))).collect();
+            // A goal's conversation is listed under Goals: say which ones are.
+            let goals = super::intent_items::goal_ids(&state);
+            let items: Vec<Value> = rows.iter().map(|o| {
+                let mut v = summary(o, &posts_of(&state, &o.id));
+                if o.item_id.as_ref().is_some_and(|i| goals.contains(i)) {
+                    v["item_kind"] = json!("goal");
+                }
+                v
+            }).collect();
             let n = items.len();
             Json(json!({"outcomes": items, "measured": true, "n_considered": n})).into_response()
         }
@@ -560,11 +576,14 @@ async fn change(State(state): State<AppState>, Path(id): Path<String>, Json(body
     if to == from {
         return bad(StatusCode::BAD_REQUEST, "it is already there");
     }
+    let ch = json!({"from": from, "to": to, "ts": now_ms(), "request": request});
     if let Some(a) = o.overrides.as_array_mut() {
-        a.push(json!({"from": from, "to": to, "ts": now_ms(), "request": request}));
+        a.push(ch.clone());
     }
     o.worker = to.clone();
-    if let Err(e) = update_outcome(&state, o.clone()).await {
+    remember(&id, &to);
+    let note_line = format!("Moved to {}", plain_name(&to));
+    if let Err(e) = super::intent_record::write(&state, &format!("o:{id}"), &note_line, json!({"change": ch})).await {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     let note = format!("{request}\n\n(This was first sent to {from}; the owner moved it to you.)");
@@ -632,10 +651,14 @@ async fn home(State(state): State<AppState>) -> Response {
     let pref: Option<String> = state.store.read().ok().and_then(|c| {
         c.query_row("SELECT value FROM prefs WHERE key='home'", [], |r| r.get::<_, String>(0)).ok()
     });
-    let n = super::orchestrate::roster_entries(&crate::config::amux_home()).len();
+    // Helpers amux made for her requests do not make her "someone already
+    // running a fleet": counted, her fifth request flipped her into the full
+    // app (uc1, second load).
+    let (n, n_all) = own_workers(&crate::config::amux_home());
     let env_default = std::env::var("AMUX_HOME_DEFAULT").ok();
     let (home, source) = home_choice(pref.as_deref(), env_default.as_deref(), n);
-    Json(json!({"home": home, "source": source, "measured": true, "n_considered": n})).into_response()
+    Json(json!({"home": home, "source": source, "workers_counted": n, "helpers_from_chat": n_all - n,
+        "measured": true, "n_considered": n_all})).into_response()
 }
 
 #[cfg(test)]
@@ -644,6 +667,39 @@ mod tests {
 
     fn post(author: &str) -> Value {
         json!({"author_key": author, "body": "x"})
+    }
+
+    #[test]
+    fn helpers_made_for_her_requests_do_not_make_her_a_fleet() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        for i in 0..6 {
+            std::fs::write(home.path().join(format!("sessions/helper-{i}.env")), "CC_DIR=\"/x\"\nCC_CREATOR=\"amux\"\n").unwrap();
+        }
+        std::fs::write(home.path().join("sessions/mine.env"), "CC_DIR=\"/x\"\nCC_CREATOR=\"Mac\"\n").unwrap();
+        let (own, all) = own_workers(home.path());
+        assert_eq!((own, all), (1, 7));
+        assert_eq!(home_choice(None, None, own).0, "intent", "six helpers later she still gets the simple tabs");
+    }
+
+    #[test]
+    fn an_outcome_is_its_first_record_then_each_move() {
+        use super::super::intent_record::Rec;
+        let rec = |id: i64, ts: i64, data: Value| Rec { post_id: id, conv: "o:o1".into(), ts, data };
+        let first = rec(1, 100, json!({"outcome": {"title": "Camp", "worker": "family", "decision": {"action": "send"},
+            "sources": [{"kind": "request", "text": "camp"}], "item_id": null}}));
+        let route = rec(5, 200, json!({"route": {"worker": "family-2", "decision": {"action": "create"}}}));
+        let change = rec(9, 300, json!({"change": {"from": "family-2", "to": "school", "ts": 300, "request": "camp"}}));
+        let o = outcome_of("o1", &[&first], 150).unwrap();
+        assert_eq!((o.worker.as_str(), o.title.as_str(), o.created_ms, o.updated_ms), ("family", "Camp", 100, 150));
+        assert!(o.overrides.as_array().unwrap().is_empty());
+        let o = outcome_of("o1", &[&first, &route, &change], 400).unwrap();
+        assert_eq!(o.worker, "school", "the newest move wins");
+        assert_eq!(o.decision["action"], "create", "a re-route carries its decision");
+        assert_eq!(o.overrides.as_array().unwrap().len(), 1, "only a Change is the owner's override");
+        assert_eq!(override_stats(&[o])["overridden"], 1);
+        // A thread with no first record is not an outcome (o:ideas, o:goals, a stray post).
+        assert!(outcome_of("o1", &[&route], 400).is_none());
     }
 
     #[test]

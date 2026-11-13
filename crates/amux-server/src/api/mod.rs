@@ -185,6 +185,7 @@ pub mod outcome_plan;
 pub mod intent;
 pub mod intent_store;
 pub mod intent_items;
+pub mod intent_record;
 pub mod worker_exec;
 pub mod workers;
 mod worker_messaging;

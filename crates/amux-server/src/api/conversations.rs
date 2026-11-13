@@ -1320,11 +1320,13 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
                      (a repeating one is amux wake --every '<daily at 09:00, or cron>' the same way); an event for their calendar \
                      is a POST to $AMUX_URL/api/cal-events with title, start and end; something to remember about them is \
                      amux memory add --stdin. Make the first line of your answer say what you set and when. Answer with the result first, in one to three short lines, then only the \
-                     details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. Anything that \
-                     would go to someone outside stays a draft for them to send themselves: never send it, never spend money. \
-                     Write each email draft as a block starting with a line ```draft, then To: <address>, Subject: <subject>, a \
-                     blank line, the body, and a closing ```; their screen turns it into an Open in Mail button that sends it \
-                     from their own mail. Asked to send it, give the final draft that way and say to tap Open in Mail:"),
+                     details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. An email to anyone \
+                     is a send through the amux email API: curl -sk -X POST -H 'Content-Type: application/json' \
+                     -H \"X-Amux-Session: $AMUX_SESSION\" -d '{{\"to\":...,\"subject\":...,\"body\":...}}' \"$AMUX_URL/api/email/send\". \
+                     amux holds every email to someone outside as a draft for their OK and shows it to them here, so say it is \
+                     waiting for their OK; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
+                     track of is a card on their board: curl -sk -X POST -H 'Content-Type: application/json' -H \"X-Amux-Session: $AMUX_SESSION\" \
+                     -d '{{\"title\":\"<what, in their words>\",\"due\":\"YYYY-MM-DD if there is one\"}}' \"$AMUX_URL/api/intent/todos\". What they asked:"),
             "this outcome's thread".to_string(),
         ),
     };
@@ -1974,6 +1976,20 @@ pub(crate) async fn amux_post_to_outcome(state: &AppState, id: &str, body: &str)
         .map_err(|_| format!("the post into outcome {id} was refused"))
 }
 
+/// A record post (`intent_record.rs`): an outcome's routing, an idea or a
+/// goal, or a change to one. Author `amux:record`; it reaches no worker and
+/// notifies nobody (`notifies_owner`), and Home leaves it out of the thread.
+pub(crate) async fn record_post(state: &AppState, conv: &str, body: &str, attachments: Value)
+    -> Result<Value, String> {
+    let c = Conv::parse(conv).ok_or_else(|| format!("not a conversation: {conv}"))?;
+    let c = match c { Conv::Outcome(i, _) => Conv::Outcome(i, String::new()), other => other };
+    let me = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let body: String = body.replace('@', "").chars().take(MAX_BODY).collect();
+    post_inner(state, c, &me, super::intent_record::AUTHOR.into(), "amux".into(), body, HeaderMap::new(), None, None,
+        attachments, None, None).await
+        .map_err(|_| format!("the record post into {conv} was refused"))
+}
+
 /// The owner's direct send to a worker Messages has no route to (isolated).
 pub(crate) async fn owner_send_direct(state: &AppState, worker: &str, body: &str) -> Result<String, String> {
     let resp = super::session_verbs::send_post(state, worker, &HeaderMap::new(), &json!({"text": body, "record_history": true})).await;
@@ -2076,7 +2092,7 @@ fn post_event(conv: &str, id: i64, parent: Option<i64>, op: &str) -> crate::db::
 /// worker answering), a direct message, an @mention of the owner, or a reply
 /// in a thread the owner posted in. Channel chatter is not.
 fn notifies_owner(conn: &rusqlite::Connection, conv: &Conv, author_key: &str, mentions: &[String], parent: Option<i64>) -> bool {
-    if author_key == "person:owner" {
+    if author_key == "person:owner" || author_key == super::intent_record::AUTHOR {
         return false;
     }
     if mentions.iter().any(|m| m == "person:owner") {
@@ -2913,12 +2929,22 @@ mod tests {
         let (text, place) = delivery_for(&moved, "Dana", "Plan dinners", false);
         assert_eq!(place, "here");
         assert!(text.contains("amux post 'o:oconvtest1'") && text.contains("draft"), "{text}");
-        assert!(text.contains("never send it") && text.contains("never spend money"), "outside sends stay drafts: {text}");
+        assert!(text.contains("never approve it yourself") && text.contains("never spend money"), "outside sends wait for the owner: {text}");
         // What it sets up lives in amux's own primitives: the scheduler, the calendar, memories.
         for (verb, what) in [("amux wake <YYYY", "a reminder is the scheduler"), ("amux wake --every", "a repeating one too"),
-            ("api/cal-events", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory")] {
+            ("api/cal-events", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory"),
+            ("api/email/send", "an email is the email API, held for the owner"), ("api/intent/todos", "a to-do is a card on her board")] {
             assert!(text.contains(verb), "{what}: {text}");
         }
+    }
+
+    #[test]
+    fn a_record_post_notifies_nobody_and_an_answer_does() {
+        let c = crate::db::migrate::test_memdb();
+        let conv = Conv::Outcome("orec1".into(), "family".into());
+        assert!(notifies_owner(&c, &conv, "worker:family", &[], None), "her helper's answer reaches her");
+        assert!(!notifies_owner(&c, &conv, super::super::intent_record::AUTHOR, &[], None),
+            "where a request went is a record, not news");
     }
 
     #[test]

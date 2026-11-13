@@ -9,7 +9,7 @@ test('a ranked booking order from grades and missing work', async ({ page, reque
   await openHome(page);
   await ask(page, 'Rank my parent-teacher conference bookings before registration opens');
   await reply(page, /1\.?\s*\**\s*Mr\.? Brandt|math/i);
-  const text = await page.locator('.home-msg.theirs .home-bubble').last().innerText();
+  const text = await page.locator('.cv-post[data-from="helper"] .cv-post-body').last().innerText();
   expect(text.search(/brandt|math/i), 'math (the weakest grade) ranks first').toBeLessThan(text.search(/hale|social studies/i));
   await noJargon(page);
   expect(await deliveredSends(request), 'nothing was sent outside').toBe(sends);

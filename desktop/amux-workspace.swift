@@ -1203,6 +1203,48 @@ extension AppDelegate {
                let c = controllers.first(where: { isShown($0) }) ?? controllers.first {
                 c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
             }
+        // Choose a menu item by title (?title=Copy), as a click on it does.
+        case "/menu":
+            let title = q.first { $0.name == "title" }?.value ?? ""
+            func pick(_ m: NSMenu) -> Bool {
+                for (i, it) in m.items.enumerated() {
+                    if it.title == title, it.action != nil { m.performActionForItem(at: i); return true }
+                    if let sub = it.submenu, pick(sub) { return true }
+                }
+                return false
+            }
+            let found = NSApp.mainMenu.map(pick) ?? false
+            dlog("verdict=test_menu_chosen title=\(title) found=\(found ? 1 : 0)")
+        // A real key press (?k=f&mods=cmd+shift) through NSApp, as the keyboard
+        // sends one, to the shown tab's window made key first.
+        case "/key":
+            let raw = q.first { $0.name == "k" }?.value ?? ""
+            let k = raw == "esc" ? "\u{1b}" : raw
+            let mods = q.first { $0.name == "mods" }?.value ?? ""
+            let codes: [String: UInt16] = ["a": 0, "s": 1, "f": 3, "g": 5, "c": 8, "v": 9, "e": 14, "x": 7, "\u{1b}": 53]
+            var f: NSEvent.ModifierFlags = []
+            if mods.contains("cmd") { f.insert(.command) }
+            if mods.contains("ctrl") { f.insert(.control) }
+            if mods.contains("alt") { f.insert(.option) }
+            if mods.contains("shift") { f.insert(.shift) }
+            if let c = controllers.first(where: { isShown($0) }) ?? controllers.first, let w = c.window, let u = k.unicodeScalars.first {
+                w.makeKey()
+                let chars = f.contains(.control) ? String(UnicodeScalar(UInt8(u.value & 0x1f))) : k
+                for t in [NSEvent.EventType.keyDown, .keyUp] {
+                    if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: f, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: w.windowNumber, context: nil, characters: chars,
+                                                charactersIgnoringModifiers: k, isARepeat: false, keyCode: codes[k] ?? 0) {
+                        // A quiet copy is never active, so it has no key window and
+                        // NSApp drops key events. AppKit's own order instead: the
+                        // window's key equivalents, the menu, then the key itself.
+                        if NSApp.keyWindow === w { NSApp.sendEvent(e); continue }
+                        if t == .keyDown, !f.intersection([.command, .control]).isEmpty,
+                           w.performKeyEquivalent(with: e) || (NSApp.mainMenu?.performKeyEquivalent(with: e) ?? false) { continue }
+                        w.sendEvent(e)
+                    }
+                }
+                dlog("verdict=test_key_sent k=\(raw) mods=\(mods) key_window=\(NSApp.keyWindow === w ? 1 : 0) responder=\(w.firstResponder.map { String(describing: type(of: $0)) } ?? "none")")
+            }
         // Run JS in pane `i` of the key window's grid (or its only page) and
         // write what it returns, as a string, to <state file>.js.
         case "/js-pane":
@@ -1261,6 +1303,9 @@ extension AppDelegate {
             let ws = controllers.compactMap { c -> [String: Any]? in
                 guard let w = c.window, w.isVisible else { return nil }
                 var d: [String: Any] = ["title": w.title, "frame": NSStringFromRect(w.frame), "tabs": (w.tabbedWindows ?? [w]).count, "key": w.isKeyWindow, "number": w.windowNumber,
+                                        "responder": w.firstResponder.map { String(describing: type(of: $0)) } ?? "none",
+                                        "find": c.findBar?.field.stringValue ?? NSNull(), "find_status": c.findBar?.status.stringValue ?? "",
+                                        "clipboard": copyPasteboard.string(forType: .string) ?? "",
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w, "tooltip": w.tab.toolTip ?? "",
                                         "connection": w.tab.accessoryView?.toolTip ?? "",
                                         "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? "",
@@ -1595,4 +1640,22 @@ final class AmuxWindow: NSWindow {
     }
     override func moveTabToNewWindow(_ sender: Any?) { if !refused(sender, "tab_moved") { super.moveTabToNewWindow(sender) } }
     override func mergeAllWindows(_ sender: Any?) { if !refused(sender, "tabs_merged") { super.mergeAllWindows(sender) } }
+    // A key nothing in the window answered: AppKit beeps here.
+    override func noResponder(for eventSelector: Selector) {
+        let e = NSApp.currentEvent
+        let page = firstResponder is WKWebView
+        dlog("verdict=key_unhandled selector=\(NSStringFromSelector(eventSelector)) key=\(e?.charactersIgnoringModifiers ?? "-") mods=\(e.map { keyModsName($0.modifierFlags) } ?? "-") responder=\(firstResponder.map { String(describing: type(of: $0)) } ?? "none") beep=\(page ? 0 : 1)")
+        // A key the page left alone is not an error, as in a browser: no beep.
+        if page && eventSelector == #selector(NSResponder.keyDown(with:)) { return }
+        super.noResponder(for: eventSelector)
+    }
+}
+
+func keyModsName(_ f: NSEvent.ModifierFlags) -> String {
+    var m: [String] = []
+    if f.contains(.command) { m.append("cmd") }
+    if f.contains(.control) { m.append("ctrl") }
+    if f.contains(.option) { m.append("alt") }
+    if f.contains(.shift) { m.append("shift") }
+    return m.isEmpty ? "none" : m.joined(separator: "+")
 }

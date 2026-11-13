@@ -56,7 +56,9 @@ This file says how to work here. Each folder's `CLAUDE.md` says what is true of 
   agent's commits with no passing receipt (`AMUX_SKIP_LAND_GATE=1` with
   `AMUX_SKIP_LAND_GATE_REASON` skips once, logged). Tiers are in `scripts/review-tiers.txt`:
   `[owner]` paths need the owner's approval of that exact diff, `[deep]` paths a `Revert:`
-  trailer. Close a finding with `scripts/land_gate.py --resolve <id> "<why>"`.
+  trailer. `AMUX_LAND_OWNER_APPROVAL=0` at global or group scope (Scope tab) turns the
+  owner's approval off; `boundaries.toml` and the boundary guard stay gated, and a worker
+  layer or a shell export does not count. Close a finding with `scripts/land_gate.py --resolve <id> "<why>"`.
 - **Before pushing,** `scripts/push-consent.sh` names whose commits you would carry and who
   cannot be asked; ask the others. Run gates on a detached worktree: the shared checkout holds
   other lanes' uncommitted files. Why, with the incidents: `docs/ops/pushing.md`.

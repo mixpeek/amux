@@ -2409,7 +2409,7 @@ async function _cloudOfferTry(trigger, worker) {
   // Not over Home either: it is a pitch about running workers on servers, made
   // to someone who came to say what they want (docs/design/intent-first.md).
   // Unmarked, so the fleet view can still offer it later.
-  if (document.body.classList.contains('intent-home') || !window._homeChoiceSettled || activeView === 'home') return;
+  if (document.body.classList.contains('intent-simple') || !window._homeChoiceSettled || _HOME_VIEWS[activeView]) return;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }
@@ -7035,7 +7035,7 @@ function _needsYouRenderPanel() {
 function _fireSessionNotif(name, title, body) {
   // Home speaks in requests and results, not in which worker started what
   // (a "family-admin started working" pop-up confused the second Dana run).
-  if (document.body.classList.contains('intent-home')) return;
+  if (document.body.classList.contains('intent-simple')) return;
   let icon = '\u{1f535}';
   if (title.includes('needs input')) icon = '⚠️';
   else if (title.includes('stopped')) icon = '⏹';
@@ -10610,9 +10610,12 @@ const ALL_TABS = (function _discoverNavTabs() {
   // protection now lives in _honourBoardHide instead of in REQUIRED.
   const REQUIRED = new Set(['sessions']);
   const out = [];
+  // "Everything else" is simple mode's way out (_homeShowEverything), not a
+  // view: it is never a tab to reorder or hide. Chat, Ideas and Goals are.
+  const NOT_TABS = new Set(['everything']);
   document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => {
     const id = b.id.slice(4);   // strip 'tab-'
-    if (!id) return;
+    if (!id || NOT_TABS.has(id)) return;
     const lbl = b.querySelector('.tab-lbl');
     out.push({ id, label: lbl ? lbl.textContent.trim() : id, required: REQUIRED.has(id) });
   });
@@ -10688,6 +10691,9 @@ function _applyTabVisibility() {
     const el = document.getElementById('tab-' + id);
     if (el) bar.appendChild(el); // moves to end in order
   });
+  // "Everything else" is not a tab (NOT_TABS): it always ends the bar.
+  const everything = document.getElementById('tab-everything');
+  if (everything) bar.appendChild(everything);
   // Apply visibility
   ALL_TABS.forEach(t => {
     const el = document.getElementById('tab-' + t.id);
@@ -10901,7 +10907,7 @@ function _peekTabsWheel(e) {
 const PEEK_TABS = (function _discoverPeekTabs() {
   // Outcomes leads (docs/design/intent-first.md): what was asked of this
   // worker and how it went, before the machinery.
-  const PINNED = new Set(['terminal', 'outcomes']);
+  const PINNED = new Set(['terminal']);
   const out = [];
   document.querySelectorAll('.peek-tabs button.peek-tab[id^="peek-tab-"]').forEach(b => {
     const id = b.id.slice('peek-tab-'.length);
@@ -12317,23 +12323,40 @@ async function _outcomeStart(text, cfg, files) {
   return name;
 }
 
-// ── Home: say what you want (docs/design/intent-first.md) ──
-// The first screen for a new person: Chat (a composer and the outcomes it
-// started), Ideas, Goals, and Workspace (every other tab, unchanged). An
-// outcome is a Messages thread (o:<id>) the server routed to a worker; the
-// person reads results, not workers. Words on this path avoid the machinery
-// (worker, session, model, card, board, terminal): a worker is "a helper".
+// ── Chat, Ideas and Goals (docs/design/intent-first.md) ──
+// Three tabs in the normal tab bar. Chat is a composer and the requests it
+// started; each is a Messages thread (o:<id>) the server routed to a worker,
+// and the person reads results, not workers. Ideas and Goals are views over
+// board cards, the scheduler and the calendar. For a new person (the `home`
+// choice is intent) the other tabs are hidden until "Everything else". Words
+// on this path avoid the machinery (worker, session, model, card, board,
+// terminal): a worker is "a helper".
 const _home = { pane: 'chat', open: null, outcomes: [], ideas: null, goals: null, timer: null, sending: false, detail: null };
-function _homeEnter() {
-  document.body.classList.add('intent-home');
-  // A first-run tour of workers that opened before Home did is closed: Home
-  // is this person's first run.
-  if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
-  document.getElementById('cloud-offer')?.remove();
+const _HOME_VIEWS = { home: 'chat', ideas: 'ideas', goals: 'goals' };
+function _homeEnter(view) {
+  if (document.body.classList.contains('intent-simple')) {
+    // A first-run tour of workers that opened before Chat did is closed:
+    // Chat is this person's first run.
+    if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
+    document.getElementById('cloud-offer')?.remove();
+  }
   document.documentElement.classList.remove('boot-home-pending');
-  _homeSetPane(_home.pane === 'workspace' ? 'chat' : _home.pane, true);
+  _home.pane = _HOME_VIEWS[view] || 'chat';
+  if (view === 'home') _homeFit();
+  _homeRefresh();
   _homeEnsureTimer();
 }
+// Chat fills the screen below the tab bar, its composer at the bottom (the
+// same measurement Messages uses, _cvFit).
+function _homeFit() {
+  const view = document.getElementById('home-view'); if (!view) return;
+  requestAnimationFrame(() => view.style.setProperty('--mv-top', Math.max(0, view.getBoundingClientRect().top) + 'px'));
+}
+window.addEventListener('resize', () => { if (activeView === 'home') _homeFit(); });
+// Simple mode (a new person): only Chat, Ideas and Goals in the tab bar.
+// "Everything else" shows every tab for this visit.
+function _homeSimple(on) { document.body.classList.toggle('intent-simple', !!on); }
+function _homeShowEverything() { _homeSimple(false); switchView('sessions'); }
 // Every 2s while an open request is still being worked on, else every 4s.
 function _homeEnsureTimer() {
   if (_home.timer) return;
@@ -12343,28 +12366,21 @@ function _homeEnsureTimer() {
   // (the first Dana run sat on "Working on it" for minutes over a finished
   // answer). Coming back to the tab refreshes at once.
   _home.timer = setInterval(() => {
-    if (activeView !== 'home') return;
+    if (!_HOME_VIEWS[activeView]) return;
     tick++;
     const hurry = _home.open && _home.openStatus !== 'ready';
     if (document.hidden ? tick % 8 === 0 : (hurry || tick % 2 === 0)) _homeRefresh();
   }, 2000);
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && activeView === 'home') _homeRefresh(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && _HOME_VIEWS[activeView]) _homeRefresh(); });
 function _homeLeave() {
-  document.body.classList.remove('intent-home');
   if (_home.timer) { clearInterval(_home.timer); _home.timer = null; }
 }
+// Go to Chat, Ideas or Goals (its tab).
 function _homeSetPane(p) {
-  if (p === 'workspace') { _homeLeave(); switchView('sessions'); return; }
+  const v = p === 'chat' ? 'home' : p;
+  if (activeView !== v) { switchView(v); return; }
   _home.pane = p;
-  for (const n of ['chat', 'ideas', 'goals', 'more']) {
-    const el = document.getElementById('home-' + n);
-    if (el) el.hidden = n !== p;
-    const b = document.getElementById('home-nav-' + (n === 'more' ? 'workspace' : n));
-    if (b) { b.classList.toggle('active', n === p); b.setAttribute('aria-current', n === p ? 'page' : 'false'); }
-  }
-  const comp = document.getElementById('home-composer');
-  if (comp) comp.hidden = p !== 'chat';
   _homeRefresh();
 }
 async function _homeJson(path, opts) {
@@ -12385,10 +12401,10 @@ async function _homeRefresh() {
     if (_home.detailsFor || _home.sending) return;
     if (_home.open) return _homeLoadOutcome(_home.open, true);
     const r = await _homeJson('/api/intent/outcomes');
-    // Chat lists what the person asked for. A goal's own thread (item ids
-    // starting "g") lives under Goals, behind its Open button: listed here,
+    // Chat lists what the person asked for. A goal's own thread (marked
+    // item_kind goal) lives under Goals, behind its Open button: listed here,
     // the pass's goals buried the request she had just made (final uc5).
-    if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => !String(o.item_id || '').startsWith('g'));
+    if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => o.item_kind !== 'goal');
     _homeRenderList();
   } else if (_home.pane === 'ideas') {
     const r = await _homeJson('/api/intent/ideas');
@@ -12397,6 +12413,7 @@ async function _homeRefresh() {
   } else if (_home.pane === 'goals') {
     const [r, rm, ev] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders'), _homeJson('/api/cal-events')]);
     _home.goals = r.ok ? (r.v.goals || []) : [];
+    _home.todos = r.ok ? (r.v.todos || []) : [];
     _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const week = new Date(today.getTime() + 8 * 86400000);
@@ -12509,6 +12526,11 @@ async function _homeLoadOutcome(id, quiet) {
   // so a promised reminder can be seen saved (asked for in four runs).
   const rm = await _homeJson('/api/intent/reminders');
   r.v.reminders = _homeTurnReminders(r.v.thread || [], rm.ok ? rm.v.reminders || [] : [], r.v.worker, Date.now());
+  // Emails its helper wrote in these turns, held by the email API for her OK.
+  const ap = await _homeJson('/api/email/approvals');
+  const now = Date.now();
+  r.v.drafts = _homeTurnReminders(r.v.thread || [], (ap.ok ? ap.v.pending || [] : [])
+    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 })), r.v.worker, now);
   if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
 }
@@ -12534,14 +12556,61 @@ function _homeTurnReminders(thread, reminders, worker, now) {
   });
   return reminders.filter(x => x.worker === worker && turns.some(([a, b]) => ms(x.created) >= a && ms(x.created) <= b));
 }
+// Her to-dos: cards on her own board tagged todo (POST /api/intent/todos from
+// a helper). Done closes the card through the board's own update.
+function _homeTodosHtml() {
+  const t = _home.todos || [];
+  if (!t.length) return '';
+  return '<div class="home-pane-head"><span class="home-pane-title">To-dos</span></div><div class="home-list">'
+    + t.map(x => '<div class="home-card"><div class="home-card-top"><span class="home-card-title">' + esc(x.title) + '</span>'
+      + '<button type="button" class="btn" onclick="_homeTodoDone(\'' + esc(x.id) + '\',this)">Done</button></div>'
+      + (x.due ? '<div class="home-card-from">Due ' + esc(_homeLocalDate(x.due).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })) + '</div>' : '')
+      + '</div>').join('') + '</div>';
+}
+async function _homeTodoDone(id, btn) {
+  if (btn) btn.disabled = true;
+  const r = await _homeJson('/api/board/' + encodeURIComponent(id), { method: 'PATCH',
+    body: JSON.stringify({ status: 'done', evidence: 'none: marked done in Goals', gate_ack: true }) });
+  if (!r.ok) { showToast('Not marked done: ' + (r.v.error || 'please try again')); if (btn) btn.disabled = false; return; }
+  showToast('Done');
+  _homeRefresh();
+}
+// A held email (POST /api/email/send from her helper, held for her OK), with
+// the approvals banner's own Send and Discard (_apprApprove/_apprReject).
+const _homeApprOpts = { plain: true, after: () => { _home.detail = null; _homeRefresh(); } };
+function _homeHeldDraftHtml(p) {
+  const pv = p.preview || {};
+  const body = (p.review && p.review.body_complete && typeof p.review.body === 'string') ? p.review.body : (pv.body || '');
+  const id = esc(p.id);
+  return '<div class="home-draft" data-approval="' + id + '"><div class="home-draft-head">Draft email, waiting for your OK</div>'
+    + '<div class="home-draft-meta">To: ' + esc(pv.to || '') + '</div><div class="home-draft-meta">Subject: ' + esc(pv.subject || '') + '</div>'
+    + '<div class="home-draft-body">' + esc(body).replace(/\n/g, '<br>') + '</div>'
+    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send</button>'
+    + '<button type="button" class="btn" onclick="_apprReject(\'' + id + '\',this,_homeApprOpts)">Discard</button>'
+    + '<button type="button" class="btn" onclick="_homeCopyDraft(this)">Copy</button></div></div>';
+}
+function _homeCopyDraft(btn) {
+  const d = btn.closest('.home-draft');
+  const text = Array.from(d.querySelectorAll('.home-draft-meta, .home-draft-body')).map(n => n.innerText).join('\n\n');
+  _copyTextWithToast(text, 'Copied');
+}
+// A helper still working: a post in the same shape, its body the dots.
+function _homeTypingPost(name, words, note) {
+  return _cvPostHtml({ id: 'typing', author_key: 'worker:', author_name: name, body: '', ts: Date.now() }, false, true,
+    { plain: true, from: 'typing', name, body: '<span class="home-typing" aria-label="' + esc(words) + '">' + esc(words)
+      + '<span>.</span><span>.</span><span>.</span>' + esc(note) + '</span>' });
+}
 function _homeRenderOutcome(o) {
   const el = document.getElementById('home-chat-body');
   if (!el) return;
+  // The Messages thread view's own post (_cvPostHtml), plain: her name is
+  // "You", a helper's is its plain name, and a helper's answer keeps Chat's
+  // reading of drafts and dates (_homeAnswerHtml).
+  const helper = o.worker ? _homePlainName(o.worker) : 'amux';
   const posts = (o.thread || []).map(p => {
     const mine = String(p.author_key || '').startsWith('person:');
-    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(_homePlainReply(String(p.body || '')));
-    return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
-      + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
+    return _cvPostHtml(p, false, true, { plain: true, from: mine ? 'you' : 'helper', name: mine ? 'You' : helper,
+      body: mine ? undefined : _homeAnswerHtml(_homePlainReply(String(p.body || ''))) });
   }).join('');
   const working = o.status !== 'ready';
   const canChange = o.worker && o.action !== 'answer';
@@ -12560,11 +12629,12 @@ function _homeRenderOutcome(o) {
     + (o.reminders || []).map(x => '<div class="home-reminder">&#x23F0; Reminder set: ' + esc(x.title) + ' · '
       + esc(_homeReminderWhen(x)) + '</div>').join('')
     + '<div class="home-msgs" id="home-msgs">' + posts
-    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
+    + (o.drafts || []).map(_homeHeldDraftHtml).join('')
+    + (working ? _homeTypingPost(helper, 'Working on it', waitNote) : '')
     + '</div></div>';
   // Land on the START of the newest answer: a long one opened at its bottom
   // on a phone, hiding its first line (where the result is).
-  const replies = el.querySelectorAll('.home-msg.theirs:not(:has(.home-typing))');
+  const replies = el.querySelectorAll('.cv-post[data-from="helper"]:not(:has(.home-typing))');
   const newest = replies[replies.length - 1];
   if (working) document.getElementById('home-msgs')?.lastElementChild?.scrollIntoView({ block: 'end' });
   else if (newest) newest.scrollIntoView({ block: 'start' });
@@ -12647,8 +12717,9 @@ async function _homeSend() {
   if (_home.open) body.outcome = _home.open;
   if (!_home.open) {
     const el = document.getElementById('home-chat-body');
-    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs"><div class="home-msg mine"><div class="home-bubble">' + esc(text)
-      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Getting started<span>.</span><span>.</span><span>.</span></div></div></div></div>';
+    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs">'
+      + _cvPostHtml({ id: 'pending', author_key: 'person:owner', author_name: 'You', body: text, ts: Date.now() }, false, true, { plain: true, from: 'you', name: 'You' })
+      + _homeTypingPost('amux', 'Getting started', '') + '</div></div>';
   }
   const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
   _home.sending = false;
@@ -12761,11 +12832,11 @@ function _homeRenderGoals(v) {
   const tracking = goals.filter(g => g.tier === 'tracking');
   const standing = goals.filter(g => g.tier !== 'tracking');
   if (!goals.length) {
-    el.innerHTML = up + rem + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
+    el.innerHTML = up + rem + _homeTodosHtml() + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
       + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
     return;
   }
-  el.innerHTML = up + rem + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+  el.innerHTML = up + rem + _homeTodosHtml() + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
     + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
 }
 async function _homeGoalDismiss(id) {
@@ -12785,7 +12856,7 @@ async function _homeGoalApprove(id) {
   showToast(r.ok ? 'Approved' : ('Not approved: ' + (r.v.error || 'error')));
   _homeRefresh();
 }
-// Each worker's outcomes, for its card line and its Outcomes tab. One fetch
+// Each worker's conversations from Chat, for its card line. One fetch
 // of /api/intent/outcomes, refreshed at most every 20 seconds.
 let _homeOutcomeIndex = { at: 0, by: {}, loading: false };
 function _homeOutcomeIndexLoad(force) {
@@ -12804,22 +12875,23 @@ function _homeCardOutcomes(name) {
   const list = _homeOutcomeIndex.by[name] || [];
   if (!list.length) return '';
   const names = list.slice(0, 3).map(o => o.title).join(' · ');
-  return '<div class="card-outcomes" title="Outcomes routed to this worker">Outcomes: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
+  return '<div class="card-outcomes" title="Conversations from Chat routed to this worker">From Chat: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
 }
-async function _peekOutcomesLoad() {
-  const el = document.getElementById('peek-outcomes-panel');
+// The conversations from Chat routed to this worker, at the top of its
+// Messages tab: conversations are organized by conversation, and a worker
+// shows the ones it owns where its messages already are. Empty shows nothing.
+async function _peekConvsLoad() {
+  const el = document.getElementById('peek-msg-convs');
   if (!el || !peekSession) return;
   const who = peekSession;
-  _homeOutcomeIndexLoad(true);
   let v = null;
-  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] outcomes for the worker view did not load', e); }
+  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] conversations for the worker view did not load', e); }
   if (peekSession !== who) return;
   const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
-  el.innerHTML = !v ? '<div class="ui-help">Outcomes could not be loaded.</div>'
-    : !mine.length ? '<div class="ui-help">Nothing has been routed to ' + esc(who) + ' from Home yet. Requests made in Home that this worker owns show up here.</div>'
-    : '<div class="home-list">' + mine.map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
+  el.innerHTML = !mine.length ? '' : '<div class="peek-msg-convs-head">Conversations from Chat</div><div class="home-list">'
+    + mine.slice(0, 8).map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
       + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title) + '</span><span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
-      + '<span class="home-row-snip">' + esc((o.latest_reply || '').slice(0, 160)) + '</span><span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
+      + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
 }
 function _homeOpenFromPeek(id) {
   closePeek();
@@ -12837,6 +12909,7 @@ async function _homeBootChoice() {
   let r = await _homeJson('/api/intent/home');
   for (let i = 0; i < 6 && !r.ok; i++) { await new Promise(res => setTimeout(res, 1000 * (i + 1))); r = await _homeJson('/api/intent/home'); }
   if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (e) { console.warn('[home] storage unwritable', e); } }
+  _homeSimple(choice === 'intent');
   document.documentElement.classList.remove('boot-home-pending');
   // Settled after the caller's switch (a microtask later): the first-run tour
   // waits on this, so it never opens over a Home about to appear.
@@ -15717,12 +15790,6 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
-  document.getElementById('peek-tab-outcomes')?.classList.toggle('active', tab === 'outcomes');
-  const outcomesP = document.getElementById('peek-outcomes-panel');
-  if (outcomesP) {
-    if (tab === 'outcomes') { outcomesP.classList.add('active'); _peekOutcomesLoad(); }
-    else outcomesP.classList.remove('active');
-  }
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
@@ -15730,7 +15797,7 @@ function setPeekTab(tab) {
     else tasksP.classList.remove('active');
   }
   const messages = document.getElementById('peek-messages-panel');
-  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
+  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); _peekConvsLoad(); }
   else { messages.classList.remove('active'); }
   const costPanel = document.getElementById('peek-cost-panel');
   if (tab === 'cost') { costPanel.classList.add('active'); _peekCostLoad(); }
@@ -26041,17 +26108,20 @@ function _apprToggle() {
   localStorage.setItem('amuxApprCollapsed', now);
   _approvalsRefresh();
 }
-async function _apprReject(id, btn) {
+// `opts` (optional): {plain: true} words the toast without machinery names,
+// {after: fn} runs once the request settles (Chat's draft cards use both).
+async function _apprReject(id, btn, opts) {
   if (btn) { btn.disabled = true; btn.textContent = 'Discarding…'; }
   try {
     const r = await fetch(API + '/api/email/reject/' + encodeURIComponent(id), {
       method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' },
     });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) showToast('Discarded — nothing was sent' + (d.was_for_session ? ' (' + d.was_for_session + ')' : ''));
-    else showToast('Discard failed: ' + (d.error || r.status));
+    if (r.ok) showToast('Discarded — nothing was sent' + (d.was_for_session && !opts?.plain ? ' (' + d.was_for_session + ')' : ''));
+    else showToast((opts?.plain ? 'Not discarded: ' : 'Discard failed: ') + (d.error || r.status));
   } catch (e) { showToast('Discard failed: ' + e); }
   _approvalsRefresh();
+  if (opts?.after) opts.after();
 }
 /// Swap the frozen preview for a textarea holding the same text (AMUX-5021).
 ///
@@ -26103,7 +26173,7 @@ function _apprEditCancel(id) {
 /// is non-empty, so a poll cannot discard what someone is typing.
 const _apprEditing = new Set();
 
-async function _apprApprove(id, btn) {
+async function _apprApprove(id, btn, opts) {
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     // AUTOD-48: approve now authorizes on a POSITIVE marker. Absence used to
@@ -26124,10 +26194,11 @@ async function _apprApprove(id, btn) {
     const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), init);
     _apprEditing.delete(id);
     const d = await r.json().catch(() => ({}));
-    if (r.ok) showToast('Approved — sent for ' + (d.sent_for_session || 'worker'));
-    else showToast('Approve failed: ' + (d.error || r.status));
+    if (r.ok) showToast(opts?.plain ? 'Sent' : 'Approved — sent for ' + (d.sent_for_session || 'worker'));
+    else showToast((opts?.plain ? 'Not sent: ' : 'Approve failed: ') + (d.error || r.status));
   } catch (e) { showToast('Approve failed: ' + e); }
   _approvalsRefresh();
+  if (opts?.after) opts.after();
 }
 // "today 3:00 PM", "tomorrow 9:00 AM", "Tue, Nov 11, 9:00 AM": when a scheduled
 // draft goes out, in this device's time.
@@ -42107,6 +42178,23 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ⌃F outside a text box opens the Mac app's Find bar (desktop/amux-find.swift);
+// in a text box it stays the Mac's move-forward and a terminal gets it as
+// usual. ⌘F reaches the app's Edit > Find on its own. A Hotkey bound to ⌃F
+// wins: it has already prevented the default by the time this runs.
+function _hkFindKey(e) {
+  if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || (e.key !== 'f' && e.key !== 'F')) return false;
+  let h = null;
+  try { h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxFind; } catch (err) { console.warn('amux: no find bridge', err); }
+  if (!h) return false;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return false;
+  e.preventDefault();
+  try { h.postMessage({ op: 'show' }); } catch (err) { console.warn('amux: could not open the find bar', err); }
+  return true;
+}
+document.addEventListener('keydown', _hkFindKey);
+
 // ── Escape closes the topmost modal, whatever it is ───────────────────────
 // The handler above knows five overlay ids BY NAME and hard-returns unless
 // peek is open, so it can never reach a dialog app.js appends to <body>: 12
@@ -43491,7 +43579,7 @@ function switchView(view) {
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
     ['calls', 'calls', 'flex'],
-    ['home', 'home', 'flex'],
+    ['home', 'home', 'flex'], ['ideas', 'ideas', 'block'], ['goals', 'goals', 'block'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -43499,11 +43587,7 @@ function switchView(view) {
     const te = document.getElementById('tab-' + name);
     if (te) te.classList.toggle('active', view === name);
   }
-  if (view === 'home') _homeEnter(); else _homeLeave();
-  // Someone whose first screen is Home always has a way back to it.
-  { const hb = document.getElementById('home-back-btn'); let hc = null;
-    try { hc = localStorage.getItem('amux_home_choice'); } catch (e) { console.warn('[home] storage unreadable', e); }
-    if (hb) hb.hidden = view === 'home' || hc !== 'intent'; }
+  if (_HOME_VIEWS[view]) _homeEnter(view); else _homeLeave();
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
@@ -60078,6 +60162,11 @@ function _restoreScreen(bootHash) {
                      || /[?&]view=/.test(location.search);
   // A link names the screen: Home is not being decided.
   if (_hasDeeplink) window._homeChoiceSettled = true;
+  // Simple mode is who she is, not which screen opens: applied on every load,
+  // from the last answer at once and the server's when it comes. Only the
+  // no-saved-view branch below asks it to pick the screen too. Applied there
+  // alone, a reload into Chat showed every tab (uc1, second load).
+  try { _homeSimple(localStorage.getItem('amux_home_choice') === 'intent'); } catch (e) { console.warn('[home] storage unreadable', e); }
   // THIS TAB'S OWN STATE WINS OVER THE SHARED COPY. localStorage is shared by
   // every tab of the origin (and every Mac app window), so amux_ui_view and
   // amux_peek_state hold whatever tab was used LAST. A tab on the Workers list
@@ -60097,11 +60186,13 @@ function _restoreScreen(bootHash) {
       document.documentElement.classList.remove('boot-home-pending');
       window._homeChoiceSettled = true;
     }
+    _homeBootChoice();
     return;
   }
   let _ownTab = false;
   try { _ownTab = sessionStorage.getItem(_UI_TAB_SEEN_KEY) === '1'; sessionStorage.setItem(_UI_TAB_SEEN_KEY, '1'); } catch(e) {}
   const _restoreStore = _ownTab ? sessionStorage : localStorage;
+  let _homeChoiceAsked = false;
   // 1. Restore the tab.
   if (!_hasDeeplink) {
     try {
@@ -60127,10 +60218,12 @@ function _restoreScreen(bootHash) {
         // Nothing saved: the home pref (or, for someone new, the intent
         // Home) picks the first screen. Hidden until it answers, so a new
         // person never sees the fleet flash first.
+        _homeChoiceAsked = true;
         _homeBootChoice().then(c => { if (c === 'intent' && activeView === 'sessions' && !peekSession) { try { switchView('home'); } catch(e) { console.warn('[home] could not open Home', e); } } });
       }
     } catch(e) {}
   }
+  if (!_homeChoiceAsked) _homeBootChoice();
   // 2. Restore an open session peek. Prefer sessionStorage (same tab session);
   //    fall back to localStorage when we came back after an eviction.
   //    A #peek= deeplink names its own target — restoring the LAST peek over
@@ -72240,7 +72333,13 @@ function _cvDelivHtml(p) {
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
 }
 const _CV_QUICK = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2764\uFE0F', '\u{1F602}'];
-function _cvPostHtml(p, showConv, inThread) {
+// `opts` (optional) draws a post outside the Messages view (Chat, intent
+// Home): {plain: true, name, body, from}. Plain shows `name` in place of the
+// author, an initial in place of the worker avatar, `body` (HTML) in place of
+// the rendered body when given, and none of the actions, reactions, thread
+// line or delivery chips, which all act on the Messages view's own state.
+function _cvPostHtml(p, showConv, inThread, opts) {
+  const plain = !!(opts && opts.plain);
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
   const mine = p.author_key === _cvMeKey();
@@ -72248,6 +72347,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const real = typeof p.id === 'number';
   const pinned = real && _cvPinnedIds().has(p.id);
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
+    : plain && opts.body !== undefined ? '<div class="cv-post-body cv-md">' + opts.body + '</div>'
     : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
   const reacts = Object.entries(p.reactions || {}).map(([e, who]) => '<button type="button" class="cv-react' + ((who || []).includes(_cvMeKey()) ? ' mine' : '')
@@ -72265,6 +72365,14 @@ function _cvPostHtml(p, showConv, inThread) {
     + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
     + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
     + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
+  if (plain) {
+    const name = opts.name || p.author_name || '';
+    return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '"' + (opts.from ? ' data-from="' + esc(opts.from) + '"' : '') + '>'
+      + _cvAvatar(name, false, null)
+      + '<div class="cv-post-main"><div class="cv-post-head"><span class="cv-post-who">' + esc(name) + '</span>'
+      + '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span></div>'
+      + body + '</div></div>';
+  }
   return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker, p.author_key) + '<div class="cv-post-main"><div class="cv-post-head">' +
     '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +

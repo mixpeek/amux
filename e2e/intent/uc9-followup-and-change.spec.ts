@@ -11,11 +11,11 @@ test('a follow-up stays with its helper, and Change moves a misrouted request', 
   await ask(page, 'Plan dinners this week');
   await reply(page, /mon/i);
   await ask(page, 'What should Rafi bring to soccer practice?');
-  await expect(page.locator('.home-msg.theirs .home-bubble').first()).toBeVisible();
+  await expect(page.locator('.cv-post[data-from="helper"] .cv-post-body').first()).toBeVisible();
   const first = await outcomeLike(request, /soccer|rafi/i);
   await page.locator('#home-input').fill('And what time does it start?');
   await page.locator('#home-send').click();
-  await expect(page.locator('.home-msg.mine')).toHaveCount(2);
+  await expect(page.locator('.cv-post[data-from="you"]')).toHaveCount(2);
   const after = await until(async () => (await (await request.get('/api/intent/outcomes/' + first.id)).json()),
     (v) => (v.thread || []).filter((p: { author_key: string }) => p.author_key.startsWith('worker:')).length >= 2);
   expect(after.worker, 'the follow-up went to the same helper').toBe(first.worker);

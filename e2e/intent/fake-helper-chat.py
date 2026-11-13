@@ -4,11 +4,12 @@
 Speaks `claude -p --output-format stream-json` like e2e/fixtures/fake-claude-stream.py,
 and answers the household's requests from the seeded mail and calendar it
 reads through the server's own API (the way a real helper would, with
-`amux get`). A reminder becomes a one-time schedule. Nothing is ever sent:
-every outside message is a draft in the answer. The persona runs use the real
-model; this keeps the specs about amux.
+`amux get`). It uses the primitives the brief names: a reminder is a
+one-time schedule, a draft email is a send through the email API (held for
+the owner, never released here), a to-do is a card on her board. The persona
+runs use the real model; this keeps the specs about amux.
 """
-import json, os, re, ssl, sys, time, urllib.request, urllib.parse
+import json, os, re, ssl, sys, time, urllib.error, urllib.request, urllib.parse
 
 PROMPT = sys.stdin.read()
 SID = "1f0e0d0c-0b0a-4908-8706-050403020101"
@@ -25,6 +26,11 @@ def api(path, body=None):
     try:
         with urllib.request.urlopen(req, context=CTX, timeout=20) as r:
             return json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:  # the server's refusal, with its reason
+        try:
+            return {"error": "%s %s" % (e.code, e.read().decode()[:300])}
+        except Exception:  # noqa: BLE001
+            return {"error": str(e)}
     except Exception as e:  # noqa: BLE001 - a fixture reports, never crashes
         return {"error": str(e)}
 
@@ -82,9 +88,15 @@ elif "hudson prep" in b and ("done or missing" in b or "confirmation" in b):
     answer = ("**Verdict: missing.** There is no \"Application received\" email from Hudson Prep. Their reminder says the parent "
               "statement is still missing (the teacher recommendation arrived). The deadline is in 9 days." if not got else "**Verdict: done.**")
 elif "nudge" in b and "camp" in b:
-    answer = ("Here is a second nudge for Marcy Feld, ready for you to send:\n\n```draft\nTo: marcy@campkaylie.test\n"
-              "Subject: Re: Rafi Levin - Session 2 waitlist\n\nHi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 "
-              "waitlist. He is still very excited about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana\n```")
+    held = api("/api/email/send", {"to": "marcy@campkaylie.test", "subject": "Re: Rafi Levin - Session 2 waitlist",
+                                   "body": "Hi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 waitlist. He is still "
+                                           "very excited about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana"})
+    answer = ("I wrote a second nudge to Marcy Feld. It is waiting for your OK below." if (held or {}).get("approval_id")
+              else "I could not save the draft: %s" % (held or {}).get("error", "no answer"))
+elif "add" in b and ("to-do" in b or "todo" in b or "to do" in b):
+    what = re.sub(r"^.*?(add|put)\s+", "", body.strip(), flags=re.I).split(" to my")[0].strip().rstrip(".") or body.strip()
+    card = api("/api/intent/todos", {"title": what[:80]})
+    answer = ("Added to your to-dos: %s." % what) if (card or {}).get("id") else "I could not add it: %s" % json.dumps(card)[:300]
 elif "school" in b and "inbox" in b:
     answer = ("I found 4 school items:\n\n1. **Rafi's field trip permission slip** and $15, due Friday (Ms. Ortiz).\n2. **Picture day** order form, due on picture day.\n"
               "3. **Ezra's emergency contact form**, update in the parent portal in 4 days.\n4. **Conference sign-ups** open in 2 days at 7pm.")

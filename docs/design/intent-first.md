@@ -97,6 +97,84 @@ the router's accuracy metric.
   asks, as any worker does today. Goals can be dismissed or reworded.
 - Every idea and goal records the messages it came from.
 
+## Built from primitives (owner, 2026-11-13)
+
+The owner's ruling: "It should be simple, just using amux worker -> all the
+amux primitives from intent." A chat request goes to an amux worker, and that
+worker uses the primitives directly. Intent adds no store a primitive already
+holds.
+
+| What Dana asks for | Where it lives |
+|---|---|
+| A conversation | Messages: the thread `o:<id>` with one worker |
+| Which worker a conversation is with, and why | a post in that same thread by `amux:record` (its structured part is an `intent` attachment Messages does not draw); a re-route or a "Change" is another one |
+| "Remind me…" | the scheduler: the worker runs `amux wake` (`--every` for a repeating one) |
+| An event | the amux calendar (`/api/cal-events`) |
+| "Remember that…" | memories (`amux memory add`) |
+| A draft email | the email API: the worker sends it with `/api/email/send`, which holds any outside send for the owner's OK |
+| A goal | a board card on its helper's board, tagged `goal`, `owner_type: human` (a due date makes it Tracking; the status line is the helper's newest `STATUS:` line in its conversation) |
+| A to-do | a card on her own board (unassigned, `owner_type: human`, tagged `todo`), made through the board's own create; Goals lists it with Done. A helper has no board of its own (new workers have their board switches off since 2026-11-02), so it asks `POST /api/intent/todos` (owner, 2026-11-13). |
+| An idea | a backlog board card tagged `idea`; "Do it" starts its request, "Not now" discards it |
+| What Dana started or dismissed | memories in the `intent-home` group |
+| Checks for goals and ideas | the scheduler (shell kind, no model unless inputs changed) |
+
+Chat, Ideas and Goals are tabs in the normal tab bar next to the worker list,
+and are views over those stores. There is no full-screen Home and no second
+bottom bar. The `home` preference only picks which tab opens first, and for a
+new person it hides the worker tabs, so the default path still shows no
+worker, model, terminal or setting.
+
+`intent_outcomes` and `intent_items` (migration 0159) are dropped: an
+outcome's routing moves to its thread, ideas and goals to the board.
+
+Checked on this change: the nine use-case specs plus a to-do spec, 20 of 20 at
+desktop and 375px, on two consecutive runs
+([P](../../e2e/intent/results/2026-11-13-run-P.txt),
+[Q](../../e2e/intent/results/2026-11-13-run-Q.txt)), each asserting no outside
+send. Each new rule was broken with `scripts/mutate.sh` and its test named it:
+a record post notifies nobody; a file-mailbox draft is held and its release
+refused; an ASK closes on her answer; a Change moves the outcome; ideas and
+to-dos are hers (`owner_type: human`, her board); helpers made for her requests
+do not count as a fleet; simple mode returns on reload from the server's answer;
+the other tabs hide in simple mode; a held draft shows in its conversation; Done
+closes a to-do. One rule is unpinned: applying the remembered choice before the
+server answers only prevents a flash.
+
+The specs run against a private copy of the server binary
+(`AMUX_E2E_SERVER_BIN`): the shared debug build is replaced by any lane's
+build, and two runs on 2026-11-13 silently tested another lane's binary.
+
+Chat's conversation uses the Messages thread view's post (owner, 2026-11-13);
+runs [R](../../e2e/intent/results/2026-11-13-run-R.txt) and
+[S](../../e2e/intent/results/2026-11-13-run-S.txt) are the specs on it, and
+the plain post, the hidden tab list in simple mode and "Everything else" ending
+the bar are each mutation-checked. A markdown table in any post keeps whole
+words and scrolls sideways (shared `.cv-md` style), which is not pinned by a
+test.
+
+### What is still intent-only, and why
+
+No intent table is left (0160 drops both). What remains:
+
+| Left | Kind | Why a primitive does not hold it |
+|---|---|---|
+| `amux:record` posts in each `o:<id>` thread | Messages, with an `intent` attachment | It is Messages. Which worker a conversation is with has to live somewhere the next request can find; the thread itself is the natural place, and the structured part rides in an attachment rather than in prose. |
+| `prefs` keys `intent_last_pass_ms` and `intent_goal_fp_<card>` | the settings store | When the ideas pass last ran, and a fingerprint of each goal's inputs, so the scheduled checks skip the model when nothing changed. The scheduler's own pass state belongs to one schedule; these are read across them. |
+| The outcome-to-worker map in memory | a cache | Rebuilt from the record posts at boot (`load_registry`); `Conv::parse` has no store to read. |
+| `AMUX_HOME/mailboxes/*.json` | filesystem | A draft-only mailbox for the household demo and the specs; nothing reads it on a real install. |
+
+Endpoints under `/api/intent/`, each a decision or a view over primitives:
+
+| Endpoint | Why it is not a primitive's own route |
+|---|---|
+| `POST plan` | The router's one model call and the validation of what it names (workers, groups, isolation). |
+| `outcomes` (list, start, one, change) | Starting one is plan, then create or pick a worker, then a Messages post; the list joins threads with their records. |
+| `stats` | The override rate, computed from the records. |
+| `home`, `helpers`, `tidy` | Which tab opens first; which workers Change may pick; stopping idle helpers amux made. |
+| `ideas`, `goals` (and start, dismiss, patch, check, approve) | Views over cards tagged `idea` and `goal`, plus the pass that proposes them and the check that keeps a goal current. A card is created and changed through the board's own handlers. |
+| `reminders` | A view over the scheduler: the `amux wake` entries of the helpers her conversations went to. |
+| `POST todos` | A helper cannot write to its own board (its board switches are off), so it asks here, and the card is made on her board through the board's own create. |
+
 ## UX
 
 - Home becomes four views: Chat (composer and outcomes), Ideas, Goals
@@ -131,22 +209,22 @@ the router's accuracy metric.
 
 ## What shipped
 
-Every phase, composed from existing primitives (A1). No new primitive: an
-outcome is a Messages thread, an idea is a suggested request, a goal is a
-goal contract worked by a worker on a schedule.
+Every phase, composed from existing primitives (A1), as the section above
+maps: an outcome is a Messages thread, ideas and goals are board cards,
+reminders and checks are scheduler entries, drafts are held email-API sends.
 
 | Piece | Where | What it does |
 |---|---|---|
 | Router | `api/intent.rs`, `POST /api/intent/plan` | One decision: `answer`, `send`, `create` or `continue`. The helper model judges; every worker, directory, group, type, model and effort it names is validated, an isolated worker is never a target (A9), and each correction is reported in `corrections`. Returns `why`, `candidates`, `measured`, `n_considered` and `sources`. Past "Change" overrides are fed back into its prompt. |
 | Roster | `orchestrate::roster_entries` | The voice router and the intent router read one roster (name, groups, description, type, directory, isolation). |
 | Dialog | `app.js` `_outcomeStart` | "Describe what you want" routes first: it answers, sends to the worker that owns the work, or creates one. Created workers are not isolated by default. |
-| Outcomes | `api/intent_store.rs`, `conversations.rs` `Conv::Outcome` | `o:<id>` threads. A request is posted into the thread, which delivers it to the worker; the answer comes back into the thread (`relay_turn`, now also straight from a chat turn). A follow-up goes to the same worker with no routing call. "Change" moves an outcome and re-delivers it; `GET /api/intent/stats` is the override rate. |
-| Home | `index.html` `#home-view`, `app.js` `_home*` | Chat, Ideas, Goals and More (your calendar and reminders, ideas, then the full workspace last); Goals opens with the next week of the calendar and the reminders set; a reminder a helper sets shows in its conversation. One bottom row on a phone with the composer above it. The default first screen for a new person (`GET /api/intent/home`: the `home` pref, then the `AMUX_HOME_DEFAULT` environment default, else intent below five workers; the fleet e2e harnesses set `AMUX_HOME_DEFAULT=fleet`). The fleet stays hidden until the choice is made, so it never flashes first. |
-| Worker view | `peek-tab-outcomes`, `_homeCardOutcomes` | An Outcomes tab first in the worker view, and one line on each worker card naming its outcomes. |
-| Ideas | `api/intent_items.rs` | One pass reads the owner's messages to every worker (`cmd_history`), their outcomes, recent and related email (searches the model writes), the calendar, and what they started or dismissed before (memories in the `intent-home` group, which no worker is in). Each idea must cite sources that exist or it is dropped and counted. A pass runs after each new request, on refresh, and every 30 minutes by a shell schedule that runs the model only after three new requests. |
-| Goals | `api/intent_items.rs` | Inferred goals, tiered `tracking` (a real due date) and `standing`. Each is a goal contract (versioned; a reword is a new version), an outcome thread to a worker, and a shell schedule every 2 hours that fingerprints the goal's inputs and asks the worker only when they changed. The status line is the worker's newest `STATUS:` line. Goals start on their own but read and draft only; an `ASK:` line shows an Approve button, and approval is recorded (`outside_ok`). |
-| Self-configuration | `intent.rs`, `intent_store.rs` | The router picks type, model and effort per outcome; overrides feed the router prompt; a daily shell schedule stops helpers amux created once idle for 7 days with no active goal (archiving stays a person's call). |
-| File mailbox | `integrations/local_mailbox.rs` | A read-only mailbox in `AMUX_HOME/mailboxes/*.json`, read by `/api/email/inbox`, `/search` and `/message` beside Gmail. Nothing can be sent from it. |
+| Outcomes | `api/intent_store.rs`, `intent_record.rs`, `conversations.rs` `Conv::Outcome` | `o:<id>` Messages threads. Where one went and why is a record post in that thread (author `amux:record`, an `intent` attachment Messages does not draw, never a notification); a re-route or a Change is another. A request is posted into the thread, which delivers it to the worker; the answer comes back into the same thread (`relay_turn`, also straight from a chat turn). A follow-up goes to the same worker with no routing call. `GET /api/intent/stats` is the override rate. |
+| Chat, Ideas, Goals | `index.html` `#home-view`, `#ideas-view`, `#goals-view`; `app.js` `_home*` | Three tabs in the normal tab bar. Chat is a composer and the requests it started; a conversation is drawn with the Messages thread view's own post (`_cvPostHtml`, its `plain` option: "You" and the helper's plain name, no actions or delivery chips) and shows the reminders its helper set and the emails it wrote, held by the email API, with the approvals banner's own Send and Discard. Goals shows the next week of the calendar, reminders, to-dos and goals. For a new person (`GET /api/intent/home`: the `home` pref, then `AMUX_HOME_DEFAULT`, else intent below five workers) only these tabs and "Everything else" show. |
+| Worker view | `_peekConvsLoad`, `_homeCardOutcomes` | Conversations are organized by conversation, not by worker: no per-worker tab. A worker's Messages tab starts with the conversations from Chat routed to it (each opens in Chat), and its card has one "From Chat" line naming them. Chat lists every conversation across workers. |
+| Ideas | `api/intent_items.rs` | One pass reads the owner's messages to every worker (`cmd_history`), their conversations, related email, the calendar, and what they started or dismissed (memories in the `intent-home` group). Each idea must cite sources that exist. An idea is a backlog board card tagged `idea`, `owner_type: human`; "Do it" starts its request and closes the card, "Not now" discards it. Passes run one at a time. |
+| Goals | `api/intent_items.rs` | Inferred goals are board cards tagged `goal` on the helper's board (a due date makes one Tracking), each with its conversation and a shell scheduler check that asks the helper only when its inputs changed. The status line is the helper's newest `STATUS:` line. Goals read and draft only: an email waits in the email API for the owner's OK, any other outside step is an `ASK:` line answered in the conversation. |
+| Self-configuration | `intent.rs`, `intent_store.rs` | The router picks type, model and effort per outcome; overrides feed the router prompt; a helper amux creates gets a board of its own (`AMUX_BOARD_DEFAULT` at its scope, no automatic pickup); a daily shell schedule stops idle helpers amux created. |
+| File mailbox | `integrations/local_mailbox.rs`, `api/email.rs` | A mailbox in `AMUX_HOME/mailboxes/*.json`, read by `/api/email/inbox`, `/search` and `/message` beside Gmail. It is draft-only: a worker's send from it is held like any other, and its release is refused (`draft_only_mailbox`), so nothing can be sent from it. |
 
 ### The acceptance set
 
