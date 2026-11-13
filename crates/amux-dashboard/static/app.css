@@ -11256,3 +11256,15 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .peek-msg-convs:empty { display: none; }
 .peek-msg-convs { padding: var(--space-2-5) var(--space-2-5) 0; display: flex; flex-direction: column; gap: var(--space-1-5); }
 .peek-msg-convs-head { font-weight: 600; font-size: var(--fs-md); color: var(--dim); }
+
+/* Workflow wizard (#wfw-overlay) */
+.wfw-brief { white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: var(--fs-sm);
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2); }
+.wfw-start-over { text-align: right; margin-top: var(--space-1); }
+.wfw-chips { display: flex; flex-wrap: wrap; gap: var(--space-1-5); margin-bottom: var(--space-2); }
+.wfw-chip { flex: 0 1 auto; white-space: nowrap; min-height: 44px; }
+.wfw-help { margin-bottom: var(--space-2); }
+.wfw-answer { width: 100%; }
+.wfw-error { color: var(--red); }
+.wfw-error[hidden] { display: none; }
+.wfw-actions { flex-wrap: wrap; }

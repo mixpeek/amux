@@ -812,6 +812,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Play  | `_vxSelect` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Delete expired now | `_vxSweepNow` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Mute | `_vxToggleMute` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Create worker | `_wfwCreateWorker` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Inherit | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_workerExternalEmailSet` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | … | `_workerTypeSet` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1614,6 +1615,14 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Playback speed | `_vxSpeed` | onclick |
 | app.js | More actions | `_vxToggleMenu` | onclick |
 | app.js | Voice settings | `_vxToggleSettings` | onclick |
+| app.js | Back | `_wfwBack` | onclick |
+| app.js | Back | `_wfwBack` | onclick |
+| app.js | Copy | `_wfwCopy` | onclick |
+| app.js | Download | `_wfwDownload` | onclick |
+| app.js | Next | `_wfwNext` | onclick |
+| app.js | I don\t know yet | `_wfwSkip` | onclick |
+| app.js | Start over | `_wfwStartOver` | onclick |
+| app.js | … | `_wfwToggleChip` | onclick |
 | app.js | + _WT_CHAPTERS[k].label + (done[k] ? | `_wtChapter` | onclick |
 | app.js | Finish | `_wtDismiss` | onclick |
 | app.js | Skip | `_wtDismiss` | onclick |
@@ -1685,6 +1694,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Cancel | `closeTTS` | onclick |
 | app.js | button | `closeTTS` | onclick |
 | app.js | Close themes | `closeThemes` | onclick |
+| app.js | Cancel | `closeWorkflowWizard` | onclick |
+| index.html | wfw-overlay | `closeWorkflowWizard` | onclick |
 | index.html | Copy text | `copyFileContent` | onclick |
 | index.html | Clear console | `dtClearConsole` | onclick |
 | index.html | Console | `dtSwitchTab` | onclick |
@@ -1725,6 +1736,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Style guide | `openStyleGuide` | onclick |
 | index.html | Themes… | `openThemes` | onclick |
 | app.js | All shown | `openVisibleWorkerActions` | onclick |
+| index.html | Use the workflow wizard | `openWorkflowWizard` | onclick |
 | app.js | + | `peek-action:chat-toggle` | data-peek-action |
 | app.js | + | `peek-action:file-browser` | data-peek-action |
 | index.html | PR ↗ | `peekGitOpenPR` | onclick |
