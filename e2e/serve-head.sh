@@ -71,6 +71,12 @@ for _k in $(compgen -e); do
 done
 [ -n "$_scrubbed" ] && echo "[e2e] ENV: scrubbed fleet vars:$_scrubbed (a throwaway home must not inherit fleet toggles)"
 
+# A test server answers this machine only. The server binds every interface by
+# default (AMUX_RS_BIND, docs/self-hosting.md), and on the owner's Mac each e2e
+# run left one listening on the Wi-Fi and tailnet addresses, where the network
+# watch reported it. Specs reach it as localhost, which already lands on IPv4.
+export AMUX_RS_BIND=127.0.0.1
+
 # WHICH DASHBOARD BYTES THIS SERVER SERVES. CI may boot a server binary main
 # compiled (rust.yml server-bin cache) for a PR that changed only the
 # dashboard; AMUX_DASHBOARD_DIR then points the server at the PR's static/
