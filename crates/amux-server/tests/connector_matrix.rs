@@ -381,7 +381,9 @@ impl Rig {
         child.wait().unwrap();
     }
     async fn ready(&self) {
-        for _ in 0..100 {
+        // 30 s: a cold start on a loaded host took 7.8 s and failed the old 5 s
+        // window as "server did not start" (2026-11-12, three land gates).
+        for _ in 0..600 {
             if self
                 .client
                 .get(format!("http://127.0.0.1:{}/health", self.port))
