@@ -12505,14 +12505,34 @@ async function _homeLoadOutcome(id, quiet) {
   if (quiet && _home.detail === sig) return;
   _home.detail = sig;
   _home.openStatus = r.v.status;
-  // Reminders its helper set since this request: shown in the conversation,
+  // Reminders its helper set while answering this conversation: shown in it,
   // so a promised reminder can be seen saved (asked for in four runs).
   const rm = await _homeJson('/api/intent/reminders');
-  const asked = (r.v.thread || [])[0]?.ts || 0;
-  r.v.reminders = (rm.ok ? rm.v.reminders || [] : []).filter(x => x.worker === r.v.worker
-    && Number(x.created) * (Number(x.created) < 1e12 ? 1000 : 1) >= asked - 5000);
+  r.v.reminders = _homeTurnReminders(r.v.thread || [], rm.ok ? rm.v.reminders || [] : [], r.v.worker, Date.now());
   if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
+}
+// The reminders a helper set inside this conversation's own turns: from each
+// request of hers to the helper's answer (plus a little slack). A helper that
+// also runs goals sets reminders for them too, and "since the first request"
+// pinned all 13 household reminders onto the camp thread (walkthrough recording).
+// When a reminder comes: its next time, and for a repeating one how often
+// ("Sun Nov 15, 9:00 AM, then daily at 09:00").
+function _homeReminderWhen(x) {
+  const next = new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  if (!x.every) return next;
+  const e = String(x.every);
+  return next + ', then ' + (/^\s*[\d*]/.test(e) ? 'on a repeating schedule' : e.replace(/^every\s+/i, 'every '));
+}
+function _homeTurnReminders(thread, reminders, worker, now) {
+  const ms = (t) => Number(t) * (Number(t) < 1e12 ? 1000 : 1);
+  const turns = [];
+  thread.forEach((p, n) => {
+    if (!String(p.author_key || '').startsWith('person:')) return;
+    const reply = thread.slice(n + 1).find(q => String(q.author_key || '').startsWith('worker:'));
+    turns.push([ms(p.ts) - 5000, reply ? ms(reply.ts) + 15000 : now]);
+  });
+  return reminders.filter(x => x.worker === worker && turns.some(([a, b]) => ms(x.created) >= a && ms(x.created) <= b));
 }
 function _homeRenderOutcome(o) {
   const el = document.getElementById('home-chat-body');
@@ -12538,7 +12558,7 @@ function _homeRenderOutcome(o) {
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
     + (o.reminders || []).map(x => '<div class="home-reminder">&#x23F0; Reminder set: ' + esc(x.title) + ' · '
-      + esc(new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</div>').join('')
+      + esc(_homeReminderWhen(x)) + '</div>').join('')
     + '<div class="home-msgs" id="home-msgs">' + posts
     + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
     + '</div></div>';
@@ -12732,7 +12752,7 @@ function _homeRenderGoals(v) {
   const goals = _home.goals || [];
   const rem = (_home.reminders || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span></div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
     + _home.reminders.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
-      + esc(new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</div></div>').join('') + '</div>' : '';
+      + esc(_homeReminderWhen(x)) + '</div></div>').join('') + '</div>' : '';
   const fmtEv = (e) => { const d = _homeLocalDate(e.start); const allDay = e.all_day || String(e.start).length <= 10;
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + (allDay ? '' : ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })); };
   const up = (_home.events || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Coming up</span></div><div class="home-pane-sub">Your calendar for the next week</div><div class="home-list">'

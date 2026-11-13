@@ -1314,10 +1314,12 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
                      this thread, in plain words, on a phone. Do the work without asking first: when the request touches \
                      people, school, camp, money, dates or plans, look in their email and calendar yourself \
                      (amux get 'api/email/search?q=<a few words>&days=180', amux get 'api/email/message/<message_id>', \
-                     amux get 'api/email/inbox?count=20&days=14', amux get api/cal-events). For a reminder, set it with \
-                     amux wake <YYYY-MM-DDTHH:MM> --title \"<what to remember, in their words>\" --stdin, telling yourself to post \
-                     the reminder here with amux post 'o:{id}', \
-                     and make the first line of your answer say when it is set. Answer with the result first, in one to three short lines, then only the \
+                     amux get 'api/email/inbox?count=20&days=14', amux get api/cal-events). Keep what you set up in amux, \
+                     never in another app or a file of your own: a reminder is amux wake <YYYY-MM-DDTHH:MM> --title \
+                     \"<what to remember, in their words>\" --stdin, telling yourself to post the reminder here with amux post 'o:{id}' \
+                     (a repeating one is amux wake --every '<daily at 09:00, or cron>' the same way); an event for their calendar \
+                     is a POST to $AMUX_URL/api/cal-events with title, start and end; something to remember about them is \
+                     amux memory add --stdin. Make the first line of your answer say what you set and when. Answer with the result first, in one to three short lines, then only the \
                      details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. Anything that \
                      would go to someone outside stays a draft for them to send themselves: never send it, never spend money. \
                      Write each email draft as a block starting with a line ```draft, then To: <address>, Subject: <subject>, a \
@@ -2912,6 +2914,11 @@ mod tests {
         assert_eq!(place, "here");
         assert!(text.contains("amux post 'o:oconvtest1'") && text.contains("draft"), "{text}");
         assert!(text.contains("never send it") && text.contains("never spend money"), "outside sends stay drafts: {text}");
+        // What it sets up lives in amux's own primitives: the scheduler, the calendar, memories.
+        for (verb, what) in [("amux wake <YYYY", "a reminder is the scheduler"), ("amux wake --every", "a repeating one too"),
+            ("api/cal-events", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory")] {
+            assert!(text.contains(verb), "{what}: {text}");
+        }
     }
 
     #[test]

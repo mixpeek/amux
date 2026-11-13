@@ -1,0 +1,23 @@
+
+Running 18 tests using 2 workers
+
+  ✓   1 [desktop] › e2e/intent/uc2-application-check.spec.ts:7:5 › an idea that checks whether Ezra's application is done (11.8s)
+  ✓   3 [desktop] › e2e/intent/uc3-school-inbox.spec.ts:7:5 › school items now, and a standing goal for school forms (3.8s)
+  ✓   4 [desktop] › e2e/intent/uc4-dinners.spec.ts:6:5 › a dinner plan, and a meal-planning goal (3.9s)
+  ✓   5 [desktop] › e2e/intent/uc5-conferences.spec.ts:6:5 › a ranked booking order from grades and missing work (3.5s)
+  ✓   6 [desktop] › e2e/intent/uc6-reconcile.spec.ts:6:5 › a reconciliation of the car rental split (3.8s)
+  ✓   2 [desktop] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread (28.6s)
+  ✓   7 [desktop] › e2e/intent/uc7-family-calendar.spec.ts:6:5 › a calendar goal whose status names the next event (2.1s)
+  ✓   8 [desktop] › e2e/intent/uc8-tracking-deadline.spec.ts:6:5 › open enrollment under Tracking with the days left (2.0s)
+  ✓  10 [mobile] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread (25.9s)
+  ✓  11 [mobile] › e2e/intent/uc2-application-check.spec.ts:7:5 › an idea that checks whether Ezra's application is done (5.6s)
+  ✓  12 [mobile] › e2e/intent/uc3-school-inbox.spec.ts:7:5 › school items now, and a standing goal for school forms (3.8s)
+  ✓  13 [mobile] › e2e/intent/uc4-dinners.spec.ts:6:5 › a dinner plan, and a meal-planning goal (4.2s)
+  ✓  14 [mobile] › e2e/intent/uc5-conferences.spec.ts:6:5 › a ranked booking order from grades and missing work (3.2s)
+  ✓  15 [mobile] › e2e/intent/uc6-reconcile.spec.ts:6:5 › a reconciliation of the car rental split (3.4s)
+  ✓  16 [mobile] › e2e/intent/uc7-family-calendar.spec.ts:6:5 › a calendar goal whose status names the next event (1.3s)
+  ✓  17 [mobile] › e2e/intent/uc8-tracking-deadline.spec.ts:6:5 › open enrollment under Tracking with the days left (1.2s)
+  ✓   9 [desktop] › e2e/intent/uc9-followup-and-change.spec.ts:6:5 › a follow-up stays with its helper, and Change moves a misrouted request (2.1m)
+  ✓  18 [mobile] › e2e/intent/uc9-followup-and-change.spec.ts:6:5 › a follow-up stays with its helper, and Change moves a misrouted request (2.1m)
+
+  18 passed (3.6m)

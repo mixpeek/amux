@@ -230,6 +230,20 @@ citation, goal tiers, approvals) and 13 of 13 in the second (reminders, home
 choice, STATUS and ASK parsing, the relay guards, drafts), and 2 of 2 for
 the create fallback (isolation, the name match).
 
+**Found by the walkthrough recording (fixed after the results above).**
+
+- A conversation showed every reminder its helper had set since the first
+  request, so the camp thread listed all 13 household reminders (the helper
+  also runs the household's goals). It now shows only reminders set inside its
+  own turns, from each request to the answer (`_homeTurnReminders`); uc1 pins it
+  with a later, unrelated reminder by the same helper.
+- Two ideas passes ran 200ms apart and offered the same ideas twice. Passes now
+  run one at a time, and asks that overlap fold into one more run that sees the
+  first run's ideas (`Coalescer`, verdict `intent_pass_coalesced`).
+- Runs [L](../../e2e/intent/results/2026-11-13-run-L.txt) and
+  [M](../../e2e/intent/results/2026-11-13-run-M.txt): the nine specs on these
+  fixes.
+
 **Open gaps.**
 
 - Goal checks and idea passes each set their own reminders, so one deadline can

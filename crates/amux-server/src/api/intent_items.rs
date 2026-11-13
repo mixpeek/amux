@@ -54,21 +54,28 @@ async fn reminders(State(state): State<AppState>) -> Response {
         Err(e) => return Json(json!({"reminders": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
     };
     let now = chrono::Local::now().naive_local();
-    let rows: Vec<(String, String, String, Option<String>, i64)> = state.store.read().ok().and_then(|c| {
-        let mut st = c.prepare("SELECT id, title, session, next_run, created FROM schedules WHERE enabled=1 AND sched_type='once' AND deleted IS NULL").ok()?;
-        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?, r.get::<_, i64>(4)?))).ok()?;
+    // A reminder is a scheduler entry a helper set with `amux wake`: once, or
+    // repeating (`--every`). amux's own checks for goals and ideas are shell
+    // schedules and are not reminders.
+    type Row = (String, String, String, Option<String>, i64, Option<String>);
+    let rows: Vec<Row> = state.store.read().ok().and_then(|c| {
+        let mut st = c.prepare("SELECT id, title, session, next_run, created, \
+            CASE WHEN sched_type='recurring' THEN schedule_expr END FROM schedules \
+            WHERE enabled=1 AND deleted IS NULL AND kind<>'shell' AND sched_type IN ('once','recurring')").ok()?;
+        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?,
+            r.get::<_, i64>(4)?, r.get::<_, Option<String>>(5)?))).ok()?;
         Some(r.flatten().collect())
     }).unwrap_or_default();
     let n = rows.len();
     let mut out: Vec<Value> = rows.into_iter()
-        .filter(|(_, _, sess, _, _)| helpers.contains(sess))
-        .filter_map(|(id, title, sess, next, created)| {
+        .filter(|(_, _, sess, _, _, _)| helpers.contains(sess))
+        .filter_map(|(id, title, sess, next, created, every)| {
             let next = next?;
             let when = chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M:%S")
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M"))
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%d %H:%M:%S")).ok()?;
             (when > now).then(|| json!({"id": id, "title": reminder_title(&title), "when": when.format("%Y-%m-%dT%H:%M").to_string(),
-                "worker": sess, "created": created}))
+                "worker": sess, "created": created, "every": every.filter(|e| !e.is_empty())}))
         })
         .collect();
     out.sort_by(|a, b| a["when"].as_str().cmp(&b["when"].as_str()));
@@ -572,7 +579,7 @@ async fn refresh(State(state): State<AppState>, Query(q): Query<HashMap<String, 
                 "why": format!("{fresh} new request(s) since the last pass; {n} start one")})).into_response();
         }
     }
-    let v = run_pass(&state, "refresh").await;
+    let v = PASSES.run_waiting(run_pass(&state, "refresh")).await;
     mark_pass(&state).await;
     Json(v).into_response()
 }
@@ -594,14 +601,65 @@ async fn mark_pass(state: &AppState) {
     }).await);
 }
 
+/// One pass at a time. Two at once each read the same items and both offered
+/// the same ideas (the walkthrough recording: two passes 200ms apart, 9 ideas
+/// each, "Rafi's zoo slip" twice). A pass asked for while one runs is folded
+/// into one more run after it, which sees what the first one made.
+static PASSES: Coalescer = Coalescer::new();
+
+/// Runs one job at a time; a run asked for while one is going becomes one
+/// more run after it (any number of asks fold into that one).
+pub(crate) struct Coalescer {
+    lock: tokio::sync::Mutex<()>,
+    again: std::sync::atomic::AtomicBool,
+}
+
+impl Coalescer {
+    pub(crate) const fn new() -> Self {
+        Self { lock: tokio::sync::Mutex::const_new(()), again: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    /// Runs `job` now, or folds it into the run after the current one.
+    /// Returns false when it was folded.
+    pub(crate) async fn run<F, Fut>(&self, job: F) -> bool
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use std::sync::atomic::Ordering;
+        let Ok(_one) = self.lock.try_lock() else {
+            self.again.store(true, Ordering::SeqCst);
+            return false;
+        };
+        loop {
+            job().await;
+            if !self.again.swap(false, Ordering::SeqCst) {
+                return true;
+            }
+        }
+    }
+
+    /// Waits its turn, then runs `job` once (an explicit refresh wants its answer).
+    pub(crate) async fn run_waiting<T, Fut: std::future::Future<Output = T>>(&self, job: Fut) -> T {
+        let _one = self.lock.lock().await;
+        job.await
+    }
+}
+
 /// After an outcome starts: a pass, in the background, so its ideas and any
 /// goal it implies show up while the person is still looking.
 pub(crate) fn pass_after_outcome(state: &AppState) {
     let st = state.clone();
     tokio::spawn(async move {
-        let v = run_pass(&st, "outcome_started").await;
-        tracing::debug!(created = %v["created"], verdict = "intent_pass_after_outcome", "intent: pass after a new request");
-        mark_pass(&st).await;
+        let ran = PASSES.run(|| async {
+            let v = run_pass(&st, "outcome_started").await;
+            tracing::debug!(created = %v["created"], verdict = "intent_pass_after_outcome", "intent: pass after a new request");
+            mark_pass(&st).await;
+        }).await;
+        if !ran {
+            tracing::info!(measured = true, n_considered = 1, verdict = "intent_pass_coalesced",
+                "intent: a pass was already running; one more runs after it");
+        }
     });
 }
 
@@ -916,6 +974,31 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn overlapping_passes_fold_into_one_more_run() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let c = Arc::new(Coalescer::new());
+        let runs = Arc::new(AtomicUsize::new(0));
+        let job = |runs: Arc<AtomicUsize>| move || {
+            let runs = runs.clone();
+            async move {
+                runs.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        let first = tokio::spawn({ let (c, r) = (c.clone(), runs.clone()); async move { c.run(job(r)).await } });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Three asks while the first runs: none runs alongside it, and they fold into one.
+        for _ in 0..3 {
+            assert!(!c.run(job(runs.clone())).await, "an overlapping ask is folded");
+        }
+        assert!(first.await.unwrap());
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "the first run, then one more for the folded asks");
+        assert!(c.run(job(runs.clone())).await, "with nothing running, it runs");
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
     use super::*;
 
     fn srcs() -> Vec<Src> {

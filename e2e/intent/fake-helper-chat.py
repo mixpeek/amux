@@ -67,15 +67,15 @@ if "keep this goal" in b or "your last update on this goal" in b:
     answer = status + "\n\nI'll keep this up to date and only read and draft. Nothing goes out without your OK."
 elif "remind me" in b and "camp" in b:
     when = time.strftime("%Y-%m-%dT10:00", time.localtime(time.time() + 86400))
-    api("/api/schedules", {"title": "Reminder: call the camp director about Rafi's waitlist", "kind": "shell",
-                           "once": when, "command": "true"})
+    api("/api/schedules", {"title": "Reminder: call the camp director about Rafi's waitlist", "kind": "tmux",
+                           "once": when, "command": "Post the reminder", "session": os.environ.get("AMUX_SESSION", "")})
     thread = mail("camp kaylie rafi")
     answer = ("Done: I'll remind you tomorrow at 10:00 to call Marcy Feld, the Camp Kaylie director, about Rafi's Session 2 waitlist. "
               "Her number is (845) 555-0142.\n\nFrom your email: Rafi was #4 on the waitlist, and your follow-up %d days ago has no answer yet."
               % 12 if thread else "Done: I'll remind you tomorrow at 10:00 to call the camp director.")
 elif "remind me" in b and "application" in b:
     when = time.strftime("%Y-%m-%dT19:00", time.localtime(time.time() + 86400))
-    api("/api/schedules", {"title": "Reminder: fill in Ezra's school application", "kind": "shell", "once": when, "command": "true"})
+    api("/api/schedules", {"title": "Reminder: fill in Ezra's school application", "kind": "tmux", "once": when, "command": "Post the reminder", "session": os.environ.get("AMUX_SESSION", "")})
     answer = "Done: I'll remind you tomorrow evening to fill in Ezra's Hudson Prep application."
 elif "hudson prep" in b and ("done or missing" in b or "confirmation" in b):
     got = mail("hudson prep application received")
