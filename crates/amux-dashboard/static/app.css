@@ -11163,7 +11163,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 /* ── Home: say what you want (docs/design/intent-first.md) ──
    One column, the composer above one bottom row of four views on a phone. */
 html.boot-home-pending #session-view, html.boot-home-pending .tab-bar-outer, html.boot-home-pending .header-row { visibility: hidden; }
-body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home #no-apikey-banner { display: none !important; }
+body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home #no-apikey-banner, body.intent-home #chrome-tabs-bar { display: none !important; }
 .home-view { position: fixed; inset: 0; z-index: 5; flex-direction: column; background: var(--bg); color: var(--text);
   padding-top: env(safe-area-inset-top); font-family: var(--font-ui); }
 .home-top { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 var(--space-4); }

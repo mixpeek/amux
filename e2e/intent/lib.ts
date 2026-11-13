@@ -43,12 +43,17 @@ export async function ask(page: Page, text: string) {
 
 /** Wait for a helper answer in the open thread that matches `re`. */
 export async function reply(page: Page, re: RegExp) {
-  await expect(page.locator('.home-msg.theirs .home-bubble').filter({ hasText: re }).first()).toBeVisible();
+  await expect(page.locator('.home-msg.theirs .home-bubble').filter({ hasText: re }).first()).toBeVisible({ timeout: LIVE ? 600_000 : 60_000 });
 }
 
-/** The default path shows no machinery words. */
+/** The default path shows no machinery words. amux's own words are checked;
+ * the family's messages and answers about them (a camp's "Session 2") are not. */
 export async function noJargon(page: Page) {
-  const text = await page.locator('#home-view').innerText();
+  const text = await page.locator('#home-view').evaluate((root) => {
+    const c = root.cloneNode(true) as HTMLElement;
+    c.querySelectorAll('.home-bubble, .home-row-snip, .home-card-from').forEach((n) => n.remove());
+    return c.innerText;
+  });
   const hit = text.match(JARGON);
   expect(hit?.[0] ?? null, `jargon on the default path: "${hit?.[0]}" in: ${text.slice(Math.max(0, (hit?.index ?? 0) - 60), (hit?.index ?? 0) + 60)}`).toBeNull();
 }

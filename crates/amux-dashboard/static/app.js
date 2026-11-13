@@ -2406,6 +2406,10 @@ async function _cloudOfferTry(trigger, worker) {
   // Not over an open file or worker: it covered the markdown editor's text on a phone
   // (2026-10-31). Left unmarked, so it is offered again on the next trigger.
   if (document.querySelector('#file-overlay.active, #peek-overlay.active')) return;
+  // Not over Home either: it is a pitch about running workers on servers, made
+  // to someone who came to say what they want (docs/design/intent-first.md).
+  // Unmarked, so the fleet view can still offer it later.
+  if (document.body.classList.contains('intent-home') || !window._homeChoiceSettled || activeView === 'home') return;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }
@@ -12265,9 +12269,21 @@ function _homeEnter() {
   // A first-run tour of workers that opened before Home did is closed: Home
   // is this person's first run.
   if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
+  document.getElementById('cloud-offer')?.remove();
   document.documentElement.classList.remove('boot-home-pending');
   _homeSetPane(_home.pane === 'workspace' ? 'chat' : _home.pane, true);
-  if (!_home.timer) _home.timer = setInterval(() => { if (activeView === 'home' && !document.hidden) _homeRefresh(); }, 4000);
+  _homeEnsureTimer();
+}
+// Every 2s while an open request is still being worked on, else every 4s.
+function _homeEnsureTimer() {
+  if (_home.timer) return;
+  let tick = 0;
+  _home.timer = setInterval(() => {
+    if (activeView !== 'home' || document.hidden) return;
+    tick++;
+    const hurry = _home.open && _home.openStatus !== 'ready';
+    if (hurry || tick % 2 === 0) _homeRefresh();
+  }, 2000);
 }
 function _homeLeave() {
   document.body.classList.remove('intent-home');
@@ -12287,11 +12303,15 @@ function _homeSetPane(p) {
   _homeRefresh();
 }
 async function _homeJson(path, opts) {
+  // Bounded: one request that hangs (a busy server) must not freeze the
+  // screen; the next poll asks again. A POST gets longer, it may create a helper.
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), opts && opts.method === 'POST' ? 120000 : 15000);
   try {
-    const r = await fetch(API + path, Object.assign({ headers: _authHeaders({'Content-Type': 'application/json'}) }, opts || {}));
+    const r = await fetch(API + path, Object.assign({ headers: _authHeaders({'Content-Type': 'application/json'}), signal: ctl.signal }, opts || {}));
     let v = null; try { v = await r.json(); } catch (_) {}
     return { ok: r.ok, status: r.status, v: v || {} };
-  } catch (_) { return { ok: false, status: 0, v: {} }; }
+  } catch (_) { return { ok: false, status: 0, v: {} }; } finally { clearTimeout(t); }
 }
 async function _homeRefresh() {
   if (_home.pane === 'chat') {
@@ -12350,6 +12370,8 @@ function _homeGrow(i) {
 function _homeOpenOutcome(id) {
   _home.open = id;
   _home.detail = null;
+  _home.openStatus = 'working';
+  _homeEnsureTimer();
   _homeLoadOutcome(id, false);
 }
 function _homeBack() {
@@ -12364,6 +12386,7 @@ async function _homeLoadOutcome(id, quiet) {
   const sig = JSON.stringify([r.v.thread?.length, r.v.status, r.v.worker, r.v.thread?.[r.v.thread.length - 1]?.id]);
   if (quiet && _home.detail === sig) return;
   _home.detail = sig;
+  _home.openStatus = r.v.status;
   _homeRenderOutcome(r.v);
 }
 function _homeRenderOutcome(o) {
@@ -59503,6 +59526,8 @@ function _restoreScreen(bootHash) {
   const _bootHash = typeof bootHash === 'string' ? bootHash : location.hash;
   const _hasDeeplink = _DEEPLINK_HASH_RE.test(_bootHash)
                      || /[?&]view=/.test(location.search);
+  // A link names the screen: Home is not being decided.
+  if (_hasDeeplink) window._homeChoiceSettled = true;
   // 1. Restore the tab.
   if (!_hasDeeplink) {
     try {
