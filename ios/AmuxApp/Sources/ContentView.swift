@@ -10,10 +10,19 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var webViewRef: WKWebView?
     @State private var loadError: String?
+    @State private var offline: OfflineCopy.Badge?
     @State private var webViewId = UUID()  // force recreation on retry
 
     var body: some View {
         ZStack(alignment: .top) {
+            // Offline, a strip above the page says so and keeps Retry and
+            // Switch Server one tap away. It sits ABOVE the web view rather
+            // than over it: floated over the page it covered the dashboard's
+            // own header buttons (measured on an iPhone 17 Pro simulator).
+            VStack(spacing: 0) {
+            if let badge = offline, loadError == nil {
+                offlineStrip(badge)
+            }
             if let url = serverManager.serverURL {
                 WebView(
                     url: url,
@@ -22,12 +31,16 @@ struct ContentView: View {
                     canGoForward: $canGoForward,
                     loadError: $loadError,
                     offDashboard: $offDashboard,
+                    offline: $offline,
                     onWebView: { webViewRef = $0 },
                     onNavigationAction: handleNavigation,
                     onLongPress: { showSettings = true }
                 )
                 .id(webViewId)
-                .ignoresSafeArea()
+                // With the strip shown it owns the status-bar area, so the
+                // page starts below it and its safe-area padding drops to 0.
+                .ignoresSafeArea(edges: (offline != nil && loadError == nil) ? .bottom : .all)
+            }
             }
 
             // A page opened from the dashboard (a public app, a shared file,
@@ -81,6 +94,7 @@ struct ContentView: View {
                     HStack(spacing: 16) {
                         Button("Retry") {
                             loadError = nil
+                            offline = nil
                             webViewId = UUID()
                         }
                         .buttonStyle(.borderedProminent)
@@ -104,6 +118,46 @@ struct ContentView: View {
             SettingsView()
                 .environmentObject(serverManager)
         }
+    }
+
+    private func offlineStrip(_ badge: OfflineCopy.Badge) -> some View {
+        Menu {
+            Button {
+                // A reload goes to the server; if it still cannot reach it,
+                // the page stays as it is (OfflineCopy.Decision.keepPage).
+                webViewRef?.reload()
+            } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            Button {
+                showSettings = true
+            } label: {
+                Label("Switch Server", systemImage: "server.rack")
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(Color.orange)
+                Text(OfflineCopy.label(savedAt: badge.savedAt))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text("Retry")
+                    .foregroundStyle(Color.accentColor)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .background(Color.orange.opacity(0.18).ignoresSafeArea(edges: .top))
+        .background(Color(red: 0.051, green: 0.067, blue: 0.09).ignoresSafeArea(edges: .top))
+        .accessibilityLabel(OfflineCopy.label(savedAt: badge.savedAt) + ". Retry or switch server")
+        .accessibilityIdentifier("offline-badge")
     }
 
     /// Back to the newest dashboard page in this web view's history, which

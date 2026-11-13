@@ -146,6 +146,7 @@ targets:
       - path: AmuxApp/Sources/LocationHistory.swift
       - path: AmuxApp/Sources/DeepLink.swift
       - path: AmuxApp/Sources/DashboardPage.swift
+      - path: AmuxApp/Sources/OfflineCopy.swift
       # The native recorder's shared core, tested on the iOS runtime (RecorderCoreTests).
       - path: ../desktop/amux-recorder-core.swift
 

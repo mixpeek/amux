@@ -13,6 +13,10 @@ struct WebView: UIViewRepresentable {
     /// True while the page shown is not the dashboard (DashboardPage), so
     /// ContentView can offer the way back.
     @Binding var offDashboard: Bool
+    /// Non-nil while the page on screen cannot reach the server: either the
+    /// saved copy loaded offline, or a live page that lost its connection
+    /// (OfflineCopy.swift). ContentView shows the offline badge from it.
+    @Binding var offline: OfflineCopy.Badge?
     /// Hands ContentView the web view, for its back button.
     var onWebView: (WKWebView) -> Void = { _ in }
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
@@ -101,8 +105,7 @@ struct WebView: UIViewRepresentable {
         context.coordinator.requestedURL = url
         RecorderBridge.shared.setUp(webView: webView)
         NotifyBridge.shared.setUp(webView: webView)
-        webView.load(URLRequest(url: url))
-        context.coordinator.armWatchdog(host: url.host)
+        context.coordinator.loadFromServer(webView, url)
         logger.info("Loading URL: \(url.absoluteString)")
         return webView
     }
@@ -126,10 +129,18 @@ struct WebView: UIViewRepresentable {
         //
         // Comparing against what we ASKED for is stable: about:blank is not a
         // server switch, so it no longer triggers one.
+        // The coordinator reads the server from `parent`, so it must see this
+        // view's values: a switched server kept `parent.url` on the old one,
+        // and an unreachable new server fell back to the old server's page
+        // (land-gate review, 2026-11-12).
+        let previous = context.coordinator.parent.url
+        context.coordinator.parent = self
         if context.coordinator.requestedURL != url {
             context.coordinator.requestedURL = url
-            webView.load(URLRequest(url: url))
-            context.coordinator.armWatchdog(host: url.host)
+            if DashboardPage.root(of: previous) != DashboardPage.root(of: url) {
+                context.coordinator.serverChanged()
+            }
+            context.coordinator.loadFromServer(webView, url)
         }
     }
 
@@ -143,6 +154,20 @@ struct WebView: UIViewRepresentable {
         /// view's own `url` is the wrong thing to compare.
         var requestedURL: URL?
 
+        // MARK: - Offline (OfflineCopy.swift)
+
+        /// A dashboard page is committed in the web view. A failed reload or
+        /// pull-to-refresh leaves it on screen, so it is kept and marked
+        /// offline instead of being covered by the error screen.
+        var showingDashboard = false
+        /// The current attempt is the load from WebKit's cache. Reset by every
+        /// load that goes to the server, so each one gets one fallback.
+        var triedSavedCopy = false
+        private var savedCopyNavigation: WKNavigation?
+        private var reconnectTimer: Timer?
+        private lazy var probeSession = URLSession(configuration: .ephemeral,
+                                                   delegate: SelfHostedTrust(), delegateQueue: nil)
+
         init(_ parent: WebView) {
             self.parent = parent
             super.init()
@@ -150,6 +175,133 @@ struct WebView: UIViewRepresentable {
                                                    object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.pushLocationStatus() }
             }
+            // Back in the foreground while offline: look for the server now
+            // rather than at the next tick of the reconnect timer.
+            NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                                                   object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.parent.offline != nil else { return }
+                self.probeServer(reason: "foreground")
+            }
+        }
+
+        deinit {
+            reconnectTimer?.invalidate()
+            watchdog?.cancel()
+        }
+
+        /// Another server: the page on screen and its offline state belong to
+        /// the old one, so neither may stand in for the new one.
+        func serverChanged() {
+            showingDashboard = false
+            stopReconnectProbe()
+            DispatchQueue.main.async { [weak self] in self?.parent.offline = nil }
+        }
+
+        /// Every load that should reach the server goes through here.
+        func loadFromServer(_ webView: WKWebView, _ url: URL) {
+            triedSavedCopy = false
+            savedCopyNavigation = nil
+            webView.load(URLRequest(url: url))
+            armWatchdog(host: url.host)
+        }
+
+        /// A navigation failed, or never answered (`error` nil: the watchdog).
+        /// Returns true when the offline path handled it, false when the
+        /// error screen should show.
+        func handleFailure(_ webView: WKWebView, navigation: WKNavigation?, error: NSError?) -> Bool {
+            let server = parent.url
+            let defaults = AmuxStore.defaults
+            let unreachable = error.map(OfflineCopy.isUnreachable) ?? true
+            let wasSavedCopy = triedSavedCopy
+            let savedAt = OfflineCopy.savedAt(server: server, defaults: defaults)
+            let decision = OfflineCopy.decide(unreachable: unreachable, showingDashboard: showingDashboard,
+                                              savedAt: savedAt, triedSavedCopy: triedSavedCopy)
+            let why = error.map { "\($0.domain)/\($0.code)" } ?? "watchdog"
+            let host = server.host ?? "-"
+            switch decision {
+            case .keepPage:
+                webView.stopLoading()
+                if parent.offline == nil {
+                    parent.offline = OfflineCopy.Badge(savedAt: nil, since: Date())
+                }
+                logger.info("offline_load verdict=kept_page host=\(host, privacy: .public) error=\(why, privacy: .public)")
+                startReconnectProbe()
+                return true
+            case .loadSavedCopy:
+                triedSavedCopy = true
+                let url = OfflineCopy.cachedURL(for: requestedURL ?? server, server: server)
+                var req = URLRequest(url: url)
+                req.cachePolicy = .returnCacheDataElseLoad
+                savedCopyNavigation = webView.load(req)
+                armWatchdog(host: url.host)
+                logger.info("offline_load verdict=loading_saved_copy host=\(host, privacy: .public) error=\(why, privacy: .public) saved_at=\(savedAt?.description ?? "-", privacy: .public)")
+                return true
+            case .showError:
+                if wasSavedCopy && savedAt != nil && unreachable {
+                    // The record said a copy existed and WebKit had none (its
+                    // cache was cleared), so stop promising one.
+                    OfflineCopy.forget(server: server, defaults: defaults)
+                    logger.error("offline_load verdict=saved_copy_missing host=\(host, privacy: .public)")
+                } else if unreachable {
+                    logger.error("offline_load verdict=no_saved_copy host=\(host, privacy: .public) error=\(why, privacy: .public)")
+                }
+                return false
+            }
+        }
+
+        /// The error-screen text for an unreachable server with nothing saved.
+        func noCopySuffix(_ error: NSError?) -> String {
+            let unreachable = error.map(OfflineCopy.isUnreachable) ?? true
+            return unreachable ? "\n\n" + OfflineCopy.noCopyMessage : ""
+        }
+
+        private func startReconnectProbe() {
+            guard reconnectTimer == nil else { return }
+            let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+                self?.probeServer(reason: "timer")
+            }
+            RunLoop.main.add(t, forMode: .common)
+            reconnectTimer = t
+        }
+
+        private func stopReconnectProbe() {
+            reconnectTimer?.invalidate()
+            reconnectTimer = nil
+        }
+
+        /// Ask the server whether it answers. Any HTTP reply counts: the
+        /// dashboard's own reads say whether it is healthy.
+        func probeServer(reason: String) {
+            var req = URLRequest(url: DashboardPage.root(of: parent.url).appendingPathComponent("health"),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 4)
+            req.httpMethod = "GET"
+            probeSession.dataTask(with: req) { [weak self] _, response, _ in
+                guard response is HTTPURLResponse else { return }
+                DispatchQueue.main.async { self?.reconnected(reason: reason) }
+            }.resume()
+        }
+
+        /// The server answers again. The dashboard catches up by itself (its
+        /// polling, and the `online` handler that drains the outbox); the
+        /// event is dispatched because a stopped server or a dead Tailscale
+        /// route never fire it, while airplane mode does.
+        private func reconnected(reason: String) {
+            guard let badge = parent.offline else { return }
+            stopReconnectProbe()
+            parent.offline = nil
+            let offlineS = Int(Date().timeIntervalSince(badge.since))
+            let fromCopy = badge.savedAt != nil
+            logger.info("offline_load verdict=reconnected via=\(reason, privacy: .public) offline_s=\(offlineS) saved_copy=\(fromCopy)")
+            let beacon: [String: Any] = ["kind": "ios-offline", "verdict": "reconnected", "via": reason,
+                                         "offline_s": offlineS, "saved_copy": fromCopy,
+                                         "measured": true, "n_considered": 1]
+            let json = (try? JSONSerialization.data(withJSONObject: beacon))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            let js = "(function(){try{window.dispatchEvent(new Event('online'));}catch(e){}"
+                + "try{fetch((typeof API!=='undefined'?API:'')+'/api/client-debug',{method:'POST',"
+                + "headers:{'Content-Type':'application/json'},keepalive:true,body:JSON.stringify(\(json))})"
+                + ".catch(function(){});}catch(e){}})()"
+            webView?.evaluateJavaScript(js)
         }
 
         /// Hand the recorder's status to the dashboard's Location history tab.
@@ -198,11 +350,12 @@ struct WebView: UIViewRepresentable {
                 guard self.parent.loadError == nil, self.parent.isLoading || self.webView?.url == nil
                 else { return }
                 self.parent.isLoading = false
+                logger.error("Load watchdog fired after \(Int(Coordinator.loadTimeout))s for \(where_)")
+                if let webView = self.webView, self.handleFailure(webView, navigation: nil, error: nil) { return }
                 self.parent.loadError =
                     "No response from \(where_) after \(Int(Coordinator.loadTimeout))s. "
                     + "The server may be down, or this device may have lost its VPN or "
-                    + "Tailscale route to it."
-                logger.error("Load watchdog fired after \(Int(Coordinator.loadTimeout))s for \(where_)")
+                    + "Tailscale route to it." + self.noCopySuffix(nil)
             }
             watchdog = item
             DispatchQueue.main.asyncAfter(deadline: .now() + Coordinator.loadTimeout, execute: item)
@@ -354,6 +507,9 @@ struct WebView: UIViewRepresentable {
 
         // Every main-frame page change, including a back swipe, commits here.
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            let scheme = webView.url?.scheme?.lowercased()
+            showingDashboard = (scheme == "http" || scheme == "https")
+                && DashboardPage.isDashboard(webView.url, server: parent.url)
             let off = !DashboardPage.isDashboard(webView.url, server: parent.url)
             if off != parent.offDashboard {
                 logger.info("Page is \(off ? "off" : "back on") the dashboard: \(webView.url?.absoluteString ?? "nil")")
@@ -370,6 +526,10 @@ struct WebView: UIViewRepresentable {
             // reuse the overlay that already exists for unreachable servers.
             if webView.url.map({ $0.absoluteString == "about:blank" }) == true,
                parent.url.absoluteString != "about:blank" {
+                if handleFailure(webView, navigation: navigation, error: nil) {
+                    refreshControl?.endRefreshing()
+                    return
+                }
                 parent.loadError =
                     "Could not load \(parent.url.host ?? "the server"). The server may be "
                     + "down, or this device may have lost its VPN or Tailscale route to it."
@@ -382,6 +542,20 @@ struct WebView: UIViewRepresentable {
             parent.canGoForward = webView.canGoForward
             refreshControl?.endRefreshing()
             logger.info("Navigation finished: \(webView.url?.absoluteString ?? "nil")")
+            if navigation != nil && navigation === savedCopyNavigation {
+                let savedAt = OfflineCopy.savedAt(server: parent.url, defaults: AmuxStore.defaults)
+                parent.offline = OfflineCopy.Badge(savedAt: savedAt, since: Date())
+                logger.info("offline_load verdict=saved_copy_shown host=\(self.parent.url.host ?? "-", privacy: .public) saved_at=\(savedAt?.description ?? "-", privacy: .public)")
+                startReconnectProbe()
+                probeServer(reason: "loaded")
+            } else if showingDashboard {
+                // Reached the server: this is the copy WebKit now holds.
+                OfflineCopy.recordOnlineLoad(server: parent.url, at: Date(), defaults: AmuxStore.defaults)
+                if parent.offline != nil {
+                    stopReconnectProbe()
+                    parent.offline = nil
+                }
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -389,11 +563,12 @@ struct WebView: UIViewRepresentable {
             parent.isLoading = false
             refreshControl?.endRefreshing()
             let nsError = error as NSError
-            // Don't show cancellation errors (e.g. user tapped a link before page loaded)
-            if nsError.code != NSURLErrorCancelled {
-                parent.loadError = error.localizedDescription
-            }
             logger.error("Navigation failed: \(error.localizedDescription)")
+            // Don't show cancellation errors (e.g. user tapped a link before page loaded)
+            if nsError.code != NSURLErrorCancelled,
+               !handleFailure(webView, navigation: navigation, error: nsError) {
+                parent.loadError = error.localizedDescription + noCopySuffix(nsError)
+            }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -401,10 +576,11 @@ struct WebView: UIViewRepresentable {
             parent.isLoading = false
             refreshControl?.endRefreshing()
             let nsError = error as NSError
-            if nsError.code != NSURLErrorCancelled {
-                parent.loadError = error.localizedDescription
-            }
             logger.error("Provisional navigation failed: \(error.localizedDescription) url=\(webView.url?.absoluteString ?? "nil")")
+            if nsError.code != NSURLErrorCancelled,
+               !handleFailure(webView, navigation: navigation, error: nsError) {
+                parent.loadError = error.localizedDescription + noCopySuffix(nsError)
+            }
         }
 
         func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
@@ -413,6 +589,11 @@ struct WebView: UIViewRepresentable {
 
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             logger.fault("WebContent process terminated — reloading")
+            // The page is gone, so an offline reload falls back to the saved
+            // copy instead of keeping a page that no longer exists.
+            showingDashboard = false
+            triedSavedCopy = false
+            savedCopyNavigation = nil
             webView.reload()
             armWatchdog(host: webView.url?.host ?? parent.url.host)
         }
@@ -427,8 +608,25 @@ struct WebView: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
         @objc func handleRefresh(_ sender: UIRefreshControl) {
+            triedSavedCopy = false
             webView?.reload()
             armWatchdog(host: webView?.url?.host ?? parent.url.host)
+        }
+    }
+}
+
+/// Trusts a self-hosted server's certificate for the reconnect probe, by the
+/// same rule the web view's own challenge handler uses: anything that is not
+/// an amux.io host (Tailscale, LAN, a custom domain) may be self-signed.
+final class SelfHostedTrust: NSObject, URLSessionDelegate {
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           !challenge.protectionSpace.host.hasSuffix("amux.io"),
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
         }
     }
 }
