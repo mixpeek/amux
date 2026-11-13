@@ -160,7 +160,7 @@ pub(crate) fn valid_key(k: &str) -> Result<(), String> {
 // Master key
 // ---------------------------------------------------------------------------
 
-fn keystore_is_file() -> bool {
+pub(crate) fn keystore_is_file() -> bool {
     match std::env::var("AMUX_VAULT_KEYSTORE").ok().as_deref().map(str::trim) {
         Some("file") => true,
         Some("keychain") => false,
@@ -175,13 +175,13 @@ fn keychain_account(home: &Path) -> String {
     format!("home-{}", hex::encode(&h[..8]))
 }
 
-fn key_file(home: &Path) -> PathBuf {
+pub(crate) fn key_file(home: &Path) -> PathBuf {
     super::vault::vault_dir(home).join("master.key")
 }
 
 /// Short fingerprint of a key, stored on each item so a replaced Keychain key
 /// is reported as "the key changed", not as a generic decryption failure.
-fn fingerprint(key: &[u8; 32]) -> String {
+pub(crate) fn fingerprint(key: &[u8; 32]) -> String {
     hex::encode(&Sha256::digest(key)[..4])
 }
 
@@ -191,8 +191,14 @@ fn parse_key_hex(s: &str) -> Option<[u8; 32]> {
 }
 
 fn read_keychain(home: &Path) -> Result<Option<[u8; 32]>, String> {
+    read_keychain_item(KEYCHAIN_SERVICE, home)
+}
+
+/// One 32-byte key from the login Keychain under `service`, per home. Shared
+/// with the ledger checkpoint signing key (governance PR 10).
+pub(crate) fn read_keychain_item(service: &str, home: &Path) -> Result<Option<[u8; 32]>, String> {
     let out = std::process::Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", &keychain_account(home), "-w"])
+        .args(["find-generic-password", "-s", service, "-a", &keychain_account(home), "-w"])
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not run security: {e}"))?;
@@ -212,6 +218,10 @@ fn read_keychain(home: &Path) -> Result<Option<[u8; 32]>, String> {
 }
 
 fn write_keychain(home: &Path, key: &[u8; 32]) -> Result<(), String> {
+    write_keychain_item(KEYCHAIN_SERVICE, "amux vault master key", home, key)
+}
+
+pub(crate) fn write_keychain_item(service: &str, label: &str, home: &Path, key: &[u8; 32]) -> Result<(), String> {
     use std::io::Write;
     // `security -i` reads commands from stdin: the key never becomes an argv
     // element of any process.
@@ -223,7 +233,7 @@ fn write_keychain(home: &Path, key: &[u8; 32]) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("could not run security: {e}"))?;
     let line = format!(
-        "add-generic-password -U -s {KEYCHAIN_SERVICE} -a {} -l \"amux vault master key\" -w {}\n",
+        "add-generic-password -U -s {service} -a {} -l \"{label}\" -w {}\n",
         keychain_account(home),
         hex::encode(key)
     );
@@ -261,18 +271,27 @@ fn write_key_file(home: &Path, key: &[u8; 32]) -> Result<(), String> {
     std::fs::rename(&tmp, key_file(home)).map_err(|e| e.to_string())
 }
 
-fn key_cache() -> &'static std::sync::Mutex<BTreeMap<PathBuf, [u8; 32]>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<BTreeMap<PathBuf, [u8; 32]>>> = std::sync::OnceLock::new();
+type KeyCache = std::sync::Mutex<BTreeMap<(PathBuf, bool), [u8; 32]>>;
+
+fn key_cache() -> &'static KeyCache {
+    static C: std::sync::OnceLock<KeyCache> = std::sync::OnceLock::new();
     C.get_or_init(Default::default)
 }
 
 /// The master key for this home. `create` mints one when none exists; only a
 /// write asks for that, so reading an empty vault never touches the Keychain.
 pub(crate) fn master_key(home: &Path, create: bool) -> Result<Option<[u8; 32]>, String> {
-    if let Some(k) = key_cache().lock().ok().and_then(|c| c.get(home).copied()) {
+    master_key_on(home, create, keystore_is_file())
+}
+
+/// The same master key, from a named backend: `file` is the 0600 key file
+/// beside the store, otherwise the login Keychain. Encryption at rest
+/// (integrations::at_rest) derives its own key from this one, so the host has
+/// one key source with a separate key per purpose (A10).
+pub(crate) fn master_key_on(home: &Path, create: bool, file: bool) -> Result<Option<[u8; 32]>, String> {
+    if let Some(k) = key_cache().lock().ok().and_then(|c| c.get(&(home.to_path_buf(), file)).copied()) {
         return Ok(Some(k));
     }
-    let file = keystore_is_file();
     let found = if file { read_key_file(home)? } else { read_keychain(home)? };
     let key = match found {
         Some(k) => k,
@@ -298,7 +317,7 @@ pub(crate) fn master_key(home: &Path, create: bool) -> Result<Option<[u8; 32]>, 
             "vault: master key is a 0600 file beside the store (no Keychain); a copy of ~/.amux carries both (AMUX-5375)");
     }
     if let Ok(mut c) = key_cache().lock() {
-        c.insert(home.to_path_buf(), key);
+        c.insert((home.to_path_buf(), file), key);
     }
     Ok(Some(key))
 }

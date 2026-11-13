@@ -8,12 +8,65 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub(crate) fn read_json<T: DeserializeOwned + Default>(path: &Path) -> io::Result<T> {
-    match std::fs::read(path) {
+    match read_bytes(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e),
     }
+}
+
+/// The plain bytes of a stored file. A connector grant sealed at rest
+/// (integrations::at_rest) is opened here, and a plain grant is sealed in
+/// place on the way through. A grant that cannot be opened is an
+/// `at_rest::is_locked` error, never an empty or missing grant.
+pub(crate) fn read_bytes(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)?;
+    let Some(home) = super::at_rest::grant_home(path) else {
+        return Ok(bytes);
+    };
+    if super::at_rest::is_envelope(&bytes) {
+        return super::at_rest::open(&home, path, &bytes);
+    }
+    super::at_rest::counters::bump(&super::at_rest::counters::PLAIN_READ);
+    if super::at_rest::enabled() {
+        if let Err(e) = migrate_plain(path, &bytes) {
+            tracing::warn!(path = %path.display(), error = %e, measured = true, n_considered = 1,
+                verdict = "at_rest_migration_failed", "a plain connector grant could not be sealed; it stays readable");
+        }
+    }
+    Ok(bytes)
+}
+
+/// `read_bytes` as UTF-8, for callers that parse the text themselves.
+pub(crate) fn read_string(path: impl AsRef<Path>) -> io::Result<String> {
+    String::from_utf8(read_bytes(path.as_ref())?).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Seal the plain grant at `path` in place, if it still holds exactly `plain`.
+/// No lock is taken (callers often hold the account lease already); instead
+/// the file is compared just before the sealed copy replaces it, so a
+/// concurrent write is never overwritten. Ok(false): nothing to do.
+pub(crate) fn migrate_plain(path: &Path, plain: &[u8]) -> io::Result<bool> {
+    let Some(home) = super::at_rest::grant_home(path) else {
+        return Ok(false);
+    };
+    if !super::at_rest::enabled() || super::at_rest::is_envelope(plain) {
+        return Ok(false);
+    }
+    let sealed = super::at_rest::seal(&home, path, plain).map_err(io::Error::other)?;
+    write_before_publish(path, &sealed, |_| {
+        if std::fs::read(path)? == plain {
+            Ok(())
+        } else {
+            Err(io::Error::other("grant changed while it was being sealed; left for the next read"))
+        }
+    })?;
+    super::at_rest::counters::bump(&super::at_rest::counters::MIGRATED);
+    tracing::info!(path = %path.display(), provider = super::at_rest::provider().name(), measured = true,
+        n_considered = 1, verdict = "at_rest_migrated", "a plain connector grant was sealed at rest");
+    Ok(true)
 }
 
 // Sync new directory links as well as the final file's directory: otherwise
@@ -49,6 +102,16 @@ fn private_directories(dir: &Path) -> io::Result<()> {
 /// sync its bytes before atomic publication, then sync the directory entry.
 /// NamedTempFile removes an unpublished temp on ordinary errors.
 pub(crate) fn write(path: &Path, content: &[u8]) -> io::Result<()> {
+    // A connector grant is sealed before it touches the disk. If the key is
+    // not available the write fails: a plain copy is never the fallback.
+    let sealed;
+    let content = match super::at_rest::grant_home(path) {
+        Some(home) if super::at_rest::enabled() && !super::at_rest::is_envelope(content) => {
+            sealed = super::at_rest::seal(&home, path, content).map_err(super::at_rest::locked)?;
+            &sealed[..]
+        }
+        _ => content,
+    };
     let result = write_before_publish(path, content, |_| Ok(()));
     if let Err(ref error) = result {
         tracing::warn!(path = %path.display(), %error, measured = true, n_considered = 1,

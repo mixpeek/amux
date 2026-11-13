@@ -47,6 +47,8 @@ pub struct DeployedCommit {
     pub sha: String,
     pub subject: String,
     pub lanes: Vec<String>,
+    /// `Amux-Host:` trailers (governance PR 15): which amux server made it.
+    pub hosts: Vec<String>,
 }
 
 /// What one lane is told.
@@ -54,6 +56,9 @@ pub struct DeployedCommit {
 pub struct LaneWake {
     pub shas: Vec<String>,
     pub cards: Vec<String>,
+    /// How many of `shas` carried no `Amux-Host`, so were matched by the
+    /// worker's name alone; the notice says so.
+    pub by_name_only: usize,
 }
 
 /// Is this setting on? Same spelling the other scoped gates accept.
@@ -117,6 +122,24 @@ pub fn trailer_lanes(body: &str) -> Vec<String> {
     out
 }
 
+/// `Amux-Host:` trailers in one commit body.
+pub fn trailer_hosts(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in body.lines() {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        if !k.trim().eq_ignore_ascii_case("amux-host") {
+            continue;
+        }
+        let v = v.trim().to_ascii_lowercase();
+        if !v.is_empty() && v.len() <= 64 && v.bytes().all(|b| b.is_ascii_hexdigit()) && !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
+}
+
 /// `git log --format=%H%x1f%s%x1f%B%x1e` output, parsed.
 pub fn parse_log(raw: &str) -> Vec<DeployedCommit> {
     raw.split('\x1e')
@@ -133,6 +156,7 @@ pub fn parse_log(raw: &str) -> Vec<DeployedCommit> {
                 sha,
                 subject,
                 lanes: trailer_lanes(body),
+                hosts: trailer_hosts(body),
             })
         })
         .collect()
@@ -159,13 +183,26 @@ pub fn card_ids(subject: &str) -> Vec<String> {
 /// Group the deployed commits by lane. Commits with no trailer are counted by
 /// the caller and attributed to nobody: guessing an author is how a lane gets
 /// told to verify work it never did.
-pub fn plan_wakes(commits: &[DeployedCommit]) -> BTreeMap<String, LaneWake> {
+///
+/// A commit whose `Amux-Host` names another server is nobody's here, whatever
+/// its lane is called: on 2026-11-10 this server's `amux-helper` was told three
+/// commits "of yours" had gone live that a same-named lane on Ethan's Mac made.
+/// A commit with no `Amux-Host` (made before governance PR 15) still matches by
+/// name, and the wake says it was matched by name only.
+pub fn plan_wakes(commits: &[DeployedCommit], this_host: &str) -> BTreeMap<String, LaneWake> {
     let mut out: BTreeMap<String, LaneWake> = BTreeMap::new();
+    let this_host = this_host.trim().to_ascii_lowercase();
     for c in commits {
+        if !c.hosts.is_empty() && !c.hosts.contains(&this_host) {
+            continue;
+        }
         for lane in &c.lanes {
             let w = out.entry(lane.clone()).or_default();
             if !w.shas.contains(&c.sha) {
                 w.shas.push(c.sha.clone());
+                if c.hosts.is_empty() {
+                    w.by_name_only += 1;
+                }
             }
             for id in card_ids(&c.subject) {
                 if !w.cards.contains(&id) {
@@ -227,8 +264,18 @@ pub fn wake_text(served: &str, w: &LaneWake, ci_red: &[(String, String)]) -> Str
         "[amux] {short} is live on this server. It includes {n} commit(s) of yours: {}{more}. \
          Run your UI/prod check for {cards} now; nothing else will prompt you. If the change \
          is not visible, hard-reload the dashboard first (the service worker caches). \
-         (deploy-wake, AMUX-5239; opt out with AMUX_DEPLOY_WAKE=0 in your scope){ci}",
+         (deploy-wake, AMUX-5239; opt out with AMUX_DEPLOY_WAKE=0 in your scope){by_name}{ci}",
         listed.join(", "),
+        by_name = if w.by_name_only == 0 {
+            String::new()
+        } else {
+            format!(
+                " {} of these carry no Amux-Host, so they were matched by your worker name only: \
+                 a worker with the same name on another amux server may have made them; check \
+                 their Amux-Agent trailer before acting.",
+                w.by_name_only
+            )
+        },
         ci = if ci_red.is_empty() {
             String::new()
         } else {
@@ -396,7 +443,10 @@ pub async fn run_once(state: &AppState, home: &Path, served: &str) -> Vec<String
     let truncated = commits.len() > MAX_COMMITS;
     commits.truncate(MAX_COMMITS);
     let unattributed = commits.iter().filter(|c| c.lanes.is_empty()).count();
-    let plan = plan_wakes(&commits);
+    let this_host = crate::api::ledger_checkpoint::host_id(home);
+    let other_host = commits.iter().filter(|c| !c.hosts.is_empty() && !c.hosts.contains(&this_host)).count();
+    let by_name_only = commits.iter().filter(|c| c.hosts.is_empty() && !c.lanes.is_empty()).count();
+    let plan = plan_wakes(&commits, &this_host);
     let ci_red = match state.store.read() {
         Ok(conn) => open_ci_red(&conn),
         Err(_) => Vec::new(),
@@ -444,6 +494,9 @@ pub async fn run_once(state: &AppState, home: &Path, served: &str) -> Vec<String
         commits = commits.len(),
         truncated,
         unattributed,
+        other_host,
+        by_name_only,
+        deploy_wake_attribution = if by_name_only == 0 { "trailer_host" } else { "trailer_lane_only" },
         lanes = plan.len(),
         woken = woken.len(),
         verdict = "deploy_wake_summary",
@@ -496,12 +549,39 @@ mod tests {
         )
     }
 
+    /// The 2026-11-10 misattribution: two servers each run a lane named
+    /// `amux-helper`. A commit stamped with the other server's host is not this
+    /// lane's; one with this host is; one with no host matches by name and the
+    /// wake says so.
+    #[test]
+    fn a_same_named_lane_on_another_host_is_not_yours() {
+        let (a, b, c) = (sha('a'), sha('b'), sha('c'));
+        let raw = format!(
+            "{a}\x1ffeat: theirs\x1ffeat: theirs\n\nAmux-Session: amux-helper\nAmux-Host: 1111111111111111\n\x1e\n\
+             {b}\x1ffix: mine (AMUX-7)\x1ffix: mine\n\nAmux-Session: amux-helper\nAmux-Host: 2222222222222222\n\x1e\n\
+             {c}\x1ffix: old\x1ffix: old\n\nAmux-Session: amux-helper\n\x1e\n"
+        );
+        let commits = parse_log(&raw);
+        assert_eq!(commits[0].hosts, vec!["1111111111111111".to_string()]);
+        let plan = plan_wakes(&commits, "2222222222222222");
+        let w = &plan["amux-helper"];
+        assert_eq!(w.shas, vec![b.clone(), c.clone()], "the other host's commit is not this lane's");
+        assert_eq!(w.by_name_only, 1);
+        let text = wake_text(&sha('d'), w, &[]);
+        assert!(text.contains("2 commit(s) of yours"), "{text}");
+        assert!(text.contains("1 of these carry no Amux-Host"), "{text}");
+        let other = plan_wakes(&commits, "1111111111111111");
+        assert_eq!(other["amux-helper"].shas, vec![a, c]);
+        let clean = LaneWake { shas: vec![b], cards: vec![], by_name_only: 0 };
+        assert!(!wake_text(&sha('d'), &clean, &[]).contains("Amux-Host"));
+    }
+
     #[test]
     fn a_deploy_range_is_grouped_by_trailer_with_cards() {
         let commits = parse_log(&fixture());
         assert_eq!(commits.len(), 3);
         assert_eq!(commits[2].lanes, Vec::<String>::new());
-        let plan = plan_wakes(&commits);
+        let plan = plan_wakes(&commits, "");
         assert_eq!(plan.len(), 1, "an untrailered commit is attributed to nobody");
         let w = &plan["amux-helper"];
         assert_eq!(w.shas, vec![sha('a'), sha('b')]);
@@ -604,7 +684,7 @@ mod tests {
         assert_eq!(read_marker(&home), Some(base.clone()), "first boot records");
 
         let raw = git_log(repo.to_str().unwrap(), &base, &head).await.unwrap();
-        let plan = plan_wakes(&parse_log(&raw));
+        let plan = plan_wakes(&parse_log(&raw), "");
         assert_eq!(plan.keys().collect::<Vec<_>>(), vec!["nosuch-lane-deploy-wake-test"]);
         assert_eq!(plan["nosuch-lane-deploy-wake-test"].cards, vec!["AMUX-12".to_string()]);
 

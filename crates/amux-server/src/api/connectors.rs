@@ -2783,8 +2783,48 @@ async fn mint_connector_token(
     Extension(ctx): Extension<Arc<ConnectorsCtx>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-    Query(mut q): Query<std::collections::HashMap<String, String>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    // WHO IS THIS FOR (governance PR 4): resolved from what the server
+    // verified, never from whether a worker header is present. See
+    // `connector_scope.rs`; every mint below leaves a receipt.
+    let principal = super::connector_scope::resolve(&ctx.home, &headers);
+    let gate = super::connector_scope::gate(&principal);
+    let scopes = q.get("scopes").cloned();
+    if gate == super::connector_scope::Gate::Refuse {
+        let account = q.get("account").cloned();
+        super::connector_scope::record(&state, &id, &principal, &gate, account, scopes, 403).await;
+        return super::connector_scope::refusal(&id, &principal);
+    }
+    let (resp, account) = mint_for(&state, &ctx, &id, principal.lane(), &headers, q).await;
+    super::connector_scope::record(&state, &id, &principal, &gate, account, scopes, resp.status().as_u16()).await;
+    resp
+}
+
+/// The mint itself, for a principal already resolved. `lane` is the worker
+/// whose connector scope limits the bearer, or `None` for a verified human.
+/// Returns the account the mint was pinned to, for the receipt.
+async fn mint_for(
+    state: &AppState,
+    ctx: &Arc<ConnectorsCtx>,
+    id: &str,
+    lane: Option<&str>,
+    headers: &HeaderMap,
+    mut q: std::collections::HashMap<String, String>,
+) -> (Response, Option<String>) {
+    let resp = mint_for_inner(state, ctx, id, lane, headers, &mut q).await;
+    (resp, q.get("account").cloned())
+}
+
+async fn mint_for_inner(
+    state: &AppState,
+    ctx: &Arc<ConnectorsCtx>,
+    id: &str,
+    lane: Option<&str>,
+    headers: &HeaderMap,
+    q: &mut std::collections::HashMap<String, String>,
+) -> Response {
+    let id = id.to_string();
     let declared = def_of(&ctx.home, &id).filter(|d| !d.builtin);
     if provider(&id).is_none() && declared.is_none() {
         return (
@@ -2794,10 +2834,10 @@ async fn mint_connector_token(
             .into_response();
     }
     // ENTITLEMENT (APM-2): a live bearer is the actual secret — mint it only
-    // for a worker the `connectors` scope actually names. No X-Amux-Session
-    // header means the caller is the dashboard/human, not a worker, so the
-    // check does not apply (matches gmail_scope_check's shape in email.rs).
-    if let Some(lane) = super::email::hdr_worker(&headers) {
+    // for a worker the `connectors` scope actually names. `lane` comes from
+    // the resolved principal: a worker (proven or merely named, since the
+    // name only narrows) is held to its scope; a verified human is not.
+    if let Some(lane) = lane {
         let req_account = q
             .get("account")
             .map(|s| s.trim().to_string())
@@ -2806,7 +2846,7 @@ async fn mint_connector_token(
         match connector_entitlement_check(
             conn.as_deref(),
             &ctx.home,
-            &lane,
+            lane,
             &id,
             req_account.as_deref(),
         ) {
@@ -2819,12 +2859,17 @@ async fn mint_connector_token(
                     worker = %lane, connector = %id,
                     "[connectors] token mint refused: not entitled (APM-2)"
                 );
+                let resource = match req_account.as_deref() {
+                    Some(a) => format!("connector {id} account {a}"),
+                    None => format!("connector {id}"),
+                };
+                super::capabilities::existing_refusal(&ctx.home, lane, "connectors", &resource, &id);
                 return (StatusCode::FORBIDDEN, Json(denial)).into_response();
             }
         }
     }
     if let Some(d) = declared {
-        return declared_oauth::mint(&ctx, &d, q.get("account").map(String::as_str)).await;
+        return declared_oauth::mint(ctx, &d, q.get("account").map(String::as_str)).await;
     }
     let p = provider(&id).expect("builtin was checked");
     // LoginPassword's mint has nothing in common with the Google-SA-impersonation
@@ -2867,7 +2912,7 @@ async fn mint_connector_token(
                 }
             },
         };
-        let store: Value = std::fs::read_to_string(store_path(&ctx.home, p.id, &account))
+        let store: Value = crate::integrations::secure_store::read_string(store_path(&ctx.home, p.id, &account))
             .ok()
             .and_then(|r| serde_json::from_str(&r).ok())
             .unwrap_or(json!({}));
@@ -2968,7 +3013,7 @@ async fn mint_connector_token(
         Some(a) if p.category == "Google" && super::google_sa::sa_usable_in(&ctx.home) => {
             let missing = oauth_store::family_path(&ctx.home, family, &a)
                 .ok()
-                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|path| crate::integrations::secure_store::read_string(path).ok())
                 .map(|grant| grant_missing_scopes(&grant, &scope))
                 .unwrap_or_default();
             if missing.is_empty() {
@@ -3021,12 +3066,12 @@ async fn mint_connector_token(
             )
                 .into_response();
         };
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
     if let Some(acct) = user_account {
-        return mint_from_user_grant(&ctx, p.id, family, &acct, &scope).await;
+        return mint_from_user_grant(ctx, p.id, family, &acct, &scope).await;
     }
-    let Some(subject) = impersonation_subject(&headers, &ctx.home) else {
+    let Some(subject) = impersonation_subject(headers, &ctx.home) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "status": "error", "detail": "no impersonation subject (GOOGLE_SA_SUBJECT unset and no X-Amux-User-Email)"})),
@@ -3094,7 +3139,7 @@ pub(crate) fn google_calendar_accounts(home: &std::path::Path) -> Vec<(String, b
     store_accounts(home, "google")
         .into_iter()
         .map(|account| {
-            let granted = std::fs::read_to_string(store_path(home, "google", &account))
+            let granted = crate::integrations::secure_store::read_string(store_path(home, "google", &account))
                 .ok()
                 .and_then(|r| serde_json::from_str::<Value>(&r).ok())
                 .and_then(|v| v.get("scopes").and_then(Value::as_str).map(|s| s.contains("auth/calendar")))
@@ -3185,10 +3230,21 @@ async fn mint_with_lifetime(
         )
             .into_response();
     };
-    let Some(tf) = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
-    else {
+    let raw = match crate::integrations::secure_store::read_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if crate::integrations::at_rest::is_locked(&e) => {
+            // Sealed at rest and the key is not available: the grant is fine,
+            // so this must not read as "reconnect the account" (gov PR 18).
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"ok": false, "status": "locked", "detail": e.to_string(),
+                    "fix": "make the at-rest key available (GET /api/security/at-rest)"})),
+            )
+                .into_response();
+        }
+        Err(_) => String::new(),
+    };
+    let Some(tf) = serde_json::from_str::<Value>(&raw).ok() else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "status": "error", "detail": format!("grant file for {account} is unreadable")})),
@@ -3351,7 +3407,7 @@ pub(super) async fn disconnect_google(ctx: &ConnectorsCtx, account: &str) -> Res
     let grant = ctx.home.join("connectors").join("google").join(format!("{account}.json"));
     let mirror = ctx.home.join("gmail-tokens").join(format!("{account}.json"));
     let token = [&grant, &mirror].iter().find_map(|p| {
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+        let v: Value = serde_json::from_str(&crate::integrations::secure_store::read_string(p).ok()?).ok()?;
         ["refresh_token", "token", "access_token"].iter()
             .find_map(|k| v[*k].as_str().filter(|t| !t.is_empty()).map(str::to_string))
     });
@@ -3455,11 +3511,15 @@ pub(crate) async fn accounts_rollup(
     for family in ["google", "slack", "mattermost"] {
         for a in store_accounts(home, family) {
             let path = store_path(home, family, &a);
-            let tf: Value = std::fs::read_to_string(&path)
+            let read = crate::integrations::secure_store::read_string(&path);
+            let locked = read.as_ref().is_err_and(crate::integrations::at_rest::is_locked);
+            let tf: Value = read
                 .ok()
                 .and_then(|r| serde_json::from_str(&r).ok())
                 .unwrap_or(json!({}));
-            let health = if family == "slack" {
+            let health = if locked {
+                "locked".to_string()
+            } else if family == "slack" {
                 let ctx = ConnectorsCtx { home: home.into(), http: http.clone() };
                 let response = mint_from_user_grant(&ctx, "slack", "slack", &a, "").await;
                 let status = response.status();
@@ -3737,7 +3797,7 @@ async fn canary_google_legs(
         return;
     }
     // Re-read: probe_google_refresh may have just rotated the token in place.
-    let tf: Value = std::fs::read_to_string(store)
+    let tf: Value = crate::integrations::secure_store::read_string(store)
         .ok()
         .and_then(|r| serde_json::from_str(&r).ok())
         .unwrap_or(json!({}));
@@ -3827,9 +3887,13 @@ pub fn routes() -> Router<AppState> {
 /// A bearer for builtin connector `id`, resolved exactly as
 /// `POST /api/connectors/{id}/token?account=` resolves it (the account's stored
 /// grant, else the domain-wide service account), for server-side callers that
-/// spend the token and never return it (`api/social.rs`). `headers` carries the
-/// calling worker, so the same entitlement check applies; empty headers are the
-/// server itself. The error is the mint's JSON with any bearer removed.
+/// spend the token and never return it (`api/social.rs`). The principal is
+/// whoever `headers` proves, resolved exactly as for the HTTP route
+/// (`connector_scope::resolve`): the original request's verified owner, member
+/// or worker token, or, for a job running inside the server, the job's
+/// `org::policy_headers("job:<name>")` mark plus the worker it acts for. Empty
+/// headers prove nobody and count as anonymous. The error is the mint's JSON
+/// with any bearer removed.
 /// The requested scopes a stored grant (its JSON text) does not hold. A grant
 /// that names no scopes cannot be judged, so nothing reads as missing.
 fn grant_missing_scopes(grant: &str, requested: &str) -> Vec<String> {
@@ -4769,7 +4833,7 @@ mod tests {
         // Pending state persisted (family + verifier), challenge derived S256.
         let state = qparam(url, "state").unwrap();
         let pending: Value = serde_json::from_str(
-            &std::fs::read_to_string(home.path().join("connectors").join("pending.json")).unwrap(),
+            &crate::integrations::secure_store::read_string(home.path().join("connectors").join("pending.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(pending[state]["family"], json!("google"));
@@ -4859,7 +4923,7 @@ mod tests {
 
         // Family store: one file per ACCOUNT (named by userinfo, not the hint).
         let fam: Value = serde_json::from_str(
-            &std::fs::read_to_string(
+            &crate::integrations::secure_store::read_string(
                 home.path()
                     .join("connectors")
                     .join("google")
@@ -4883,7 +4947,7 @@ mod tests {
         // Gmail mirror: EXACT legacy shape (integrations/email.rs reads this),
         // so the one approval repaired the email subsystem too.
         let legacy: Value = serde_json::from_str(
-            &std::fs::read_to_string(
+            &crate::integrations::secure_store::read_string(
                 home.path()
                     .join("gmail-tokens")
                     .join(format!("{ACCT}.json")),
@@ -5011,6 +5075,52 @@ mod tests {
         assert_eq!(st, StatusCode::NOT_FOUND);
     }
 
+    /// Governance PR 4: who a mint is for comes from proof, not from whether a
+    /// worker header is present. A headerless call used to be taken for the
+    /// dashboard and handed an unscoped bearer.
+    #[tokio::test]
+    async fn a_mint_is_scoped_by_proof_and_every_mint_leaves_a_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let fam_dir = home.path().join("connectors").join("google");
+        std::fs::create_dir_all(&fam_dir).unwrap();
+        std::fs::write(
+            fam_dir.join(format!("{ACCT}.json")),
+            json!({"token": "PLACEHOLDER_FRESH", "scopes": "https://www.googleapis.com/auth/drive",
+                   "expires_at": now_ts() + 3000.0}).to_string(),
+        )
+        .unwrap();
+        let (app, d) = app_with(MockHttp::new(vec![]), home.path());
+        let _mode = super::super::connector_scope::test_override::set(
+            super::super::connector_scope::Mode::Enforce, true);
+        let path = "/api/connectors/google-drive/token?account=hello%40amux.io";
+
+        let (st, v) = send_json(&app, "POST", path).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "a headerless mint proves nobody: {v}");
+        assert_eq!(v["code"], "connector_token_refused", "{v}");
+        assert!(v.get("access_token").is_none(), "{v}");
+
+        let req = Request::builder().method("POST").uri(path)
+            .header(super::super::human_proof::OWNER_PROOF_HEADER, "1")
+            .body(Body::empty()).unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the verified owner still mints");
+
+        let conn = rusqlite::Connection::open(d.path().join("c.db")).unwrap();
+        let rows: Vec<(String, String, String)> = conn
+            .prepare("SELECT actor,effect,rationale FROM _amux_policy_receipts
+                      WHERE action='connector_token_mint' ORDER BY created_at")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "both mints leave a receipt: {rows:?}");
+        assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), ("anonymous", "deny"), "{rows:?}");
+        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("owner-token", "allow"), "{rows:?}");
+        assert!(rows[1].2.contains("hello@amux.io"), "the receipt names the account: {rows:?}");
+        assert!(!rows.iter().any(|r| r.2.contains("PLACEHOLDER_FRESH")), "a receipt never holds a bearer");
+    }
+
     #[tokio::test]
     async fn token_serves_fresh_grant_without_a_round_trip_and_refreshes_stale() {
         let home = tempfile::tempdir().unwrap();
@@ -5075,7 +5185,7 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(v["access_token"], json!("PLACEHOLDER_NEW"));
         let persisted: Value = serde_json::from_str(
-            &std::fs::read_to_string(fam_dir.join(format!("{ACCT}.json"))).unwrap(),
+            &crate::integrations::secure_store::read_string(fam_dir.join(format!("{ACCT}.json"))).unwrap(),
         )
         .unwrap();
         assert_eq!(persisted["token"], json!("PLACEHOLDER_NEW"));
@@ -5380,7 +5490,7 @@ mod tests {
         assert_eq!(row["needs_reauth"], json!(false), "{v}");
         // Last-checked survives restarts: the canary map is persisted.
         let persisted: Value = serde_json::from_str(
-            &std::fs::read_to_string(home.path().join("connectors").join("canary.json")).unwrap(),
+            &crate::integrations::secure_store::read_string(home.path().join("connectors").join("canary.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -5441,7 +5551,7 @@ mod tests {
         );
 
         let stored: Value = serde_json::from_str(
-            &std::fs::read_to_string(store_path(home.path(), "mattermost", "alice")).unwrap(),
+            &crate::integrations::secure_store::read_string(store_path(home.path(), "mattermost", "alice")).unwrap(),
         )
         .unwrap();
         assert_eq!(stored["token"], json!("PLACEHOLDER_SESSION_TOKEN"));
@@ -5647,7 +5757,7 @@ mod connector_storage_regressions {
         ))
         .await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken registry");
+        assert_eq!(crate::integrations::secure_store::read_string(path).unwrap(), "{broken registry");
     }
 
     #[test]
@@ -5802,7 +5912,7 @@ mod connector_maintenance_regressions {
         let result = accounts_rollup(&transport, home.path(), true).await;
         assert_eq!(http.calls.load(Ordering::SeqCst), 1, "idle Slack health must refresh its rotating grant, not canary an expired bearer");
         assert_eq!(result["accounts"][0]["canary"]["slack"]["status"], "ok");
-        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "rotated-refresh");
     }
 
@@ -5816,16 +5926,16 @@ mod connector_maintenance_regressions {
             let registry = if family == "fixture-oauth" {json!([{"id":family,"label":"Owner fixture","kind":"oauth2","test_url":"https://fixture.invalid/canary"}])} else {json!([])};
             write_store_file(&custom_store_path(home.path()), &registry).unwrap();
             std::fs::write(home.path().join("server.env"), "OWNER_UNRELATED=stable\n").unwrap();
-            let registry_before = std::fs::read(custom_store_path(home.path())).unwrap();
+            let registry_before = crate::integrations::secure_store::read_bytes(custom_store_path(home.path())).unwrap();
             let http = RefreshHttp::new(false);
             let result = maintenance_pass(&ctx(home.path(), http.clone())).await;
             assert_eq!(http.calls.load(Ordering::SeqCst), 1, "upkeep must refresh idle {family} before expiry");
             assert_eq!(result["durable"], true);
-            let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(&path).unwrap()).unwrap();
             assert_eq!(stored["refresh_token"], "rotated-refresh");
             assert_eq!(stored["owner_metadata"], grant["owner_metadata"]);
-            assert_eq!(std::fs::read(custom_store_path(home.path())).unwrap(), registry_before);
-            assert_eq!(std::fs::read_to_string(home.path().join("server.env")).unwrap(), "OWNER_UNRELATED=stable\n");
+            assert_eq!(crate::integrations::secure_store::read_bytes(custom_store_path(home.path())).unwrap(), registry_before);
+            assert_eq!(crate::integrations::secure_store::read_string(home.path().join("server.env")).unwrap(), "OWNER_UNRELATED=stable\n");
             assert!(!result.to_string().contains("rotated-refresh"));
             assert!(!result.to_string().contains("new-access"));
             maintenance_pass(&ctx(home.path(), http.clone())).await;
@@ -5834,7 +5944,7 @@ mod connector_maintenance_regressions {
             write_store_file(&path, &grant).unwrap();
             maintenance_pass(&ctx(home.path(), http.clone())).await;
             assert_eq!(http.calls.load(Ordering::SeqCst), 1, "disconnect must never be resurrected by upkeep");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), grant.to_string());
+            assert_eq!(crate::integrations::secure_store::read_string(&path).unwrap(), grant.to_string());
         }
     }
 
@@ -5873,7 +5983,7 @@ mod connector_maintenance_regressions {
         let http = RefreshHttp::new(false);
         let report = maintenance_pass(&ctx(home.path(), http)).await;
         assert_eq!(report["grants"][0]["status"], "registry_unreadable");
-        assert_eq!(std::fs::read_to_string(custom_store_path(home.path())).unwrap(), "broken-json");
+        assert_eq!(crate::integrations::secure_store::read_string(custom_store_path(home.path())).unwrap(), "broken-json");
         assert_eq!(report["failures"], 1);
     }
 
@@ -5893,7 +6003,7 @@ mod connector_maintenance_regressions {
         }
         std::fs::write(last_tests_path(home.path()), "corrupt-receipt").unwrap();
         record_test(home.path(), "new", &json!({"ok":true}));
-        assert_eq!(std::fs::read_to_string(last_tests_path(home.path())).unwrap(), "corrupt-receipt");
+        assert_eq!(crate::integrations::secure_store::read_string(last_tests_path(home.path())).unwrap(), "corrupt-receipt");
     }
 
     #[tokio::test]
@@ -5905,7 +6015,7 @@ mod connector_maintenance_regressions {
         let http = RefreshHttp::new(false);
         let ctx = ctx(home.path(), http.clone());
         assert_eq!(maintenance::maintain(&ctx,"google","fixture@example.com").await["status"], "ok");
-        let saved:Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let saved:Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(&path).unwrap()).unwrap();
         assert!(saved["expires_at"].as_f64().unwrap()>now_ts()+3000.0);
         assert_eq!(maintenance::maintain(&ctx,"google","fixture@example.com").await["status"], "not_due");
         assert_eq!(http.calls.load(Ordering::SeqCst), 1);
@@ -5923,13 +6033,13 @@ mod connector_maintenance_regressions {
         for (status,code) in [(200,"invalid_grant"),(400,"invalid_grant"),(200,"invalid_refresh_token"),(200,"token_revoked")] {
             let home = tempfile::tempdir().unwrap();
             let path = seed(home.path());
-            let before = std::fs::read(&path).unwrap();
+            let before = crate::integrations::secure_store::read_bytes(&path).unwrap();
             let ctx = ConnectorsCtx { home:home.path().into(),http:Arc::new(RejectedRefresh{status,code}) };
             let response = mint_with_lifetime(&ctx,"fixture","google","fixture@example.com","",600.0).await;
             assert_eq!(response.status(),StatusCode::CONFLICT,"provider {status}/{code} must name reauth");
             let body:Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),usize::MAX).await.unwrap()).unwrap();
             assert_eq!(body["status"], "needs_reauth");
-            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(crate::integrations::secure_store::read_bytes(&path).unwrap(), before);
         }
     }
 
@@ -5976,7 +6086,7 @@ mod connector_maintenance_regressions {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "rotated-refresh");
         assert_eq!(stored["identity_unverified"], true);
     }
@@ -5986,12 +6096,12 @@ mod connector_maintenance_regressions {
         let home = tempfile::tempdir().unwrap();
         let path = seed(home.path());
         let http: Arc<dyn HttpTransport> = RefreshHttp::new(false);
-        let tf = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let tf = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(&path).unwrap()).unwrap();
         assert_eq!(
             probe_google_refresh(&http, home.path(), "fixture@example.com", &path, &tf).await,
             "ok"
         );
-        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "rotated-refresh");
     }
 
@@ -6020,7 +6130,7 @@ mod connector_maintenance_regressions {
             "the failure must be the commit after a successful refresh"
         );
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "old-refresh");
     }
 
@@ -6063,7 +6173,7 @@ mod connector_maintenance_regressions {
             1,
             "the second worker must re-read the committed fresh grant"
         );
-        let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let stored: Value = serde_json::from_slice(&crate::integrations::secure_store::read_bytes(path).unwrap()).unwrap();
         assert_eq!(stored["refresh_token"], "rotated-refresh");
     }
 }

@@ -7,6 +7,7 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("X-Door-User", "dana@example.com"); self.send_header("X-Amux-Member", "REAL-TOKEN")
         elif "amux_door=password" in c:
             self.send_response(200); self.send_header("X-Door-User", "ethan")           # no member token
+            self.send_header("X-Amux-Front-Door-Owner", "REAL-PROOF")                   # the owner's proof
         else:
             self.send_response(401)
         self.send_header("Content-Length", "0"); self.end_headers()
