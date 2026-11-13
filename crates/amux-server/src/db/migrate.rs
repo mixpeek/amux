@@ -849,6 +849,46 @@ const MIGRATIONS: &[Migration] = &[
         name: "0157_event_subscriptions",
         sql: include_str!("../../migrations/0157_event_subscriptions.sql"),
     },
+    Migration {
+        version: 158,
+        name: "0158_ledger",
+        sql: include_str!("../../migrations/0158_ledger.sql"),
+    },
+    Migration {
+        version: 159,
+        name: "0159_trace",
+        sql: include_str!("../../migrations/0159_trace.sql"),
+    },
+    Migration {
+        version: 160,
+        name: "0160_cli_telemetry",
+        sql: include_str!("../../migrations/0160_cli_telemetry.sql"),
+    },
+    Migration {
+        version: 161,
+        name: "0161_ledger_checkpoints",
+        sql: include_str!("../../migrations/0161_ledger_checkpoints.sql"),
+    },
+    Migration {
+        version: 162,
+        name: "0162_approval_cards",
+        sql: include_str!("../../migrations/0162_approval_cards.sql"),
+    },
+    Migration {
+        version: 163,
+        name: "0163_schedule_authority",
+        sql: include_str!("../../migrations/0163_schedule_authority.sql"),
+    },
+    Migration {
+        version: 164,
+        name: "0164_audit_governance",
+        sql: include_str!("../../migrations/0164_audit_governance.sql"),
+    },
+    Migration {
+        version: 165,
+        name: "0165_sso_mfa_scim",
+        sql: include_str!("../../migrations/0165_sso_mfa_scim.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

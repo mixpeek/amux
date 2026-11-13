@@ -1,6 +1,6 @@
 #!/bin/sh
-# guard-features: interpret-trailers Amux-Committer
-# guard-version: 3
+# guard-features: interpret-trailers Amux-Committer Amux-Trace Amux-Host On-behalf-of
+# guard-version: 5
 # (AF-431 / MR-44. A file declaring guard-features must carry exactly ONE
 #  anchored integer version so staleness is a NUMERIC comparison, not a
 #  substring hunt. Two spellings, per mixpeek-research's dc21a0d489: hooks
@@ -433,6 +433,55 @@ if [ -n "$conv" ]; then
     --trailer "Amux-Conversation: $conv" "$msg_file" 2>/dev/null || {
     grep -q "^Amux-Conversation: " "$msg_file" 2>/dev/null \
       || printf 'Amux-Conversation: %s\n' "$conv" >> "$msg_file"
+  }
+fi
+
+# The unit of work this commit belongs to (governance PR 8, api/trace.rs): the
+# caller's $TRACEPARENT or $AMUX_TRACE_ID, else the trace of the last message
+# the server delivered to this worker. Only when known; never guessed.
+_trace=""
+if [ -n "${TRACEPARENT:-}" ]; then
+  _trace=$(printf '%s' "$TRACEPARENT" | cut -d- -f2)
+elif [ -n "${AMUX_TRACE_ID:-}" ]; then
+  _trace="$AMUX_TRACE_ID"
+elif [ -n "$stamp" ] && [ -s "${AMUX_HOME:-$HOME/.amux}/trace/$stamp.current" ]; then
+  _trace=$(head -1 "${AMUX_HOME:-$HOME/.amux}/trace/$stamp.current" | cut -d- -f2)
+fi
+if [ "${AMUX_TRACE:-on}" != off ] && printf '%s' "$_trace" | grep -Eq '^[0-9a-f]{32}$'; then
+  git interpret-trailers --in-place --if-exists doNothing \
+    --trailer "Amux-Trace: $_trace" "$msg_file" 2>/dev/null || {
+    grep -q "^Amux-Trace: " "$msg_file" 2>/dev/null \
+      || printf 'Amux-Trace: %s\n' "$_trace" >> "$msg_file"
+  }
+fi
+
+# Which amux server made the commit (governance PR 15, api/agent_commit.rs).
+# `Amux-Session` names a lane but two hosts can each run a lane of that name:
+# on 2026-11-10 a sandbox's deploy-wake claimed three commits a same-named lane
+# made on another Mac. $AMUX_HOST_ID is set at launch; else the server's file.
+_host="${AMUX_HOST_ID:-}"
+if [ -z "$_host" ] && [ -n "$stamp" ] && [ "$stamp" != "(human)" ] && [ -s "${AMUX_HOME:-$HOME/.amux}/ledger/host-id" ]; then
+  _host=$(head -1 "${AMUX_HOME:-$HOME/.amux}/ledger/host-id" | tr -cd '0-9a-f')
+fi
+if [ -n "$_host" ]; then
+  git interpret-trailers --in-place --if-exists doNothing \
+    --trailer "Amux-Host: $_host" "$msg_file" 2>/dev/null || {
+    grep -q "^Amux-Host: " "$msg_file" 2>/dev/null \
+      || printf 'Amux-Host: %s\n' "$_host" >> "$msg_file"
+  }
+fi
+
+# The person this lane's work is for: written by the server at each delivery
+# (the proven sender if a person, else the worker's sponsor). Only when known.
+_obo=""
+if [ -n "$stamp" ] && [ "$stamp" != "(human)" ] && [ -s "${AMUX_HOME:-$HOME/.amux}/trace/$stamp.on-behalf-of" ]; then
+  _obo=$(head -1 "${AMUX_HOME:-$HOME/.amux}/trace/$stamp.on-behalf-of" | tr -d '\r')
+fi
+if printf '%s' "$_obo" | grep -Eq '^(owner|member:[^[:space:]]+)$'; then
+  git interpret-trailers --in-place --if-exists doNothing \
+    --trailer "On-behalf-of: $_obo" "$msg_file" 2>/dev/null || {
+    grep -q "^On-behalf-of: " "$msg_file" 2>/dev/null \
+      || printf 'On-behalf-of: %s\n' "$_obo" >> "$msg_file"
   }
 fi
 

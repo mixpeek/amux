@@ -57,9 +57,13 @@ b = [{"type": "secret_text", "name": "STRIPE_SECRET_KEY", "text": key},
 sa = os.path.join(s, "gmail-sa.json")
 if os.path.exists(sa):
     b.append({"type": "secret_text", "name": "GMAIL_SA", "text": base64.b64encode(open(sa, "rb").read()).decode()})
-if os.path.exists(gt):
+# A grant sealed at rest (governance PR 18) is no use to the Worker: skip it and say so.
+gt_sealed = os.path.exists(gt) and b'"amux_at_rest"' in open(gt, "rb").read(64)
+if gt_sealed:
+    print("WARN the hello@amux.io grant is encrypted at rest; not sent. The service account (gmail-sa.json) is the mail path", file=sys.stderr)
+elif os.path.exists(gt):
     b.append({"type": "secret_text", "name": "GMAIL_OAUTH", "text": base64.b64encode(open(gt, "rb").read()).decode()})
-if not (os.path.exists(sa) or os.path.exists(gt)):
+if not (os.path.exists(sa) or (os.path.exists(gt) and not gt_sealed)):
     print("WARN no mail credential: billing, deletion and operator emails will fail", file=sys.stderr)
 # Sign in with Apple from the iOS app: the Worker checks Apple's token against the app's bundle id
 # and signs each server's two-minute sign-in link with a key derived from DOOR_ENTRY_SECRET.

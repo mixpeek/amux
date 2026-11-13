@@ -531,6 +531,10 @@ async fn async_main() {
 
     boot_watch::step("app_state");
     let reconciled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    api::human_proof::set_owner_credential_configured(auth_token.is_some());
+    // Governance PR 3: the secret a sign-in door or gateway returns for the
+    // owner (loopback_trust.rs). Minted once, 0600; harmless where no door uses it.
+    api::loopback_trust::init(&cfg.amux_home, cfg.env.get(api::loopback_trust::FRONT_DOOR_SECRET_ENV).map(String::as_str));
     let state = api::AppState {
         store: store.clone(),
         started: Instant::now(),
@@ -704,6 +708,12 @@ async fn async_main() {
     crate::api::file_visits::spawn_seed(state.store.clone());
     drop(runtime_jobs::host_metrics::spawn(state.clone()));
     drop(runtime_jobs::trace_archive::spawn(state.clone()));
+    drop(runtime_jobs::ledger_checkpoint::spawn(state.clone()));
+    // Encryption at rest (governance PR 18): seal any plain connector grant
+    // once per boot. Reads seal lazily too; this pass covers grants nothing reads.
+    tokio::task::spawn_blocking(|| {
+        crate::integrations::at_rest::migrate_home(&crate::config::amux_home());
+    });
     drop(runtime_jobs::host_guard::spawn());
     drop(runtime_jobs::worker_resources::spawn(state.clone()));
     drop(runtime_jobs::goal_keeper::spawn(state.clone()));
