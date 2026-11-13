@@ -43,7 +43,12 @@ print(r if isinstance(r,str) else json.dumps(r)[:6000])'
 
 case "${1:-look}" in
   open)
-    post start "$(python3 -c 'import json,sys;print(json.dumps({"profile":sys.argv[1],"url":sys.argv[2]}))' "$PROFILE" "$URL")" >/dev/null
+    # The evaluator's OWN profile, created fresh. Starting a profile that does
+    # not exist fails, and an ignored failure used to leave every run on the
+    # browser already open (the owner's profile). Now a failed start stops here.
+    post profile/create "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1]}))' "$PROFILE")" >/dev/null
+    out=$(post start "$(python3 -c 'import json,sys;print(json.dumps({"profile":sys.argv[1],"url":sys.argv[2]}))' "$PROFILE" "$URL")")
+    if printf '%s' "$out" | grep -q '"error"'; then echo "the browser did not start: $out" >&2; exit 1; fi
     act '{"action":"viewport","width":390,"height":844}' >/dev/null
     post navigate "$(python3 -c 'import json,sys;print(json.dumps({"url":sys.argv[1]}))' "$URL")" >/dev/null
     sleep 3; look ;;
@@ -57,6 +62,10 @@ case "${1:-look}" in
     act "$(python3 "$HERE/dana_js.py" scroll "${2:-down}")" >/dev/null; sleep 1; look ;;
   enter) act '{"action":"key","key":"Enter"}' >/dev/null; sleep 2; look ;;
   wait) s="${2:-10}"; [ "$s" -gt 120 ] && s=120; sleep "$s"; look ;;
-  close) post stop "$(python3 -c 'import json,sys;print(json.dumps({"profile":sys.argv[1]}))' "$PROFILE")" >/dev/null; echo closed ;;
+  close)
+    post stop "$(python3 -c 'import json,sys;print(json.dumps({"profile":sys.argv[1]}))' "$PROFILE")" >/dev/null
+    # A throwaway evaluator profile is removed with its run (only dana-* names).
+    case "$PROFILE" in dana-*) rm -rf "$HOME/.amux/playwright-auth/profiles/$PROFILE" ;; esac
+    echo closed ;;
   *) echo "unknown: $1" >&2; exit 2 ;;
 esac
