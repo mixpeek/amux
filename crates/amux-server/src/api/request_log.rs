@@ -4369,7 +4369,14 @@ pub(crate) fn nearest_routes(path: &str, n: usize) -> Vec<&'static str> {
 /// sample choice) must be order-independent, or flipping the scan direction
 /// creates the inverse defect — see the min/max and sample_ts rules in the
 /// group assembly.
+#[cfg(not(test))]
 const ANALYZE_SCAN_CAP: i64 = 200_000;
+// The over-cap test crosses this cap with 2.6k rows instead of 260k: inserting
+// those through a debug SQLite with five indexes took 227 to 280 s, the whole
+// tail of the lib suite (docs/design/cicd-two-minutes.md, Z8). Every behaviour
+// it pins is relative to the cap, so a hundredth of it pins the same edges.
+#[cfg(test)]
+const ANALYZE_SCAN_CAP: i64 = 2_000;
 /// Groups returned by /analyze (sorted by count desc before the cut).
 const ANALYZE_GROUP_CAP: usize = 200;
 /// slow_outliers cap in /stats.
@@ -7036,9 +7043,9 @@ mod tests {
     async fn over_cap_stats_samples_the_window_while_analyze_truncates_and_both_report_it() {
         let (store, _dir) = store();
         let now = unix_now();
-        // 50k "old-era" rows around 90-80h ago, then 210k "new-era" rows in
-        // the last 70h — 260k total against the 200k cap, so a truthful
-        // truncation contains ZERO old-era rows.
+        // 500 "old-era" rows around 90-83h ago, then 2100 "new-era" rows over
+        // the last 70h — 2.6k total against the 2k test cap (ANALYZE_SCAN_CAP),
+        // so a truthful truncation contains ZERO old-era rows.
         store
             .write(move |conn| {
                 let tx_like = conn; // Store::write is already one transaction
@@ -7048,12 +7055,12 @@ mod tests {
                       amux_session, worker, answered_by, error_body) \
                      VALUES (?1,'GET',?2,?3,500,1.0,'127.0.0.1','lane',NULL,'native',NULL)",
                 )?;
-                for i in 0..50_000 {
-                    let ts = now - 90.0 * 3600.0 + i as f64 * 0.5;
+                for i in 0..500 {
+                    let ts = now - 90.0 * 3600.0 + i as f64 * 50.0;
                     stmt.execute(rusqlite::params![ts, "/api/old-era", "old-era"])?;
                 }
-                for i in 0..210_000 {
-                    let ts = now - 70.0 * 3600.0 + i as f64;
+                for i in 0..2_100 {
+                    let ts = now - 70.0 * 3600.0 + i as f64 * 100.0;
                     stmt.execute(rusqlite::params![ts, "/api/new-era", "new-era"])?;
                 }
                 Ok(crate::db::WriteOutcome {
@@ -7100,9 +7107,9 @@ mod tests {
         );
         assert_eq!(
             v["sampled"], true,
-            "260k rows over a 200k cap must sample: {v}"
+            "2.6k rows over a 2k test cap must sample: {v}"
         );
-        assert_eq!(v["window_rows"], 260_000, "the true pre-sample count: {v}");
+        assert_eq!(v["window_rows"], 2_600, "the true pre-sample count: {v}");
         let fam_n = |name: &str| -> f64 {
             v["families"]
                 .as_array()
@@ -7117,11 +7124,11 @@ mod tests {
             new_n > 0.0 && old_n > 0.0,
             "both eras must survive sampling: {v}"
         );
-        // Seeded 210k new : 50k old = 4.2. A uniform sample preserves the ratio.
+        // Seeded 2100 new : 500 old = 4.2. A uniform sample preserves the ratio.
         let ratio = new_n / old_n;
         assert!(
             (ratio - 4.2).abs() < 0.3,
-            "the sample must be UNIFORM across the window — seeded 210k:50k = 4.2, \
+            "the sample must be UNIFORM across the window — seeded 2100:500 = 4.2, \
              got {new_n}:{old_n} = {ratio}. A skew here means the read is biased \
              toward one end of the window, which is AF-131's bug in either direction: {v}"
         );
@@ -7155,10 +7162,10 @@ mod tests {
             .find(|g| g["family"] == "new-era")
             .expect("new-era group");
         let last = new_era["last_ts"].as_f64().unwrap();
-        // The fixture's newest new-era row is at now - (70h - 209,999s), i.e.
+        // The fixture's newest new-era row is at now - (70h - 209,900s), i.e.
         // ~11.67h ago; a positional overwrite under the DESC scan would land
         // ~70h ago instead.
-        let expected_newest = now - 70.0 * 3600.0 + 209_999.0;
+        let expected_newest = now - 70.0 * 3600.0 + 209_900.0;
         assert!(
             (last - expected_newest).abs() < 5.0,
             "last_ts must be the group's NEWEST hit — a positional overwrite under the \
