@@ -122,15 +122,18 @@ pub(crate) fn build_prompt(
          description, groups and directory, not by keywords). Name it exactly.\n\
          - \"create\": no worker fits. Describe a new one in \"create\".\n\
          Prefer send when a worker clearly fits; prefer create over sending to a poor fit.\n\
-         For create: name is 1 to 3 lowercase words joined by '-', at most 24 characters, naming the \
-         job (never filler such as need, worker, want). dir is a directory from the list where this \
+         For create: name the AREA the helper will keep handling, not this one request, so later requests \
+         reuse it (family-admin, meals, money, school, work-crm): 1 to 3 lowercase words joined by '-', at \
+         most 24 characters, never filler such as need, worker, want. desc says that area in one plain \
+         sentence (\"Handles the family's school forms, camp and calendar\"). dir is a directory from the list where this \
          work's files live, copied exactly, or \"\" when the work is not about files (email, calendar, \
          errands, planning). worker_type is \"chat\" for everyday tasks, research and questions about \
          email or calendar, \"coding\" when it changes code or files in a repository. model is haiku, \
          sonnet or opus (sonnet unless the work is unusually hard or trivial). effort is low, medium or \
          high: how hard it should think (low for a quick lookup, high for planning or reconciling).\n\
          Always give: title (at most 7 plain words naming the outcome, no worker names), why (one \
-         short sentence a non-technical person understands), and candidates (up to 3 workers you \
+         short sentence a non-technical person understands, about the request, never the words worker, \
+         agent, session, model, terminal or AI; say \"helper\" if you must), and candidates (up to 3 workers you \
          considered, each with a short why).\n\
          Reply with ONLY a JSON object:\n\
          {\"action\":\"answer|send|create\",\"worker\":\"<exact name or empty>\",\"answer\":\"...\",\

@@ -11,7 +11,10 @@ export const ACCOUNT = 'dana@household.test';
 
 const day = 86400000;
 const rfc = (d) => new Date(d).toUTCString().replace('GMT', '+0000');
-const iso = (d) => new Date(d).toISOString().slice(0, 10);
+// The family's local date: a UTC date disagrees with the calendar's local
+// times every evening (a helper caught it as a "date that disagrees").
+const iso = (d) => { const x = new Date(d); const p = (n) => String(n).padStart(2, '0');
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}`; };
 const at = (d, hh, mm = 0) => { const x = new Date(d); x.setHours(hh, mm, 0, 0); return x; };
 const localIso = (d) => { const x = new Date(d); const p = (n) => String(n).padStart(2, '0');
   return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T${p(x.getHours())}:${p(x.getMinutes())}:00`; };

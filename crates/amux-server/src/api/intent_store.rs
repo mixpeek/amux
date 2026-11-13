@@ -435,9 +435,9 @@ pub(crate) fn receipt(plan: &Value, worker: &str) -> String {
     };
     match plan["action"].as_str().unwrap_or("") {
         "answer" => "Answered right away".to_string(),
-        "continue" => format!("Sent to {worker}, who is already on this"),
-        "create" => format!("Started {worker} for this{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
-        _ => format!("Sent to {worker}{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
+        "continue" => format!("{worker} is already on this"),
+        "create" => format!("A new helper, {worker}, is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
+        _ => format!("{worker} is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
     }
 }
 
@@ -637,8 +637,8 @@ mod tests {
     #[test]
     fn receipts_say_where_it_went_in_plain_words() {
         assert_eq!(receipt(&json!({"action": "send", "why": "It handles family errands."}), "family"),
-            "Sent to family: it handles family errands");
-        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meals"), "Started meals for this");
+            "family is on it: it handles family errands");
+        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meals"), "A new helper, meals, is on it");
         assert_eq!(receipt(&json!({"action": "answer"}), ""), "Answered right away");
     }
 

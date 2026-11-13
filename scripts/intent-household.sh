@@ -60,12 +60,12 @@ start() {
   up || { echo "household server did not come up; see $HOME_DIR/server.log" >&2; exit 1; }
   # The family calendar, once.
   have=$(curl -sk "$URL/api/cal-events" || echo '[]')
-  node -e "
+  NODE_TLS_REJECT_UNAUTHORIZED=0 node -e "
     const have = JSON.parse(process.argv[1]); const titles = new Set((Array.isArray(have) ? have : have.events || []).map(e => e.title));
     const ev = JSON.parse(require('fs').readFileSync('$HOME_DIR/household-events.json', 'utf8'));
     (async () => { for (const e of ev) if (!titles.has(e.title))
       await fetch('$URL/api/cal-events', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(e) }); })();
-  " "$have" 2>/dev/null || NODE_TLS_REJECT_UNAUTHORIZED=0 true
+  " "$have" 2>/dev/null || echo "household: the calendar could not be seeded" >&2
   echo "$URL"
 }
 

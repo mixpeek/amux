@@ -264,7 +264,9 @@ pub(crate) fn pass_prompt(srcs: &[Src], existing: &[String], fb: &[String], toda
          tier \"tracking\" for something finite with a deadline (give due as YYYY-MM-DD), \"standing\" for an ongoing \
          goal (for example \"Never miss a school form\", \"Stay ahead of the family calendar\", \"Plan the week's dinners\"). \
          Give a status_line: one sentence on where it stands now, naming the next thing and what is ready for it.\n\
-         Rules: plain words for someone who is not technical. Nothing is sent, bought or changed outside; an idea that \
+         An idea is a NEXT step: never restate a request or report what an answer already said; skip anything \
+         already done or being worked on in WHAT THEY ASKED FOR. \
+         Rules: plain words for someone who is not technical (never worker, agent, session, model, AI). Nothing is sent, bought or changed outside; an idea that \
          would send something drafts it for approval. Every idea and goal must cite the ids of the items it came from in \
          sources (ids exactly as given). Skip anything already offered or dismissed. Return empty lists if nothing fits.\n\
          Reply with ONLY JSON: {{\"ideas\":[{{\"title\":\"...\",\"body\":\"...\",\"request\":\"what to ask the assistant to do, \
