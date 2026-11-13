@@ -147,7 +147,13 @@ strip = "symbols"
 # opt-level stays 3: opt-level 1 saved only 5s on the same edit.
 [profile.deploy]
 inherits = "release"
-lto = false
+# "off", not false: `lto = false` is rustc's thin-LOCAL LTO across the 256 codegen
+# units, which was 59 s of a 166 s full compile of amux-server (-Z time-passes,
+# mixpeek-dev, 2026-11-12). A real one-function change then rebuilt in 173 s and
+# 81 s; with "off" in 63 s and 63 s, for a binary 1.7% larger
+# (docs/design/cicd-two-minutes.md). The server is I/O-bound; cross-unit inlining
+# is what is given up.
+lto = "off"
 incremental = true
 codegen-units = 256
 # Keep the SYMBOL TABLE on the binary this host runs (Mac CPU RCA
