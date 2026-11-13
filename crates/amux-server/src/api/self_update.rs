@@ -84,19 +84,31 @@ pub(crate) fn push_to_live(raw: &str, last: usize) -> serde_json::Value {
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
     let recent = &rows[rows.len().saturating_sub(last)..];
-    let mut secs: Vec<i64> = recent.iter().filter_map(|r| r.get("from_push_s")?.as_i64()).collect();
-    secs.sort_unstable();
-    let pct = |p: usize| (!secs.is_empty()).then(|| secs[(secs.len() - 1) * p / 100]);
-    json!({
-        "measured": !secs.is_empty(),
-        "n_considered": recent.len(),
-        "unmeasured": recent.len() - secs.len(),
-        "p50_s": pct(50),
-        "p90_s": pct(90),
-        "max_s": secs.last(),
-        "under_120_s": secs.iter().filter(|s| **s < 120).count(),
-        "last": recent.last(),
-    })
+    // Over every deploy, and over those that needed a new binary (compiled here or
+    // received prebuilt): a restamp goes live in seconds and would hide the slow ones.
+    let summary = |sel: &[&serde_json::Value]| {
+        let mut secs: Vec<i64> = sel.iter().filter_map(|r| r.get("from_push_s")?.as_i64()).collect();
+        secs.sort_unstable();
+        let pct = |p: usize| (!secs.is_empty()).then(|| secs[(secs.len() - 1) * p / 100]);
+        json!({
+            "measured": !secs.is_empty(),
+            "n_considered": sel.len(),
+            "unmeasured": sel.len() - secs.len(),
+            "p50_s": pct(50),
+            "p90_s": pct(90),
+            "max_s": secs.last(),
+            "under_120_s": secs.iter().filter(|s| **s < 120).count(),
+        })
+    };
+    let all: Vec<&serde_json::Value> = recent.iter().collect();
+    let built: Vec<&serde_json::Value> = recent
+        .iter()
+        .filter(|r| matches!(r.get("kind").and_then(|k| k.as_str()), Some("compiled" | "prebuilt")))
+        .collect();
+    let mut out = summary(&all);
+    out["built"] = summary(&built);
+    out["last"] = recent.last().cloned().unwrap_or(serde_json::Value::Null);
+    out
 }
 
 fn push_to_live_now() -> serde_json::Value {
@@ -713,6 +725,15 @@ mod deploy_summary_tests {
         assert_eq!(v["max_s"], json!(200));
         assert_eq!(v["under_120_s"], json!(5));
         assert_eq!(v["last"]["sha"], json!("x"));
+        // Only deploys that needed a new binary count toward `built`.
+        let kinds = "{\"sha\":\"r\",\"at\":1,\"from_push_s\":30,\"kind\":\"restamp\"}\n\
+                     {\"sha\":\"c\",\"at\":2,\"from_push_s\":150,\"kind\":\"compiled\"}\n\
+                     {\"sha\":\"p\",\"at\":3,\"from_push_s\":100,\"kind\":\"prebuilt\"}";
+        let k = push_to_live(kinds, 50);
+        assert_eq!(k["n_considered"], json!(3));
+        assert_eq!(k["built"]["n_considered"], json!(2));
+        assert_eq!(k["built"]["max_s"], json!(150));
+        assert_eq!(k["built"]["under_120_s"], json!(1));
         let last3 = push_to_live(&raw, 3);
         assert_eq!(last3["n_considered"], json!(3));
         let none = push_to_live("", 50);

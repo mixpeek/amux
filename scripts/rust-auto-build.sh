@@ -83,9 +83,9 @@ from_push_s() {
 
 # One JSON line per deploy for the server to report (GET /api/pull
 # push_to_live): the seconds from the push, or null when unmeasured.
-record_deploy_latency() { # <sha> <from_push_s>
+record_deploy_latency() { # <sha> <from_push_s> <kind: restamp|compiled|prebuilt>
   local v="$2"; case "$v" in ''|*[!0-9]*) v=null ;; esac
-  printf '{"sha":"%s","at":%s,"from_push_s":%s}\n' "$1" "$(date +%s)" "$v" \
+  printf '{"sha":"%s","at":%s,"from_push_s":%s,"kind":"%s"}\n' "$1" "$(date +%s)" "$v" "${3:-unknown}" \
     >> "${AMUX_DEPLOY_LATENCY_LOG:-$HOME/.amux/deploy-latency.jsonl}" 2>/dev/null || true
 }
 
@@ -480,7 +480,7 @@ PYSTAMP
     rm -f "${INSTALL}.identity.json.rollback"
     prune_dashboard_snapshots "$dash_dir"
     echo "== ACTIVATION HEALTHY sha=$sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$REPO" log -1 --format=%ct "$sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$sha") restamped=1 verdict=activation_healthy"
-    record_deploy_latency "$sha" "$(from_push_s "$sha")"
+    record_deploy_latency "$sha" "$(from_push_s "$sha")" restamp
     return 0
   fi
   mv -f "${INSTALL}.identity.json.rollback" "${INSTALL}.identity.json"
@@ -1126,7 +1126,7 @@ fi
     mkdir -p "$DEPLOY_TARGET/deploy"
     cp -f "$PREBUILT" "$DEPLOY_TARGET/deploy/amux-server.prebuilt.$$" \
       && mv -f "$DEPLOY_TARGET/deploy/amux-server.prebuilt.$$" "$DEPLOY_TARGET/deploy/amux-server" \
-      && BUILD_OK=1 && BUILT_BIN="$DEPLOY_TARGET/deploy/amux-server"
+      && BUILD_OK=1 && BUILT_BIN="$DEPLOY_TARGET/deploy/amux-server" && DEPLOY_KIND=prebuilt
     echo "== deploy build used the prebuilt binary for $built_sha ($(wc -c < "$PREBUILT" | tr -d ' ') bytes) ok=$BUILD_OK verdict=deploy_prebuilt_used" | tee -a "$BUILD_OUT"
   elif [ -n "$PREBUILT" ]; then
     echo "== deploy build: no prebuilt binary for $built_sha in $AMUX_DEPLOY_PREBUILT_DIR; compiling here verdict=deploy_prebuilt_missing"
@@ -1329,7 +1329,7 @@ PYIDENTITY
       if wait_live_identity "$built_sha" "$limit"; then healthy=1; fi
       if [ "$healthy" = 1 ]; then
         echo "== ACTIVATION HEALTHY sha=$built_sha after ${waited}s push_to_live_s=$(( $(date +%s) - $(git -C "$WORK" log -1 --format=%ct "$built_sha" 2>/dev/null || date +%s) )) from_push_s=$(from_push_s "$built_sha") verdict=activation_healthy"
-        record_deploy_latency "$built_sha" "$(from_push_s "$built_sha")"
+        record_deploy_latency "$built_sha" "$(from_push_s "$built_sha")" "${DEPLOY_KIND:-compiled}"
         rm -f "${INSTALL}.rollback" "${INSTALL}.identity.json.rollback" "${STAMP}.rolled_back"
       else
         # Identity before the executable, the same order as the install.
