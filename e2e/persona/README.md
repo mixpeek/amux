@@ -48,7 +48,7 @@ The text below is the whole prompt, with `{CASE}`, `{TASK}`, `{DIR}` and
 > Use only this phone-sized browser, through the shell command
 > `DANA_URL=https://localhost:18950 DANA_PROFILE={PROFILE} DANA_SHOTS={DIR}/{CASE} e2e/persona/dana.sh <verb>`,
 > run from `/Users/ethan/Dev/amux/.worktrees/amux-intent-feature`. Verbs:
-> `open`, `look`, `tap "<text you see>"`, `type "<text>"`, `enter`,
+> `open`, `look`, `tap "<text you see>"`, `type "<text>"`, `scroll down` or `scroll up`, `enter`,
 > `wait <seconds>`, `close`. Start with `open`. Behave like Dana: read what is
 > on the screen, tap what a person would tap, wait for answers the way you
 > would wait for ChatGPT (up to about 5 minutes for a result, checking with

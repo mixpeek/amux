@@ -1299,11 +1299,17 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
         Conv::Direct(..) => (format!("{author} wrote to you in your direct message with them (amux Messages):"), "that direct message".to_string()),
         // An outcome: one request, followed by someone who never sees a
         // worker, a terminal or a card. The answer is the result itself.
-        Conv::Outcome(..) => (
+        Conv::Outcome(id, _) => (
             format!("{author} asked for this in amux (amux Messages, an outcome they follow by itself). They read only \
-                     this thread, in plain words, on a phone: answer with the result itself, no jargon about workers, \
-                     terminals, cards or tools. Anything that would go to someone outside (an email, a text, a message) \
-                     stays a draft in your answer for them to approve; never send it, and never spend money:"),
+                     this thread, in plain words, on a phone. Do the work without asking first: when the request touches \
+                     people, school, camp, money, dates or plans, look in their email and calendar yourself \
+                     (amux get 'api/email/search?q=<a few words>&days=180', amux get 'api/email/message/<message_id>', \
+                     amux get 'api/email/inbox?count=20&days=14', amux get api/cal-events). For a reminder, set it with \
+                     amux wake <YYYY-MM-DDTHH:MM> --stdin, telling yourself to post the reminder here with amux post 'o:{id}', \
+                     and say when it will come. Answer with the result first, in one to three short lines, then only the \
+                     details that help; no jargon about workers, terminals, cards or tools. Anything that would go to someone \
+                     outside (an email, a text, a message) stays a draft in your answer for them to approve; never send it, \
+                     and never spend money:"),
             "this outcome's thread".to_string(),
         ),
     };

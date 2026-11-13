@@ -6976,6 +6976,9 @@ function _needsYouRenderPanel() {
 })();
 
 function _fireSessionNotif(name, title, body) {
+  // Home speaks in requests and results, not in which worker started what
+  // (a "family-admin started working" pop-up confused the second Dana run).
+  if (document.body.classList.contains('intent-home')) return;
   let icon = '\u{1f535}';
   if (title.includes('needs input')) icon = '⚠️';
   else if (title.includes('stopped')) icon = '⏹';
@@ -12278,13 +12281,18 @@ function _homeEnter() {
 function _homeEnsureTimer() {
   if (_home.timer) return;
   let tick = 0;
+  // A tab the browser reports hidden still refreshes, every 16s: an embedded
+  // or automated browser can report hidden while a person is looking at it
+  // (the first Dana run sat on "Working on it" for minutes over a finished
+  // answer). Coming back to the tab refreshes at once.
   _home.timer = setInterval(() => {
-    if (activeView !== 'home' || document.hidden) return;
+    if (activeView !== 'home') return;
     tick++;
     const hurry = _home.open && _home.openStatus !== 'ready';
-    if (hurry || tick % 2 === 0) _homeRefresh();
+    if (document.hidden ? tick % 8 === 0 : (hurry || tick % 2 === 0)) _homeRefresh();
   }, 2000);
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && activeView === 'home') _homeRefresh(); });
 function _homeLeave() {
   document.body.classList.remove('intent-home');
   if (_home.timer) { clearInterval(_home.timer); _home.timer = null; }
@@ -12359,6 +12367,11 @@ function _homeRenderList() {
     + '<span class="home-row-snip">' + esc((o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
     + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + '</span></button>').join('') + '</div>';
 }
+// A helper's name as words, the way the receipt says it: family-admin -> Family admin.
+function _homePlainName(n) {
+  const w = String(n || '').replace(/[-_]+/g, ' ');
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
 function _homeFill(t) {
   const i = document.getElementById('home-input');
   if (i) { i.value = t; i.focus(); _homeGrow(i); }
@@ -12383,7 +12396,7 @@ async function _homeLoadOutcome(id, quiet) {
   const r = await _homeJson('/api/intent/outcomes/' + encodeURIComponent(id));
   if (_home.open !== id) return;
   if (!r.ok) { if (!quiet) showToast('That conversation could not be opened.'); _homeBack(); return; }
-  const sig = JSON.stringify([r.v.thread?.length, r.v.status, r.v.worker, r.v.thread?.[r.v.thread.length - 1]?.id]);
+  const sig = JSON.stringify([r.v.thread?.length, r.v.status, r.v.worker, r.v.thread?.[r.v.thread.length - 1]?.id, Math.floor(Date.now() / 60000)]);
   if (quiet && _home.detail === sig) return;
   _home.detail = sig;
   _home.openStatus = r.v.status;
@@ -12400,6 +12413,11 @@ function _homeRenderOutcome(o) {
   }).join('');
   const working = o.status !== 'ready';
   const canChange = o.worker && o.action !== 'answer';
+  // How long the newest request has been worked on, so a long wait reads as
+  // progress rather than a frozen screen.
+  const askedAt = [...(o.thread || [])].reverse().find(p => String(p.author_key || '').startsWith('person:'))?.ts || 0;
+  const mins = askedAt ? Math.floor((Date.now() - askedAt) / 60000) : 0;
+  const waitNote = mins >= 1 ? ' · ' + mins + ' min' + (mins >= 2 ? '. Reading email and calendar can take a few minutes.' : '') : '';
   el.innerHTML = '<div class="home-thread">'
     + '<div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeBack()" aria-label="Back to all requests">&#x2039; All</button>'
     + '<span class="home-thread-title">' + esc(o.title || 'Request') + '</span></div>'
@@ -12408,10 +12426,14 @@ function _homeRenderOutcome(o) {
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(o.worker) + '\')">Show work</button>' : '')
     + '</div>'
     + '<div class="home-msgs" id="home-msgs">' + posts
-    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span></div></div>' : '')
+    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
     + '</div></div>';
-  const m = document.getElementById('home-msgs');
-  if (m) m.lastElementChild?.scrollIntoView({ block: 'end' });
+  // Land on the START of the newest answer: a long one opened at its bottom
+  // on a phone, hiding its first line (where the result is).
+  const replies = el.querySelectorAll('.home-msg.theirs:not(:has(.home-typing))');
+  const newest = replies[replies.length - 1];
+  if (working) document.getElementById('home-msgs')?.lastElementChild?.scrollIntoView({ block: 'end' });
+  else if (newest) newest.scrollIntoView({ block: 'start' });
   const i = document.getElementById('home-input');
   if (i) i.placeholder = 'Reply or ask a follow-up';
 }
@@ -12447,7 +12469,7 @@ async function _homeChange(id) {
   const helpers = (r.ok ? r.v.helpers : []) || [];
   const cur = _home.open && (_home.outcomes.find(o => o.id === id)?.worker);
   const rows = helpers.filter(h => h.name !== cur).map((h, n) =>
-    '<label class="home-choice"><input type="radio" name="home-change" value="' + esc(h.name) + '"' + (n === 0 ? ' checked' : '') + '> <span><b>' + esc(h.name) + '</b>'
+    '<label class="home-choice"><input type="radio" name="home-change" value="' + esc(h.name) + '"' + (n === 0 ? ' checked' : '') + '> <span><b>' + esc(_homePlainName(h.name)) + '</b>'
     + (h.desc ? '<br><span class="ui-help">' + esc(h.desc) + '</span>' : '') + '</span></label>').join('');
   const html = '<div class="home-change">' + rows
     + '<label class="home-choice"><input type="radio" name="home-change" value="__new__"' + (rows ? '' : ' checked') + '> <span><b>A new helper</b><br><span class="ui-help">Start a fresh helper just for this.</span></span></label></div>';

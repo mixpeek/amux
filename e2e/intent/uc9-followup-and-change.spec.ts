@@ -22,11 +22,11 @@ test('a follow-up stays with its helper, and Change moves a misrouted request', 
   expect(after.decision.action).not.toBe('continue');
   // A request the router sends to the wrong helper, moved with Change.
   await ask(page, 'Does the school bus run on snow days?');
-  await expect(page.locator('.home-receipt')).toContainText(/meal-planner/);
+  await expect(page.locator('.home-receipt')).toContainText(/meal planner/i);
   await page.locator('.home-receipt').getByRole('button', { name: 'Change' }).click();
-  await page.locator('label.home-choice').filter({ hasText: 'family-helper' }).click();
+  await page.locator('label.home-choice').filter({ hasText: 'Family helper' }).click();
   await page.getByRole('button', { name: 'Move it' }).click();
-  await expect(page.locator('.home-receipt')).toContainText(/family-helper/);
+  await expect(page.locator('.home-receipt')).toContainText(/family helper/i);
   await reply(page, /bus/i);
   const stats = await (await request.get('/api/intent/stats')).json();
   expect(stats.measured).toBe(true);

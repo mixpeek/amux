@@ -427,7 +427,15 @@ async fn resolve_target(state: &AppState, _text: &str, mut plan: Value) -> Resul
 
 /// One plain line about where a request went, e.g. "Sent to family: it
 /// handles school and camp errands". The dashboard adds "Change".
+/// A helper's name as words: `family-admin` reads "Family admin".
+pub(crate) fn plain_name(worker: &str) -> String {
+    let w = worker.replace(['-', '_'], " ");
+    let mut c = w.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
 pub(crate) fn receipt(plan: &Value, worker: &str) -> String {
+    let worker = &plain_name(worker);
     let why = plan["why"].as_str().unwrap_or("").trim().trim_end_matches('.');
     let lower = |s: &str| {
         let mut c = s.chars();
@@ -436,7 +444,7 @@ pub(crate) fn receipt(plan: &Value, worker: &str) -> String {
     match plan["action"].as_str().unwrap_or("") {
         "answer" => "Answered right away".to_string(),
         "continue" => format!("{worker} is already on this"),
-        "create" => format!("A new helper, {worker}, is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
+        "create" => format!("{worker} is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
         _ => format!("{worker} is on it{}", if why.is_empty() { String::new() } else { format!(": {}", lower(why)) }),
     }
 }
@@ -522,7 +530,7 @@ async fn change(State(state): State<AppState>, Path(id): Path<String>, Json(body
     tracing::info!(outcome = %id, from = %from, to = %to, measured = true, n_considered = 1,
         verdict = "intent_override", "intent: the owner moved an outcome to another worker (router override)");
     Json(json!({"ok": delivered.is_ok(), "outcome": summary(&o, &posts_of(&state, &id)),
-        "receipt": format!("Moved to {to}"), "error": delivered.err()})).into_response()
+        "receipt": format!("Moved to {}", plain_name(&to)), "error": delivered.err()})).into_response()
 }
 
 /// Routed decisions and the owner's overrides of them. `rate` is null when
@@ -637,8 +645,8 @@ mod tests {
     #[test]
     fn receipts_say_where_it_went_in_plain_words() {
         assert_eq!(receipt(&json!({"action": "send", "why": "It handles family errands."}), "family"),
-            "family is on it: it handles family errands");
-        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meals"), "A new helper, meals, is on it");
+            "Family is on it: it handles family errands");
+        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meal-planner"), "Meal planner is on it");
         assert_eq!(receipt(&json!({"action": "answer"}), ""), "Answered right away");
     }
 

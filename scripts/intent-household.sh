@@ -37,6 +37,12 @@ stop() {
 
 seed() {
   mkdir -p "$HOME_DIR/mailboxes" "$HOME_DIR/tmux"
+  # The owner's amux TLS pair, COPIED (never linked: a rotation here must not
+  # touch the real one). The amux browser pins exactly this key, so Dana's
+  # browser reaches the demo with certificate checks still on.
+  if [ -f "$HOME/.amux/tls/cert.pem" ] && [ ! -e "$HOME_DIR/tls" ]; then
+    mkdir -p "$HOME_DIR/tls" && cp -p "$HOME/.amux/tls/"*.pem "$HOME_DIR/tls/" && chmod 600 "$HOME_DIR/tls/"*.pem
+  fi
   : > "$HOME_DIR/server.env"
   node --input-type=module -e "
     import { buildHousehold } from '$REPO/e2e/intent/household.mjs';
