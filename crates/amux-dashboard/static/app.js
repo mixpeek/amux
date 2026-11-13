@@ -42107,6 +42107,23 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ⌃F outside a text box opens the Mac app's Find bar (desktop/amux-find.swift);
+// in a text box it stays the Mac's move-forward and a terminal gets it as
+// usual. ⌘F reaches the app's Edit > Find on its own. A Hotkey bound to ⌃F
+// wins: it has already prevented the default by the time this runs.
+function _hkFindKey(e) {
+  if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || (e.key !== 'f' && e.key !== 'F')) return false;
+  let h = null;
+  try { h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxFind; } catch (err) { console.warn('amux: no find bridge', err); }
+  if (!h) return false;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return false;
+  e.preventDefault();
+  try { h.postMessage({ op: 'show' }); } catch (err) { console.warn('amux: could not open the find bar', err); }
+  return true;
+}
+document.addEventListener('keydown', _hkFindKey);
+
 // ── Escape closes the topmost modal, whatever it is ───────────────────────
 // The handler above knows five overlay ids BY NAME and hard-returns unless
 // peek is open, so it can never reach a dialog app.js appends to <body>: 12

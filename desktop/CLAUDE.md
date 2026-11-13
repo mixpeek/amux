@@ -12,7 +12,8 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   config (`AMUX_DESKTOP_CONFIG`) and drive it through `amux://test/...` hooks in test mode. A
   test that needs this checkout's dashboard starts a private server with
   `AMUX_DASHBOARD_DIR` (`palette-focus-e2e.py` shows how); otherwise the app talks to this Mac's
-  running amux.
+  running amux. `amux://test/key?k=f&mods=cmd` presses a key as AppKit routes it, and
+  `amux://test/menu?title=Copy` chooses a menu item (`find-copy-e2e.py` uses both).
 - An agent's build is **Amux Dev** (`com.amux.desktop.dev`, no `amux://` handler, never a
   login item), a separate app from the owner's Amux. A test copy (`AMUX_DESKTOP_TEST=1`) is
   quiet: no Dock icon or menu bar, it never comes to the front or posts a notification, and
