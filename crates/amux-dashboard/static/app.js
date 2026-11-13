@@ -12333,8 +12333,9 @@ async function _homeRefresh() {
     _home.ideas = r.ok ? (r.v.ideas || []) : [];
     _homeRenderIdeas(r.ok ? r.v : null);
   } else if (_home.pane === 'goals') {
-    const r = await _homeJson('/api/intent/goals');
+    const [r, rm] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders')]);
     _home.goals = r.ok ? (r.v.goals || []) : [];
+    _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
     _homeRenderGoals(r.ok ? r.v : null);
   }
 }
@@ -12640,14 +12641,17 @@ function _homeRenderGoals(v) {
   const el = document.getElementById('home-goals-body');
   if (!el) return;
   const goals = _home.goals || [];
+  const rem = (_home.reminders || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span></div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
+    + _home.reminders.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
+      + esc(new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</div></div>').join('') + '</div>' : '';
   const tracking = goals.filter(g => g.tier === 'tracking');
   const standing = goals.filter(g => g.tier !== 'tracking');
   if (!goals.length) {
-    el.innerHTML = '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
+    el.innerHTML = rem + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
       + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
     return;
   }
-  el.innerHTML = (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+  el.innerHTML = rem + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
     + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
 }
 async function _homeGoalDismiss(id) {

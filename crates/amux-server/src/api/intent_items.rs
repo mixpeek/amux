@@ -42,6 +42,45 @@ pub fn routes() -> Router<AppState> {
         .route("/api/intent/goals/{id}", axum::routing::patch(patch_goal))
         .route("/api/intent/goals/{id}/check", post(check_goal))
         .route("/api/intent/goals/{id}/approve", post(approve_goal))
+        .route("/api/intent/reminders", get(reminders))
+}
+
+/// Reminders a helper set for an outcome (`amux wake` one-time schedules on
+/// the helpers outcomes are routed to), still to come. Shown in Goals, so a
+/// reminder promised in a chat can be seen saved.
+async fn reminders(State(state): State<AppState>) -> Response {
+    let helpers: BTreeSet<String> = match super::intent_store::all_outcomes(&state) {
+        Ok(rows) => rows.into_iter().map(|o| o.worker).filter(|w| !w.is_empty()).collect(),
+        Err(e) => return Json(json!({"reminders": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
+    };
+    let now = chrono::Local::now().naive_local();
+    let rows: Vec<(String, String, String, Option<String>)> = state.store.read().ok().and_then(|c| {
+        let mut st = c.prepare("SELECT id, title, session, next_run FROM schedules WHERE enabled=1 AND sched_type='once'").ok()?;
+        let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?))).ok()?;
+        Some(r.flatten().collect())
+    }).unwrap_or_default();
+    let n = rows.len();
+    let mut out: Vec<Value> = rows.into_iter()
+        .filter(|(_, _, sess, _)| helpers.contains(sess))
+        .filter_map(|(id, title, _, next)| {
+            let next = next?;
+            let when = chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M:%S")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M"))
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%d %H:%M:%S")).ok()?;
+            (when > now).then(|| json!({"id": id, "title": reminder_title(&title), "when": when.format("%Y-%m-%dT%H:%M").to_string()}))
+        })
+        .collect();
+    out.sort_by(|a, b| a["when"].as_str().cmp(&b["when"].as_str()));
+    Json(json!({"reminders": out, "measured": true, "n_considered": n})).into_response()
+}
+
+/// A wake prompt's first line, as a person reads a reminder: no "Remind Dana
+/// to", no instructions to the helper after it.
+pub(crate) fn reminder_title(title: &str) -> String {
+    let first = title.lines().next().unwrap_or("").trim();
+    let t = first.trim_start_matches("wake:").trim().trim_start_matches("Reminder:").trim();
+    let cut: String = t.chars().take(90).collect();
+    if cut.is_empty() { "Reminder".into() } else { cut }
 }
 
 /// This server's own address, baked into its shell schedules: `amux url`
@@ -565,8 +604,24 @@ pub(crate) fn pass_after_outcome(state: &AppState) {
     });
 }
 
+/// A person who has never had a pass (new to Home) gets one on first look,
+/// in the background, so their email and calendar fill Ideas and Goals.
+fn first_pass_if_none(state: &AppState) {
+    let ran = state.store.read().ok().and_then(|c| c.query_row(
+        "SELECT 1 FROM prefs WHERE key='intent_last_pass_ms'", [], |_| Ok(())).ok()).is_some();
+    if !ran {
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info!(measured = true, n_considered = 0, verdict = "intent_first_pass",
+                "intent: first look at Ideas or Goals with no pass yet; starting one");
+            pass_after_outcome(state);
+        }
+    }
+}
+
 async fn list_ideas(State(state): State<AppState>) -> Response {
     ensure_ideas_schedule(&state).await;
+    first_pass_if_none(&state);
     match items(&state, "idea", &["offered"]) {
         Ok(v) => {
             let n = v.len();
@@ -746,6 +801,7 @@ fn goal_view(state: &AppState, g: &Value) -> Value {
 }
 
 async fn list_goals(State(state): State<AppState>) -> Response {
+    first_pass_if_none(&state);
     match items(&state, "goal", &["active", "paused"]) {
         Ok(v) => {
             let n = v.len();
@@ -934,6 +990,13 @@ mod tests {
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
         assert_ne!(fp, inputs_fingerprint(&b[2..], &b[1..2]));
+    }
+
+    #[test]
+    fn a_reminder_reads_as_a_reminder() {
+        assert_eq!(reminder_title("Reminder: call Marcy Feld about Rafi\nThen post it with amux post"), "call Marcy Feld about Rafi");
+        assert_eq!(reminder_title(""), "Reminder");
+        assert_eq!(reminder_title("wake: Reminder: sign Rafi's slip"), "sign Rafi's slip");
     }
 
     #[test]

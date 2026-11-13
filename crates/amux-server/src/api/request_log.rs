@@ -3087,6 +3087,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/intent/reminders",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/tmux-sessions",
         methods: &["GET"],
     },
