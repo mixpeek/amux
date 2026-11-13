@@ -15,7 +15,7 @@ pub fn spawn(state: AppState) -> super::PeriodicTask {
     super::spawn_periodic(JOB, TICK_SECS, move || {
         let st = state.clone();
         async move {
-            let _ = crate::api::ledger_checkpoint::tick(&st, false).await;
+            crate::api::ledger_checkpoint::tick(&st, false).await;
         }
     })
 }
