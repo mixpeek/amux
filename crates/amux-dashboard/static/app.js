@@ -10691,6 +10691,9 @@ function _applyTabVisibility() {
     const el = document.getElementById('tab-' + id);
     if (el) bar.appendChild(el); // moves to end in order
   });
+  // "Everything else" is not a tab (NOT_TABS): it always ends the bar.
+  const everything = document.getElementById('tab-everything');
+  if (everything) bar.appendChild(everything);
   // Apply visibility
   ALL_TABS.forEach(t => {
     const el = document.getElementById('tab-' + t.id);
@@ -12591,14 +12594,23 @@ function _homeCopyDraft(btn) {
   const text = Array.from(d.querySelectorAll('.home-draft-meta, .home-draft-body')).map(n => n.innerText).join('\n\n');
   _copyTextWithToast(text, 'Copied');
 }
+// A helper still working: a post in the same shape, its body the dots.
+function _homeTypingPost(name, words, note) {
+  return _cvPostHtml({ id: 'typing', author_key: 'worker:', author_name: name, body: '', ts: Date.now() }, false, true,
+    { plain: true, from: 'typing', name, body: '<span class="home-typing" aria-label="' + esc(words) + '">' + esc(words)
+      + '<span>.</span><span>.</span><span>.</span>' + esc(note) + '</span>' });
+}
 function _homeRenderOutcome(o) {
   const el = document.getElementById('home-chat-body');
   if (!el) return;
+  // The Messages thread view's own post (_cvPostHtml), plain: her name is
+  // "You", a helper's is its plain name, and a helper's answer keeps Chat's
+  // reading of drafts and dates (_homeAnswerHtml).
+  const helper = o.worker ? _homePlainName(o.worker) : 'amux';
   const posts = (o.thread || []).map(p => {
     const mine = String(p.author_key || '').startsWith('person:');
-    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(_homePlainReply(String(p.body || '')));
-    return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
-      + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
+    return _cvPostHtml(p, false, true, { plain: true, from: mine ? 'you' : 'helper', name: mine ? 'You' : helper,
+      body: mine ? undefined : _homeAnswerHtml(_homePlainReply(String(p.body || ''))) });
   }).join('');
   const working = o.status !== 'ready';
   const canChange = o.worker && o.action !== 'answer';
@@ -12618,11 +12630,11 @@ function _homeRenderOutcome(o) {
       + esc(_homeReminderWhen(x)) + '</div>').join('')
     + '<div class="home-msgs" id="home-msgs">' + posts
     + (o.drafts || []).map(_homeHeldDraftHtml).join('')
-    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
+    + (working ? _homeTypingPost(helper, 'Working on it', waitNote) : '')
     + '</div></div>';
   // Land on the START of the newest answer: a long one opened at its bottom
   // on a phone, hiding its first line (where the result is).
-  const replies = el.querySelectorAll('.home-msg.theirs:not(:has(.home-typing))');
+  const replies = el.querySelectorAll('.cv-post[data-from="helper"]:not(:has(.home-typing))');
   const newest = replies[replies.length - 1];
   if (working) document.getElementById('home-msgs')?.lastElementChild?.scrollIntoView({ block: 'end' });
   else if (newest) newest.scrollIntoView({ block: 'start' });
@@ -12705,8 +12717,9 @@ async function _homeSend() {
   if (_home.open) body.outcome = _home.open;
   if (!_home.open) {
     const el = document.getElementById('home-chat-body');
-    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs"><div class="home-msg mine"><div class="home-bubble">' + esc(text)
-      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Getting started<span>.</span><span>.</span><span>.</span></div></div></div></div>';
+    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs">'
+      + _cvPostHtml({ id: 'pending', author_key: 'person:owner', author_name: 'You', body: text, ts: Date.now() }, false, true, { plain: true, from: 'you', name: 'You' })
+      + _homeTypingPost('amux', 'Getting started', '') + '</div></div>';
   }
   const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
   _home.sending = false;
@@ -72280,7 +72293,13 @@ function _cvDelivHtml(p) {
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
 }
 const _CV_QUICK = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2764\uFE0F', '\u{1F602}'];
-function _cvPostHtml(p, showConv, inThread) {
+// `opts` (optional) draws a post outside the Messages view (Chat, intent
+// Home): {plain: true, name, body, from}. Plain shows `name` in place of the
+// author, an initial in place of the worker avatar, `body` (HTML) in place of
+// the rendered body when given, and none of the actions, reactions, thread
+// line or delivery chips, which all act on the Messages view's own state.
+function _cvPostHtml(p, showConv, inThread, opts) {
+  const plain = !!(opts && opts.plain);
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
   const mine = p.author_key === _cvMeKey();
@@ -72288,6 +72307,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const real = typeof p.id === 'number';
   const pinned = real && _cvPinnedIds().has(p.id);
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
+    : plain && opts.body !== undefined ? '<div class="cv-post-body cv-md">' + opts.body + '</div>'
     : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
   const reacts = Object.entries(p.reactions || {}).map(([e, who]) => '<button type="button" class="cv-react' + ((who || []).includes(_cvMeKey()) ? ' mine' : '')
@@ -72305,6 +72325,14 @@ function _cvPostHtml(p, showConv, inThread) {
     + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
     + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
     + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
+  if (plain) {
+    const name = opts.name || p.author_name || '';
+    return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '"' + (opts.from ? ' data-from="' + esc(opts.from) + '"' : '') + '>'
+      + _cvAvatar(name, false, null)
+      + '<div class="cv-post-main"><div class="cv-post-head"><span class="cv-post-who">' + esc(name) + '</span>'
+      + '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span></div>'
+      + body + '</div></div>';
+  }
   return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker, p.author_key) + '<div class="cv-post-main"><div class="cv-post-head">' +
     '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +

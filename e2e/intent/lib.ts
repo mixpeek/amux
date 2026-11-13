@@ -35,6 +35,10 @@ export async function openHome(page: Page) {
   for (const t of ['#tab-ideas', '#tab-goals', '#tab-everything']) await expect(page.locator(t)).toBeVisible();
   await expect(page.locator('#tab-sessions'), 'the worker tabs are hidden for a new person').toBeHidden();
   await expect(page.locator('#tab-board')).toBeHidden();
+  await expect(page.locator('.tab-customize-wrap'), 'the tab list names every worker tab').toBeHidden();
+  // "Everything else" ends the bar: the way out comes after her three tabs.
+  const visible = await page.locator('.tab-bar > button').evaluateAll((bs) => bs.filter((b) => (b as HTMLElement).offsetParent !== null).map((b) => b.id));
+  expect(visible.at(-1), `tab order: ${visible.join(', ')}`).toBe('tab-everything');
 }
 
 /** Say something in Chat and land in its thread. */
@@ -49,7 +53,7 @@ export async function ask(page: Page, text: string) {
 
 /** Wait for a helper answer in the open thread that matches `re`. */
 export async function reply(page: Page, re: RegExp) {
-  await expect(page.locator('.home-msg.theirs .home-bubble').filter({ hasText: re }).first()).toBeVisible({ timeout: LIVE ? 600_000 : 60_000 });
+  await expect(page.locator('.cv-post[data-from="helper"] .cv-post-body').filter({ hasText: re }).first()).toBeVisible({ timeout: LIVE ? 600_000 : 60_000 });
 }
 
 /** The default path shows no machinery words. amux's own words are checked;
@@ -65,7 +69,7 @@ export async function noJargon(page: Page) {
       const c = root.cloneNode(true) as HTMLElement;
       const btns = Array.from(c.querySelectorAll('button'));
       hidden.forEach((h, i) => { if (h) btns[i]?.remove(); });
-      c.querySelectorAll('.home-bubble, .home-row-snip, .home-card-from, .home-draft-meta, .home-draft-body').forEach((n) => n.remove());
+      c.querySelectorAll('.cv-post-body, .home-row-snip, .home-card-from, .home-draft-meta, .home-draft-body').forEach((n) => n.remove());
       return c.innerText;
     }).join('\n');
   });

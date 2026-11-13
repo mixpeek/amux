@@ -144,6 +144,14 @@ The specs run against a private copy of the server binary
 (`AMUX_E2E_SERVER_BIN`): the shared debug build is replaced by any lane's
 build, and two runs on 2026-11-13 silently tested another lane's binary.
 
+Chat's conversation uses the Messages thread view's post (owner, 2026-11-13);
+runs [R](../../e2e/intent/results/2026-11-13-run-R.txt) and
+[S](../../e2e/intent/results/2026-11-13-run-S.txt) are the specs on it, and
+the plain post, the hidden tab list in simple mode and "Everything else" ending
+the bar are each mutation-checked. A markdown table in any post keeps whole
+words and scrolls sideways (shared `.cv-md` style), which is not pinned by a
+test.
+
 ### What is still intent-only, and why
 
 No intent table is left (0160 drops both). What remains:
@@ -211,7 +219,7 @@ reminders and checks are scheduler entries, drafts are held email-API sends.
 | Roster | `orchestrate::roster_entries` | The voice router and the intent router read one roster (name, groups, description, type, directory, isolation). |
 | Dialog | `app.js` `_outcomeStart` | "Describe what you want" routes first: it answers, sends to the worker that owns the work, or creates one. Created workers are not isolated by default. |
 | Outcomes | `api/intent_store.rs`, `intent_record.rs`, `conversations.rs` `Conv::Outcome` | `o:<id>` Messages threads. Where one went and why is a record post in that thread (author `amux:record`, an `intent` attachment Messages does not draw, never a notification); a re-route or a Change is another. A request is posted into the thread, which delivers it to the worker; the answer comes back into the same thread (`relay_turn`, also straight from a chat turn). A follow-up goes to the same worker with no routing call. `GET /api/intent/stats` is the override rate. |
-| Chat, Ideas, Goals | `index.html` `#home-view`, `#ideas-view`, `#goals-view`; `app.js` `_home*` | Three tabs in the normal tab bar. Chat is a composer and the requests it started; a conversation shows the reminders its helper set and the emails it wrote, held by the email API, with the approvals banner's own Send and Discard. Goals shows the next week of the calendar, reminders, to-dos and goals. For a new person (`GET /api/intent/home`: the `home` pref, then `AMUX_HOME_DEFAULT`, else intent below five workers) only these tabs and "Everything else" show. |
+| Chat, Ideas, Goals | `index.html` `#home-view`, `#ideas-view`, `#goals-view`; `app.js` `_home*` | Three tabs in the normal tab bar. Chat is a composer and the requests it started; a conversation is drawn with the Messages thread view's own post (`_cvPostHtml`, its `plain` option: "You" and the helper's plain name, no actions or delivery chips) and shows the reminders its helper set and the emails it wrote, held by the email API, with the approvals banner's own Send and Discard. Goals shows the next week of the calendar, reminders, to-dos and goals. For a new person (`GET /api/intent/home`: the `home` pref, then `AMUX_HOME_DEFAULT`, else intent below five workers) only these tabs and "Everything else" show. |
 | Worker view | `_peekConvsLoad`, `_homeCardOutcomes` | Conversations are organized by conversation, not by worker: no per-worker tab. A worker's Messages tab starts with the conversations from Chat routed to it (each opens in Chat), and its card has one "From Chat" line naming them. Chat lists every conversation across workers. |
 | Ideas | `api/intent_items.rs` | One pass reads the owner's messages to every worker (`cmd_history`), their conversations, related email, the calendar, and what they started or dismissed (memories in the `intent-home` group). Each idea must cite sources that exist. An idea is a backlog board card tagged `idea`, `owner_type: human`; "Do it" starts its request and closes the card, "Not now" discards it. Passes run one at a time. |
 | Goals | `api/intent_items.rs` | Inferred goals are board cards tagged `goal` on the helper's board (a due date makes one Tracking), each with its conversation and a shell scheduler check that asks the helper only when its inputs changed. The status line is the helper's newest `STATUS:` line. Goals read and draft only: an email waits in the email API for the owner's OK, any other outside step is an `ASK:` line answered in the conversation. |
