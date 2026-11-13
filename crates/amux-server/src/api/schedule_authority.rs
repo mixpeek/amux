@@ -56,7 +56,9 @@ pub fn mode() -> Mode {
 static STORE: OnceLock<SharedStore> = OnceLock::new();
 
 pub fn install_store(store: SharedStore) {
-    let _ = STORE.set(store);
+    if STORE.set(store).is_err() {
+        tracing::debug!("store already installed; keeping the first");
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -259,12 +261,14 @@ async fn record(store: &SharedStore, id: &str, by: &str, target: &str, why: &str
         outcome: Some(if enforce { format!("paused: {why}") } else { format!("fired (report): {why}") }),
         ..Default::default()
     };
-    let _ = store
+    if let Err(e) = store
         .write_async(move |conn| {
             super::ledger::append(conn, &ev);
             Ok(WriteOutcome { applied: false, events: vec![] })
         })
-        .await;
+        .await {
+        tracing::warn!(error = %e, verdict = "ledger_append_failed", "the schedule authority decision was not recorded in the ledger");
+    }
 }
 
 /// Disable a schedule with a reason, and audit it. Pausing is reversible; the
@@ -309,7 +313,9 @@ fn read_asks(home: &Path) -> Map<String, Value> {
 pub fn clear_ask(home: &Path, id: &str) {
     let mut all = read_asks(home);
     if all.remove(id).is_some() {
-        let _ = crate::integrations::secure_store::write(&asks_file(home), Value::Object(all).to_string().as_bytes());
+        if let Err(e) = crate::integrations::secure_store::write(&asks_file(home), Value::Object(all).to_string().as_bytes()) {
+            tracing::warn!(error = %e, verdict = "schedule_ask_unsaved", "clearing the schedule's ask was not saved");
+        }
     }
 }
 
