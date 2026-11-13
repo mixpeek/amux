@@ -509,6 +509,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // when the window is hidden and click through to the conversation.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotify")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotify")
+        // The page's device switch (app.js _notifToggleNative): reads and sets
+        // the app's own, so the dashboard, the menu and Settings agree.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotifyPrefs")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotifyPrefs")
         // A zoom from the page (app.js _zoomShare): every other page follows it.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxZoom")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxZoom")
@@ -537,6 +541,16 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         }
         if message.name == "amuxZoom" {
             if let n = message.body as? NSNumber { app?.zoomOthers(from: self, level: n.intValue) }
+            return
+        }
+        if message.name == "amuxNotifyPrefs" {
+            guard webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let app = app,
+                  let d = message.body as? [String: Any] else { return }
+            if (d["op"] as? String) == "set", let on = d["on"] as? Bool {
+                app.setNotifications(on, source: "page")
+            } else {
+                app.tellNotifications(self)
+            }
             return
         }
         if message.name == "amuxNotify" {
@@ -1766,6 +1780,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// A Messages post addressed to the owner (the page decided; it only asks
     /// for one when the owner is not already looking at that conversation).
     func notifyMessage(_ d: [String: Any]) {
+        guard config.notifications ?? true else {
+            NSLog("amux-desktop: verdict=notification_suppressed what=message reason=notifications_off")
+            return
+        }
         guard canNotify else { return }
         let content = UNMutableNotificationContent()
         content.title = (d["title"] as? String) ?? "amux"
@@ -1920,9 +1938,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func toggleNotifications(_ sender: NSMenuItem) {
+        setNotifications(!(loadConfig().notifications ?? true), source: "menu")
+    }
+
+    /// The one switch for this Mac's notifications (needs-you and Messages).
+    /// The menu, the app's Settings and any dashboard page set it; every page
+    /// is told, so each one's Settings and bell panel show the same value.
+    func setNotifications(_ on: Bool, source: String) {
         config = loadConfig()
-        config.notifications = !(config.notifications ?? true)
+        config.notifications = on
         saveConfig(config)
+        dlog("verdict=notifications_set on=\(on ? 1 : 0) source=\(source) pages=\(controllers.count)")
+        for c in controllers { tellNotifications(c) }
+    }
+
+    func tellNotifications(_ c: DashboardWindowController) {
+        let on = (config.notifications ?? true) ? "true" : "false"
+        c.webView.evaluateJavaScript("typeof _notifDesktopState === 'function' && _notifDesktopState(\(on))", completionHandler: nil)
     }
 
     // ── Menu actions ──

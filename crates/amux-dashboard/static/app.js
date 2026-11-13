@@ -6508,6 +6508,26 @@ let lastSessionsJSON = '';
 // ── In-app notification system ──
 const _prevSessionState = {};  // name → {status, running}
 let _notifsNative = localStorage.getItem('amux_notifs') === '1';
+// In the Mac app the app owns the device switch (its menu and Settings carry it
+// too), so the page reads and writes the app's value instead of localStorage.
+// amuxNotifyPrefs exists only in an app that knows this; an older app's
+// amuxNotify posts whatever it is sent, so the page never probes that one.
+function _notifDesktopPrefs() {
+  try { return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxNotifyPrefs) || null; } catch (e) { return null; }
+}
+function _notifInOlderApp() {
+  try { return !_notifDesktopPrefs() && !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxNotify); } catch (e) { return false; }
+}
+// The app answers a get with this, and calls it in every window when the
+// switch changes anywhere (a page, the menu, the app's Settings).
+function _notifDesktopState(on) {
+  _notifsNative = !!on;
+  _notifUpdateNativeBtn();
+}
+if (_notifDesktopPrefs()) {
+  _notifsNative = true;   // the app's default until it answers
+  try { _notifDesktopPrefs().postMessage({ op: 'get' }); } catch (e) { console.warn('amux: could not ask the app for its notification switch', e); }
+}
 let _notifBanners = localStorage.getItem('amux_notif_banners') !== '0';  // in-app pop-ups, default on
 let _notifItems = JSON.parse(localStorage.getItem('amux_notif_items') || '[]').slice(0, 100);
 let _notifUnread = _notifItems.filter(n => !n.read).length;
@@ -6689,19 +6709,41 @@ async function _pushSubscribe() {
   }
 }
 
+// Ends this device's push subscription. The device side goes even when the
+// server cannot be told: the push service then answers 410 and the server
+// prunes the endpoint on its next send (push/mod.rs), so nothing reaches here.
 async function _pushUnsubscribe() {
+  let sub = null;
   try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription();
-    if (sub) {
-      await apiCall(API + '/api/push/unsubscribe', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: sub.endpoint }),
-      });
-      await sub.unsubscribe();
-    }
-  } catch (e) {}
+    const reg = await _swReady(8000);
+    sub = await reg.pushManager.getSubscription();
+    if (!sub) return false;
+    await apiCall(API + '/api/push/unsubscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    });
+  } catch (e) { console.warn('amux: push unsubscribe did not reach the server; the device drops it anyway', e); }
+  if (!sub) return false;
+  try { await sub.unsubscribe(); return true; } catch (e) { return false; }
 }
+
+// On load, make this device's push subscription agree with its switch: off
+// with a subscription left behind (a failed unsubscribe, another browser
+// profile's toggle, a subscription from before the switch) ends it; on with
+// permission but no subscription (the push service expired it) renews it.
+async function _pushReconcile() {
+  if (_notifDesktopPrefs() || _notifInOlderApp()) return;   // the Mac app notifies natively
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') return;
+  let sub = null;
+  try { sub = await (await _swReady(8000)).pushManager.getSubscription(); } catch (e) { return; }
+  let verdict = '';
+  if (!_notifsNative && sub) verdict = (await _pushUnsubscribe()) ? 'push_unsubscribed_device_off' : 'push_unsubscribe_failed';
+  else if (_notifsNative && !sub && Notification.permission === 'granted') verdict = (await _pushSubscribe()).ok ? 'push_resubscribed' : 'push_resubscribe_failed';
+  if (verdict) {
+    try { _interactionDiagnostic({ kind: 'notification', verdict, measured: true, n_considered: 1 }); } catch (e) { console.warn('amux: ' + verdict, e); }
+  }
+}
+setTimeout(_pushReconcile, 6000);
 
 // Step-by-step on-device diagnostic. Uses alert() so the full report is
 // readable on a phone (toasts truncate). Leads with the iOS Home-Screen fix,
@@ -6765,6 +6807,14 @@ async function _notifSendTest() {
 }
 
 async function _notifToggleNative() {
+  const app = _notifDesktopPrefs();
+  if (app) {
+    _notifsNative = !_notifsNative;
+    try { app.postMessage({ op: 'set', on: _notifsNative }); } catch (e) { console.warn('amux: could not set the app\'s notification switch', e); }
+    showToast(_notifsNative ? 'Notifications on for this Mac' : 'Notifications off for this Mac');
+    _notifUpdateNativeBtn();
+    return;
+  }
   if (_notifsNative) {
     _notifsNative = false;
     localStorage.setItem('amux_notifs', '0');
@@ -6773,10 +6823,10 @@ async function _notifToggleNative() {
   } else {
     try {
       if (typeof Notification !== 'undefined') {
-        if (Notification.permission === 'denied') { showToast('Blocked — enable in browser Site Settings'); return; }
+        if (Notification.permission === 'denied') { showToast('Blocked — enable in browser Site Settings'); _notifUpdateNativeBtn(); return; }
         if (Notification.permission !== 'granted') {
           const perm = await Notification.requestPermission();
-          if (perm !== 'granted') { showToast('Permission not granted'); return; }
+          if (perm !== 'granted') { showToast('Permission not granted'); _notifUpdateNativeBtn(); return; }
         }
       }
     } catch(e) {}
@@ -6790,6 +6840,8 @@ async function _notifToggleNative() {
 }
 
 function _notifUpdateNativeBtn() {
+  const cb = document.getElementById('notif-device-native-cb');
+  if (cb) cb.checked = _notifsNative;
   const btn = document.getElementById('notif-native-btn');
   if (!btn) return;
   btn.style.opacity = _notifsNative ? '1' : '0.4';
@@ -6811,6 +6863,8 @@ function _notifToggleBanners() {
 }
 
 function _notifUpdateBannerBtn() {
+  const cb = document.getElementById('notif-device-banner-cb');
+  if (cb) cb.checked = _notifBanners;
   const btn = document.getElementById('notif-banner-btn');
   if (!btn) return;
   btn.style.opacity = _notifBanners ? '1' : '0.4';
@@ -6818,6 +6872,9 @@ function _notifUpdateBannerBtn() {
   btn.title = 'In-app pop-ups (banners and action toasts): ' + (_notifBanners ? 'on' : 'off');
   btn.setAttribute('aria-label', btn.title);
 }
+
+// The Settings switches show the device's state from the first paint.
+setTimeout(() => { _notifUpdateNativeBtn(); _notifUpdateBannerBtn(); }, 0);
 
 function toggleNotifPanel() {
   _notifPanelOpen = !_notifPanelOpen;
@@ -72477,6 +72534,9 @@ async function _cvRefreshPost(id) {
 const _cvNotified = new Set();
 async function _cvMaybeNotify(ev) {
   if (_cvNotified.has(ev.id)) return;
+  // The device switch covers Messages too. An older Mac app has its own
+  // switch and no way to tell the page, so it decides there.
+  if (!_notifInOlderApp() && !amuxNotifyAllowed('native')) return;
   const looking = !document.hidden && _cvViewOn() && _cv.sel === ev.conv && (!ev.parent_id || (_cv.thread && _cv.thread.root === ev.parent_id));
   if (looking) return;
   let p = null;

@@ -494,6 +494,19 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
         </div>
         </div>
         <div class="settings-tab-panel" id="stab-notifications" data-stab="notifications">
+        <div class="settings-section" id="settings-device-notifs-section">
+          <div class="settings-section-label">This device</div>
+          <div class="ui-help" style="margin-bottom:var(--space-2);">Each phone, browser and Mac app keeps its own switches. Off here means nothing reaches this device: no lock-screen or background push, no Messages notifications, and in the Mac app no needs-you notifications either.</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <span style="font-size:var(--fs-lg);">Notifications on this device</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-native-cb" aria-label="Notifications on this device" onchange="_notifToggleNative()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:var(--space-1);">
+            <span style="font-size:var(--fs-lg);">In-app pop-ups</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-banner-cb" aria-label="In-app pop-ups" onchange="_notifToggleBanners()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+        </div>
+        <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label">Alerts</div>
           <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-2);line-height:1.4;">Routine notifications use in-app amux Alerts. <b>Urgent alerts</b> are reserved for things that need your attention immediately — workers are told to use them sparingly.</div>

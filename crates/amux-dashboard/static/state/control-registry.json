@@ -1218,6 +1218,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cvMaybeNotify": {
+      "kind": "command._cvMaybeNotify",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvNewMessage": {
       "kind": "command._cvNewMessage",
       "feedback_required": true,
@@ -4544,6 +4550,12 @@
     },
     "_pushChipsNow": {
       "kind": "command._pushChipsNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pushReconcile": {
+      "kind": "command._pushReconcile",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -572,7 +572,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             let on = m["value"] as? Bool ?? true
             switch name {
             case "menuBar": cfg.menuBar = on
-            case "notifications": cfg.notifications = on
+            case "notifications": app.setNotifications(on, source: "settings"); cfg = app.config
             case "dockBadge": cfg.dockBadge = on
             case "snapToGrid": cfg.snapToGrid = on
             case "openAtLogin": cfg.openAtLogin = on
@@ -696,7 +696,7 @@ func settingsHTML(_ app: AppDelegate) -> String {
     <h2>General</h2>
     <div class="card">
       \(toggle("menuBar", c.menuBar ?? true, "Show in menu bar", "CPU and memory readout, with your pinned notes one click away."))
-      \(toggle("notifications", c.notifications ?? true, "Notify when amux needs you", "A notification for each new item waiting on you."))
+      \(toggle("notifications", c.notifications ?? true, "Notifications", "Each new item waiting on you, and Messages addressed to you. The dashboard's Settings > Alerts has the same switch."))
       \(toggle("dockBadge", c.dockBadge ?? true, "Show count on Dock icon", "The number of items waiting on you."))
       <div class="row"><div class="info"><div class="name">Split opens the new pane</div>
         <small>The Split button, "Open in split pane" and "Split this tab".</small></div>
