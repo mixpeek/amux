@@ -382,7 +382,10 @@ pub(crate) async fn start_outcome(state: &AppState, text: &str, outcome: Option<
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
     push_source(&mut o.sources, json!({"kind": "post", "id": post["id"], "text": text}));
     if plan["action"] == "answer" {
-        let _ = super::conversations::amux_post_to_outcome(state, &id, plan["answer"].as_str().unwrap_or("")).await;
+        if let Err(e) = super::conversations::amux_post_to_outcome(state, &id, plan["answer"].as_str().unwrap_or("")).await {
+            tracing::warn!(outcome = %id, error = %e, measured = true, n_considered = 1, verdict = "intent_answer_not_posted",
+                "intent: the router answered but the answer could not be posted to the outcome");
+        }
     }
     update_outcome(state, o.clone()).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     tracing::info!(outcome = %id, action = %plan["action"], worker = %worker, measured = true, n_considered = 1,

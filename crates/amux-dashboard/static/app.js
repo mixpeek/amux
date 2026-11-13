@@ -12192,7 +12192,7 @@ async function _intentRoute(text, extra) {
     const r = await fetch(API + '/api/intent/plan', { method: 'POST',
       headers: _authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(Object.assign({ text }, extra || {})) });
     if (r.ok) return await r.json();
-  } catch (_) {}
+  } catch (e) { console.warn('[intent] routing unavailable; the create plan stands', e); }
   return null;
 }
 async function _outcomeStart(text, cfg, files) {
@@ -12309,7 +12309,7 @@ async function _homeJson(path, opts) {
   const t = setTimeout(() => ctl.abort(), opts && opts.method === 'POST' ? 120000 : 15000);
   try {
     const r = await fetch(API + path, Object.assign({ headers: _authHeaders({'Content-Type': 'application/json'}), signal: ctl.signal }, opts || {}));
-    let v = null; try { v = await r.json(); } catch (_) {}
+    let v = null; try { v = await r.json(); } catch (e) { console.warn('[home] not JSON from ' + path, e); }
     return { ok: r.ok, status: r.status, v: v || {} };
   } catch (_) { return { ok: false, status: 0, v: {} }; } finally { clearTimeout(t); }
 }
@@ -12568,7 +12568,7 @@ function _homeOutcomeIndexLoad(force) {
     for (const o of (v && v.outcomes) || []) if (o.worker) (by[o.worker] = by[o.worker] || []).push(o);
     const changed = JSON.stringify(Object.keys(by).map(k => [k, by[k].length])) !== JSON.stringify(Object.keys(_homeOutcomeIndex.by).map(k => [k, _homeOutcomeIndex.by[k].length]));
     _homeOutcomeIndex = { at: Date.now(), by, loading: false };
-    if (changed && activeView === 'sessions') { try { render(); } catch (_) {} }
+    if (changed && activeView === 'sessions') { try { render(); } catch (e) { console.warn('[home] card re-render failed', e); } }
   }).catch(() => { _homeOutcomeIndex.loading = false; });
 }
 function _homeCardOutcomes(name) {
@@ -12584,7 +12584,7 @@ async function _peekOutcomesLoad() {
   const who = peekSession;
   _homeOutcomeIndexLoad(true);
   let v = null;
-  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (_) {}
+  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] outcomes for the worker view did not load', e); }
   if (peekSession !== who) return;
   const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
   el.innerHTML = !v ? '<div class="ui-help">Outcomes could not be loaded.</div>'
@@ -12603,9 +12603,9 @@ function _homeOpenFromPeek(id) {
 // pref, or intent for someone new (GET /api/intent/home decides).
 async function _homeBootChoice() {
   let choice = null;
-  try { choice = localStorage.getItem('amux_home_choice'); } catch (_) {}
+  try { choice = localStorage.getItem('amux_home_choice'); } catch (e) { console.warn('[home] storage unreadable', e); }
   const r = await _homeJson('/api/intent/home');
-  if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (_) {} }
+  if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (e) { console.warn('[home] storage unwritable', e); } }
   document.documentElement.classList.remove('boot-home-pending');
   // Settled after the caller's switch (a microtask later): the first-run tour
   // waits on this, so it never opens over a Home about to appear.
@@ -59548,7 +59548,7 @@ function _restoreScreen(bootHash) {
         // Nothing saved: the home pref (or, for someone new, the intent
         // Home) picks the first screen. Hidden until it answers, so a new
         // person never sees the fleet flash first.
-        _homeBootChoice().then(c => { if (c === 'intent' && activeView === 'sessions' && !peekSession) { try { switchView('home'); } catch(e) {} } });
+        _homeBootChoice().then(c => { if (c === 'intent' && activeView === 'sessions' && !peekSession) { try { switchView('home'); } catch(e) { console.warn('[home] could not open Home', e); } } });
       }
     } catch(e) {}
   }

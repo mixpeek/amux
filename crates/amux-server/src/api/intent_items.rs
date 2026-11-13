@@ -50,6 +50,15 @@ fn self_url() -> String {
     format!("https://localhost:{}", crate::config::canonical_port())
 }
 
+/// A write or delivery whose failure does not stop the request, said out
+/// loud: an `intent_step_failed` WARN names the step (A4).
+fn logged<T, E: std::fmt::Display>(step: &str, r: Result<T, E>) {
+    if let Err(e) = r {
+        tracing::warn!(step, error = %e, measured = true, n_considered = 1, verdict = "intent_step_failed",
+            "intent: a step failed; the request went on without it");
+    }
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -536,10 +545,10 @@ fn new_since_last_pass(state: &AppState) -> i64 {
 
 async fn mark_pass(state: &AppState) {
     let v = now_ms().to_string();
-    let _ = state.store.write_async(move |c| {
+    logged("store write", state.store.write_async(move |c| {
         c.execute("INSERT INTO prefs (key, value) VALUES ('intent_last_pass_ms', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [v])?;
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await;
+    }).await);
 }
 
 /// After an outcome starts: a pass, in the background, so its ideas and any
@@ -547,7 +556,8 @@ async fn mark_pass(state: &AppState) {
 pub(crate) fn pass_after_outcome(state: &AppState) {
     let st = state.clone();
     tokio::spawn(async move {
-        let _ = run_pass(&st, "outcome_started").await;
+        let v = run_pass(&st, "outcome_started").await;
+        tracing::debug!(created = %v["created"], verdict = "intent_pass_after_outcome", "intent: pass after a new request");
         mark_pass(&st).await;
     });
 }
@@ -570,7 +580,7 @@ async fn start_idea(State(state): State<AppState>, Path(id): Path<String>) -> Re
     match super::intent_store::start_outcome(&state, &req, None, Some(id.clone()), title, it["sources"].clone()).await {
         Ok(v) => {
             let oid = v["outcome"]["id"].as_str().unwrap_or("").to_string();
-            let _ = set_fields(&state, &id, vec![("status", txt("started")), ("outcome_id", txt(oid))]).await;
+            logged("idea started", set_fields(&state, &id, vec![("status", txt("started")), ("outcome_id", txt(oid))]).await);
             remember_feedback(&state, &fingerprint(it["title"].as_str().unwrap_or("")),
                 format!("Owner STARTED the idea: {}", it["title"].as_str().unwrap_or(""))).await;
             Json(v).into_response()
@@ -683,13 +693,13 @@ async fn ensure_ideas_schedule(state: &AppState) {
     if exists {
         return;
     }
-    let _ = create_schedule(state, json!({
+    create_schedule(state, json!({
         "title": "Ideas: look for next steps",
         "kind": "shell",
         "schedule_expr": "every 30m",
         "command": format!("curl -sk --max-time 300 -X POST '{}/api/intent/ideas/refresh?if_new=3'", self_url()),
     })).await;    // Phase 5: idle helpers amux created are stopped once a day.
-    let _ = create_schedule(state, json!({
+    create_schedule(state, json!({
         "title": "Home: stop idle helpers",
         "kind": "shell",
         "schedule_expr": "daily at 4:15",
@@ -750,7 +760,7 @@ async fn patch_goal(State(state): State<AppState>, Path(id): Path<String>, Json(
         // A reworded goal is a new version of its goal contract.
         if let Some(gid) = g["goal_id"].as_str() {
             let (gid, t) = (gid.to_string(), t.to_string());
-            let _ = state.store.write_async(move |c| {
+            logged("store write", state.store.write_async(move |c| {
                 if let Ok(Some(mut gc)) = crate::db::harness_store::get_goal_contract(c, &gid) {
                     gc.objective = t;
                     gc.updated_by = "owner".into();
@@ -758,7 +768,7 @@ async fn patch_goal(State(state): State<AppState>, Path(id): Path<String>, Json(
                     crate::db::harness_store::put_goal_contract(c, &gc)?;
                 }
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-            }).await;
+            }).await);
         }
     }
     if let Some(s) = body["status"].as_str() {
@@ -769,10 +779,10 @@ async fn patch_goal(State(state): State<AppState>, Path(id): Path<String>, Json(
         if let Some(sid) = g["schedule_id"].as_str() {
             let on = if s == "active" { 1 } else { 0 };
             let sid = sid.to_string();
-            let _ = state.store.write_async(move |c| {
+            logged("store write", state.store.write_async(move |c| {
                 c.execute("UPDATE schedules SET enabled=?2 WHERE id=?1", rusqlite::params![sid, on])?;
                 Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-            }).await;
+            }).await);
         }
     }
     if let Err(e) = set_fields(&state, &id, fields).await {
@@ -787,9 +797,9 @@ async fn approve_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
     }
     if let Some(oid) = g["outcome_id"].as_str() {
-        let _ = super::intent_store::start_outcome(&state,
+        logged("approval delivered", super::intent_store::start_outcome(&state,
             "I approve what you asked to do for this goal. Go ahead with that one step; any outside email still goes through amux's own approval.",
-            Some(oid), None, None, json!([])).await;
+            Some(oid), None, None, json!([])).await.map_err(|(_, e)| e));
     }
     tracing::info!(goal = %id, measured = true, n_considered = 1, verdict = "intent_goal_approved",
         "intent: the owner approved an inferred goal's first outside action");
@@ -826,10 +836,10 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
         return Json(json!({"ok": true, "changed": false, "measured": true, "n_considered": n, "mail_measured": mail_measured})).into_response();
     }
     let fp2 = fp.clone();
-    let _ = state.store.write_async(move |c| {
+    logged("store write", state.store.write_async(move |c| {
         c.execute("INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, fp2])?;
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await;
+    }).await);
     let mut delivered = false;
     if let Some(oid) = g["outcome_id"].as_str() {
         delivered = super::intent_store::start_outcome(&state,
@@ -837,7 +847,7 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    let _ = set_fields(&state, &id, vec![("status_at", rusqlite::types::Value::Integer(now_ms()))]).await;
+    logged("goal checked", set_fields(&state, &id, vec![("status_at", rusqlite::types::Value::Integer(now_ms()))]).await);
     tracing::info!(goal = %id, delivered, measured = true, n_considered = n, verdict = "intent_goal_changed",
         "intent: a goal's inputs changed; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "measured": true, "n_considered": n, "mail_measured": mail_measured})).into_response()
