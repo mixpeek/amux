@@ -783,6 +783,13 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
     <section id="home-chat" class="home-pane"><div id="home-chat-body" class="home-pane-body"></div></section>
     <section id="home-ideas" class="home-pane" hidden><div id="home-ideas-body" class="home-pane-body"></div></section>
     <section id="home-goals" class="home-pane" hidden><div id="home-goals-body" class="home-pane-body"></div></section>
+    <section id="home-more" class="home-pane" hidden><div class="home-pane-body">
+      <div class="home-pane-head"><span class="home-pane-title">More</span></div>
+      <div class="home-list">
+        <button type="button" class="home-row" onclick="_homeSetPane('goals')"><span class="home-row-title">Your calendar and reminders</span><span class="home-row-snip">What is coming up this week, and the reminders you have set</span></button>
+        <button type="button" class="home-row" onclick="_homeSetPane('ideas')"><span class="home-row-title">Ideas</span><span class="home-row-snip">Next steps suggested from your email and calendar</span></button>
+        <button type="button" class="home-row" onclick="_homeSetPane('workspace')"><span class="home-row-title">Everything else</span><span class="home-row-snip">The full workspace, with the tools for setting things up. Home is always one tap away.</span></button>
+      </div></div></section>
   </div>
   <form id="home-composer" class="home-composer" onsubmit="event.preventDefault();_homeSend()">
     <div class="home-composer-row">
@@ -796,7 +803,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
     <button type="button" id="home-nav-chat" class="home-nav-btn active" onclick="_homeSetPane('chat')"><span class="home-nav-ico">&#x1F4AC;</span><span>Chat</span></button>
     <button type="button" id="home-nav-ideas" class="home-nav-btn" onclick="_homeSetPane('ideas')"><span class="home-nav-ico">&#x1F4A1;</span><span>Ideas</span></button>
     <button type="button" id="home-nav-goals" class="home-nav-btn" onclick="_homeSetPane('goals')"><span class="home-nav-ico">&#x1F3AF;</span><span>Goals</span></button>
-    <button type="button" id="home-nav-workspace" class="home-nav-btn" title="Everything else: the full workspace" onclick="_homeSetPane('workspace')"><span class="home-nav-ico">&#x25A6;</span><span>More</span></button>
+    <button type="button" id="home-nav-workspace" class="home-nav-btn" title="Everything else: the full workspace" onclick="_homeSetPane('more')"><span class="home-nav-ico">&#x25A6;</span><span>More</span></button>
   </nav>
 </div>
 <div id="session-view">

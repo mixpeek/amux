@@ -11238,3 +11238,6 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-back-btn { min-height: 44px; }
 .home-pane-sub { color: var(--dim); font-size: var(--fs-lg); margin: calc(-1 * var(--space-1)) 0 var(--space-2); }
 .home-reminder { font-size: var(--fs-lg); padding: var(--space-1-5) var(--space-3); margin-bottom: var(--space-2); border-radius: var(--radius-pill); background: var(--card); border: 1px solid var(--border); display: inline-block; }
+.home-agenda { display: flex; flex-direction: column; gap: var(--space-0-5); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.home-agenda-when { color: var(--dim); font-size: var(--fs-lg); }
+.home-agenda-what { font-size: var(--fs-xl); }

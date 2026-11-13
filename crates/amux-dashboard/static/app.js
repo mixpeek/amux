@@ -12300,10 +12300,10 @@ function _homeLeave() {
 function _homeSetPane(p) {
   if (p === 'workspace') { _homeLeave(); switchView('sessions'); return; }
   _home.pane = p;
-  for (const n of ['chat', 'ideas', 'goals']) {
+  for (const n of ['chat', 'ideas', 'goals', 'more']) {
     const el = document.getElementById('home-' + n);
     if (el) el.hidden = n !== p;
-    const b = document.getElementById('home-nav-' + n);
+    const b = document.getElementById('home-nav-' + (n === 'more' ? 'workspace' : n));
     if (b) { b.classList.toggle('active', n === p); b.setAttribute('aria-current', n === p ? 'page' : 'false'); }
   }
   const comp = document.getElementById('home-composer');
@@ -12338,9 +12338,14 @@ async function _homeRefresh() {
     _home.ideas = r.ok ? (r.v.ideas || []) : [];
     _homeRenderIdeas(r.ok ? r.v : null);
   } else if (_home.pane === 'goals') {
-    const [r, rm] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders')]);
+    const [r, rm, ev] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders'), _homeJson('/api/cal-events')]);
     _home.goals = r.ok ? (r.v.goals || []) : [];
     _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const week = new Date(today.getTime() + 8 * 86400000);
+    _home.events = (ev.ok ? (Array.isArray(ev.v) ? ev.v : ev.v.events || []) : [])
+      .filter(e => { const d = _homeLocalDate(e.start); return !isNaN(d) && d >= today && d < week; })
+      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
     _homeRenderGoals(r.ok ? r.v : null);
   }
 }
@@ -12399,6 +12404,12 @@ function _homeAnswerHtml(text) {
 // Goals reads); on screen it is just the first sentence.
 function _homePlainReply(t) {
   return String(t || '').replace(/^\s*\**STATUS:\**\s*/i, '').replace(/^\s*\**ASK:\**\s*/gim, '');
+}
+// A calendar date as the family's own day: "2026-11-19" parsed by Date is
+// UTC midnight, the evening before in New York (picture day showed Wednesday).
+function _homeLocalDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(s);
 }
 // A helper's name as words, the way the receipt says it: family-admin -> Family admin.
 function _homePlainName(n) {
@@ -12665,14 +12676,19 @@ function _homeRenderGoals(v) {
   const rem = (_home.reminders || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span></div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
     + _home.reminders.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
       + esc(new Date(x.when).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</div></div>').join('') + '</div>' : '';
+  const fmtEv = (e) => { const d = _homeLocalDate(e.start); const allDay = e.all_day || String(e.start).length <= 10;
+    return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + (allDay ? '' : ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })); };
+  const up = (_home.events || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Coming up</span></div><div class="home-pane-sub">Your calendar for the next week</div><div class="home-list">'
+    + _home.events.map(e => '<div class="home-agenda"><span class="home-agenda-when">' + esc(fmtEv(e)) + '</span><span class="home-agenda-what">' + esc(e.title || '')
+      + (e.location ? ' · ' + esc(e.location) : '') + '</span></div>').join('') + '</div>' : '';
   const tracking = goals.filter(g => g.tier === 'tracking');
   const standing = goals.filter(g => g.tier !== 'tracking');
   if (!goals.length) {
-    el.innerHTML = rem + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
+    el.innerHTML = up + rem + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
       + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
     return;
   }
-  el.innerHTML = rem + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+  el.innerHTML = up + rem + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
     + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
 }
 async function _homeGoalDismiss(id) {
