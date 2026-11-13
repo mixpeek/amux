@@ -20,8 +20,13 @@ LOOK = r"""(() => { const out = []; const W = innerWidth, H = innerHeight;
   return out.join('\n').slice(0, 6000); })()"""
 
 TAP = r"""(() => { const want = %s;
+  // Only what a person could tap: on screen and on top at its centre (not an
+  // element hidden under an overlay, which a finger cannot reach).
+  const onTop = e => { const r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.bottom < 0 || r.top > innerHeight) return false;
+    const t = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), Math.min(innerHeight - 1, Math.max(0, r.top + r.height / 2)));
+    return !!t && (t === e || e.contains(t) || t.contains(e)); };
   const els = [...document.querySelectorAll('button, a, [role=button], [role=listitem], label, summary, input[type=radio], input[type=checkbox]')]
-    .filter(e => e.offsetParent !== null || e.getClientRects().length);
+    .filter(onTop);
   const txt = e => (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().toLowerCase();
   const el = els.find(e => txt(e) === want) || els.find(e => txt(e).startsWith(want)) || els.find(e => txt(e).includes(want));
   if (!el) return 'NOT FOUND: nothing on screen says ' + JSON.stringify(want);

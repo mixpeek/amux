@@ -12323,10 +12323,15 @@ async function _homeJson(path, opts) {
 }
 async function _homeRefresh() {
   if (_home.pane === 'chat') {
-    if (_home.detailsFor) return;
+    // A send in flight owns the screen (its "Getting started" line); a
+    // refresh drew the list over it and the answer never opened by itself.
+    if (_home.detailsFor || _home.sending) return;
     if (_home.open) return _homeLoadOutcome(_home.open, true);
     const r = await _homeJson('/api/intent/outcomes');
-    if (r.ok) _home.outcomes = r.v.outcomes || [];
+    // Chat lists what the person asked for. A goal's own thread (item ids
+    // starting "g") lives under Goals, behind its Open button: listed here,
+    // the pass's goals buried the request she had just made (final uc5).
+    if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => !String(o.item_id || '').startsWith('g'));
     _homeRenderList();
   } else if (_home.pane === 'ideas') {
     const r = await _homeJson('/api/intent/ideas');
