@@ -226,6 +226,11 @@ local_gate() { # <sha>: prints green when gate.yml's steps pass here
       rc=failed
     fi
     mkdir -p "$CI_CACHE" && echo "$rc" > "$mark"
+    # A local pass IS the gate's verdict for this sha: cache it where GitHub's answer
+    # goes, so later passes stop asking GitHub about it. The sandbox reads GitHub
+    # without a token (60 requests an hour); asking about a passed tip on every pass
+    # would spend that and read "unmeasured", which refuses every deploy.
+    [ "$rc" = green ] && echo green > "$CI_CACHE/$sha"
     say "LOCAL GATE $sha $rc in $(( $(date +%s) - t0 ))s ($(tail -1 "$d/log" | cut -c1-160)) verdict=local_gate_$rc"
   else
     say "LOCAL GATE $sha could not check out the commit; waiting for GitHub verdict=local_gate_unmeasured"

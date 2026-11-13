@@ -229,6 +229,8 @@ run_gate() {
 run_gate
 expect grep -q "repo=$WORK sha=$GATE_OK" "$TRACE"
 expect grep -q "LOCAL GATE $GATE_OK green.*verdict=local_gate_green" "$LOG"
+# ...and is cached as the gate's verdict, so the next pass does not ask GitHub again.
+expect test "$(cat "$CACHE/gate/$GATE_OK" 2>/dev/null)" = green
 expect test "$(cat "$PUSHED/$GATE_OK")" = 1794477600
 expect test -z "$(git -C "$STALE" worktree list | grep amux-local-gate)"
 # A failing gate holds the tip, once per sha: the next pass does not rerun it.
