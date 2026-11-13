@@ -263,7 +263,8 @@ pub(crate) fn pass_prompt(srcs: &[Src], existing: &[String], fb: &[String], toda
          - goals: themes that keep coming up (or that they asked to keep up with) worth tracking without being asked. \
          tier \"tracking\" for something finite with a deadline (give due as YYYY-MM-DD), \"standing\" for an ongoing \
          goal (for example \"Never miss a school form\", \"Stay ahead of the family calendar\", \"Plan the week's dinners\"). \
-         Give a status_line: one sentence on where it stands now, naming the next thing and what is ready for it.\n\
+         Give a status_line: one sentence on where it stands now, naming the next thing and what is ready for it; \
+         write dates as a person says them (Tue Nov 17).\n\
          An idea is a NEXT step: never restate a request or report what an answer already said; skip anything \
          already done or being worked on in WHAT THEY ASKED FOR. \
          Rules: plain words for someone who is not technical (never worker, agent, session, model, AI). Nothing is sent, bought or changed outside; an idea that \
@@ -611,7 +612,8 @@ pub(crate) fn goal_brief(title: &str, request: &str, tier: &str, due: Option<&st
          {}Check my email and calendar for what this needs, and keep it ready: read and draft only. \
          Do not send, buy, sign up for, or change anything outside amux; if a step needs that, write the draft \
          and start a line with ASK: saying what you want to do, and wait for my OK. Start every answer with one \
-         line beginning STATUS: that says where this stands, naming the next thing and what is ready for it.",
+         line beginning STATUS: that says where this stands, naming the next thing and what is ready for it, with dates \
+         written as a person says them (Tue Nov 17).",
         match (tier, due) {
             ("tracking", Some(d)) => format!("It has a deadline: {d}. "),
             _ => String::new(),

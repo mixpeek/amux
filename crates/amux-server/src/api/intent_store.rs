@@ -445,7 +445,10 @@ pub(crate) fn plain_name(worker: &str) -> String {
 }
 
 pub(crate) fn receipt(plan: &Value, worker: &str) -> String {
-    let worker = &plain_name(worker);
+    // "Your family school helper", never "Family school is on it" (the third
+    // use case's evaluator could not tell who "Family school" was).
+    let words = plain_name(worker).to_lowercase();
+    let worker = &if words.ends_with("helper") { format!("Your {words}") } else { format!("Your {words} helper") };
     match plan["action"].as_str().unwrap_or("") {
         "answer" => "Answered right away".to_string(),
         "continue" => format!("{worker} is already on this"),
@@ -652,8 +655,9 @@ mod tests {
     #[test]
     fn receipts_say_where_it_went_in_plain_words() {
         assert_eq!(receipt(&json!({"action": "send", "why": "It handles family errands."}), "family"),
-            "Family is on it", "the reason stays out of the receipt");
-        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meal-planner"), "Meal planner is on it");
+            "Your family helper is on it", "the reason stays out of the receipt");
+        assert_eq!(receipt(&json!({"action": "create", "why": ""}), "meal-planner"), "Your meal planner helper is on it");
+        assert_eq!(receipt(&json!({"action": "send"}), "family-helper"), "Your family helper is on it", "no doubled helper");
         assert_eq!(receipt(&json!({"action": "answer"}), ""), "Answered right away");
     }
 

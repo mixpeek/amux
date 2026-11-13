@@ -12354,7 +12354,7 @@ function _homeRenderList() {
   if (!el) return;
   const list = _home.outcomes || [];
   if (!list.length) {
-    el.innerHTML = '<div class="home-empty"><div class="home-empty-title">What can I help with?</div>'
+    el.innerHTML = '<div class="home-empty"><div class="home-empty-title" onclick="document.getElementById(\'home-input\')?.focus()">What can I help with?</div>'
       + '<div class="home-empty-sub">Ask for a reminder, a plan, or something from your inbox or calendar. '
       + 'You will see the result here, and nothing goes to anyone without your OK.</div>'
       + '<div class="home-examples">' + ['Remind me to call the dentist on Friday', 'Plan dinners this week', 'Find anything I need to sign in my inbox']
@@ -12375,8 +12375,9 @@ function _homeAnswerHtml(text) {
   const md = text.replace(/```draft\s*\n([\s\S]*?)```/g, (m, d) => { drafts.push(d); return '\n\nHOMEDRAFT' + (drafts.length - 1) + '\n\n'; });
   let h = renderMarkdown(md, '');
   drafts.forEach((d, i) => {
-    const to = (d.match(/^To:\s*(.+)$/mi) || [])[1] || '';
-    const subject = (d.match(/^Subject:\s*(.+)$/mi) || [])[1] || '';
+    // [ \t]*, not \s*: an empty To: line must not take the Subject line.
+    const to = (d.match(/^To:[ \t]*(.*)$/mi) || [])[1] || '';
+    const subject = (d.match(/^Subject:[ \t]*(.*)$/mi) || [])[1] || '';
     const body = d.replace(/^(To|Subject|Cc):.*\n?/gmi, '').replace(/^\s*\n/, '').trim();
     const href = 'mailto:' + encodeURIComponent(to.trim()) + '?subject=' + encodeURIComponent(subject.trim()) + '&body=' + encodeURIComponent(body);
     const card = '<div class="home-draft"><div class="home-draft-head">Draft email, not sent</div>'
@@ -12613,14 +12614,18 @@ async function _homeIdeaDismiss(id) {
 }
 function _homeDaysLeft(due) {
   if (!due) return '';
-  const d = Math.ceil((new Date(due + 'T23:59:59') - new Date()) / 86400000);
+  // Calendar days between today and the due date, the way a person counts.
+  const t = new Date(); const today = Date.UTC(t.getFullYear(), t.getMonth(), t.getDate());
+  const [yy, mm, dd] = String(due).split('-').map(Number);
+  const d = Math.round((Date.UTC(yy, (mm || 1) - 1, dd || 1) - today) / 86400000);
   if (isNaN(d)) return '';
   return d < 0 ? 'past due' : d === 0 ? 'due today' : d === 1 ? '1 day left' : d + ' days left';
 }
 function _homeGoalCard(g) {
   const days = g.tier === 'tracking' ? _homeDaysLeft(g.due) : '';
   const ask = g.pending_ask ? '<div class="home-ask"><div>' + esc(g.pending_ask) + '</div>'
-    + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Approve</button></div>' : '';
+    + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Yes, go ahead</button>'
+    + '<div class="ui-help">Emails still come back to you as drafts to send yourself.</div></div>' : '';
   return '<div class="home-card" data-goal="' + esc(g.id) + '"><div class="home-card-top"><span class="home-card-title">' + esc(g.title) + '</span>'
     + (days ? '<span class="home-pill working">' + esc(days) + '</span>' : '') + '</div>'
     + '<div class="home-status-line">' + esc(g.status_line || 'Getting started...') + '</div>'
