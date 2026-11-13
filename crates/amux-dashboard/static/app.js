@@ -19250,7 +19250,7 @@ function closePeek() {
   }
   _peekPollStop('close');   // open-view poller stops when the view closes (beaconed)
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
-  sessionStorage.removeItem('peekState');
+  if (!_isInTab) sessionStorage.removeItem('peekState');
   // An explicitly-closed peek must not resurrect after an iOS eviction: the
   // localStorage copy exists only for eviction restore, and leaving it here
   // meant close -> background -> relaunch reopened what the user dismissed.
@@ -19277,12 +19277,12 @@ function _savePeekState() {
       state.split = true;
       state.splitPath = _peekSplitPath || peekSessionDir || '/';
     }
-    sessionStorage.setItem('peekState', JSON.stringify(state));
+    if (!_isInTab) sessionStorage.setItem('peekState', JSON.stringify(state));
     // Also persist to localStorage (with a timestamp) so an open session peek
     // is restored after iOS evicts the backgrounded PWA, not just a soft reload.
     try { localStorage.setItem('amux_peek_state', JSON.stringify(Object.assign({ ts: Date.now() }, state))); } catch(e) {}
   } else {
-    sessionStorage.removeItem('peekState');
+    if (!_isInTab) sessionStorage.removeItem('peekState');
     try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
   }
 }
@@ -43466,7 +43466,9 @@ function switchView(view) {
   _zoomFontModeSync(view);
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
-  try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
+  // sessionStorage too: this tab's own copy, which its reload restores rather
+  // than the shared one another tab last wrote (_restoreScreen).
+  try { const _uv = JSON.stringify({ v: view, ts: Date.now() }); localStorage.setItem('amux_ui_view', _uv); if (!_isInTab) sessionStorage.setItem('amux_ui_view', _uv); } catch(e) {}
   if (!peekSession) _syncUrlHash();
   // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
   // ARRAYS that had to stay index-aligned, and the alignment had already failed
@@ -60053,6 +60055,9 @@ const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
 // on 2026-11-08: a connector alert's link opened Connectors and its prompt,
 // then the restore reopened the last worker over them.
 const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
+// Set in sessionStorage by a tab's first boot: a later boot of the same tab
+// (a reload, a discarded tab coming back) restores from its own state.
+const _UI_TAB_SEEN_KEY = 'amux_tab_seen';
 function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
@@ -60073,10 +60078,34 @@ function _restoreScreen(bootHash) {
                      || /[?&]view=/.test(location.search);
   // A link names the screen: Home is not being decided.
   if (_hasDeeplink) window._homeChoiceSettled = true;
+  // THIS TAB'S OWN STATE WINS OVER THE SHARED COPY. localStorage is shared by
+  // every tab of the origin (and every Mac app window), so amux_ui_view and
+  // amux_peek_state hold whatever tab was used LAST. A tab on the Workers list
+  // or the Files root (no #view=/#peek= in its address) that reloaded (Chrome
+  // discarding a background tab, a deploy's reload-when-shown, a crash) came
+  // back on the other tab's worker and its peek tab (owner, 2026-11-13: "each
+  // tab is not keeping its workers"). sessionStorage is per tab and survives a
+  // reload and a discard; only a tab that has none (a new tab, or a PWA iOS
+  // evicted, which wipes it) falls back to the shared copy.
+  //
+  // A tab of the in-page tab bar (?_tab=, an iframe) shares sessionStorage with
+  // the page around it, so neither copy is its own: it opens on its address
+  // (the bar keeps each tab's) and nothing else. Restoring here gave every
+  // rebuilt tab the worker another tab opened last (owner, 2026-11-13).
+  if (_isInTab) {
+    if (!_hasDeeplink) {
+      document.documentElement.classList.remove('boot-home-pending');
+      window._homeChoiceSettled = true;
+    }
+    return;
+  }
+  let _ownTab = false;
+  try { _ownTab = sessionStorage.getItem(_UI_TAB_SEEN_KEY) === '1'; sessionStorage.setItem(_UI_TAB_SEEN_KEY, '1'); } catch(e) {}
+  const _restoreStore = _ownTab ? sessionStorage : localStorage;
   // 1. Restore the tab.
   if (!_hasDeeplink) {
     try {
-      const _v = JSON.parse(localStorage.getItem('amux_ui_view') || 'null');
+      const _v = JSON.parse(_restoreStore.getItem('amux_ui_view') || 'null');
       // Only restore a view whose nav tab still EXISTS. localStorage outlives
       // the feature it names: when the notes view was deleted, browsers that had
       // last been on it kept restoring 'notes' into a dispatcher that no longer
@@ -60087,6 +60116,11 @@ function _restoreScreen(bootHash) {
       if (_v && _v.v && _v.v !== 'workers' && (Date.now() - (_v.ts || 0) < _UI_RESTORE_MAX_AGE)
           && document.getElementById('tab-' + _v.v)) {
         try { switchView(_v.v); } catch(e) {}
+        document.documentElement.classList.remove('boot-home-pending');
+        window._homeChoiceSettled = true;
+      } else if (_ownTab) {
+        // This tab never left the screen it opened on: it stays there. The
+        // Home choice is for a tab's first screen, not for its reload.
         document.documentElement.classList.remove('boot-home-pending');
         window._homeChoiceSettled = true;
       } else {
@@ -60115,7 +60149,12 @@ function _restoreScreen(bootHash) {
   if (!_ps || !_ps.session) {
     try {
       const _lp = JSON.parse(localStorage.getItem('amux_peek_state') || 'null');
-      if (_lp && _lp.session && (Date.now() - (_lp.ts || 0) < _UI_RESTORE_MAX_AGE)) _ps = _lp;
+      if (_lp && _lp.session && (Date.now() - (_lp.ts || 0) < _UI_RESTORE_MAX_AGE)) {
+        // A tab with its own state had no worker open: the shared copy is
+        // another tab's worker. Say so, so the next leak announces itself.
+        if (_ownTab) amuxTrack('peek_restore_shared_ignored', {verdict: 'other_tab_peek_not_restored', measured: true, n_considered: 1});
+        else _ps = _lp;
+      }
     } catch(e) {}
   }
   if (_ps && _ps.session) {
