@@ -1388,10 +1388,12 @@ pub(crate) async fn dispatch_one(
                 if root != sub.notify_post {
                     sub.notify_post = root;
                     let (sid, r) = (sub.id, root);
-                    let _ = state.store.write_async(move |conn| {
+                    if let Err(e) = state.store.write_async(move |conn| {
                         conn.execute("UPDATE signal_subscriptions SET notify_post = ?1 WHERE id = ?2", rusqlite::params![r, sid])?;
                         Ok(WriteOutcome { applied: true, events: vec![] })
-                    }).await;
+                    }).await {
+                        tracing::warn!(error = %e, verdict = "signal_notify_post_unsaved", "the notify thread root was not saved; the next notify starts a new thread");
+                    }
                 }
                 outcome
             }
