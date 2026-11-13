@@ -7,6 +7,8 @@ set -euo pipefail
 # The deploy target directory comes from the environment (server.env reaches
 # every process the server starts); a test's fake cargo must never write there.
 unset AMUX_DEPLOY_TARGET_DIR
+# Their fake cargo writes a few-byte stand-in; the builder refuses those by default.
+export AMUX_DEPLOY_MIN_BIN_BYTES=0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILDER="$ROOT/scripts/rust-auto-build.sh"
@@ -95,4 +97,24 @@ if ! "$INSTALL" | grep -q '^new-build$'; then
   exit 1
 fi
 
-echo "test-build-atomic-install: 5 passed, 0 failed"
+# With the default minimum (1 MB), the same few-byte build is refused and the
+# installed server stays as it was (a test's stand-in in the real deploy
+# directory, 2026-11-12).
+printf '#!/bin/sh\nprintf old-build\\n\n' > "$INSTALL"
+chmod 0755 "$INSTALL"
+HOME="$FAKE_HOME" AMUX_REPO="$REPO" AMUX_RS_INSTALL="$INSTALL" \
+AMUX_RS_BUILD_STAMP="$TMP/stamp2" AMUX_RS_BUILD_LOG="$TMP/build2.log" AMUX_RS_BUILD_LOCK="$TMP/build2.lock" \
+AMUX_RS_BUILD_PROVENANCE="$TMP/provenance2.json" AMUX_RS_ACTIVATION_REF=HEAD AMUX_ACTIVATION_ROLLBACK=0 \
+AMUX_RS_RUNS_URL=http://127.0.0.1:9/ AMUX_BUILD_MIN_FREE_GB=0 AMUX_BUILD_DEBUG_MAX_GB=999999 \
+AMUX_DEPLOY_MIN_BIN_BYTES=1048576 \
+  bash "$BUILDER" || true
+if ! "$INSTALL" | grep -q '^old-build'; then
+  echo "FAIL: a few-byte build was installed over the server (it prints: $("$INSTALL" 2>&1 | head -1))"
+  exit 1
+fi
+if ! grep -aq "verdict=deploy_binary_too_small" "$TMP/build2.log"; then
+  echo "FAIL: the refusal of a few-byte build was not logged"
+  exit 1
+fi
+
+echo "test-build-atomic-install: 7 passed, 0 failed"

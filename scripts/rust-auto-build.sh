@@ -1173,6 +1173,13 @@ fi
   # `wait` on a killed one returns 143. Either would abort the deploy itself.
   kill "$HB_PID" 2>/dev/null || true; wait "$HB_PID" 2>/dev/null || true; HB_PID=
   DEPLOY_ELAPSED=$(( $(date +%s) - DEPLOY_T0 ))
+  # NEVER INSTALL A STAND-IN. A real amux-server is over 100 MB; the builder tests'
+  # fake cargo writes a 35-byte script, and one landed in the Mac's real deploy
+  # directory on 2026-11-12 (3283eeb11). Anything under 1 MB is a failed build.
+  if [ "$BUILD_OK" = 1 ] && [ "$(wc -c < "$BUILT_BIN" 2>/dev/null | tr -d ' ' || echo 0)" -le "${AMUX_DEPLOY_MIN_BIN_BYTES:-1048576}" ]; then
+    echo "== ERROR deploy build produced $(wc -c < "$BUILT_BIN" 2>/dev/null | tr -d ' ' || echo 0) bytes at $BUILT_BIN, not a server; refusing to install it verdict=deploy_binary_too_small"
+    BUILD_OK=0
+  fi
   echo "== deploy build elapsed_s=$DEPLOY_ELAPSED ok=$BUILD_OK jobs=$DEPLOY_JOBS"
   # Cargo says when another build holds the target directory; that wait is
   # part of elapsed_s, and BUILD_OUT is deleted, so name it here.
