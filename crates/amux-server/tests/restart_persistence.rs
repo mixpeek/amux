@@ -179,6 +179,9 @@ impl Rig {
             // upkeep must not rotate the grant before that fault is armed;
             // connector_maintenance_process exercises the scheduled path.
             .envs(self.no_external_probes.then_some(("AMUX_CONNECTOR_MAINTENANCE_SECS", "0")))
+            // The inbox watcher reads Gmail with the fixture grant: Google
+            // answers the fake token 401 and the client refreshes again.
+            .envs(self.no_external_probes.then_some(("AMUX_EMAIL_EVENTS_SECS", "0")))
             .env("AMUX_RS_PORT", self.port.to_string())
             // Auth off, so it must be loopback-only: bind 127.0.0.1, never
             // the default of every interface.
