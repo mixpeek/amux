@@ -1281,6 +1281,16 @@ fn worker_chain_capped(recent: &[String]) -> bool {
     recent.len() >= WORKER_CHAIN && recent.iter().all(|a| a.starts_with("worker:"))
 }
 
+/// Seconds to wait before each retry of a failed delivery.
+const DELIVERY_BACKOFF_S: [u64; 3] = [2, 5, 10];
+
+/// Retry a failed delivery when the server failed (5xx: the worker is
+/// starting, its pane is not ready), never when it refused (4xx), and only
+/// within the backoff schedule.
+fn delivery_retryable(status: u16, attempt: usize) -> bool {
+    status >= 500 && attempt < DELIVERY_BACKOFF_S.len()
+}
+
 /// The text a worker receives. It names where it came from and how to answer
 /// there, since the worker cannot see the Messages tab.
 fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
@@ -1660,10 +1670,26 @@ pub(crate) async fn post_inner(
                 if let Some(n) = &note {
                     text = format!("{n}\n\n{text}");
                 }
-                let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
-                let status = resp.status();
-                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
-                let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+                // A worker that is still starting (an outcome's helper created
+                // a moment ago) answers 5xx not_submitted. That used to lose the
+                // post for good; a server-side failure is retried with backoff
+                // (a refusal, 4xx, is not). Bounded: four tries over ~17s.
+                let mut attempt = 0usize;
+                let (status, v) = loop {
+                    let resp = super::session_verbs::send_post(&st, &w, &hdrs, &json!({"text": text, "record_history": true})).await;
+                    let status = resp.status();
+                    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
+                    let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+                    let accepted = status.is_success() && v.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                    if accepted || !delivery_retryable(status.as_u16(), attempt) {
+                        break (status, v);
+                    }
+                    attempt += 1;
+                    tracing::warn!(conv = %conv2.key(), post = id, worker = %w, status = status.as_u16(), attempt,
+                        measured = true, n_considered = 1, verdict = "conversation_delivery_retried",
+                        "a Messages post did not reach a starting worker; retrying");
+                    tokio::time::sleep(std::time::Duration::from_secs(DELIVERY_BACKOFF_S[attempt - 1])).await;
+                };
                 let accepted = status.is_success() && v.get("ok").and_then(Value::as_bool).unwrap_or(false);
                 let submission = v.get("submission").and_then(Value::as_str).unwrap_or("");
                 // "confirmed" is the only state that means the worker has it now;
@@ -1843,6 +1869,16 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
         }
     };
     let Some(conv) = Conv::parse(&key) else { return };
+    // An outcome thread that is not routed to this worker here (a prompt read
+    // back from an older transcript names one from another run) gets nothing.
+    if let Conv::Outcome(_, w) = &conv {
+        if w != worker {
+            tracing::warn!(conv = %key, worker, routed_to = %w, measured = true, n_considered = 1,
+                verdict = "conversation_relay_outcome_not_routed",
+                "turn-end: the answer names an outcome this worker is not routed to; not posted");
+            return;
+        }
+    }
     let mut hdrs = HeaderMap::new();
     if let Ok(v) = HeaderValue::from_str(worker) {
         hdrs.insert("x-amux-session", v);
@@ -2842,6 +2878,15 @@ mod tests {
         assert_eq!(Conv::parse("x:nope"), None);
         assert_eq!(Conv::parse("g:"), None);
         assert_eq!(dm_key("B@x.com", "a@x.com"), "p:a@x.com|b@x.com");
+    }
+
+    #[test]
+    fn a_starting_worker_gets_the_post_again_and_a_refusal_does_not() {
+        assert!(delivery_retryable(500, 0));
+        assert!(delivery_retryable(503, 2));
+        assert!(!delivery_retryable(500, 3), "bounded");
+        assert!(!delivery_retryable(403, 0), "a refusal is final");
+        assert!(!delivery_retryable(409, 0));
     }
 
     #[test]

@@ -412,6 +412,16 @@ async fn resolve_target(state: &AppState, _text: &str, mut plan: Value) -> Resul
             let spec = plan["create"].clone();
             match create_worker(state, &spec).await {
                 Ok(name) => {
+                    // A request posted while the helper is still starting used
+                    // to be lost; wait (bounded) for it to run. Delivery retries
+                    // a failure too (conversations::delivery_retryable).
+                    let mut waited_ms = 0u64;
+                    while !super::session_verbs::is_running(&name).await && waited_ms < 10_000 {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        waited_ms += 250;
+                    }
+                    tracing::info!(worker = %name, waited_ms, measured = true, n_considered = 1,
+                        verdict = "intent_helper_ready_wait", "intent: waited for a new helper before its first request");
                     plan["worker"] = json!(name);
                     Ok((name, plan))
                 }

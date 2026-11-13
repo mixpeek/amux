@@ -17,6 +17,8 @@
 # - CC_HOME and AMUX_HOME both point at the demo home, so a helper's
 #   `amux get ...` reads this instance, not the owner's server.
 # - TMUX is unset with a private TMUX_TMPDIR: it never reaches the fleet's panes.
+# - It starts from a clean environment (env -i), so the calling lane's settings
+#   never become the demo's.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HOME_DIR="${AMUX_HOUSEHOLD_HOME:-$HOME/.amux/tmp/${AMUX_SESSION:-intent}/household}"
@@ -56,7 +58,12 @@ seed() {
 start() {
   if up; then echo "$URL"; return 0; fi
   [ -f "$HOME_DIR/mailboxes/household.json" ] || seed
-  env -u TMUX -u ANTHROPIC_API_KEY -u AMUX_URL -u AMUX_API -u AMUX_SESSION \
+  # A CLEAN environment (env -i): the caller's own worker env (CC_FLAGS with
+  # --dangerously-skip-permissions, CC_DIR, CC_TAGS, CC_SEND_ALLOW, the AMUX_*
+  # of the lane that runs this) must not become the demo's defaults. Measured:
+  # inherited, a demo helper's Claude ran in the caller's Vault directory.
+  env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" SHELL="${SHELL:-/bin/bash}" PATH="$PATH" \
+    LANG="${LANG:-en_US.UTF-8}" TMPDIR="${TMPDIR:-/tmp}" TZ="${TZ:-}" \
     AMUX_HOME="$HOME_DIR" CC_HOME="$HOME_DIR" AMUX_RS_PORT="$PORT" AMUX_RS_BIND=127.0.0.1 \
     AMUX_NO_SELF_ADOPT=1 TMUX_TMPDIR="$HOME_DIR/tmux" AMUX_VAULT_KEYSTORE=file \
     ${AMUX_DASHBOARD_DIR:+AMUX_DASHBOARD_DIR="$AMUX_DASHBOARD_DIR"} \

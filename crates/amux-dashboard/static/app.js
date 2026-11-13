@@ -12323,6 +12323,7 @@ async function _homeJson(path, opts) {
 }
 async function _homeRefresh() {
   if (_home.pane === 'chat') {
+    if (_home.detailsFor) return;
     if (_home.open) return _homeLoadOutcome(_home.open, true);
     const r = await _homeJson('/api/intent/outcomes');
     if (r.ok) _home.outcomes = r.v.outcomes || [];
@@ -12401,6 +12402,7 @@ function _homeGrow(i) {
   i.style.height = Math.min(i.scrollHeight, 160) + 'px';
 }
 function _homeOpenOutcome(id) {
+  _home.detailsFor = null;
   _home.open = id;
   _home.detail = null;
   _home.openStatus = 'working';
@@ -12408,6 +12410,7 @@ function _homeOpenOutcome(id) {
   _homeLoadOutcome(id, false);
 }
 function _homeBack() {
+  _home.detailsFor = null;
   _home.open = null;
   _home.detail = null;
   _homeRefresh();
@@ -12443,7 +12446,7 @@ function _homeRenderOutcome(o) {
     + '<span class="home-thread-title">' + esc(o.title || 'Request') + '</span></div>'
     + '<div class="home-receipt" id="home-receipt">' + esc(o.receipt || '')
     + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
-    + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(o.worker) + '\')">Show work</button>' : '')
+    + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
     + '<div class="home-msgs" id="home-msgs">' + posts
     + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
@@ -12456,6 +12459,66 @@ function _homeRenderOutcome(o) {
   else if (newest) newest.scrollIntoView({ block: 'start' });
   const i = document.getElementById('home-input');
   if (i) i.placeholder = 'Reply or ask a follow-up';
+}
+// Details: what the helper looked at and set up for this request, read from
+// its own tool calls (the emails it opened, the searches it ran, the
+// calendar, the reminders), shown inside Home. Each email opens in place, so
+// a person can check the answer against the source. The full workspace is a
+// small link at the end, for whoever wants the machinery.
+async function _homeDetails(id) {
+  const el = document.getElementById('home-chat-body');
+  if (!el) return;
+  _home.detailsFor = id;
+  el.innerHTML = '<div class="home-thread"><div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeCloseDetails()" aria-label="Back to the conversation">&#x2039; Back</button>'
+    + '<span class="home-thread-title">What it looked at</span></div><div class="home-empty-sub">Loading...</div></div>';
+  const o = (await _homeJson('/api/intent/outcomes/' + encodeURIComponent(id))).v;
+  const w = o.worker;
+  const ch = w ? (await _homeJson('/api/sessions/' + encodeURIComponent(w) + '/chat?limit=120')).v : {};
+  const msgs = ch.messages || [];
+  // The turns that belong to this request: from a delivered post naming o:<id>
+  // up to the next delivery for a different thread.
+  const key = "o:" + id;
+  let mine = false;
+  const mails = new Set(), searches = new Set(), wakes = [];
+  let calendar = false;
+  for (const m of msgs) {
+    if (m.role === 'user') { mine = String(m.text || '').includes(key) || (mine && !/amux post 'o:/.test(String(m.text || ''))); continue; }
+    if (!mine) continue;
+    for (const t of m.tool_calls || []) {
+      let cmd = '';
+      try { cmd = JSON.parse(t.args || '{}').command || ''; } catch (e) { cmd = String(t.args || ''); }
+      for (const x of cmd.matchAll(/api\/email\/message\/([^'"\s;&|)]+)/g)) {
+        let mid = x[1]; try { mid = decodeURIComponent(mid); } catch (e) { console.warn('[home] id not decodable', e); }
+        mails.add(mid.replace(/^</, '').replace(/>$/, ''));
+      }
+      for (const x of cmd.matchAll(/api\/email\/search\?q=([^&'"\s]+)/g)) { try { searches.add(decodeURIComponent(x[1].replace(/\+/g, ' '))); } catch (e) { searches.add(x[1]); } }
+      if (/api\/cal-events/.test(cmd)) calendar = true;
+      for (const x of cmd.matchAll(/amux wake "?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/g)) wakes.push(x[1]);
+    }
+  }
+  if (_home.detailsFor !== id) return;
+  const fetched = await Promise.all([...mails].slice(0, 12).map(mid => _homeJson('/api/email/message/' + encodeURIComponent(mid)).then(r => r.ok ? r.v : null)));
+  if (_home.detailsFor !== id) return;
+  const fmtWhen = (s) => { const d = new Date(s); return isNaN(d) ? s : d.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const mailHtml = fetched.filter(Boolean).map(m => '<details class="home-mail"><summary><b>' + esc(m.subject || '(no subject)') + '</b><br><span class="ui-help">'
+    + esc(String(m.from || '').replace(/<[^>]*>/, '').trim()) + ' · ' + esc(fmtWhen(m.date || '')) + '</span></summary>'
+    + '<div class="home-mail-body">' + esc(String(m.body || m.snippet || '')).replace(/\n/g, '<br>') + '</div></details>').join('');
+  const parts = [];
+  if (mailHtml) parts.push('<div class="home-pane-head"><span class="home-pane-title">Emails it read</span></div>' + mailHtml);
+  if (searches.size) parts.push('<div class="home-pane-head"><span class="home-pane-title">It searched your email for</span></div><div class="home-card-body">' + [...searches].map(q => '"' + esc(q) + '"').join(', ') + '</div>');
+  if (calendar) parts.push('<div class="home-pane-head"><span class="home-pane-title">Your calendar</span></div><div class="home-card-body">It checked your calendar.</div>');
+  if (wakes.length) parts.push('<div class="home-pane-head"><span class="home-pane-title">Reminders it set</span></div><div class="home-card-body">' + [...new Set(wakes)].map(x => esc(fmtWhen(x))).join('<br>') + '</div>');
+  if (!parts.length) parts.push('<div class="home-empty-sub">' + (o.status === 'ready'
+    ? 'It answered without opening your email or calendar.'
+    : 'Still working. The emails and calendar it looks at show up here as it goes.') + '</div>');
+  el.innerHTML = '<div class="home-thread"><div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeCloseDetails()" aria-label="Back to the conversation">&#x2039; Back</button>'
+    + '<span class="home-thread-title">What it looked at</span></div>' + parts.join('')
+    + (w ? '<div class="home-workspace-link"><button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(w) + '\')">Open the full workspace</button></div>' : '') + '</div>';
+}
+function _homeCloseDetails() {
+  _home.detailsFor = null;
+  _home.detail = null;
+  if (_home.open) _homeLoadOutcome(_home.open, false); else _homeRefresh();
 }
 function _homeShowWork(worker) {
   _homeLeave();
@@ -12646,7 +12709,10 @@ function _homeOpenFromPeek(id) {
 async function _homeBootChoice() {
   let choice = null;
   try { choice = localStorage.getItem('amux_home_choice'); } catch (e) { console.warn('[home] storage unreadable', e); }
-  const r = await _homeJson('/api/intent/home');
+  // Retried: a server still starting answers nothing, and a missed answer
+  // used to leave a new person on the fleet with the first-run tour over it.
+  let r = await _homeJson('/api/intent/home');
+  for (let i = 0; i < 6 && !r.ok; i++) { await new Promise(res => setTimeout(res, 1000 * (i + 1))); r = await _homeJson('/api/intent/home'); }
   if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (e) { console.warn('[home] storage unwritable', e); } }
   document.documentElement.classList.remove('boot-home-pending');
   // Settled after the caller's switch (a microtask later): the first-run tour
@@ -43009,6 +43075,10 @@ function switchView(view) {
     if (te) te.classList.toggle('active', view === name);
   }
   if (view === 'home') _homeEnter(); else _homeLeave();
+  // Someone whose first screen is Home always has a way back to it.
+  { const hb = document.getElementById('home-back-btn'); let hc = null;
+    try { hc = localStorage.getItem('amux_home_choice'); } catch (e) { console.warn('[home] storage unreadable', e); }
+    if (hb) hb.hidden = view === 'home' || hc !== 'intent'; }
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
