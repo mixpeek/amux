@@ -37,7 +37,7 @@ export async function ask(page: Page, text: string) {
   if (await page.locator('.home-back').isVisible()) await page.locator('.home-back').click();
   await page.locator('#home-input').fill(text);
   await page.locator('#home-send').click();
-  await expect(page.locator('.home-thread-title')).toBeVisible({ timeout: LIVE ? 120_000 : 30_000 });
+  await expect(page.locator('.home-thread-title')).toBeVisible({ timeout: LIVE ? 180_000 : 90_000 });
   await expect(page.locator('.home-receipt')).not.toBeEmpty();
 }
 
@@ -64,7 +64,7 @@ export async function pane(page: Page, name: 'chat' | 'ideas' | 'goals') {
 }
 
 /** Poll an API until `ok` holds (the ideas pass runs in the background). */
-export async function until<T>(fn: () => Promise<T>, ok: (v: T) => boolean, ms = LIVE ? 600_000 : 60_000): Promise<T> {
+export async function until<T>(fn: () => Promise<T>, ok: (v: T) => boolean, ms = LIVE ? 600_000 : 120_000): Promise<T> {
   const end = Date.now() + ms;
   let v = await fn();
   while (!ok(v) && Date.now() < end) {

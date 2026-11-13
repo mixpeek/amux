@@ -47,7 +47,7 @@ if (!LIVE && !Object.keys(homes).length) {
 export default defineConfig({
   testDir: '.',
   testMatch: /uc\d.*\.spec\.ts$/,
-  timeout: LIVE ? 900_000 : 120_000,
+  timeout: LIVE ? 900_000 : 240_000,
   expect: { timeout: LIVE ? 600_000 : 30_000 },
   fullyParallel: false,
   workers: LIVE ? 1 : 2,

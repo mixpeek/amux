@@ -41,8 +41,12 @@ def events():
 
 
 p = PROMPT.lower()
-# The owner's words: between the opening line and the delivery instructions.
-body = PROMPT.split("\n\n", 1)[-1].split("\n\nNobody pasted this.")[0]
+# The owner's words: the paragraph between the delivery's opening (which
+# ends in a colon) and "Nobody pasted this.", never the opening itself, which
+# names email, calendar and school in its instructions.
+_end = PROMPT.rfind("\n\nNobody pasted this.")
+_start = PROMPT.rfind(":\n\n", 0, _end) if _end >= 0 else -1
+body = PROMPT[_start + 3:_end] if _start >= 0 else PROMPT
 b = body.lower()
 status = ""
 goal = re.search(r"keep this goal for me: ([^.]*)", b)

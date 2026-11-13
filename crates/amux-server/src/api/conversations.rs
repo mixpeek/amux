@@ -2911,6 +2911,7 @@ mod tests {
         let (text, place) = delivery_for(&moved, "Dana", "Plan dinners", false);
         assert_eq!(place, "here");
         assert!(text.contains("amux post 'o:oconvtest1'") && text.contains("draft"), "{text}");
+        assert!(text.contains("never send it") && text.contains("never spend money"), "outside sends stay drafts: {text}");
     }
 
     #[test]
