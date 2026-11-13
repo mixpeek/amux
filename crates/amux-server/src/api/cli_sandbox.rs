@@ -161,7 +161,7 @@ pub fn secret_paths(home: &Path, lane: &str) -> Vec<(PathBuf, String)> {
             .collect();
         vault.sort();
         for p in vault {
-            let n = p.file_name().unwrap().to_string_lossy().into_owned();
+            let Some(n) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
             out.push((p, format!("amux secret ~/.amux/{n}")));
         }
     }
@@ -174,7 +174,7 @@ pub fn secret_paths(home: &Path, lane: &str) -> Vec<(PathBuf, String)> {
             .collect();
         others.sort();
         for p in others {
-            let w = p.file_stem().unwrap().to_string_lossy().into_owned();
+            let Some(w) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
             out.push((p, format!("another worker's env file ({w})")));
         }
     }
@@ -189,7 +189,7 @@ pub fn secret_paths(home: &Path, lane: &str) -> Vec<(PathBuf, String)> {
             .collect();
         groups.sort();
         for p in groups {
-            let g = p.file_stem().unwrap().to_string_lossy().into_owned();
+            let Some(g) = p.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
             out.push((p, format!("env file of group {g}, which this worker is not in")));
         }
     }
@@ -352,7 +352,9 @@ pub fn launch_opts_with(
     let body = claude_settings(&p, enforce);
     let path = settings_path(home, lane);
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return (String::new(), Outcome::Failed(e.to_string()));
+        }
     }
     if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&body).unwrap_or_default()) {
         return (String::new(), Outcome::Failed(e.to_string()));
@@ -394,9 +396,13 @@ fn record(home: &Path, lane: &str, o: &Outcome) {
         .unwrap_or_default();
     all.insert(lane.to_string(), json!({ "status": verdict, "detail": detail, "at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }));
     if let Some(d) = p.parent() {
-        let _ = std::fs::create_dir_all(d);
+        if let Err(e) = std::fs::create_dir_all(d) {
+            tracing::warn!(error = %e, verdict = "cli_sandbox_state_unsaved", "the sandbox launch record folder could not be created");
+        }
     }
-    let _ = std::fs::write(&p, serde_json::to_vec_pretty(&all).unwrap_or_default());
+    if let Err(e) = std::fs::write(&p, serde_json::to_vec_pretty(&all).unwrap_or_default()) {
+        tracing::warn!(error = %e, verdict = "cli_sandbox_state_unsaved", "the sandbox launch record was not saved");
+    }
 }
 
 fn last_launch(home: &Path, lane: &str) -> Option<Value> {
