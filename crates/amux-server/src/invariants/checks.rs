@@ -1216,6 +1216,36 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("message_pins", "pinned_at", true),
     // 0155: runtime_jobs/goal_check.rs writes the check's epoch seconds.
     ("goal_samples", "at", false),
+    // 0161: api/approval_cards.rs writes config::now_f64() epoch seconds.
+    ("_amux_approval_cards", "filed_at", false),
+    ("_amux_approval_cards", "expires_at", false),
+    ("_amux_approval_cards", "decided_at", false),
+    // 0160: api/ledger_checkpoint.rs writes epoch milliseconds (now_ms).
+    ("_amux_ledger_checkpoints", "ts", true),
+    ("_amux_ledger_checkpoint_exports", "ts", true),
+    // 0162: api/schedule_authority.rs writes chrono::Utc::now().timestamp() epoch seconds.
+    ("worker_sponsors", "set_at", false),
+    ("org_members", "offboarded_at", false),
+    // 0157: api/ledger.rs writes epoch milliseconds (the command's own ts;
+    // prune stamps Utc::now().timestamp_millis()).
+    ("_amux_ledger", "ts", true),
+    ("_amux_ledger_anchor", "pruned_at", true),
+    // 0164: api/mfa.rs, api/sso.rs and api/scim.rs write chrono::Utc::now().timestamp() epoch seconds.
+    ("org_invites", "mfa_at", false),
+    ("mfa_factors", "created_at", false),
+    ("mfa_factors", "confirmed_at", false),
+    ("mfa_recovery_codes", "created_at", false),
+    ("mfa_recovery_codes", "used_at", false),
+    ("scim_tokens", "created_at", false),
+    ("scim_tokens", "last_used_at", false),
+    ("scim_tokens", "revoked_at", false),
+    // 0163: api/governance.rs writes epoch milliseconds (now_ms).
+    ("_amux_ledger", "redacted_at", true),
+    ("_amux_ledger_holds", "placed_at", true),
+    ("_amux_ledger_holds", "lifted_at", true),
+    ("_amux_ledger_holds", "from_ts", true),
+    ("_amux_ledger_holds", "to_ts", true),
+    ("_amux_ledger_erasures", "at", true),
     // 0156: api/directive.rs writes now_f64() epoch seconds.
     ("directives", "issued_at", false),
     ("directives", "delivered_at", false),

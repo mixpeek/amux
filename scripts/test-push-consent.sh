@@ -107,6 +107,25 @@ check "an untrailered commit stays ONE lane" "<no Amux-Session trailer> — 1 co
 check_not "does not split into '<no'"        "  <no — "                                "$pout"
 check_not "does not split into 'trailer>'"   "  trailer> — "                           "$pout"
 
+# A SAME-NAMED LANE ON ANOTHER AMUX SERVER IS NOT YOU (governance PR 15). On
+# 2026-11-10 three commits a Mac's `amux-helper` made were read on a sandbox as
+# its own `amux-helper`'s. Amux-Host tells them apart.
+probe=$(mktemp -d)
+git -C "$probe" init -q -b main . 2>/dev/null
+git -C "$probe" config user.email t@t
+git -C "$probe" config user.name t
+echo a > "$probe/f"; git -C "$probe" add f
+git -C "$probe" commit -q -m "base" -- f 2>/dev/null
+git -C "$probe" branch -f base HEAD 2>/dev/null
+echo b >> "$probe/f"; git -C "$probe" add f
+git -C "$probe" commit -q -m "$(printf 'here\n\nAmux-Session: probe\nAmux-Host: aaaaaaaaaaaaaaaa')" -- f 2>/dev/null
+echo c >> "$probe/f"; git -C "$probe" add f
+git -C "$probe" commit -q -m "$(printf 'there\n\nAmux-Session: probe\nAmux-Host: bbbbbbbbbbbbbbbb')" -- f 2>/dev/null
+hout=$(cd "$probe" && AMUX_URL= AMUX_SESSION=probe AMUX_HOST_ID=aaaaaaaaaaaaaaaa bash "$here/scripts/push-consent.sh" base main 2>&1)
+rm -rf "$probe"
+check "another host's same-named lane is its own lane" "probe@bbbbbbbb — 1 commit(s)" "$hout"
+check_not "this host's commit is not tagged"            "probe@aaaaaaaa"                "$hout"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "PASS ($CELLS outcome cells)"

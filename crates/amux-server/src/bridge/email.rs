@@ -245,7 +245,7 @@ pub async fn send(message_id: &str, text: &str) -> Result<String, String> {
     let mut h = axum::http::HeaderMap::new();
     h.insert("x-amux-session", axum::http::HeaderValue::from_static("bridge"));
     let body = json!({"message_id": message_id, "body": text, "from": acct, "allow_self": true, "signature": false});
-    let resp = crate::api::email::reply(axum::Extension(ctx), h, axum::Json(body)).await;
+    let resp = crate::api::email::reply_with(None, ctx, h, body).await;
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
     let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));

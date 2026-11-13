@@ -262,6 +262,10 @@ _curl() {
   # Kept out of "$@" so the transport breadcrumb below never writes it to disk.
   local _id=()
   [[ -n "${AMUX_WORKER_TOKEN:-}" ]] && _id=(-H "X-Amux-Worker-Token: ${AMUX_WORKER_TOKEN}")
+  # Governance PR 20: an owner's step-up token (amux mfa step-up <code>) rides
+  # every request while it is exported; the server reads it only on the owner's
+  # governance powers.
+  [[ -n "${AMUX_STEP_UP:-}" ]] && _id+=(-H "X-Amux-Step-Up: ${AMUX_STEP_UP}")
   # RIDE OUT A RESTART (NetSuite worker, 2026-10-26: while the server
   # restarted, the CLI handed back empty output and the caller's JSON parse
   # failed with nothing saying why). A refused connection (exit 7) never sent
@@ -287,8 +291,44 @@ _curl() {
   [[ -f "$ep" ]] && canon=$(sed -n 's/.*"canonical_port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ep" 2>/dev/null)
   hp="${url#*://}"; hp="${hp%%/*}"; host="${hp%:*}"; port="${hp##*:}"
   [[ "$hp" == *:* && "$hp" != *"]" ]] || port=$([[ "$url" == https* ]] && echo 443 || echo 80)
+  local own=1
   if [[ -z "$canon" || "$port" != "$canon" ]] || ! [[ "$host" == localhost || "$host" == 127.0.0.1 || "$host" == "[::1]" ]]; then
-    wait_max=0
+    wait_max=0; own=0
+  fi
+  # OUTSIDE A WORKER THIS CLI IS THE OWNER AT THEIR OWN TERMINAL (governance
+  # PR 2): a request with no worker header no longer counts as the owner by
+  # itself, so it proves it with the owner bearer. Only to this machine's own
+  # server (a remote one has its own token), and never inside a lane, which
+  # names itself with its minted token instead.
+  if [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/auth_token" ]] \
+    && ! printf '%s\n' "$@" | grep -qi '^Authorization:'; then
+    local _owner_tok; _owner_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/auth_token" 2>/dev/null)"
+    [[ -n "$_owner_tok" ]] && _id+=(-H "Authorization: Bearer $_owner_tok")
+  elif [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/front-door-owner" ]]; then
+    # A HOST BEHIND A SIGN-IN DOOR has no owner token (AMUX_AUTH_TOKEN=none);
+    # there the owner's credential is the secret the door returns for them
+    # (governance PR 3, api/loopback_trust.rs), and the owner's own terminal
+    # presents the same one. Again only to this machine's own server.
+    local _door_tok; _door_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/front-door-owner" 2>/dev/null)"
+    [[ -n "$_door_tok" ]] && _id+=(-H "X-Amux-Front-Door-Owner: $_door_tok")
+  fi
+  # ONE TRACE PER UNIT OF WORK (governance PR 8, api/trace.rs). A caller that
+  # names its trace ($TRACEPARENT, or $AMUX_TRACE_ID with a fresh span) keeps
+  # it. Inside a worker, the server wrote the span of the last message it
+  # delivered to <home>/trace/<worker>.current, and this call descends from it.
+  # Otherwise nothing is sent and the server starts a trace at this origin.
+  if [[ "${AMUX_TRACE:-on}" != off && "${AMUX_TRACE:-on}" != 0 ]] && ! printf '%s\n' "$@" | grep -qi '^traceparent:'; then
+    local _tp="${TRACEPARENT:-}"
+    if [[ -z "$_tp" && "${AMUX_TRACE_ID:-}" =~ ^[0-9a-f]{32}$ ]]; then
+      local _span; _span=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+      [[ ${#_span} == 16 ]] && _tp="00-${AMUX_TRACE_ID}-${_span}-01"
+    fi
+    if [[ -z "$_tp" ]]; then
+      local _tw="${AMUX_SESSION:-${AMUX_WORKER:-${AMUX_ISOLATED_WORKER:-${AMUX_STATUS_WORKER:-}}}}"
+      local _tf="${AMUX_HOME:-${CC_HOME:-$HOME/.amux}}/trace/${_tw}.current"
+      [[ -n "$_tw" && "$_tw" != */* && -s "$_tf" ]] && _tp=$(head -1 "$_tf" 2>/dev/null)
+    fi
+    [[ "$_tp" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$ ]] && _id+=(-H "traceparent: $_tp")
   fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.
@@ -1735,23 +1775,105 @@ print("posted to %s%s as %s%s%s" % (c, where, d.get("author") or d.get("author_n
   esac
 }
 
-# amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]:
+# amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]:
 # what a worker did, newest first: browser verbs (with the page before and
-# after), tool calls, and calls to amux's own API (api/audit.rs). Read-only.
+# after), tool calls, calls to amux's own API, and the ledger's record of its
+# decisions with the authority behind each (api/audit.rs). Read-only.
+# amux audit export|holds|hold|unhold|person|erase|kill-switch (governance PR 19)
+# The record for an auditor, a lawyer or an incident. Anything else after
+# `amux audit` is a worker name (the per-worker timeline below).
+_audit_governance() {
+  local sub="$1"; shift
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    export)
+      local fmt="csv" out="" args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --format) fmt="${2:?--format is csv, ocsf or json}"; shift 2 ;;
+          --since-h) args+=(--data-urlencode "since_h=${2:?}"); shift 2 ;;
+          --since) args+=(--data-urlencode "since=${2:?epoch ms}"); shift 2 ;;
+          --until) args+=(--data-urlencode "until=${2:?epoch ms}"); shift 2 ;;
+          --actor) args+=(--data-urlencode "actor=${2:?}"); shift 2 ;;
+          --worker) args+=(--data-urlencode "worker=${2:?}"); shift 2 ;;
+          -o|--out) out="${2:?}"; shift 2 ;;
+          *) die "amux audit export: unknown argument $1" ;;
+        esac
+      done
+      local hdr; hdr=$(mktemp)
+      if [[ -n "$out" ]]; then
+        _curl -sk -m 300 -D "$hdr" -o "$out" -G "$api/api/audit/export" --data-urlencode "format=$fmt" "${args[@]}" || { rm -f "$hdr"; die "server unreachable"; }
+      else
+        _curl -sk -m 300 -D "$hdr" -G "$api/api/audit/export" --data-urlencode "format=$fmt" "${args[@]}" || { rm -f "$hdr"; die "server unreachable"; }
+      fi
+      # The chain's verdict goes to stderr, so the export itself stays clean.
+      local ok rows upto
+      ok=$(grep -i '^x-amux-ledger-chain-ok:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      rows=$(grep -i '^x-amux-ledger-rows:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      upto=$(grep -i '^x-amux-ledger-verified-upto:' "$hdr" | tr -d '\r' | awk '{print $2}')
+      local status; status=$(head -1 "$hdr" | awk '{print $2}'); rm -f "$hdr"
+      [[ "$status" == 200 ]] || die "amux audit export: the server answered $status"
+      echo "amux audit export: $rows rows; chain ${ok:-unknown} (verified up to seq ${upto:-?})${out:+; written to $out}" >&2
+      [[ "$ok" == true ]] ;;
+    holds) _curl -sk -m 60 "$api/api/audit/holds" || die "server unreachable"; echo ;;
+    hold)
+      local body
+      body=$(python3 - "$@" <<'PYHOLD'
+import json, sys
+a = sys.argv[1:]; d = {}
+keys = {"--name": "name", "--actor": "actor", "--worker": "worker", "--from": "from", "--to": "to"}
+i = 0
+while i < len(a):
+    if a[i] == "--all": d["all"] = True; i += 1; continue
+    k = keys.get(a[i])
+    if not k or i + 1 >= len(a): sys.exit("usage: amux audit hold [--name N] [--actor A] [--worker W] [--from MS] [--to MS] [--all]")
+    d[k] = int(a[i + 1]) if k in ("from", "to") else a[i + 1]; i += 2
+print(json.dumps(d))
+PYHOLD
+) || return 2
+      _curl -sk -m 60 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/audit/holds" || die "server unreachable"; echo ;;
+    unhold) _curl -sk -m 60 -X POST "$api/api/audit/holds/${1:?usage: amux audit unhold <hold id>}/lift" || die "server unreachable"; echo ;;
+    person) _curl -sk -m 120 -G "$api/api/audit/person" --data-urlencode "subject=${1:?usage: amux audit person <email>}" || die "server unreachable"; echo ;;
+    erase)
+      local subj="${1:?usage: amux audit erase <email> [--yes]}" dry=true
+      [[ "${2:-}" == --yes ]] && dry=false
+      _curl -sk -m 120 -X POST -H 'Content-Type: application/json' \
+        -d "$(python3 -c 'import json,sys; print(json.dumps({"subject": sys.argv[1], "dry_run": sys.argv[2] == "true"}))' "$subj" "$dry")" \
+        "$api/api/audit/person/erase" || die "server unreachable"; echo
+      [[ "$dry" == true ]] && echo "(dry run: nothing changed; add --yes to erase)" >&2 ;;
+    kill-switch)
+      case "${1:-status}" in
+        status) _curl -sk -m 30 "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        on) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' \
+              -d "$(python3 -c 'import json,sys; print(json.dumps({"engaged": True, "reason": sys.argv[1]}))' "${2:-}")" \
+              "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        off) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d '{"engaged":false}' "$api/api/audit/kill-switch" || die "server unreachable"; echo ;;
+        *) die "usage: amux audit kill-switch [status|on [reason]|off]" ;;
+      esac ;;
+  esac
+}
+
 cmd_audit() {
-  local worker="" since="24h" kind="browser,tool,api" limit=200 raw=""
+  case "${1:-}" in
+    export|holds|hold|unhold|person|erase|kill-switch) _audit_governance "$@"; return ;;
+  esac
+  local worker="" since="24h" kind="browser,tool,api,ledger" limit=200 raw=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --since) since="${2:?--since needs a duration like 30m, 2h, 3d}"; shift 2 ;;
-      --kind)  kind="${2:?--kind needs browser, tool, api or a comma list}"; shift 2 ;;
+      --kind)  kind="${2:?--kind needs browser, tool, api, ledger or a comma list}"; shift 2 ;;
       --limit) limit="${2:?--limit needs a number}"; shift 2 ;;
       --json)  raw=1; shift ;;
-      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"; return 0 ;;
+      -h|--help) echo "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]
+       amux audit export [--format csv|ocsf|json] [--since-h H] [--actor A] [--worker W] [-o FILE]
+       amux audit holds | hold [--actor A] [--worker W] [--from MS] [--to MS] [--all] [--name N] | unhold <id>
+       amux audit person <email> | erase <email> [--yes]
+       amux audit kill-switch [status|on [reason]|off]"; return 0 ;;
       *) worker="$1"; shift ;;
     esac
   done
   worker="${worker:-${AMUX_SESSION:-}}"
-  [[ -n "$worker" ]] || die "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api] [--limit N] [--json]"
+  [[ -n "$worker" ]] || die "usage: amux audit <worker> [--since 2h] [--kind browser,tool,api,ledger] [--limit N] [--json]"
   local hours
   hours=$(python3 -c 'import re,sys
 m=re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)",sys.argv[1].strip())
@@ -1790,6 +1912,10 @@ for e in reversed(d.get("events") or []):
     elif k == "tool":
         ok = det.get("ok")
         line = "%s  tool     %-10s %s%s" % (at, t, (det.get("input") or "")[:140], "" if ok in (None, True) else "  FAILED" + (" exit %s" % det["exit_code"] if det.get("exit_code") is not None else ""))
+    elif k == "ledger":
+        who = det.get("actor") or "anonymous"
+        if det.get("claimed") and who == "anonymous": who += " (claimed %s)" % det["claimed"]
+        line = "%s  ledger   %s  %s by %s on %s" % (at, t, det.get("decision") or det.get("outcome") or "", who, det.get("authority") or "none")
     else:
         line = "%s  api      %s  %s" % (at, t, det.get("status"))
     print(line)
@@ -1797,6 +1923,273 @@ srcs = ", ".join("%s %s/%s" % (s["table"], s["rows"], s["rows_total"]) + (" ERRO
 print("\n%d shown, %d in window%s. sources: %s" % (len(d.get("events") or []), d.get("n_considered", 0), " (truncated, raise --limit)" if d.get("truncated") else "", srcs))
 print("not visible here: " + "; ".join(x.split(":")[0] for x in d.get("blind_spots") or []))
 PYAUDIT
+}
+
+# amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH] [--json]
+# amux ledger checkpoint | key
+# Governance PR 10. Without --against: the server's own verify (chain plus
+# signed checkpoints plus the external sink). With --against: an auditor's
+# check that needs only the exported checkpoints and the public key. Every
+# checkpoint's signature, hash and link is checked here, not by the server;
+# then the ledger's hash at the newest checkpoint's seq is compared, from a
+# copy of the database (--db, every checkpoint, every row re-hashed here) or
+# from the server (GET /api/ledger/at/<seq>).
+cmd_security() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    at-rest) _curl -sk -m 60 "$api/api/security/at-rest" || die "server unreachable"; echo ;;
+    decrypt-grants) _curl -sk -m 120 -X POST "$api/api/security/at-rest/decrypt" || die "server unreachable"; echo ;;
+    *) echo "usage: amux security at-rest          what is encrypted at rest, and where the key lives
+       amux security decrypt-grants   rewrite sealed connector grants as plain files (owner; needs AMUX_ENCRYPT_AT_REST=off)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
+# Governance PR 20: a second factor (TOTP) for the caller, and the owner's
+# step-up for the kill switch, holds, erasure and capability changes.
+cmd_mfa() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  local body
+  case "$sub" in
+    status) _curl -sk -m 30 "$api/api/mfa/status" || die "server unreachable"; echo ;;
+    enroll) _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d '{}' "$api/api/mfa/enroll" || die "server unreachable"; echo ;;
+    confirm|verify|step-up|recovery-codes)
+      [[ -n "${1:-}" ]] || die "usage: amux mfa $sub <code>"
+      body=$(python3 -c 'import json,sys; print(json.dumps({"code": sys.argv[1]}))' "$1")
+      local path="$sub"; [[ "$sub" == confirm ]] && path="enroll/confirm"
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/mfa/$path" || die "server unreachable"; echo
+      [[ "$sub" == step-up ]] && echo "export AMUX_STEP_UP=<token above> for five minutes of the owner's governance powers" >&2 ;;
+    reset)
+      body=$(python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps({"subject": a[0]} if a and not a[0].isdigit() else {"code": a[0] if a else ""}))' "$@")
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/mfa/reset" || die "server unreachable"; echo ;;
+    *) echo "usage: amux mfa status                 your second factor, the policy and the step-up switch
+       amux mfa enroll                 start: prints a key and an otpauth link for an authenticator app
+       amux mfa confirm <code>         finish enrolling; prints ten recovery codes once
+       amux mfa verify <code>          prove a factor (a code or a recovery code)
+       amux mfa step-up <code>         owner: a five-minute token for the kill switch, holds, erasure, capabilities
+       amux mfa recovery-codes <code>  new recovery codes
+       amux mfa reset <code>|<subject> reset your own (with a code) or, as owner, a member's (member:<email>)"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
+# Governance PR 20: SSO status and the identity provider's SCIM tokens (owner).
+cmd_identity() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    sso) _curl -sk -m 30 "$api/api/sso/status" || die "server unreachable"; echo ;;
+    scim-tokens) _curl -sk -m 30 "$api/api/scim/tokens" || die "server unreachable"; echo ;;
+    scim-token)
+      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"label": " ".join(sys.argv[1:])}))' "$@")
+      _curl -sk -m 30 -X POST -H 'Content-Type: application/json' -d "$body" "$api/api/scim/tokens" || die "server unreachable"; echo ;;
+    scim-revoke) [[ -n "${1:-}" ]] || die "usage: amux identity scim-revoke <id>"
+      _curl -sk -m 30 -X DELETE "$api/api/scim/tokens/$1" || die "server unreachable"; echo ;;
+    *) echo "usage: amux identity sso                 single sign-on settings and counts
+       amux identity scim-token [label]  issue a token for the identity provider (shown once)
+       amux identity scim-tokens         list them (no secrets)
+       amux identity scim-revoke <id>    revoke one"
+       [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+}
+
+cmd_ledger() {
+  local sub="${1:-}"; shift || true
+  local api="${AMUX_API:-$(cmd_url)}"
+  case "$sub" in
+    key) _curl -sk -m 30 "$api/api/ledger/checkpoints/key" || die "server unreachable"; echo; return 0 ;;
+    checkpoint) _curl -sk -m 120 -X POST "$api/api/ledger/checkpoints" || die "server unreachable"; echo; return 0 ;;
+    verify) ;;
+    *) echo "usage: amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH] [--json]
+       amux ledger checkpoint   sign the ledger head now and export it
+       amux ledger key          this host's checkpoint public key"; [[ -z "$sub" || "$sub" == -h || "$sub" == --help ]] && return 0; return 2 ;;
+  esac
+  local against="" pubkey="" db="" raw=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --against) against="${2:?--against needs a checkpoints.jsonl path or s3}"; shift 2 ;;
+      --pubkey)  pubkey="${2:?--pubkey needs the hex public key}"; shift 2 ;;
+      --db)      db="${2:?--db needs a copy of amux.db}"; shift 2 ;;
+      --json)    raw=1; shift ;;
+      *) die "amux ledger verify: unknown argument $1" ;;
+    esac
+  done
+  if [[ -z "$against" ]]; then
+    local out
+    out=$(_curl -sk -m 120 "$api/api/ledger/verify") || die "server unreachable"
+    if [[ -n "$raw" ]]; then printf '%s\n' "$out"; else
+      OUT="$out" python3 -c 'import json,os
+d=json.loads(os.environ["OUT"]); c=d.get("checkpoints") or {}
+print("ledger: %s, %s rows sealed, %s unsealed" % ("ok" if d.get("chain_ok") else "BROKEN", d.get("sealed"), d.get("unsealed")))
+print("checkpoints: %s verified%s" % (c.get("verified"), "" if c.get("ok", True) else ", FAILED: " + json.dumps(c.get("first_bad"))))
+ef=c.get("export_file") or {}; print("export file: %s (%s lines, behind by %s)" % ("ok" if ef.get("ok") else "MISMATCH " + json.dumps(ef.get("first_bad")), ef.get("lines"), ef.get("behind_by")))
+ex=c.get("external") or {}; print("external sink: " + ("not configured" if not ex.get("configured") else ("ok" if ex.get("ok") else "MISMATCH: %s" % ex.get("reason")) if ex.get("checked") else "not checked: %s" % (ex.get("why_unmeasured") or ex.get("reason"))))
+print("verdict:", "OK" if d.get("ok") else "FAILED " + json.dumps(d.get("first_bad")))'
+    fi
+    python3 -c 'import json,sys; sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$out"
+    return
+  fi
+  AGAINST="$against" PUBKEY="$pubkey" DB="$db" RAW="$raw" AMUX_BIN="$0" python3 - <<'PYLEDGER'
+import hashlib, hmac, json, os, subprocess, sys, tempfile, datetime, urllib.request, urllib.parse
+FORMAT = "amux-ledger-checkpoint-v1"
+def sha(b): return hashlib.sha256(b).hexdigest()
+def message(c):
+    return "%s\nhost_id=%s\nseq=%s\nhead_hash=%s\nts=%s\nn_rows=%s\nprev_checkpoint_hash=%s\npublic_key=%s" % (
+        FORMAT, c["host_id"], c["seq"], c["head_hash"], c["ts"], c["n_rows"], c["prev_checkpoint_hash"], c["public_key"])
+def sig_ok(pk_hex, msg, sig_hex):
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(pk_hex)).verify(bytes.fromhex(sig_hex), msg.encode())
+        return True
+    except ImportError:
+        pass
+    except Exception:
+        return False
+    import base64
+    der = bytes.fromhex("302a300506032b6570032100" + pk_hex)
+    pem = "-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n" % base64.b64encode(der).decode()
+    with tempfile.TemporaryDirectory() as d:
+        for n, b in (("k.pem", pem.encode()), ("m", msg.encode()), ("s", bytes.fromhex(sig_hex))):
+            open(os.path.join(d, n), "wb").write(b)
+        r = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", os.path.join(d, "k.pem"), "-rawin",
+                            "-in", os.path.join(d, "m"), "-sigfile", os.path.join(d, "s")], capture_output=True)
+        return r.returncode == 0
+
+def s3_checkpoints():
+    E = lambda k, d=None: os.environ.get("AMUX_LEDGER_CHECKPOINT_S3_" + k, d)
+    ep, bucket, kid, secret = E("ENDPOINT"), E("BUCKET"), E("ACCESS_KEY_ID"), E("SECRET_ACCESS_KEY")
+    if not all([ep, bucket, kid, secret]):
+        sys.exit("amux ledger verify --against s3 needs AMUX_LEDGER_CHECKPOINT_S3_ENDPOINT, _BUCKET, _ACCESS_KEY_ID and _SECRET_ACCESS_KEY")
+    region, prefix = E("REGION", "auto"), E("PREFIX", "amux-ledger-checkpoints").strip("/") + "/"
+    ep = ep.rstrip("/"); host = urllib.parse.urlparse(ep).netloc
+    enc = lambda s, keep: urllib.parse.quote(s, safe="-_.~" + ("/" if keep else ""))
+    def req(key, query):
+        uri = "/" + enc(bucket, False) + ("/" + enc(key, True) if key else "")
+        qs = "&".join("%s=%s" % (enc(k, False), enc(v, False)) for k, v in sorted(query.items()))
+        now = datetime.datetime.now(datetime.timezone.utc); amz = now.strftime("%Y%m%dT%H%M%SZ"); date = now.strftime("%Y%m%d")
+        ph = sha(b""); h = {"host": host, "x-amz-content-sha256": ph, "x-amz-date": amz}
+        signed = ";".join(sorted(h)); canon = "".join("%s:%s\n" % (k, h[k]) for k in sorted(h))
+        creq = "GET\n%s\n%s\n%s\n%s\n%s" % (uri, qs, canon, signed, ph)
+        scope = "%s/%s/s3/aws4_request" % (date, region)
+        sts = "AWS4-HMAC-SHA256\n%s\n%s\n%s" % (amz, scope, sha(creq.encode()))
+        k = ("AWS4" + secret).encode()
+        for part in (date, region, "s3", "aws4_request"): k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+        sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+        r = urllib.request.Request(ep + uri + ("?" + qs if qs else ""), headers={"x-amz-content-sha256": ph, "x-amz-date": amz,
+            "Authorization": "AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s" % (kid, scope, signed, sig)})
+        return urllib.request.urlopen(r, timeout=30).read().decode()
+    keys, token = [], None
+    while True:
+        q = {"list-type": "2", "prefix": prefix}
+        if token: q["continuation-token"] = token
+        t = req(None, q)
+        keys += [s.split("</Key>")[0] for s in t.split("<Key>")[1:]]
+        if "<IsTruncated>true</IsTruncated>" not in t: break
+        token = t.split("<NextContinuationToken>")[1].split("</NextContinuationToken>")[0]
+    out = {}
+    for k in sorted(keys):
+        c = json.loads(req(k, {}))
+        out.setdefault(c["host_id"], []).append(c)
+    if len(out) > 1:
+        print("note: the sink holds checkpoints from %d hosts; checking each" % len(out))
+    return out
+
+against, pinned, db = os.environ["AGAINST"], os.environ.get("PUBKEY") or None, os.environ.get("DB") or None
+if against == "s3":
+    groups = s3_checkpoints()
+else:
+    groups = {}
+    for i, line in enumerate(open(against), 1):
+        if line.strip():
+            try:
+                c = json.loads(line)
+            except Exception:
+                sys.exit("line %d is not JSON" % i)
+            groups.setdefault(c.get("host_id"), []).append(c)
+if not groups:
+    sys.exit("no checkpoints found in " + against)
+if not pinned:
+    print("WARNING: no --pubkey given; trusting the key in the first checkpoint. Pin it with --pubkey for a real audit.")
+
+def chain_from_db(path):
+    import sqlite3
+    c = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    upto, prev = c.execute("SELECT upto_seq, anchor_hash FROM _amux_ledger_anchor WHERE id=1").fetchone()
+    cols = ("seq, event_id, ts, kind, trace_id, parent_event_id, actor, claimed, on_behalf_of, authority, policy_version, action, "
+            "resource, input_hash, output_hash, decision, outcome, cost_microusd, source_table, source_id, span_id, parent_span_id, trace_source")
+    hashes, bad = {}, None
+    for row in c.execute("SELECT %s, prev_hash, hash FROM _amux_ledger ORDER BY seq" % cols):
+        f, rp, rh = list(row[:23]), row[23], row[24]
+        if rh is None: break
+        def s(v):
+            if v is None: return None
+            if isinstance(v, bytes): return sha(v)
+            if isinstance(v, float): return str(int(v)) if v.is_integer() else repr(v)
+            return str(v)
+        f = [s(v) for v in f]
+        if all(v is None for v in f[20:]): f = f[:20]
+        buf = prev + "".join("\x1e" + (v if v is not None else "\x00") for v in f)
+        h = sha(buf.encode())
+        if rp != prev or h != rh:
+            bad = {"seq": row[0], "reason": "row does not hash to its stored hash or link"}; break
+        hashes[row[0]] = h; prev = h
+    return upto, hashes, bad
+
+report = {"ok": True, "hosts": {}}
+for host, cps in groups.items():
+    key = pinned or cps[0]["public_key"]
+    prev, prev_seq, first_bad = "genesis", 0, None
+    for c in cps:
+        m = message(c)
+        why = None
+        if sha(m.encode()) != c.get("checkpoint_hash"): why = "fields do not hash to checkpoint_hash"
+        elif c["public_key"] != key: why = "signed by a different key than the pinned one"
+        elif not sig_ok(c["public_key"], m, c["signature"]): why = "signature does not verify"
+        elif c["prev_checkpoint_hash"] != prev: why = "does not link to the checkpoint before it (one was removed or reordered)"
+        elif c["seq"] < prev_seq: why = "seq went backwards"
+        if why:
+            first_bad = {"checkpoint_seq": c["seq"], "reason": why}; break
+        prev, prev_seq = c["checkpoint_hash"], c["seq"]
+    ledger = {"checked": False}
+    if not first_bad:
+        if db:
+            upto, hashes, chain_bad = chain_from_db(db)
+            ledger = {"checked": True, "source": "db", "rows_rehashed": len(hashes), "chain_bad": chain_bad}
+            for c in cps:
+                if c["seq"] > upto:
+                    if hashes.get(c["seq"]) != c["head_hash"]:
+                        first_bad = {"checkpoint_seq": c["seq"], "reason": "the database's chain does not hold the hash this checkpoint signed (rewritten)"}; break
+            if chain_bad and not first_bad:
+                first_bad = {"seq": chain_bad["seq"], "reason": "the database's chain is broken: " + chain_bad["reason"]}
+        else:
+            last = cps[-1]
+            r = subprocess.run([os.environ["AMUX_BIN"], "get", "api/ledger/at/%d" % last["seq"]], capture_output=True, text=True)
+            try:
+                at = json.loads(r.stdout)
+            except Exception:
+                at = {}
+            ledger = {"checked": bool(at), "source": "server", "seq": last["seq"], "server": at}
+            if not at:
+                ledger["why_unmeasured"] = "the server did not answer"
+            elif at.get("present") and at.get("hash") != last["head_hash"]:
+                first_bad = {"checkpoint_seq": last["seq"], "reason": "the server's ledger no longer holds the hash this checkpoint signed (rows up to it were rewritten)"}
+            elif not at.get("present") and not at.get("pruned"):
+                first_bad = {"checkpoint_seq": last["seq"], "reason": "the server's ledger row this checkpoint signed is gone"}
+    h = {"checkpoints": len(cps), "key": key, "latest_seq": cps[-1]["seq"], "first_bad": first_bad, "ledger": ledger,
+         "ok": first_bad is None and ledger.get("checked", False)}
+    report["hosts"][host] = h
+    report["ok"] = report["ok"] and h["ok"]
+if os.environ.get("RAW"):
+    print(json.dumps(report, indent=2))
+else:
+    for host, h in report["hosts"].items():
+        print("host %s: %d checkpoints, newest seq %s, key %s..." % (host, h["checkpoints"], h["latest_seq"], h["key"][:16]))
+        print("  ledger compared: %s" % (("yes, from " + h["ledger"]["source"]) if h["ledger"].get("checked") else "NO (" + str(h["ledger"].get("why_unmeasured", "a checkpoint failed first")) + ")"))
+        print("  " + ("OK" if h["ok"] else "FAILED: " + json.dumps(h["first_bad"])))
+sys.exit(0 if report["ok"] else 1)
+PYLEDGER
 }
 
 # amux receipts [--keep] [<worker>]: outcomes held so they would not wake you.
@@ -6804,6 +7197,10 @@ ${BOLD}Interaction:${RESET}
   amux post <conv> [text]        Post to Messages: g:<group>, #group, w:<worker>, or p:<person> (from a
                                  worker: your 1:1 direct message with that person). Prints where and as whom
   amux audit <worker> [--since 2h] [--kind browser,tool,api]
+  amux ledger verify [--against <checkpoints.jsonl|s3>] [--pubkey HEX] [--db PATH]   Check the ledger and its signed checkpoints
+  amux security at-rest | decrypt-grants   What is encrypted at rest; the owner's way back to plain grant files
+  amux mfa status|enroll|confirm|verify|step-up   Your second factor (TOTP); the owner's five-minute step-up
+  amux identity sso|scim-token|scim-tokens|scim-revoke   Single sign-on status and the identity provider's SCIM tokens
                                  What a worker did: browser verbs (page before/after), tool calls, API calls
   amux send <name> --stdin       Send a message read from stdin ${GREEN}(preferred)${RESET}
                                  ${DIM}amux send api --stdin <<'EOF'${RESET}
@@ -7236,6 +7633,18 @@ cmd_publish() {
   # (--file). All listed and removable in the Apps tab.
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local kind=app target title origin=0
+  # --api "METHOD /api/path" (repeatable): amux calls the app asks for. A
+  # published app has no amux access otherwise (governance PR 5).
+  local -a api_rules=() rest=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --api ]]; then
+      [[ -n "${2:-}" ]] || die "usage: --api \"METHOD /api/path\""
+      api_rules+=("$2"); shift 2
+    else
+      rest+=("$1"); shift
+    fi
+  done
+  set -- "${rest[@]+"${rest[@]}"}"
   case "${1:-}" in
     ""|-h|--help|help)
       cat <<EOF
@@ -7249,6 +7658,9 @@ ${BOLD}amux publish${RESET}: apps and files in the Apps tab
                                                that breaks under /pub/<id>/
   amux publish --file PATH [TITLE]             A file or folder for anyone with the link
   amux publish --list                          List them
+  amux publish PORT [TITLE] --api "POST /api/sessions/NAME/send"
+                                               Ask for amux calls the app needs
+                                               (none otherwise; the owner approves)
 
 This is the default host for anything you publish. Do not deploy to Netlify,
 Vercel, Cloudflare Pages, GitHub Pages or another outside host unless the owner
@@ -7263,6 +7675,10 @@ start a web server for static files: it serves every file beside them.
 
 Anything a worker adds stays PENDING (a public link serves nobody, an app
 inside amux does not open) until the owner approves it in the Apps tab.
+
+An app gets its own amux credential, saved to ~/.amux/app-tokens/ID.token.
+Start the app with AMUX_APP_TOKEN set to it; the app sends it as
+X-Amux-App-Token and may make only the calls the owner allowed.
 EOF
       return 0
       ;;
@@ -7315,17 +7731,19 @@ for l in links:
   body=$(python3 -c '
 import json, sys
 kind, target, title, is_path, origin = sys.argv[1:6]
-d = {"kind": kind, "title": title}
+d = {"kind": kind, "title": title, "api": sys.argv[6:]}
 if origin == "1":
     d["origin"] = True
 if is_path == "1":
     d["path"] = target
 else:
     d["port"] = int(target)
-print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin")
+print(json.dumps(d))' "$kind" "$target" "$title" "$is_path" "$origin" "${api_rules[@]+"${api_rules[@]}"}")
+  local token_dir="${AMUX_HOME:-$HOME/.amux}/app-tokens"
+
   _curl -sk -m 15 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" \
     -d "$body" "$AMUX_API/api/page-links" | python3 -c '
-import json, sys
+import json, os, sys
 try:
     d = json.load(sys.stdin)
 except ValueError:
@@ -7333,6 +7751,24 @@ except ValueError:
 if "error" in d:
     sys.exit("not published: " + str(d["error"]))
 print(d.get("url") or d["path"] + "   (address unknown: set AMUX_PUBLIC_URL in server.env)")
+tok = d.pop("app_token", None)
+if tok:
+    # The app credential is shown once; keep it out of the transcript.
+    tdir = sys.argv[1]
+    os.makedirs(tdir, mode=0o700, exist_ok=True)
+    tpath = os.path.join(tdir, d["id"] + ".token")
+    fd = os.open(tpath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok + "\n")
+    print("app credential: %s (start the app with AMUX_APP_TOKEN=\"$(cat %s)\"; it sends it as X-Amux-App-Token)" % (tpath, tpath), file=sys.stderr)
+    asked = d.get("api_requested") or []
+    allowed = d.get("api_allow") or []
+    if allowed:
+        print("amux access: " + "; ".join(allowed), file=sys.stderr)
+    elif asked:
+        print("amux access asked for (allowed when the owner approves): " + "; ".join(asked), file=sys.stderr)
+    else:
+        print("amux access: none (ask with --api \"METHOD /api/path\")", file=sys.stderr)
 if not d.get("file") and not d.get("listening"):
     print("note: nothing listens on port %s yet; the link works once the app runs" % d["port"], file=sys.stderr)
 if d.get("pending"):
@@ -7342,7 +7778,7 @@ elif d.get("public"):
 else:
     print("only you, signed in.", file=sys.stderr)
 print("Listed in the Apps tab; remove with: amux publish --revoke " + d["id"], file=sys.stderr)
-'
+' "$token_dir"
 }
 
 cmd_pin() {
@@ -12823,6 +13259,10 @@ if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     send)             shift; cmd_send "$@" ;;
     post)             shift; cmd_post "$@" ;;
     audit)            shift; cmd_audit "$@" ;;
+    ledger)           shift; cmd_ledger "$@" ;;
+    security)         shift; cmd_security "$@" ;;
+    mfa)              shift; cmd_mfa "$@" ;;
+    identity)         shift; cmd_identity "$@" ;;
     receipts)         shift; cmd_receipts "$@" ;;
     stop|kill)        shift; cmd_stop "$@" ;;
     pause)            shift; cmd_pause "$@" ;;

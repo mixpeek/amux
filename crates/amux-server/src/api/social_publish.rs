@@ -406,6 +406,12 @@ pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
     if orphaned {
         tracing::warn!(job = "social-publish", verdict = "social_queue_uncertain", reason = "orphaned_claim", "a post left mid-publish by a stopped server was marked uncertain, not re-sent");
     }
+    // The owner's kill switch (governance PR 19): posts stay queued until it lifts.
+    if crate::api::governance::kill_enabled() && crate::api::governance::kill_state(&crate::config::amux_home()).is_some() {
+        tracing::warn!(job = "social-publish", verdict = "kill_switch_held", measured = true, n_considered = 0,
+            "the kill switch is engaged; queued posts wait");
+        return json!({"measured": true, "n_considered": 0, "held_by_kill_switch": true});
+    }
     let due: Vec<i64> = match state.store.read().map_err(|e| e.to_string()).and_then(|c| {
         c.prepare("SELECT id FROM social_queue WHERE status = 'queued' AND next_attempt_at <= ?1 ORDER BY next_attempt_at, id LIMIT 20")
             .and_then(|mut st| Ok(st.query_map([at], |r| r.get(0))?.flatten().collect()))
@@ -420,7 +426,10 @@ pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
     let (mut posted, mut retried, mut failed, mut uncertain) = (0, 0, 0, 0);
     for id in &due {
         let Some(c) = claim(state, *id, &me).await else { continue };
-        let mut headers = HeaderMap::new();
+        // The job acts for the worker that queued the post: the worker's
+        // connector scope applies, and the job's policy mark proves the call
+        // came from inside the server (governance PR 4, connector_scope.rs).
+        let mut headers = crate::api::org::policy_headers("job:social-publish");
         if let Ok(v) = HeaderValue::from_str(&c.session) {
             headers.insert("x-amux-session", v);
         }

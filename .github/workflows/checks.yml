@@ -368,6 +368,12 @@ jobs:
           python3 scripts/git-hooks/test_pre_push_spa_gates.py
       # AF-1073: pre-push runs the checks.yml shell tests that name a changed
       # script, on the pushed commit, since land_gate.py runs none of them.
+      # Governance PR 19: the owner's kill switch stops a worker's push, from
+      # the file the server writes, with no override.
+      - name: the pre-push hook refuses a worker's push while the kill switch is engaged
+        run: |
+          set -euo pipefail
+          python3 scripts/git-hooks/test_pre_push_kill_switch.py
       - name: the pre-push script tests refuse a script red, and only this push's (AF-1073)
         run: |
           set -euo pipefail
@@ -519,7 +525,7 @@ jobs:
       - name: The Cloud sign-in door queues a page load's burst instead of dropping it
         run: python3 cloud/desktop/test_door_backlog.py
       - name: The sign-in door throttles password guessing and enforces the owner's address allowlist
-        run: python3 -m unittest cloud/desktop/test_door_throttle.py cloud/desktop/test_door_allowlist.py
+        run: python3 -m unittest cloud/desktop/test_door_throttle.py cloud/desktop/test_door_allowlist.py cloud/desktop/test_door_owner_proof.py cloud/desktop/test_door_totp.py
       - name: Python reading a shared site-packages defaults grpc to fork-safe (Mac crashes RCA 20261018-105230)
         run: |
           set -uo pipefail
