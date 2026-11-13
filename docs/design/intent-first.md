@@ -1,6 +1,6 @@
 # Intent first: describe what you want, amux works out how
 
-Owner request, 2026-11-12. Status: proposal, nothing built.
+Owner request, 2026-11-12. Status: built; see [What shipped](#what-shipped) at the end.
 
 Today a person has to understand workers, models, execution modes and
 configuration before amux does anything for them. The goal: they say what they
@@ -128,3 +128,40 @@ the router's accuracy metric.
   default; isolation stays an explicit setting.
 - **Inferred goals start on their own or wait for a tap.** Decided:
   start on their own, limited to reading and drafting.
+
+## What shipped
+
+Every phase, composed from existing primitives (A1). No new primitive: an
+outcome is a Messages thread, an idea is a suggested request, a goal is a
+goal contract worked by a worker on a schedule.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Router | `api/intent.rs`, `POST /api/intent/plan` | One decision: `answer`, `send`, `create` or `continue`. The helper model judges; every worker, directory, group, type, model and effort it names is validated, an isolated worker is never a target (A9), and each correction is reported in `corrections`. Returns `why`, `candidates`, `measured`, `n_considered` and `sources`. Past "Change" overrides are fed back into its prompt. |
+| Roster | `orchestrate::roster_entries` | The voice router and the intent router read one roster (name, groups, description, type, directory, isolation). |
+| Dialog | `app.js` `_outcomeStart` | "Describe what you want" routes first: it answers, sends to the worker that owns the work, or creates one. Created workers are not isolated by default. |
+| Outcomes | `api/intent_store.rs`, `conversations.rs` `Conv::Outcome` | `o:<id>` threads. A request is posted into the thread, which delivers it to the worker; the answer comes back into the thread (`relay_turn`, now also straight from a chat turn). A follow-up goes to the same worker with no routing call. "Change" moves an outcome and re-delivers it; `GET /api/intent/stats` is the override rate. |
+| Home | `index.html` `#home-view`, `app.js` `_home*` | Chat, Ideas, Goals and Workspace; one bottom row on a phone with the composer above it. The default first screen for a new person (`GET /api/intent/home`: the `home` pref, else intent below five workers). The fleet stays hidden until the choice is made, so it never flashes first. |
+| Worker view | `peek-tab-outcomes`, `_homeCardOutcomes` | An Outcomes tab first in the worker view, and one line on each worker card naming its outcomes. |
+| Ideas | `api/intent_items.rs` | One pass reads the owner's messages to every worker (`cmd_history`), their outcomes, recent and related email (searches the model writes), the calendar, and what they started or dismissed before (memories in the `intent-home` group, which no worker is in). Each idea must cite sources that exist or it is dropped and counted. A pass runs after each new request, on refresh, and every 30 minutes by a shell schedule that runs the model only after three new requests. |
+| Goals | `api/intent_items.rs` | Inferred goals, tiered `tracking` (a real due date) and `standing`. Each is a goal contract (versioned; a reword is a new version), an outcome thread to a worker, and a shell schedule every 2 hours that fingerprints the goal's inputs and asks the worker only when they changed. The status line is the worker's newest `STATUS:` line. Goals start on their own but read and draft only; an `ASK:` line shows an Approve button, and approval is recorded (`outside_ok`). |
+| Self-configuration | `intent.rs`, `intent_store.rs` | The router picks type, model and effort per outcome; overrides feed the router prompt; a daily shell schedule stops helpers amux created once idle for 7 days with no active goal (archiving stays a person's call). |
+| File mailbox | `integrations/local_mailbox.rs` | A read-only mailbox in `AMUX_HOME/mailboxes/*.json`, read by `/api/email/inbox`, `/search` and `/message` beside Gmail. Nothing can be sent from it. |
+
+### The acceptance set
+
+The owner's inbox has no kids, camp or school mail, so the nine use cases run on
+a seeded household (`e2e/intent/household.mjs`: Dana, Rafi, Ezra and Noa, a camp
+waitlist, a school application, conferences, a car rental split with Tova, open
+enrollment, a family calendar). Two ways to run them:
+
+- `e2e/intent/intent.config.ts`: isolated servers at 1280px and 375px with a
+  stand-in helper model and chat helper. Every spec asserts no outside send
+  (`GET /api/email/log`) and no jargon on the default path.
+- `AMUX_INTENT_URL=<url>`: the same specs against the household demo
+  (`scripts/intent-household.sh start`), the live binary with the real model.
+
+Persona runs (`e2e/persona/README.md`): a fresh evaluator plays Dana on the
+household demo at a phone size, with only `e2e/persona/dana.sh`.
+
+<!-- RESULTS -->
