@@ -11236,3 +11236,4 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-mail-body { margin-top: var(--space-2); font-size: var(--fs-lg); line-height: 1.5; overflow-wrap: anywhere; }
 .home-workspace-link { margin-top: var(--space-6); text-align: center; font-size: var(--fs-sm); }
 .home-back-btn { min-height: 44px; }
+.home-pane-sub { color: var(--dim); font-size: var(--fs-lg); margin: calc(-1 * var(--space-1)) 0 var(--space-2); }

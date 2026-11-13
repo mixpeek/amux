@@ -920,6 +920,10 @@ mod tests {
         assert_eq!(status_from_posts(&posts), Some(("Next is the dentist on Tue; the form is filled.".into(), 5)));
         assert_eq!(ask_from_posts(&posts).as_deref(), Some("May I email the school office?"));
         assert_eq!(ask_from_posts(&posts[..2]), None, "the newest worker post has no ask");
+        // The owner quoting a STATUS line (or pasting one) never becomes the goal's status.
+        let mut quoted = posts.clone();
+        quoted.push(json!({"author_key": "person:owner", "body": "STATUS: what the owner typed", "ts": 12}));
+        assert_eq!(status_from_posts(&quoted).map(|s| s.0), Some("Next is the dentist on Tue; the form is filled.".into()));
     }
 
     #[test]

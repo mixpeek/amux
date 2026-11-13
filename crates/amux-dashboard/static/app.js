@@ -12445,7 +12445,7 @@ function _homeRenderOutcome(o) {
   el.innerHTML = '<div class="home-thread">'
     + '<div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeBack()" aria-label="Back to all requests">&#x2039; All</button>'
     + '<span class="home-thread-title">' + esc(o.title || 'Request') + '</span></div>'
-    + '<div class="home-receipt" id="home-receipt">' + esc(o.receipt || '')
+    + '<div class="home-receipt" id="home-receipt">' + esc(working ? (o.receipt || '') : String(o.receipt || '').replace(/ is on it$/, ' answered'))
     + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
@@ -12514,7 +12514,7 @@ async function _homeDetails(id) {
     : 'Still working. The emails and calendar it looks at show up here as it goes.') + '</div>');
   el.innerHTML = '<div class="home-thread"><div class="home-thread-head"><button type="button" class="btn home-back" onclick="_homeCloseDetails()" aria-label="Back to the conversation">&#x2039; Back</button>'
     + '<span class="home-thread-title">What it looked at</span></div>' + parts.join('')
-    + (w ? '<div class="home-workspace-link"><button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(w) + '\')">Open the full workspace</button></div>' : '') + '</div>';
+    + (w ? '<div class="home-workspace-link"><button type="button" class="home-link" onclick="_homeShowWork(\'' + esc(w) + '\')">See everything behind this</button></div>' : '') + '</div>';
 }
 function _homeCloseDetails() {
   _home.detailsFor = null;
@@ -12647,8 +12647,8 @@ function _homeRenderGoals(v) {
       + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
     return;
   }
-  el.innerHTML = (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
-    + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
+  el.innerHTML = (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+    + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
 }
 async function _homeGoalDismiss(id) {
   if (!await showConfirm('Stop keeping track of this?', 'Stop')) return;

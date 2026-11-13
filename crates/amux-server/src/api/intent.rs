@@ -115,9 +115,11 @@ pub(crate) fn build_prompt(
     let mut p = String::from(
         "You route a person's request inside amux, where AI workers do work for them. \
          Decide ONE action:\n\
-         - \"answer\": a quick question you can answer fully yourself, right now, from general \
-         knowledge (no reading their email, calendar, files or accounts, no follow-up work). Put the \
-         whole answer in \"answer\".\n\
+         - \"answer\": ONLY a general-knowledge question you can answer fully yourself, right now (a \
+         capital, a conversion, a recipe idea). Never for anything about their own life: a person they \
+         know, a payment, their email, messages, calendar, kids, school, plans or files; those always \
+         go to a helper. Put the whole answer in \"answer\", in plain words, never mentioning routing, \
+         helpers, workers, access or this decision.\n\
          - \"send\": an existing worker below already owns this kind of work (judge by its \
          description, groups and directory, not by keywords). Name it exactly.\n\
          - \"create\": no worker fits. Describe a new one in \"create\".\n\
