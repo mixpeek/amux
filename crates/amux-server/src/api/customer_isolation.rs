@@ -428,7 +428,7 @@ pub fn bwrap_args(plan: &Plan) -> Vec<String> {
 /// The docker arguments for `plan` (runner `docker`): the same mounts as
 /// volumes, host networking, the caller's uid, the worker's environment.
 pub fn docker_args(plan: &Plan, image: &str) -> Vec<String> {
-    // `-it` is docker's stdin plus tty, written as one flag: a bare "-t" reads
+    // `-it` is docker's stdin plus tty, written as one flag: a bare quoted -t reads
     // as a tmux target to tests/tmux_target_audit.rs.
     let mut a: Vec<String> = ["run", "--rm", "-it", "--network", "host"].iter().map(|s| s.to_string()).collect();
     #[cfg(unix)]
