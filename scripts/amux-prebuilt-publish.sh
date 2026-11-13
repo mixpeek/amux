@@ -9,6 +9,7 @@
 #   AMUX_PREBUILT_REPO     default https://github.com/mixpeek/amux.git
 #   AMUX_PREBUILT_CPUS     CPU cap for the build container (default 40 of 48: the box is shared)
 #   AMUX_PREBUILT_POLL_S   how often main is read (default 15)
+#   AMUX_PREBUILT_NICE     the build's niceness (default 0; the CPU cap protects the box)
 #
 # Only the newest tip is built: a commit superseded while another builds is skipped, and the
 # installing host's builder compiles that one itself if it ever needs it.
@@ -18,6 +19,7 @@ KEY="${AMUX_PREBUILT_KEY:-$HOME/.ssh/amux-prebuilt}"
 REPO="${AMUX_PREBUILT_REPO:-https://github.com/mixpeek/amux.git}"
 CPUS="${AMUX_PREBUILT_CPUS:-40}"
 POLL="${AMUX_PREBUILT_POLL_S:-15}"
+NICE="${AMUX_PREBUILT_NICE:-0}"   # the box idles at load ~10 of 48; the CPU cap is the guard
 IMAGE="${AMUX_PREBUILT_IMAGE:-rust:1-bookworm}"
 STATE="${AMUX_PREBUILT_STATE:-$HOME/.amux-prebuilt}"
 mkdir -p "$STATE"
@@ -30,11 +32,11 @@ build() { # <sha>: writes $STATE/out/amux-server, returns cargo's status
   docker run --rm --cpus "$CPUS" \
     -v amux-prebuilt-src:/src -v amux-prebuilt-cargo:/usr/local/cargo/registry \
     -v amux-prebuilt-rustup:/usr/local/rustup -v "$STATE/out:/out" \
-    -e SHA="$sha" -e REPO="$REPO" "$IMAGE" bash -c '
+    -e SHA="$sha" -e REPO="$REPO" -e NICE="$NICE" "$IMAGE" bash -c '
       set -e
       [ -d /src/amux/.git ] || git clone -q "$REPO" /src/amux
       cd /src/amux && git fetch -q origin main && git checkout -q -f "$SHA" && git clean -qfd -e target
-      nice -n 10 cargo build -q --profile deploy -p amux-server
+      nice -n "$NICE" cargo build -q --profile deploy -p amux-server
       cp target/deploy/amux-server /out/amux-server' >"$STATE/build.log" 2>&1
 }
 

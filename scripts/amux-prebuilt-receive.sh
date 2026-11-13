@@ -32,6 +32,12 @@ case "${verb:-}" in
     mv -f "$tmp" "$DIR/$sha/amux-server"
     trap - EXIT
     say "received $sha ($size bytes) verdict=prebuilt_received"
+    # Start the builder now rather than at its next pass (up to 15 s): it is waiting
+    # for exactly this file. Best effort: the timer runs it anyway.
+    if [ "${AMUX_PREBUILT_KICK:-1}" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+      XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" systemctl --user start --no-block amux-builder.service 2>/dev/null \
+        && say "started the builder for $sha verdict=prebuilt_builder_kicked" || true
+    fi
     # Keep the newest KEEP commits.
     ls -1t "$DIR" 2>/dev/null | tail -n +"$((KEEP + 1))" | while read -r old; do
       [[ "$old" =~ ^[0-9a-f]{40}$ ]] && rm -rf -- "${DIR:?}/${old:?}"
