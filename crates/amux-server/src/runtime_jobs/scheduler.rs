@@ -1264,7 +1264,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 39] = [
+    const COLS: [&str; 41] = [
         "id",
         "title",
         "session",
@@ -1307,6 +1307,9 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         // 0141 wake condition (schedule_wake.rs).
         "when_check",
         "when_once",
+        // 0160 proven creator (schedule_authority.rs).
+        "created_by",
+        "created_by_verified",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -3023,12 +3026,45 @@ async fn fire_recorded(
     policy: MissedRunPolicy,
 ) -> anyhow::Result<bool> {
     use futures::FutureExt;
-    let result = std::panic::AssertUnwindSafe(fire_one(store, deliverer, id, now, policy))
+    // Governance PR 13: the creator must still have authority over the worker
+    // this fires as. `report` fires and counts; `enforce` pauses and asks.
+    if crate::api::schedule_authority::gate(store, id).await == crate::api::schedule_authority::Gate::Paused {
+        return Ok(false);
+    }
+    // A firing is an origin: it starts its own trace, and everything the
+    // delivery records (the message row, the worker's trace file) descends
+    // from it (api/trace.rs).
+    let trace = crate::api::trace::TraceCtx::mint(format!("schedule:{id}"));
+    let fire = crate::api::trace::CURRENT.scope(trace.clone(), fire_one(store, deliverer, id, now, policy));
+    let result = std::panic::AssertUnwindSafe(fire)
         .catch_unwind().await.unwrap_or_else(|_| {
             tracing::warn!(schedule = id, verdict = "schedule_consumer_panicked",
                 measured = true, n_considered = 1, "schedule consumer panicked; outcome remains unknown");
             Err(anyhow::anyhow!("schedule consumer panicked; delivery outcome unknown"))
         });
+    // The firing is the root of its trace: record it, so the delivery that
+    // descends from it has a parent in the ledger rather than an orphan span.
+    if !matches!(result, Ok(false)) && crate::api::trace::enabled() {
+        let ev = crate::api::ledger::Event {
+            event_id: format!("sched:{id}:{}", trace.span_id),
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            kind: "schedule".into(),
+            actor: "policy:scheduler".into(),
+            authority: Some("schedule".into()),
+            action: Some("fire".into()),
+            resource: Some(format!("schedule:{id}")),
+            decision: Some(if result.is_ok() { "allowed" } else { "failed" }.into()),
+            outcome: Some(if result.is_ok() { "fired" } else { "failed" }.into()),
+            trace_id: Some(trace.trace_id.clone()),
+            span_id: Some(trace.span_id.clone()),
+            trace_source: Some(crate::api::trace::MINTED.into()),
+            ..Default::default()
+        };
+        let _ = store.write_async(move |conn| {
+            crate::api::ledger::append(conn, &ev);
+            Ok(WriteOutcome { applied: false, events: vec![] })
+        }).await;
+    }
     if let Err(e) = &result {
         tracing::warn!(schedule = id, error = %e, "fire failed");
         let eid = id.to_owned();

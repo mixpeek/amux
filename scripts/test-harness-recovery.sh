@@ -38,6 +38,22 @@ CHAOS_SCENARIOS=(
   e2e/chaos/worker-group-boundary-recovery.mjs worker-group-boundary
   e2e/chaos/directive-recovery.mjs directive
   e2e/chaos/worker-identity-default.mjs worker-identity-default
+  e2e/chaos/anonymous-not-owner.mjs anonymous-not-owner
+  e2e/chaos/loopback-not-trusted.mjs loopback-not-trusted
+  e2e/chaos/connector-token-scope.mjs connector-token-scope
+  e2e/chaos/published-app-api.mjs published-app-api
+  e2e/chaos/email-approval-scope.mjs email-approval-scope
+  e2e/chaos/ledger.mjs ledger
+  e2e/chaos/trace-id.mjs trace-id
+  e2e/chaos/cli-otel.mjs cli-otel
+  e2e/chaos/ledger-checkpoints.mjs ledger-checkpoints
+  e2e/chaos/capabilities.mjs capabilities
+  e2e/chaos/approval-cards.mjs approval-cards
+  e2e/chaos/schedule-authority.mjs schedule-authority
+  e2e/chaos/instruction-provenance.mjs instruction-provenance
+  e2e/chaos/agent-commit-identity.mjs agent-commit-identity
+  e2e/chaos/cli-sandbox.mjs cli-sandbox
+  e2e/chaos/customer-isolation.mjs customer-isolation
   e2e/chaos/land-startup-recovery.mjs land-startup
   e2e/chaos/land-red-recovery.mjs land-red
   e2e/chaos/sessions-snapshot-restart.mjs sessions-snapshot

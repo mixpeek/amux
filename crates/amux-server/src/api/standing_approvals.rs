@@ -762,6 +762,14 @@ fn split_terms(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// The approvals a lane's ASK is matched against and that MEMORY.md lists:
+/// every row except those remembered from an approval card (source
+/// `approval:<kind>`), which the server applies itself on an exact key
+/// (approval_cards.rs, governance PR 12) and a lane never needs to read.
+pub fn load_for_asks(conn: &Connection) -> rusqlite::Result<Vec<StandingApproval>> {
+    Ok(load_all(conn)?.into_iter().filter(|a| !a.source.starts_with("approval:")).collect())
+}
+
 pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<StandingApproval>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLS} FROM standing_approvals ORDER BY id"
@@ -840,7 +848,7 @@ pub async fn evaluate(
     let verdict = match state
         .store
         .read_async(move |conn| {
-            let all = load_all(conn)?;
+            let all = load_for_asks(conn)?;
             Ok(match_ask(
                 &all,
                 &text_o,
@@ -1725,7 +1733,7 @@ pub fn memory_section(session: &str) -> String {
     };
     let loaded = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .ok()
-        .and_then(|c| load_all(&c).ok());
+        .and_then(|c| load_for_asks(&c).ok());
     memory_section_from(
         loaded.as_deref(),
         session,

@@ -254,7 +254,7 @@ mod tests {
         let _home = crate::api::settings::test_env::set_home(dir.path());
         std::fs::write(dir.path().join("server.env"), "AMUX_PUBLIC_APPS_DOMAIN=sandbox.example\n").unwrap();
         let mk = |id: &str, origin: bool, approved: &str| Link { id: id.into(), kind: "app".into(), port, path: String::new(),
-            title: String::new(), created_by: String::new(), created_at: 0, approved_by: approved.into(), aliases: Vec::new(), origin };
+            title: String::new(), created_by: String::new(), created_at: 0, approved_by: approved.into(), aliases: Vec::new(), origin, ..Default::default() };
         let links = serde_json::json!({ "links": [mk("signing", true, "owner"), mk("plain-pub", false, "owner"), mk("waiting", true, "")] });
         std::fs::write(dir.path().join("public-links.json"), links.to_string()).unwrap();
 
