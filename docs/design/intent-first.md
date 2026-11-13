@@ -170,6 +170,20 @@ and stale copy under "Yes, go ahead". Runs
 [T](../../e2e/intent/results/2026-11-13-run-T.txt) and
 [U](../../e2e/intent/results/2026-11-13-run-U.txt): 20 of 20.
 
+The third recording (346be20e3, real model) showed the draft card in about
+20 seconds and the to-do in Goals. It also showed a goal check's draft in an
+unrelated conversation on the same helper: a held draft now names the
+conversation it was written in (`amux email send --conv`, kept on the held
+draft's preview), and Chat shows each draft in its own conversation only
+(mutation-checked). The helper says a draft is waiting below without repeating
+it, and the draft's button reads "Send email". Runs
+[V](../../e2e/intent/results/2026-11-13-run-V.txt) and
+[W](../../e2e/intent/results/2026-11-13-run-W.txt): 20 of 20.
+
+Open from that recording: an idea can offer a step a goal has already taken
+(the pass reads conversations, not goal status lines), and a request waits
+behind its helper's goal checks (174 seconds against about 25).
+
 ### What is still intent-only, and why
 
 No intent table is left (0160 drops both). What remains:

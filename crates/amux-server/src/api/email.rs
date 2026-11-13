@@ -681,11 +681,16 @@ pub async fn send(
         if !externals.is_empty()
             && !crate::api::email_approval::external_email_allowed(&home, &lane)
         {
+            // The conversation it was written in (`amux email send --conv`),
+            // so Chat shows a held draft in that conversation and no other
+            // (a goal check's draft appeared in an unrelated one, walkthrough v3).
+            let conv = body_str(&body, "conv");
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
                 "body": message.chars().take(2000).collect::<String>(),
                 "external_recipients": externals,
+                "conv": (conv.starts_with("o:") && conv.len() < 64).then_some(conv),
             });
             let attachments = match frozen_attachments(&body) {
                 Ok(a) => a,
@@ -2501,11 +2506,12 @@ mod tests {
             json!({"account": "dana@household.test", "messages": []}).to_string()).unwrap();
         let http = MockHttp::new(vec![]);
         let (app, _d, _r) = app_with(http, home.path());
-        let draft = json!({"to": "marcy@campkaylie.test", "subject": "Rafi's waitlist", "body": "Hi Marcy"});
+        let draft = json!({"to": "marcy@campkaylie.test", "subject": "Rafi's waitlist", "body": "Hi Marcy", "conv": "o:ocamp1"});
         let (st, held) = send_req(&app, "POST", "/api/email/send", Some(draft.clone()), &[("x-amux-session", "family")]).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "held for the owner: {held}");
         let id = held["approval_id"].as_str().expect("held, with an id").to_string();
         assert_eq!(held["preview"]["from"], "dana@household.test", "from the only mailbox: {held}");
+        assert_eq!(held["preview"]["conv"], "o:ocamp1", "the conversation it was written in: {held}");
         let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &ADMIN).await;
         assert_eq!(st, StatusCode::CONFLICT, "{e}");
         assert_eq!(e["code"], "draft_only_mailbox");

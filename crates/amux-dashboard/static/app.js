@@ -12532,8 +12532,11 @@ async function _homeLoadOutcome(id, quiet) {
   // Emails its helper wrote in these turns, held by the email API for her OK.
   const ap = await _homeJson('/api/email/approvals');
   const now = Date.now();
-  r.v.drafts = _homeTurnReminders(r.v.thread || [], (ap.ok ? ap.v.pending || [] : [])
-    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 })), r.v.worker, now);
+  // A draft that names its conversation (amux email send --conv) belongs to
+  // that one alone; one that names none falls back to its helper's turns.
+  const held = (ap.ok ? ap.v.pending || [] : []).filter(p => !(p.preview || {}).conv || p.preview.conv === 'o:' + id)
+    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 }));
+  r.v.drafts = held.filter(p => p.preview && p.preview.conv).concat(_homeTurnReminders(r.v.thread || [], held.filter(p => !(p.preview || {}).conv), r.v.worker, now));
   if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
 }
@@ -12588,7 +12591,7 @@ function _homeHeldDraftHtml(p) {
   return '<div class="home-draft" data-approval="' + id + '"><div class="home-draft-head">Draft email, waiting for your OK</div>'
     + '<div class="home-draft-meta">To: ' + esc(pv.to || '') + '</div><div class="home-draft-meta">Subject: ' + esc(pv.subject || '') + '</div>'
     + '<div class="home-draft-body">' + esc(body).replace(/\n/g, '<br>') + '</div>'
-    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send</button>'
+    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send email</button>'
     + '<button type="button" class="btn" onclick="_apprReject(\'' + id + '\',this,_homeApprOpts)">Discard</button>'
     + '<button type="button" class="btn" onclick="_homeCopyDraft(this)">Copy</button></div></div>';
 }

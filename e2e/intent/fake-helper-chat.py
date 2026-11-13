@@ -104,7 +104,8 @@ elif "hudson prep" in b and ("done or missing" in b or "confirmation" in b):
     answer = ("**Verdict: missing.** There is no \"Application received\" email from Hudson Prep. Their reminder says the parent "
               "statement is still missing (the teacher recommendation arrived). The deadline is in 9 days." if not got else "**Verdict: done.**")
 elif "nudge" in b and "camp" in b:
-    rc, out = cli(["email", "send", "--to", "marcy@campkaylie.test", "--subject", "Re: Rafi Levin - Session 2 waitlist", "--stdin"],
+    rc, out = cli(["email", "send", "--to", "marcy@campkaylie.test", "--subject", "Re: Rafi Levin - Session 2 waitlist"]
+                  + (["--conv", "o:" + _conv.group(1)] if _conv else []) + ["--stdin"],
                   "Hi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 waitlist. He is still very excited "
                   "about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana")
     answer = ("I wrote a second nudge to Marcy Feld. It is waiting for your OK below." if rc == 0 and "held" in out

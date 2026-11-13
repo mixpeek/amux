@@ -86,9 +86,19 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
   await expect(draft).toBeVisible({ timeout: 60_000 });
   await expect(draft).toContainText(/waiting for your OK/i);
   await expect(draft).toContainText('marcy@campkaylie.test');
-  await expect(draft.getByRole('button', { name: 'Send' })).toBeVisible();
+  await expect(draft.getByRole('button', { name: 'Send email' })).toBeVisible();
+  const heldNow = (await (await request.get('/api/email/approvals')).json()).pending || [];
+  const mine = heldNow.find((p: { preview?: { subject?: string } }) => /Rafi Levin/.test(p.preview?.subject || ''));
+  expect(mine?.preview?.conv, 'the held draft names the conversation it was written in').toMatch(/^o:o/);
   const held = (await (await request.get('/api/email/approvals')).json()).pending || [];
   expect(held.some((p: { preview?: { subject?: string } }) => /Rafi Levin/.test(p.preview?.subject || '')), 'held by the email API').toBeTruthy();
+  // The same helper's draft for ANOTHER conversation (a goal's check) stays out
+  // of this one: held drafts name their conversation.
+  const doer = (await (await request.get('/api/intent/outcomes')).json()).outcomes.find((o: { title: string }) => /camp|nudge/i.test(o.title))?.worker;
+  await request.post('/api/email/send', { headers: { 'X-Amux-Session': doer },
+    data: { to: 'ortiz@maple.test', subject: "Rafi's reading logs", body: 'Hi Ms. Ortiz', conv: 'o:oelsewhere2' } });
+  await page.waitForTimeout(5_000);
+  await expect(page.locator('.home-draft').filter({ hasText: 'reading logs' })).toHaveCount(0);
   await noJargon(page);
   // Discard: the draft goes, and nothing was sent.
   await draft.getByRole('button', { name: 'Discard' }).click();

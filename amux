@@ -10028,16 +10028,17 @@ cmd_email() {
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   case "${1:-}" in
     send) shift ;;
-    ""|help|-h|--help) echo "usage: amux email send --to <addr> --subject <text> [--cc <addr>] [--from <account>] --stdin|--file <path>"; return 0 ;;
+    ""|help|-h|--help) echo "usage: amux email send --to <addr> --subject <text> [--cc <addr>] [--from <account>] [--conv o:<id>] --stdin|--file <path>"; return 0 ;;
     *) die "amux email: unknown verb ${1} (amux email help)" ;;
   esac
-  local to="" subject="" cc="" from="" body="" have=0
+  local to="" subject="" cc="" from="" conv="" body="" have=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --to) to="${2:-}"; shift 2 ;;
       --subject) subject="${2:-}"; shift 2 ;;
       --cc) cc="${2:-}"; shift 2 ;;
       --from) from="${2:-}"; shift 2 ;;
+      --conv) conv="${2:-}"; shift 2 ;;
       --stdin|-) body="$(cat)"; have=1; shift ;;
       --file) [[ -r "${2:-}" ]] || die "amux email send: cannot read ${2:-<missing path>}"; body="$(cat -- "$2")"; have=1; shift 2 ;;
       *) die "amux email send: unknown argument $1" ;;
@@ -10048,7 +10049,8 @@ cmd_email() {
   payload=$(python3 -c 'import json,sys; d={"to":sys.argv[1],"subject":sys.argv[2],"body":sys.stdin.read()}
 if sys.argv[3]: d["cc"]=sys.argv[3]
 if sys.argv[4]: d["from"]=sys.argv[4]
-print(json.dumps(d))' "$to" "$subject" "$cc" "$from" <<<"$body") || die "amux email send: could not build the request"
+if sys.argv[5]: d["conv"]=sys.argv[5]
+print(json.dumps(d))' "$to" "$subject" "$cc" "$from" "$conv" <<<"$body") || die "amux email send: could not build the request"
   out="$(mktemp "${TMPDIR:-/tmp}/amux-email.XXXXXX")" || die "amux email send: mktemp failed"
   code=$(_curl -sk -m 60 -o "$out" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
     -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$payload" "$AMUX_API/api/email/send" 2>/dev/null || echo 000)

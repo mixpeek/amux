@@ -1321,9 +1321,9 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
                      is amux cal add \"<title>\" --start YYYY-MM-DDTHH:MM --end YYYY-MM-DDTHH:MM; something to remember about them is \
                      amux memory add --stdin. Make the first line of your answer say what you set and when. Answer with the result first, in one to three short lines, then only the \
                      details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. An email to anyone \
-                     is amux email send --to <address> --subject \"<subject>\" --stdin (the body on stdin): amux holds every \
-                     email to someone outside as a draft for their OK and shows it to them here, so say it is waiting for their \
-                     OK; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
+                     is amux email send --to <address> --subject \"<subject>\" --conv 'o:{id}' --stdin (the body on stdin): amux \
+                     holds every email to someone outside as a draft for their OK and shows it to them here, so say in one line that \
+                     it is waiting for their OK below, without repeating its text; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
                      track of is amux todo add \"<what, in their words>\" --due YYYY-MM-DD (the due date only if there is one). What they asked:"),
             "this outcome's thread".to_string(),
         ),
@@ -2934,7 +2934,7 @@ mod tests {
         assert!(!text.contains("curl "), "no step a helper is not allowed to run: {text}");
         for (verb, what) in [("amux wake <YYYY", "a reminder is the scheduler"), ("amux wake --every", "a repeating one too"),
             ("amux cal add", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory"),
-            ("amux email send", "an email is the email API, held for the owner"), ("amux todo add", "a to-do is a card on her board")] {
+            ("amux email send", "an email is the email API, held for the owner"), ("--conv 'o:oconvtest1'", "and names its conversation"), ("amux todo add", "a to-do is a card on her board")] {
             assert!(text.contains(verb), "{what}: {text}");
         }
     }
