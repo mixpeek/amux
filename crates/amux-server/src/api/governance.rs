@@ -172,7 +172,9 @@ pub struct ExportQuery {
 
 /// The rows an export covers, oldest first, and the chain's verdict on them.
 pub fn export_rows(conn: &Connection, q: &ExportQuery) -> rusqlite::Result<(Vec<Value>, Value)> {
-    let _ = ledger::seal(conn);
+    if let Err(e) = ledger::seal(conn) {
+        tracing::warn!(error = %e, verdict = "ledger_seal_failed", "sealing before the export failed; its newest rows read as unsealed");
+    }
     let (verify, _, walked) = ledger::verify_capturing(conn, &Default::default());
     let chain_ok = verify["chain_ok"] == json!(true);
     let since = q.since.unwrap_or_else(|| {
@@ -481,7 +483,9 @@ const PERSON_MATCH: &str = "(instr(lower(COALESCE(actor,'')), ?1) > 0 OR instr(l
     OR instr(lower(COALESCE(on_behalf_of,'')), ?1) > 0 OR instr(lower(COALESCE(resource,'')), ?1) > 0)";
 
 pub fn person(conn: &Connection, s: &Subject) -> rusqlite::Result<Value> {
-    let _ = ledger::seal(conn);
+    if let Err(e) = ledger::seal(conn) {
+        tracing::warn!(error = %e, verdict = "ledger_seal_failed", "sealing before the person view failed; its newest rows read as unsealed");
+    }
     let ledger_rows: Vec<Value> = {
         let mut st = conn.prepare(&format!(
             "SELECT seq, event_id, ts, kind, actor, claimed, on_behalf_of, action, resource, decision, outcome, trace_id
@@ -548,7 +552,9 @@ fn not_kept_here() -> Value {
 /// Erase a person from the ledger and the working trails. Refused, changing
 /// nothing, when any matching ledger row is under an active legal hold.
 pub fn erase(conn: &Connection, s: &Subject, p: &Principal, dry_run: bool) -> rusqlite::Result<Value> {
-    let _ = ledger::seal(conn);
+    if let Err(e) = ledger::seal(conn) {
+        tracing::warn!(error = %e, verdict = "ledger_seal_failed", "sealing before the erase failed; its newest rows read as unsealed");
+    }
     let seqs: Vec<i64> = {
         let mut st = conn.prepare(&format!(
             "SELECT seq FROM _amux_ledger WHERE redacted_at IS NULL AND {PERSON_MATCH} ORDER BY seq"))?;
@@ -784,13 +790,15 @@ async fn kill_set(State(state): State<AppState>, headers: HeaderMap, Json(b): Js
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
     }
     let action = if b.engaged { "kill_switch.engage" } else { "kill_switch.lift" };
-    let _ = state
+    if let Err(e) = state
         .store
         .write_async(move |c| {
             record(c, &p, action, "kill_switch", "allow", None);
             Ok(WriteOutcome { applied: true, events: vec![] })
         })
-        .await;
+        .await {
+        tracing::warn!(error = %e, verdict = "governance_record_failed", "the kill switch change was not recorded in the ledger");
+    }
     tracing::warn!(engaged = b.engaged, verdict = if b.engaged { "kill_switch_engaged" } else { "kill_switch_lifted" },
         measured = true, n_considered = 1, "the owner changed the kill switch");
     Json(json!({"ok": true, "engaged": b.engaged, "state": body})).into_response()

@@ -54,7 +54,9 @@ const REMEMBERABLE: [&str; 3] = ["email", "grant", "publish"];
 static STORE: OnceLock<crate::db::SharedStore> = OnceLock::new();
 
 pub fn install_store(store: crate::db::SharedStore) {
-    let _ = STORE.set(store);
+    if STORE.set(store).is_err() {
+        tracing::debug!("store already installed; keeping the first");
+    }
 }
 
 pub fn enabled() -> bool {
@@ -582,12 +584,14 @@ pub async fn standing_use(kind: &'static str, worker: &str, key: &str, amount: O
         standing_in(&conn, kind, worker, key, amount, now).ok().flatten()?
     };
     let (w, r, a) = (worker.to_string(), reff.to_string(), ask.to_string());
-    let _ = store
+    if let Err(e) = store
         .write_async(move |conn| {
             note_use_in(conn, id, &w, &r, &a, now)?;
             Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
         })
-        .await;
+        .await {
+        tracing::warn!(error = %e, verdict = "approval_standing_use_unrecorded", "the use of a remembered decision was not recorded");
+    }
     counters::bump(&format!("{kind}.standing_applied"));
     tracing::info!(kind, worker, standing = id, measured = true, n_considered = 1,
         verdict = "approval_standing_applied", "a remembered decision answered this request; no card filed");
@@ -608,12 +612,14 @@ pub fn standing_use_sync(kind: &'static str, worker: &str, key: &str, amount: Op
     let (w, r, a) = (worker.to_string(), reff.to_string(), ask.to_string());
     if let Ok(h) = tokio::runtime::Handle::try_current() {
         h.spawn(async move {
-            let _ = store
+            if let Err(e) = store
                 .write_async(move |conn| {
                     note_use_in(conn, id, &w, &r, &a, now)?;
                     Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
                 })
-                .await;
+                .await {
+                tracing::warn!(error = %e, verdict = "approval_standing_use_unrecorded", "the use of a remembered decision was not recorded");
+            }
         });
     }
     counters::bump(&format!("{kind}.standing_applied"));
@@ -712,7 +718,7 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
             }
         }
         "land" => {
-            let uri: Uri = "/api/land/approvals".parse().expect("static uri");
+            let uri = Uri::from_static("/api/land/approvals");
             let mut b = json!({"patch_id": id});
             if let Some(n) = body.get("reason").and_then(Value::as_str) {
                 b["note"] = json!(n);
@@ -746,9 +752,11 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
                     json!({"level": "worker", "name": lane, "capability": "env", "value": write}).to_string(),
-                ))
-                .expect("scope request");
-            super::scope::handler(State(state.clone()), req).await
+                ));
+            match req {
+                Ok(req) => super::scope::handler(State(state.clone()), req).await,
+                Err(e) => bad(StatusCode::INTERNAL_SERVER_ERROR, &format!("could not build the grant request: {e}")),
+            }
         }
         other => bad(StatusCode::BAD_REQUEST, &format!("unknown approval kind '{other}'")),
     }
