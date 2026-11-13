@@ -220,7 +220,9 @@ pub async fn view(
     }
     let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50).clamp(1, 500);
     let rows = state.store.read().ok().and_then(|c| {
-        let _ = super::session_verbs::ensure_fleet_tables(&c);
+        if let Err(e) = super::session_verbs::ensure_fleet_tables(&c) {
+            tracing::warn!(error = %e, verdict = "provenance_tables_unready", "the fleet tables could not be created; history may read empty");
+        }
         history_rows(&c, &name, limit).ok()
     });
     match rows {

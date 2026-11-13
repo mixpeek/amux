@@ -2918,10 +2918,12 @@ async fn fire_recorded(
             trace_source: Some(crate::api::trace::MINTED.into()),
             ..Default::default()
         };
-        let _ = store.write_async(move |conn| {
+        if let Err(e) = store.write_async(move |conn| {
             crate::api::ledger::append(conn, &ev);
             Ok(WriteOutcome { applied: false, events: vec![] })
-        }).await;
+        }).await {
+            tracing::warn!(error = %e, verdict = "ledger_append_failed", "the schedule fire was not recorded in the ledger");
+        }
     }
     if let Err(e) = &result {
         tracing::warn!(schedule = id, error = %e, "fire failed");

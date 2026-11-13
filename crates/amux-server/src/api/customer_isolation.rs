@@ -491,7 +491,7 @@ fn outcome_str(o: &Outcome) -> (&'static str, String) {
 pub fn wrap_with(
     home: &Path,
     lane: &str,
-    work_dir: &Path,
+    _work_dir: &Path,
     inner: &str,
     mode: Mode,
     rn: &Runner,
@@ -500,7 +500,6 @@ pub fn wrap_with(
     if mode == Mode::Off {
         return (Ok(None), Outcome::Off, None);
     }
-    let _ = (home, work_dir);
     let Some(p) = plan_of() else {
         return (Ok(None), Outcome::NotBoundary, None);
     };
@@ -514,7 +513,9 @@ pub fn wrap_with(
                 // The private /tmp and the worker's own status and transcript
                 // folders are created; a missing work folder is not invented.
                 if m.kind == "tmp" || m.path.contains("/status-events/") || m.path.contains("/.claude/projects/") {
-                    let _ = std::fs::create_dir_all(&m.path);
+                    if let Err(e) = std::fs::create_dir_all(&m.path) {
+                        tracing::warn!(error = %e, verdict = "customer_isolation_mount_missing", "a private folder for the boundary could not be created");
+                    }
                 }
             }
             let args: Vec<String> = bwrap_args(&p).iter().map(|s| q(s)).collect();
@@ -522,7 +523,9 @@ pub fn wrap_with(
             (Ok(Some(cmd)), Outcome::Wrapped { runner: "bwrap".into() }, Some(p))
         }
         Runner::Docker { image } => {
-            let _ = std::fs::create_dir_all(private_tmp(home, &p.boundary, lane));
+            if let Err(e) = std::fs::create_dir_all(private_tmp(home, &p.boundary, lane)) {
+                tracing::warn!(error = %e, verdict = "customer_isolation_mount_missing", "the boundary's private tmp could not be created");
+            }
             let args: Vec<String> = docker_args(&p, image).iter().map(|s| q(s)).collect();
             let cmd = format!("docker {} /bin/sh -c {}", args.join(" "), q(inner));
             (Ok(Some(cmd)), Outcome::Wrapped { runner: "docker".into() }, Some(p))
@@ -598,9 +601,13 @@ fn record(home: &Path, lane: &str, o: &Outcome, p: Option<&Plan>) {
     all.insert(lane.to_string(), json!({ "status": verdict, "detail": detail, "at": now_s(),
         "mounts": p.map(|p| p.mounts.len()).unwrap_or(0) }));
     if let Some(d) = path.parent() {
-        let _ = std::fs::create_dir_all(d);
+        if let Err(e) = std::fs::create_dir_all(d) {
+            tracing::warn!(error = %e, verdict = "customer_isolation_state_unsaved", "the isolation launch record folder could not be created");
+        }
     }
-    let _ = std::fs::write(&path, serde_json::to_vec_pretty(&all).unwrap_or_default());
+    if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&all).unwrap_or_default()) {
+        tracing::warn!(error = %e, verdict = "customer_isolation_state_unsaved", "the isolation launch record was not saved");
+    }
 }
 
 fn last_launch(home: &Path, lane: &str) -> Option<Value> {
