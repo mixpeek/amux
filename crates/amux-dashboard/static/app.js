@@ -43350,6 +43350,33 @@ function statusStyle(id) {
 // ═══════ CHROME TABS ═══════
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
+// "the other tab will then also become that session"). Tabs after the first
+// are iframes, rebuilt after any reload of the page (a deploy, Chrome
+// discarding it) from a bare /?_tab=1, so each came back on whatever worker
+// another tab opened last. A tab now writes its address (#peek=, #view=,
+// #path=, ...) under its own key, and the bar rebuilds it on that address.
+const _CHROME_TAB_VIEW_KEY = 'amux_chrome_tab_view:';
+function _chromeTabSavedHash(id) {
+  let h = '';
+  try { h = localStorage.getItem(_CHROME_TAB_VIEW_KEY + id) || ''; } catch (e) {}
+  return h.charAt(0) === '#' ? h : '';
+}
+if (_isInTab) {
+  const _inTabId = new URLSearchParams(location.search).get('_tab');
+  let _inTabLast = null;
+  const _inTabRemember = () => {
+    const h = location.hash || '';
+    if (h === _inTabLast) return;
+    _inTabLast = h;
+    try { localStorage.setItem(_CHROME_TAB_VIEW_KEY + _inTabId, h); } catch (e) {}
+  };
+  // Most moves replace the address without a hashchange (_syncUrlHash), so
+  // it is read on a timer as well as on every event that can end the page.
+  setInterval(_inTabRemember, 1000);
+  window.addEventListener('hashchange', _inTabRemember);
+  window.addEventListener('pagehide', _inTabRemember);
+}
 // The Mac app has real windows and tabs (Cmd-N, Cmd-T), so the in-page strip
 // is hidden there and the page always shows its own first tab (Ethan,
 // 2026-10-19: "this is much cleaner, you can get rid of this now").
@@ -43414,7 +43441,9 @@ function _chromeShowActive() {
     if (!iframe) {
       iframe = document.createElement('iframe');
       iframe.dataset.tabId = String(_chromeActiveId);
-      iframe.src = '/?_tab=1';
+      const saved = _chromeTabSavedHash(_chromeActiveId);
+      iframe.src = '/?_tab=' + _chromeActiveId + saved;
+      amuxTrack('chrome_tab_rebuilt', {verdict: saved ? 'own_address' : 'no_saved_address', measured: true, n_considered: 1});
       fc.appendChild(iframe);
     }
     fc.querySelectorAll('iframe').forEach(f => f.classList.toggle('hidden', f.dataset.tabId !== String(_chromeActiveId)));
@@ -43541,6 +43570,7 @@ function _chromeCloseTab(id) {
   const idx = _chromeTabs.findIndex(t => t.id === id);
   const fc = document.getElementById('chrome-tab-frames');
   if (fc) { const iframe = fc.querySelector('iframe[data-tab-id="'+id+'"]'); if (iframe) iframe.remove(); }
+  try { localStorage.removeItem(_CHROME_TAB_VIEW_KEY + id); } catch (e) {}
   _chromeTabs.splice(idx, 1);
   if (_chromeActiveId === id) {
     const ni = Math.min(idx, _chromeTabs.length - 1);
