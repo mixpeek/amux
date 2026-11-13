@@ -43555,7 +43555,17 @@ const _CALLS_PILL = {
   in_progress: 'cx-warn', no_answer: 'cx-bad', busy: 'cx-bad', failed: 'cx-bad', canceled: 'cx-idle', declined: 'cx-idle',
 };
 
+// The page body is not a flex column, so flex:1 alone left the Calls view only as
+// tall as its rows (314px of a 667px phone). Like Messages (_cvFit), it is sized
+// from where it starts to the bottom of the screen.
+function _callsFit() {
+  const view = document.getElementById('calls-view');
+  if (!view || view.style.display === 'none') return;
+  requestAnimationFrame(() => { window.scrollTo(0, 0); view.style.setProperty('--calls-top', Math.max(0, view.getBoundingClientRect().top) + 'px'); });
+}
+window.addEventListener('resize', _callsFit);
 async function _callsLoad() {
+  _callsFit();
   try {
     const r = await fetch(API + '/api/calls?limit=500', { headers: _authHeaders() });
     const d = await r.json().catch(() => ({}));

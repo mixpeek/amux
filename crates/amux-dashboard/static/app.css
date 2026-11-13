@@ -11140,7 +11140,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 /* Calls tab (api/calls.rs). One control row above the list; on a phone it
    scrolls sideways instead of wrapping (css-mobile rule). Chips, status pills
    and the drawer reuse the Connectors classes (.cx-filter, .cx-pill, .cx-drawer). */
-.calls-view { display: none; flex-direction: column; flex: 1; min-height: 0; max-width: 980px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.calls-view { display: none; flex-direction: column; flex: 1; min-height: 0; height: calc(100dvh - var(--calls-top, 110px) - env(safe-area-inset-bottom, 0px)); max-width: 980px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 .calls-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }
 .calls-bar::-webkit-scrollbar { display: none; }
 .calls-filters { display: flex; flex-wrap: nowrap; gap: var(--space-1-5); flex: 1 0 auto; }
