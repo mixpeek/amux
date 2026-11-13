@@ -36,7 +36,7 @@ turns that off; AMUX_SKIP_LAND_GATE=1 with AMUX_SKIP_LAND_GATE_REASON skips it
 once, logged). Log: ~/.amux/logs/land-gate.log.
 """
 import argparse, glob, hashlib, json, os, random, re, shutil, ssl, subprocess, sys, tempfile, time
-import urllib.request
+import urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -179,10 +179,72 @@ def api(method, path, body=None):
         return 0, {"error": str(e)}
 
 
+# Owner approval of [owner]-tier diffs is on unless the owner turns it off.
+# Ethan, 2026-11-13: "I dont want to approve PRs, thats not the purpose of
+# amux", and "maybe you make that a group wide thing or even global wide".
+# AMUX_LAND_OWNER_APPROVAL=0 in the Scope tab at global or group level turns
+# it off. Only those two layers count: a worker may write its own worker layer
+# and its own shell, so a value there would let it waive its own gate. The
+# boundary registry and its guard stay gated either way: boundaries are the
+# owner's to change by rule, and a land is how a repo change reaches them.
+OWNER_APPROVAL_KEY = "AMUX_LAND_OWNER_APPROVAL"
+# From the account, never from $HOME or another variable: a worker sets its own
+# environment, and a redirected home would let it write the "global" file
+# itself (land review F1).
+import pwd
+SCOPE_HOME = os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".amux")
+ALWAYS_OWNER = ("boundaries.toml", "scripts/hooks/boundary-guard.py")
+_OFF = ("0", "false", "off", "no")
+
+
+def _env_value(path, key):
+    try:
+        lines = open(path).read().splitlines()
+    except OSError:
+        return None
+    val = None
+    for l in lines:
+        l = l.strip()
+        if l.startswith("export "):
+            l = l[len("export "):].strip()
+        if l.startswith(key + "="):
+            val = l[len(key) + 1:].strip().strip("'\"")
+    return val
+
+
+def owner_approval_setting(worker):
+    """(required, where it was decided). Group beats global; when the worker's
+    groups disagree, required wins."""
+    home = SCOPE_HOME
+    groups = []
+    if worker:
+        code, body = api("GET", "/api/scope?level=worker&name=" + urllib.parse.quote(worker))
+        groups = (body.get("groups") or []) if code == 200 else []
+    gv = {g: _env_value(os.path.join(home, "env", g + ".env"), OWNER_APPROVAL_KEY) for g in groups}
+    gv = {g: v for g, v in gv.items() if v not in (None, "")}
+    if gv:
+        on = [g for g, v in gv.items() if v.lower() not in _OFF]
+        if on:
+            return True, "group:" + on[0]
+        return False, "group:" + sorted(gv)[0]
+    v = _env_value(os.path.join(home, "amux.env"), OWNER_APPROVAL_KEY)
+    if v not in (None, ""):
+        return v.lower() not in _OFF, "global"
+    return True, "default"
+
+
 def owner_leg(repo, base, head, tiers, request=True):
     files = [f for f in git(repo, "diff", "--name-only", base, head).splitlines() if in_tier(tiers, "owner", f)]
     if not files:
         return {"verdict": "owner_not_needed"}
+    required, source = owner_approval_setting(lane())
+    if not required:
+        waived = [f for f in files if f not in ALWAYS_OWNER]
+        files = [f for f in files if f in ALWAYS_OWNER]
+        log("verdict=owner_approval_off source=%s waived=%s still_gated=%s lane=%s" % (
+            source, ",".join(waived) or "-", ",".join(files) or "-", lane() or "human"))
+        if not files:
+            return {"verdict": "owner_not_required", "source": source, "waived": waived}
     pid = patch_id(repo, base, head, "--", *files)
     code, body = api("GET", "/api/land/approvals?patch_id=" + pid)
     if code == 200 and body.get("approved"):
@@ -611,6 +673,8 @@ def render(legs):
                        req.get("link") or "#land-approve=" + o["patch_id"]))
     else:
         out.append("owner: %s%s" % (o["verdict"], " " + str(o.get("detail", "")) if o.get("detail") else ""))
+        if o.get("waived"):
+            out.append("  %s=0 (%s): %s land without the owner" % (OWNER_APPROVAL_KEY, o["source"], ", ".join(o["waived"])))
     r = legs["revert"]
     out.append("revert: %s" % r["verdict"])
     for m in r.get("missing", []):

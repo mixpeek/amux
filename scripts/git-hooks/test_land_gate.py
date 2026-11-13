@@ -19,7 +19,7 @@ fixtures, so the round logic is tested without a model:
 
 Run: python3 scripts/git-hooks/test_land_gate.py   (exit 0 = pass)
 """
-import http.server, json, os, shutil, subprocess, sys, tempfile, threading
+import http.server, json, os, shutil, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HOOK = os.path.join(ROOT, "scripts", "git-hooks", "pre-push")
@@ -54,7 +54,11 @@ class Approvals(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    groups = []
+
     def do_GET(self):
+        if self.path.startswith("/api/scope"):
+            return self._send(200, {"level": "worker", "groups": Approvals.groups})
         pid = self.path.split("patch_id=", 1)[-1]
         self._send(200, {"patch_id": pid, "approved": pid in self.approved, "known": True})
 
@@ -198,6 +202,62 @@ def main():
         check("a push cannot drop its own tier", r.returncode != 0, True)
         check("and the ask lists both owner files", len(Approvals.requests) > n and
               sorted(Approvals.requests[-1]["files"]) == ["boundaries.toml", "scripts/review-tiers.txt"], True)
+
+        # AMUX_LAND_OWNER_APPROVAL: the owner turns his approval off at global
+        # or group scope (Ethan, 2026-11-13: "I dont want to approve PRs").
+        # The scope directory comes from the account, never from $HOME, so
+        # these call the gate's own functions with SCOPE_HOME pointed here.
+        run(work, "checkout", "-q", "-B", "main", "origin/main")
+        scope = os.path.join(tmp, "scope-home")
+        os.makedirs(os.path.join(scope, "env"))
+        os.makedirs(os.path.join(scope, "sessions"))
+        import pwd
+        got = subprocess.run([sys.executable, "-c", "import land_gate; print(land_gate.SCOPE_HOME)"],
+                             cwd=os.path.join(ROOT, "scripts"), capture_output=True, text=True,
+                             env=dict(base_env, AMUX_LAND_SCOPE_HOME=tmp)).stdout.strip()
+        check("the scope comes from the account, not $HOME or a variable",
+              got, os.path.join(pwd.getpwuid(os.getuid()).pw_dir, ".amux"))
+        land_gate.SCOPE_HOME = scope
+        os.environ["AMUX_URL"] = base_env["AMUX_URL"]
+        os.environ["HOME"] = tmp  # no endpoint.json here, so api() uses the fake server
+        os.environ["AMUX_SESSION"] = "lane-t"
+        tiers = land_gate.parse_tiers(open(os.path.join(work, "scripts/review-tiers.txt")).read())
+        key = "AMUX_LAND_OWNER_APPROVAL"
+
+        def leg(*paths):
+            for p_ in paths:
+                write(work, p_, "// %s\n" % time.time())
+            commit(work, "change", *paths)
+            base = land_gate.git(work, "rev-parse", "origin/main").strip()
+            cwd = os.getcwd()
+            os.chdir(work)
+            try:
+                return land_gate.owner_leg(work, base, "HEAD", tiers)
+            finally:
+                os.chdir(cwd)
+
+        auth = "crates/amux-server/src/api/auth.rs"
+        check("by default an owner-tier change waits on the owner", leg(auth)["verdict"], "owner_pending")
+        open(os.path.join(scope, "sessions", "lane-t.env"), "w").write(key + "=0\n")
+        os.environ[key] = "0"
+        fake = os.path.join(tmp, "fake-home", ".amux")
+        os.makedirs(fake)
+        open(os.path.join(fake, "amux.env"), "w").write(key + "=0\n")
+        os.environ["AMUX_LAND_SCOPE_HOME"] = os.path.dirname(fake)
+        check("a worker layer, a shell export or a moved home cannot waive it",
+              leg(auth)["verdict"], "owner_pending")
+        open(os.path.join(scope, "amux.env"), "w").write("OTHER=1\nexport %s='0'\n" % key)
+        o = leg(auth)
+        check("off at global scope, an owner-tier change needs no owner", o["verdict"], "owner_not_required")
+        check("and says where that was decided", o.get("source"), "global")
+        Approvals.groups = ["core"]
+        open(os.path.join(scope, "env", "core.env"), "w").write(key + "=1\n")
+        check("a group that keeps it on outranks global off", leg(auth)["verdict"], "owner_pending")
+        open(os.path.join(scope, "env", "core.env"), "w").write(key + "=off\n")
+        check("off at the group, it is not needed", leg(auth)["verdict"], "owner_not_required")
+        o = leg(auth, "boundaries.toml")
+        check("the boundary registry still waits on the owner", o["verdict"], "owner_pending")
+        check("and the ask names only it", o.get("files"), ["boundaries.toml"])
     finally:
         srv.shutdown()
 
