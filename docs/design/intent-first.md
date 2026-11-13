@@ -141,7 +141,7 @@ goal contract worked by a worker on a schedule.
 | Roster | `orchestrate::roster_entries` | The voice router and the intent router read one roster (name, groups, description, type, directory, isolation). |
 | Dialog | `app.js` `_outcomeStart` | "Describe what you want" routes first: it answers, sends to the worker that owns the work, or creates one. Created workers are not isolated by default. |
 | Outcomes | `api/intent_store.rs`, `conversations.rs` `Conv::Outcome` | `o:<id>` threads. A request is posted into the thread, which delivers it to the worker; the answer comes back into the thread (`relay_turn`, now also straight from a chat turn). A follow-up goes to the same worker with no routing call. "Change" moves an outcome and re-delivers it; `GET /api/intent/stats` is the override rate. |
-| Home | `index.html` `#home-view`, `app.js` `_home*` | Chat, Ideas, Goals and Workspace; one bottom row on a phone with the composer above it. The default first screen for a new person (`GET /api/intent/home`: the `home` pref, then the `AMUX_HOME_DEFAULT` environment default, else intent below five workers; the fleet e2e harnesses set `AMUX_HOME_DEFAULT=fleet`). The fleet stays hidden until the choice is made, so it never flashes first. |
+| Home | `index.html` `#home-view`, `app.js` `_home*` | Chat, Ideas, Goals and More (your calendar and reminders, ideas, then the full workspace last); Goals opens with the next week of the calendar and the reminders set; a reminder a helper sets shows in its conversation. One bottom row on a phone with the composer above it. The default first screen for a new person (`GET /api/intent/home`: the `home` pref, then the `AMUX_HOME_DEFAULT` environment default, else intent below five workers; the fleet e2e harnesses set `AMUX_HOME_DEFAULT=fleet`). The fleet stays hidden until the choice is made, so it never flashes first. |
 | Worker view | `peek-tab-outcomes`, `_homeCardOutcomes` | An Outcomes tab first in the worker view, and one line on each worker card naming its outcomes. |
 | Ideas | `api/intent_items.rs` | One pass reads the owner's messages to every worker (`cmd_history`), their outcomes, recent and related email (searches the model writes), the calendar, and what they started or dismissed before (memories in the `intent-home` group, which no worker is in). Each idea must cite sources that exist or it is dropped and counted. A pass runs after each new request, on refresh, and every 30 minutes by a shell schedule that runs the model only after three new requests. |
 | Goals | `api/intent_items.rs` | Inferred goals, tiered `tracking` (a real due date) and `standing`. Each is a goal contract (versioned; a reword is a new version), an outcome thread to a worker, and a shell schedule every 2 hours that fingerprints the goal's inputs and asks the worker only when they changed. The status line is the worker's newest `STATUS:` line. Goals start on their own but read and draft only; an `ASK:` line shows an Approve button, and approval is recorded (`outside_ok`). |
@@ -164,4 +164,82 @@ enrollment, a family calendar). Two ways to run them:
 Persona runs (`e2e/persona/README.md`): a fresh evaluator plays Dana on the
 household demo at a phone size, with only `e2e/persona/dana.sh`.
 
-<!-- RESULTS -->
+### Results (2026-11-13)
+
+**Persona scores.** The newest fresh-evaluator run per case, on the household
+demo served by the deployed binary at 8dd33f1f1 with this checkout's
+dashboard, at 390px. Each evaluator had its own new browser profile and only
+`e2e/persona/dana.sh`. Earlier rounds are kept in
+[`e2e/persona/2026-11-13/history/`](../../e2e/persona/2026-11-13/history/), and the
+iteration rounds that drove the fixes are in
+[`e2e/persona/2026-11-12/`](../../e2e/persona/2026-11-12/).
+
+| case | round | finished | correct | no jargon | steps like ChatGPT | trust | banned words seen | run |
+|---|---|---|---|---|---|---|---|---|
+| uc1 | 2 | 5 | 5 | 5 | 4 | 5 | none | [uc1.json](../../e2e/persona/2026-11-13/uc1.json) |
+| uc2 | 1 | 5 | 4 | 5 | 5 | 4 | none | [uc2.json](../../e2e/persona/2026-11-13/uc2.json) |
+| uc3 | 1 | 5 | 4 | 5 | 4 | 5 | none | [uc3.json](../../e2e/persona/2026-11-13/uc3.json) |
+| uc4 | 1 | 5 | 4 | 5 | 4 | 4 | none | [uc4.json](../../e2e/persona/2026-11-13/uc4.json) |
+| uc5 | 2 | 5 | 4 | 5 | 4 | 5 | none | [uc5.json](../../e2e/persona/2026-11-13/uc5.json) |
+| uc6 | 1 | 5 | 5 | 5 | 5 | 4 | none | [uc6.json](../../e2e/persona/2026-11-13/uc6.json) |
+| uc7 | 2 | 5 | 5 | 5 | 5 | 4 | none | [uc7.json](../../e2e/persona/2026-11-13/uc7.json) |
+| uc8 | 1 | 5 | 5 | 5 | 5 | 4 | none | [uc8.json](../../e2e/persona/2026-11-13/uc8.json) |
+| uc9 | 1 | 5 | 4 | 5 | 4 | 5 | none | [uc9.json](../../e2e/persona/2026-11-13/uc9.json) |
+
+Router overrides: 0 of 71 routed requests (0%); evaluators who used Change: 0.
+
+Checked with `python3 e2e/persona/summarize.py e2e/persona/2026-11-13 --check`
+(exit 0). The overrides are summed from the household's `/api/intent/stats`
+snapshots taken after each run
+([`stats/`](../../e2e/persona/2026-11-13/stats/)). No evaluator used Change,
+and `GET /api/email/log` on the demo shows no send.
+
+What moved the three cases that failed a first final round:
+
+- uc1 (trust 3, steps 3): the reminder was promised but never shown, and was set
+  at 5am because the demo ran in UTC. The demo now passes `TZ` only when it is
+  set, the helper says when a reminder is set in its first line, and the
+  conversation shows a "Reminder set" line for every reminder its helper set.
+- uc5 (correct 3): the first round hit a stale demo; rerun on a reset demo.
+- uc7 (no jargon 2): "More" opened the full workspace. More now starts with
+  plain choices (your calendar and reminders, ideas), and the workspace is the
+  last row.
+
+Caveat on the 2026-11-12 rounds: until `dana.sh` created each evaluator's
+profile and failed loudly, several of those runs shared one browser profile, so
+they were not fully fresh. Every 2026-11-13 run used a fresh profile.
+
+**Use-case specs.** All nine specs, at desktop (1280px) and mobile (375px), each
+asserting no outside send and no jargon on the default path: 18 of 18 on two
+consecutive runs, [run F](../../e2e/intent/results/2026-11-13-run-F.txt) and
+[run G](../../e2e/intent/results/2026-11-13-run-G.txt). On the deployed
+8dd33f1f1 binary, [run H](../../e2e/intent/results/2026-11-13-run-H.txt) passed
+and [run I](../../e2e/intent/results/2026-11-13-run-I.txt) failed one case:
+two requests at once both asked for a new `family-helper`, the second create
+failed with "already exists", and the person saw "Not sent". A failed create
+now goes to the helper of that name when it exists, else the first routable
+candidate (`create_fallback`, verdict `intent_create_failed` with `fallback`).
+With that fix, [run J](../../e2e/intent/results/2026-11-13-run-J.txt) and
+[run K](../../e2e/intent/results/2026-11-13-run-K.txt) passed 18 of 18 back to
+back.
+
+**Mutation checks.** Every new rule was broken one at a time with
+`scripts/mutate.sh` and the suite named it: 19 of 19 in the first batch
+(router validation, isolation, outcome routing, receipts, delivery retry, source
+citation, goal tiers, approvals) and 13 of 13 in the second (reminders, home
+choice, STATUS and ASK parsing, the relay guards, drafts), and 2 of 2 for
+the create fallback (isolation, the name match).
+
+**Open gaps.**
+
+- Goal checks and idea passes each set their own reminders, so one deadline can
+  get several overlapping reminders (three for the Hudson Prep statement in the
+  uc1 run). Reminders need a dedupe by subject and day.
+- A first answer takes about a minute and a follow-up up to three; evaluators
+  scored steps 4 rather than 5 mostly on waiting.
+- The "helper is on it" line with Change and Details gave two evaluators a
+  moment's doubt.
+- The owner's own inbox has no household mail, so the persona runs use the
+  seeded household, read through the file mailbox. Gmail goes through the same
+  inbox, search and message routes, but no persona run used it.
+

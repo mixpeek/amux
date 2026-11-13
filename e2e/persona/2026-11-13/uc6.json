@@ -1,0 +1,34 @@
+{
+  "case": "uc6",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Figure out the $388 car rental payment Tova sent you: what it was for and whether the amount is right.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with example prompts, a text box and a Send button, plus a note that nothing is sent or paid without my OK.",
+    "Typed 'Tova sent me $388 for a car rental. What was it for and is the amount right?' and tapped Send; the screen showed my question with 'Getting started' and a sending indicator.",
+    "Waited 30 seconds: a thread titled 'Check Tova's $388 car rental payment' answered that it was her half of the Hertz car I rented in Vermont, total $776.40, half $388.20, she sent $388.00 on Mon Nov 9, so it is right give or take 20 cents, with pickup at Burlington Airport Thu Nov 5, return Sat Nov 7, a $612.00 + $112.40 + $52.00 breakdown, charged to my Visa ending 4411.",
+    "Scrolled down to look for more; that was the whole answer, with a follow-up box below."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc6/step-00.jpg",
+    "e2e/persona/2026-11-13/uc6/step-01.jpg",
+    "e2e/persona/2026-11-13/uc6/step-02.jpg",
+    "e2e/persona/2026-11-13/uc6/step-03.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "No link to the Hertz receipt or Tova's payment email, so I had to take the numbers on trust (the breakdown does add up: 612 + 112.40 + 52 = 776.40, half is 388.20).",
+    "The bottom tabs (Ideas, Goals, More) are a little vague, but I did not need them."
+  ],
+  "verdict": "One question and a 30-second wait gave a clear answer: Tova's $388 was her half of the Vermont Hertz rental and is 20 cents short of an exact split. It felt just like asking ChatGPT, and the only gap was not being able to tap through to the receipt to check it myself."
+}

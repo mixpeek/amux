@@ -1,0 +1,39 @@
+{
+  "case": "uc7",
+  "round": 2,
+  "date": "2026-11-13",
+  "task": "Ask the app to help you stay ahead of the family calendar, and check what it says is coming up next and what is ready for it.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three example prompts, a Send box, and a note that nothing is sent or paid for without my OK.",
+    "Typed 'Help me stay ahead of the family calendar. What's coming up next and what do I need to have ready for it?' and pressed enter; it showed 'Getting started' and 'Sending'.",
+    "Waited 30 seconds: the screen titled 'Upcoming family events and what to prepare' said 'Your family calendar helper is on it' with Change and Details links and 'Working on it'.",
+    "Waited 30 more seconds: the answer arrived. Next up is Rafi's soccer Sat Nov 14 at 9 at Riverside Park field 3 (nothing to prep), then Lincoln conference sign-ups Sun 7pm (book Mr. Brandt and Mr. Ruiz first), Ezra at Dr. Shah Mon 3:30 (bring the new insurance card, science lab due), Ezra's emergency contact form Tue.",
+    "Scrolled down: Noa's piano recital Wed 6pm, picture day at Maple Thu with order form due that morning, Hudson Prep application Sun Nov 22 missing only my parent statement, plus Ezra's overdue math worksheets, Rafi's 2 reading logs, open enrollment closing Dec 1, and an offer to set reminders such as Sunday 6:50pm for sign-ups.",
+    "Tapped Goals to compare: 'Coming up, Your calendar for the next week' listed the same five events (soccer, sign-ups, Ezra dentist Dr. Shah, Noa recital, picture day) with matching days, times and places."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc7-r2/step-00.jpg",
+    "e2e/persona/2026-11-13/uc7-r2/step-01.jpg",
+    "e2e/persona/2026-11-13/uc7-r2/step-02.jpg",
+    "e2e/persona/2026-11-13/uc7-r2/step-03.jpg",
+    "e2e/persona/2026-11-13/uc7-r2/step-04.jpg",
+    "e2e/persona/2026-11-13/uc7-r2/step-05.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The 'Your family calendar helper is on it' line with Change and Details links made me wonder briefly whether I had to set something up; I ignored it and the answer came.",
+    "The answer said 'Ezra at Dr. Shah' without saying it is the dentist; the calendar view said dentist.",
+    "About a minute of waiting, a bit slower than ChatGPT but fine."
+  ],
+  "verdict": "I typed one sentence like I would to ChatGPT and in about a minute got a clear, dated list of what is next and what to have ready, and it matched my calendar exactly and pulled useful prep from my email (insurance card, order form, parent statement). Nothing was sent anywhere and it asked before setting reminders; only the unexplained 'helper' line with Change and Details gave me a moment's pause."
+}

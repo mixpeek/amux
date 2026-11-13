@@ -1,0 +1,47 @@
+{
+  "case": "uc7",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Ask the app to help you stay ahead of the family calendar, and check what it says is coming up next and what is ready for it.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three example requests, a Send button and a note that nothing is sent without my OK.",
+    "Tried tapping the heading 'What can I help with?'; nothing happened, but the text box was there to type in.",
+    "Typed: 'Can you help me stay ahead of the family calendar? Tell me what's coming up next and what I need to have ready for it'.",
+    "Tapped Send; it showed 'Sending', then a chat titled 'Stay ahead of the family calendar' with 'Your family calendar helper is on it' and 'Working on it'.",
+    "Waited 30 seconds; the answer had arrived: today Rafi's field trip slip and $15 are due to Ms. Ortiz, soccer tomorrow at 9, and Sunday 7pm Lincoln conference sign-ups, with a promise to remind me at 6:45.",
+    "Read the list of what's coming and what to have ready: Sat soccer (cleats, shin guards, water), Sun sign-ups (book Mr. Brandt first because Ezra has a C+ and Worksheet 4.5 overdue), Mon Ezra dentist (bring new insurance card), Tue Ezra emergency contact form, Wed Noa's piano recital (clothes and music).",
+    "Waited another 30 seconds; nothing new, the answer was complete.",
+    "Scrolled up: the header now said 'Your family calendar helper answered', with Change and Details links and my question above the answer.",
+    "Scrolled down: Thu Nov 19 picture day at Maple (order form due that morning) and CSA pickup, Sun Nov 22 Hudson Prep application due (only my parent statement missing).",
+    "Scrolled to the end: further out, work open enrollment closes Tue Dec 1 at 5pm and the dependent care FSA must be re-elected; it offered reminders for the picture day form or the parent statement."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc7-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc7-r1/step-08.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The answer came in under a minute but the first wait showed the whole screen as the answer with no header, so I had to scroll up to see it was my chat.",
+    "It said 'I'll remind you at 6:45 that evening' on its own; I did not ask for that and could not see where that reminder lives or how it will reach me.",
+    "The suggestion 'picture day form Wednesday night' is right (form due Thursday morning) but I had to work out that it meant the night before.",
+    "I could not check the dates against my own email or calendar from this screen; I had to trust the list."
+  ],
+  "verdict": "Felt like ChatGPT: one sentence typed, one Send, and within a minute I had a dated, kid-by-kid list of what is coming and exactly what to bring or finish. The only thing that gave me pause was the reminder it set by itself without showing me where it went."
+}

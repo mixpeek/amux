@@ -1,0 +1,50 @@
+{
+  "case": "uc5",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Figure out which parent-teacher conference slots to book first, before registration opens, based on how the kids are doing in school.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen saying 'What can I help with?' with example prompts and a note that nothing is sent without my OK.",
+    "Typed 'Which parent-teacher conference slots should I book first for Rafi, Ezra and Noa, before registration opens? Base it on how each kid is doing in school.' and tapped Send.",
+    "After 30s the list showed two items for my one question: 'Book parent-teacher slots for Rafi, Ezra and Noa' and 'Choose school conference slots for the kids', both 'Working on it'.",
+    "After another minute the list filled with things I never asked for (benefits enrollment, Hudson Prep application, Ezra's missing schoolwork, school forms, family calendar, dinners) and my two items were pushed off the screen.",
+    "Scrolled up and down to find my question again; found 'Book parent-teacher slots for Rafi, Ezra and Noa' marked Ready near the bottom, under 'Never miss a school form'.",
+    "Tapped it: it said the sign-up opening Sun Nov 15 at 7pm is Lincoln's, so only for Ezra; book Mr. Brandt (Math, C+ with 3 missing assignments) first, then Mr. Ruiz (Science, B, lab report due Mon Nov 16 not in), and Ms. Okafor (A-) and Ms. Hale (A) only if slots remain; up to four 10-minute slots.",
+    "Same answer: Rafi has no Maple sign-up yet, ask for Ms. Ortiz when it comes (reading a bit below grade level, 2 reading logs missing). Noa: it couldn't find her school or grades and asked me to tell it.",
+    "It offered a reminder a few minutes before 7pm Sunday; I typed 'yes please remind me' and sent.",
+    "Waited about 3 minutes with 'Working on it'; then it said 'Done. I'll remind you Sun Nov 15 at 6:50pm' and that the reminder lists Mr. Brandt then Mr. Ruiz.",
+    "Went back to the list: the second item 'Choose school conference slots for the kids' was still 'Working on it' after 7 minutes; opening it showed only 'Your family school helper is on it', Change, Details, and dots."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc5/step-00.jpg", "e2e/persona/2026-11-13/uc5/step-01.jpg", "e2e/persona/2026-11-13/uc5/step-02.jpg",
+    "e2e/persona/2026-11-13/uc5/step-03.jpg", "e2e/persona/2026-11-13/uc5/step-04.jpg", "e2e/persona/2026-11-13/uc5/step-05.jpg",
+    "e2e/persona/2026-11-13/uc5/step-06.jpg", "e2e/persona/2026-11-13/uc5/step-07.jpg", "e2e/persona/2026-11-13/uc5/step-08.jpg",
+    "e2e/persona/2026-11-13/uc5/step-09.jpg", "e2e/persona/2026-11-13/uc5/step-10.jpg", "e2e/persona/2026-11-13/uc5/step-11.jpg",
+    "e2e/persona/2026-11-13/uc5/step-12.jpg", "e2e/persona/2026-11-13/uc5/step-13.jpg", "e2e/persona/2026-11-13/uc5/step-14.jpg",
+    "e2e/persona/2026-11-13/uc5/step-15.jpg", "e2e/persona/2026-11-13/uc5/step-16.jpg", "e2e/persona/2026-11-13/uc5/step-17.jpg",
+    "e2e/persona/2026-11-13/uc5/step-18.jpg", "e2e/persona/2026-11-13/uc5/step-19.jpg", "e2e/persona/2026-11-13/uc5/step-20.jpg",
+    "e2e/persona/2026-11-13/uc5/step-21.jpg", "e2e/persona/2026-11-13/uc5/step-22.jpg", "e2e/persona/2026-11-13/uc5/step-23.jpg",
+    "e2e/persona/2026-11-13/uc5/step-24.jpg", "e2e/persona/2026-11-13/uc5/step-25.jpg", "e2e/persona/2026-11-13/uc5/step-26.jpg",
+    "e2e/persona/2026-11-13/uc5/step-27.jpg", "e2e/persona/2026-11-13/uc5/step-28.jpg", "e2e/persona/2026-11-13/uc5/step-29.jpg",
+    "e2e/persona/2026-11-13/uc5/step-30.jpg", "e2e/persona/2026-11-13/uc5/step-31.jpg"
+  ],
+  "scores": {
+    "finished": 4,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 3,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "My one question turned into two items with different names; one answered, the other still said 'Working on it' after 7 minutes with nothing inside.",
+    "Six other items I never asked for (benefits, Hudson Prep, dinners, calendar, school forms, missing schoolwork) appeared and pushed my question off the screen, so I had to scroll around to find my answer.",
+    "My answer did not open on its own; I had to spot it in the list and tap it.",
+    "The reminder reply took about 3 minutes; ChatGPT would answer in seconds.",
+    "'Details' and 'Change' links next to the answer were not explained; I left them alone."
+  ],
+  "verdict": "The answer itself was great: it knew only Ezra's school opens Sunday at 7pm, put the Math teacher first because of the C+ and missing work, explained Rafi and admitted it had nothing on Noa, then set a reminder for 6:50pm. Finding that answer was harder than ChatGPT because a duplicate item and a pile of things I never asked for buried it in the list."
+}

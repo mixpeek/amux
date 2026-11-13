@@ -1,0 +1,69 @@
+{
+  "case": "uc1",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: home screen asked 'What can I help with?' with example prompts and a promise that nothing is sent without my OK.",
+    "type + enter: 'Remind me to call the camp director about Rafi's waitlist, and can you help me follow up with the camp?'; the button read 'Sending'.",
+    "look after ~20s: a page titled 'Camp waitlist follow-up for Rafi' said 'A new helper, family-admin, is on it' with 'Change' and 'Show work' links, and 'Working on it...'.",
+    "wait 30 + look: the answer arrived; the bottom showed questions to ask on the call (final decisions, room in another session) and a draft email to Marcy, 'Re: Rafi Levin - Session 2 waitlist', marked 'I haven't sent it', with 'Reply \"send it\"' to send.",
+    "looked at the screenshot: the answer was long and I only saw its bottom; I could not see whether the reminder was set.",
+    "type + enter: 'Did you set the reminder to call her? When?'; screen showed 'Working on it...'.",
+    "waited about 4.5 minutes (9 x wait 30): screen never changed, still 'Working on it' and the times stayed at 'just now' / '1 min ago'.",
+    "tap 'Chat': the tap reported an error, but the screen then showed the reply, timestamped 5 min ago: reminder set for tomorrow, Friday Nov 13 at 11:00 am, calling Marcy Feld at Camp Kaylie (845) 555-0142, and it will check for an email from her before the reminder.",
+    "tap 'Workspace' and tap 'Ideas': both returned an error and the screen did not change; I stopped there."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc1/step-08.jpg",
+    "e2e/persona/2026-11-12/uc1/step-09.jpg",
+    "e2e/persona/2026-11-12/uc1/step-10.jpg",
+    "e2e/persona/2026-11-12/uc1/step-11.jpg",
+    "e2e/persona/2026-11-12/uc1/step-12.jpg",
+    "e2e/persona/2026-11-12/uc1/step-13.jpg",
+    "e2e/persona/2026-11-12/uc1/step-14.jpg",
+    "e2e/persona/2026-11-12/uc1/step-15.jpg",
+    "e2e/persona/2026-11-12/uc1/step-16.jpg",
+    "e2e/persona/2026-11-12/uc1/step-17.jpg",
+    "e2e/persona/2026-11-12/uc1/step-18.jpg",
+    "e2e/persona/2026-11-12/uc1/step-19.jpg",
+    "e2e/persona/2026-11-12/uc1/step-20.jpg",
+    "e2e/persona/2026-11-12/uc1/step-21.jpg",
+    "e2e/persona/2026-11-12/uc1/step-22.jpg",
+    "e2e/persona/2026-11-12/uc1/step-23.jpg",
+    "e2e/persona/2026-11-12/uc1/step-24.jpg",
+    "e2e/persona/2026-11-12/uc1/step-25.jpg"
+  ],
+  "scores": {
+    "finished": 4,
+    "correct": 4,
+    "no_jargon": 4,
+    "steps_like_chatgpt": 3,
+    "trust": 5
+  },
+  "jargon_seen": [
+    "family-admin",
+    "helper",
+    "Show work",
+    "Workspace"
+  ],
+  "used_change": false,
+  "stumbles": [
+    "The first answer was long and on a phone I landed at the bottom (the email draft); I could not tell whether the reminder was actually set without asking again.",
+    "My follow-up question showed 'Working on it' for ~4.5 minutes while the reply had actually arrived about 5 minutes earlier; the screen did not update until I tapped something. With ChatGPT I would have assumed it was stuck.",
+    "'A new helper, family-admin, is on it' reads like computer talk; I don't know what a helper or family-admin is.",
+    "Tapping the bottom tabs (Chat, Workspace, Ideas) did nothing visible; Workspace and Ideas never opened.",
+    "I could not check the answer against my own email or calendar from the app, so I am taking the director's name, phone number and Friday 11am on trust (the date is right: tomorrow is Friday Nov 13)."
+  ],
+  "verdict": "The app did what I asked: it set a call reminder for tomorrow at 11 with Marcy's name and number, gave me questions to ask, and wrote a follow-up email it clearly had not sent. But the reply to my follow-up sat hidden behind 'Working on it' for minutes and the tabs did not respond, so I would have thought it was broken without poking at it."
+}

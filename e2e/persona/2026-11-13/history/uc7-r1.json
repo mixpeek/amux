@@ -1,0 +1,46 @@
+{
+  "case": "uc7",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Ask the app to help you stay ahead of the family calendar, and check what it says is coming up next and what is ready for it.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with a text box, three example prompts, and the note that nothing is sent without my OK.",
+    "type + enter: I wrote 'help me stay ahead of the family calendar. what's coming up next and what do I need to have ready for it?' and it showed 'Getting started' then 'Sending'.",
+    "wait 30: a thread titled 'Upcoming family events and what to prepare' appeared, saying 'Your family calendar helper is on it', with Change and Details links and 'Working on it'.",
+    "wait 30: the answer arrived: next up is Rafi's soccer Sat Nov 14 9 to 10:30 at Riverside Park field 3 (bring cleats, water, shin guards), then Lincoln conference sign-ups Sun 7pm (book Mr. Brandt for Ezra's C+ and missing worksheets, then Mr. Ruiz, reminder at 6:45), Ezra's dentist Mon 3:30 with Dr. Shah (bring the new insurance card; science lab report due that day).",
+    "scroll down: the rest listed Ezra's emergency contact form Tue, Noa's piano recital Wed 6 to 7:30, Maple picture day Thu with the order form due that morning (reminder Wed 8:30pm), Hudson Prep application due Sun Nov 22 missing only my parent statement, and open enrollment closing Dec 1.",
+    "tap More: wanted to double-check against my calendar, but got a screen full of words like Workers, Board, Groups, Scheduler, a file path, 'chat', 'high' and 'claude-opus-5-5'. Confusing.",
+    "tap Calendar: a calendar opened in week view for Nov 8 to 14 with nothing on it.",
+    "tap Month: November 2026 month view, no events visible on any day, so I could not check the answer against it. Second confusing screen, so I stopped exploring.",
+    "tap '‹ Home': back to the chat thread with the answer still there."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc7/step-00.jpg",
+    "e2e/persona/2026-11-13/uc7/step-01.jpg",
+    "e2e/persona/2026-11-13/uc7/step-02.jpg",
+    "e2e/persona/2026-11-13/uc7/step-03.jpg",
+    "e2e/persona/2026-11-13/uc7/step-04.jpg",
+    "e2e/persona/2026-11-13/uc7/step-05.jpg",
+    "e2e/persona/2026-11-13/uc7/step-06.jpg",
+    "e2e/persona/2026-11-13/uc7/step-07.jpg",
+    "e2e/persona/2026-11-13/uc7/step-08.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 2,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": ["Workers", "Board", "Groups", "Scheduler", "Usage", "chat", "high", "claude-opus-5-5", "/Users/ethan/.amux/tmp/amux-intent-feature/household/chat/family-meals", "amux", "Live", "Subscribe", "Calendars"],
+  "used_change": false,
+  "stumbles": [
+    "About a minute of 'Working on it' with three dots; fine, like ChatGPT thinking.",
+    "Tapping More (the only place that looked like it might show my calendar) opened a techy dashboard with Workers, Board, a file path and a model name.",
+    "The Calendar in that dashboard showed an empty November, so the events the helper listed were nowhere I could see. I could not check the answer against my own calendar, and it made me wonder where the helper got its information.",
+    "The answer is long; the 'what to have ready' items are mixed into each line rather than pulled out as a short checklist."
+  ],
+  "verdict": "Asking was as easy as ChatGPT and the answer was genuinely useful: a dated, sensible run-down of the next week with what to bring and what was still missing, and dates that line up with today being Friday Nov 13. Trying to double-check it under More dropped me into a jargon-heavy dashboard whose calendar was empty, so I could not confirm the answer against my own calendar."
+}

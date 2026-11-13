@@ -1,0 +1,38 @@
+{
+  "case": "uc6",
+  "round": 2,
+  "date": "2026-11-12",
+  "task": "figure out the $388 car rental payment Tova sent you: what it was for and whether the amount is right.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen saying 'What can I help with?' with a text box, three example prompts and a note that nothing is sent without my OK.",
+    "Typed 'Tova sent me $388 for a car rental. What was it for and is the amount right?' and pressed enter; the button changed to 'Sending'.",
+    "Waited 30 seconds: the screen titled the request 'Check Tova's $388 car rental payment', said 'Your family admin helper is on it' with Change and Details links, and showed 'Working on it'.",
+    "Waited 30 more seconds: got the answer. It is her half of the Hertz rental for the Vermont trip and it is 20 cents short: total $776.40, half $388.20, she sent $388.00.",
+    "The answer listed pickup at Burlington Airport Thu Nov 5, return Sat Nov 7, cost $612.00 base + $112.40 taxes and fees + $52.00 fuel service on my Visa ending 4411, and her Venmo on Mon Nov 9 with the note 'car rental vermont, half'. It said she probably rounded and it is not worth chasing.",
+    "Viewed the screenshot and scrolled up to re-read the whole answer; the parts add up (612 + 112.40 + 52 = 776.40, half = 388.20)."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc6-r2/step-00.jpg",
+    "e2e/persona/2026-11-12/uc6-r2/step-01.jpg",
+    "e2e/persona/2026-11-12/uc6-r2/step-02.jpg",
+    "e2e/persona/2026-11-12/uc6-r2/step-03.jpg",
+    "e2e/persona/2026-11-12/uc6-r2/step-04.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 5
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The line 'Your family admin helper is on it' with 'Change' and 'Details' links was a little puzzling (who is the helper, what would Change do?), but I could ignore it.",
+    "The answer never showed me the actual Hertz receipt or Venmo email, so I took its figures on trust; the arithmetic checks out, though.",
+    "The bullet list was slightly misformatted: the last line 'She probably just rounded' ran into the Venmo bullet."
+  ],
+  "verdict": "One question and about a minute of waiting gave me exactly what I wanted: what the $388 was for, the full breakdown, and that she was 20 cents short. It felt just like asking ChatGPT, with nothing sent anywhere."
+}

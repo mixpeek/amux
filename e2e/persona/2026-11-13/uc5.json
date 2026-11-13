@@ -1,0 +1,52 @@
+{
+  "case": "uc5",
+  "round": 2,
+  "date": "2026-11-13",
+  "task": "Figure out which parent-teacher conference slots to book first, before registration opens, based on how the kids are doing in school.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three example prompts and a note that nothing is sent without my OK.",
+    "Typed my question about which conference slots to book first for Rafi, Ezra and Noa and tapped Send; it showed 'Getting started' with dots.",
+    "Waited 30s: the chat got a title 'Pick parent-teacher conference slots', said 'Your family school helper is on it' and 'Working on it'.",
+    "Waited 30s more: answer arrived. The sign-up is Lincoln Middle only, so it covers Ezra (up to 4 slots): 1) Mr. Brandt, Math, C+ with 3 missing assignments, 2) Mr. Ruiz, Science, B with a lab report due Mon Nov 16 not in, 3) English (A-) and Social Studies (A) optional.",
+    "Scrolled down: for Rafi it said Maple has not announced conferences, his reading is 'approaching grade level', 2 reading logs missing, and offered a draft email to Ms. Ortiz marked 'Draft email, not sent' with Open in Mail and Copy buttons.",
+    "Scrolled down: for Noa it said nothing about her school or grades was in my email, then offered a reminder at 6:55pm Sunday before sign-ups open.",
+    "Typed a follow-up asking which times for Ezra would not clash with my calendar and tapped Send.",
+    "Waited about 3 minutes with 'Working on it'; after 2 minutes it added 'Reading email and calendar can take a few minutes', which reassured me.",
+    "Answer arrived: the school email has no conference dates, sign-ups open Sun Nov 15 at 7pm; avoid Mon Nov 16 3:00-4:45 (Ezra's dentist) and Wed Nov 18 after about 5:15 (Noa's piano recital); book Brandt and Ruiz back to back; paste the open times once sign-ups open and it will pick the best two.",
+    "Scrolled up to read the start of that answer, then finished."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc5-r2/step-00.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-01.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-02.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-03.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-04.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-05.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-06.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-07.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-08.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-09.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-10.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-11.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-12.jpg",
+    "e2e/persona/2026-11-13/uc5-r2/step-13.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 4,
+    "trust": 5
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The first answer ranked teachers but gave no actual times; I had to ask a follow-up to get the calendar clashes.",
+    "The follow-up took about 3 minutes with only 'Working on it' dots, longer than ChatGPT.",
+    "Small inconsistency: it said I can book up to 4 slots, then offered to 'pick the best two'.",
+    "The calendar answer had to be scrolled up to read its first line, since the screen opened at the end of the reply."
+  ],
+  "verdict": "It told me clearly to book Ezra's math and science teachers first, explained why from his grades, handled Rafi with a ready, unsent email draft, and was honest that it knew nothing about Noa. A follow-up gave the real calendar clashes to avoid, though it was slower than ChatGPT and I had to ask twice to get times."
+}

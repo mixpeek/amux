@@ -1,0 +1,58 @@
+{
+  "case": "uc1",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with example prompts, a text box, a Send button and the line 'Nothing is sent to anyone or paid for without your OK.'",
+    "Tried tapping the heading 'What can I help with?' to start typing; nothing happened (it is just a heading).",
+    "Typed 'Remind me to call the camp director about Rafi's waitlist spot, and can you help me follow up with the camp?' into the box and tapped Send.",
+    "Screen moved to a thread titled 'Follow up on Rafi's camp waitlist spot' saying 'Your family admin helper is on it' with Change and Details links and a 'Working on it' indicator.",
+    "After about 30 seconds an answer appeared: Marcy Feld at Camp Kaylie wrote Oct 20 that Rafi is #4 on the Session 2 waitlist (July 6 to 31), I checked in Nov 1 with no reply yet, and her number is (845) 555-0142.",
+    "Below it was a draft email marked 'Draft email, not sent' to marcy@campkaylie.test, subject 'Re: Rafi Levin - Session 2 waitlist', with Open in Mail and Copy buttons.",
+    "Scrolled down to read the draft body: a polite follow-up asking whether a spot opened, offering a phone call, signed Dana. It reads like me.",
+    "The first answer never said the reminder was set, so I typed 'Did you set the reminder to call her? When will it remind me?' and tapped Send.",
+    "Waited about 5 minutes (checking every 30 seconds); the screen showed 'Working on it' and later 'Reading email and calendar can take a few minutes.'",
+    "The reply said yes, the reminder to call Marcy is today, Fri Nov 13, at 10am; it had been set for 5am by mistake and it fixed that, and it also fixed the same mistake on my other reminders. It repeated her phone number.",
+    "Did not tap Open in Mail, since it would open my mail app with the draft; that counts as reaching it."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc1/step-00.jpg",
+    "e2e/persona/2026-11-13/uc1/step-01.jpg",
+    "e2e/persona/2026-11-13/uc1/step-02.jpg",
+    "e2e/persona/2026-11-13/uc1/step-03.jpg",
+    "e2e/persona/2026-11-13/uc1/step-04.jpg",
+    "e2e/persona/2026-11-13/uc1/step-05.jpg",
+    "e2e/persona/2026-11-13/uc1/step-06.jpg",
+    "e2e/persona/2026-11-13/uc1/step-07.jpg",
+    "e2e/persona/2026-11-13/uc1/step-08.jpg",
+    "e2e/persona/2026-11-13/uc1/step-09.jpg",
+    "e2e/persona/2026-11-13/uc1/step-10.jpg",
+    "e2e/persona/2026-11-13/uc1/step-11.jpg",
+    "e2e/persona/2026-11-13/uc1/step-12.jpg",
+    "e2e/persona/2026-11-13/uc1/step-13.jpg",
+    "e2e/persona/2026-11-13/uc1/step-14.jpg",
+    "e2e/persona/2026-11-13/uc1/step-15.jpg",
+    "e2e/persona/2026-11-13/uc1/step-16.jpg",
+    "e2e/persona/2026-11-13/uc1/step-17.jpg"
+  ],
+  "scores": {
+    "finished": 4,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 3,
+    "trust": 3
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The first answer gave the camp status and a draft email but never confirmed the reminder, which was the first thing I asked for. I had to ask again.",
+    "The follow-up question took about 5 minutes to answer, much slower than ChatGPT, and a simple 'did you set it?' should not need that long.",
+    "The reply admitted the reminder had first been set for 5am by mistake, and said it quietly changed my other reminders too without asking or telling me which ones. That makes me less sure what it does behind my back.",
+    "It says the reminder is today at 10am, but nothing on screen shows the reminder itself (no reminder card or list), so I have to take its word for it.",
+    "Tapping the big 'What can I help with?' heading did nothing; I had to find the text box below."
+  ],
+  "verdict": "The app found the real story from my email (Rafi is #4, Marcy has not replied since Nov 1), gave me her phone number and wrote a good follow-up email that it clearly marked as not sent, which is more than ChatGPT would do. But I had to ask separately about the reminder, wait 5 minutes for the answer, and then learn it had silently changed my other reminders, which knocks my trust down."
+}

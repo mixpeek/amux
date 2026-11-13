@@ -1,0 +1,44 @@
+{
+  "case": "uc1",
+  "round": 4,
+  "date": "2026-11-12",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three example prompts, a text box and a note that nothing is sent without my OK.",
+    "Typed 'remind me to call the camp director about Rafi's waitlist spot tomorrow morning' and tapped Send; the button changed to 'Sending'.",
+    "Waited 30 seconds: a line at the top said 'Family admin is on it ... no existing helper handles family admin yet, so one will be set up' with Change and Show work links, and the reply said the reminder is set for tomorrow (Saturday) 8:30am before Rafi's 9:00 soccer practice, gave Marcy Feld's number (845) 555-0142, and summarised the waitlist (number 4 for Session 2 as of Oct 20, my Nov 1 email unanswered).",
+    "Typed 'can you help me follow up with the camp? maybe write them an email' and tapped Send; it showed 'Working on it' with dots.",
+    "Waited about 90 seconds in total (three waits of 30) and got a draft email to marcy@campkaylie.test, clearly labelled 'Draft email, not sent', with subject 'Re: Rafi Levin - Session 2 waitlist' and a polite, accurate follow-up signed Dana.",
+    "Scrolled down and saw 'Open in Mail' and 'Copy' buttons plus a note that my call reminder is still set for 8:30am tomorrow.",
+    "Tapped 'Open in Mail', which hands the draft to my own mail app, so I stopped there."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc1-r4/step-00.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-01.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-02.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-03.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-04.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-05.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-06.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-07.jpg",
+    "e2e/persona/2026-11-12/uc1-r4/step-08.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 4,
+    "steps_like_chatgpt": 4,
+    "trust": 5
+  },
+  "jargon_seen": ["helper", "no existing helper handles family admin yet, so one will be set up", "Show work"],
+  "used_change": false,
+  "stumbles": [
+    "The status line 'Family admin is on it: ... no existing helper handles family admin yet, so one will be set up' reads like the app talking about its own plumbing; I did not know what a 'helper' was or why I should care.",
+    "The email draft took about a minute and a half with only 'Working on it' dots, longer than ChatGPT for a short email.",
+    "The Open in Mail and Copy buttons were below the draft, so I had to scroll to find them on my phone.",
+    "Tapping Open in Mail gave no visible change on the page itself, so I had to trust it opened my mail app."
+  ],
+  "verdict": "The reminder was set in one message with the director's name, phone number and where Rafi stands, and the follow-up email was a ready, clearly unsent draft I could open in my own mail. The only rough spots were the 'helper' status line and a slower wait for the draft than ChatGPT."
+}

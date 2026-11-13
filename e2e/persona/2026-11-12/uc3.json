@@ -1,0 +1,50 @@
+{
+  "case": "uc3",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Go through my inbox and find the things I need to do for my kids' school, and see whether the app will keep watching for school forms for me from now on.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with three example prompts, a text box and a note that nothing is sent without my OK.",
+    "type + tap Send: I typed 'go through my inbox and find the things I need to do for the kids' school. and can you keep watching for school forms from now on?'; the screen showed a titled thread 'Find and track kids' school to-dos', the line 'Family school is on it', and 'Working on it...'.",
+    "wait 30: still 'Working on it'.",
+    "wait 30: the answer arrived: Rafi's Bronx Zoo slip plus $15 due today, a dated list (conference sign-ups Sun 11/15 7pm with a 6:45pm reminder, Ezra's lab report Mon 11/16, Ezra's emergency contact form Tue 11/17, Maple picture day order Thu 11/19, Hudson Prep parent statement Sun 11/22), and it said it is watching the inbox for new school forms from now on.",
+    "wait 30: same answer, nothing new.",
+    "scroll down: an Ongoing section (Ezra's 3 missing math worksheets for Mr. Brandt, Rafi's 2 reading logs) and a 'Draft email, not sent' to Mr. Brandt with Open in Mail and Copy buttons; the To line oddly read 'To: Subject: Ezra Levin - missing math worksheets'.",
+    "scroll down: the full draft body was polite and correct, signed Dana Levin.",
+    "tap Goals: a Tracking list with open enrollment and 'Get Ezra's Hudson Prep application complete' (10 days left, though the text says 9 days from now), each with Approve / Open / Reword / Stop.",
+    "scroll down twice: further goals 'Keep the kids' grades on track' and 'Never miss a school form', which confirmed the app is watching for school forms, checked 2 min ago."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc3-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-08.jpg",
+    "e2e/persona/2026-11-12/uc3-r1/step-09.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The draft's To line read 'To: Subject: Ezra Levin - missing math worksheets', as if the subject had slid into the address field. It looked broken.",
+    "It said 'I found 8 more school to-dos' but I counted about 7 beyond the zoo slip, and the zoo slip is listed again as item 1.",
+    "The Hudson Prep goal says '10 days left' right above 'due Sun 11/22, 9 days from now'.",
+    "The Goals cards show dates as 2026-11-17 instead of Tue 11/17 like the chat did.",
+    "'Family school is on it' under the title is an odd phrase; I was not sure who 'Family school' is.",
+    "On Goals, an 'Approve' button sits under 'Say yes and I'll draft it'; I was not sure if Approve would send something or just make a draft.",
+    "Nothing was mentioned for Noa; I assume her school sent nothing, but the answer did not say so."
+  ],
+  "verdict": "One plain message got me a dated, kid-by-kid list of school to-dos plus a ready teacher email, and the Goals tab showed it really is watching for school forms. Small slips (a garbled To line, a miscount, a day-count mismatch and a vague Approve button) kept it just short of ChatGPT-easy."
+}

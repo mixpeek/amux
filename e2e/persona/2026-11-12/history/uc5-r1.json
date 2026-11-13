@@ -1,0 +1,53 @@
+{
+  "case": "uc5",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Figure out which parent-teacher conference slots to book first, before registration opens, based on how the kids are doing in school.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with three example prompts and a note that nothing is sent without my OK.",
+    "type + tap Send: asked which conference slots to book first for Rafi, Ezra and Noa based on how each is doing; the button changed to 'Sending'.",
+    "wait 30: a thread titled 'Rank conference slots for the three kids' appeared with 'Your family school helper is on it' and 'Working on it'.",
+    "wait 30 x2: the answer arrived. Only Ezra's sign-up (Lincoln) was found, opening Sun Nov 15 at 7pm; book Mr. Brandt (Math, C+, 3 missing assignments) first, then Mr. Ruiz (Science, B, lab report not turned in), then optionally Ms. Okafor and Ms. Hale. Rafi: no conference email from Maple yet, ask Ms. Ortiz about reading fluency and 2 missing reading logs. Noa: no notice or reports found, asked for her school.",
+    "scroll down/up: read the whole answer; it ended by offering a reminder a few minutes before 7pm Sunday.",
+    "type 'yes please remind me sunday before 7' + Send, wait 30 x2: it replied 'Done. I'll remind you here Sun Nov 15 at 6:45pm' and said the reminder will list the order.",
+    "tap Details: 'What it looked at' listed the three school emails it read (conference sign-up notice, Ezra's and Rafi's progress reports), the words it searched for, that it checked my calendar, and the 6:45 PM reminder it set."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc5-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-08.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-09.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-10.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-11.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-12.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-13.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-14.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-15.jpg",
+    "e2e/persona/2026-11-12/uc5-r1/step-16.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 4,
+    "steps_like_chatgpt": 5,
+    "trust": 5
+  },
+  "jargon_seen": ["Workspace", "Open the full workspace"],
+  "used_change": false,
+  "stumbles": [
+    "The ranked list rendered as '1. 2. 3. and 4.': the third item reads 'and 4. Ms. Okafor...', which looks like a typo.",
+    "After the answer was done, the header still said 'Your family school helper is on it', so I was not sure if it was finished.",
+    "Noa got nothing; it asked for her school instead of guessing, which is honest but leaves a third of the task open.",
+    "Rafi's part says no conference email yet, so the 'book first' answer only really covers Ezra.",
+    "The bottom tab 'Workspace' and the 'Open the full workspace' link mean nothing to me."
+  ],
+  "verdict": "One question got me a clear order for Ezra's slots with the reasons and real dates, an honest note that Rafi's and Noa's sign-ups were not in my email, and a reminder for Sunday, all in about three minutes. The Details page showed exactly which emails it read, which I trusted; the odd 'and 4.' list line and the 'still on it' header were the only rough spots."
+}

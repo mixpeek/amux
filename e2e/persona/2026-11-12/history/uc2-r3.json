@@ -1,0 +1,40 @@
+{
+  "case": "uc2",
+  "round": 3,
+  "date": "2026-11-12",
+  "task": "Get a reminder to fill in Ezra's school application, and find out whether the application is actually done or still missing something.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with example prompts, a Send button, and a note that nothing is sent or paid for without my OK.",
+    "tap 'What can I help with?': nothing happened (it is a heading, not the box), so I just typed into the box below it.",
+    "type + tap Send: I asked to be reminded to fill in Ezra's school application and whether it is done or missing something; the screen showed 'Getting started' then 'Sending'.",
+    "wait 30: a conversation titled 'Ezra's school application reminder and status' appeared with 'Family admin is on it', Change and Details links, and 'Working on it'.",
+    "wait 30: the answer arrived: Ezra's Hudson Prep application is not done; the parent statement is the only missing piece, due Sunday Nov 22. It will remind me Sunday Nov 15 at 10am, check again Friday Nov 20 and send one last reminder if needed. Details: teacher recommendation received per Hudson Prep's Nov 10 email, the deadline is already on my calendar for Nov 22.",
+    "scroll up: confirmed the title, my question and the answer together on one screen."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc2-r3/step-00.jpg",
+    "e2e/persona/2026-11-12/uc2-r3/step-01.jpg",
+    "e2e/persona/2026-11-12/uc2-r3/step-02.jpg",
+    "e2e/persona/2026-11-12/uc2-r3/step-03.jpg",
+    "e2e/persona/2026-11-12/uc2-r3/step-04.jpg",
+    "e2e/persona/2026-11-12/uc2-r3/step-05.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "I tapped the 'What can I help with?' heading first expecting it to be the text box; it was not, which cost one tap.",
+    "'Family admin is on it' was a bit odd: I don't know who Family admin is, but it read like a helper, not tech jargon.",
+    "'Those two pieces are all they need' refers to two pieces but the details list only names the teacher recommendation; I had to work out the second one is my parent statement.",
+    "The reminder is described in words but I did not see a separate confirmation (like a reminder entry) that it was actually saved, so I'm taking its word for it."
+  ],
+  "verdict": "This felt like ChatGPT: one message, about a minute of waiting, and a clear answer that the application is missing only my parent statement, due Nov 22, with reminders set for Nov 15 and Nov 20. Small wording gaps and no visible proof the reminder was saved kept it just short of perfect."
+}

@@ -1,0 +1,39 @@
+{
+  "case": "uc5",
+  "round": 2,
+  "date": "2026-11-12",
+  "task": "Figure out which parent-teacher conference slots to book first, before registration opens, based on how the kids (Rafi 8, Ezra 11, Noa 14) are doing in school.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen said 'What can I help with?' with example prompts, a Send button, and 'Nothing is sent to anyone or paid for without your OK.'",
+    "tap 'What can I help with?': NOT FOUND (it is a heading, not a button), but the screen was unchanged and the text box was there.",
+    "type: asked which teachers to book first based on how Rafi, Ezra and Noa are doing in school; it went into the 'Ask for anything' box.",
+    "tap Send: a page opened titled 'Plan kids' parent-teacher conference bookings', 'Your family school helper is on it', with Change and Details links, my question, and 'Working on it...'.",
+    "wait 30: instead of a screen, the tool returned an error that the browser was closed ('CDP port stopped answering', naming profile 'ethan').",
+    "wait 30 again: same browser-closed error.",
+    "open (to reopen the app): same browser-closed error.",
+    "close then open: close worked, open still failed with the same error.",
+    "open and look once more: same error both times. Stopped here; I never got an answer."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc5-r2/step-00.jpg",
+    "e2e/persona/2026-11-12/uc5-r2/step-01.jpg",
+    "e2e/persona/2026-11-12/uc5-r2/step-02.jpg"
+  ],
+  "scores": {
+    "finished": 1,
+    "correct": 1,
+    "no_jargon": 4,
+    "steps_like_chatgpt": 3,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The browser the test runs in died about a minute after I sent the question and would not reopen, so I never saw an answer. The error named profile 'ethan' rather than this run's dana-uc5-r2 profile, which suggests the shared browser was killed by amux's wedged-CDP recovery, not by anything Dana did.",
+    "The browser error text (CDP, profile, /api/browser/start) is harness output, not an app screen, so it is not counted as app jargon. A real Dana would just have seen a dead page.",
+    "Minor: the 'What can I help with?' heading looks tappable but is not; the text box below it is what you type in."
+  ],
+  "verdict": "Up to the point of failure the app felt like ChatGPT: one box, one Send, a clear title for my request, and a plain promise that nothing goes out without my OK. The run is inconclusive because the test browser crashed while the answer was being worked on and could not be reopened, so I got no result to judge."
+}

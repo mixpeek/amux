@@ -1,0 +1,44 @@
+{
+  "case": "uc6",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "figure out the $388 car rental payment Tova sent you: what it was for and whether the amount is right.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three example prompts, a text box and a Send button, plus a note that nothing is sent without my OK.",
+    "Tapped the heading by mistake (nothing happened), then typed 'Tova sent me $388 for a car rental. What was it for and is the amount right?' into the box and tapped Send.",
+    "Waited 30 seconds. The reply, marked 'Answered right away', said it could not tell because it had 'no access to your email, messages, or files in this routing step' and that 'a worker can check' if I forwarded the receipt.",
+    "Confused, because the home screen said it could find things in my inbox. Typed 'Can you look in my email for it? It should be from Tova' and tapped Send.",
+    "It showed 'Working on it' with dots, then a 1 minute timer.",
+    "After about 2 more minutes it answered: Tova paid me $388.00 on Venmo on Mon Nov 9 with the note 'car rental vermont, half'; the Hertz bill for the Vermont weekend (Thu Nov 5 to Sat Nov 7) was $776.40, so half is $388.20 and she is 20 cents short, basically square.",
+    "Read the answer on the screenshot; it was clear and answered both of my questions, so I stopped."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc6-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc6-r1/step-08.jpg"
+  ],
+  "scores": {
+    "finished": 4,
+    "correct": 5,
+    "no_jargon": 2,
+    "steps_like_chatgpt": 3,
+    "trust": 5
+  },
+  "jargon_seen": ["worker", "routing step"],
+  "used_change": false,
+  "stumbles": [
+    "The first answer came back instantly saying it had no access to my email, even though the home screen offered to find things in my inbox. I had to ask a second time before it actually looked.",
+    "The first answer used 'routing step' and 'worker', which mean nothing to me.",
+    "The thread title said 'Answered right away' for an answer that did not answer anything.",
+    "The real answer took about 3 minutes with only 'Working on it' and dots to show progress."
+  ],
+  "verdict": "Once it actually looked in my email, the answer was exactly what I wanted: a Venmo payment for half of the Vermont Hertz rental, with the math showing it was 20 cents short. The first reply wrongly claimed it could not see my email and used words like 'worker' and 'routing step', so I only got there because I asked a second time."
+}

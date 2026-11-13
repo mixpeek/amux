@@ -1,0 +1,40 @@
+{
+  "case": "uc2",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Get a reminder to fill in Ezra's school application, and find out whether the application is actually done or still missing something.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with example prompts and a note that nothing is sent without my OK.",
+    "type + enter: I wrote 'remind me to fill in Ezra's school application, and can you check if the application is actually done or still missing something?' and the button changed to 'Sending'.",
+    "wait 15: a chat opened titled 'Remind about Ezra's school application', 'Family admin is on it', with Change and Show work links and 'Working on it...'.",
+    "wait 30: answer arrived: Hudson Prep application is not done, still missing the parent statement, teacher recommendation is in, due Sunday Nov 22, reminders Monday Nov 16 9am and Friday Nov 20 9am if the school has not confirmed, based on the school's Nov 10 reminder email.",
+    "tap 'Show work': wanted to see the email it read; got a screen full of 'Bash amux get api/email/message/...', 'running a tool', Steering, Shell, /standup, '2 messages queued'. Confusing screen 1.",
+    "tap the X to get out: landed on a screen with amux, Workers, Board, Usage, Scheduler, family-admin, sched, claude-opus-5-5, Gate override. Confusing screen 2, so I stopped."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc2-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc2-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc2-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc2-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc2-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc2-r1/step-05.jpg"
+  ],
+  "scores": {
+    "finished": 4,
+    "correct": 4,
+    "no_jargon": 2,
+    "steps_like_chatgpt": 4,
+    "trust": 3
+  },
+  "jargon_seen": ["Bash", "amux", "running a tool", "Steering", "Shell", "/standup", "/handoff", "messages queued", "Workers", "Board", "Usage", "Scheduler", "sched", "family-admin", "claude-opus-5-5", "Gate override", "Live"],
+  "used_change": false,
+  "stumbles": [
+    "'Show work' sounded like the place to see the school's email for myself, but it opened a computer-code screen with commands and email addresses like hh-3@household.test.",
+    "The X on that screen did not take me back to my chat; it dropped me on an even more technical screen (Workers, Board, claude-opus-5-5, Gate override) with no obvious way home.",
+    "The answer says it read the school's Nov 10 email, but I never got to see that email myself, so I could only check it against common sense (the dates and weekdays line up and the reminders come before the due date).",
+    "The reminders were set without asking me first; fine for a reminder to myself, but I did not see a confirm step."
+  ],
+  "verdict": "The main answer was as good as ChatGPT: one message got me a clear status (parent statement still missing, due Sunday Nov 22) and two sensible reminders. Tapping 'Show work' to check the source threw me into two screens of tech jargon with no clear way back, which is where I gave up."
+}

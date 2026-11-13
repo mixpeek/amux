@@ -1,0 +1,53 @@
+{
+  "case": "uc1",
+  "round": 3,
+  "date": "2026-11-12",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a 'What can I help with?' screen with example prompts, a text box and a Send button, plus a note that nothing is sent without my OK.",
+    "Tried tapping the heading text to start typing; nothing happened (not a box), so I typed straight into the box.",
+    "Typed 'Remind me to call the camp director about Rafi's waitlist. And can you help me follow up with the camp?' and tapped Send; it showed 'Finding the right helper' with dots.",
+    "After about 30 seconds it answered: a reminder here Monday Nov 16 at 9:30am to call Marcy Feld, Camp Kaylie director, with her phone number, a summary (Rafi #4 on the Session 2 waitlist as of Oct 20, my Nov 1 check-in unanswered) and a draft follow-up email it said it had not sent.",
+    "Scrolled down: the draft ended with an offer to change anything or drop the line about another session.",
+    "Asked to see Marcy's last email and whether Monday is free; it showed Monday has only Ezra's dentist at 3:30pm, and quoted Marcy's Oct 20 email, which matched its summary.",
+    "Said 'the email looks good, send it to Marcy'; it replied it couldn't send, the send was stopped and needs my OK on this device, nothing went out, and suggested I copy the text and reply myself.",
+    "Scrolled for an OK button and found none.",
+    "Asked where to tap to say yes; it said there is no button on my phone and the yes has to be given on the home computer 'in the family-admin window in amux', or I can paste the text into a reply myself. I stopped there."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc1-r3/step-00.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-01.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-02.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-03.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-04.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-05.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-06.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-07.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-08.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-09.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-10.jpg",
+    "e2e/persona/2026-11-12/uc1-r3/step-11.jpg"
+  ],
+  "scores": {
+    "finished": 3,
+    "correct": 5,
+    "no_jargon": 3,
+    "steps_like_chatgpt": 4,
+    "trust": 4
+  },
+  "jargon_seen": [
+    "amux",
+    "family-admin window",
+    "helper (\"Finding the right helper\")"
+  ],
+  "used_change": false,
+  "stumbles": [
+    "The app said sending needs 'your OK on this device' but there was no OK button anywhere on the phone.",
+    "When I gave my OK in words, it told me the approval has to happen on the home computer in 'the family-admin window in amux', which I have never seen and don't know how to find.",
+    "The fallback was to copy and paste the email into my own mail app, which is what I'd do without this app.",
+    "Tapping the big 'What can I help with?' heading did nothing; minor."
+  ],
+  "verdict": "The reminder and the draft were fast, accurate and matched Marcy's actual email and my calendar, which felt as good as ChatGPT and better because it knew my inbox. The follow-up stalled at sending: it promised my OK would do it, then sent me to a computer window called amux I don't know, so I'd end up copying and pasting the email myself."
+}

@@ -1,0 +1,66 @@
+
+Running 18 tests using 2 workers
+
+  ✓   2 [desktop] › e2e/intent/uc2-application-check.spec.ts:7:5 › an idea that checks whether Ezra's application is done (9.1s)
+  ✓   3 [desktop] › e2e/intent/uc3-school-inbox.spec.ts:7:5 › school items now, and a standing goal for school forms (2.8s)
+  ✓   4 [desktop] › e2e/intent/uc4-dinners.spec.ts:6:5 › a dinner plan, and a meal-planning goal (3.0s)
+  ✓   5 [desktop] › e2e/intent/uc5-conferences.spec.ts:6:5 › a ranked booking order from grades and missing work (3.2s)
+  ✓   6 [desktop] › e2e/intent/uc6-reconcile.spec.ts:6:5 › a reconciliation of the car rental split (2.6s)
+  ✓   7 [desktop] › e2e/intent/uc7-family-calendar.spec.ts:6:5 › a calendar goal whose status names the next event (2.4s)
+  ✓   8 [desktop] › e2e/intent/uc8-tracking-deadline.spec.ts:6:5 › open enrollment under Tracking with the days left (634ms)
+  ✘   1 [desktop] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread (1.6m)
+  ✓  10 [mobile] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread (6.4s)
+  ✓  11 [mobile] › e2e/intent/uc2-application-check.spec.ts:7:5 › an idea that checks whether Ezra's application is done (4.7s)
+  ✓  12 [mobile] › e2e/intent/uc3-school-inbox.spec.ts:7:5 › school items now, and a standing goal for school forms (2.7s)
+  ✓  13 [mobile] › e2e/intent/uc4-dinners.spec.ts:6:5 › a dinner plan, and a meal-planning goal (2.9s)
+  ✓  14 [mobile] › e2e/intent/uc5-conferences.spec.ts:6:5 › a ranked booking order from grades and missing work (2.6s)
+  ✓  15 [mobile] › e2e/intent/uc6-reconcile.spec.ts:6:5 › a reconciliation of the car rental split (2.7s)
+  ✓  16 [mobile] › e2e/intent/uc7-family-calendar.spec.ts:6:5 › a calendar goal whose status names the next event (2.4s)
+  ✓  17 [mobile] › e2e/intent/uc8-tracking-deadline.spec.ts:6:5 › open enrollment under Tracking with the days left (800ms)
+  ✓   9 [desktop] › e2e/intent/uc9-followup-and-change.spec.ts:6:5 › a follow-up stays with its helper, and Change moves a misrouted request (2.1m)
+  ✓  18 [mobile] › e2e/intent/uc9-followup-and-change.spec.ts:6:5 › a follow-up stays with its helper, and Change moves a misrouted request (2.1m)
+
+
+  1) [desktop] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: locator('.home-thread-title')
+    Expected: visible
+    Timeout: 90000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" with timeout 90000ms
+      - waiting for locator('.home-thread-title')
+
+
+       at lib.ts:40
+
+      38 |   await page.locator('#home-input').fill(text);
+      39 |   await page.locator('#home-send').click();
+    > 40 |   await expect(page.locator('.home-thread-title')).toBeVisible({ timeout: LIVE ? 180_000 : 90_000 });
+         |                                                    ^
+      41 |   await expect(page.locator('.home-receipt')).not.toBeEmpty();
+      42 | }
+      43 |
+        at ask (/Users/ethan/Dev/amux/.worktrees/amux-intent-feature/e2e/intent/lib.ts:40:52)
+        at /Users/ethan/Dev/amux/.worktrees/amux-intent-feature/e2e/intent/uc1-reminder-and-nudge.spec.ts:12:3
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results/uc1-reminder-and-nudge-a-r-a0920--nudge-from-the-camp-thread-desktop/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/uc1-reminder-and-nudge-a-r-a0920--nudge-from-the-camp-thread-desktop/error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/uc1-reminder-and-nudge-a-r-a0920--nudge-from-the-camp-thread-desktop/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/uc1-reminder-and-nudge-a-r-a0920--nudge-from-the-camp-thread-desktop/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [desktop] › e2e/intent/uc1-reminder-and-nudge.spec.ts:7:5 › a reminder, and an idea to draft a nudge from the camp thread 
+  17 passed (4.2m)

@@ -1,0 +1,35 @@
+{
+  "case": "uc8",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Find out whether you have any deadlines coming up, like open enrollment at work, and how many days you have left for each.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen saying 'What can I help with?' with a text box, three example prompts and a Send button.",
+    "Typed 'do I have any deadlines coming up? like open enrollment at work. how many days do I have left for each' and pressed enter; the button showed 'Sending'.",
+    "Waited 30 seconds: the screen showed a titled thread 'Check upcoming deadlines and days left', a line 'Your deadlines tracker helper is on it', links 'Change' and 'Details', my question, and 'Working on it'.",
+    "Waited 30 more seconds: the answer appeared. Open enrollment closes Tue Dec 1 at 5pm, 18 days left, with a note that the dependent care FSA must be re-elected. It then listed kid deadlines with dates and days left: today Rafi's zoo permission slip and $15, Mon Nov 16 (3 days) Ezra's lab report, Tue Nov 17 (4 days) Ezra's emergency contact form, Thu Nov 19 (6 days) picture day form, Sun Nov 22 (9 days) Ezra's Hudson Prep application needing my parent statement, plus conference sign-ups opening Sun Nov 15 at 7pm and an overdue math worksheet.",
+    "Viewed the screenshot to confirm the list read cleanly on the phone; it did, as a bulleted list with a reply box underneath."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc8-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc8-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc8-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc8-r1/step-03.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 5
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The 'Your deadlines tracker helper is on it' line with 'Change' and 'Details' links was a little puzzling (what helper? change what?), but I could ignore it.",
+    "About a minute to answer, a bit slower than ChatGPT but fine."
+  ],
+  "verdict": "I asked one question the way I would ask ChatGPT and got a clear list of every deadline with the date and days left, open enrollment included, and the day counts check out against today being Friday Nov 13. It even caught the FSA re-election and Rafi's missing permission slip, which is exactly what I needed."
+}

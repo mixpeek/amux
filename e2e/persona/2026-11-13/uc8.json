@@ -1,0 +1,37 @@
+{
+  "case": "uc8",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Find out whether you have any deadlines coming up, like open enrollment at work, and how many days you have left for each.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen saying 'What can I help with?' with a text box, three example prompts, a Send button and the line 'Nothing is sent to anyone or paid for without your OK.'",
+    "Typed 'Do I have any deadlines coming up, like open enrollment at work? How many days do I have left for each?' and tapped Send; the screen showed my question, 'Getting started' and 'Sending'.",
+    "Waited 30 seconds: the screen was titled 'Track your upcoming deadlines and days left', said 'Your deadlines tracker helper is on it' with Change and Details links, and 'Working on it'.",
+    "Waited 30 more seconds: a dated list appeared with days left for each: Rafi's Bronx Zoo permission slip + $15 today (0 days), Lincoln conference sign-ups Sun Nov 15 (2), Ezra's lab report Mon Nov 16 (3), Ezra's emergency contact form Tue Nov 17 (4), Maple picture day form Thu Nov 19 (6), Hudson Prep application Sun Nov 22 (9, parent statement missing), open enrollment Tue Dec 1 5pm (18, must re-elect FSA).",
+    "Scrolled down to check for more; the list ended at open enrollment with a 'Reply or ask a follow-up' box below."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc8/step-00.jpg",
+    "e2e/persona/2026-11-13/uc8/step-01.jpg",
+    "e2e/persona/2026-11-13/uc8/step-02.jpg",
+    "e2e/persona/2026-11-13/uc8/step-03.jpg",
+    "e2e/persona/2026-11-13/uc8/step-04.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "'Your deadlines tracker helper is on it' with Change and Details links was slightly odd; I did not know what a 'helper' was or what Change would change, but I could ignore it.",
+    "I could not see where each deadline came from (which email or calendar entry) without digging, so I took the dates on trust. The day counts add up correctly from Fri Nov 13.",
+    "The Lincoln conference item is when sign-ups open, not a deadline, but it was still useful to know."
+  ],
+  "verdict": "Typed one question, waited about a minute, and got a clear dated list with days left, including open enrollment on Dec 1 (18 days) and a useful note that the FSA must be re-elected. It felt like ChatGPT; the only small oddity was the 'helper' line with Change and Details."
+}

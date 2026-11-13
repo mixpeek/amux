@@ -1,0 +1,55 @@
+{
+  "case": "uc1",
+  "round": 5,
+  "date": "2026-11-12",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app and saw a Home screen asking 'What can I help with?' with example requests and a note that nothing is sent without my OK.",
+    "Typed 'Remind me to call the camp director about Rafi's waitlist tomorrow morning' into the box and tapped Send.",
+    "The screen switched to a conversation titled 'Remind you to call camp director tomorrow' showing 'Your family admin helper is on it' and 'Working on it'.",
+    "After about 45 seconds it answered: reminder set for tomorrow, Sat Nov 14 at 9am, to call Marcy Feld at Camp Kaylie, with her phone number (845) 555-0142 and where things stand (Rafi #4 on the Session 2 waitlist as of Oct 20; I emailed her Nov 1 and she has not replied).",
+    "Typed 'can you help me follow up with her? she never answered my email' and tapped Send.",
+    "Saw 'Working on it' for about 2 minutes; after a minute or so it added 'Reading email and calendar can take a few minutes', which reassured me.",
+    "A draft email appeared labelled 'Draft email, not sent', To marcy@campkaylie.test, Subject 'Re: Rafi Levin - Session 2 waitlist', with Open in Mail and Copy buttons and a polite follow-up message signed Dana.",
+    "Open in Mail would hand the draft to my own mail app, so I stopped there and closed the app."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc1-r5/step-00.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-01.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-02.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-03.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-04.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-05.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-06.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-07.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-08.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-09.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-10.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-11.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-12.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-13.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-14.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-15.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-16.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-17.jpg",
+    "e2e/persona/2026-11-12/uc1-r5/step-18.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 4,
+    "trust": 5
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The follow-up draft took about 2 minutes with only dots on screen at first; ChatGPT answers faster. The 'can take a few minutes' note helped.",
+    "The draft offers to be 'flexible on dates', which is a little odd since the session dates are fixed, but easy to edit.",
+    "The conversation title still says 'Remind you to call camp director tomorrow' even after it became an email draft, a small mismatch.",
+    "My reminder is described in the reply, but I did not see it listed anywhere else to double-check it was saved."
+  ],
+  "verdict": "I typed two plain sentences and got a 9am reminder with Marcy's number and a ready follow-up email that was clearly marked as not sent. It felt almost like ChatGPT, only slower on the email and a bit vague about where the reminder lives."
+}

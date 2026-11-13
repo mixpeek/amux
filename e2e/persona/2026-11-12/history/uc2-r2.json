@@ -1,0 +1,57 @@
+{
+  "case": "uc2",
+  "round": 2,
+  "date": "2026-11-12",
+  "task": "Get a reminder to fill in Ezra's school application, and find out whether the application is actually done or still missing something.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: a welcome screen said 'Your AI workforce. Every card is a Claude Code agent in its own terminal... amux is the operations layer around a whole fleet', with Skip and Next.",
+    "tap Skip: landed on a dark screen with tabs Workers, Board, Usage, Tasks, Groups, Calendar, Scheduler and 'No workers yet. Tap + to create one.' I did not know what any of it meant.",
+    "tap Home: a friendly screen 'What can I help with?' with example prompts and a box, and a promise that nothing is sent without my OK.",
+    "type my request in plain words and press enter: a conversation titled 'Track Ezra's school application' opened, saying 'Family admin is on it', showing 'Working on it...'.",
+    "wait 30 (x2): still 'Working on it'.",
+    "wait 30 (x2): still 'Working on it', now '1 min'.",
+    "wait 30 (x2): 'Working on it... 2 min. Reading email and calendar can take a few minutes.'",
+    "wait 30 (x2): same, 3 min.",
+    "wait 30 (x2): same, 4 min.",
+    "tap Details: 'What it looked at: It answered without opening your email or calendar.' and 'Open the full workspace'. This contradicted the chat, which had not answered anything and claimed to be reading email and calendar.",
+    "tap Back and wait 30 (x2): still 'Working on it... 5 min', 6 minutes after asking. No reminder confirmation and no answer about the application. I gave up."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc2-r2/step-00.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-01.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-02.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-03.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-04.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-05.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-06.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-07.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-08.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-09.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-10.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-11.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-12.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-13.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-14.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-15.jpg",
+    "e2e/persona/2026-11-12/uc2-r2/step-16.jpg"
+  ],
+  "scores": {
+    "finished": 1,
+    "correct": 1,
+    "no_jargon": 2,
+    "steps_like_chatgpt": 3,
+    "trust": 3
+  },
+  "jargon_seen": ["Claude Code agent", "terminal", "card", "fleet", "operations layer", "Workers", "Board", "Usage", "Groups", "Scheduler", "No workers yet", "Workspace", "Open the full workspace"],
+  "used_change": false,
+  "stumbles": [
+    "The first screen talked about an 'AI workforce', 'Claude Code agent', 'terminal' and 'fleet'. Nothing for a parent.",
+    "Skip dropped me on a 'Workers' tab saying 'No workers yet', not on the chat. I had to guess that Home was the place to talk.",
+    "After asking, it never answered. 'Working on it' ran past 6 minutes; ChatGPT answers in seconds.",
+    "Details said 'It answered without opening your email or calendar' while the chat still said it was reading my email and calendar and had answered nothing. The two screens disagreed.",
+    "No reminder was confirmed, so I do not know if I will be reminded at all."
+  ],
+  "verdict": "Once I found the Home chat, asking was as easy as ChatGPT, but after six minutes I had no reminder and no answer about Ezra's application, and the Details page claimed it had already answered. The welcome screen and the Workers tab I landed on after Skip would have lost me before I ever reached the chat if I had not guessed Home."
+}

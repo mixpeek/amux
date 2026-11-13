@@ -1,0 +1,48 @@
+{
+  "case": "uc4",
+  "round": 1,
+  "date": "2026-11-12",
+  "task": "Plan dinners for this week, and see whether the app will keep helping you with dinners from now on.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with three suggestion buttons, one of them 'Plan dinners this week', and a note that nothing is sent without my OK.",
+    "Tapped 'Plan dinners this week'; it put the words in the message box instead of sending.",
+    "Tapped Send; the screen switched to a conversation titled 'Plan this week's dinners' with 'Your meals helper is on it', Change and Details links, and 'Working on it'.",
+    "Waited 30 seconds; a full plan for Fri Nov 13 to Thu Nov 19 appeared, every night vegetarian-friendly for Noa (fish once), using the CSA box, and fitted around conference sign-ups Sunday at 7, Ezra's dentist Monday and Noa's recital Wednesday at 6.",
+    "Scrolled down: a grocery list that skips what I already have (squash, kale, apples, carrots, onions, eggs) and asks if I want swaps or a store list.",
+    "Typed 'this is great. can you do this for me every week from now on?' and tapped Send.",
+    "Within about 30 seconds it said yes: a new plan and grocery list every Thursday at 8am starting Thu Nov 19, built around the CSA box and the calendar, and it asked what Noa's Thanksgiving main should be (offering stuffed squash).",
+    "Tapped Goals: saw tracked items for open enrollment and Ezra's schoolwork, and after scrolling, 'Keep dinners in step with Noa's new diet', on track, naming next week's Thanksgiving plan as the next step, with Open, Reword and Stop buttons."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-12/uc4-r1/step-00.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-01.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-02.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-03.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-04.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-05.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-06.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-07.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-08.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-09.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-10.jpg",
+    "e2e/persona/2026-11-12/uc4-r1/step-11.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "Tapping the suggestion only filled the box; I had to tap Send too (small, ChatGPT does the same thing).",
+    "It said I'd 'get' a plan every Thursday at 8am but not where: here in the app, a text, or an email. I also could not tell if it will ping me.",
+    "The dinners goal sat at the bottom of Goals, under a separate 'Goals' heading below 'Tracking', so I had to scroll to find it and wasn't sure why the two lists are different.",
+    "I could not check the plan against my actual email or calendar myself, but every event it named (sign-ups, dentist, recital, CSA box) made sense and the meals fit Noa."
+  ],
+  "verdict": "As easy as ChatGPT: one tap and one Send gave me a week of dinners that fit Noa, my calendar and my CSA box, plus a grocery list. Asking it to keep going worked in one message and showed up as a goal I can stop, though I wish it said where the weekly plan will arrive."
+}

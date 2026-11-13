@@ -1,0 +1,41 @@
+{
+  "case": "uc1",
+  "round": 2,
+  "date": "2026-11-13",
+  "task": "Get a reminder to call the camp director about Rafi's waitlist, and see whether the app can help you follow up with the camp.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with example prompts and a note that nothing is sent without my OK.",
+    "Typed 'Remind me to call the camp director about Rafi's waitlist' and pressed enter; it showed 'Getting started' then 'Sending'.",
+    "Waited 30 seconds: it set a reminder for Mon Nov 16 at 10am to call Marcy Feld, the Camp Kaylie director, showed her number (845) 555-0142, and summarized that Rafi was #4 on the Session 2 waitlist as of Oct 20 and that my Nov 1 email got no reply. It offered to change the day or time.",
+    "Typed 'can you help me follow up with the camp? maybe write her an email' and pressed enter; it showed 'Working on it'.",
+    "Waited about 90 seconds in total: a 'Draft email, not sent' appeared, addressed to marcy@campkaylie.test, subject 'Re: Rafi Levin - Session 2 waitlist', with a friendly follow-up asking about Rafi's Session 2 spot, other sessions, and offering a phone call, plus 'Open in Mail' and 'Copy' buttons.",
+    "Tapped 'Open in Mail', which hands the draft to my own mail app; the screen stayed on the draft."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc1-r2/step-00.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-01.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-02.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-03.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-04.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-05.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-06.jpg",
+    "e2e/persona/2026-11-13/uc1-r2/step-07.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 5,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 4,
+    "trust": 5
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The draft took about a minute and a half with only 'Working on it' and dots, slower than ChatGPT.",
+    "It picked Monday at 10am for the reminder without asking; fine for me, but it was a choice made for me (it did offer to change it).",
+    "After tapping 'Open in Mail' the app screen looked the same, so on a phone I would rely on the mail app popping up to know it worked."
+  ],
+  "verdict": "This felt like ChatGPT that actually knows my email: one sentence got a reminder with the director's name, number and where the waitlist stands, and one more got a ready follow-up email. It never sent anything on its own and the only drag was waiting about a minute and a half for the draft."
+}

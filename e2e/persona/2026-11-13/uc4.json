@@ -1,0 +1,52 @@
+{
+  "case": "uc4",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Plan dinners for this week, and see whether the app will keep helping you with dinners from now on.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "open: Home screen asked 'What can I help with?' with three suggestion buttons, one of them 'Plan dinners this week', and a note that nothing is sent without my OK.",
+    "tap 'Plan dinners this week': it filled the text box with that phrase instead of sending it, so I still had to press Send.",
+    "tap 'Send': the button read 'Sending'.",
+    "wait 30: a page 'Plan this week's dinners' opened saying 'Your meals helper is on it', with 'Change' and 'Details' links and 'Working on it...'.",
+    "wait 30: a dinner plan for Sat Nov 14 to Fri Nov 20 appeared, built around my calendar (eat by 6:30 Sunday for conference sign-ups at 7, quick tacos after Ezra's dentist Monday, dinner at 5 Wednesday before Noa's 6:00 recital).",
+    "scroll down: a 'To buy' grocery list per meal, and the question 'Want me to swap anything, or add a second fish night?'",
+    "type and send 'this is great. can you do this for me every week from now on?': it showed 'Working on it...'.",
+    "wait 30 twice: still 'Working on it'.",
+    "wait 30: it answered yes, starting Fri Nov 20 I get next week's plan and grocery list here every Friday morning, working around the produce box and busy evenings, keeping it Noa-friendly, no repeats, and a vegetarian main for Noa at Thanksgiving.",
+    "tap 'Goals': a 'Reminders' list including 'Plan next week's vegetarian-friendly dinners for Noa' on Fri Nov 20, 9:00 AM.",
+    "scroll down: a second entry 'Weekly dinner plan for the family' also on Fri Nov 20, 9:00 AM, plus school and FSA reminders. Neither dinner entry says it repeats every week."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc4/step-00.jpg",
+    "e2e/persona/2026-11-13/uc4/step-01.jpg",
+    "e2e/persona/2026-11-13/uc4/step-02.jpg",
+    "e2e/persona/2026-11-13/uc4/step-03.jpg",
+    "e2e/persona/2026-11-13/uc4/step-04.jpg",
+    "e2e/persona/2026-11-13/uc4/step-05.jpg",
+    "e2e/persona/2026-11-13/uc4/step-06.jpg",
+    "e2e/persona/2026-11-13/uc4/step-07.jpg",
+    "e2e/persona/2026-11-13/uc4/step-08.jpg",
+    "e2e/persona/2026-11-13/uc4/step-09.jpg",
+    "e2e/persona/2026-11-13/uc4/step-10.jpg",
+    "e2e/persona/2026-11-13/uc4/step-11.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 4,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "Tapping the 'Plan dinners this week' suggestion only filled the box; I had to tap Send as a second step.",
+    "The weekly-plan reply took about 90 seconds, longer than the first plan, for a yes/no style question.",
+    "In Goals there are two dinner reminders on the same Friday ('Plan next week's vegetarian-friendly dinners for Noa' and 'Weekly dinner plan for the family'). It looks like a duplicate, and neither shows that it repeats every week, so I have to trust the chat reply.",
+    "The grocery list leaves out squash, kale, apples and carrots; the later reply mentions a produce box, which explains it, but the plan itself did not say so.",
+    "'Your meals helper' and 'Details' were a little vague, though not confusing enough to stop me."
+  ],
+  "verdict": "I got a sensible week of dinners that fit around the kids' dentist, recital and conference nights, with a shopping list, in about a minute and without any confusing words. Asking for it every week worked in plain language, but the Goals list shows two dinner reminders for the same Friday and neither says 'weekly', which made me less sure what will actually happen."
+}

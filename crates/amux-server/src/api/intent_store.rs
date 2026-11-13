@@ -412,27 +412,59 @@ async fn resolve_target(state: &AppState, _text: &str, mut plan: Value) -> Resul
             let spec = plan["create"].clone();
             match create_worker(state, &spec).await {
                 Ok(name) => {
-                    // A request posted while the helper is still starting used
-                    // to be lost; wait (bounded) for it to run. Delivery retries
-                    // a failure too (conversations::delivery_retryable).
-                    let mut waited_ms = 0u64;
-                    while !super::session_verbs::is_running(&name).await && waited_ms < 10_000 {
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                        waited_ms += 250;
-                    }
-                    tracing::info!(worker = %name, waited_ms, measured = true, n_considered = 1,
-                        verdict = "intent_helper_ready_wait", "intent: waited for a new helper before its first request");
+                    wait_until_running(&name).await;
                     plan["worker"] = json!(name);
                     Ok((name, plan))
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, measured = true, n_considered = 1, verdict = "intent_create_failed",
+                    // Two requests at once can both ask for the same new
+                    // helper; the second create fails with "already exists"
+                    // while the helper it wanted is right there (run I, uc1
+                    // desktop: the person saw "Not sent").
+                    let roster = super::orchestrate::roster_entries(&crate::config::amux_home());
+                    let fallback = create_fallback(&roster, &spec, &plan);
+                    tracing::warn!(error = %e, fallback = ?fallback, measured = true, n_considered = roster.len(),
+                        verdict = "intent_create_failed",
                         "intent: the router asked for a new worker and it could not be created");
-                    Err((StatusCode::BAD_GATEWAY, format!("could not start a helper for this: {e}")))
+                    let Some(name) = fallback else {
+                        return Err((StatusCode::BAD_GATEWAY, format!("could not start a helper for this: {e}")));
+                    };
+                    wait_until_running(&name).await;
+                    plan["action"] = json!("send");
+                    plan["worker"] = json!(name);
+                    Ok((name, plan))
                 }
             }
         }
     }
+}
+
+/// A request posted while the helper is still starting used to be lost; wait
+/// (bounded) for it to run. Delivery retries a failure too
+/// (conversations::delivery_retryable).
+async fn wait_until_running(name: &str) {
+    let mut waited_ms = 0u64;
+    while !super::session_verbs::is_running(name).await && waited_ms < 10_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        waited_ms += 250;
+    }
+    tracing::info!(worker = %name, waited_ms, measured = true, n_considered = 1,
+        verdict = "intent_helper_ready_wait", "intent: waited for a new helper before its first request");
+}
+
+/// Where a request goes when its new helper could not be created: the helper
+/// of that name if one exists now (a concurrent request made it), else the
+/// plan's first candidate. Never an isolated worker (A9).
+fn create_fallback(roster: &[super::orchestrate::RosterEntry], spec: &Value, plan: &Value) -> Option<String> {
+    let routable = |n: &str| roster.iter().any(|w| w.name == n && !w.isolated);
+    let wanted = spec["name"].as_str().unwrap_or("");
+    if !wanted.is_empty() && routable(wanted) {
+        return Some(wanted.to_string());
+    }
+    plan["candidates"].as_array()?.iter()
+        .filter_map(|c| c["worker"].as_str())
+        .find(|n| routable(n))
+        .map(str::to_string)
 }
 
 /// One plain line about where a request went, e.g. "Sent to family: it
@@ -612,6 +644,19 @@ mod tests {
 
     fn post(author: &str) -> Value {
         json!({"author_key": author, "body": "x"})
+    }
+
+    #[test]
+    fn a_create_that_lost_a_race_goes_to_the_helper_it_wanted() {
+        use super::super::orchestrate::RosterEntry;
+        let w = |n: &str, iso: bool| RosterEntry { name: n.into(), isolated: iso, ..Default::default() };
+        let roster = vec![w("family-helper", false), w("private-notes", true), w("family", false)];
+        let plan = json!({"candidates": [{"worker": "private-notes"}, {"worker": "family"}]});
+        assert_eq!(create_fallback(&roster, &json!({"name": "family-helper"}), &plan).as_deref(), Some("family-helper"));
+        // Not created by anyone: the first routable candidate, never an isolated one.
+        assert_eq!(create_fallback(&roster, &json!({"name": "camp"}), &plan).as_deref(), Some("family"));
+        assert_eq!(create_fallback(&roster, &json!({"name": "private-notes"}), &plan).as_deref(), Some("family"));
+        assert_eq!(create_fallback(&roster, &json!({"name": "camp"}), &json!({})), None);
     }
 
     #[test]

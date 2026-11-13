@@ -1,0 +1,45 @@
+{
+  "case": "uc2",
+  "round": 1,
+  "date": "2026-11-13",
+  "task": "Get a reminder to fill in Ezra's school application, and find out whether the application is actually done or still missing something.",
+  "url": "https://localhost:18950",
+  "evaluator": "fresh subagent",
+  "transcript": [
+    "Opened the app: a Home screen asking 'What can I help with?' with example prompts and a note that nothing is sent without my OK.",
+    "Typed 'Remind me to fill in Ezra's school application, and can you check my email to see if the application is actually done or still missing something?' and tapped Send.",
+    "Screen showed my message, 'Getting started' and then a conversation titled 'Check Ezra's school application status' with 'Your family admin helper is on it', Change, Details, and 'Working on it'.",
+    "Waited 30 seconds: still 'Working on it'.",
+    "Waited about another minute: the answer said Ezra's Hudson Prep application isn't done, the parent statement is still missing, it will remind me Sun Nov 15 at 10am, and it's due Sun Nov 22; bullets cited a Nov 10 email from Hudson Prep saying the parent statement is the only missing piece, the teacher recommendation was received, and nothing since says it's complete.",
+    "Tapped Goals: saw my calendar for the next week (soccer, conference sign-ups, Ezra dentist, Noa recital, picture day).",
+    "Scrolled down: Reminders list shows 'Fill in Ezra's school application (Hudson Prep parent statement)' Sun Nov 15 10:00 AM, plus 'Check Ezra's Hudson Prep application (parent statement)' Tue Nov 17 9:00 AM and an FSA reminder.",
+    "Tapped More: options for calendar and reminders, Ideas, and 'Everything else'; I stopped there since I had my answer."
+  ],
+  "screenshots": [
+    "e2e/persona/2026-11-13/uc2/step-00.jpg",
+    "e2e/persona/2026-11-13/uc2/step-01.jpg",
+    "e2e/persona/2026-11-13/uc2/step-02.jpg",
+    "e2e/persona/2026-11-13/uc2/step-03.jpg",
+    "e2e/persona/2026-11-13/uc2/step-04.jpg",
+    "e2e/persona/2026-11-13/uc2/step-05.jpg",
+    "e2e/persona/2026-11-13/uc2/step-06.jpg",
+    "e2e/persona/2026-11-13/uc2/step-07.jpg",
+    "e2e/persona/2026-11-13/uc2/step-08.jpg"
+  ],
+  "scores": {
+    "finished": 5,
+    "correct": 4,
+    "no_jargon": 5,
+    "steps_like_chatgpt": 5,
+    "trust": 4
+  },
+  "jargon_seen": [],
+  "used_change": false,
+  "stumbles": [
+    "The answer took about 90 seconds with only 'Working on it' and dots; fine, but slower than ChatGPT.",
+    "Reminders list had a second Ezra reminder ('Check Ezra's Hudson Prep application', Tue Nov 17 9am) that I did not knowingly ask for, so I was not sure whether it set two reminders or one was older.",
+    "The app never shows me the actual Hudson Prep email, so I took its word on what the email said; the answer quoted a date and details, which helped.",
+    "'Your family admin helper' and the 'Change' link were a little unclear, but I did not need them."
+  ],
+  "verdict": "One message got me a clear answer (not done, parent statement missing, due Nov 22) and a Sunday 10am reminder that really appears in my Reminders list. It felt like ChatGPT apart from the wait and a puzzling extra reminder."
+}
