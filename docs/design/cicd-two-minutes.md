@@ -205,3 +205,84 @@ remaining gap to two minutes at p90**, and this plan says so rather than countin
   responsive; the benchmark ran at load 11 to 13 with no effect on them that the box reported.
 - **Selection misses a regression.** The two-hourly sweep is the backstop; the land gate also runs
   the selected tests before each push.
+
+## Built and measured (2026-11-13)
+
+What landed after the plan, and what each measured on real pushes (from_push_s, the push to the
+server reporting the commit). `GET /api/pull` publishes it as `push_to_live`, with the deploys that
+needed a new binary under `built`.
+
+| change | commit | effect |
+|---|---|---|
+| sandbox installs a binary mixpeek-dev built (Z4) | fb58627c0 | the sandbox deploys Rust commits again (its own compile is OOM-killed) |
+| a local gate pass is cached as the verdict; sandbox builder every 15 s | d665e521f | no-Rust commits: sandbox 32 to 84 s |
+| `lto = "off"` in the deploy profile | d5dc04716 | a real one-function rebuild 173/81 s -> 63/63 s |
+| received binary starts the builder; publisher reuses unchanged binaries | 4aaec163c, 2ad7a78b7 | |
+| the Mac compiles alongside its local gate; 30 s gate budget | 55aeaa533 | 73c7a9f32 651 s -> 13b436e0b 171 s |
+| publisher drops a build a newer commit supersedes in its first minute | b8929c66a | b96fac4ef waited ~4 min behind an older build |
+
+Profile of a full amux-server compile (nightly -Z time-passes, deploy profile, lto off not yet):
+166 s, of which type check 4 s and macro expansion 10 s; LLVM is the rest (IR 65 s, passes 59 s,
+ThinLTO 59 s). So splitting the crate helps through codegen, not the front end.
+
+Rebuild of a real one-function change on mixpeek-dev, lto off, 24 CPUs at nice 19, load ~30:
+
+| opt-level | first | again |
+|---|---|---|
+| 3 (kept) | 105 s | 52 s |
+| 2 | 59 s | 52 s |
+| 1 | 66 s | 65 s |
+
+Lowering it buys nothing; nightly `-Z threads` bought nothing either (46 vs 43 s).
+
+### Where it stands
+
+| commit kind | sandbox | Mac |
+|---|---|---|
+| no compile input changed | 32 to 84 s | 52 to 124 s |
+| Rust change | 121 to 358 s measured; ~70 to 125 s when mixpeek-dev is at load ~30 | 171 to 251 s with the early prebuild, 651 s before it |
+
+The Rust path is now the compile on a shared, loaded machine: the Mac runs the fleet at load 40 to
+115, mixpeek-dev runs Mixpeek at load 20 to 120. The no-spend levers are spent. What would move it
+further needs the owner: a quieter or dedicated build machine (an Apple Silicon one for the Macs
+
+## Built and measured (2026-11-13)
+
+What landed after the plan, and what each measured on real pushes (from_push_s, the push to the
+server reporting the commit). `GET /api/pull` publishes it as `push_to_live`, with the deploys that
+needed a new binary under `built`.
+
+| change | commit | effect |
+|---|---|---|
+| sandbox installs a binary mixpeek-dev built (Z4) | fb58627c0 | the sandbox deploys Rust commits again (its own compile is OOM-killed) |
+| a local gate pass is cached as the verdict; sandbox builder every 15 s | d665e521f | no-Rust commits: sandbox 32 to 84 s |
+| `lto = "off"` in the deploy profile | d5dc04716 | a real one-function rebuild 173/81 s -> 63/63 s |
+| received binary starts the builder; publisher reuses unchanged binaries | 4aaec163c, 2ad7a78b7 | |
+| the Mac compiles alongside its local gate; 30 s gate budget | 55aeaa533 | 73c7a9f32 651 s -> 13b436e0b 171 s |
+| publisher drops a build a newer commit supersedes in its first minute | b8929c66a | b96fac4ef waited about 4 min behind an older build |
+
+Profile of a full amux-server compile (nightly -Z time-passes, deploy profile, before lto off):
+166 s, of which type check 4 s and macro expansion 10 s; LLVM is the rest (IR 65 s, passes 59 s,
+ThinLTO 59 s). Splitting the crate would help through codegen, not the front end.
+
+Rebuild of a real one-function change on mixpeek-dev, lto off, 24 CPUs at nice 19, load about 30:
+
+| opt-level | first | again |
+|---|---|---|
+| 3 (kept) | 105 s | 52 s |
+| 2 | 59 s | 52 s |
+| 1 | 66 s | 65 s |
+
+Lowering it buys nothing; nightly `-Z threads` bought nothing either (46 against 43 s).
+
+### Where it stands
+
+| commit kind | sandbox | Mac |
+|---|---|---|
+| no compile input changed | 32 to 84 s | 52 to 124 s |
+| Rust change | 121 to 358 s measured; about 70 to 125 s when mixpeek-dev is at load about 30 | 171 to 251 s with the early prebuild, 651 s before it |
+
+The Rust path is now the compile on a shared, loaded machine: the Mac runs the fleet at load 40 to
+115, mixpeek-dev runs Mixpeek at load 20 to 120. The no-spend levers are spent. What would move it
+further needs the owner: a quieter or dedicated build machine (an Apple Silicon one for the Mac
+binary), or splitting amux-server into crates so a change recompiles less.
