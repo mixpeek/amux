@@ -54,6 +54,8 @@ export async function ask(page: Page, text: string) {
 /** Wait for a helper answer in the open thread that matches `re`. */
 export async function reply(page: Page, re: RegExp) {
   await expect(page.locator('.cv-post[data-from="helper"] .cv-post-body').filter({ hasText: re }).first()).toBeVisible({ timeout: LIVE ? 600_000 : 60_000 });
+  // The answer is scrolled to inside Chat's pane, never the page: the tabs stay on screen.
+  await expect(page.locator('#tab-home'), 'the tab bar stays on screen').toBeInViewport();
 }
 
 /** The default path shows no machinery words. amux's own words are checked;

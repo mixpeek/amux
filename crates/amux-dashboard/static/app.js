@@ -12525,12 +12525,18 @@ async function _homeLoadOutcome(id, quiet) {
   // Reminders its helper set while answering this conversation: shown in it,
   // so a promised reminder can be seen saved (asked for in four runs).
   const rm = await _homeJson('/api/intent/reminders');
-  r.v.reminders = _homeTurnReminders(r.v.thread || [], rm.ok ? rm.v.reminders || [] : [], r.v.worker, Date.now());
+  // One that names its conversation belongs to that one alone; one that names
+  // none falls back to the turns its helper set it in.
+  const rms = (rm.ok ? rm.v.reminders || [] : []).filter(x => !x.conv || x.conv === 'o:' + id);
+  r.v.reminders = rms.filter(x => x.conv).concat(_homeTurnReminders(r.v.thread || [], rms.filter(x => !x.conv), r.v.worker, Date.now()));
   // Emails its helper wrote in these turns, held by the email API for her OK.
   const ap = await _homeJson('/api/email/approvals');
   const now = Date.now();
-  r.v.drafts = _homeTurnReminders(r.v.thread || [], (ap.ok ? ap.v.pending || [] : [])
-    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 })), r.v.worker, now);
+  // A draft that names its conversation (amux email send --conv) belongs to
+  // that one alone; one that names none falls back to its helper's turns.
+  const held = (ap.ok ? ap.v.pending || [] : []).filter(p => !(p.preview || {}).conv || p.preview.conv === 'o:' + id)
+    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 }));
+  r.v.drafts = held.filter(p => p.preview && p.preview.conv).concat(_homeTurnReminders(r.v.thread || [], held.filter(p => !(p.preview || {}).conv), r.v.worker, now));
   if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
 }
@@ -12585,7 +12591,7 @@ function _homeHeldDraftHtml(p) {
   return '<div class="home-draft" data-approval="' + id + '"><div class="home-draft-head">Draft email, waiting for your OK</div>'
     + '<div class="home-draft-meta">To: ' + esc(pv.to || '') + '</div><div class="home-draft-meta">Subject: ' + esc(pv.subject || '') + '</div>'
     + '<div class="home-draft-body">' + esc(body).replace(/\n/g, '<br>') + '</div>'
-    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send</button>'
+    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send email</button>'
     + '<button type="button" class="btn" onclick="_apprReject(\'' + id + '\',this,_homeApprOpts)">Discard</button>'
     + '<button type="button" class="btn" onclick="_homeCopyDraft(this)">Copy</button></div></div>';
 }
@@ -12626,9 +12632,10 @@ function _homeRenderOutcome(o) {
     + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
+    + '<div class="home-msgs" id="home-msgs">' + posts
+    // Below the request that asked for them, not above it (walkthrough).
     + (o.reminders || []).map(x => '<div class="home-reminder">&#x23F0; Reminder set: ' + esc(x.title) + ' · '
       + esc(_homeReminderWhen(x)) + '</div>').join('')
-    + '<div class="home-msgs" id="home-msgs">' + posts
     + (o.drafts || []).map(_homeHeldDraftHtml).join('')
     + (working ? _homeTypingPost(helper, 'Working on it', waitNote) : '')
     + '</div></div>';
@@ -12636,8 +12643,12 @@ function _homeRenderOutcome(o) {
   // on a phone, hiding its first line (where the result is).
   const replies = el.querySelectorAll('.cv-post[data-from="helper"]:not(:has(.home-typing))');
   const newest = replies[replies.length - 1];
-  if (working) document.getElementById('home-msgs')?.lastElementChild?.scrollIntoView({ block: 'end' });
-  else if (newest) newest.scrollIntoView({ block: 'start' });
+  // Scrolled inside Chat's own pane: scrollIntoView moved the whole page and
+  // pushed the tab bar off the top of a phone (walkthrough).
+  const pane = el.closest('.home-main');
+  const head = el.querySelector('.home-thread-head');
+  if (pane && working) pane.scrollTop = pane.scrollHeight;
+  else if (pane && newest) pane.scrollTop = Math.max(0, newest.offsetTop - pane.offsetTop - (head ? head.offsetHeight : 0) - 8);
   const i = document.getElementById('home-input');
   if (i) i.placeholder = 'Reply or ask a follow-up';
 }
@@ -12806,7 +12817,7 @@ function _homeGoalCard(g) {
   const days = g.tier === 'tracking' ? _homeDaysLeft(g.due) : '';
   const ask = g.pending_ask ? '<div class="home-ask"><div>' + esc(g.pending_ask) + '</div>'
     + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Yes, go ahead</button>'
-    + '<div class="ui-help">Emails still come back to you as drafts to send yourself.</div></div>' : '';
+    + '<div class="ui-help">An email still waits for your OK in its conversation.</div></div>' : '';
   return '<div class="home-card" data-goal="' + esc(g.id) + '"><div class="home-card-top"><span class="home-card-title">' + esc(g.title) + '</span>'
     + (days ? '<span class="home-pill working">' + esc(days) + '</span>' : '') + '</div>'
     + '<div class="home-status-line">' + esc(g.status_line || 'Getting started...') + '</div>'
@@ -12821,8 +12832,16 @@ function _homeRenderGoals(v) {
   const el = document.getElementById('home-goals-body');
   if (!el) return;
   const goals = _home.goals || [];
-  const rem = (_home.reminders || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span></div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
-    + _home.reminders.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
+  // The next five; "Show all" for the rest, so goals are not a long scroll away.
+  // One row per subject here (the server keeps one per subject in each
+  // conversation, so a conversation still shows its own).
+  const remSeen = new Set();
+  const remAll = (_home.reminders || []).filter(x => { const k = String(x.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); return !remSeen.has(k) && remSeen.add(k); });
+  const remShown = _home.remindersAll ? remAll : remAll.slice(0, 5);
+  const rem = remAll.length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span>'
+    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeRefresh()">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
+    + '</div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
+    + remShown.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
       + esc(_homeReminderWhen(x)) + '</div></div>').join('') + '</div>' : '';
   const fmtEv = (e) => { const d = _homeLocalDate(e.start); const allDay = e.all_day || String(e.start).length <= 10;
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + (allDay ? '' : ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })); };

@@ -798,7 +798,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
   </div>
   <form id="home-composer" class="home-composer" onsubmit="event.preventDefault();_homeSend()">
     <div class="home-composer-row">
-      <textarea id="home-input" class="input home-input" rows="1" placeholder="Ask for anything: a reminder, a plan, something from your inbox" aria-label="What do you need?"
+      <textarea id="home-input" class="input home-input" rows="1" placeholder="Ask for anything" aria-label="What do you need?"
         oninput="_homeGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_homeSend()}"></textarea>
       <button id="home-send" type="submit" class="btn primary home-send">Send</button>
     </div>

@@ -58,29 +58,56 @@ async fn reminders(State(state): State<AppState>) -> Response {
     // A reminder is a scheduler entry a helper set with `amux wake`: once, or
     // repeating (`--every`). amux's own checks for goals and ideas are shell
     // schedules and are not reminders.
-    type Row = (String, String, String, Option<String>, i64, Option<String>);
+    type Row = (String, String, String, Option<String>, i64, Option<String>, String);
     let rows: Vec<Row> = state.store.read().ok().and_then(|c| {
         let mut st = c.prepare("SELECT id, title, session, next_run, created, \
-            CASE WHEN sched_type='recurring' THEN schedule_expr END FROM schedules \
+            CASE WHEN sched_type='recurring' THEN schedule_expr END, COALESCE(command,'') FROM schedules \
             WHERE enabled=1 AND deleted IS NULL AND kind<>'shell' AND sched_type IN ('once','recurring')").ok()?;
         let r = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default(), r.get(3)?,
-            r.get::<_, i64>(4)?, r.get::<_, Option<String>>(5)?))).ok()?;
+            r.get::<_, i64>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, String>(6)?))).ok()?;
         Some(r.flatten().collect())
     }).unwrap_or_default();
     let n = rows.len();
     let mut out: Vec<Value> = rows.into_iter()
-        .filter(|(_, _, sess, _, _, _)| helpers.contains(sess))
-        .filter_map(|(id, title, sess, next, created, every)| {
+        .filter(|(_, _, sess, _, _, _, _)| helpers.contains(sess))
+        .filter_map(|(id, title, sess, next, created, every, command)| {
             let next = next?;
             let when = chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M:%S")
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%dT%H:%M"))
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(&next, "%Y-%m-%d %H:%M:%S")).ok()?;
             (when > now).then(|| json!({"id": id, "title": reminder_title(&title), "when": when.format("%Y-%m-%dT%H:%M").to_string(),
-                "worker": sess, "created": created, "every": every.filter(|e| !e.is_empty())}))
+                "worker": sess, "created": created, "every": every.filter(|e| !e.is_empty()),
+                "conv": conv_named(&command)}))
         })
         .collect();
     out.sort_by(|a, b| a["when"].as_str().cmp(&b["when"].as_str()));
-    Json(json!({"reminders": out, "measured": true, "n_considered": n})).into_response()
+    let (out, folded) = fold_repeats(out);
+    Json(json!({"reminders": out, "folded": folded, "measured": true, "n_considered": n})).into_response()
+}
+
+/// The conversation a reminder's prompt names (`amux post 'o:<id>'`, as the
+/// brief asks), so a conversation shows its own reminders and not another
+/// goal's on the same helper (walkthrough run 2).
+pub(crate) fn conv_named(command: &str) -> Option<String> {
+    let i = command.find("o:o")?;
+    let id: String = command[i + 2..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    (id.len() > 3).then(|| format!("o:{id}"))
+}
+
+/// One reminder per subject in each conversation: a goal's checks setting
+/// "Check Ezra's Hudson Prep application" again and again filled Goals with
+/// twenty rows (walkthrough). Two conversations that each set the same title
+/// keep one each, so each still shows its own (land review). Kept: the
+/// soonest; returned: how many folded.
+pub(crate) fn fold_repeats(sorted: Vec<Value>) -> (Vec<Value>, usize) {
+    let mut seen = BTreeSet::new();
+    let before = sorted.len();
+    let out: Vec<Value> = sorted.into_iter().filter(|r| {
+        let whose = r["conv"].as_str().or(r["worker"].as_str()).unwrap_or("").to_string();
+        seen.insert((whose, fingerprint(r["title"].as_str().unwrap_or(""))))
+    }).collect();
+    let folded = before - out.len();
+    (out, folded)
 }
 
 /// A wake prompt's first line, as a person reads a reminder: no "Remind Dana
@@ -1099,6 +1126,24 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_reminder_names_its_conversation_and_repeats_fold() {
+        use super::{conv_named, fold_repeats};
+        use serde_json::json;
+        assert_eq!(conv_named("Post the reminder here with amux post 'o:o01abc9z' then stop").as_deref(), Some("o:o01abc9z"));
+        assert_eq!(conv_named("Post the reminder"), None);
+        let r = |t: &str, w: &str| json!({"title": t, "when": w});
+        let (out, folded) = fold_repeats(vec![r("Check Ezra's Hudson Prep application", "2026-11-14T09:00"),
+            r("Call the camp", "2026-11-15T10:00"), r("Check Ezra's Hudson Prep application!", "2026-11-16T09:00")]);
+        assert_eq!(folded, 1);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["when"], "2026-11-14T09:00", "the soonest is kept");
+        // The same title in two conversations: one each, so each shows its own.
+        let c = |conv: &str| json!({"title": "Check the application", "when": "2026-11-14T09:00", "conv": conv});
+        let (out, folded) = fold_repeats(vec![c("o:oa"), c("o:ob"), c("o:oa")]);
+        assert_eq!((out.len(), folded), (2, 1));
+    }
+
     #[test]
     fn a_card_description_reads_back_as_the_idea() {
         use super::{card_desc, parse_desc};

@@ -109,9 +109,9 @@ holds.
 | A conversation | Messages: the thread `o:<id>` with one worker |
 | Which worker a conversation is with, and why | a post in that same thread by `amux:record` (its structured part is an `intent` attachment Messages does not draw); a re-route or a "Change" is another one |
 | "Remind me…" | the scheduler: the worker runs `amux wake` (`--every` for a repeating one) |
-| An event | the amux calendar (`/api/cal-events`) |
+| An event | the amux calendar: the worker runs `amux cal add` |
 | "Remember that…" | memories (`amux memory add`) |
-| A draft email | the email API: the worker sends it with `/api/email/send`, which holds any outside send for the owner's OK |
+| A draft email | the email API: the worker runs `amux email send`, and the API holds any outside send for the owner's OK |
 | A goal | a board card on its helper's board, tagged `goal`, `owner_type: human` (a due date makes it Tracking; the status line is the helper's newest `STATUS:` line in its conversation) |
 | A to-do | a card on her own board (unassigned, `owner_type: human`, tagged `todo`), made through the board's own create; Goals lists it with Done. A helper has no board of its own (new workers have their board switches off since 2026-11-02), so it asks `POST /api/intent/todos` (owner, 2026-11-13). |
 | An idea | a backlog board card tagged `idea`; "Do it" starts its request, "Not now" discards it |
@@ -151,6 +151,38 @@ the plain post, the hidden tab list in simple mode and "Everything else" ending
 the bar are each mutation-checked. A markdown table in any post keeps whole
 words and scrolls sideways (shared `.cv-md` style), which is not pinned by a
 test.
+
+**Every step a helper takes is an `amux` verb.** A chat worker may run only
+`amux ...` (`chat_worker.rs`, `--allowedTools Bash(amux:*)`). The second
+walkthrough recording (on b5801aea0) found the brief telling helpers to `curl`
+the email and to-do routes: their permission check refused it, so no draft was
+ever held and no to-do made, while the specs, whose stand-in helper called the
+API directly, stayed green. The CLI now has `amux email send`, `amux todo add`
+and `amux cal add`, the brief names only `amux` verbs (a test refuses `curl ` in
+it), and the stand-in helper runs the repo's own CLI, so the specs take the path
+a real helper takes. The same recording also found: reminder lines above the
+request that set them (now below), the page scrolling the tab bar off a phone
+(now Chat's pane scrolls, a visual fix the stand-in's short answers cannot
+reproduce), twenty near-duplicate reminders (now one per subject, the next five
+shown), a conversation listing another goal's reminders (a reminder that names
+its conversation now belongs to that one alone), a clipped composer placeholder,
+and stale copy under "Yes, go ahead". Runs
+[T](../../e2e/intent/results/2026-11-13-run-T.txt) and
+[U](../../e2e/intent/results/2026-11-13-run-U.txt): 20 of 20.
+
+The third recording (346be20e3, real model) showed the draft card in about
+20 seconds and the to-do in Goals. It also showed a goal check's draft in an
+unrelated conversation on the same helper: a held draft now names the
+conversation it was written in (`amux email send --conv`, kept on the held
+draft's preview), and Chat shows each draft in its own conversation only
+(mutation-checked). The helper says a draft is waiting below without repeating
+it, and the draft's button reads "Send email". Runs
+[V](../../e2e/intent/results/2026-11-13-run-V.txt) and
+[W](../../e2e/intent/results/2026-11-13-run-W.txt): 20 of 20.
+
+Open from that recording: an idea can offer a step a goal has already taken
+(the pass reads conversations, not goal status lines), and a request waits
+behind its helper's goal checks (174 seconds against about 25).
 
 ### What is still intent-only, and why
 

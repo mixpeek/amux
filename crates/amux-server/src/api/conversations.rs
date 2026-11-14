@@ -1318,15 +1318,13 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
                      never in another app or a file of your own: a reminder is amux wake <YYYY-MM-DDTHH:MM> --title \
                      \"<what to remember, in their words>\" --stdin, telling yourself to post the reminder here with amux post 'o:{id}' \
                      (a repeating one is amux wake --every '<daily at 09:00, or cron>' the same way); an event for their calendar \
-                     is a POST to $AMUX_URL/api/cal-events with title, start and end; something to remember about them is \
+                     is amux cal add \"<title>\" --start YYYY-MM-DDTHH:MM --end YYYY-MM-DDTHH:MM; something to remember about them is \
                      amux memory add --stdin. Make the first line of your answer say what you set and when. Answer with the result first, in one to three short lines, then only the \
                      details that help; write dates the way a person says them (Tue Nov 17), never 2026-11-17; never mention amux, workers, terminals, cards, tools or approval steps. An email to anyone \
-                     is a send through the amux email API: curl -sk -X POST -H 'Content-Type: application/json' \
-                     -H \"X-Amux-Session: $AMUX_SESSION\" -d '{{\"to\":...,\"subject\":...,\"body\":...}}' \"$AMUX_URL/api/email/send\". \
-                     amux holds every email to someone outside as a draft for their OK and shows it to them here, so say it is \
-                     waiting for their OK; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
-                     track of is a card on their board: curl -sk -X POST -H 'Content-Type: application/json' -H \"X-Amux-Session: $AMUX_SESSION\" \
-                     -d '{{\"title\":\"<what, in their words>\",\"due\":\"YYYY-MM-DD if there is one\"}}' \"$AMUX_URL/api/intent/todos\". What they asked:"),
+                     is amux email send --to <address> --subject \"<subject>\" --conv 'o:{id}' --stdin (the body on stdin): amux \
+                     holds every email to someone outside as a draft for their OK and shows it to them here, so say in one line that \
+                     it is waiting for their OK below, without repeating its text; never approve it yourself, never send it another way, never spend money. A to-do or something to keep \
+                     track of is amux todo add \"<what, in their words>\" --due YYYY-MM-DD (the due date only if there is one). What they asked:"),
             "this outcome's thread".to_string(),
         ),
     };
@@ -2931,9 +2929,12 @@ mod tests {
         assert!(text.contains("amux post 'o:oconvtest1'") && text.contains("draft"), "{text}");
         assert!(text.contains("never approve it yourself") && text.contains("never spend money"), "outside sends wait for the owner: {text}");
         // What it sets up lives in amux's own primitives: the scheduler, the calendar, memories.
+        // Every step is an `amux` verb: a chat worker may run nothing else (--allowedTools Bash(amux:*)),
+        // and a curl in the brief was refused, so no draft was ever held (walkthrough, 2026-11-13).
+        assert!(!text.contains("curl "), "no step a helper is not allowed to run: {text}");
         for (verb, what) in [("amux wake <YYYY", "a reminder is the scheduler"), ("amux wake --every", "a repeating one too"),
-            ("api/cal-events", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory"),
-            ("api/email/send", "an email is the email API, held for the owner"), ("api/intent/todos", "a to-do is a card on her board")] {
+            ("amux cal add", "an event is the amux calendar"), ("amux memory add", "a fact to keep is a memory"),
+            ("amux email send", "an email is the email API, held for the owner"), ("--conv 'o:oconvtest1'", "and names its conversation"), ("amux todo add", "a to-do is a card on her board")] {
             assert!(text.contains(verb), "{what}: {text}");
         }
     }
