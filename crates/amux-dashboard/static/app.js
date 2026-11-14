@@ -40527,12 +40527,40 @@ document.addEventListener('click', e => {
     _openOwnPage(a.href, 'anchor');
   }
 }, true);
+// A NEW TAB FROM A LINK TO THIS AMUX STAYS ON THIS ADDRESS (owner, 2026-11-13:
+// a middle-clicked link opened in light mode). Workers write links on the
+// server's public address (the /api/deep-link base, e.g. https://amux.example.com)
+// while this tab may be on https://localhost:8824. A plain click opens such a
+// link here (above); a middle, ⌘ or ctrl click, or "Open Link in New Tab", let
+// the browser open the public address: another origin, so another
+// localStorage, without this one's theme, drafts, tab order or worker views
+// (and with its own sign-in). Just before the browser acts on the link, its
+// href is pointed at this origin, so every way of opening it lands here.
+function _ownLinkHere(href) {
+  const hash = _ownLinkHash(href);
+  if (!hash) return '';
+  try { if (new URL(href, location.href).origin === location.origin) return ''; } catch (_) { return ''; }
+  return location.origin + '/' + hash;
+}
+function _ownLinkRetarget(e) {
+  const a = e.target && e.target.closest && e.target.closest('a[href]');
+  if (!a || a.hasAttribute('download')) return;
+  const here = _ownLinkHere(a.getAttribute('href'));
+  if (!here) return;
+  a.setAttribute('href', here);
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'own-link', verdict: 'retargeted_to_this_origin', how: e.type, measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (_) {}
+}
+['pointerdown', 'contextmenu', 'focusin'].forEach(ev => document.addEventListener(ev, _ownLinkRetarget, true));
 // The terminal's links (xterm's web-links addon) open the same way.
 function _termLinkOpen(e, uri) {
   const mod = !!(e && (e.metaKey || e.ctrlKey));
   if (!mod && _openOwnLink(uri, 'terminal')) return;
   if (!mod && _ownPageLink(uri)) { _openOwnPage(uri, 'terminal'); return; }
-  window.open(uri, '_blank');
+  window.open(_ownLinkHere(uri) || uri, '_blank');
 }
 
 // A PAGE ON THIS AMUX THAT IS NOT THE DASHBOARD NEVER REPLACES IT IN THE APP.

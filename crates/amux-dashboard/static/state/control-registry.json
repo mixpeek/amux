@@ -3912,6 +3912,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_ownLinkRetarget": {
+      "kind": "command._ownLinkRetarget",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_ownPageBeacon": {
       "kind": "command._ownPageBeacon",
       "feedback_required": true,
