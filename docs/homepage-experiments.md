@@ -1020,6 +1020,14 @@
 - **Implementation:** the exp143-answer paragraph deleted; nothing else on the page changes, so the top Cloud box returns to sitting directly under the subtitle. dateModified 2026-11-06.
 - **Effort:** XS
 
+### EXP-160: Cloud boxes on /glossary/agent-multiplexer/
+- **Hypothesis:** The agent multiplexer glossary page converts readers to GitHub better than any content page (18.2% of 11 landers this week, about 28% over 30 days) but has sent nobody to /start/, and it had no Cloud box at all. A top Cloud box under the subtitle, plus a Cloud link and the Team line in the closing box, gets 3%+ of landers to /start/ without lowering the GitHub rate below 12%.
+- **Page:** /glossary/agent-multiplexer/
+- **KPI:** /start/ views with `source=glossary-agent-multiplexer` and `cta_click` goal=cloud and goal=github per landing visitor; spots `cloud-inline-top`, `cloud-inline-end`
+- **Status:** `running`, started 2026-11-14, score 2026-11-28 (two weeks, since the page gets about 11 landers a week). Baseline (site-funnel.py --days 7, 11-07 to 11-14, scanner hits excluded): 18.2% GitHub click (2), 0.0% /start/ view from 11 landing visitors.
+- **Implementation:** top `cloud-inline-top` box (Cloud first, self-host on GitHub second); the closing box becomes `cloud-inline-end` with the curl installer instead of the old clone/register/start/serve steps, GitHub and Cloud buttons, and the Team $69 line; em-dashes removed from the page. dateModified 2026-11-14.
+- **Effort:** XS
+
 ## Which Cloud boxes have produced anything (read before picking the next page)
 
 Measured 2026-11-02 over 10-19 to 11-02, HogQL on project 378145, distinct people. `cta_click` goal=cloud by spot, content pages only:
