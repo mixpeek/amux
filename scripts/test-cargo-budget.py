@@ -502,13 +502,14 @@ class BuildRetryTests(unittest.TestCase):
                 AMUX_RS_DISK_CLEAR_ONLY='1', AMUX_RS_DISK_CLEAR_DRYRUN='1',
                 AMUX_RS_BUILD_LOG=str(base / 'build.log'))
             env.pop('AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB', None)
-            for gb in (20, 33):
+            # 36G is one warm workspace test build: it must survive.
+            for gb in (20, 36, 45):
                 (base / 'build.log').unlink(missing_ok=True)
                 subprocess.run(['bash', str(ROOT / 'rust-auto-build.sh')],
                                env=env | dict(FIXTURE_TARGET_KB=str(gb * 1024**2)),
                                check=True, capture_output=True, timeout=20)
                 log = (base / 'build.log').read_text()
-                self.assertEqual('DEBUG ARTIFACTS' in log, gb > 32, log)
+                self.assertEqual('DEBUG ARTIFACTS' in log, gb > 44, log)
                 self.assertEqual(marker.read_text(), 'warm cache')
 
     def test_failed_inputs_back_off_changed_inputs_retry_and_success_clears(self):

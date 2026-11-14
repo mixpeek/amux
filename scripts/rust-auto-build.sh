@@ -963,10 +963,16 @@ fi
     done
     echo "== WARN cargo_reclaim_deferred DEFERRED path=$2 attempts=$tries waited_s=$((SECONDS-started)) verdict=cargo_reclaim_retry_exhausted last=${RECLAIM_LAST:-peer override}; the guard refused for the whole window, the next run retries."
   }
+  # The cap must sit ABOVE one workspace test build (33-36G measured
+  # 2026-11-14). At 32 every builder run after a land gate cleared it, the
+  # next gate rebuilt all of it cold, and the host's free space swung ~35G per
+  # cycle, which the disk tick escalated three times as an 18-20G/h burn
+  # (RCAs 20261114-032649, -122821). 44 keeps the warm build and stays under
+  # the 64G AMUX_CARGO_MAX_TARGET_GB with deploy/ and release/ beside it.
   DEBUG_DIR="$HOME/.amux/rust-build-target/debug"
   if [ -d "$DEBUG_DIR" ]; then
     DEBUG_GB=$(du -sk "$DEBUG_DIR" 2>/dev/null | awk '{print int($1/1048576)}')
-    if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-32}" ]; then
+    if [ "${DEBUG_GB:-0}" -gt "${AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB:-44}" ]; then
       echo "== DEBUG ARTIFACTS: ${DEBUG_GB:-?}GB in $DEBUG_DIR. Clearing eligible artifacts only after the Cargo safety guard permits it."
       reclaim_debug_with_retries "$HOME/.amux/rust-build-target" "$DEBUG_DIR"
     fi

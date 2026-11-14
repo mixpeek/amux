@@ -22,7 +22,7 @@ signal a peer build or a worker.
 | Elapsed Cargo execution | 1 hour | `AMUX_CARGO_MAX_SECONDS` |
 | Combined selected target directories | 40 GiB | `AMUX_CARGO_MAX_TARGET_GB` |
 | Free space reserve on their volumes | 4 GiB | `AMUX_CARGO_MIN_FREE_GB` |
-| Idle debug-cache cleanup threshold | above 32 GiB | `AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB` |
+| Idle debug-cache cleanup threshold | above 44 GiB (one warm workspace test build is 33-36 GiB) | `AMUX_BUILD_DEBUG_CLEAR_ABOVE_GB` |
 | Retry delay for unchanged failed build inputs | 15 minutes | `AMUX_BUILD_FAILURE_RETRY_SECS` |
 
 Memory/time are sampled every 2 seconds, disk every 30 seconds. These are
