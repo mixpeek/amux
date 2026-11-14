@@ -12323,16 +12323,18 @@ async function _outcomeStart(text, cfg, files) {
   return name;
 }
 
-// ── Chat, Ideas and Goals (docs/design/intent-first.md) ──
-// Three tabs in the normal tab bar. Chat is a composer and the requests it
+// ── Chat (docs/design/intent-first.md) ──
+// One tab in the normal tab bar. Chat is a composer and the requests it
 // started; each is a Messages thread (o:<id>) the server routed to a worker,
-// and the person reads results, not workers. Ideas and Goals are views over
-// board cards, the scheduler and the calendar. For a new person (the `home`
-// choice is intent) the other tabs are hidden until "Everything else". Words
+// and the person reads results, not workers. Below the requests, the same
+// screen shows what is coming up (calendar, reminders, to-dos and goals) and
+// ideas: views over board cards, the scheduler and the calendar. An open
+// conversation shows only itself. For a new person (the `home` choice is
+// intent) the other tabs are hidden until "Everything else". Words
 // on this path avoid the machinery (worker, session, model, card, board,
 // terminal): a worker is "a helper".
 const _home = { pane: 'chat', open: null, outcomes: [], ideas: null, goals: null, timer: null, sending: false, detail: null };
-const _HOME_VIEWS = { home: 'chat', ideas: 'ideas', goals: 'goals' };
+const _HOME_VIEWS = { home: 'chat' };
 function _homeEnter(view) {
   if (document.body.classList.contains('intent-simple')) {
     // A first-run tour of workers that opened before Chat did is closed:
@@ -12341,8 +12343,9 @@ function _homeEnter(view) {
     document.getElementById('cloud-offer')?.remove();
   }
   document.documentElement.classList.remove('boot-home-pending');
-  _home.pane = _HOME_VIEWS[view] || 'chat';
-  if (view === 'home') _homeFit();
+  _home.pane = 'chat';
+  _homeFit();
+  _home.extrasAt = 0;
   _homeRefresh();
   _homeEnsureTimer();
 }
@@ -12353,7 +12356,7 @@ function _homeFit() {
   requestAnimationFrame(() => view.style.setProperty('--mv-top', Math.max(0, view.getBoundingClientRect().top) + 'px'));
 }
 window.addEventListener('resize', () => { if (activeView === 'home') _homeFit(); });
-// Simple mode (a new person): only Chat, Ideas and Goals in the tab bar.
+// Simple mode (a new person): only Chat in the tab bar.
 // "Everything else" shows every tab for this visit.
 function _homeSimple(on) { document.body.classList.toggle('intent-simple', !!on); }
 function _homeShowEverything() { _homeSimple(false); switchView('sessions'); }
@@ -12376,12 +12379,13 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && _H
 function _homeLeave() {
   if (_home.timer) { clearInterval(_home.timer); _home.timer = null; }
 }
-// Go to Chat, Ideas or Goals (its tab).
+// Go to Chat; 'ideas' or 'goals' closes any open conversation and scrolls
+// to that section of the list.
 function _homeSetPane(p) {
-  const v = p === 'chat' ? 'home' : p;
-  if (activeView !== v) { switchView(v); return; }
-  _home.pane = p;
-  _homeRefresh();
+  if (activeView !== 'home') switchView('home');
+  if (p === 'chat') return;
+  if (_home.open) _homeBack();
+  _homeExtrasLoad(true).then(() => document.getElementById(p === 'ideas' ? 'home-ideas' : 'home-goals')?.scrollIntoView({ block: 'start' }));
 }
 async function _homeJson(path, opts) {
   // Bounded: one request that hangs (a busy server) must not freeze the
@@ -12406,22 +12410,32 @@ async function _homeRefresh() {
     // the pass's goals buried the request she had just made (final uc5).
     if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => o.item_kind !== 'goal');
     _homeRenderList();
-  } else if (_home.pane === 'ideas') {
-    const r = await _homeJson('/api/intent/ideas');
-    _home.ideas = r.ok ? (r.v.ideas || []) : [];
-    _homeRenderIdeas(r.ok ? r.v : null);
-  } else if (_home.pane === 'goals') {
-    const [r, rm, ev] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders'), _homeJson('/api/cal-events')]);
-    _home.goals = r.ok ? (r.v.goals || []) : [];
-    _home.todos = r.ok ? (r.v.todos || []) : [];
-    _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const week = new Date(today.getTime() + 8 * 86400000);
-    _home.events = (ev.ok ? (Array.isArray(ev.v) ? ev.v : ev.v.events || []) : [])
-      .filter(e => { const d = _homeLocalDate(e.start); return !isNaN(d) && d >= today && d < week; })
-      .sort((a, b) => String(a.start).localeCompare(String(b.start)));
-    _homeRenderGoals(r.ok ? r.v : null);
+    _homeExtrasLoad(false);
   }
+}
+// What is coming up and ideas, below the requests: every 20 seconds at most
+// (the request list polls every few seconds), or at once when forced.
+async function _homeExtrasLoad(force) {
+  if (!force && Date.now() - (_home.extrasAt || 0) < 20000) return;
+  _home.extrasAt = Date.now();
+  await Promise.all([_homeIdeasLoad(), _homeGoalsLoad()]);
+}
+async function _homeIdeasLoad() {
+  const r = await _homeJson('/api/intent/ideas');
+  _home.ideas = r.ok ? (r.v.ideas || []) : [];
+  _homeRenderIdeas(r.ok ? r.v : null);
+}
+async function _homeGoalsLoad() {
+  const [r, rm, ev] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders'), _homeJson('/api/cal-events')]);
+  _home.goals = r.ok ? (r.v.goals || []) : [];
+  _home.todos = r.ok ? (r.v.todos || []) : [];
+  _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const week = new Date(today.getTime() + 8 * 86400000);
+  _home.events = (ev.ok ? (Array.isArray(ev.v) ? ev.v : ev.v.events || []) : [])
+    .filter(e => { const d = _homeLocalDate(e.start); return !isNaN(d) && d >= today && d < week; })
+    .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+  _homeRenderGoals(r.ok ? r.v : null);
 }
 function _homeAgo(ms) {
   if (!ms) return '';
@@ -12446,7 +12460,11 @@ function _homeRenderList() {
         .map(t => '<button type="button" class="btn home-example" onclick="_homeFill(this.textContent)">' + esc(t) + '</button>').join('') + '</div></div>';
     return;
   }
-  el.innerHTML = '<div class="home-list" role="list">' + list.map(o =>
+  // The newest five, so what is coming up and ideas below stay in reach.
+  const shown = _home.outcomesAll ? list : list.slice(0, 5);
+  el.innerHTML = '<div class="home-pane-head"><span class="home-pane-title">Your requests</span>'
+    + (list.length > 5 ? '<button type="button" class="home-link" onclick="_home.outcomesAll=!_home.outcomesAll;_homeRenderList()">' + (_home.outcomesAll ? 'Show fewer' : 'Show all ' + list.length) + '</button>' : '')
+    + '</div><div class="home-list" role="list">' + shown.map(o =>
     '<button type="button" role="listitem" class="home-row" data-outcome="' + esc(o.id) + '" onclick="_homeOpenOutcome(this.dataset.outcome)">'
     + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title || 'Request') + '</span>'
     + '<span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
@@ -12579,7 +12597,7 @@ async function _homeTodoDone(id, btn) {
     body: JSON.stringify({ status: 'done', evidence: 'none: marked done in Goals', gate_ack: true }) });
   if (!r.ok) { showToast('Not marked done: ' + (r.v.error || 'please try again')); if (btn) btn.disabled = false; return; }
   showToast('Done');
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 // A held email (POST /api/email/send from her helper, held for her OK), with
 // the approvals banner's own Send and Discard (_apprApprove/_apprReject).
@@ -12792,7 +12810,7 @@ async function _homeIdeasRefresh() {
   if (b) { b.disabled = true; b.textContent = 'Looking...'; }
   const r = await _homeJson('/api/intent/ideas/refresh', { method: 'POST', body: '{}' });
   if (!r.ok) showToast('Could not look for ideas just now.');
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 async function _homeIdeaStart(id) {
   const r = await _homeJson('/api/intent/ideas/' + encodeURIComponent(id) + '/start', { method: 'POST', body: '{}' });
@@ -12802,7 +12820,7 @@ async function _homeIdeaStart(id) {
 }
 async function _homeIdeaDismiss(id) {
   await _homeJson('/api/intent/ideas/' + encodeURIComponent(id) + '/dismiss', { method: 'POST', body: '{}' });
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 function _homeDaysLeft(due) {
   if (!due) return '';
@@ -12839,7 +12857,7 @@ function _homeRenderGoals(v) {
   const remAll = (_home.reminders || []).filter(x => { const k = String(x.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); return !remSeen.has(k) && remSeen.add(k); });
   const remShown = _home.remindersAll ? remAll : remAll.slice(0, 5);
   const rem = remAll.length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span>'
-    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeRefresh()">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
+    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeExtrasLoad(true)">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
     + '</div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
     + remShown.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
       + esc(_homeReminderWhen(x)) + '</div></div>').join('') + '</div>' : '';
@@ -12861,19 +12879,19 @@ function _homeRenderGoals(v) {
 async function _homeGoalDismiss(id) {
   if (!await showConfirm('Stop keeping track of this?', 'Stop')) return;
   await _homeJson('/api/intent/goals/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ status: 'dismissed' }) });
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 async function _homeGoalRename(id) {
   const g = (_home.goals || []).find(x => x.id === id);
   const t = await showPrompt('Reword this goal', g?.title || '');
   if (!t || !t.trim()) return;
   await _homeJson('/api/intent/goals/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 async function _homeGoalApprove(id) {
   const r = await _homeJson('/api/intent/goals/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: '{}' });
   showToast(r.ok ? 'Approved' : ('Not approved: ' + (r.v.error || 'error')));
-  _homeRefresh();
+  _homeExtrasLoad(true);
 }
 // Each worker's conversations from Chat, for its card line. One fetch
 // of /api/intent/outcomes, refreshed at most every 20 seconds.
@@ -19382,7 +19400,9 @@ function _savePeekState() {
 // 'pages' internally; #view=apps is the canonical address and #view=pages is
 // kept as an alias, because worker messages already carry those links.
 function _viewHashName(view) { return view === 'pages' ? 'apps' : view; }
-function _viewFromHashName(v) { return v === 'apps' ? 'pages' : v; }
+// Ideas and Goals were tabs until 2026-11-14; they are sections of Chat now,
+// so an old #view=ideas or #view=goals opens Chat.
+function _viewFromHashName(v) { return v === 'apps' ? 'pages' : (v === 'ideas' || v === 'goals') ? 'home' : v; }
 
 function _syncUrlHash() {
   if (window._peekSplitChild || window._peekEmbed) return;
@@ -43967,7 +43987,7 @@ function switchView(view) {
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
     ['calls', 'calls', 'flex'],
-    ['home', 'home', 'flex'], ['ideas', 'ideas', 'block'], ['goals', 'goals', 'block'],
+    ['home', 'home', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');

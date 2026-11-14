@@ -13,7 +13,7 @@ test("an idea that checks whether Ezra's application is done", async ({ page, re
   await until(async () => (await (await request.get('/api/intent/ideas')).json()).ideas || [],
     (v) => v.some((i: { title: string }) => /application/i.test(i.title)));
   await pane(page, 'ideas');
-  const card = page.locator('.home-card').filter({ hasText: /application/i }).first();
+  const card = page.locator('#home-ideas .home-card').filter({ hasText: /application/i }).first();
   await expect(card).toBeVisible();
   await noJargon(page);
   await card.getByRole('button', { name: 'Do it' }).click();

@@ -11190,12 +11190,13 @@ html.boot-home-pending #session-view, html.boot-home-pending .tab-bar-outer, htm
    its conversation instead (_homeHeldDraftHtml). */
 body.intent-simple .header-row, body.intent-simple #no-apikey-banner, body.intent-simple #chrome-tabs-bar,
 body.intent-simple #email-approvals-banner { display: none !important; }
-body.intent-simple .tab-bar > button:not(#tab-home):not(#tab-ideas):not(#tab-goals):not(#tab-everything) { display: none !important; }
+body.intent-simple .tab-bar > button:not(#tab-home):not(#tab-everything) { display: none !important; }
 body:not(.intent-simple) #tab-everything { display: none; }
 body.intent-simple .tab-customize-wrap { display: none !important; }
 body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .home-view { flex-direction: column; height: calc(100dvh - var(--mv-top, 120px)); min-height: 0; color: var(--text); font-family: var(--font-ui); }
-.home-page { color: var(--text); font-family: var(--font-ui); }
+.home-view:has(.home-thread) .home-extra { display: none; }
+.home-extra .home-pane-body { padding-top: 0; }
 .home-main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .home-pane-body { max-width: 760px; margin: 0 auto; padding: var(--space-2) var(--space-4) var(--space-4); }
 .home-pane-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin: var(--space-3) 0 var(--space-2); }

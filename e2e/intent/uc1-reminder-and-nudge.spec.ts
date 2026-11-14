@@ -55,7 +55,11 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
     // alone has to bring simple mode back (her helpers do not count as a fleet).
     await page.evaluate(() => localStorage.removeItem('amux_home_choice'));
     await openHome(page);
-    await page.locator(`.home-row[data-outcome="${id}"]`).click();
+    // The list shows the newest five; an older request is behind "Show all".
+    const row = page.locator(`.home-row[data-outcome="${id}"]`);
+    await expect(page.locator('#home-chat .home-row').first()).toBeVisible({ timeout: 20_000 });
+    if (!(await row.isVisible())) await page.locator('#home-chat .home-link', { hasText: /show all/i }).click();
+    await row.click();
     await expect(page.locator('.home-reminder').filter({ hasText: /camp/i })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('.home-reminder').filter({ hasText: /registration/i })).toHaveCount(0);
     await expect(page.locator('.home-reminder').filter({ hasText: /hudson/i }), 'another conversation\'s reminder').toHaveCount(0);
@@ -68,7 +72,7 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
   expect(idea.sources.some((s: { kind: string }) => s.kind === 'email'), 'the idea records the camp email it came from').toBeTruthy();
   expect(idea.sources.some((s: { kind: string }) => s.kind === 'outcome'), 'and the request').toBeTruthy();
   await pane(page, 'ideas');
-  const card = page.locator('.home-card').filter({ hasText: /camp kaylie|nudge/i }).first();
+  const card = page.locator('#home-ideas .home-card').filter({ hasText: /camp kaylie|nudge/i }).first();
   await expect(card).toBeVisible();
   await expect(card).toContainText(/draft/i);
   await expect(card.locator('.home-card-from')).toContainText(/email/i);

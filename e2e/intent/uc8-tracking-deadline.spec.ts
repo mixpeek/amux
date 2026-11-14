@@ -35,6 +35,12 @@ test('a to-do is a card on her board, listed in Goals, and Done closes it', asyn
   const card = await (await request.get('/api/board/' + encodeURIComponent(todo.id))).json();
   expect(card.session || '', 'on her own board, not a helper\'s').toBe('');
   expect(card.owner_type, 'hers, so nothing dispatches it').toBe('human');
+  // Goals was its own tab; an old link to it lands in Chat, where it lives now.
+  await page.locator('#tab-everything').click();
+  await expect(page.locator('#home-view')).toBeHidden();
+  await page.goto('/#view=goals');
+  await expect(page.locator('#home-view'), 'a saved Goals link opens Chat').toBeVisible({ timeout: 20_000 });
+  await openHome(page);
   await pane(page, 'goals');
   const row = page.locator('.home-card').filter({ hasText: what });
   await expect(row).toBeVisible();
