@@ -652,11 +652,17 @@ pub async fn send(
     }
 
     let connected = ctx.client.connected_accounts();
-    from_acct = default_from(&connected, from_acct);
+    // A file mailbox (integrations/local_mailbox.rs) is DRAFT-ONLY: a worker's
+    // send from it is held like any other, so its owner sees the draft, and it
+    // can never be released (`approve` refuses it by name). With no Gmail
+    // account connected, the only file mailbox is the default `from`.
+    let drafts_only = crate::integrations::local_mailbox::accounts(ctx.client.home());
+    from_acct = default_from(if connected.is_empty() { &drafts_only } else { &connected }, from_acct);
+    let draft_only = drafts_only.contains(&from_acct) && !connected.contains(&from_acct);
     // A send no connected account can make is refused HERE, before the hold:
     // frozen with an empty `from`, the wexus worker's draft on sandbox failed
     // every release with "invalid connector account or family" (2026-11-12).
-    if !connected.contains(&from_acct) {
+    if !connected.contains(&from_acct) && !(draft_only && hdr_lane(&headers).is_some()) {
         return refuse_send(&ctx, &headers, "send", &from_acct);
     }
 
@@ -675,11 +681,16 @@ pub async fn send(
         if !externals.is_empty()
             && !crate::api::email_approval::external_email_allowed(&home, &lane)
         {
+            // The conversation it was written in (`amux email send --conv`),
+            // so Chat shows a held draft in that conversation and no other
+            // (a goal check's draft appeared in an unrelated one, walkthrough v3).
+            let conv = body_str(&body, "conv");
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
                 "body": message.chars().take(2000).collect::<String>(),
                 "external_recipients": externals,
+                "conv": (conv.starts_with("o:") && conv.len() < 64).then_some(conv),
             });
             let attachments = match frozen_attachments(&body) {
                 Ok(a) => a,
@@ -723,6 +734,11 @@ pub async fn send(
                 ),
             };
         }
+    }
+    // Not held (an internal recipient, or a lane allowed to send outside): a
+    // draft-only mailbox still sends nothing.
+    if draft_only {
+        return refuse_send(&ctx, &headers, "send", &from_acct);
     }
 
     // NEW-THREAD GUARD (AMUX-1739): a /send to an EXTERNAL recipient with an
@@ -1502,6 +1518,19 @@ pub async fn approve(
     // A draft frozen before default_from existed carries an empty `from`; the
     // only connected account is the one it would have gone out from.
     let from = default_from(&ctx.client.connected_accounts(), p("from"));
+    // A draft held from a file mailbox is never released: that mailbox cannot
+    // send. It stays held, so its owner can still read or copy it.
+    if !ctx.client.connected_accounts().contains(&from)
+        && crate::integrations::local_mailbox::accounts(ctx.client.home()).contains(&from)
+    {
+        tracing::warn!(approval = %id, from = %from, measured = true, n_considered = 1, verdict = "email_draft_only_release_refused",
+            "[email] a draft held from a file mailbox was approved; that mailbox cannot send, nothing went out");
+        crate::api::email_approval::reopen_after_failed_send(&home, &id, "a file mailbox cannot send");
+        return err(StatusCode::CONFLICT, json!({
+            "error": format!("{from} is a mailbox amux only reads: nothing was sent. Copy the draft into your own mail to send it."),
+            "code": "draft_only_mailbox", "approval_id": id, "delivered": false,
+        }));
+    }
     let res = match endpoint.as_str() {
         "send" => {
             ctx.client
@@ -2457,6 +2486,43 @@ mod tests {
         assert!(e.get("approval_id").is_none(), "no dead draft is held: {e}");
         let (_, pending) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
         assert_eq!(pending["pending"], json!([]), "{pending}");
+    }
+
+    /// A file mailbox is draft-only: a worker's send from it is held for the
+    /// owner, the release is refused by name and sends nothing, and the draft
+    /// stays waiting (intent-first: "a draft = the email API, held for OK").
+    /// In-memory app with no Gmail mocked: any real send would fail the test.
+    #[tokio::test]
+    async fn a_file_mailbox_holds_a_draft_and_never_sends_it() {
+        const ADMIN: [(&str, &str); 4] = [
+            ("x-amux-local-member-verified", "1"),
+            ("x-amux-local-member-actor", "member:ethan@x.com"),
+            ("x-amux-session", "member:ethan@x.com"),
+            ("x-amux-local-member-admin", "1"),
+        ];
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("mailboxes")).unwrap();
+        std::fs::write(home.path().join("mailboxes/household.json"),
+            json!({"account": "dana@household.test", "messages": []}).to_string()).unwrap();
+        let http = MockHttp::new(vec![]);
+        let (app, _d, _r) = app_with(http, home.path());
+        let draft = json!({"to": "marcy@campkaylie.test", "subject": "Rafi's waitlist", "body": "Hi Marcy", "conv": "o:ocamp1"});
+        let (st, held) = send_req(&app, "POST", "/api/email/send", Some(draft.clone()), &[("x-amux-session", "family")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "held for the owner: {held}");
+        let id = held["approval_id"].as_str().expect("held, with an id").to_string();
+        assert_eq!(held["preview"]["from"], "dana@household.test", "from the only mailbox: {held}");
+        assert_eq!(held["preview"]["conv"], "o:ocamp1", "the conversation it was written in: {held}");
+        let (st, e) = send_req(&app, "POST", &format!("/api/email/approve/{id}"), None, &ADMIN).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{e}");
+        assert_eq!(e["code"], "draft_only_mailbox");
+        let (_, pending) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+        assert!(pending["pending"].to_string().contains(&id), "still waiting: {pending}");
+        // The owner sending from it directly is refused too.
+        let (st, e) = send_req(&app, "POST", "/api/email/send", Some(draft), &[]).await;
+        assert_ne!(st, StatusCode::OK, "{e}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 50, "");
+        assert!(!log["log"].as_array().unwrap().iter().any(|x| x.get("approved") == Some(&json!(true))),
+            "nothing was released: {log}");
     }
 
     /// Temp amux home with one connected account (PLACEHOLDER token values

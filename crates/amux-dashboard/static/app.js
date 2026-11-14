@@ -2409,7 +2409,7 @@ async function _cloudOfferTry(trigger, worker) {
   // Not over Home either: it is a pitch about running workers on servers, made
   // to someone who came to say what they want (docs/design/intent-first.md).
   // Unmarked, so the fleet view can still offer it later.
-  if (document.body.classList.contains('intent-home') || !window._homeChoiceSettled || activeView === 'home') return;
+  if (document.body.classList.contains('intent-simple') || !window._homeChoiceSettled || _HOME_VIEWS[activeView]) return;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }
@@ -7035,7 +7035,7 @@ function _needsYouRenderPanel() {
 function _fireSessionNotif(name, title, body) {
   // Home speaks in requests and results, not in which worker started what
   // (a "family-admin started working" pop-up confused the second Dana run).
-  if (document.body.classList.contains('intent-home')) return;
+  if (document.body.classList.contains('intent-simple')) return;
   let icon = '\u{1f535}';
   if (title.includes('needs input')) icon = '⚠️';
   else if (title.includes('stopped')) icon = '⏹';
@@ -10610,9 +10610,12 @@ const ALL_TABS = (function _discoverNavTabs() {
   // protection now lives in _honourBoardHide instead of in REQUIRED.
   const REQUIRED = new Set(['sessions']);
   const out = [];
+  // "Everything else" is simple mode's way out (_homeShowEverything), not a
+  // view: it is never a tab to reorder or hide. Chat, Ideas and Goals are.
+  const NOT_TABS = new Set(['everything']);
   document.querySelectorAll('.tab-bar button[id^="tab-"]').forEach(b => {
     const id = b.id.slice(4);   // strip 'tab-'
-    if (!id) return;
+    if (!id || NOT_TABS.has(id)) return;
     const lbl = b.querySelector('.tab-lbl');
     out.push({ id, label: lbl ? lbl.textContent.trim() : id, required: REQUIRED.has(id) });
   });
@@ -10688,6 +10691,9 @@ function _applyTabVisibility() {
     const el = document.getElementById('tab-' + id);
     if (el) bar.appendChild(el); // moves to end in order
   });
+  // "Everything else" is not a tab (NOT_TABS): it always ends the bar.
+  const everything = document.getElementById('tab-everything');
+  if (everything) bar.appendChild(everything);
   // Apply visibility
   ALL_TABS.forEach(t => {
     const el = document.getElementById('tab-' + t.id);
@@ -10901,7 +10907,7 @@ function _peekTabsWheel(e) {
 const PEEK_TABS = (function _discoverPeekTabs() {
   // Outcomes leads (docs/design/intent-first.md): what was asked of this
   // worker and how it went, before the machinery.
-  const PINNED = new Set(['terminal', 'outcomes']);
+  const PINNED = new Set(['terminal']);
   const out = [];
   document.querySelectorAll('.peek-tabs button.peek-tab[id^="peek-tab-"]').forEach(b => {
     const id = b.id.slice('peek-tab-'.length);
@@ -12317,23 +12323,40 @@ async function _outcomeStart(text, cfg, files) {
   return name;
 }
 
-// ── Home: say what you want (docs/design/intent-first.md) ──
-// The first screen for a new person: Chat (a composer and the outcomes it
-// started), Ideas, Goals, and Workspace (every other tab, unchanged). An
-// outcome is a Messages thread (o:<id>) the server routed to a worker; the
-// person reads results, not workers. Words on this path avoid the machinery
-// (worker, session, model, card, board, terminal): a worker is "a helper".
+// ── Chat, Ideas and Goals (docs/design/intent-first.md) ──
+// Three tabs in the normal tab bar. Chat is a composer and the requests it
+// started; each is a Messages thread (o:<id>) the server routed to a worker,
+// and the person reads results, not workers. Ideas and Goals are views over
+// board cards, the scheduler and the calendar. For a new person (the `home`
+// choice is intent) the other tabs are hidden until "Everything else". Words
+// on this path avoid the machinery (worker, session, model, card, board,
+// terminal): a worker is "a helper".
 const _home = { pane: 'chat', open: null, outcomes: [], ideas: null, goals: null, timer: null, sending: false, detail: null };
-function _homeEnter() {
-  document.body.classList.add('intent-home');
-  // A first-run tour of workers that opened before Home did is closed: Home
-  // is this person's first run.
-  if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
-  document.getElementById('cloud-offer')?.remove();
+const _HOME_VIEWS = { home: 'chat', ideas: 'ideas', goals: 'goals' };
+function _homeEnter(view) {
+  if (document.body.classList.contains('intent-simple')) {
+    // A first-run tour of workers that opened before Chat did is closed:
+    // Chat is this person's first run.
+    if (document.getElementById('wt-overlay')?.classList.contains('open') && typeof window._wtDismiss === 'function') window._wtDismiss();
+    document.getElementById('cloud-offer')?.remove();
+  }
   document.documentElement.classList.remove('boot-home-pending');
-  _homeSetPane(_home.pane === 'workspace' ? 'chat' : _home.pane, true);
+  _home.pane = _HOME_VIEWS[view] || 'chat';
+  if (view === 'home') _homeFit();
+  _homeRefresh();
   _homeEnsureTimer();
 }
+// Chat fills the screen below the tab bar, its composer at the bottom (the
+// same measurement Messages uses, _cvFit).
+function _homeFit() {
+  const view = document.getElementById('home-view'); if (!view) return;
+  requestAnimationFrame(() => view.style.setProperty('--mv-top', Math.max(0, view.getBoundingClientRect().top) + 'px'));
+}
+window.addEventListener('resize', () => { if (activeView === 'home') _homeFit(); });
+// Simple mode (a new person): only Chat, Ideas and Goals in the tab bar.
+// "Everything else" shows every tab for this visit.
+function _homeSimple(on) { document.body.classList.toggle('intent-simple', !!on); }
+function _homeShowEverything() { _homeSimple(false); switchView('sessions'); }
 // Every 2s while an open request is still being worked on, else every 4s.
 function _homeEnsureTimer() {
   if (_home.timer) return;
@@ -12343,28 +12366,21 @@ function _homeEnsureTimer() {
   // (the first Dana run sat on "Working on it" for minutes over a finished
   // answer). Coming back to the tab refreshes at once.
   _home.timer = setInterval(() => {
-    if (activeView !== 'home') return;
+    if (!_HOME_VIEWS[activeView]) return;
     tick++;
     const hurry = _home.open && _home.openStatus !== 'ready';
     if (document.hidden ? tick % 8 === 0 : (hurry || tick % 2 === 0)) _homeRefresh();
   }, 2000);
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && activeView === 'home') _homeRefresh(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && _HOME_VIEWS[activeView]) _homeRefresh(); });
 function _homeLeave() {
-  document.body.classList.remove('intent-home');
   if (_home.timer) { clearInterval(_home.timer); _home.timer = null; }
 }
+// Go to Chat, Ideas or Goals (its tab).
 function _homeSetPane(p) {
-  if (p === 'workspace') { _homeLeave(); switchView('sessions'); return; }
+  const v = p === 'chat' ? 'home' : p;
+  if (activeView !== v) { switchView(v); return; }
   _home.pane = p;
-  for (const n of ['chat', 'ideas', 'goals', 'more']) {
-    const el = document.getElementById('home-' + n);
-    if (el) el.hidden = n !== p;
-    const b = document.getElementById('home-nav-' + (n === 'more' ? 'workspace' : n));
-    if (b) { b.classList.toggle('active', n === p); b.setAttribute('aria-current', n === p ? 'page' : 'false'); }
-  }
-  const comp = document.getElementById('home-composer');
-  if (comp) comp.hidden = p !== 'chat';
   _homeRefresh();
 }
 async function _homeJson(path, opts) {
@@ -12385,10 +12401,10 @@ async function _homeRefresh() {
     if (_home.detailsFor || _home.sending) return;
     if (_home.open) return _homeLoadOutcome(_home.open, true);
     const r = await _homeJson('/api/intent/outcomes');
-    // Chat lists what the person asked for. A goal's own thread (item ids
-    // starting "g") lives under Goals, behind its Open button: listed here,
+    // Chat lists what the person asked for. A goal's own thread (marked
+    // item_kind goal) lives under Goals, behind its Open button: listed here,
     // the pass's goals buried the request she had just made (final uc5).
-    if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => !String(o.item_id || '').startsWith('g'));
+    if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => o.item_kind !== 'goal');
     _homeRenderList();
   } else if (_home.pane === 'ideas') {
     const r = await _homeJson('/api/intent/ideas');
@@ -12397,6 +12413,7 @@ async function _homeRefresh() {
   } else if (_home.pane === 'goals') {
     const [r, rm, ev] = await Promise.all([_homeJson('/api/intent/goals'), _homeJson('/api/intent/reminders'), _homeJson('/api/cal-events')]);
     _home.goals = r.ok ? (r.v.goals || []) : [];
+    _home.todos = r.ok ? (r.v.todos || []) : [];
     _home.reminders = rm.ok ? (rm.v.reminders || []) : [];
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const week = new Date(today.getTime() + 8 * 86400000);
@@ -12508,7 +12525,18 @@ async function _homeLoadOutcome(id, quiet) {
   // Reminders its helper set while answering this conversation: shown in it,
   // so a promised reminder can be seen saved (asked for in four runs).
   const rm = await _homeJson('/api/intent/reminders');
-  r.v.reminders = _homeTurnReminders(r.v.thread || [], rm.ok ? rm.v.reminders || [] : [], r.v.worker, Date.now());
+  // One that names its conversation belongs to that one alone; one that names
+  // none falls back to the turns its helper set it in.
+  const rms = (rm.ok ? rm.v.reminders || [] : []).filter(x => !x.conv || x.conv === 'o:' + id);
+  r.v.reminders = rms.filter(x => x.conv).concat(_homeTurnReminders(r.v.thread || [], rms.filter(x => !x.conv), r.v.worker, Date.now()));
+  // Emails its helper wrote in these turns, held by the email API for her OK.
+  const ap = await _homeJson('/api/email/approvals');
+  const now = Date.now();
+  // A draft that names its conversation (amux email send --conv) belongs to
+  // that one alone; one that names none falls back to its helper's turns.
+  const held = (ap.ok ? ap.v.pending || [] : []).filter(p => !(p.preview || {}).conv || p.preview.conv === 'o:' + id)
+    .map(p => Object.assign({}, p, { worker: p.session, created: (now - (p.age_s || 0) * 1000) / 1000 }));
+  r.v.drafts = held.filter(p => p.preview && p.preview.conv).concat(_homeTurnReminders(r.v.thread || [], held.filter(p => !(p.preview || {}).conv), r.v.worker, now));
   if (_home.open !== id) return;
   _homeRenderOutcome(r.v);
 }
@@ -12534,14 +12562,61 @@ function _homeTurnReminders(thread, reminders, worker, now) {
   });
   return reminders.filter(x => x.worker === worker && turns.some(([a, b]) => ms(x.created) >= a && ms(x.created) <= b));
 }
+// Her to-dos: cards on her own board tagged todo (POST /api/intent/todos from
+// a helper). Done closes the card through the board's own update.
+function _homeTodosHtml() {
+  const t = _home.todos || [];
+  if (!t.length) return '';
+  return '<div class="home-pane-head"><span class="home-pane-title">To-dos</span></div><div class="home-list">'
+    + t.map(x => '<div class="home-card"><div class="home-card-top"><span class="home-card-title">' + esc(x.title) + '</span>'
+      + '<button type="button" class="btn" onclick="_homeTodoDone(\'' + esc(x.id) + '\',this)">Done</button></div>'
+      + (x.due ? '<div class="home-card-from">Due ' + esc(_homeLocalDate(x.due).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })) + '</div>' : '')
+      + '</div>').join('') + '</div>';
+}
+async function _homeTodoDone(id, btn) {
+  if (btn) btn.disabled = true;
+  const r = await _homeJson('/api/board/' + encodeURIComponent(id), { method: 'PATCH',
+    body: JSON.stringify({ status: 'done', evidence: 'none: marked done in Goals', gate_ack: true }) });
+  if (!r.ok) { showToast('Not marked done: ' + (r.v.error || 'please try again')); if (btn) btn.disabled = false; return; }
+  showToast('Done');
+  _homeRefresh();
+}
+// A held email (POST /api/email/send from her helper, held for her OK), with
+// the approvals banner's own Send and Discard (_apprApprove/_apprReject).
+const _homeApprOpts = { plain: true, after: () => { _home.detail = null; _homeRefresh(); } };
+function _homeHeldDraftHtml(p) {
+  const pv = p.preview || {};
+  const body = (p.review && p.review.body_complete && typeof p.review.body === 'string') ? p.review.body : (pv.body || '');
+  const id = esc(p.id);
+  return '<div class="home-draft" data-approval="' + id + '"><div class="home-draft-head">Draft email, waiting for your OK</div>'
+    + '<div class="home-draft-meta">To: ' + esc(pv.to || '') + '</div><div class="home-draft-meta">Subject: ' + esc(pv.subject || '') + '</div>'
+    + '<div class="home-draft-body">' + esc(body).replace(/\n/g, '<br>') + '</div>'
+    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_apprApprove(\'' + id + '\',this,_homeApprOpts)">Send email</button>'
+    + '<button type="button" class="btn" onclick="_apprReject(\'' + id + '\',this,_homeApprOpts)">Discard</button>'
+    + '<button type="button" class="btn" onclick="_homeCopyDraft(this)">Copy</button></div></div>';
+}
+function _homeCopyDraft(btn) {
+  const d = btn.closest('.home-draft');
+  const text = Array.from(d.querySelectorAll('.home-draft-meta, .home-draft-body')).map(n => n.innerText).join('\n\n');
+  _copyTextWithToast(text, 'Copied');
+}
+// A helper still working: a post in the same shape, its body the dots.
+function _homeTypingPost(name, words, note) {
+  return _cvPostHtml({ id: 'typing', author_key: 'worker:', author_name: name, body: '', ts: Date.now() }, false, true,
+    { plain: true, from: 'typing', name, body: '<span class="home-typing" aria-label="' + esc(words) + '">' + esc(words)
+      + '<span>.</span><span>.</span><span>.</span>' + esc(note) + '</span>' });
+}
 function _homeRenderOutcome(o) {
   const el = document.getElementById('home-chat-body');
   if (!el) return;
+  // The Messages thread view's own post (_cvPostHtml), plain: her name is
+  // "You", a helper's is its plain name, and a helper's answer keeps Chat's
+  // reading of drafts and dates (_homeAnswerHtml).
+  const helper = o.worker ? _homePlainName(o.worker) : 'amux';
   const posts = (o.thread || []).map(p => {
     const mine = String(p.author_key || '').startsWith('person:');
-    const body = mine ? esc(p.body).replace(/\n/g, '<br>') : _homeAnswerHtml(_homePlainReply(String(p.body || '')));
-    return '<div class="home-msg ' + (mine ? 'mine' : 'theirs') + '"><div class="home-bubble">' + body + '</div>'
-      + '<div class="home-msg-when">' + esc(_homeAgo(p.ts)) + '</div></div>';
+    return _cvPostHtml(p, false, true, { plain: true, from: mine ? 'you' : 'helper', name: mine ? 'You' : helper,
+      body: mine ? undefined : _homeAnswerHtml(_homePlainReply(String(p.body || ''))) });
   }).join('');
   const working = o.status !== 'ready';
   const canChange = o.worker && o.action !== 'answer';
@@ -12557,17 +12632,23 @@ function _homeRenderOutcome(o) {
     + (canChange ? ' · <button type="button" class="home-link" onclick="_homeChange(\'' + esc(o.id) + '\')">Change</button>' : '')
     + (o.worker ? ' · <button type="button" class="home-link" onclick="_homeDetails(\'' + esc(o.id) + '\')">Details</button>' : '')
     + '</div>'
+    + '<div class="home-msgs" id="home-msgs">' + posts
+    // Below the request that asked for them, not above it (walkthrough).
     + (o.reminders || []).map(x => '<div class="home-reminder">&#x23F0; Reminder set: ' + esc(x.title) + ' · '
       + esc(_homeReminderWhen(x)) + '</div>').join('')
-    + '<div class="home-msgs" id="home-msgs">' + posts
-    + (working ? '<div class="home-msg theirs"><div class="home-bubble home-typing" aria-label="Working on it">Working on it<span>.</span><span>.</span><span>.</span>' + esc(waitNote) + '</div></div>' : '')
+    + (o.drafts || []).map(_homeHeldDraftHtml).join('')
+    + (working ? _homeTypingPost(helper, 'Working on it', waitNote) : '')
     + '</div></div>';
   // Land on the START of the newest answer: a long one opened at its bottom
   // on a phone, hiding its first line (where the result is).
-  const replies = el.querySelectorAll('.home-msg.theirs:not(:has(.home-typing))');
+  const replies = el.querySelectorAll('.cv-post[data-from="helper"]:not(:has(.home-typing))');
   const newest = replies[replies.length - 1];
-  if (working) document.getElementById('home-msgs')?.lastElementChild?.scrollIntoView({ block: 'end' });
-  else if (newest) newest.scrollIntoView({ block: 'start' });
+  // Scrolled inside Chat's own pane: scrollIntoView moved the whole page and
+  // pushed the tab bar off the top of a phone (walkthrough).
+  const pane = el.closest('.home-main');
+  const head = el.querySelector('.home-thread-head');
+  if (pane && working) pane.scrollTop = pane.scrollHeight;
+  else if (pane && newest) pane.scrollTop = Math.max(0, newest.offsetTop - pane.offsetTop - (head ? head.offsetHeight : 0) - 8);
   const i = document.getElementById('home-input');
   if (i) i.placeholder = 'Reply or ask a follow-up';
 }
@@ -12647,8 +12728,9 @@ async function _homeSend() {
   if (_home.open) body.outcome = _home.open;
   if (!_home.open) {
     const el = document.getElementById('home-chat-body');
-    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs"><div class="home-msg mine"><div class="home-bubble">' + esc(text)
-      + '</div></div><div class="home-msg theirs"><div class="home-bubble home-typing">Getting started<span>.</span><span>.</span><span>.</span></div></div></div></div>';
+    if (el) el.innerHTML = '<div class="home-thread"><div class="home-msgs">'
+      + _cvPostHtml({ id: 'pending', author_key: 'person:owner', author_name: 'You', body: text, ts: Date.now() }, false, true, { plain: true, from: 'you', name: 'You' })
+      + _homeTypingPost('amux', 'Getting started', '') + '</div></div>';
   }
   const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
   _home.sending = false;
@@ -12735,7 +12817,7 @@ function _homeGoalCard(g) {
   const days = g.tier === 'tracking' ? _homeDaysLeft(g.due) : '';
   const ask = g.pending_ask ? '<div class="home-ask"><div>' + esc(g.pending_ask) + '</div>'
     + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Yes, go ahead</button>'
-    + '<div class="ui-help">Emails still come back to you as drafts to send yourself.</div></div>' : '';
+    + '<div class="ui-help">An email still waits for your OK in its conversation.</div></div>' : '';
   return '<div class="home-card" data-goal="' + esc(g.id) + '"><div class="home-card-top"><span class="home-card-title">' + esc(g.title) + '</span>'
     + (days ? '<span class="home-pill working">' + esc(days) + '</span>' : '') + '</div>'
     + '<div class="home-status-line">' + esc(g.status_line || 'Getting started...') + '</div>'
@@ -12750,8 +12832,16 @@ function _homeRenderGoals(v) {
   const el = document.getElementById('home-goals-body');
   if (!el) return;
   const goals = _home.goals || [];
-  const rem = (_home.reminders || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span></div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
-    + _home.reminders.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
+  // The next five; "Show all" for the rest, so goals are not a long scroll away.
+  // One row per subject here (the server keeps one per subject in each
+  // conversation, so a conversation still shows its own).
+  const remSeen = new Set();
+  const remAll = (_home.reminders || []).filter(x => { const k = String(x.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); return !remSeen.has(k) && remSeen.add(k); });
+  const remShown = _home.remindersAll ? remAll : remAll.slice(0, 5);
+  const rem = remAll.length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span>'
+    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeRefresh()">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
+    + '</div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
+    + remShown.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
       + esc(_homeReminderWhen(x)) + '</div></div>').join('') + '</div>' : '';
   const fmtEv = (e) => { const d = _homeLocalDate(e.start); const allDay = e.all_day || String(e.start).length <= 10;
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + (allDay ? '' : ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })); };
@@ -12761,11 +12851,11 @@ function _homeRenderGoals(v) {
   const tracking = goals.filter(g => g.tier === 'tracking');
   const standing = goals.filter(g => g.tier !== 'tracking');
   if (!goals.length) {
-    el.innerHTML = up + rem + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
+    el.innerHTML = up + rem + _homeTodosHtml() + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
       + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
     return;
   }
-  el.innerHTML = up + rem + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
+  el.innerHTML = up + rem + _homeTodosHtml() + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
     + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
 }
 async function _homeGoalDismiss(id) {
@@ -12785,7 +12875,7 @@ async function _homeGoalApprove(id) {
   showToast(r.ok ? 'Approved' : ('Not approved: ' + (r.v.error || 'error')));
   _homeRefresh();
 }
-// Each worker's outcomes, for its card line and its Outcomes tab. One fetch
+// Each worker's conversations from Chat, for its card line. One fetch
 // of /api/intent/outcomes, refreshed at most every 20 seconds.
 let _homeOutcomeIndex = { at: 0, by: {}, loading: false };
 function _homeOutcomeIndexLoad(force) {
@@ -12804,22 +12894,23 @@ function _homeCardOutcomes(name) {
   const list = _homeOutcomeIndex.by[name] || [];
   if (!list.length) return '';
   const names = list.slice(0, 3).map(o => o.title).join(' · ');
-  return '<div class="card-outcomes" title="Outcomes routed to this worker">Outcomes: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
+  return '<div class="card-outcomes" title="Conversations from Chat routed to this worker">From Chat: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
 }
-async function _peekOutcomesLoad() {
-  const el = document.getElementById('peek-outcomes-panel');
+// The conversations from Chat routed to this worker, at the top of its
+// Messages tab: conversations are organized by conversation, and a worker
+// shows the ones it owns where its messages already are. Empty shows nothing.
+async function _peekConvsLoad() {
+  const el = document.getElementById('peek-msg-convs');
   if (!el || !peekSession) return;
   const who = peekSession;
-  _homeOutcomeIndexLoad(true);
   let v = null;
-  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] outcomes for the worker view did not load', e); }
+  try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] conversations for the worker view did not load', e); }
   if (peekSession !== who) return;
   const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
-  el.innerHTML = !v ? '<div class="ui-help">Outcomes could not be loaded.</div>'
-    : !mine.length ? '<div class="ui-help">Nothing has been routed to ' + esc(who) + ' from Home yet. Requests made in Home that this worker owns show up here.</div>'
-    : '<div class="home-list">' + mine.map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
+  el.innerHTML = !mine.length ? '' : '<div class="peek-msg-convs-head">Conversations from Chat</div><div class="home-list">'
+    + mine.slice(0, 8).map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
       + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title) + '</span><span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
-      + '<span class="home-row-snip">' + esc((o.latest_reply || '').slice(0, 160)) + '</span><span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
+      + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
 }
 function _homeOpenFromPeek(id) {
   closePeek();
@@ -12837,6 +12928,7 @@ async function _homeBootChoice() {
   let r = await _homeJson('/api/intent/home');
   for (let i = 0; i < 6 && !r.ok; i++) { await new Promise(res => setTimeout(res, 1000 * (i + 1))); r = await _homeJson('/api/intent/home'); }
   if (r.ok && r.v.home) { choice = r.v.home; try { localStorage.setItem('amux_home_choice', choice); } catch (e) { console.warn('[home] storage unwritable', e); } }
+  _homeSimple(choice === 'intent');
   document.documentElement.classList.remove('boot-home-pending');
   // Settled after the caller's switch (a microtask later): the first-run tour
   // waits on this, so it never opens over a Home about to appear.
@@ -15717,12 +15809,6 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
-  document.getElementById('peek-tab-outcomes')?.classList.toggle('active', tab === 'outcomes');
-  const outcomesP = document.getElementById('peek-outcomes-panel');
-  if (outcomesP) {
-    if (tab === 'outcomes') { outcomesP.classList.add('active'); _peekOutcomesLoad(); }
-    else outcomesP.classList.remove('active');
-  }
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
@@ -15730,7 +15816,7 @@ function setPeekTab(tab) {
     else tasksP.classList.remove('active');
   }
   const messages = document.getElementById('peek-messages-panel');
-  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
+  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); _peekConvsLoad(); }
   else { messages.classList.remove('active'); }
   const costPanel = document.getElementById('peek-cost-panel');
   if (tab === 'cost') { costPanel.classList.add('active'); _peekCostLoad(); }
@@ -19250,7 +19336,7 @@ function closePeek() {
   }
   _peekPollStop('close');   // open-view poller stops when the view closes (beaconed)
   if (_transcriptTimer) { clearInterval(_transcriptTimer); _transcriptTimer = null; }
-  sessionStorage.removeItem('peekState');
+  if (!_isInTab) sessionStorage.removeItem('peekState');
   // An explicitly-closed peek must not resurrect after an iOS eviction: the
   // localStorage copy exists only for eviction restore, and leaving it here
   // meant close -> background -> relaunch reopened what the user dismissed.
@@ -19277,12 +19363,12 @@ function _savePeekState() {
       state.split = true;
       state.splitPath = _peekSplitPath || peekSessionDir || '/';
     }
-    sessionStorage.setItem('peekState', JSON.stringify(state));
+    if (!_isInTab) sessionStorage.setItem('peekState', JSON.stringify(state));
     // Also persist to localStorage (with a timestamp) so an open session peek
     // is restored after iOS evicts the backgrounded PWA, not just a soft reload.
     try { localStorage.setItem('amux_peek_state', JSON.stringify(Object.assign({ ts: Date.now() }, state))); } catch(e) {}
   } else {
-    sessionStorage.removeItem('peekState');
+    if (!_isInTab) sessionStorage.removeItem('peekState');
     try { localStorage.removeItem('amux_peek_state'); } catch(e) {}
   }
 }
@@ -26041,17 +26127,20 @@ function _apprToggle() {
   localStorage.setItem('amuxApprCollapsed', now);
   _approvalsRefresh();
 }
-async function _apprReject(id, btn) {
+// `opts` (optional): {plain: true} words the toast without machinery names,
+// {after: fn} runs once the request settles (Chat's draft cards use both).
+async function _apprReject(id, btn, opts) {
   if (btn) { btn.disabled = true; btn.textContent = 'Discarding…'; }
   try {
     const r = await fetch(API + '/api/email/reject/' + encodeURIComponent(id), {
       method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' },
     });
     const d = await r.json().catch(() => ({}));
-    if (r.ok) showToast('Discarded — nothing was sent' + (d.was_for_session ? ' (' + d.was_for_session + ')' : ''));
-    else showToast('Discard failed: ' + (d.error || r.status));
+    if (r.ok) showToast('Discarded — nothing was sent' + (d.was_for_session && !opts?.plain ? ' (' + d.was_for_session + ')' : ''));
+    else showToast((opts?.plain ? 'Not discarded: ' : 'Discard failed: ') + (d.error || r.status));
   } catch (e) { showToast('Discard failed: ' + e); }
   _approvalsRefresh();
+  if (opts?.after) opts.after();
 }
 /// Swap the frozen preview for a textarea holding the same text (AMUX-5021).
 ///
@@ -26103,7 +26192,7 @@ function _apprEditCancel(id) {
 /// is non-empty, so a poll cannot discard what someone is typing.
 const _apprEditing = new Set();
 
-async function _apprApprove(id, btn) {
+async function _apprApprove(id, btn, opts) {
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     // AUTOD-48: approve now authorizes on a POSITIVE marker. Absence used to
@@ -26124,10 +26213,11 @@ async function _apprApprove(id, btn) {
     const r = await fetch(API + '/api/email/approve/' + encodeURIComponent(id), init);
     _apprEditing.delete(id);
     const d = await r.json().catch(() => ({}));
-    if (r.ok) showToast('Approved — sent for ' + (d.sent_for_session || 'worker'));
-    else showToast('Approve failed: ' + (d.error || r.status));
+    if (r.ok) showToast(opts?.plain ? 'Sent' : 'Approved — sent for ' + (d.sent_for_session || 'worker'));
+    else showToast((opts?.plain ? 'Not sent: ' : 'Approve failed: ') + (d.error || r.status));
   } catch (e) { showToast('Approve failed: ' + e); }
   _approvalsRefresh();
+  if (opts?.after) opts.after();
 }
 // "today 3:00 PM", "tomorrow 9:00 AM", "Tue, Nov 11, 9:00 AM": when a scheduled
 // draft goes out, in this device's time.
@@ -40437,12 +40527,40 @@ document.addEventListener('click', e => {
     _openOwnPage(a.href, 'anchor');
   }
 }, true);
+// A NEW TAB FROM A LINK TO THIS AMUX STAYS ON THIS ADDRESS (owner, 2026-11-13:
+// a middle-clicked link opened in light mode). Workers write links on the
+// server's public address (the /api/deep-link base, e.g. https://amux.example.com)
+// while this tab may be on https://localhost:8824. A plain click opens such a
+// link here (above); a middle, ⌘ or ctrl click, or "Open Link in New Tab", let
+// the browser open the public address: another origin, so another
+// localStorage, without this one's theme, drafts, tab order or worker views
+// (and with its own sign-in). Just before the browser acts on the link, its
+// href is pointed at this origin, so every way of opening it lands here.
+function _ownLinkHere(href) {
+  const hash = _ownLinkHash(href);
+  if (!hash) return '';
+  try { if (new URL(href, location.href).origin === location.origin) return ''; } catch (_) { return ''; }
+  return location.origin + '/' + hash;
+}
+function _ownLinkRetarget(e) {
+  const a = e.target && e.target.closest && e.target.closest('a[href]');
+  if (!a || a.hasAttribute('download')) return;
+  const here = _ownLinkHere(a.getAttribute('href'));
+  if (!here) return;
+  a.setAttribute('href', here);
+  try {
+    fetch(API + '/api/client-debug', { method: 'POST', _skipOutbox: true, keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'own-link', verdict: 'retargeted_to_this_origin', how: e.type, measured: true, n_considered: 1,
+        ver: typeof APP_VER !== 'undefined' ? APP_VER : '?' }) }).catch(() => {});
+  } catch (_) {}
+}
+['pointerdown', 'contextmenu', 'focusin'].forEach(ev => document.addEventListener(ev, _ownLinkRetarget, true));
 // The terminal's links (xterm's web-links addon) open the same way.
 function _termLinkOpen(e, uri) {
   const mod = !!(e && (e.metaKey || e.ctrlKey));
   if (!mod && _openOwnLink(uri, 'terminal')) return;
   if (!mod && _ownPageLink(uri)) { _openOwnPage(uri, 'terminal'); return; }
-  window.open(uri, '_blank');
+  window.open(_ownLinkHere(uri) || uri, '_blank');
 }
 
 // A PAGE ON THIS AMUX THAT IS NOT THE DASHBOARD NEVER REPLACES IT IN THE APP.
@@ -40999,6 +41117,231 @@ function closeCreate() {
   document.getElementById('ac-list').classList.remove('open');
   const gs = document.getElementById('create-groups-suggestions');
   if (gs) gs.classList.remove('open');
+}
+
+// ── Workflow wizard (#457, Doron) ──
+// A non-technical person describes a job one plain question at a time; the
+// answers become a workflow brief that the New Worker dialog starts a worker
+// on. No server side: the brief is the worker's first prompt, and the worker
+// saves it as WORKFLOW.md. A skipped question is listed as an open question
+// the worker asks about first, so "I don't know yet" is always honest.
+const _WFW_KEY = 'amux-workflow-wizard';
+const _WFW_STEPS = [
+  { id: 'outcome', title: 'Outcome', q: 'What outcome are you trying to achieve?', required: true,
+    help: 'Say what is true when the job is done, in your own words.',
+    ex: 'Every customer payment from last week is matched to its invoice, and anything that does not match is listed with the reason.' },
+  { id: 'success', title: 'How you will know it worked', q: 'How will you know it worked?',
+    help: 'A check, a number, or the person who signs off.',
+    ex: 'Elliot reviews the list and finds nothing missed. It takes him under 30 minutes instead of 8 hours.' },
+  { id: 'when', title: 'When it runs', q: 'When should it run, and how much work is it?',
+    help: 'Only when you ask, daily, weekly, or when something arrives. Roughly how many items each time.',
+    ex: 'Every Monday morning, about 200 payments.' },
+  { id: 'systems', title: 'Systems it needs', q: 'What systems does it need to get into?',
+    help: 'Pick any that apply, and say whether it only reads or can also change things.',
+    chips: ['Email', 'Calendar', 'Google Drive', 'Spreadsheets', 'Accounting software', 'CRM', 'A website', 'Files on this computer'],
+    ex: 'NetSuite, read only. The shared Google Sheet, can edit.' },
+  { id: 'inputs', title: 'Where the information comes from', q: 'Where does the information come from?',
+    help: 'The reports, emails, exports or files it starts from, and where they live.',
+    ex: 'The payments export from NetSuite and the invoices tab of the shared sheet.' },
+  { id: 'examples', title: 'Examples of good work', q: 'Are there examples of good work?',
+    help: 'Paste one, or say where past results are (a folder, a file name, a link).',
+    ex: 'Last month\'s finished sheet is in Drive under Reconciliations/October.' },
+  { id: 'rules', title: 'Rules', q: 'What rules must it always follow?',
+    help: 'One per line. The way you would explain the job to a new hire.',
+    ex: 'Amazon under $20 is office supplies.\nA payment that says "prior virtual payment" went to court.' },
+  { id: 'exceptions', title: 'Known exceptions', q: 'What are the known exceptions to those rules?',
+    help: 'Cases where the rules do not apply, and what to do instead.',
+    ex: 'Coeur Wine Co pays several invoices in one payment: split it by invoice amount.' },
+  { id: 'tools', title: 'Tools', q: 'What tools or software should it use?',
+    help: 'Anything it should use to do the work, or must not use.',
+    ex: 'Excel for the final file. No new software.' },
+  { id: 'approval', title: 'Needs your OK first', q: 'What needs your OK first, and what must it never do?',
+    help: 'Pick what it must ask you about first, and add anything it must never do.',
+    chips: ['Sending email or messages', 'Contacting customers', 'Spending money', 'Changing records', 'Deleting anything'],
+    ex: 'Never email a client directly. Never change an invoice in NetSuite.' },
+  { id: 'sensitive', title: 'Sensitive information', q: 'Does it handle sensitive information?',
+    help: 'So it knows what to keep private.',
+    chips: ['Personal details', 'Health information', 'Bank or card details', 'Passwords or logins', 'None'],
+    ex: 'Client names and amounts. Never paste them into an outside tool.' },
+  { id: 'output', title: 'Where the result goes', q: 'Where should the result go, and who should be told?',
+    help: 'A file, a spreadsheet, an email draft. Who hears when it is done.',
+    ex: 'A new tab in the shared sheet. Message me a two-line summary.' },
+  { id: 'stuck', title: 'When it gets stuck', q: 'If it gets stuck, what should it do?',
+    help: 'Who to ask, and whether to wait or carry on with the rest.',
+    ex: 'Ask me in Messages and carry on with the other payments.' },
+];
+let _wfw = null;   // { step, answers: {id: text}, chips: {id: [labels]}, name }
+
+function _wfwLoad() {
+  try { const s = JSON.parse(localStorage.getItem(_WFW_KEY) || 'null'); if (s && s.answers) return s; } catch (e) { console.warn('amux: workflow wizard draft unreadable, starting fresh', e); }
+  return { step: 0, answers: {}, chips: {}, name: '' };
+}
+function _wfwSave() { try { localStorage.setItem(_WFW_KEY, JSON.stringify(_wfw)); } catch (e) { console.warn('amux: workflow wizard draft not saved', e); } }
+
+function _wfwSlug(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .split('-').slice(0, 4).join('-');
+}
+
+// The brief, from the answers alone: pure, so a spec can check it directly.
+function _wfwBrief(answers, chips) {
+  answers = answers || {}; chips = chips || {};
+  const open = [];
+  const parts = ['# Workflow', '',
+    'Save this brief as WORKFLOW.md in your folder. Before you start, ask me about every item under "Open questions". '
+    + 'Do nothing listed under "Needs my OK first" without asking me, and if you are unsure whether something needs my OK, ask.', ''];
+  for (const s of _WFW_STEPS) {
+    const picked = (chips[s.id] || []).filter(Boolean);
+    const text = String(answers[s.id] || '').trim();
+    if (!picked.length && !text) { open.push(s.q); continue; }
+    parts.push('## ' + s.title);
+    if (picked.length) parts.push(picked.map(c => '- ' + c).join('\n'));
+    if (text) parts.push(text);
+    parts.push('');
+  }
+  parts.push('## Open questions');
+  parts.push(open.length ? open.map(q => '- ' + q).join('\n') : '- None. Confirm the brief back to me in two lines, then start.');
+  return parts.join('\n').trim() + '\n';
+}
+
+function openWorkflowWizard() {
+  if (typeof closeCreate === 'function') closeCreate();
+  _wfw = _wfwLoad();
+  document.getElementById('wfw-overlay').classList.add('active');
+  _wfwRender();
+}
+function closeWorkflowWizard() {
+  if (_wfw) _wfwCapture();
+  document.getElementById('wfw-overlay').classList.remove('active');
+}
+
+// Read the visible step's fields into the draft before moving away from it.
+function _wfwCapture() {
+  const s = _WFW_STEPS[_wfw.step];
+  const ta = document.getElementById('wfw-answer');
+  if (s && ta) _wfw.answers[s.id] = ta.value;
+  const nm = document.getElementById('wfw-name');
+  if (nm) _wfw.name = nm.value;
+  _wfwSave();
+}
+
+function _wfwRender() {
+  const body = document.getElementById('wfw-body');
+  const n = _WFW_STEPS.length;
+  if (_wfw.step >= n) {
+    const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+    const name = _wfw.name || _wfwSlug(_wfw.answers.outcome);
+    body.innerHTML =
+      '<div class="field-optional" id="wfw-progress">Review</div>'
+      + '<h3 id="wfw-q">Here is your workflow</h3>'
+      + '<div class="field-optional">Read it through. Go back to change an answer, or start a worker on it.</div>'
+      + '<pre id="wfw-brief" class="wfw-brief">'
+      + esc(brief) + '</pre>'
+      + '<div class="field-group"><label class="field-label" for="wfw-name">Worker name</label>'
+      + '<input id="wfw-name" type="text" autocomplete="off" autocorrect="off" value="' + esc(name) + '"></div>'
+      + '<div class="edit-actions wfw-actions">'
+      + '<button type="button" class="btn" onclick="_wfwBack()">Back</button>'
+      + '<button type="button" class="btn" onclick="_wfwCopy()">Copy</button>'
+      + '<button type="button" class="btn" onclick="_wfwDownload()">Download</button>'
+      + '<button type="button" class="btn primary" id="wfw-create" onclick="_wfwCreateWorker()">Create worker</button>'
+      + '</div>'
+      + '<div class="wfw-start-over"><button type="button" class="btn" onclick="_wfwStartOver()">Start over</button></div>';
+    return;
+  }
+  const s = _WFW_STEPS[_wfw.step];
+  const picked = _wfw.chips[s.id] || [];
+  const chips = s.chips ? '<div id="wfw-chips" class="wfw-chips">'
+    + s.chips.map((c, i) => '<button type="button" class="btn provider-btn wfw-chip' + (picked.includes(c) ? ' selected' : '')
+      + '" aria-pressed="' + picked.includes(c) + '" onclick="_wfwToggleChip(' + i + ')">' + esc(c) + '</button>').join('')
+    + '</div>' : '';
+  body.innerHTML =
+    '<div class="field-optional" id="wfw-progress">Step ' + (_wfw.step + 1) + ' of ' + n + '</div>'
+    + '<h3 id="wfw-q">' + esc(s.q) + '</h3>'
+    + '<div class="field-optional wfw-help">' + esc(s.help) + '</div>'
+    + chips
+    + '<textarea id="wfw-answer" class="wfw-answer" rows="5" placeholder="' + esc('For example: ' + s.ex) + '"'
+    + ' onkeydown="if(event.key===\'Enter\'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_wfwNext();}">'
+    + esc(_wfw.answers[s.id] || '') + '</textarea>'
+    + '<div id="wfw-error" class="field-optional wfw-error" hidden></div>'
+    + '<div class="edit-actions wfw-actions">'
+    + (_wfw.step > 0 ? '<button type="button" class="btn" onclick="_wfwBack()">Back</button>' : '<button type="button" class="btn" onclick="closeWorkflowWizard()">Cancel</button>')
+    + (s.required ? '' : '<button type="button" class="btn" id="wfw-skip" onclick="_wfwSkip()">I don\'t know yet</button>')
+    + '<button type="button" class="btn primary" id="wfw-next" onclick="_wfwNext()">Next</button>'
+    + '</div>';
+  setTimeout(() => { const ta = document.getElementById('wfw-answer'); if (ta && matchMedia('(min-width: 601px)').matches) ta.focus({ preventScroll: true }); }, 50);
+}
+
+function _wfwToggleChip(i) {
+  const s = _WFW_STEPS[_wfw.step];
+  _wfwCapture();
+  const cur = _wfw.chips[s.id] || [];
+  const c = s.chips[i];
+  _wfw.chips[s.id] = cur.includes(c) ? cur.filter(x => x !== c) : cur.concat([c]);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwNext() {
+  _wfwCapture();
+  const s = _WFW_STEPS[_wfw.step];
+  if (s && s.required && !String(_wfw.answers[s.id] || '').trim()) {
+    const er = document.getElementById('wfw-error');
+    er.textContent = 'This one is needed: everything else follows from it. A sentence is enough.';
+    er.hidden = false;
+    return;
+  }
+  _wfw.step = Math.min(_wfw.step + 1, _WFW_STEPS.length);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwSkip() {
+  const s = _WFW_STEPS[_wfw.step];
+  _wfw.answers[s.id] = ''; _wfw.chips[s.id] = [];
+  const ta = document.getElementById('wfw-answer'); if (ta) ta.value = '';
+  _wfwNext();
+}
+function _wfwBack() {
+  _wfwCapture();
+  _wfw.step = Math.max(0, _wfw.step - 1);
+  _wfwSave();
+  _wfwRender();
+}
+function _wfwStartOver() {
+  showConfirm('Clear all your answers and start over?', 'Start over', true).then(ok => {
+    if (!ok) return;
+    _wfw = { step: 0, answers: {}, chips: {}, name: '' };
+    _wfwSave();
+    _wfwRender();
+  });
+}
+function _wfwCopy() {
+  const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+  (navigator.clipboard ? navigator.clipboard.writeText(brief) : Promise.reject())
+    .then(() => showToast('Workflow copied'), () => showToast('Could not copy. Select the text and copy it instead.'));
+}
+function _wfwDownload() {
+  _wfwCapture();
+  const blob = new Blob([_wfwBrief(_wfw.answers, _wfw.chips)], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (_wfw.name || _wfwSlug(_wfw.answers.outcome) || 'workflow') + '-WORKFLOW.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+// Hand off to the New Worker dialog (A8: one way to create a worker), with
+// the name and the brief as its first prompt. The person still picks the
+// folder there. The draft is kept until they start over, so cancelling the
+// dialog loses nothing.
+function _wfwCreateWorker() {
+  _wfwCapture();
+  const name = _wfwSlug(_wfw.name) || _wfwSlug(_wfw.answers.outcome) || 'workflow';
+  const brief = _wfwBrief(_wfw.answers, _wfw.chips);
+  document.getElementById('wfw-overlay').classList.remove('active');
+  openCreate();
+  const nm = document.getElementById('create-name');
+  nm.value = name; _createNameChanged(name);
+  document.getElementById('create-prompt').value = brief;
+  if (typeof amuxTrack === 'function') amuxTrack('workflow_wizard_handoff', { answered: _WFW_STEPS.filter(s => String(_wfw.answers[s.id] || '').trim() || (_wfw.chips[s.id] || []).length).length,
+    of: _WFW_STEPS.length, measured: true });
 }
 
 function _showGroupSuggestions() {
@@ -42106,6 +42449,23 @@ document.addEventListener('keydown', (e) => {
     }
   }
 });
+
+// ⌃F outside a text box opens the Mac app's Find bar (desktop/amux-find.swift);
+// in a text box it stays the Mac's move-forward and a terminal gets it as
+// usual. ⌘F reaches the app's Edit > Find on its own. A Hotkey bound to ⌃F
+// wins: it has already prevented the default by the time this runs.
+function _hkFindKey(e) {
+  if (e.defaultPrevented || !e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || (e.key !== 'f' && e.key !== 'F')) return false;
+  let h = null;
+  try { h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxFind; } catch (err) { console.warn('amux: no find bridge', err); }
+  if (!h) return false;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return false;
+  e.preventDefault();
+  try { h.postMessage({ op: 'show' }); } catch (err) { console.warn('amux: could not open the find bar', err); }
+  return true;
+}
+document.addEventListener('keydown', _hkFindKey);
 
 // ── Escape closes the topmost modal, whatever it is ───────────────────────
 // The handler above knows five overlay ids BY NAME and hard-returns unless
@@ -43243,6 +43603,36 @@ function statusStyle(id) {
 // ═══════ CHROME TABS ═══════
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
+// "the other tab will then also become that session"). Tabs after the first
+// are iframes, rebuilt after any reload of the page (a deploy, Chrome
+// discarding it) from a bare /?_tab=1, so each came back on whatever worker
+// another tab opened last. A tab now writes its address (#peek=, #view=,
+// #path=, ...) under its own key, and the bar rebuilds it on that address.
+// The key is in sessionStorage: a browser tab and the iframes inside it share
+// it, and another browser tab of amux does not, so two amux windows no longer
+// overwrite each other's tabs (owner, 2026-11-13).
+const _CHROME_TAB_VIEW_KEY = 'amux_chrome_tab_view:';
+function _chromeTabSavedHash(id) {
+  let h = '';
+  try { h = sessionStorage.getItem(_CHROME_TAB_VIEW_KEY + id) || ''; } catch (e) {}
+  return h.charAt(0) === '#' ? h : '';
+}
+if (_isInTab) {
+  const _inTabId = new URLSearchParams(location.search).get('_tab');
+  let _inTabLast = null;
+  const _inTabRemember = () => {
+    const h = location.hash || '';
+    if (h === _inTabLast) return;
+    _inTabLast = h;
+    try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + _inTabId, h); } catch (e) {}
+  };
+  // Most moves replace the address without a hashchange (_syncUrlHash), so
+  // it is read on a timer as well as on every event that can end the page.
+  setInterval(_inTabRemember, 1000);
+  window.addEventListener('hashchange', _inTabRemember);
+  window.addEventListener('pagehide', _inTabRemember);
+}
 // The Mac app has real windows and tabs (Cmd-N, Cmd-T), so the in-page strip
 // is hidden there and the page always shows its own first tab (Ethan,
 // 2026-10-19: "this is much cleaner, you can get rid of this now").
@@ -43267,8 +43657,37 @@ if (_nativePaneBridge()) {
   if (b) { b.title = 'Split: this page again in a new pane on the right'; b.removeAttribute('aria-haspopup'); }
 }
 
-let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null') || [{id:1, name:'Tab 1'}];
-let _chromeActiveId = (_nativeTabs ? null : parseInt(localStorage.getItem('amux_chrome_active2'))) || _chromeTabs[0]?.id || 1;
+// THE TAB BAR BELONGS TO ITS BROWSER TAB (owner, 2026-11-13: "the tab
+// navigation is very screwed up"). The list and the open tab were in
+// localStorage, shared by every amux window and read once at load: a second
+// window opened on the first one's tabs, each window's saves overwrote the
+// other's, and both handed out the same new tab id. Each browser tab now keeps
+// its own bar in sessionStorage (it survives a reload and a discarded tab).
+// localStorage keeps a snapshot, addresses included, only so a browser tab
+// with no bar of its own (a new one, or a PWA iOS evicted) starts from the
+// tabs last used. A tab's iframe reads nothing and seeds nothing here.
+const _CHROME_STATE_KEY = 'amux_chrome_state';
+function _chromeLoad() {
+  const one = { tabs: [{id: 1, name: 'Tab 1'}], active: 1 };
+  if (_isInTab) return one;
+  try {
+    const s = JSON.parse(sessionStorage.getItem(_CHROME_STATE_KEY) || 'null');
+    if (s && Array.isArray(s.tabs) && s.tabs.length) return { tabs: s.tabs, active: s.active };
+  } catch (e) {}
+  let snap = null;
+  try { snap = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null'); } catch (e) {}
+  if (!Array.isArray(snap) || !snap.length) return one;
+  snap.slice(1).forEach(t => {
+    if (t && typeof t.hash === 'string' && t.hash.charAt(0) === '#') {
+      try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); } catch (e) {}
+    }
+  });
+  return { tabs: snap.map(t => ({ id: t.id, name: t.name || '' })), active: parseInt(localStorage.getItem('amux_chrome_active2')) };
+}
+const _chromeLoaded = _chromeLoad();
+let _chromeTabs = _chromeLoaded.tabs;
+let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromeTabs[0]?.id || 1;
+if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromeTabs[0].id;
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -43307,7 +43726,10 @@ function _chromeShowActive() {
     if (!iframe) {
       iframe = document.createElement('iframe');
       iframe.dataset.tabId = String(_chromeActiveId);
-      iframe.src = '/?_tab=1';
+      iframe.addEventListener('load', () => { iframe.dataset.loaded = '1'; });
+      const saved = _chromeTabSavedHash(_chromeActiveId);
+      iframe.src = '/?_tab=' + _chromeActiveId + saved;
+      amuxTrack('chrome_tab_rebuilt', {verdict: saved ? 'own_address' : 'no_saved_address', measured: true, n_considered: 1});
       fc.appendChild(iframe);
     }
     fc.querySelectorAll('iframe').forEach(f => f.classList.toggle('hidden', f.dataset.tabId !== String(_chromeActiveId)));
@@ -43429,11 +43851,47 @@ function _chromeAddTab() {
   _chromeSave();
 }
 
+// Where a tab is now: its iframe's own address once it has loaded, else the
+// one it saved (written within a second of every move). Not before its load
+// event: reading a just-inserted iframe's location in the same tick stalled
+// its script in Chromium about 1 load in 15 (the tab came up with no app).
+function _chromeTabLiveHash(id) {
+  const f = document.querySelector('#chrome-tab-frames iframe[data-tab-id="' + id + '"]');
+  if (f && f.dataset.loaded === '1') {
+    try { return f.contentWindow.location.hash || ''; } catch (e) {}
+  }
+  return _chromeTabSavedHash(id);
+}
+// The first tab is this page itself; every later tab is an iframe. Closing
+// the first tab made the next one first, and the bar showed it AS this page,
+// which still held the closed tab's worker (owner, 2026-11-13: "the next tab,
+// which replaces the now-closed tab, becomes the session of the tab I
+// closed"). The page now moves to that tab's own place and its iframe goes.
+function _chromePageGoTo(hash) {
+  try { if (peekSession) closePeek(); } catch (e) { console.warn('[tabs] could not close the closed tab\'s worker', e); }
+  if (hash) {
+    if (location.hash === hash) _handleDeeplink(hash); else location.hash = hash;
+  } else {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+    switchView('sessions');
+  }
+}
 function _chromeCloseTab(id) {
   if (_chromeTabs.length <= 1) return;
   const idx = _chromeTabs.findIndex(t => t.id === id);
+  if (idx < 0) return;
   const fc = document.getElementById('chrome-tab-frames');
+  let moveTo = null;
+  if (idx === 0) {
+    const next = _chromeTabs[1];
+    moveTo = _chromeTabLiveHash(next.id);
+    if (fc) { const nf = fc.querySelector('iframe[data-tab-id="' + next.id + '"]'); if (nf) nf.remove(); }
+    try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + next.id); } catch (e) {}
+  }
   if (fc) { const iframe = fc.querySelector('iframe[data-tab-id="'+id+'"]'); if (iframe) iframe.remove(); }
+  try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + id); } catch (e) {}
+  amuxTrack('chrome_tab_closed', {verdict: idx === 0 ? 'first_tab_page_moved_to_next' : 'later_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
+  if (moveTo !== null) _chromePageGoTo(moveTo);
   _chromeTabs.splice(idx, 1);
   if (_chromeActiveId === id) {
     const ni = Math.min(idx, _chromeTabs.length - 1);
@@ -43443,11 +43901,29 @@ function _chromeCloseTab(id) {
   _chromeSave();
 }
 
+// The snapshot a browser tab with no bar of its own starts from.
+let _chromeSnapLast = '';
+function _chromeSnapshot() {
+  const snap = JSON.stringify(_chromeTabs.map((t, i) => ({ id: t.id, name: t.name || '', hash: i === 0 ? (location.hash || '') : _chromeTabLiveHash(t.id) })));
+  if (snap === _chromeSnapLast) return;
+  _chromeSnapLast = snap;
+  localStorage.setItem('amux_chrome_tabs2', snap);
+  localStorage.setItem('amux_chrome_active2', String(_chromeActiveId));
+}
 function _chromeSave() {
+  if (_isInTab) return;
   try {
-    localStorage.setItem('amux_chrome_tabs2', JSON.stringify(_chromeTabs));
-    localStorage.setItem('amux_chrome_active2', String(_chromeActiveId));
+    sessionStorage.setItem(_CHROME_STATE_KEY, JSON.stringify({ tabs: _chromeTabs, active: _chromeActiveId }));
+    _chromeSnapLast = '';
+    _chromeSnapshot();
   } catch(e) {}
+}
+// Addresses move without a save (a worker opened inside a tab), so the
+// snapshot follows them, written only when it changed, and when the page is
+// left; a window opened next starts on what each tab shows now.
+if (!_isInTab) {
+  window.addEventListener('pagehide', _chromeSave);
+  setInterval(() => { try { _chromeSnapshot(); } catch (e) {} }, 2000);
 }
 
 function switchView(view) {
@@ -43466,7 +43942,9 @@ function switchView(view) {
   _zoomFontModeSync(view);
   // Persist the tab to localStorage so it survives iOS evicting the backgrounded
   // PWA (which wipes sessionStorage but keeps localStorage) — restored on load.
-  try { localStorage.setItem('amux_ui_view', JSON.stringify({ v: view, ts: Date.now() })); } catch(e) {}
+  // sessionStorage too: this tab's own copy, which its reload restores rather
+  // than the shared one another tab last wrote (_restoreScreen).
+  try { const _uv = JSON.stringify({ v: view, ts: Date.now() }); localStorage.setItem('amux_ui_view', _uv); if (!_isInTab) sessionStorage.setItem('amux_ui_view', _uv); } catch(e) {}
   if (!peekSession) _syncUrlHash();
   // ONE ROW PER VIEW: [domIdPrefix, tabName, display]. This was three PARALLEL
   // ARRAYS that had to stay index-aligned, and the alignment had already failed
@@ -43489,7 +43967,7 @@ function switchView(view) {
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
     ['calls', 'calls', 'flex'],
-    ['home', 'home', 'flex'],
+    ['home', 'home', 'flex'], ['ideas', 'ideas', 'block'], ['goals', 'goals', 'block'],
   ];
   for (const [domId, name, display] of _svViews) {
     const ve = document.getElementById(domId + '-view');
@@ -43497,11 +43975,7 @@ function switchView(view) {
     const te = document.getElementById('tab-' + name);
     if (te) te.classList.toggle('active', view === name);
   }
-  if (view === 'home') _homeEnter(); else _homeLeave();
-  // Someone whose first screen is Home always has a way back to it.
-  { const hb = document.getElementById('home-back-btn'); let hc = null;
-    try { hc = localStorage.getItem('amux_home_choice'); } catch (e) { console.warn('[home] storage unreadable', e); }
-    if (hb) hb.hidden = view === 'home' || hc !== 'intent'; }
+  if (_HOME_VIEWS[view]) _homeEnter(view); else _homeLeave();
   if (view === 'groups') { _renderGroupsTab(); fetchBoard().then(() => _renderGroupsTab()); }
   if (view === 'calendar') { fetchBoard().then(() => { _fcInit(); }); }
   if (view === 'torrents') _torrentLoad(); else _torrentStopTimer();
@@ -56117,6 +56591,8 @@ loadBranding();
 
 // Initialize chrome tabs
 _chromeRender();
+// This browser tab owns its bar from its first load, so its reload reads its own.
+_chromeSave();
 _chromeUpdateOffsets();
 window.addEventListener('resize', _chromeUpdateOffsets);
 window.addEventListener('orientationchange', () => setTimeout(_chromeUpdateOffsets, 100));
@@ -60053,6 +60529,9 @@ const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
 // on 2026-11-08: a connector alert's link opened Connectors and its prompt,
 // then the restore reopened the last worker over them.
 const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
+// Set in sessionStorage by a tab's first boot: a later boot of the same tab
+// (a reload, a discarded tab coming back) restores from its own state.
+const _UI_TAB_SEEN_KEY = 'amux_tab_seen';
 function _restoreScreen(bootHash) {
   // Must run AFTER the DOM is parsed: switchView touches #grid-view, which is
   // defined later in the HTML than this inline script — calling it during boot
@@ -60073,10 +60552,41 @@ function _restoreScreen(bootHash) {
                      || /[?&]view=/.test(location.search);
   // A link names the screen: Home is not being decided.
   if (_hasDeeplink) window._homeChoiceSettled = true;
+  // Simple mode is who she is, not which screen opens: applied on every load,
+  // from the last answer at once and the server's when it comes. Only the
+  // no-saved-view branch below asks it to pick the screen too. Applied there
+  // alone, a reload into Chat showed every tab (uc1, second load).
+  try { _homeSimple(localStorage.getItem('amux_home_choice') === 'intent'); } catch (e) { console.warn('[home] storage unreadable', e); }
+  // THIS TAB'S OWN STATE WINS OVER THE SHARED COPY. localStorage is shared by
+  // every tab of the origin (and every Mac app window), so amux_ui_view and
+  // amux_peek_state hold whatever tab was used LAST. A tab on the Workers list
+  // or the Files root (no #view=/#peek= in its address) that reloaded (Chrome
+  // discarding a background tab, a deploy's reload-when-shown, a crash) came
+  // back on the other tab's worker and its peek tab (owner, 2026-11-13: "each
+  // tab is not keeping its workers"). sessionStorage is per tab and survives a
+  // reload and a discard; only a tab that has none (a new tab, or a PWA iOS
+  // evicted, which wipes it) falls back to the shared copy.
+  //
+  // A tab of the in-page tab bar (?_tab=, an iframe) shares sessionStorage with
+  // the page around it, so neither copy is its own: it opens on its address
+  // (the bar keeps each tab's) and nothing else. Restoring here gave every
+  // rebuilt tab the worker another tab opened last (owner, 2026-11-13).
+  if (_isInTab) {
+    if (!_hasDeeplink) {
+      document.documentElement.classList.remove('boot-home-pending');
+      window._homeChoiceSettled = true;
+    }
+    _homeBootChoice();
+    return;
+  }
+  let _ownTab = false;
+  try { _ownTab = sessionStorage.getItem(_UI_TAB_SEEN_KEY) === '1'; sessionStorage.setItem(_UI_TAB_SEEN_KEY, '1'); } catch(e) {}
+  const _restoreStore = _ownTab ? sessionStorage : localStorage;
+  let _homeChoiceAsked = false;
   // 1. Restore the tab.
   if (!_hasDeeplink) {
     try {
-      const _v = JSON.parse(localStorage.getItem('amux_ui_view') || 'null');
+      const _v = JSON.parse(_restoreStore.getItem('amux_ui_view') || 'null');
       // Only restore a view whose nav tab still EXISTS. localStorage outlives
       // the feature it names: when the notes view was deleted, browsers that had
       // last been on it kept restoring 'notes' into a dispatcher that no longer
@@ -60089,14 +60599,21 @@ function _restoreScreen(bootHash) {
         try { switchView(_v.v); } catch(e) {}
         document.documentElement.classList.remove('boot-home-pending');
         window._homeChoiceSettled = true;
+      } else if (_ownTab) {
+        // This tab never left the screen it opened on: it stays there. The
+        // Home choice is for a tab's first screen, not for its reload.
+        document.documentElement.classList.remove('boot-home-pending');
+        window._homeChoiceSettled = true;
       } else {
         // Nothing saved: the home pref (or, for someone new, the intent
         // Home) picks the first screen. Hidden until it answers, so a new
         // person never sees the fleet flash first.
+        _homeChoiceAsked = true;
         _homeBootChoice().then(c => { if (c === 'intent' && activeView === 'sessions' && !peekSession) { try { switchView('home'); } catch(e) { console.warn('[home] could not open Home', e); } } });
       }
     } catch(e) {}
   }
+  if (!_homeChoiceAsked) _homeBootChoice();
   // 2. Restore an open session peek. Prefer sessionStorage (same tab session);
   //    fall back to localStorage when we came back after an eviction.
   //    A #peek= deeplink names its own target — restoring the LAST peek over
@@ -60115,7 +60632,12 @@ function _restoreScreen(bootHash) {
   if (!_ps || !_ps.session) {
     try {
       const _lp = JSON.parse(localStorage.getItem('amux_peek_state') || 'null');
-      if (_lp && _lp.session && (Date.now() - (_lp.ts || 0) < _UI_RESTORE_MAX_AGE)) _ps = _lp;
+      if (_lp && _lp.session && (Date.now() - (_lp.ts || 0) < _UI_RESTORE_MAX_AGE)) {
+        // A tab with its own state had no worker open: the shared copy is
+        // another tab's worker. Say so, so the next leak announces itself.
+        if (_ownTab) amuxTrack('peek_restore_shared_ignored', {verdict: 'other_tab_peek_not_restored', measured: true, n_considered: 1});
+        else _ps = _lp;
+      }
     } catch(e) {}
   }
   if (_ps && _ps.session) {
@@ -72201,7 +72723,13 @@ function _cvDelivHtml(p) {
   return '<div class="cv-deliv">' + chips.join('') + '</div>';
 }
 const _CV_QUICK = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2764\uFE0F', '\u{1F602}'];
-function _cvPostHtml(p, showConv, inThread) {
+// `opts` (optional) draws a post outside the Messages view (Chat, intent
+// Home): {plain: true, name, body, from}. Plain shows `name` in place of the
+// author, an initial in place of the worker avatar, `body` (HTML) in place of
+// the rendered body when given, and none of the actions, reactions, thread
+// line or delivery chips, which all act on the Messages view's own state.
+function _cvPostHtml(p, showConv, inThread, opts) {
+  const plain = !!(opts && opts.plain);
   const worker = p.author_key.indexOf('worker:') === 0;
   const t = new Date(p.ts);
   const mine = p.author_key === _cvMeKey();
@@ -72209,6 +72737,7 @@ function _cvPostHtml(p, showConv, inThread) {
   const real = typeof p.id === 'number';
   const pinned = real && _cvPinnedIds().has(p.id);
   const body = p.deleted ? '<div class="cv-deleted">This message was deleted.</div>'
+    : plain && opts.body !== undefined ? '<div class="cv-post-body cv-md">' + opts.body + '</div>'
     : _cv.editing && _cv.editing.id === p.id ? '<div class="cv-post-body" data-body-id="' + esc(String(p.id)) + '">' + _cvEditHtml(p.id) + '</div>'
     : '<div class="cv-post-body cv-md" data-body-id="' + esc(String(p.id)) + '">' + _cvBodyHtml(p) + '</div>' + _cvAttachHtml(p) + _cvPreviewHtml(p);
   const reacts = Object.entries(p.reactions || {}).map(([e, who]) => '<button type="button" class="cv-react' + ((who || []).includes(_cvMeKey()) ? ' mine' : '')
@@ -72226,6 +72755,14 @@ function _cvPostHtml(p, showConv, inThread) {
     + (mine ? '<button type="button" title="Edit" aria-label="Edit" onclick="_cvEdit(' + p.id + ')">&#x270F;&#xFE0F;</button>' : '')
     + (mine || owner ? '<button type="button" title="Delete" aria-label="Delete" onclick="_cvDelete(' + p.id + ')">&#x1F5D1;&#xFE0F;</button>' : '')
     + '</div><button type="button" class="cv-more" aria-label="More actions" onclick="_cvMore(this)">&#x22EF;</button>' : '';
+  if (plain) {
+    const name = opts.name || p.author_name || '';
+    return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '"' + (opts.from ? ' data-from="' + esc(opts.from) + '"' : '') + '>'
+      + _cvAvatar(name, false, null)
+      + '<div class="cv-post-main"><div class="cv-post-head"><span class="cv-post-who">' + esc(name) + '</span>'
+      + '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span></div>'
+      + body + '</div></div>';
+  }
   return '<div class="cv-post' + (p.pending ? ' pending' : '') + '" data-id="' + esc(String(p.id)) + '">' + _cvAvatar(p.author_name, worker, p.author_key) + '<div class="cv-post-main"><div class="cv-post-head">' +
     '<span class="cv-post-who">' + esc(p.author_name) + (mine ? ' <span style="color:var(--dim);font-weight:400">(you)</span>' : '') + '</span>' +
     '<span class="cv-post-ts" title="' + esc(t.toLocaleString()) + '">' + t.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</span>' +
@@ -76562,6 +77099,7 @@ const _CMDK_WEIGHT = { worker: 220, group: 200, view: 160, action: 140, card: 60
 function _cmdkActions() {
   return [
     { title: 'New worker', sub: 'Create or connect', run: () => openCreate() },
+    { title: 'New workflow (guided)', sub: 'Answer a few plain questions, then start a worker on it', run: () => openWorkflowWizard() },
     { title: 'New card', sub: 'Add a card to the board', run: () => { switchView('board'); openBoardAdd(); } },
     { title: 'New schedule', sub: 'Run a prompt or command on a timer', run: () => { switchView('scheduler'); openSchedModal(); } },
     { title: 'New scratchpad note', sub: 'Scratchpad', run: () => { switchView('scratchpad'); _scratchpadNewNote(); } },

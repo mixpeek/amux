@@ -10,6 +10,15 @@ const W = { name: 'sendnow-w', status: 'active', running: true, renderer: 'termi
 async function boot(page: any, chips?: object[]) {
   await page.route(/\/api\/sessions(?:\?.*)?$/, (r: any) => r.request().method() === 'GET'
     ? r.fulfill({ json: [W] }) : r.fallback());
+  // The chip set is a server pref every spec on this server shares: nightly
+  // runs a whole project against one server, and a set another spec saved
+  // there replaced the defaults here (AF-1212). This spec owns its own.
+  await page.route(/\/api\/prefs\?key=ui_chips(_offered)?$/, (r: any) => r.request().method() === 'GET'
+    ? r.fulfill({ json: { value: '' } }) : r.fallback());
+  await page.route(/\/api\/prefs$/, (r: any) => {
+    const key = r.request().method() === 'POST' ? (r.request().postDataJSON() || {}).key : '';
+    return key === 'ui_chips' || key === 'ui_chips_offered' ? r.fulfill({ json: { ok: true } }) : r.fallback();
+  });
   await page.addInitScript((saved: any) => {
     localStorage.setItem('amux_walkthrough_done', '1');
     if (saved) localStorage.setItem('amux_chips', JSON.stringify(saved));

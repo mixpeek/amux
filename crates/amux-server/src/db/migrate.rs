@@ -859,6 +859,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0159_intent",
         sql: include_str!("../../migrations/0159_intent.sql"),
     },
+    Migration {
+        version: 160,
+        name: "0160_intent_on_primitives",
+        sql: include_str!("../../migrations/0160_intent_on_primitives.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

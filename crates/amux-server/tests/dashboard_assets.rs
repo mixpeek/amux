@@ -2365,7 +2365,8 @@ fn every_cdn_asset_is_cors_and_precached_for_offline() {
 
 /// NOTIFICATIONS OBEY ONE GATE. The header switches (in-app pop-ups, native) are
 /// read only by the gate `amuxNotifyAllowed`, the switches' own toggle/render
-/// functions, and the test-send. Any other reader is an emitter deciding for
+/// functions, the test-send, and the two that keep the switch in step
+/// (`_notifDesktopState`, `_pushReconcile`). Any other reader is an emitter deciding for
 /// itself, which is how a press-layer "...: done" toast appeared with in-app
 /// pop-ups off (2026-10-01). The press layer's success toast must ask the gate.
 #[test]
@@ -2374,6 +2375,10 @@ fn every_notification_emitter_goes_through_the_shared_gate() {
     let allowed = [
         "amuxNotifyAllowed", "_notifToggleNative", "_notifUpdateNativeBtn",
         "_notifToggleBanners", "_notifUpdateBannerBtn", "_notifSendTest",
+        // The Mac app's answer that sets the native switch, and the load-time
+        // check that makes this device's push subscription match it. Both keep
+        // the switch itself in step and raise nothing (2eb8f94ce).
+        "_notifDesktopState", "_pushReconcile",
     ];
     let mut current = String::from("<top level>");
     let mut offenders = Vec::new();

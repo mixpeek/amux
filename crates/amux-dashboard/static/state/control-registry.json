@@ -876,6 +876,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chromeCloseTab": {
+      "kind": "command._chromeCloseTab",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chromePageGoTo": {
+      "kind": "command._chromePageGoTo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,
@@ -2736,12 +2748,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_homeEnter": {
-      "kind": "command._homeEnter",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "_homeIdeaStart": {
       "kind": "command._homeIdeaStart",
       "feedback_required": true,
@@ -2762,6 +2768,12 @@
     },
     "_homeSetPane": {
       "kind": "command._homeSetPane",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_homeShowEverything": {
+      "kind": "command._homeShowEverything",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -3912,6 +3924,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_ownLinkRetarget": {
+      "kind": "command._ownLinkRetarget",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_ownPageBeacon": {
       "kind": "command._ownPageBeacon",
       "feedback_required": true,
@@ -4232,12 +4250,6 @@
     },
     "_peekOpenLogAt": {
       "kind": "command._peekOpenLogAt",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "_peekOutcomesLoad": {
-      "kind": "command._peekOutcomesLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6122,6 +6134,12 @@
     },
     "_watchPeekTabAnchor": {
       "kind": "command._watchPeekTabAnchor",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_wfwCreateWorker": {
+      "kind": "command._wfwCreateWorker",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

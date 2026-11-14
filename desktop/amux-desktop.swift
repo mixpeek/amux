@@ -511,6 +511,8 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotify")
         // The page's device switch (app.js _notifToggleNative): reads and sets
         // the app's own, so the dashboard, the menu and Settings agree.
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxFind")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxFind")
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxNotifyPrefs")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotifyPrefs")
         // A zoom from the page (app.js _zoomShare): every other page follows it.
@@ -541,6 +543,11 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         }
         if message.name == "amuxZoom" {
             if let n = message.body as? NSNumber { app?.zoomOthers(from: self, level: n.intValue) }
+            return
+        }
+        // ⌃F outside a text box (app.js _hkFindKey): this page's find bar.
+        if message.name == "amuxFind" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false { showFind() }
             return
         }
         if message.name == "amuxNotifyPrefs" {
@@ -2203,10 +2210,17 @@ func buildMenuBar(_ d: AppDelegate) {
     add(edit, "Redo", Selector(("redo:")), "z", [.command, .shift])
     edit.addItem(.separator())
     add(edit, "Cut", #selector(NSText.cut(_:)), "x")
-    add(edit, "Copy", #selector(NSText.copy(_:)), "c")
+    add(edit, "Copy", #selector(AppDelegate.copyFromPage(_:)), "c", target: d)
     add(edit, "Paste", #selector(NSText.paste(_:)), "v")
     add(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
     edit.addItem(.separator())
+    // Find in the page you are in (amux-find.swift).
+    let find = NSMenu(title: "Find")
+    add(find, "Find…", #selector(AppDelegate.findInPage(_:)), "f", target: d)
+    add(find, "Find Next", #selector(AppDelegate.findNextInPage(_:)), "g", target: d)
+    add(find, "Find Previous", #selector(AppDelegate.findPreviousInPage(_:)), "g", [.command, .shift], target: d)
+    add(find, "Use Selection for Find", #selector(AppDelegate.useSelectionForFind(_:)), "e", target: d)
+    edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
     // The standard spelling menus. The focused WKWebView answers each action
     // and shows its checkmark.
     let spelling = NSMenu(title: "Spelling and Grammar")

@@ -9133,6 +9133,10 @@ button.cv-sec:hover { color:var(--text); }
 .cv-md pre { max-width:100%; overflow-x:auto; background:color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 12%, transparent); border-radius:var(--radius-md); padding:var(--space-2) var(--space-2-5); font-size:var(--fs-md); }
 .cv-md :not(pre) > code { background:color-mix(in srgb, color-mix(in srgb, var(--shade) 50%, var(--on-solid)) 14%, transparent); border-radius:var(--radius-sm); padding:1px var(--space-1); font-size:0.88em; }
 .cv-md img, .cv-md video { max-width:100%; height:auto; border-radius:var(--radius-md); }
+/* A table keeps whole words in its cells and scrolls sideways when wider than
+   the post: the body's break-word split "Amount" into "Amoun / t" on a phone. */
+.cv-md table { display:block; max-width:100%; overflow-x:auto; border-collapse:collapse; }
+.cv-md th, .cv-md td { word-break:normal; overflow-wrap:normal; padding:var(--space-1) var(--space-2); border:1px solid var(--border); }
 .cv-md .file-link { color:var(--cyan); border-bottom:1px dashed var(--cyan); cursor:pointer; word-break:break-all; }
 .cv-md .md-link { color:var(--yellow); border-bottom:1px dashed var(--yellow); cursor:pointer; word-break:break-all; }
 .cv-thumbs { display:flex; gap:var(--space-1-5); flex-wrap:wrap; margin-top:var(--space-1-5); }
@@ -11177,14 +11181,21 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   .calls-actions .btn { flex: 1; min-height: 44px; }
 }
 
-/* ── Home: say what you want (docs/design/intent-first.md) ──
-   One column, the composer above one bottom row of four views on a phone. */
+/* ── Chat, Ideas and Goals (docs/design/intent-first.md) ──
+   Three tabs in the normal tab bar. Chat is one column with its composer at
+   the bottom of the view; in simple mode (a new person) only these tabs and
+   "Everything else" show, and the header with them. */
 html.boot-home-pending #session-view, html.boot-home-pending .tab-bar-outer, html.boot-home-pending .header-row { visibility: hidden; }
-body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home #no-apikey-banner, body.intent-home #chrome-tabs-bar { display: none !important; }
-.home-view { position: fixed; inset: 0; z-index: 5; flex-direction: column; background: var(--bg); color: var(--text);
-  padding-top: env(safe-area-inset-top); font-family: var(--font-ui); }
-.home-top { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 var(--space-4); }
-.home-brand { font-weight: 700; font-size: var(--fs-3xl); letter-spacing: 0.02em; }
+/* The approvals banner names the helper; in simple mode a held draft shows in
+   its conversation instead (_homeHeldDraftHtml). */
+body.intent-simple .header-row, body.intent-simple #no-apikey-banner, body.intent-simple #chrome-tabs-bar,
+body.intent-simple #email-approvals-banner { display: none !important; }
+body.intent-simple .tab-bar > button:not(#tab-home):not(#tab-ideas):not(#tab-goals):not(#tab-everything) { display: none !important; }
+body:not(.intent-simple) #tab-everything { display: none; }
+body.intent-simple .tab-customize-wrap { display: none !important; }
+body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
+.home-view { flex-direction: column; height: calc(100dvh - var(--mv-top, 120px)); min-height: 0; color: var(--text); font-family: var(--font-ui); }
+.home-page { color: var(--text); font-family: var(--font-ui); }
 .home-main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .home-pane-body { max-width: 760px; margin: 0 auto; padding: var(--space-2) var(--space-4) var(--space-4); }
 .home-pane-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin: var(--space-3) 0 var(--space-2); }
@@ -11197,11 +11208,11 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .home-row { display: flex; flex-direction: column; gap: var(--space-1); text-align: left; width: 100%; min-height: 56px;
   padding: var(--space-3); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); color: var(--text); cursor: pointer; font: inherit; }
-.home-row:focus-visible, .home-nav-btn:focus-visible, .home-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.home-row:focus-visible, .home-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .home-row-top, .home-card-top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .home-row-title, .home-card-title { font-weight: 600; font-size: var(--fs-2xl); min-width: 0; overflow-wrap: anywhere; }
 .home-row-snip { color: var(--dim); font-size: var(--fs-xl); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.home-row-when, .home-card-from, .home-msg-when { color: var(--dim); font-size: var(--fs-sm); }
+.home-row-when, .home-card-from { color: var(--dim); font-size: var(--fs-sm); }
 .home-pill { flex: none; font-size: var(--fs-sm); padding: var(--space-0-5) var(--space-2); border-radius: var(--radius-pill); border: 1px solid var(--border); }
 .home-pill.ready { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, transparent); }
 .home-pill.working { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 50%, transparent); }
@@ -11211,15 +11222,6 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-receipt { color: var(--dim); font-size: var(--fs-lg); margin-bottom: var(--space-3); line-height: 1.6; }
 .home-link { background: none; border: none; padding: var(--space-1) 0; color: var(--accent); font: inherit; cursor: pointer; min-height: 32px; }
 .home-msgs { display: flex; flex-direction: column; gap: var(--space-3); }
-.home-msg { display: flex; flex-direction: column; max-width: 92%; }
-.home-msg.mine { align-self: flex-end; align-items: flex-end; }
-.home-msg.theirs { align-self: flex-start; }
-.home-bubble { padding: var(--space-2-5) var(--space-3); border-radius: var(--radius-3xl); font-size: var(--fs-2xl); line-height: 1.5; overflow-wrap: anywhere; }
-.home-msg.mine .home-bubble { background: var(--accent); color: var(--on-accent); }
-.home-msg.theirs .home-bubble { background: var(--card); border: 1px solid var(--border); }
-.home-bubble p { margin: 0 0 var(--space-2); } .home-bubble p:last-child { margin-bottom: 0; }
-.home-bubble table { border-collapse: collapse; font-size: var(--fs-lg); display: block; overflow-x: auto; }
-.home-bubble td, .home-bubble th { border: 1px solid var(--border); padding: var(--space-1) var(--space-2); }
 .home-typing { color: var(--dim); }
 .home-typing span { animation: home-dot 1.2s infinite; } .home-typing span:nth-child(2) { animation-delay: .2s; } .home-typing span:nth-child(3) { animation-delay: .4s; }
 @keyframes home-dot { 0%, 60%, 100% { opacity: .2; } 30% { opacity: 1; } }
@@ -11228,17 +11230,11 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-card-actions { display: flex; gap: var(--space-2); margin-top: var(--space-1); flex-wrap: nowrap; overflow-x: auto; }
 .home-card-actions .btn { min-height: 44px; }
 .home-ask { border-left: 3px solid var(--yellow); padding-left: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1-5); font-size: var(--fs-xl); }
-.home-composer { max-width: 760px; width: 100%; margin: 0 auto; padding: var(--space-2) var(--space-3) var(--space-1); box-sizing: border-box; }
+.home-composer { max-width: 760px; width: 100%; margin: 0 auto; padding: var(--space-2) var(--space-3) calc(var(--space-1) + env(safe-area-inset-bottom)); box-sizing: border-box; }
 .home-composer-row { display: flex; gap: var(--space-2); align-items: flex-end; }
 .home-input { flex: 1; min-width: 0; resize: none; min-height: 44px; max-height: 160px; font-size: var(--fs-2xl); line-height: 1.4; border-radius: var(--radius-3xl); padding: var(--space-2-5) var(--space-3); }
 .home-send { min-height: 44px; min-width: 64px; border-radius: var(--radius-3xl); }
 .home-trust { color: var(--dim); font-size: var(--fs-sm); text-align: center; padding-top: var(--space-1); }
-.home-nav { display: flex; justify-content: space-around; border-top: 1px solid var(--border); background: var(--bg);
-  padding: var(--space-1) var(--space-2) calc(var(--space-1) + env(safe-area-inset-bottom)); }
-.home-nav-btn { flex: 1; max-width: 160px; min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-0-5);
-  background: none; border: none; color: var(--dim); font: inherit; font-size: var(--fs-sm); cursor: pointer; border-radius: var(--radius-lg); }
-.home-nav-btn.active { color: var(--accent); font-weight: 600; }
-.home-nav-ico { font-size: var(--fs-4xl); line-height: 1; }
 .home-change { display: flex; flex-direction: column; gap: var(--space-2); max-height: 60vh; overflow-y: auto; }
 .home-choice { display: flex; gap: var(--space-2); align-items: flex-start; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-lg); min-height: 44px; cursor: pointer; }
 .outcome-answer { font-size: var(--fs-xl); line-height: 1.5; }
@@ -11252,9 +11248,23 @@ body.intent-home .header-row, body.intent-home .tab-bar-outer, body.intent-home 
 .home-mail summary { cursor: pointer; min-height: 44px; font-size: var(--fs-xl); line-height: 1.4; }
 .home-mail-body { margin-top: var(--space-2); font-size: var(--fs-lg); line-height: 1.5; overflow-wrap: anywhere; }
 .home-workspace-link { margin-top: var(--space-6); text-align: center; font-size: var(--fs-sm); }
-.home-back-btn { min-height: 44px; }
 .home-pane-sub { color: var(--dim); font-size: var(--fs-lg); margin: calc(-1 * var(--space-1)) 0 var(--space-2); }
 .home-reminder { font-size: var(--fs-lg); padding: var(--space-1-5) var(--space-3); margin-bottom: var(--space-2); border-radius: var(--radius-pill); background: var(--card); border: 1px solid var(--border); display: inline-block; }
 .home-agenda { display: flex; flex-direction: column; gap: var(--space-0-5); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
 .home-agenda-when { color: var(--dim); font-size: var(--fs-lg); }
 .home-agenda-what { font-size: var(--fs-xl); }
+.peek-msg-convs:empty { display: none; }
+.peek-msg-convs { padding: var(--space-2-5) var(--space-2-5) 0; display: flex; flex-direction: column; gap: var(--space-1-5); }
+.peek-msg-convs-head { font-weight: 600; font-size: var(--fs-md); color: var(--dim); }
+
+/* Workflow wizard (#wfw-overlay) */
+.wfw-brief { white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: var(--fs-sm);
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2); }
+.wfw-start-over { text-align: right; margin-top: var(--space-1); }
+.wfw-chips { display: flex; flex-wrap: wrap; gap: var(--space-1-5); margin-bottom: var(--space-2); }
+.wfw-chip { flex: 0 1 auto; white-space: nowrap; min-height: 44px; }
+.wfw-help { margin-bottom: var(--space-2); }
+.wfw-answer { width: 100%; }
+.wfw-error { color: var(--red); }
+.wfw-error[hidden] { display: none; }
+.wfw-actions { flex-wrap: wrap; }

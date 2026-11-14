@@ -4,11 +4,12 @@
 Speaks `claude -p --output-format stream-json` like e2e/fixtures/fake-claude-stream.py,
 and answers the household's requests from the seeded mail and calendar it
 reads through the server's own API (the way a real helper would, with
-`amux get`). A reminder becomes a one-time schedule. Nothing is ever sent:
-every outside message is a draft in the answer. The persona runs use the real
-model; this keeps the specs about amux.
+`amux get`). It uses the primitives the brief names: a reminder is a
+one-time schedule, a draft email is a send through the email API (held for
+the owner, never released here), a to-do is a card on her board. The persona
+runs use the real model; this keeps the specs about amux.
 """
-import json, os, re, ssl, sys, time, urllib.request, urllib.parse
+import json, os, re, ssl, sys, time, urllib.error, urllib.request, urllib.parse
 
 PROMPT = sys.stdin.read()
 SID = "1f0e0d0c-0b0a-4908-8706-050403020101"
@@ -25,8 +26,25 @@ def api(path, body=None):
     try:
         with urllib.request.urlopen(req, context=CTX, timeout=20) as r:
             return json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:  # the server's refusal, with its reason
+        try:
+            return {"error": "%s %s" % (e.code, e.read().decode()[:300])}
+        except Exception:  # noqa: BLE001
+            return {"error": str(e)}
     except Exception as e:  # noqa: BLE001 - a fixture reports, never crashes
         return {"error": str(e)}
+
+
+# The repo's own CLI: a real helper may run only `amux ...`, so the stand-in
+# writes email and to-dos through the same verbs (amux email send, amux todo add).
+CLI = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "amux"))
+
+
+def cli(args, stdin=""):
+    import subprocess
+    env = dict(os.environ, AMUX_API=URL, AMUX_URL=URL)
+    r = subprocess.run([CLI] + args, input=stdin, capture_output=True, text=True, env=env, timeout=60)
+    return r.returncode, (r.stdout + r.stderr).strip()
 
 
 def mail(q):
@@ -40,6 +58,10 @@ def events():
     return sorted(r, key=lambda e: e.get("start", ""))
 
 
+# The conversation this request came from: the brief names it (amux post 'o:<id>'),
+# and a reminder's prompt names it back, as a real helper's does.
+_conv = re.search(r"amux post 'o:(o[a-z0-9]+)'", PROMPT)
+POST_HERE = "Post the reminder here with amux post 'o:%s'" % _conv.group(1) if _conv else "Post the reminder"
 p = PROMPT.lower()
 # The owner's words: the paragraph between the delivery's opening (which
 # ends in a colon) and "Nobody pasted this.", never the opening itself, which
@@ -68,23 +90,30 @@ if "keep this goal" in b or "your last update on this goal" in b:
 elif "remind me" in b and "camp" in b:
     when = time.strftime("%Y-%m-%dT10:00", time.localtime(time.time() + 86400))
     api("/api/schedules", {"title": "Reminder: call the camp director about Rafi's waitlist", "kind": "tmux",
-                           "once": when, "command": "Post the reminder", "session": os.environ.get("AMUX_SESSION", "")})
+                           "once": when, "command": POST_HERE, "session": os.environ.get("AMUX_SESSION", "")})
     thread = mail("camp kaylie rafi")
     answer = ("Done: I'll remind you tomorrow at 10:00 to call Marcy Feld, the Camp Kaylie director, about Rafi's Session 2 waitlist. "
               "Her number is (845) 555-0142.\n\nFrom your email: Rafi was #4 on the waitlist, and your follow-up %d days ago has no answer yet."
               % 12 if thread else "Done: I'll remind you tomorrow at 10:00 to call the camp director.")
 elif "remind me" in b and "application" in b:
     when = time.strftime("%Y-%m-%dT19:00", time.localtime(time.time() + 86400))
-    api("/api/schedules", {"title": "Reminder: fill in Ezra's school application", "kind": "tmux", "once": when, "command": "Post the reminder", "session": os.environ.get("AMUX_SESSION", "")})
+    api("/api/schedules", {"title": "Reminder: fill in Ezra's school application", "kind": "tmux", "once": when, "command": POST_HERE, "session": os.environ.get("AMUX_SESSION", "")})
     answer = "Done: I'll remind you tomorrow evening to fill in Ezra's Hudson Prep application."
 elif "hudson prep" in b and ("done or missing" in b or "confirmation" in b):
     got = mail("hudson prep application received")
     answer = ("**Verdict: missing.** There is no \"Application received\" email from Hudson Prep. Their reminder says the parent "
               "statement is still missing (the teacher recommendation arrived). The deadline is in 9 days." if not got else "**Verdict: done.**")
 elif "nudge" in b and "camp" in b:
-    answer = ("Here is a second nudge for Marcy Feld, ready for you to send:\n\n```draft\nTo: marcy@campkaylie.test\n"
-              "Subject: Re: Rafi Levin - Session 2 waitlist\n\nHi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 "
-              "waitlist. He is still very excited about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana\n```")
+    rc, out = cli(["email", "send", "--to", "marcy@campkaylie.test", "--subject", "Re: Rafi Levin - Session 2 waitlist"]
+                  + (["--conv", "o:" + _conv.group(1)] if _conv else []) + ["--stdin"],
+                  "Hi Marcy,\n\nI wanted to check in again on Rafi's spot on the Session 2 waitlist. He is still very excited "
+                  "about camp. Is there any news, or anything we can do?\n\nThanks so much,\nDana")
+    answer = ("I wrote a second nudge to Marcy Feld. It is waiting for your OK below." if rc == 0 and "held" in out
+              else "I could not save the draft: %s" % out[:300])
+elif "add" in b and ("to-do" in b or "todo" in b or "to do" in b):
+    what = re.sub(r"^.*?(add|put)\s+", "", body.strip(), flags=re.I).split(" to my")[0].strip().rstrip(".") or body.strip()
+    rc, out = cli(["todo", "add", what[:80]])
+    answer = ("Added to your to-dos: %s." % what) if rc == 0 else "I could not add it: %s" % out[:300]
 elif "school" in b and "inbox" in b:
     answer = ("I found 4 school items:\n\n1. **Rafi's field trip permission slip** and $15, due Friday (Ms. Ortiz).\n2. **Picture day** order form, due on picture day.\n"
               "3. **Ezra's emergency contact form**, update in the parent portal in 4 days.\n4. **Conference sign-ups** open in 2 days at 7pm.")
