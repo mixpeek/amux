@@ -219,11 +219,33 @@ fn install_hooks(dir: &Path) {
         tracing::warn!(%error, measured = false, n_considered = 1, verdict = "claude_tool_denies_install_failed",
             settings = %settings.display(), "could not deny the claude.ai Artifact tool in a worker's Claude config folder");
     }
+    // The boundary guard (payments, email, credentials) is wired into ~/.claude,
+    // not into this folder, so a worker running here has none. Say so on every
+    // folder recorded, so the gap shows in a log sweep (review, #456).
+    let text = std::fs::read_to_string(&settings).ok();
+    if !guard_wired(text.as_deref()) {
+        tracing::warn!(measured = text.is_some(), n_considered = 1, verdict = "claude_config_dir_unguarded",
+            settings = %settings.display(),
+            "a worker's Claude config folder has no boundary guard: payments, email and credentials are not checked there");
+    }
+}
+
+/// Whether a Claude `settings.json` runs amux's boundary guard (the same test
+/// `boundaries.rs` uses for the default folder). An unreadable file has none.
+fn guard_wired(settings_text: Option<&str>) -> bool {
+    settings_text.is_some_and(|t| t.contains("boundary-guard.py"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_without_the_boundary_guard_reads_unguarded() {
+        assert!(guard_wired(Some(r#"{"hooks":{"PreToolUse":[{"hooks":[{"command":"python3 ~/.amux/hooks/boundary-guard.py"}]}]}}"#)));
+        assert!(!guard_wired(Some(r#"{"hooks":{"Stop":[{"hooks":[{"command":"python3 ~/.amux/native-status.py"}]}]}}"#)));
+        assert!(!guard_wired(None), "an unreadable settings file runs no guard");
+    }
 
     fn procargs(argv: &[&str], env: &[&str]) -> Vec<u8> {
         let mut b = (argv.len() as i32).to_ne_bytes().to_vec();
