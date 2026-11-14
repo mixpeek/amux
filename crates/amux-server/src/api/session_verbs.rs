@@ -3791,7 +3791,7 @@ fn transcript_path_for(name: &str) -> Option<PathBuf> {
         return None;
     }
     let wd = work_dir_of(&parse_env(name));
-    let p = claude_home()
+    let p = super::claude_config::for_session(name)
         .join("projects")
         .join(project_name(&wd))
         .join(format!("{conv}.jsonl"));
@@ -4850,12 +4850,15 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let meta = load_meta(name);
     let conv_id = meta_str(&meta, "cc_conversation_id");
     let cc_cwd = meta_str(&meta, "cc_cwd");
+    // The worker's own Claude config folder (CLAUDE_CONFIG_DIR on its live
+    // process), not always ~/.claude: see claude_config.
+    let chome = super::claude_config::for_session(name);
     if !conv_id.is_empty() {
         for base in [cc_cwd.trim(), wd.as_str()] {
             if base.is_empty() {
                 continue;
             }
-            let cand = claude_home()
+            let cand = chome
                 .join("projects")
                 .join(project_name(base))
                 .join(format!("{conv_id}.jsonl"));
@@ -4878,7 +4881,7 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
         // minutes, dead conversations came due together and cost 463 scans and
         // 1,431 s in 10 hours, up to 29 in a minute, inside the fleet build
         // whose overrun answers /api/sessions with 503 (AF-1146).
-        let projects_dir = claude_home().join("projects");
+        let projects_dir = chome.join("projects");
         if !conversation_miss_is_cached(&conv_id) {
             if let Some(p) = find_conversation_jsonl(&projects_dir, &conv_id) {
                 return Some(p);
@@ -4899,9 +4902,9 @@ pub(crate) fn session_jsonl_path(name: &str) -> Option<PathBuf> {
     let project_dir = [cc_cwd.trim(), wd.as_str()]
         .into_iter()
         .filter(|b| !b.is_empty())
-        .map(|b| claude_home().join("projects").join(project_name(b)))
+        .map(|b| chome.join("projects").join(project_name(b)))
         .find(|d| d.is_dir())
-        .unwrap_or_else(|| claude_home().join("projects").join(project_name(&wd)));
+        .unwrap_or_else(|| chome.join("projects").join(project_name(&wd)));
     let Ok(rd) = std::fs::read_dir(&project_dir) else {
         return None;
     };
@@ -11267,9 +11270,10 @@ async fn live_claude_conversation(name: &str) -> Option<String> {
     let out = tmux(&["list-panes", "-t", &stq, "-F", "#{pane_pid}"]).await?;
     let pane = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
     let kids = run_cmd("pgrep", &["-P", &pane], OP_TIMEOUT).await?;
-    String::from_utf8_lossy(&kids.stdout)
-        .split_whitespace()
-        .find_map(|pid| claude_session_file_id(&claude_home().join("sessions").join(format!("{pid}.json"))))
+    let homes = super::claude_config::search_order(name);
+    String::from_utf8_lossy(&kids.stdout).split_whitespace().find_map(|pid| {
+        homes.iter().find_map(|h| claude_session_file_id(&h.join("sessions").join(format!("{pid}.json"))))
+    })
 }
 
 /// `sessionId` from one Claude Code process file.
@@ -17158,7 +17162,10 @@ pub(crate) async fn start_session(
         let conv_id = meta_str(&meta, "cc_conversation_id");
         let mut resumable = false;
         if !conv_id.is_empty() && uuid_re.is_match(&conv_id) {
-            let conv_file = claude_home()
+            // Under the folder the worker's Claude last ran in: a resume that
+            // looked only in ~/.claude found no file for a worker on another
+            // CLAUDE_CONFIG_DIR and started it fresh, dropping its conversation.
+            let conv_file = super::claude_config::for_session(name)
                 .join("projects")
                 .join(project_name(&work_dir))
                 .join(format!("{conv_id}.jsonl"));
@@ -20629,7 +20636,7 @@ async fn session_cc_tasks(name: &str) -> Value {
     let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
         return empty;
     };
-    let tdir = claude_home().join("tasks").join(stem);
+    let tdir = super::claude_config::for_session(name).join("tasks").join(stem);
     if !tdir.is_dir() {
         return empty;
     }
@@ -21293,7 +21300,7 @@ fn backup_session_jsonl(name: &str, reason: &str) -> Option<String> {
     if wd.is_empty() {
         return None;
     }
-    let project_dir = claude_home().join("projects").join(project_name(&wd));
+    let project_dir = super::claude_config::for_session(name).join("projects").join(project_name(&wd));
     let Ok(rd) = std::fs::read_dir(&project_dir) else {
         return None;
     };
@@ -22040,7 +22047,7 @@ fn write_claude_memory(name: &str, work_dir: &str) {
 
     let composed = compose_memory_doc(name, &global_content, &session_content);
 
-    let claude_mem_dir = claude_home().join("projects").join(&pname).join("memory");
+    let claude_mem_dir = super::claude_config::for_session(name).join("projects").join(&pname).join("memory");
     let claude_mem_file = claude_mem_dir.join("MEMORY.md");
 
     if std::fs::create_dir_all(&claude_mem_dir).is_err() {
@@ -34097,7 +34104,9 @@ pub(crate) fn lifecycle_transcript_path(name: &str, lifecycle_session: &str) -> 
             return Some(hit.clone());
         }
     }
-    let (hit, by_id) = find_transcript(&claude_home().join("projects"), &bases, lifecycle_session)?;
+    let (hit, by_id) = super::claude_config::search_order(name)
+        .iter()
+        .find_map(|h| find_transcript(&h.join("projects"), &bases, lifecycle_session))?;
     if by_id {
         tracing::info!(session = name, path = %hit.display(), verdict = "lifecycle_transcript_found_by_id",
             "conversation found by its id outside the worker's configured directory");

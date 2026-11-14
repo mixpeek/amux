@@ -108,6 +108,7 @@ pub mod needs_input_auto;
 pub mod memories;
 pub mod messages;
 pub(crate) mod native_status;
+pub(crate) mod claude_config;
 pub(crate) mod cross_site;
 pub mod metrics;
 pub mod traces;
