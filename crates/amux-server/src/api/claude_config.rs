@@ -76,6 +76,8 @@ pub(crate) fn config_dir_from_env<'a>(vars: impl IntoIterator<Item = &'a str>) -
 /// `argc`, the exec path, NUL padding, `argc` arguments, then the environment,
 /// each NUL-terminated. Arguments are skipped by count, so an argument that
 /// happens to contain `CLAUDE_CONFIG_DIR=` is never read as the environment.
+/// Only macOS reads this buffer; the tests cover the parser on every platform.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn procargs2_env(buf: &[u8]) -> Option<Vec<String>> {
     let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
     if argc < 0 {
