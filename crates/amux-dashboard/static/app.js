@@ -43603,6 +43603,36 @@ function statusStyle(id) {
 // ═══════ CHROME TABS ═══════
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
+// "the other tab will then also become that session"). Tabs after the first
+// are iframes, rebuilt after any reload of the page (a deploy, Chrome
+// discarding it) from a bare /?_tab=1, so each came back on whatever worker
+// another tab opened last. A tab now writes its address (#peek=, #view=,
+// #path=, ...) under its own key, and the bar rebuilds it on that address.
+// The key is in sessionStorage: a browser tab and the iframes inside it share
+// it, and another browser tab of amux does not, so two amux windows no longer
+// overwrite each other's tabs (owner, 2026-11-13).
+const _CHROME_TAB_VIEW_KEY = 'amux_chrome_tab_view:';
+function _chromeTabSavedHash(id) {
+  let h = '';
+  try { h = sessionStorage.getItem(_CHROME_TAB_VIEW_KEY + id) || ''; } catch (e) {}
+  return h.charAt(0) === '#' ? h : '';
+}
+if (_isInTab) {
+  const _inTabId = new URLSearchParams(location.search).get('_tab');
+  let _inTabLast = null;
+  const _inTabRemember = () => {
+    const h = location.hash || '';
+    if (h === _inTabLast) return;
+    _inTabLast = h;
+    try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + _inTabId, h); } catch (e) {}
+  };
+  // Most moves replace the address without a hashchange (_syncUrlHash), so
+  // it is read on a timer as well as on every event that can end the page.
+  setInterval(_inTabRemember, 1000);
+  window.addEventListener('hashchange', _inTabRemember);
+  window.addEventListener('pagehide', _inTabRemember);
+}
 // The Mac app has real windows and tabs (Cmd-N, Cmd-T), so the in-page strip
 // is hidden there and the page always shows its own first tab (Ethan,
 // 2026-10-19: "this is much cleaner, you can get rid of this now").
@@ -43627,8 +43657,37 @@ if (_nativePaneBridge()) {
   if (b) { b.title = 'Split: this page again in a new pane on the right'; b.removeAttribute('aria-haspopup'); }
 }
 
-let _chromeTabs = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null') || [{id:1, name:'Tab 1'}];
-let _chromeActiveId = (_nativeTabs ? null : parseInt(localStorage.getItem('amux_chrome_active2'))) || _chromeTabs[0]?.id || 1;
+// THE TAB BAR BELONGS TO ITS BROWSER TAB (owner, 2026-11-13: "the tab
+// navigation is very screwed up"). The list and the open tab were in
+// localStorage, shared by every amux window and read once at load: a second
+// window opened on the first one's tabs, each window's saves overwrote the
+// other's, and both handed out the same new tab id. Each browser tab now keeps
+// its own bar in sessionStorage (it survives a reload and a discarded tab).
+// localStorage keeps a snapshot, addresses included, only so a browser tab
+// with no bar of its own (a new one, or a PWA iOS evicted) starts from the
+// tabs last used. A tab's iframe reads nothing and seeds nothing here.
+const _CHROME_STATE_KEY = 'amux_chrome_state';
+function _chromeLoad() {
+  const one = { tabs: [{id: 1, name: 'Tab 1'}], active: 1 };
+  if (_isInTab) return one;
+  try {
+    const s = JSON.parse(sessionStorage.getItem(_CHROME_STATE_KEY) || 'null');
+    if (s && Array.isArray(s.tabs) && s.tabs.length) return { tabs: s.tabs, active: s.active };
+  } catch (e) {}
+  let snap = null;
+  try { snap = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null'); } catch (e) {}
+  if (!Array.isArray(snap) || !snap.length) return one;
+  snap.slice(1).forEach(t => {
+    if (t && typeof t.hash === 'string' && t.hash.charAt(0) === '#') {
+      try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); } catch (e) {}
+    }
+  });
+  return { tabs: snap.map(t => ({ id: t.id, name: t.name || '' })), active: parseInt(localStorage.getItem('amux_chrome_active2')) };
+}
+const _chromeLoaded = _chromeLoad();
+let _chromeTabs = _chromeLoaded.tabs;
+let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromeTabs[0]?.id || 1;
+if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromeTabs[0].id;
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -43667,7 +43726,10 @@ function _chromeShowActive() {
     if (!iframe) {
       iframe = document.createElement('iframe');
       iframe.dataset.tabId = String(_chromeActiveId);
-      iframe.src = '/?_tab=1';
+      iframe.addEventListener('load', () => { iframe.dataset.loaded = '1'; });
+      const saved = _chromeTabSavedHash(_chromeActiveId);
+      iframe.src = '/?_tab=' + _chromeActiveId + saved;
+      amuxTrack('chrome_tab_rebuilt', {verdict: saved ? 'own_address' : 'no_saved_address', measured: true, n_considered: 1});
       fc.appendChild(iframe);
     }
     fc.querySelectorAll('iframe').forEach(f => f.classList.toggle('hidden', f.dataset.tabId !== String(_chromeActiveId)));
@@ -43789,11 +43851,47 @@ function _chromeAddTab() {
   _chromeSave();
 }
 
+// Where a tab is now: its iframe's own address once it has loaded, else the
+// one it saved (written within a second of every move). Not before its load
+// event: reading a just-inserted iframe's location in the same tick stalled
+// its script in Chromium about 1 load in 15 (the tab came up with no app).
+function _chromeTabLiveHash(id) {
+  const f = document.querySelector('#chrome-tab-frames iframe[data-tab-id="' + id + '"]');
+  if (f && f.dataset.loaded === '1') {
+    try { return f.contentWindow.location.hash || ''; } catch (e) {}
+  }
+  return _chromeTabSavedHash(id);
+}
+// The first tab is this page itself; every later tab is an iframe. Closing
+// the first tab made the next one first, and the bar showed it AS this page,
+// which still held the closed tab's worker (owner, 2026-11-13: "the next tab,
+// which replaces the now-closed tab, becomes the session of the tab I
+// closed"). The page now moves to that tab's own place and its iframe goes.
+function _chromePageGoTo(hash) {
+  try { if (peekSession) closePeek(); } catch (e) { console.warn('[tabs] could not close the closed tab\'s worker', e); }
+  if (hash) {
+    if (location.hash === hash) _handleDeeplink(hash); else location.hash = hash;
+  } else {
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+    switchView('sessions');
+  }
+}
 function _chromeCloseTab(id) {
   if (_chromeTabs.length <= 1) return;
   const idx = _chromeTabs.findIndex(t => t.id === id);
+  if (idx < 0) return;
   const fc = document.getElementById('chrome-tab-frames');
+  let moveTo = null;
+  if (idx === 0) {
+    const next = _chromeTabs[1];
+    moveTo = _chromeTabLiveHash(next.id);
+    if (fc) { const nf = fc.querySelector('iframe[data-tab-id="' + next.id + '"]'); if (nf) nf.remove(); }
+    try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + next.id); } catch (e) {}
+  }
   if (fc) { const iframe = fc.querySelector('iframe[data-tab-id="'+id+'"]'); if (iframe) iframe.remove(); }
+  try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + id); } catch (e) {}
+  amuxTrack('chrome_tab_closed', {verdict: idx === 0 ? 'first_tab_page_moved_to_next' : 'later_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
+  if (moveTo !== null) _chromePageGoTo(moveTo);
   _chromeTabs.splice(idx, 1);
   if (_chromeActiveId === id) {
     const ni = Math.min(idx, _chromeTabs.length - 1);
@@ -43803,11 +43901,29 @@ function _chromeCloseTab(id) {
   _chromeSave();
 }
 
+// The snapshot a browser tab with no bar of its own starts from.
+let _chromeSnapLast = '';
+function _chromeSnapshot() {
+  const snap = JSON.stringify(_chromeTabs.map((t, i) => ({ id: t.id, name: t.name || '', hash: i === 0 ? (location.hash || '') : _chromeTabLiveHash(t.id) })));
+  if (snap === _chromeSnapLast) return;
+  _chromeSnapLast = snap;
+  localStorage.setItem('amux_chrome_tabs2', snap);
+  localStorage.setItem('amux_chrome_active2', String(_chromeActiveId));
+}
 function _chromeSave() {
+  if (_isInTab) return;
   try {
-    localStorage.setItem('amux_chrome_tabs2', JSON.stringify(_chromeTabs));
-    localStorage.setItem('amux_chrome_active2', String(_chromeActiveId));
+    sessionStorage.setItem(_CHROME_STATE_KEY, JSON.stringify({ tabs: _chromeTabs, active: _chromeActiveId }));
+    _chromeSnapLast = '';
+    _chromeSnapshot();
   } catch(e) {}
+}
+// Addresses move without a save (a worker opened inside a tab), so the
+// snapshot follows them, written only when it changed, and when the page is
+// left; a window opened next starts on what each tab shows now.
+if (!_isInTab) {
+  window.addEventListener('pagehide', _chromeSave);
+  setInterval(() => { try { _chromeSnapshot(); } catch (e) {} }, 2000);
 }
 
 function switchView(view) {
@@ -56473,6 +56589,8 @@ loadBranding();
 
 // Initialize chrome tabs
 _chromeRender();
+// This browser tab owns its bar from its first load, so its reload reads its own.
+_chromeSave();
 _chromeUpdateOffsets();
 window.addEventListener('resize', _chromeUpdateOffsets);
 window.addEventListener('orientationchange', () => setTimeout(_chromeUpdateOffsets, 100));

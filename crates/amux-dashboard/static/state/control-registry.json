@@ -876,6 +876,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chromeCloseTab": {
+      "kind": "command._chromeCloseTab",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chromePageGoTo": {
+      "kind": "command._chromePageGoTo",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,
