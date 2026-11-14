@@ -158,6 +158,7 @@ pub mod ids {
     pub const CONTRACT_WATCH: &str = "contract-watch";
     pub const LAND_QUEUE: &str = "land-queue";
     pub const CONVERSE_RETENTION: &str = "converse-retention";
+    pub const MEMORY_DREAM: &str = "memory-dream";
 }
 
 /// Every id above, enumerated. `mod ids` is a set of constants and Rust cannot
@@ -234,6 +235,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::LAND_QUEUE,
     ids::CONVERSE_RETENTION,
     ids::WORKER_RESOURCES,
+    ids::MEMORY_DREAM,
 ];
 
 /// An env var this job reads at startup. It is a READOUT, never a switch: a
@@ -1060,6 +1062,25 @@ pub const CATALOG: &[Doc] = &[
         ],
         pref: None,
         detail: Some("/api/converse/config"),
+    },
+    Doc {
+        id: ids::MEMORY_DREAM,
+        name: "Memory curation",
+        purpose: "Asks a running worker to rewrite its own amux memory when the file is over AMUX_MEMORY_DREAM_KB, changed since the last ask, and the last ask is a week old. Every launch loads the whole memory and the only other write verb appends, so without this memory only grows. The worker saves with `amux memory curate --stdin`, which keeps the prior version under memory/.history.",
+        env: &[
+            EnvControl {
+                var: "AMUX_MEMORY_DREAM",
+                effect: "0 stops the asks (also settable per worker, group or global scope)",
+                off: Some("0"),
+            },
+            EnvControl {
+                var: "AMUX_MEMORY_DREAM_KB",
+                effect: "size in KB above which a worker is asked (default 12)",
+                off: None,
+            },
+        ],
+        pref: None,
+        detail: None,
     },
     Doc {
         id: ids::MODEL_CATALOG_REFRESH,

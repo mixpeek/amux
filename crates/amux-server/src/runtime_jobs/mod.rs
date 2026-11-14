@@ -65,6 +65,7 @@ pub mod converse_retention;
 pub mod contract_watch;
 pub mod land_queue;
 pub mod deploy_wake;
+pub mod memory_dream;
 pub mod disk_watch;
 pub mod decision_digest;
 pub mod directive;

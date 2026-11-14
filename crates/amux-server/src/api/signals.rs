@@ -1432,7 +1432,7 @@ async fn act(state: &AppState, sub: &mut LiveSub, event_id: Option<i64>, event_t
         super::event_subs::fill(&render_template(&sub.action_template, event_type, data), ev)
     };
     let outcome = match sub.action.as_str() {
-        "send" => execute_send_action(state, &sub.action_target, &send_sender(&sub.owner, &sub.action_target), &text).await,
+        "send" => execute_send_action(state, sub.id, &sub.action_target, &send_sender(&sub.owner, &sub.action_target), &text).await,
         "board" => execute_board_action(state, &sub.action_target, event_type, &text).await,
         "schedule" => execute_schedule_action(state, &sub.action_target).await,
         "shell" => execute_shell_action(&sub.action_target, &text).await,
@@ -1521,11 +1521,50 @@ pub(crate) fn send_sender(owner: &str, target: &str) -> String {
     }
 }
 
-async fn execute_send_action(state: &AppState, target: &str, sender: &str, text: &str) -> String {
+/// Fold a subscription's event into its message already waiting for `target`,
+/// so a worker that is busy (or between turns) gets ONE message listing every
+/// event, not one turn per event. Only a row this subscription queued and no
+/// delivery has claimed is extended; the claim re-checks the text, so a
+/// delivery holding the older snapshot retries with the merged one. Returns
+/// the row id it extended, or None when there is nothing to fold into.
+pub(crate) fn coalesce_signal_send(conn: &Connection, sub_id: i64, target: &str, text: &str) -> rusqlite::Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM steering_queue WHERE session=?1 AND id GLOB ?2 AND delivering_since IS NULL \
+             ORDER BY queued_at DESC LIMIT 1",
+            rusqlite::params![target, format!("signal-sub:{sub_id}:{target}:*")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(id) = id else { return Ok(None) };
+    let n = conn.execute(
+        "UPDATE steering_queue SET text = text || ?1 WHERE id=?2 AND delivering_since IS NULL",
+        rusqlite::params![format!("\n\n---\n\n{text}"), id],
+    )?;
+    Ok((n > 0).then_some(id))
+}
+
+async fn execute_send_action(state: &AppState, sub_id: i64, target: &str, sender: &str, text: &str) -> String {
     let home = crate::config::amux_home();
     let sessions_dir = home.join("sessions");
     if !sessions_dir.join(format!("{target}.env")).exists() {
         return format!("target_not_found:{target}");
+    }
+    let (t, body) = (target.to_string(), text.to_string());
+    let folded = state
+        .store
+        .write_async(move |conn| {
+            let id = coalesce_signal_send(conn, sub_id, &t, &body)?;
+            Ok(crate::db::WriteOutcome { applied: id.is_some(), events: vec![] })
+        })
+        .await
+        .map(|r| r.applied)
+        .unwrap_or(false);
+    if folded {
+        tracing::info!(target: "amux::signals", subscription_id = sub_id, session = target, measured = true, n_considered = 1,
+            verdict = "signal_send_coalesced", "folded the event into the message already waiting for this worker");
+        return "coalesced".to_string();
     }
     match crate::api::session_verbs::steer_enqueue_idempotent(
         state,
@@ -1533,7 +1572,7 @@ async fn execute_send_action(state: &AppState, target: &str, sender: &str, text:
         text,
         "signal-subscription",
         sender,
-        &format!("signal-sub:{}:{}", target, chrono::Utc::now().timestamp()),
+        &format!("signal-sub:{}:{}:{}", sub_id, target, chrono::Utc::now().timestamp_millis()),
     )
     .await
     {
@@ -1672,6 +1711,27 @@ pub(crate) mod tests {
     // times as worker_group_boundary: the send went out as "signal-dispatcher", a
     // name in no group. Run the real steering gate on what each kind of
     // subscription now sends as.
+    // The always-on agent's inbox batches: events that arrive while a worker
+    // is busy reach it as one message at its next turn, not one turn each.
+    // Live, 2026-11-14: subscription #10 sent amux 57 deploy wakes, each a turn.
+    #[test]
+    fn a_waiting_subscription_message_absorbs_the_next_event() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE steering_queue (id TEXT PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL, \
+            queued_at REAL NOT NULL, delivering_since REAL);
+            INSERT INTO steering_queue VALUES ('signal-sub:10:amux:1','amux','build A',1,NULL);
+            INSERT INTO steering_queue VALUES ('signal-sub:11:amux:1','amux','other sub',1,NULL);
+            INSERT INTO steering_queue VALUES ('signal-sub:10:w2:1','w2','build A',1,1.0);").unwrap();
+        let text = |id: &str| c.query_row("SELECT text FROM steering_queue WHERE id=?1", [id], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(coalesce_signal_send(&c, 10, "amux", "build B").unwrap().as_deref(), Some("signal-sub:10:amux:1"));
+        assert_eq!(coalesce_signal_send(&c, 10, "amux", "build C").unwrap().as_deref(), Some("signal-sub:10:amux:1"));
+        assert_eq!(text("signal-sub:10:amux:1"), "build A\n\n---\n\nbuild B\n\n---\n\nbuild C");
+        assert_eq!(text("signal-sub:11:amux:1"), "other sub", "another subscription's message is left alone");
+        assert_eq!(coalesce_signal_send(&c, 10, "w2", "build B").unwrap(), None,
+            "a message a delivery already claimed is never extended");
+        assert_eq!(coalesce_signal_send(&c, 10, "w3", "build B").unwrap(), None, "nothing waiting: enqueue fresh");
+    }
+
     #[test]
     fn a_subscription_send_speaks_as_its_owner() {
         for (owner, target) in [("owner", "w1"), ("", "w1"), ("gtm-engine", "gtm-engine")] {

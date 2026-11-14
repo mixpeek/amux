@@ -12707,10 +12707,11 @@ cmd_cdp() {
 
 # amux memory                       print your worker memory (the Memory tab)
 # amux memory add --stdin | <text>  append a note to it
+# amux memory curate --stdin         replace it with a curated rewrite (the prior is kept)
 # --worker NAME targets another worker (the owner's use).
 cmd_memory() {
   local sub="show" who="${AMUX_WORKER:-${AMUX_SESSION:-}}" text="" from_stdin=""
-  if [[ "${1:-}" == "add" || "${1:-}" == "show" ]]; then sub="$1"; shift; fi
+  if [[ "${1:-}" == "add" || "${1:-}" == "show" || "${1:-}" == "curate" ]]; then sub="$1"; shift; fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --worker) who="${2:-}"; shift 2 ;;
@@ -12722,6 +12723,7 @@ cmd_memory() {
   if [[ "$sub" == "help" ]]; then
     echo "Usage: amux memory [show] [--worker NAME]"
     echo "       amux memory add --stdin | <text> [--worker NAME]"
+    echo "       amux memory curate --stdin [--worker NAME]   replace it with a curated rewrite; the prior version is kept"
     echo "Your amux worker memory is what the owner sees in the Memory tab and what your next launch carries."
     return 0
   fi
@@ -12734,6 +12736,24 @@ cmd_memory() {
     return 0
   fi
   [[ -n "$from_stdin" ]] && text="$(cat)"
+  if [[ "$sub" == "curate" ]]; then
+    [[ -n "$from_stdin" && -n "${text//[[:space:]]/}" ]] || die "Usage: amux memory curate --stdin  (the whole curated memory on stdin)"
+    local cresp
+    cresp=$(TEXT="$text" python3 -c 'import json,os; print(json.dumps({"curate": os.environ["TEXT"]}))' \
+      | _curl -sk -X POST -H 'Content-Type: application/json' \
+          -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$url") || die "cannot reach the server to save $who's memory"
+    RESP="$cresp" WHO="$who" python3 - <<'PY3'
+import json, os, sys
+try:
+    d = json.loads(os.environ["RESP"])
+except Exception:
+    print("memory curate: unreadable response: " + os.environ["RESP"][:200], file=sys.stderr); sys.exit(1)
+if not d.get("curated"):
+    print("memory curate FAILED: " + str(d.get("error") or d), file=sys.stderr); sys.exit(1)
+print(f"curated {os.environ['WHO']}'s amux memory: {d['bytes_before']} -> {d['bytes']} bytes; the prior version is kept at {d['prior_kept']}")
+PY3
+    return
+  fi
   [[ -n "${text//[[:space:]]/}" ]] || die "Usage: amux memory add --stdin | <text>"
   # `content` is the same result spelled out for a server that predates
   # `append`, which would otherwise write an empty memory; a current server

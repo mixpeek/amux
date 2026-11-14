@@ -25286,13 +25286,19 @@ async fn steering_debug(State(state): State<AppState>) -> Response {
 /// caller can win this UPDATE for a given row -- a losing caller means
 /// someone else is already delivering it (or already has), which is
 /// contention, not a delivery refusal.
-async fn claim_steering_row(store: &crate::db::SharedStore, id: &str) -> bool {
-    let id = id.to_string();
+///
+/// The claim also requires the row's text to still be the `text` the caller
+/// read. A subscription send folds a new event into a queued row (signals.rs
+/// `coalesce_signal_send`); a delivery holding the older snapshot then loses
+/// the claim and the next pass delivers the merged text, so no folded event is
+/// typed short.
+async fn claim_steering_row(store: &crate::db::SharedStore, id: &str, text: &str) -> bool {
+    let (id, text) = (id.to_string(), text.to_string());
     store
         .write_async(move |conn| {
             let n = conn.execute(
-                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL",
-                rusqlite::params![now_f64(), id],
+                "UPDATE steering_queue SET delivering_since=?1 WHERE id=?2 AND delivering_since IS NULL AND text=?3",
+                rusqlite::params![now_f64(), id, text],
             )?;
             Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
         })
@@ -25310,7 +25316,7 @@ async fn send_claimed_steering(
     text: &str,
     mode: SendMode,
 ) -> Option<(bool, String)> {
-    if !claim_steering_row(&state.store, id).await {
+    if !claim_steering_row(&state.store, id, text).await {
         tracing::debug!(
             session,
             delivery_id = id,
@@ -31885,6 +31891,32 @@ pub(crate) fn memory_post_verb(name: &str, body: &Value) -> Response {
         // Falling through to `content` would replace the memory with "".
         return jresp(StatusCode::BAD_REQUEST, json!({"error": "append is empty"}));
     }
+    // `curate` is a whole rewrite by the worker (memory_dream.rs). The prior
+    // version is kept under memory/.history first, so a bad rewrite is one
+    // copy back, never a loss.
+    let curate = body.get("curate").and_then(Value::as_str);
+    if let Some(c) = curate {
+        if c.trim().is_empty() {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error": "curate is empty; a curated memory keeps something"}));
+        }
+        let prior = std::fs::read_to_string(&mf).unwrap_or_default();
+        let hist = memory_dir().join(".history");
+        let kept = hist.join(format!("{name}-{}.md", chrono::Utc::now().format("%Y%m%dT%H%M%S")));
+        if std::fs::create_dir_all(&hist).and_then(|_| std::fs::write(&kept, &prior)).is_err() {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not keep the prior memory, so nothing was changed"}));
+        }
+        let content = format!("{}\n", c.trim_end());
+        if std::fs::write(&mf, &content).is_err() {
+            return jresp(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": "could not write memory file"}));
+        }
+        let wd = session_work_dir(name);
+        if !wd.is_empty() {
+            write_claude_memory(name, &wd);
+        }
+        tracing::info!(session = %name, bytes_before = prior.len(), bytes_after = content.len(), kept = %kept.display(),
+            verdict = "worker_memory_curated", "memory: the worker rewrote its amux memory; the prior version is kept");
+        return j200(json!({"ok": true, "curated": true, "bytes_before": prior.len(), "bytes": content.len(), "prior_kept": kept.display().to_string()}));
+    }
     let content = match append {
         Some(note) => {
             let prior = std::fs::read_to_string(&mf).unwrap_or_default();
@@ -32832,7 +32864,8 @@ pub(crate) const MEMORY_VERB_CONTEXT: &str = "# Your worker memory\n\n\
 When the owner asks you to remember something, or to add it to this worker's memory, save it to \
 your amux worker memory: `amux memory add --stdin` (a heredoc keeps backticks literal). That is \
 what the owner sees in the Memory tab, and it reaches your next launch. `amux memory` prints it. \
-Claude Code's own memory directory is shared by every worker in this directory and the owner \
+When an entry goes stale, rewrite the whole memory with `amux memory curate --stdin`; the prior \
+version is kept. Claude Code's own memory directory is shared by every worker in this directory and the owner \
 does not see it in amux.";
 
 pub fn compose_worker_context(name: &str, isolated: bool) -> String {
@@ -44357,8 +44390,8 @@ mod tests {
             .unwrap();
 
         let (timer, hook) = tokio::join!(
-            claim_steering_row(&st.store, "c1"),
-            claim_steering_row(&st.store, "c1")
+            claim_steering_row(&st.store, "c1", "hello"),
+            claim_steering_row(&st.store, "c1", "hello")
         );
         assert_ne!(
             timer, hook,
@@ -44376,7 +44409,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            !claim_steering_row(&st.store, "c1").await,
+            !claim_steering_row(&st.store, "c1", "hello").await,
             "a second claim on an already-claimed row must affect nothing"
         );
         let stamp_after_second: f64 = st
@@ -44396,9 +44429,30 @@ mod tests {
 
         unclaim_steering_row(&st.store, "c1").await;
         assert!(
-            claim_steering_row(&st.store, "c1").await,
+            claim_steering_row(&st.store, "c1", "hello").await,
             "unclaiming (a refused send) must leave the row eligible for a fresh claim (AMUX-2629)"
         );
+    }
+
+    /// A subscription folds a new event into a waiting row (signals.rs
+    /// `coalesce_signal_send`). A delivery that read the row before the fold
+    /// must lose its claim, or it types the message short of the new event.
+    #[tokio::test]
+    async fn a_claim_on_a_row_whose_text_changed_since_it_was_read_fails() {
+        let (st, _dir) = state();
+        st.store
+            .write_async(|conn| {
+                conn.execute(
+                    "INSERT INTO steering_queue(id, session, text, queued_at) VALUES('c2','lane-c','build A',0)",
+                    [],
+                )?;
+                conn.execute("UPDATE steering_queue SET text = text || ' + build B' WHERE id='c2'", [])?;
+                Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        assert!(!claim_steering_row(&st.store, "c2", "build A").await, "the stale snapshot loses");
+        assert!(claim_steering_row(&st.store, "c2", "build A + build B").await, "the merged text delivers");
     }
 
     #[tokio::test]
@@ -56719,6 +56773,29 @@ mod commit_shape_tests {
     /// verb for its amux memory, and saved the rule where the Memory tab never
     /// shows it. `append` keeps what is there (the owner's text included), and
     /// every non-isolated launch names the verb.
+    /// A curated rewrite (memory_dream.rs) replaces the memory and keeps the
+    /// prior version under memory/.history; an empty rewrite changes nothing.
+    #[tokio::test]
+    async fn a_curated_memory_replaces_the_old_one_and_keeps_it() {
+        use axum::http::StatusCode;
+        use serde_json::json;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        std::fs::create_dir_all(h.join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(h);
+        std::fs::write(h.join("sessions/memcur.env"), "CC_DIR=\"\"\n").unwrap();
+        super::memory_post_verb("memcur", &json!({"content": "old a\nold b\nold a\n"}));
+
+        assert_eq!(super::memory_post_verb("memcur", &json!({"curate": "  \n"})).status(), StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(h.join("memory/memcur.md")).unwrap(), "old a\nold b\nold a\n");
+
+        assert!(super::memory_post_verb("memcur", &json!({"curate": "a and b\n\n"})).status().is_success());
+        assert_eq!(std::fs::read_to_string(h.join("memory/memcur.md")).unwrap(), "a and b\n");
+        let kept: Vec<_> = std::fs::read_dir(h.join("memory/.history")).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), "old a\nold b\nold a\n");
+    }
+
     #[tokio::test]
     async fn a_worker_appends_to_its_own_memory_and_its_launch_names_the_verb() {
         use axum::http::StatusCode;

@@ -574,6 +574,14 @@ async fn async_main() {
         api::email_intel::theme_refresh_loop,
     );
 
+    // Memory curation (memory_dream.rs): asks a worker whose memory grew past
+    // AMUX_MEMORY_DREAM_KB to rewrite it, at most weekly.
+    jobs::spawn_loop(
+        jobs::ids::MEMORY_DREAM,
+        Some(secs(runtime_jobs::memory_dream::TICK_SECS)),
+        { let state = state.clone(); move || runtime_jobs::memory_dream::dream_loop(state.clone()) },
+    );
+
     jobs::spawn_loop(
         jobs::ids::PIPE_RECONCILE,
         Some(secs(api::session_verbs::PIPE_RECONCILE_SECS)),
