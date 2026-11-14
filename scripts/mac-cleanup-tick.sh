@@ -3981,6 +3981,23 @@ test_binary_note() { # pid command-path
     echo " [cargo test binary, $thr threads, RUST_TEST_THREADS unset: one test thread per core (verdict=cpu_test_threads_unbounded)]"
   fi
 }
+# A worker's tools get OpenMP/BLAS caps from the CPU budget amux exports when
+# the worker STARTS (AMUX_WORKER_CPUS, 130e28713). A worker started before that
+# never got them, so a numpy/torch step it runs opens one thread per core.
+# CPU RCA 20261114-152714: mixpeek-research (running since Oct 29) served at
+# 1200-1700% with 55 busy threads and no OMP_NUM_THREADS. This names such a
+# process and says what applies the cap.
+thread_pool_note() { # pid pcpu command-path
+  case "$3" in */deps/*-[0-9a-f][0-9a-f][0-9a-f]*) return 0 ;; esac
+  [ "${2%%.*}" -ge "${AMUX_CLEANUP_POOL_NOTE_PCT:-400}" ] 2>/dev/null || return 0
+  local envs lane thr
+  envs=$(ps -E -o command= -p "$1" 2>/dev/null)
+  lane=$(printf '%s' "$envs" | grep -o 'AMUX_SESSION=[^ ]*' | head -1); lane=${lane#AMUX_SESSION=}
+  [ -n "$lane" ] || return 0
+  case "$envs" in *OMP_NUM_THREADS=*) return 0 ;; esac
+  thr=$(ps -M -p "$1" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+  echo " [$thr threads, worker $lane has no OMP_NUM_THREADS: it started before its CPU budget; restart the worker or set the cap on the command (verdict=cpu_thread_pools_unbounded)]"
+}
 escalated=0
 if [ -z "$verdicts" ]; then
   echo "mac-cleanup: constraints none"
@@ -4000,7 +4017,7 @@ else
       echo "- $mem pid=$pid $cmd — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")"; done
     echo; echo "## Top CPU (with owner)"
     ps -Ao pid=,pcpu=,comm= 2>/dev/null | sort -k2 -rn | head -10 | while read -r pid cpu cmd; do
-      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")"; done
+      echo "- ${cpu}% pid=$pid $(basename "$cmd") — $(owner_label_for_pid "$pid"), lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")$(thread_pool_note "$pid" "$cpu" "$cmd")"; done
     if printf '%s\n' "$verdicts" | grep -q '^disk '; then
       echo; echo "## Files over 500M written in the last hour (the writers)"
       # Open files first: wherever they live, and only seconds of the budget.

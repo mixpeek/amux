@@ -90,7 +90,26 @@ check "an uncapped test binary is named, with its thread count" \
 check "a capped one says its cap and no verdict" "$(note "$bin" RUST_TEST_THREADS=4)" " [cargo test binary, 28 threads, RUST_TEST_THREADS=4]"
 check "any other process gets no note" "$(note /Users/x/.local/bin/amux-server-rs)" ""
 check "the RCA bundle's top-CPU lines carry the note" \
-  "$(grep -c 'lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")"; done' scripts/mac-cleanup-tick.sh)" 1
+  "$(grep -c 'lane: $(lane_for_pid "$pid" "$pmap")$(test_binary_note "$pid" "$cmd")$(thread_pool_note "$pid" "$cpu" "$cmd")"; done' scripts/mac-cleanup-tick.sh)" 1
+
+# C. CPU RCA 20261114-152714: a busy worker process with no OpenMP cap.
+sed -n '/^thread_pool_note() {/,/^}/p' scripts/mac-cleanup-tick.sh > "$T/pool.sh"
+[ -s "$T/pool.sh" ] || { echo "  FAIL could not find thread_pool_note in mac-cleanup-tick.sh"; exit 1; }
+cat > "$T/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  -M) echo "USER PID TT %CPU"; for i in $(seq 55); do echo "ethan 1 s 1.0"; done ;;
+  -E) echo "/usr/local/bin/python3 live18.py HOME=/Users/x ${STUB_ENV:-}" ;;
+esac
+EOF
+pool() { PATH="$T/bin:$PATH" STUB_ENV="${3:-}" bash -c 'source "$0"; thread_pool_note 4242 "$1" "$2"' "$T/pool.sh" "$1" "$2"; }
+py=/usr/local/bin/python3
+check "a busy worker process with no OpenMP cap is named, with its worker" \
+  "$(pool 1733.6 $py AMUX_SESSION=mixpeek-research | grep -c '55 threads, worker mixpeek-research has no OMP_NUM_THREADS.*(verdict=cpu_thread_pools_unbounded)')" 1
+check "a capped one gets no note" "$(pool 1733.6 $py 'AMUX_SESSION=w OMP_NUM_THREADS=4')" ""
+check "a process under the CPU floor gets no note" "$(pool 120.0 $py AMUX_SESSION=w)" ""
+check "a process no worker started gets no note" "$(pool 1733.6 $py)" ""
+check "a test binary is left to its own note" "$(pool 1733.6 "$bin" AMUX_SESSION=w)" ""
 
 if [ "$fails" -gt 0 ]; then echo "test-threads-cap: $fails check(s) FAILED"; exit 1; fi
 echo "test-threads-cap: all checks passed"
