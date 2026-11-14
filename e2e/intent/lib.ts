@@ -31,6 +31,7 @@ export async function openHome(page: Page) {
   await page.goto('/');
   await expect(page.locator('#home-view')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('#tab-home')).toBeVisible();
+  await expect(page.locator('#tab-home .tab-lbl'), 'the tab is named Intent').toHaveText('Intent');
   await expect(page.locator('#tab-home')).toHaveClass(/active/);
   await expect(page.locator('#tab-everything')).toBeVisible();
   await expect(page.locator('#tab-ideas, #tab-goals, #ideas-view, #goals-view'), 'one tab: Ideas and Goals are sections of Chat').toHaveCount(0);

@@ -12912,7 +12912,7 @@ function _homeCardOutcomes(name) {
   const list = _homeOutcomeIndex.by[name] || [];
   if (!list.length) return '';
   const names = list.slice(0, 3).map(o => o.title).join(' · ');
-  return '<div class="card-outcomes" title="Conversations from Chat routed to this worker">From Chat: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
+  return '<div class="card-outcomes" title="Conversations from Intent routed to this worker">From Intent: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
 }
 // The conversations from Chat routed to this worker, at the top of its
 // Messages tab: conversations are organized by conversation, and a worker
@@ -12925,7 +12925,7 @@ async function _peekConvsLoad() {
   try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] conversations for the worker view did not load', e); }
   if (peekSession !== who) return;
   const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
-  el.innerHTML = !mine.length ? '' : '<div class="peek-msg-convs-head">Conversations from Chat</div><div class="home-list">'
+  el.innerHTML = !mine.length ? '' : '<div class="peek-msg-convs-head">Conversations from Intent</div><div class="home-list">'
     + mine.slice(0, 8).map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
       + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title) + '</span><span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
       + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
