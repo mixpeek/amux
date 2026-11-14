@@ -24,8 +24,12 @@ test('a #view= deep link is not replaced by the last peek another window saved',
     await expect(page.locator('#peek-overlay')).not.toHaveClass(/active/);
   }
 
-  // Without a deep link the restore still reopens the saved peek.
-  await page.goto('about:blank');
-  await page.goto('/');
-  await expect.poll(() => page.evaluate('peekSession'), {timeout: 8000}).toBe('otherwin');
+  // Without a deep link a NEW tab (or a PWA iOS evicted: no sessionStorage)
+  // still reopens the saved peek. This tab has its own state by now, so it
+  // keeps that (tab-keeps-its-own-state.spec.ts).
+  const fresh = await page.context().newPage();
+  await fresh.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({json: [{name: 'otherwin', running: true, status: 'idle', dir: '/tmp'}]}));
+  await fresh.goto('/');
+  await expect.poll(() => fresh.evaluate('peekSession'), {timeout: 8000}).toBe('otherwin');
+  await fresh.close();
 });
