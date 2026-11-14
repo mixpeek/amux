@@ -93,7 +93,9 @@ test('Describe what you want starts a planned worker from one box, with remember
   expect(body.desc).toBe('Ships a dark mode toggle in settings.');
   expect(body.dir).toBe('/tmp/outcome-e2e');
   expect(body.tags).toEqual(['ui-work']);
-  expect(body.isolated).toBe(true);
+  // Not isolated unless asked (885c7418f, docs/design/intent-first.md):
+  // the dialog sends no isolated flag for a default start.
+  expect(body.isolated).toBeUndefined();
   expect(body.prompt.startsWith('Add a dark mode toggle to settings and ship it Constraints: Do not spend money')).toBe(true);
   expect(body.prompt).not.toContain('/goal');
   expect(body.prompt).not.toContain('\n');
@@ -138,6 +140,7 @@ test('Describe what you want starts a planned worker from one box, with remember
   expect(planned.files[0]).toMatch(/memo\.m4a$/);
   const gtm = creates[2];
   expect(gtm.name).toBe('gtm-crm');
+  expect(gtm.isolated).toBe(true);   // remembered as on, so asked for
   expect(gtm.dir).toBe('/home/u/amux-GTM/gtm');
   expect(gtm.tags).toEqual(['gtm']);
   expect(gtm.prompt).toContain('/up/memo.m4a.transcript.txt');
