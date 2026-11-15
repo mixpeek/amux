@@ -1078,12 +1078,52 @@ async fn approve_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     Json(json!({"ok": true})).into_response()
 }
 
-/// The fingerprint of what a goal watches: the calendar for the next 30
-/// days and the mail its sources point at. Same inputs, same fingerprint.
+/// The words of a goal that decide what it watches: its title's words, less
+/// the ones that would match anything ("keep", "track").
+pub(crate) fn goal_words(title: &str) -> Vec<String> {
+    const VAGUE: &[&str] = &["keep", "track", "make", "sure", "stay", "every", "goal", "help", "need", "want",
+        "about", "what", "when", "them", "they", "into", "over", "week", "weekly", "daily", "things"];
+    let mut out: Vec<String> = Vec::new();
+    for w in fingerprint(title).split('-').filter(|w| w.len() > 3 && !VAGUE.contains(w)) {
+        if !out.iter().any(|o| o == w) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// The events and mail that mention one of the goal's words. A plural or
+/// singular form counts ("dinner" matches "dinners").
+pub(crate) fn goal_relevant(words: &[String], srcs: &[Src]) -> Vec<Src> {
+    srcs.iter()
+        .filter(|s| {
+            let text = s.text.to_lowercase();
+            text.split(|c: char| !c.is_alphanumeric()).any(|t| {
+                words.iter().any(|w| t == w || t.strip_suffix('s') == Some(w.as_str()) || w.strip_suffix('s') == Some(t))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// What a goal's check watches: the events and mail that mention it, or all
+/// of them when the goal names nothing specific.
+pub(crate) fn goal_watched(words: &[String], events: Vec<Src>, mail: Vec<Src>) -> (Vec<Src>, Vec<Src>) {
+    if words.is_empty() {
+        return (events, mail);
+    }
+    (goal_relevant(words, &events), goal_relevant(words, &mail))
+}
+
+/// The fingerprint of what a goal watches: the events and mail that mention
+/// it, in any order. Same inputs, same fingerprint.
 pub(crate) fn inputs_fingerprint(events: &[Src], mail: &[Src]) -> String {
     use std::hash::{Hash, Hasher};
+    let mut all: Vec<&Src> = events.iter().chain(mail.iter()).collect();
+    all.sort_by(|a, b| a.id.cmp(&b.id));
+    all.dedup_by(|a, b| a.id == b.id);
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for s in events.iter().chain(mail.iter()) {
+    for s in all {
         s.id.hash(&mut h);
         s.text.hash(&mut h);
     }
@@ -1097,15 +1137,40 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     if g["status"] != "active" {
         return Json(json!({"ok": true, "skipped": true, "why": "the goal is not active", "measured": true, "n_considered": 0})).into_response();
     }
-    let events = calendar_sources(&state, 30);
-    let words: Vec<String> = fingerprint(g["title"].as_str().unwrap_or("")).split('-').filter(|w| w.len() > 3).take(3).map(str::to_string).collect();
-    let (mail, mail_measured) = mail_sources(&words, 10).await;
+    // The title's words first (they lead the Gmail queries), then the body's.
+    let mut words = goal_words(g["title"].as_str().unwrap_or(""));
+    for w in goal_words(g["body"].as_str().unwrap_or("")) {
+        if !words.contains(&w) {
+            words.push(w);
+        }
+    }
+    let queries: Vec<String> = words.iter().take(3).cloned().collect();
+    let (mail, mail_measured) = mail_sources(&queries, 10).await;
+    let all_events = calendar_sources(&state, 30);
+    let scanned = all_events.len() + mail.len();
+    if !mail_measured {
+        // A mail read that failed returns a shorter list; comparing it would
+        // fire once on the drop and again when mail comes back.
+        tracing::info!(goal = %id, measured = false, n_considered = scanned, verdict = "intent_goal_unmeasured",
+            "intent: a goal's mail could not be read; its check is skipped, nothing stored");
+        return Json(json!({"ok": true, "changed": false, "measured": false, "why_unmeasured": "the mail read failed or no mailbox is connected",
+            "n_considered": scanned, "mail_measured": false})).into_response();
+    }
+    // A goal with no specific words ("Stay on track every week") watches
+    // everything, as before, and says so, rather than going quiet for good.
+    if words.is_empty() {
+        tracing::info!(goal = %id, measured = true, n_considered = scanned, verdict = "intent_goal_no_words",
+            "intent: a goal's title and body name nothing specific; its check watches all events and mail");
+    }
+    let (events, mail) = goal_watched(&words, all_events, mail);
     let fp = inputs_fingerprint(&events, &mail);
     let key = format!("intent_goal_fp_{id}");
     let prev: Option<String> = state.store.read().ok().and_then(|c| c.query_row("SELECT value FROM prefs WHERE key=?1", [&key], |r| r.get(0)).ok());
     let n = events.len() + mail.len();
     if prev.as_deref() == Some(fp.as_str()) {
-        return Json(json!({"ok": true, "changed": false, "measured": true, "n_considered": n, "mail_measured": mail_measured})).into_response();
+        tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_unchanged",
+            "intent: nothing a goal watches changed; no worker turn");
+        return Json(json!({"ok": true, "changed": false, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
     }
     let fp2 = fp.clone();
     logged("store write", state.store.write_async(move |c| {
@@ -1119,9 +1184,9 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    tracing::info!(goal = %id, delivered, measured = true, n_considered = n, verdict = "intent_goal_changed",
+    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_changed",
         "intent: a goal's inputs changed; its worker was asked to update it");
-    Json(json!({"ok": true, "changed": true, "delivered": delivered, "measured": true, "n_considered": n, "mail_measured": mail_measured})).into_response()
+    Json(json!({"ok": true, "changed": true, "delivered": delivered, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
 
 #[cfg(test)]
@@ -1278,6 +1343,30 @@ mod tests {
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
         assert_ne!(fp, inputs_fingerprint(&b[2..], &b[1..2]));
+    }
+
+    #[test]
+    fn a_goal_watches_only_what_mentions_it() {
+        let words = super::goal_words("Keep my marathon training on track");
+        assert_eq!(words, vec!["marathon".to_string(), "training".to_string()]);
+        let src = |id: &str, text: &str| Src { id: id.into(), kind: "email", text: text.into(), when: String::new() };
+        let mail = vec![src("e:1", "From coach | Training plan for May"), src("e:2", "From shop | Your order shipped"),
+            src("e:3", "From race | Marathons near you")];
+        let rel = super::goal_relevant(&words, &mail);
+        assert_eq!(rel.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["e:1", "e:3"]);
+        // Unrelated mail arriving, or the same mail in another order, leaves the fingerprint alone.
+        let fp = inputs_fingerprint(&[], &rel);
+        let mut more = vec![src("e:4", "From bank | Statement ready")];
+        more.extend(mail.iter().rev().cloned());
+        assert_eq!(fp, inputs_fingerprint(&[], &super::goal_relevant(&words, &more)));
+        // Relevant mail arriving moves it.
+        more.push(src("e:5", "From coach | Training moved to 7am"));
+        assert_ne!(fp, inputs_fingerprint(&[], &super::goal_relevant(&words, &more)));
+        // A goal that names nothing specific watches everything rather than nothing.
+        let vague = super::goal_words("Stay on track every week");
+        assert!(vague.is_empty());
+        assert_eq!(super::goal_watched(&vague, vec![], mail.clone()).1.len(), 3);
+        assert_eq!(super::goal_watched(&words, vec![], mail.clone()).1.len(), 2);
     }
 
     #[test]
