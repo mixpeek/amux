@@ -1128,19 +1128,36 @@ pub(crate) fn goal_watched(words: &[String], events: Vec<Src>, mail: Vec<Src>) -
     (goal_relevant(words, &events), goal_relevant(words, &mail))
 }
 
-/// The fingerprint of what a goal watches: the events and mail that mention
-/// it, in any order. Same inputs, same fingerprint.
-pub(crate) fn inputs_fingerprint(events: &[Src], mail: &[Src]) -> String {
+/// One key per event or email a goal watches, from its id and text: a new
+/// item, or an edit to one, is a new key. Sorted and without repeats.
+pub(crate) fn watched_keys(events: &[Src], mail: &[Src]) -> Vec<String> {
     use std::hash::{Hash, Hasher};
-    let mut all: Vec<&Src> = events.iter().chain(mail.iter()).collect();
-    all.sort_by(|a, b| a.id.cmp(&b.id));
-    all.dedup_by(|a, b| a.id == b.id);
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    for s in all {
-        s.id.hash(&mut h);
-        s.text.hash(&mut h);
-    }
-    format!("{:016x}", h.finish())
+    let mut keys: Vec<String> = events
+        .iter()
+        .chain(mail.iter())
+        .map(|s| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.id.hash(&mut h);
+            s.text.hash(&mut h);
+            format!("{:016x}", h.finish())
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// The keys stored by the last check, or None when there are none in this
+/// form (a new goal, or one stored as a single fingerprint before 11-15).
+pub(crate) fn stored_keys(prev: Option<&str>) -> Option<BTreeSet<String>> {
+    let rest = prev?.strip_prefix("items:")?;
+    Some(rest.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect())
+}
+
+/// How many of `cur` the last check had not seen. An item that left the
+/// window (an email older than a week, an event that passed) is no news.
+pub(crate) fn new_keys(prev: &BTreeSet<String>, cur: &[String]) -> usize {
+    cur.iter().filter(|k| !prev.contains(*k)).count()
 }
 
 /// The scheduled check. Cheap when nothing changed: no model call, no worker
@@ -1176,20 +1193,34 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
             "intent: a goal's title and body name nothing specific; its check watches all events and mail");
     }
     let (events, mail) = goal_watched(&words, all_events, mail);
-    let fp = inputs_fingerprint(&events, &mail);
+    let keys = watched_keys(&events, &mail);
+    let stored = format!("items:{}", keys.join(","));
     let key = format!("intent_goal_fp_{id}");
     let prev: Option<String> = state.store.read().ok().and_then(|c| c.query_row("SELECT value FROM prefs WHERE key=?1", [&key], |r| r.get(0)).ok());
-    let n = events.len() + mail.len();
-    if prev.as_deref() == Some(fp.as_str()) {
-        tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_unchanged",
-            "intent: nothing a goal watches changed; no worker turn");
-        return Json(json!({"ok": true, "changed": false, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
+    let n = keys.len();
+    let seen = stored_keys(prev.as_deref());
+    let fresh = seen.as_ref().map(|p| new_keys(p, &keys));
+    if prev.as_deref() != Some(stored.as_str()) {
+        logged("store write", state.store.write_async(move |c| {
+            c.execute("INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, stored])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await);
     }
-    let fp2 = fp.clone();
-    logged("store write", state.store.write_async(move |c| {
-        c.execute("INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, fp2])?;
-        Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
-    }).await);
+    match fresh {
+        None => {
+            // Nothing stored in this form yet: remember what is there now. A
+            // new goal's worker already has its brief, so this wakes no one.
+            tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_seeded",
+                "intent: a goal's check stored what it watches; no worker turn");
+            return Json(json!({"ok": true, "changed": false, "seeded": true, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
+        }
+        Some(0) => {
+            tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_unchanged",
+                "intent: nothing new mentions a goal; no worker turn");
+            return Json(json!({"ok": true, "changed": false, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
+        }
+        Some(_) => {}
+    }
     let mut delivered = false;
     if let Some(oid) = goal_outcome(&state, &id).as_deref() {
         delivered = super::intent_store::start_outcome(&state,
@@ -1197,9 +1228,9 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, verdict = "intent_goal_changed",
-        "intent: a goal's inputs changed; its worker was asked to update it");
-    Json(json!({"ok": true, "changed": true, "delivered": delivered, "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
+    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), verdict = "intent_goal_changed",
+        "intent: something new mentions a goal; its worker was asked to update it");
+    Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
 
 #[cfg(test)]
@@ -1349,13 +1380,23 @@ mod tests {
     }
 
     #[test]
-    fn the_check_fingerprint_moves_only_with_its_inputs() {
+    fn a_check_wakes_only_for_something_new() {
+        use super::{new_keys, stored_keys, watched_keys};
         let a = srcs();
-        let fp = inputs_fingerprint(&a[2..], &a[1..2]);
-        assert_eq!(fp, inputs_fingerprint(&a[2..], &a[1..2]));
+        let keys = watched_keys(&a[2..], &a[1..2]);
+        let stored = format!("items:{}", keys.join(","));
+        let prev = stored_keys(Some(&stored)).expect("stored keys read back");
+        assert_eq!(new_keys(&prev, &watched_keys(&a[2..], &a[1..2])), 0, "the same inputs");
+        // An item leaving the window is no news.
+        assert_eq!(new_keys(&prev, &watched_keys(&a[3..], &a[1..2])), 0, "an item left");
+        // An edit to one is.
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
-        assert_ne!(fp, inputs_fingerprint(&b[2..], &b[1..2]));
+        assert_eq!(new_keys(&prev, &watched_keys(&b[2..], &b[1..2])), 1, "an item changed");
+        // A fingerprint from before 11-15, or none, reads as nothing stored.
+        assert_eq!(stored_keys(Some("0123456789abcdef")), None);
+        assert_eq!(stored_keys(None), None);
+        assert_eq!(stored_keys(Some("items:")).map(|s| s.len()), Some(0));
     }
 
     #[test]
@@ -1373,14 +1414,14 @@ mod tests {
             src("e:3", "From race | Marathons near you")];
         let rel = super::goal_relevant(&words, &mail);
         assert_eq!(rel.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["e:1", "e:3"]);
-        // Unrelated mail arriving, or the same mail in another order, leaves the fingerprint alone.
-        let fp = inputs_fingerprint(&[], &rel);
+        // Unrelated mail arriving, or the same mail in another order, is nothing new.
+        let prev: std::collections::BTreeSet<String> = super::watched_keys(&[], &rel).into_iter().collect();
         let mut more = vec![src("e:4", "From bank | Statement ready")];
         more.extend(mail.iter().rev().cloned());
-        assert_eq!(fp, inputs_fingerprint(&[], &super::goal_relevant(&words, &more)));
-        // Relevant mail arriving moves it.
+        assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 0);
+        // Relevant mail arriving is.
         more.push(src("e:5", "From coach | Training moved to 7am"));
-        assert_ne!(fp, inputs_fingerprint(&[], &super::goal_relevant(&words, &more)));
+        assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 1);
         // A goal that names nothing specific watches everything rather than nothing.
         let vague = super::goal_words("Stay on track every week");
         assert!(vague.is_empty());
