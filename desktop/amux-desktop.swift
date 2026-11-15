@@ -405,6 +405,10 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     var lastMemoryReload = Date.distantPast
     /// The footprint the guard reloaded this page at; 0 once the result is logged.
     var memoryReloadFromMB = 0
+    /// The limit the last memory reload was measured against (hidden or shown).
+    var memoryReloadLimitMB = 0
+    /// When the guard last logged that it left an over-limit shown page alone for typing.
+    var memoryInUseLogged = Date.distantPast
     // The last amux page this window showed, kept while it shows the connect page.
     var lastServerURL: URL?
 
@@ -1416,6 +1420,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // tab_reload_did_not_free when the page is still over the limit).
     func guardTabMemory() {
         let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
+        // A page on screen had no bound at all: the memory RCA of 2026-11-15
+        // found two worker terminals shown side by side in a pane grid at 13.4
+        // and 6.9 GB (one growing 0.9 GB in 10 minutes), never touched because
+        // only hidden pages were reloaded. Over this much a shown page gets the
+        // same fresh process, unless the person is typing in it. 0 turns it off.
+        let shownLimit = Int(envSeconds("AMUX_DESKTOP_SHOWN_TAB_MB_LIMIT", 6144))
+        let cooldown = envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600)
         let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
         let now = Date()
         for c in controllers {
@@ -1425,24 +1436,38 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             // would have said so.
             if c.memoryReloadFromMB > 0, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60),
                let pid = webPID(c), let after = footprintMB(pid) {
-                let verdict = after > limit ? "tab_reload_did_not_free" : "tab_reload_freed"
-                dlog("verdict=\(verdict) before_mb=\(c.memoryReloadFromMB) after_mb=\(after) limit=\(limit) view=\(c.viewHash)")
+                let was = c.memoryReloadLimitMB > 0 ? c.memoryReloadLimitMB : limit
+                let verdict = after > was ? "tab_reload_did_not_free" : "tab_reload_freed"
+                dlog("verdict=\(verdict) before_mb=\(c.memoryReloadFromMB) after_mb=\(after) limit=\(was) view=\(c.viewHash)")
                 beaconFrom(c, ["kind": "desktop-tab-reload-result", "verdict": verdict, "measured": true, "n_considered": 1,
-                               "before_mb": c.memoryReloadFromMB, "after_mb": after, "limit_mb": limit, "view": c.viewHash])
+                               "before_mb": c.memoryReloadFromMB, "after_mb": after, "limit_mb": was, "view": c.viewHash])
                 c.memoryReloadFromMB = 0
             }
-            if isShown(c) { c.lastShown = now; continue }
+            let shown = isShown(c)
+            if shown { c.lastShown = now }
             let hidden = now.timeIntervalSince(c.lastShown)
+            let over = shown ? shownLimit : limit
             // At most one reload per page per cooldown: a page that grows straight
             // back is a leak to find (its view is in the log), not one to churn.
-            guard hidden >= grace, now.timeIntervalSince(c.lastMemoryReload) >= envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600),
-                  let pid = webPID(c), let mb = footprintMB(pid), mb > limit,
+            guard (shown ? shownLimit > 0 : hidden >= grace), now.timeIntervalSince(c.lastMemoryReload) >= cooldown,
+                  let pid = webPID(c), let mb = footprintMB(pid), mb > over,
                   let url = c.webView.url, isServerURL(url) else { continue }
+            // Typing defers the reload to the next tick the person is not typing,
+            // without starting a cooldown; the log line has its own once-per-cooldown clock.
+            if shown, isTyping(c) {
+                if now.timeIntervalSince(c.memoryInUseLogged) >= cooldown {
+                    c.memoryInUseLogged = now
+                    dlog("verdict=shown_tab_over_limit_in_use mb=\(mb) limit=\(over) view=\(c.viewHash)")
+                }
+                continue
+            }
             c.lastMemoryReload = now
             c.memoryReloadFromMB = mb
-            dlog("verdict=tab_reloaded_for_memory mb=\(mb) limit=\(limit) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
-            beaconFrom(c, ["kind": "desktop-tab-reloaded", "verdict": "tab_reloaded_for_memory", "measured": true,
-                           "n_considered": 1, "mb": mb, "limit_mb": limit, "hidden_s": Int(hidden), "view": c.viewHash])
+            c.memoryReloadLimitMB = over
+            let verdict = shown ? "shown_tab_reloaded_for_memory" : "tab_reloaded_for_memory"
+            dlog("verdict=\(verdict) mb=\(mb) limit=\(over) hidden_s=\(Int(hidden)) view=\(c.viewHash)")
+            beaconFrom(c, ["kind": "desktop-tab-reloaded", "verdict": verdict, "measured": true, "shown": shown,
+                           "n_considered": 1, "mb": mb, "limit_mb": over, "hidden_s": Int(hidden), "view": c.viewHash])
             // The saved URL carries what the page had open (a file, a drawing, a
             // worker's tab); the web view's own URL may have dropped that hash.
             let target = c.savedURL().flatMap { URL(string: $0) } ?? url
@@ -1463,6 +1488,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             }
             c.webView.load(URLRequest(url: target))
         }
+    }
+
+    /// Whether the person is working in this page now: its window is the key
+    /// window and the keyboard focus is inside its web view.
+    func isTyping(_ c: DashboardWindowController) -> Bool {
+        guard let w = c.webView.window, w.isKeyWindow, let r = w.firstResponder as? NSView else { return false }
+        return r === c.webView || r.isDescendant(of: c.webView)
     }
 
     /// Post a client-debug beacon through any amux page but `c` (a page about to
