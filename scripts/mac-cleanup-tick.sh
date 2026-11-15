@@ -2793,6 +2793,13 @@ for r in out[:3]:
 # 233G down to 206G (13.3 G/h, "full in 15.5h" off the pre-prune 206.2G) while
 # the same run had just pruned 21.9G and the disk read 228.4G. The writer was
 # real and bounded: the hourly prune takes back what it builds, a sawtooth.
+# The fit uses the newest FIT_H (2h) of the history; the history the tick asks
+# for is NET_H (8h) long, and the burn is also capped at the net loss over all
+# of it. Disk RCA 20261115-032743: a VM database's write-and-trim cycle (the
+# ipcheck-standalone guest, bounded by its 120G disk) handed back 35G at
+# 01:27, so the 2h window from there read 18.3G/h, "full in 22h", while free
+# was 406.9G at 19:16 and 404.2G at 03:31. A disk that holds level over 8h is
+# not filling, and the 2h fit still sees a burn that is.
 burn_from_history() { # <history json on stdin> <min_gbh> [now_ts now_free_gb]
   python3 -c '
 import json,sys
@@ -2801,6 +2808,10 @@ try:
     d=json.load(sys.stdin); rows=[(r["ts"],r["disk_free_gb"]) for r in d.get("samples",[]) if r.get("measured") and r.get("disk_free_gb") is not None]
 except Exception:
     rows=[]
+fit_h=float(sys.argv[4]) if len(sys.argv)>4 and sys.argv[4] else 2.0
+long_rows=list(rows)
+if rows:
+    newest=max(r[0] for r in rows); rows=[r for r in rows if newest-r[0]<=fit_h*3600+60]
 hn=len(rows); ran="-"
 try:
     nt,nf=float(sys.argv[2]),float(sys.argv[3])
@@ -2814,9 +2825,14 @@ xs=[(t-rows[0][0])/3600 for t,_ in rows]; ys=[f for _,f in rows]
 mx=sum(xs)/n; my=sum(ys)/n
 slope=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/max(1e-9,sum((x-mx)**2 for x in xs))
 o=sorted(zip(xs,ys)); net=(o[0][1]-o[-1][1])/max(1e-9,o[-1][0]-o[0][0])
+lo=sorted(long_rows+rows[len(rows)-1:] if ran=="run" else long_rows)
+capped="-"; lspan=(lo[-1][0]-lo[0][0])/3600
+if lspan>span+0.5:
+    lnet=(lo[0][1]-lo[-1][1])/max(1e-9,lspan)
+    if lnet<min(-slope,net): net=lnet; capped="%.1f"%lspan
 burn=min(-slope,net); last=ys[-1] if xs[-1]==max(xs) else ys[xs.index(max(xs))]
-print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), hn, "%.1f"%span, ran)
-' "$1" "${2:-}" "${3:-}" 2>/dev/null || echo "- - 0 0.0"
+print(("%.1f -" if burn<m else "%.1f %.1f")%((burn,) if burn<m else (burn,last/burn)), hn, "%.1f"%span, ran, capped)
+' "$1" "${2:-}" "${3:-}" "${BURN_FIT_H:-2}" 2>/dev/null || echo "- - 0 0.0"
 }
 
 # Read a key from the state file; empty if absent.
@@ -3903,12 +3919,13 @@ ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 0)
 STATE="$STATE_DIR/state"
 prev_ts=$(state_get "$STATE" last_ts); prev_free=$(state_get "$STATE" last_disk_free_gb)
 prev_swt=$(state_get "$STATE" last_swap_total_mb || true)   # read before this run's state write below
-HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=2}
-read -r burn htf hist_n hist_span hist_run <<EOF
+HISTORY_CMD=${AMUX_CLEANUP_HISTORY_CMD:-curl -sk --max-time 15 $(amux url 2>/dev/null || echo https://localhost:8824)/api/metrics/host/history?since_h=${BURN_NET_H:-8}}
+read -r burn htf hist_n hist_span hist_run hist_net <<EOF
 $($HISTORY_CMD 2>/dev/null | burn_from_history "$BURN_MIN_GBH" "$(date +%s)" "$disk_now")
 EOF
 burn_src="history ${hist_n} samples over ${hist_span}h"
 [ "${hist_run:-}" = "run" ] && burn_src="$burn_src + this run's post-cleanup ${disk_now}G"
+case "${hist_net:--}" in -) ;; *) burn_src="$burn_src, capped at the net loss over ${hist_net}h (verdict=disk_burn_capped_by_net)" ;; esac
 if [ "$htf" = "-" ] && [ "$burn" = "-" ]; then
 read -r burn htf <<EOF
 $(disk_trend "${prev_ts:-0}" "${prev_free:-0}" "$now" "$disk_now" "$BURN_MIN_GBH")

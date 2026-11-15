@@ -75,6 +75,22 @@ check "an unmeasured run reading (-1) is not appended"    "-"    "$(sawtooth | b
 check "a run reading older than the history is not appended" "-" "$(sawtooth | burn_from_history 1 9000 228.4 | awk '{print $5}')"
 check "a run reading hours after the history is not appended" "-" "$(sawtooth | burn_from_history 1 99999 228.4 | awk '{print $5}')"
 check "garbage input is unmeasured, not a crash"           "- -"  "$(echo 'not json' | burn_from_history 1 | awk '{print $1, $2}')"
+# Disk RCA 20261115-032743: 8h level (407G -> 404G), but a 40G hand-back
+# 2h ago leaves the newest 2h falling 20G/h. Over 8h the disk is not filling.
+vmsaw() { python3 -c '
+import json,sys
+fall=float(sys.argv[1]); rows=[]
+for i in range(97):
+    t=10000+i*300; h=i*300/3600
+    f=407-fall*h if h<6 else 407-fall*6+40-20*(h-6)
+    rows.append({"ts":t,"disk_free_gb":f,"measured":True})
+print(json.dumps({"measured":True,"samples":rows}))' "$1"; }
+last2h() { python3 -c 'import json,sys; d=json.load(sys.stdin); n=max(r["ts"] for r in d["samples"]); d["samples"]=[r for r in d["samples"] if n-r["ts"]<=7200]; print(json.dumps(d))'; }
+check "control: the old 2h fetch reads a 24h-scale ETA"   "yes" "$(vmsaw 0.5 | last2h | burn_from_history 1 | awk '{print ($2!="-" && $2+0<24) ? "yes" : "no"}')"
+check "level over 8h is not filling, and the cap is named" "- 8.0" "$(vmsaw 0.5 | burn_from_history 1 | awk '{print $2, $6}')"
+check "a real 8h burn (6G/h, then the dip) still has an ETA" "yes" "$(vmsaw 6 | burn_from_history 1 | awk '{print ($2!="-") ? "yes" : "no"}')"
+check "a 2h-only history is not capped"                    "-"    "$(sawtooth | burn_from_history 1 | awk '{print $6}')"
+check "the tick asks the history for 8h"                   "1"    "$(grep -c 'history?since_h=${BURN_NET_H:-8}' scripts/mac-cleanup-tick.sh)"
 
 echo "2. classification"
 DISK_FLOOR_GB=150; HOURS_TO_FULL=24; SWAP_FREE_FLOOR_MB=512; CPU_SHARE=0.9; CPU_IDLE_MAX_PCT=25; SWAP_FREE_CRITICAL_PCT=0.10
