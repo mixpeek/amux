@@ -28,7 +28,11 @@ touch -t 202609300000 "$R/lane6/mvs-drill/standby_ok" "$R/lane6/mvs-drill/promot
 mkdir -p "$R/lane6/many"; for i in $(seq 1 80); do echo $i > "$R/lane6/many/f$i"; done
 touch -t 202609300000 "$R/lane6/many"/* "$R/lane6/many"
 touch -t 202609300000 "$R/lane1/oldidle/sub/f" "$R/lane1/oldidle/sub" "$R/lane1/oldidle" "$R/lane1/oldtopfreshinside" "$R/lane2/inuse"
-(cd "$R/lane2/inuse" && exec sleep 30) & holder=$!
+# The holder lives until the end of the test, which kills it: a run takes 22s
+# on a quiet Mac and 53s on a loaded one, and a 30s holder ended mid-run and
+# failed the in-use checks (the pre-push of 519c18cf1).
+(cd "$R/lane2/inuse" && exec sleep 600) & holder=$!
+trap 'kill "$holder" 2>/dev/null' EXIT
 sleep 1
 F="$(mktemp "${TMPDIR:-/tmp}/ltf.XXXXXX")"
 sed -n '/^reap_lane_tmp() {/,/^}/p' "$ROOT/scripts/mac-cleanup-tick.sh" > "$F"
@@ -99,6 +103,9 @@ grep -qF "$(printf 'w/scratchbuild\t')" "$ST8/lane-tmp-removed.log" 2>/dev/null 
 # floor and was removed. A checkout with edited tracked files or commits on no
 # remote is kept and named; a clean checkout of pushed commits still goes.
 R9="$T/root9"; mkdir -p "$R9/w"
+# The CI runner has no git identity, so without one the seed commit fails and
+# root9 stays empty: the gate's only reds on 8eefef59f, 4b22ba9c4, 2857482b7.
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 git init -q "$T/seed9" && git -C "$T/seed9" commit -q --allow-empty -m base && git clone -q --bare "$T/seed9" "$T/origin9"
 for d in dirty ahead clean; do git clone -q "$T/origin9" "$R9/w/$d"; head -c 2000000 /dev/zero > "$R9/w/$d/big.bin"; done
 git -C "$R9/w/dirty" add big.bin && git -C "$R9/w/dirty" commit -q -m big && git -C "$R9/w/dirty" push -q origin HEAD 2>/dev/null
