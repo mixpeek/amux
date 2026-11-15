@@ -258,15 +258,22 @@ async fn mail_sources(queries: &[String], recent: usize) -> (Vec<Src>, bool) {
     let client = crate::integrations::email::GmailClient::new_default();
     let accounts = client.connected_accounts();
     let mut rows: Vec<Value> = crate::integrations::local_mailbox::inbox(&home, "", recent, 21.0);
-    let mut measured = !accounts.is_empty() || !crate::integrations::local_mailbox::accounts(&home).is_empty();
+    let mut answered = !crate::integrations::local_mailbox::accounts(&home).is_empty();
+    let mut failed = false;
     for q in queries {
         rows.extend(crate::integrations::local_mailbox::search(&home, q, "", 8, 120));
     }
     for a in &accounts {
         let fut = client.inbox_messages(a, recent.min(25), "", 7.0, None);
         match tokio::time::timeout(std::time::Duration::from_secs(20), fut).await {
-            Ok(Ok(v)) => rows.extend(v["messages"].as_array().cloned().unwrap_or_default()),
-            _ => measured = false,
+            Ok(Ok(v)) => {
+                answered = true;
+                rows.extend(v["messages"].as_array().cloned().unwrap_or_default());
+            }
+            // A revoked account fails the same way every time, so leaving it
+            // out keeps the list steady; it waits on a re-consent.
+            Ok(Err(e)) if mail_account_revoked(&e) => continue,
+            _ => failed = true,
         }
         for q in queries.iter().take(4) {
             let gq = format!("{q} newer_than:120d");
@@ -278,7 +285,13 @@ async fn mail_sources(queries: &[String], recent: usize) -> (Vec<Src>, bool) {
     }
     let mut seen = BTreeSet::new();
     let out = rows.iter().filter_map(mail_src).filter(|s| seen.insert(s.id.clone())).take(60).collect();
-    (out, measured)
+    (out, answered && !failed)
+}
+
+/// A Gmail read that failed because the account's consent was revoked, as
+/// opposed to a timeout or a passing error that the next read may not repeat.
+pub(crate) fn mail_account_revoked(err: &str) -> bool {
+    err.contains("invalid_grant")
 }
 
 /// What the owner started or dismissed before, from memories.
@@ -1343,6 +1356,12 @@ mod tests {
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
         assert_ne!(fp, inputs_fingerprint(&b[2..], &b[1..2]));
+    }
+
+    #[test]
+    fn a_revoked_mailbox_is_left_out_and_a_timeout_is_not() {
+        assert!(super::mail_account_revoked(r#"token refresh failed (400): {"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#));
+        assert!(!super::mail_account_revoked("gmail list failed (503): backend error"));
     }
 
     #[test]
