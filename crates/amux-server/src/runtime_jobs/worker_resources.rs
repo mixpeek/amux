@@ -116,6 +116,15 @@ pub fn sample_workers() -> Vec<WorkerSnapshot> {
         pid_rss.insert(pid, rss_kb);
     }
 
+    // The pane shell's direct children are the worker's provider process.
+    // Record which Claude config folder each runs under (read once per pid),
+    // so transcript readers follow a wrapper's CLAUDE_CONFIG_DIR.
+    for (&pid, &ppid) in &parents {
+        if let Some(w) = panes.get(&ppid) {
+            crate::api::claude_config::observe(w, pid);
+        }
+    }
+
     // Map pids to workers and aggregate
     let mut by_worker: HashMap<String, WorkerSnapshot> = HashMap::new();
     for (&pid, &rss) in &pid_rss {
