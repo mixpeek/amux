@@ -24,7 +24,7 @@
 //!
 //! Off with AMUX_LINKEDIN_EVENTS_SECS=0, and in an isolated (e2e) server.
 //! Verdicts: linkedin_events_emitted, linkedin_events_seeded,
-//! linkedin_events_read_failed, linkedin_events_signed_out,
+//! linkedin_events_read_failed, linkedin_events_signed_out, linkedin_events_empty_list,
 //! linkedin_events_state_unsaved.
 
 use super::registry::ids;
@@ -122,6 +122,14 @@ pub(crate) fn event_data(row: &Value) -> Value {
     })
 }
 
+/// Why a read cannot be used, if it cannot: not the list, or a list that has
+/// not rendered yet. The first live read (2026-11-15 09:55) evaluated the page
+/// before LinkedIn filled it, found 0 rows and seeded on them, which would have
+/// announced every conversation already listed as new on the next read.
+pub(crate) fn unusable(href: &str, rows: &[Value]) -> Option<&'static str> {
+    not_the_list(href).or(if rows.is_empty() { Some("empty list") } else { None })
+}
+
 /// Why the page is not the conversation list, if it is not.
 pub(crate) fn not_the_list(href: &str) -> Option<&'static str> {
     if href.contains("/login") || href.contains("/checkpoint") || href.contains("/authwall") || href.contains("/uas/") {
@@ -141,14 +149,24 @@ async fn read_list(state: &AppState) -> Result<(String, Vec<Value>), String> {
     let read = if code >= 300 || started["ok"].as_bool() == Some(false) {
         Err(format!("start answered {code}: {}", started["error"].as_str().unwrap_or("no error text")))
     } else {
-        let (code, v) = run_verb(state, ROUTE_SESSION, "action", json!({"action": "eval", "script": LIST_JS})).await;
-        match v.pointer("/data/result").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok()) {
-            Some(page) => Ok((
-                page["href"].as_str().unwrap_or("").to_string(),
-                page["rows"].as_array().cloned().unwrap_or_default(),
-            )),
-            None => Err(format!("eval answered {code} with no list: {}", v["error"].as_str().unwrap_or(""))),
+        // The list renders after the page loads: read until it has rows, the
+        // page is not the list, or 20 s pass.
+        let mut last = Err("the list was never read".to_string());
+        for _ in 0..20 {
+            let (code, v) = run_verb(state, ROUTE_SESSION, "action", json!({"action": "eval", "script": LIST_JS})).await;
+            last = match v.pointer("/data/result").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok()) {
+                Some(page) => Ok((
+                    page["href"].as_str().unwrap_or("").to_string(),
+                    page["rows"].as_array().cloned().unwrap_or_default(),
+                )),
+                None => Err(format!("eval answered {code} with no list: {}", v["error"].as_str().unwrap_or(""))),
+            };
+            if matches!(&last, Ok((href, rows)) if !rows.is_empty() || not_the_list(href).is_some()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+        last
     };
     let (code, stopped) = run_verb(state, ROUTE_SESSION, "stop", json!({})).await;
     if code >= 300 {
@@ -175,9 +193,10 @@ async fn tick(state: &AppState, home: &Path, every: i64) {
             return;
         }
     };
-    if let Some(why) = not_the_list(&href) {
-        tracing::warn!(target: "amux::linkedin_events", href = %href, why, measured = false,
-            verdict = "linkedin_events_signed_out", "the LinkedIn read did not reach the message list; sign the ethan profile in to LinkedIn");
+    if let Some(why) = unusable(&href, &rows) {
+        let verdict = if why == "empty list" { "linkedin_events_empty_list" } else { "linkedin_events_signed_out" };
+        tracing::warn!(target: "amux::linkedin_events", href = %href, why, measured = false, n_considered = 0, verdict,
+            "the LinkedIn read did not reach a filled message list; nothing seeded or announced this time");
         persist(home, &w);
         return;
     }
@@ -256,6 +275,14 @@ mod tests {
     fn a_new_message_in_the_same_conversation_is_a_new_key() {
         assert_ne!(row_key(&row("Raj Das", "one", true)), row_key(&row("Raj Das", "two", true)));
         assert_eq!(row_key(&row("Raj Das", "one", true)), row_key(&row("Raj Das", "one", false)));
+    }
+
+    #[test]
+    fn a_list_that_has_not_rendered_is_unmeasured_not_an_empty_inbox() {
+        let list = "https://www.linkedin.com/messaging/thread/new/";
+        assert_eq!(unusable(list, &[]), Some("empty list"));
+        assert_eq!(unusable(list, &[row("a", "b", false)]), None);
+        assert_eq!(unusable("https://www.linkedin.com/login", &[row("a", "b", false)]), Some("signed out"));
     }
 
     #[test]
