@@ -7,7 +7,8 @@
 #   enforce   green: main is fast-forwarded to the dispatched candidate, the
 #             mq ref is gone, and the base reaches the workflow input
 #   enforce   red alone: rc 6, main unchanged
-#   enforce   red batch: bisected, the culprit waiter ejected, the rest land
+#   enforce   red batch: bisected, the culprit waiter ejected, the prefix that
+#             already passed lands, the waiters after the culprit keep tickets
 #   enforce   red on the holder's own commit in a batch: rc 6, waiters keep
 #             their tickets
 #   enforce   lost runner: dispatched once more, lands
@@ -135,9 +136,16 @@ key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
 plant w1 w1; plant w2 bad; plant w3 w3
 land; rc=$?
-{ [ "$rc" = 0 ] && main_has h && main_has w1 && main_has w3 && ! main_has bad; } \
-  && ok "enforce red batch: the culprit is bisected out and the rest lands" || bad "red batch rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -8)"
-[ "$(dispatches)" = 4 ] && ok "enforce red batch: 4 runs (full, 2 bisect prefixes, the re-composed batch)" || bad "dispatches=$(dispatches)"
+{ [ "$rc" = 0 ] && main_has h && main_has w1 && ! main_has bad && ! main_has w3; } \
+  && ok "enforce red batch: the culprit is bisected out and the prefix that passed lands" || bad "red batch rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -8)"
+# Mixpeek 2026-11-15: three red batches each re-ran a passing prefix and landed
+# none of it. The prefix is landed as the exact candidate that ran green.
+[ "$(dispatches)" = 3 ] && ok "enforce red batch: 3 runs (full, 2 bisect prefixes); the passing prefix is not run again" || bad "dispatches=$(dispatches)"
+[ "$(git --git-dir="$H/origin.git" rev-parse main)" = "$(grep -- '-b1 ' "$H/dispatched" | awk '{print $2}' | tail -1)" ] \
+  && ok "enforce red batch: main is exactly the prefix candidate that ran green" || bad "main $(git --git-dir="$H/origin.git" rev-parse main) is not the b1 candidate: $(cat "$H/dispatched")"
+grep -q "landing the prefix that already passed (this lane and 1 waiter(s), verdict=mq_prefix_landed)" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log says the prefix landed" || bad "no prefix line: $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -3)"
+grep -q "^landed " "$H/.amux/locks/land-$key.r/"*w1* 2>/dev/null || grep -lq "^landed " "$H/.amux/locks/land-$key.r/"* 2>/dev/null && ok "enforce red batch: the prefix waiter is told it landed" || bad "no landed result for w1"
+ls "$q" | grep -q . && ok "enforce red batch: the waiter after the culprit keeps its ticket" || bad "w3's ticket is gone: $(ls "$q")"
 grep -q "refused the batch on your commit" "$H/.amux/locks/land-$key.r/"* 2>/dev/null && ok "enforce red batch: the culprit's waiter is told it was refused" || bad "no refusal written for w2"
 grep -q "bisected to w2's commit" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log names the culprit lane" || bad "culprit not logged"
 [ "$(mq_refs)" = 0 ] && ok "enforce red batch: no candidate ref left" || bad "mq refs left: $(mq_refs)"

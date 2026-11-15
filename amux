@@ -10751,9 +10751,13 @@ _land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <ru
 # Binary search over the batch's prefixes on the same base, each regenerated as
 # the full stack was. Prefix 0 is the holder's own change, prefix k adds the
 # k-th waiter (line k of stack_map). The base is taken as green: in enforce mode
-# the branch only moves to green candidates.
-_land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit index> <url>" or "unmeasured <why>"
-  local lo=-1 hi n mid tip v url="$4"
+# the branch only moves to green candidates. The third field is the candidate
+# that ran green for the longest passing prefix (prefix culprit-1), or - when
+# none did, so the caller can land what already passed instead of running it
+# again (mixpeek, 2026-11-15: three red batches in a row each bisected to a
+# passing prefix, landed none of it, and held main for 100 minutes).
+_land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit index> <url> <green tip|->" or "unmeasured <why>"
+  local lo=-1 hi n mid tip v url="$4" gtip="-"
   n="$(printf '%s\n' "$stack_map" | grep -c .)"; hi="$n"
   while [ $(( hi - lo )) -gt 1 ]; do
     mid=$(( (lo + hi) / 2 ))
@@ -10763,12 +10767,13 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
     v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
     v="$(_land_mq_judge "$2-b$mid" "$1" "$tip" "bisect: prefix of $((mid + 1)) of $((n + 1)) landings")"
     case "${v%% *}" in
-      green) lo="$mid" ;;
+      green) lo="$mid"; gtip="$tip" ;;
       red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
       *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
     esac
   done
-  echo "$hi $url"
+  [ "$lo" = $(( hi - 1 )) ] || gtip="-"
+  echo "$hi $url $gtip"
 }
 # Candidate refs land made, past twice the budget (shadow leaves its refs for the
 # run; a killed holder leaves one). Other mq/ refs (a CI self-test) are not ours.
@@ -12474,20 +12479,39 @@ $f"
             fi
             _land_log "merge queue: batch with ${lanes} red ($_mq_url); bisecting"
             _mq_b="$(_land_mq_bisect "$_mq_base" "$_mq_id" "$_mq_own" "$_mq_url")"
-            case "${_mq_b%% *}" in
+            local _mq_bi _mq_burl _mq_bg
+            read -r _mq_bi _mq_burl _mq_bg <<< "$_mq_b"
+            case "$_mq_bi" in
               0)
-                _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="${_mq_b#* }"
-                _land_log "merge queue: bisected to this lane's own change (${_mq_b#* }); refused, nothing pushed. The waiters keep their places"
+                _land_mq_ledger phase=refused batch="$_mq_id" lane="$me" run="$_mq_burl"
+                _land_log "merge queue: bisected to this lane's own change ($_mq_burl); refused, nothing pushed. The waiters keep their places"
                 return 6 ;;
               [1-9]*)
-                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $1}')"
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_bi}p" | awk '{print $1}')"
                 batch_skip="$batch_skip$_mq_tk "
-                echo "excluded: the merge queue refused the batch on your commit (bisected; run ${_mq_b#* }); fix it and run amux land again" > "$rdir/$_mq_tk"
+                echo "excluded: the merge queue refused the batch on your commit (bisected; run $_mq_burl); fix it and run amux land again" > "$rdir/$_mq_tk"
                 rm -f -- "${q:?}/${_mq_tk:?}"
-                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_b%% *}p" | awk '{print $2}')"
-                _land_mq_ledger phase=ejected batch="$_mq_id" lane="$_mq_tk" run="${_mq_b#* }"
-                _land_log "merge queue: bisected to ${_mq_tk}'s commit (${_mq_b#* }); ejected it, re-composing the rest (attempt $i)"
-                continue ;;
+                _mq_tk="$(printf '%s\n' "$stack_in" | grep . | sed -n "${_mq_bi}p" | awk '{print $2}')"
+                _land_mq_ledger phase=ejected batch="$_mq_id" lane="$_mq_tk" run="$_mq_burl"
+                # LAND WHAT ALREADY PASSED. The prefix before the culprit ran green on
+                # this base; land exactly that candidate, tell its waiters, and leave
+                # the waiters after the culprit their tickets for the next holder.
+                # Re-composing them with it would run the passing prefix again, and a
+                # flaky red would hold all of it once more.
+                git fetch -q "$remote" "$branch" 2>/dev/null || true
+                if [ -n "${_mq_bg:-}" ] && [ "$_mq_bg" != - ] && git merge-base --is-ancestor "$remote/$branch" "$_mq_bg"; then
+                  stack_in="$(printf '%s\n' "$stack_in" | grep . | head -n $(( _mq_bi - 1 )))"; stack_in="${stack_in:+$stack_in
+}"
+                  stack_map="$(printf '%s\n' "$stack_map" | grep . | head -n $(( _mq_bi - 1 )))"; stack_map="${stack_map:+$stack_map
+}"
+                  lanes="$(printf '%s' "$stack_in" | awk 'NF {printf "%s%s", sep, $2; sep=", "}')"
+                  stack_tip="$_mq_bg"
+                  _land_mq_ledger phase=prefix batch="$_mq_id" base="$_mq_base" candidate="$stack_tip" landings="$_mq_bi" lanes="$me${lanes:+, $lanes}"
+                  _land_log "merge queue: bisected to ${_mq_tk}'s commit ($_mq_burl); ejected it and landing the prefix that already passed (this lane and $(( _mq_bi - 1 )) waiter(s), verdict=mq_prefix_landed); the waiters after it keep their places for the next holder"
+                else
+                  _land_log "merge queue: bisected to ${_mq_tk}'s commit ($_mq_burl); ejected it, re-composing the rest (attempt $i)"
+                  continue
+                fi ;;
               *)
                 _land_log "merge queue: bisect did not finish (${_mq_b}); landing this lane alone next, the waiters keep their places"
                 solo=1; continue ;;
