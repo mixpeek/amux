@@ -869,6 +869,7 @@ async fn async_main() {
     drop(runtime_jobs::desc_refresh::spawn(state.clone()));
     drop(runtime_jobs::event_dispatch::spawn(state.clone()));
     drop(runtime_jobs::email_events::spawn(state.clone()));
+    drop(runtime_jobs::linkedin_events::spawn(state.clone()));
     boot_watch::step("router");
     let app = api::router(state);
 

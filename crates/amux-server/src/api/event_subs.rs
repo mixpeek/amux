@@ -206,6 +206,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("browser.stopped", "a browser was stopped"),
     ("browser.navigated", "a browser went to a url"),
     ("email.received", "a new email arrived in a connected Gmail inbox: fields account (the inbox), from (\"Name <addr>\"), from_address, from_domain, to, cc, subject, snippet (the first lines), thread_id, message_id, labels, unread, bulk (true for a mailing list or newsletter). Match a sender with eq on from_address or from_domain, an inbox with eq on account, drop newsletters with bulk eq false; judge when the request is about what the mail means"),
+    ("linkedin.message_received", "a new unread LinkedIn message to the owner (read from the ethan browser profile about every 45 minutes, without opening it): fields account, from_name, snippet (the list preview), time_label (LinkedIn's own label, such as 3:45 PM or Nov 14), is_inmail, sponsored, conversation_url (the inbox; the list has no per-thread link), key. Match a sender with eq on from_name, drop InMail with is_inmail eq false; judge when the request is about what the message means"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),
@@ -309,11 +310,17 @@ pub(crate) fn catalog(conn: &rusqlite::Connection, days: i64) -> rusqlite::Resul
 /// A filter is checked against a type's fields, and a type seen 0 times has
 /// none observed, so without this a subscription to it compiled and was then
 /// refused ("the filter reads fields email.received does not have").
-pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[(
-    "email.received",
-    &["account", "from", "from_address", "from_domain", "to", "cc", "subject", "snippet", "thread_id", "message_id",
-        "gmail_id", "labels", "unread", "bulk", "date"],
-)];
+pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
+    (
+        "email.received",
+        &["account", "from", "from_address", "from_domain", "to", "cc", "subject", "snippet", "thread_id", "message_id",
+            "gmail_id", "labels", "unread", "bulk", "date"],
+    ),
+    (
+        "linkedin.message_received",
+        &["account", "from_name", "snippet", "time_label", "is_inmail", "sponsored", "conversation_url", "key"],
+    ),
+];
 
 fn entry(t: &str, n: i64, last: i64, mut fields: std::collections::BTreeSet<String>, example: Value) -> Value {
     for (dt, df) in DECLARED_FIELDS {

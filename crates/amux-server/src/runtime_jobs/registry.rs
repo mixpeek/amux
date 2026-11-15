@@ -100,6 +100,7 @@ pub mod ids {
     pub const DESC_REFRESH: &str = "desc-refresh";
     pub const EVENT_DISPATCH: &str = "event-dispatch";
     pub const EMAIL_EVENTS: &str = "email-events";
+    pub const LINKEDIN_EVENTS: &str = "linkedin-events";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -214,6 +215,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::DESC_REFRESH,
     ids::EVENT_DISPATCH,
     ids::EMAIL_EVENTS,
+    ids::LINKEDIN_EVENTS,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -891,6 +893,14 @@ pub const CATALOG: &[Doc] = &[
         name: "Email events",
         purpose: "Every 60 s, reads the last day of each connected Gmail inbox and writes each message that arrived since watching began as an email.received event (account, from, to, subject, snippet, thread_id, message_id), so an event subscription can wake a worker when a particular email lands. The first read of an account only records when watching began. Keyed per message, so a re-read never fires twice.",
         env: &[EnvControl { var: "AMUX_EMAIL_EVENTS_SECS", effect: "seconds between inbox reads, default 60; 0 stops email events", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/subscriptions/catalog"),
+    },
+    Doc {
+        id: ids::LINKEDIN_EVENTS,
+        name: "LinkedIn events",
+        purpose: "About every 45 minutes, opens LinkedIn's conversation list on the ethan browser profile (the compose page, so no conversation is opened or marked read), and writes each new unread message as a linkedin.message_received event (from_name, snippet, time_label, is_inmail, sponsored), so an event subscription can wake a worker when someone messages the owner on LinkedIn. Read-only: no clicks, no typing. The first read only records what is listed. The last read time survives a restart.",
+        env: &[EnvControl { var: "AMUX_LINKEDIN_EVENTS_SECS", effect: "seconds between LinkedIn reads, default 2700; 0 stops LinkedIn events", off: Some("0") }],
         pref: None,
         detail: Some("/api/subscriptions/catalog"),
     },

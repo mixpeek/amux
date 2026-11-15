@@ -427,6 +427,17 @@ async fn request(
     (parts.status, Json(v)).into_response()
 }
 
+/// One route verb run in-process, for a server job that reads a page the way
+/// a worker would (`runtime_jobs::linkedin_events`). It goes through
+/// `request`, so the job gets the same ladder, profile choice, audit event and
+/// bot-check reading as a worker's call. Returns the status and the JSON body.
+pub(crate) async fn run_verb(state: &AppState, session: &str, verb: &str, body: Value) -> (u16, Value) {
+    let r = Request { verb: verb.into(), body, session: session.into() };
+    let (parts, b) = request(State(state.clone()), HeaderMap::new(), Json(r)).await.into_parts();
+    let bytes = axum::body::to_bytes(b, 64 << 20).await.unwrap_or_default();
+    (parts.status.as_u16(), serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
 /// A bot check the route landed on, and the step that gets past it (AF-1023).
 ///
 /// A headless Chrome never clears Cloudflare's managed challenge: the ethan
