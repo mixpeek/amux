@@ -302,10 +302,14 @@ pub fn tree(conn: &Connection, trace_id: &str) -> rusqlite::Result<Value> {
         .prepare("SELECT trace_id, span_id, parent_span_id, trace_source FROM cmd_history LIMIT 0")
         .is_ok();
     if hist_ok {
-        let mut st = conn.prepare(
-            "SELECT id, ts, session, type, origin, delivery, span_id, parent_span_id, trace_source
-             FROM cmd_history WHERE trace_id = ?1 ORDER BY ts, id",
-        )?;
+        // Where each delivery's instruction came from (instruction_provenance),
+        // when this database has the columns; null on an older one.
+        let prov = conn.prepare("SELECT source_kind, source_ref, relayed_from FROM cmd_history LIMIT 0").is_ok();
+        let cols = if prov { "source_kind, source_ref, relayed_from" } else { "NULL, NULL, NULL" };
+        let mut st = conn.prepare(&format!(
+            "SELECT id, ts, session, type, origin, delivery, span_id, parent_span_id, trace_source, {cols}
+             FROM cmd_history WHERE trace_id = ?1 ORDER BY ts, id"
+        ))?;
         let rows = st.query_map([trace_id], |r| {
             Ok(json!({
                 "source": "cmd_history", "id": format!("MSG-{}", r.get::<_, i64>(0)?), "ts": r.get::<_, i64>(1)?,
@@ -313,6 +317,8 @@ pub fn tree(conn: &Connection, trace_id: &str) -> rusqlite::Result<Value> {
                 "origin": r.get::<_, Option<String>>(4)?, "delivery": r.get::<_, Option<String>>(5)?,
                 "span_id": r.get::<_, Option<String>>(6)?, "parent_span_id": r.get::<_, Option<String>>(7)?,
                 "trace_source": r.get::<_, Option<String>>(8)?,
+                "source_kind": r.get::<_, Option<String>>(9)?, "source_ref": r.get::<_, Option<String>>(10)?,
+                "relayed_from": r.get::<_, Option<String>>(11)?,
             }))
         })?;
         let mut n = 0;

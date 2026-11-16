@@ -206,7 +206,9 @@ pub async fn stamp(req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
     let p = principal(&crate::config::amux_home(), req.headers());
-    let mut res = next.run(req).await;
+    // A message this request delivers records who the server proved sent it
+    // (instruction_provenance), not a name the body or a header claimed.
+    let mut res = super::instruction_provenance::with_actor(p.actor.clone(), next.run(req)).await;
     res.extensions_mut().insert(Stamp(p));
     res
 }

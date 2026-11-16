@@ -2431,6 +2431,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "connector_token": super::connector_scope::report(),
         "capabilities": super::capabilities::report(),
         "schedule_authority": super::schedule_authority::report(),
+        "instruction_provenance": super::instruction_provenance::report(),
         "approval_cards": super::approval_cards::report(),
         "published_app": super::app_identity::report(),
         "email_gate": super::email_scope::report(),
