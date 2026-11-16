@@ -79,7 +79,9 @@ impl Principal {
     /// Whom the actor acted for, when that differs from the actor itself.
     pub fn on_behalf_of(&self) -> Option<String> {
         match self {
-            Principal::Worker { proof: WorkerProof::Job(job), .. } => Some(format!("job:{job}")),
+            // The policy name carries its own kind ("job:social-publish",
+            // "policy:scheduled-send"), so it is recorded as it is.
+            Principal::Worker { proof: WorkerProof::Job(job), .. } => Some(job.clone()),
             Principal::Worker { proof: WorkerProof::Human(h), .. } => Some(h.clone()),
             _ => None,
         }
@@ -417,7 +419,7 @@ mod tests {
     fn the_receipt_names_the_principal_and_never_a_bearer() {
         let p = worker(WorkerProof::Job("job:social-publish".into()));
         let r = rationale(&p, &Gate::Allow, Some("x@y.z"), None, 200);
-        assert_eq!(r["on_behalf_of"], "job:job:social-publish");
+        assert_eq!(r["on_behalf_of"], "job:social-publish");
         assert_eq!(r["worker_scope"], "w1");
         assert_eq!(r["account"], "x@y.z");
         assert!(!r.to_string().contains("token\":"), "{r}");
