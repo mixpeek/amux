@@ -29601,13 +29601,18 @@ function _dictOpenPopup() {
   if (!pop) return;
   _dictPopupOpen = true;
   pop.classList.add('open');
+  pop.classList.toggle('dict-ptt', _dictPtt);
+  pop.classList.remove('dict-busy', 'dict-said');
+  _dictStatus('');
   _dictStartRec();
 }
 function _dictClosePopup(cancel) {
   const pop = document.getElementById('dict-popup');
   if (pop) pop.classList.remove('open');
   _dictPopupOpen = false;
-  if (cancel && _dictRecording) { _dictCancelled = true; _dictStopRec(); }
+  if (cancel && _dictNative) _dictNativeCancel();
+  else if (cancel && _dictRecording) { _dictCancelled = true; _dictStopRec(); }
+  _dictPtt = false;
   if (cancel && typeof _hkDictTarget !== 'undefined') _hkDictTarget = null;
   if (typeof _hkDictHome === 'function') _hkDictHome();
 }
@@ -29615,6 +29620,8 @@ let _dictCancelled = false;
 
 async function _dictStartRec() {
   if (_dictRecording) return;
+  const nat = _dictNativeBridge();
+  if (nat) { _dictNativeStart(nat); return; }
   if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
   _dictCancelled = false;
   // Reuse a still-live stream. getUserMedia costs ~200-800ms on a phone, and the
@@ -29678,34 +29685,44 @@ function _dictStartMeter() {
     src.connect(_dictAnalyser);
   } catch(e) { return; }
   const data = new Uint8Array(_dictAnalyser.frequencyBinCount);
-  const bars = Array.from(document.querySelectorAll('#dict-wave .dict-bar'));
+  let last = 0;
   const draw = () => {
     if (!_dictRecording || !_dictAnalyser) return;
-    _dictAnalyser.getByteFrequencyData(data);
-    const n = bars.length || 1;
-    const per = Math.floor(data.length / n) || 1;
-    for (let i = 0; i < n; i++) {
+    const now = performance.now();
+    if (now - last > 66) {
+      last = now;
+      _dictAnalyser.getByteFrequencyData(data);
       let sum = 0;
-      for (let j = 0; j < per; j++) sum += data[i * per + j] || 0;
-      const level = Math.min(1, (sum / per) / 140);
-      bars[i].style.transform = 'scaleY(' + Math.max(0.12, level).toFixed(3) + ')';
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      _dictLevel(Math.min(1, (sum / data.length) / 90));
     }
     _dictRafId = requestAnimationFrame(draw);
   };
   draw();
+}
+// The bars are the last few levels heard, newest on the right, so speech
+// scrolls across the pill (the app sends levels too: _dictNativeEvent).
+let _dictLevels = [];
+function _dictLevel(v) {
+  const bars = document.querySelectorAll('#dict-wave .dict-bar');
+  _dictLevels.push(v);
+  if (_dictLevels.length > bars.length) _dictLevels.splice(0, _dictLevels.length - bars.length);
+  const off = bars.length - _dictLevels.length;
+  bars.forEach((b, i) => { b.style.transform = 'scaleY(' + Math.max(0.15, i >= off ? _dictLevels[i - off] : 0).toFixed(3) + ')'; });
 }
 function _dictStopMeter() {
   if (_dictRafId) cancelAnimationFrame(_dictRafId);
   _dictRafId = 0; _dictAnalyser = null;
   try { _dictAudioCtx && _dictAudioCtx.close(); } catch(e) {}
   _dictAudioCtx = null;
-  document.querySelectorAll('#dict-wave .dict-bar').forEach(b => b.style.transform = 'scaleY(0.12)');
+  _dictLevels = [];
+  document.querySelectorAll('#dict-wave .dict-bar').forEach(b => b.style.transform = '');
 }
 function _dictTick() {
   if (!_dictRecording) return;
   const s = Math.floor((Date.now() - _dictStartedAt) / 1000);
   const clock = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
-  _dictStatus('Listening… ' + clock + ' — tap to stop');
+  const el = document.getElementById('dict-rec-status'); if (el) el.textContent = 'Listening… ' + clock + ' — tap to stop';
   const t = document.getElementById('dict-popup-time'); if (t) t.textContent = clock;
   setTimeout(_dictTick, 500);
 }
@@ -29713,6 +29730,8 @@ function _dictStopRec() {
   if (!_dictRecording) return;
   _dictRecording = false;
   document.getElementById('dict-rec-btn')?.classList.remove('recording');
+  document.getElementById('dict-popup')?.classList.add('dict-busy');
+  if (_dictNative) { _dictNativeStop(); return; }
   try { _dictRecorder && _dictRecorder.state !== 'inactive' && _dictRecorder.stop(); } catch(e) {}
   // Keep the mic warm for a short window so a follow-up take is instant, then
   // release it — an indefinitely open mic leaves the browser's recording
@@ -29723,10 +29742,109 @@ function _dictStopRec() {
     _dictStream = null; _dictWarmTimer = 0;
   }, _DICT_WARM_MS);
 }
+// The tab's status line says every step; the pill only what you must know
+// (an error, or why it waits), so a take that works shows no words at all.
 function _dictStatus(t) {
   const el = document.getElementById('dict-rec-status'); if (el) el.textContent = t;
-  const p = document.getElementById('dict-popup-status'); if (p) p.textContent = t.replace(/ — tap to stop$/, '');
+  const p = document.getElementById('dict-popup-status');
+  if (p) p.textContent = /^(Listening|Transcribing|Added to the composer|Starting mic)/.test(t) ? '' : t;
 }
+// ── Dictation in the Mac app ──
+// The app listens and recognizes on device while you speak
+// (desktop/amux-dictation.swift), so the text is ready a fraction of a second
+// after you stop; the page then sends it and the audio to /api/dictate, which
+// fixes worker names and keeps both, and puts it where you were typing. When
+// the app cannot (macOS before 26, the speech model still downloading) it
+// answers "unavailable" and this page records the take itself, as in a browser.
+let _dictNative = null;        // the take the app is running: {at, stopAt}
+let _dictNativeOffUntil = 0;   // the app said it cannot; the page records until then
+let _dictPtt = false;          // started by holding 🌐: letting go ends it
+function _dictNativeBridge() {
+  if (Date.now() < _dictNativeOffUntil) return null;
+  return (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxDictation) || null;
+}
+// Words the recognizer should expect: worker names and your dictionary.
+function _dictNativeHints() {
+  const names = (typeof sessions !== 'undefined' ? sessions : []).map(x => x && x.name).filter(Boolean);
+  const words = (_dictWords || []).map(w => (w.correct || '').trim() || w.word).filter(Boolean);
+  return [...new Set(names.concat(words))].slice(0, 200);
+}
+function _dictNativeStart(bridge) {
+  _dictCancelled = false;
+  _dictNative = { at: Date.now() };
+  _dictRecording = true; _dictStartedAt = Date.now();
+  document.getElementById('dict-rec-btn')?.classList.add('recording');
+  _dictTick();
+  bridge.postMessage({ op: 'start', hints: _dictNativeHints() });
+}
+function _dictNativeStop() {
+  if (_dictNative) _dictNative.stopAt = Date.now();
+  window.webkit.messageHandlers.amuxDictation.postMessage({ op: 'stop' });
+}
+function _dictNativeCancel() {
+  _dictNative = null; _dictRecording = false; _dictCancelled = true;
+  document.getElementById('dict-rec-btn')?.classList.remove('recording');
+  try { window.webkit.messageHandlers.amuxDictation.postMessage({ op: 'cancel' }); } catch (e) { console.warn('dictation: cancel did not reach the app', e); }
+  _dictStatus('Cancelled');
+}
+// The pill says what went wrong, then closes.
+function _dictPillSays(t, ms) {
+  const pop = document.getElementById('dict-popup');
+  pop?.classList.remove('dict-busy');
+  pop?.classList.add('dict-said');
+  _dictStatus(t);
+  setTimeout(() => { if (!_dictRecording && !_dictNative) _dictClosePopup(false); }, ms || 3500);
+}
+window._dictNativeEvent = function (ev) {
+  if (!ev || !ev.type) return;
+  if (ev.type === 'level') { if (_dictNative) _dictLevel(ev.v); return; }
+  if (ev.type === 'started') return;
+  const take = _dictNative;
+  _dictNative = null;
+  if (ev.type === 'done') { _dictNativeDone(ev, take); return; }
+  _dictRecording = false;
+  document.getElementById('dict-rec-btn')?.classList.remove('recording');
+  if (ev.type === 'unavailable') {
+    // Recorded here instead; the app is asked again in a minute.
+    _dictNativeOffUntil = Date.now() + 60000;
+    _dictBeacon('dict_native_unavailable', { why: String(ev.why || '').slice(0, 120) });
+    if (take && !_dictCancelled) _dictStartRec();
+    return;
+  }
+  _dictBeacon('dict_native_error', { error: String(ev.why || '').slice(0, 160) });
+  _dictPillSays(ev.why || 'Dictation failed');
+};
+async function _dictNativeDone(ev, take) {
+  _dictRecording = false;
+  if (_dictCancelled) return;
+  let text = String(ev.text || '').trim();
+  if (!text) {
+    _dictBeacon('dict_native_empty', { ms: ev.ms });
+    _dictPillSays('Heard nothing', 1500);
+    return;
+  }
+  const heard = text, t0 = Date.now();
+  let saved = false;
+  try {
+    // Waits briefly for the names pass (a local call); the text goes in regardless.
+    const r = await fetch(API + '/api/dictate', { method: 'POST', _skipOutbox: true,
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), signal: AbortSignal.timeout(1500),
+      body: JSON.stringify({ text, engine: 'apple', audio: ev.audio || '', mime: ev.mime || 'audio/mp4',
+        session: peekSession || '', dur_ms: ev.ms || 0 }) });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (d.text) text = d.text;
+    saved = true;
+  } catch (e) {
+    _dictBeacon('dict_native_save_failed', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+  _dictInsert(text);
+  _dictClosePopup(false);
+  if (_peekTab === 'dictation') _dictLoad();
+  _dictBeacon('dict_native_done', { ms: ev.ms, finish_ms: ev.finish_ms, save_ms: Date.now() - t0,
+    stop_to_text_ms: Date.now() - ((take && take.stopAt) || t0), words: text.split(/\s+/).length, saved, names_fixed: text !== heard });
+}
+
 function _dictKB(b) { return b < 1024 ? b + ' B' : (b/1024).toFixed(b < 102400 ? 1 : 0) + ' KB'; }
 
 // ── Dictation outbox ────────────────────────────────────────────────────────
@@ -77784,6 +77902,8 @@ const _HK_DEFAULTS = [
   { id: 'hk-dictate-text', action: 'dictate', type: 'text', trigger: '##', enabled: true, remove: true, indicator: false },
   { id: 'hk-dictate-keys', action: 'dictate', type: 'keys', trigger: 'Alt+Shift+M', enabled: true, remove: true, indicator: false },
   { id: 'hk-dictate-globe', action: 'dictate', type: 'keys', trigger: 'Globe Globe', enabled: true, remove: true, indicator: false },
+  // Held: dictates until you let go, like Wispr Flow's fn (owner, 2026-11-16).
+  { id: 'hk-dictate-globe-hold', action: 'dictate', type: 'keys', trigger: 'Globe Hold', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task', action: 'new_task', type: 'keys', trigger: 'Alt+Shift+N', enabled: true, remove: true, indicator: false },
   { id: 'hk-new-task-text', action: 'new_task', type: 'text', trigger: '!!', enabled: false, remove: true, indicator: true },
   { id: 'hk-draw', action: 'open_draw', type: 'keys', trigger: 'Alt+Shift+D', enabled: true, remove: true, indicator: false },
@@ -77850,7 +77970,7 @@ function _hkComboFromEvent(e) {
   return mods.concat([key]).join('+');
 }
 function _hkKeyChips(combo) {
-  const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐' };
+  const glyph = { Mod: _HK_IS_MAC ? '⌘' : 'Ctrl', Ctrl: _HK_IS_MAC ? '⌃' : 'Ctrl', Alt: _HK_IS_MAC ? '⌥' : 'Alt', Shift: '⇧', Enter: '↵', Space: 'Space', Globe: '🌐', Hold: 'hold' };
   return '<span class="hk-keys">' + String(combo || '').split(/[+ ]/).filter(Boolean)
     .map(k => '<kbd class="hk-kbd">' + esc(glyph[k] || k) + '</kbd>').join('') + '</span>';
 }
@@ -77867,7 +77987,7 @@ function _hkConflict(h, list) {
   } else {
     const parts = t.split('+');
     // 🌐 works alone or with a key (the Mac app hands it over: _hkNativeKey).
-    if (t !== 'Globe' && t !== 'Globe Globe' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
+    if (t !== 'Globe' && t !== 'Globe Globe' && t !== 'Globe Hold' && (parts.length < 2 || !parts.some(p => p === 'Mod' || p === 'Ctrl' || p === 'Alt' || p === 'Globe')))
       return 'A shortcut needs ⌘, ⌥, ⌃ or 🌐 (⇧ alone is how capitals are typed)';
     const b = _HK_BUILTIN.find(x => x.combo === t);
     if (b) return 'amux already uses this for ' + b.label;
@@ -77912,15 +78032,12 @@ function _hkDictate(el) {
   const pop = document.getElementById('dict-popup');
   if (!pop) throw new Error('dictation is unavailable');
   const composer = document.getElementById('peek-cmd-input');
-  _hkDictTarget = el && el !== composer ? { el, at: el.selectionStart ?? el.value.length } : null;
-  if (_hkDictTarget || !peekSession) {
+  // The text goes in at the caret of the box you were in, the composer too.
+  _hkDictTarget = el ? { el, at: el.selectionStart ?? el.value.length, end: el.selectionEnd ?? el.selectionStart ?? el.value.length } : null;
+  if ((el && el !== composer) || !peekSession) {
     if (!pop._hkHome) pop._hkHome = pop.parentNode;
     document.body.appendChild(pop);
-    pop.classList.add('dict-floating');
-    const r = (el || document.activeElement || document.body).getBoundingClientRect();
-    const w = Math.min(280, window.innerWidth - 16);
-    pop.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left)) + 'px';
-    pop.style.top = Math.max(8, Math.min(window.innerHeight - 160, r.bottom + 8)) + 'px';
+    pop.classList.add('dict-floating');   // a pill at the bottom of the window
   }
   _dictOpenPopup();
 }
@@ -77928,7 +78045,6 @@ function _hkDictHome() {
   const pop = document.getElementById('dict-popup');
   if (pop && pop._hkHome && pop.parentNode !== pop._hkHome) {
     pop.classList.remove('dict-floating');
-    pop.style.left = pop.style.top = '';
     pop._hkHome.appendChild(pop);
   }
 }
@@ -77938,15 +78054,26 @@ function _hkDictDeliver(text) {
   const t = _hkDictTarget;
   _hkDictTarget = null;
   if (!t || !document.contains(t.el)) return false;
-  const v = t.el.value, at = Math.min(t.at, v.length);
-  const pre = v.slice(0, at), post = v.slice(at);
+  // A selection is replaced, as typing would.
+  const v = t.el.value, at = Math.min(t.at, v.length), end = Math.max(at, Math.min(t.end ?? at, v.length));
+  const pre = v.slice(0, at), post = v.slice(end);
   const gap = pre && !/\s$/.test(pre) ? ' ' : '';
-  t.el.value = pre + gap + text + post;
+  const tail = post && !/^[\s.,;:!?)]/.test(post) ? ' ' : '';
+  t.el.value = pre + gap + text + tail + post;
   const caret = (pre + gap + text).length;
   try { t.el.focus(); t.el.setSelectionRange(caret, caret); } catch (e) {}
   t.el.dispatchEvent(new Event('input', { bubbles: true }));
   return true;
 }
+
+// Esc while the pill is up throws the take away, as its ✕ does.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !_dictPopupOpen || (!_dictRecording && !_dictNative)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  _dictClosePopup(true);
+  _dictBeacon('dict_cancelled', { how: 'esc' });
+}, true);
 
 document.addEventListener('keydown', e => {
   if (_hkRecording || e.repeat || e.isComposing) return;
@@ -77966,13 +78093,28 @@ document.addEventListener('keydown', e => {
 // key). A recording takes it like any combination; otherwise the hotkey bound
 // to it runs. `info.mac_dictation` is true when macOS also starts its own
 // dictation on 🌐🌐, which the owner is told once.
-let _hkMacDictWarned = false;
+let _hkMacDictWarned = false, _hkWisprWarned = false;
 window._hkNativeKey = function (combo, info) {
   combo = String(combo || '');
-  if (!/^Globe( Globe|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  // Letting go of a held 🌐 ends the take holding it started.
+  if (combo === 'Globe Release') {
+    if (_dictPtt && _dictRecording) { _dictStopRec(); return 'released'; }
+    return 'release_ignored';
+  }
+  if (!/^Globe( Globe| Hold|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
   if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
   const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
   if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }
+  if (combo === 'Globe Hold' && info && info.wispr) {
+    // Wispr Flow takes a held fn from every app; both would type the same words.
+    if (!_hkWisprWarned) {
+      _hkWisprWarned = true;
+      showToast('Wispr Flow is running and dictates while 🌐 is held, so amux leaves holding 🌐 to it. 🌐🌐 still dictates with amux.');
+    }
+    _hkBeacon('hotkey_globe_hold_left_to_wispr', { trigger: combo });
+    return 'left_to_wispr';
+  }
+  if (combo === 'Globe Hold') _dictPtt = !_dictRecording;
   if (combo === 'Globe Globe' && info && info.mac_dictation && !_hkMacDictWarned) {
     _hkMacDictWarned = true;
     showToast('macOS also starts its own dictation on 🌐🌐. To leave it to amux: System Settings → Keyboard → "Press 🌐 key to" → Do Nothing.');

@@ -1488,6 +1488,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictNativeDone": {
+      "kind": "command._dictNativeDone",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictOpenPopup": {
       "kind": "command._dictOpenPopup",
       "feedback_required": true,

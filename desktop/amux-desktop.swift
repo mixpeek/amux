@@ -526,6 +526,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // window.print(), so the page sends the file's bytes or its HTML.
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxPrint")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxPrint")
+        // Dictation on device (amux-dictation.swift, app.js _dictNativeStart).
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxDictation")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxDictation")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -542,6 +545,12 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         if message.name == "amuxPrint" {
             if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any], let w = window {
                 FilePrint.run(d, in: w)
+            }
+            return
+        }
+        if message.name == "amuxDictation" {
+            if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any] {
+                NativeDictation.shared.message(d, from: self)
             }
             return
         }
@@ -1072,6 +1081,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var tabDragMonitor: Any?
     var globeMonitor: Any?
     var globeDown = false, globeUsed = false
+    /// 🌐 held alone past globeHoldDelay: dictation runs until it is let go.
+    var globeHeld = false
+    var globeHoldTimer: DispatchWorkItem?
     var lastGlobeTap: TimeInterval = 0
     var tearWatchTimer: Timer?
     var tabGroupSeen: [ObjectIdentifier: (tabs: Int, frame: NSRect)] = [:]

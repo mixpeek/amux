@@ -177,6 +177,10 @@ pub async fn dictate(
 
     // (base64 for Gemini, decoded bytes for whisper, mime, session, dur_ms)
     let (b64, raw_audio, mime, session, dur_ms): (String, Option<Vec<u8>>, String, String, i64);
+    // A take the client already transcribed (the Mac app hears it on device,
+    // desktop/amux-dictation-core.swift): its text and the engine that made
+    // it. The names pass, history and kept audio still happen here.
+    let mut device_text: Option<(String, String)> = None;
     if !ctype.is_empty() && ctype != "application/json" {
         // RAW BINARY upload. Python 413s on the Content-Length header
         // (py:72087-72089); the actual body size is checked too so a
@@ -230,7 +234,19 @@ pub async fn dictate(
             .unwrap_or("")
             .trim()
             .to_string();
-        if audio.is_empty() {
+        if let Some(t) = body.get("text").and_then(Value::as_str) {
+            let engine: String = body
+                .get("engine")
+                .and_then(Value::as_str)
+                .unwrap_or("device")
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .take(24)
+                .collect();
+            let engine = if engine.is_empty() { "device".to_string() } else { engine };
+            device_text = Some((t.trim().to_string(), engine));
+        }
+        if audio.is_empty() && device_text.is_none() {
             return err(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "audio required" }),
@@ -271,11 +287,33 @@ pub async fn dictate(
     // THE AUDIO IS KEPT (Ethan, 2026-10-29: a worker made from dictation
     // could not be retested against what was said, because the clip was gone
     // once transcribed). Saved under dictation-audio/<history id>.<ext> below.
-    let keep_audio: Option<Vec<u8>> = raw_audio.clone().or_else(|| b64_decode_lenient(&b64).ok());
+    let keep_audio: Option<Vec<u8>> = raw_audio
+        .clone()
+        .or_else(|| b64_decode_lenient(&b64).ok())
+        .filter(|a| !a.is_empty());
     let t0 = std::time::Instant::now();
     let mut text = String::new();
     let mut werr = String::new();
     let mut engine = "";
+    let mut raw_text: Option<String> = None;
+    let device_engine: String;
+    if let Some((t, e)) = device_text {
+        let store = state.store.clone();
+        let raw = t.clone();
+        let fixed = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let conn = store.read()?;
+            Ok(fix_names_with_targets(&raw, &dn_targets(&conn), 0.86))
+        })
+        .await;
+        text = match fixed {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => return internal(e),
+            Err(e) => return internal(e),
+        };
+        raw_text = Some(t);
+        device_engine = e;
+        engine = device_engine.as_str();
+    }
     // The shared transcription setting (Settings > Connect > Transcription)
     // decides which engines may run; Recordings follow the same one.
     let pref = {
@@ -291,7 +329,7 @@ pub async fn dictate(
     // LOCAL FIRST (py:72108-72119). Whisper's raw output mangles every
     // session name, so the deterministic pass is not optional — it is what
     // makes this path usable (0/7 -> 7/7 names in the benchmark).
-    if use_local && whisper_available().await {
+    if engine.is_empty() && use_local && whisper_available().await {
         let raw = match raw_audio {
             Some(r) => Some(r),
             None => match b64_decode_lenient(&b64) {
@@ -423,13 +461,14 @@ pub async fn dictate(
     let ts = chrono::Utc::now().timestamp_millis();
     let slot: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
     let (slot_w, text_w, session_w) = (slot.clone(), text.clone(), session.clone());
+    let raw_w = raw_text.unwrap_or_else(|| text.clone());
     let write = state
         .store
         .write_async(move |conn| {
             conn.execute(
                 "INSERT INTO dictation_history (session, ts, text, raw_text, words, dur_ms) \
                  VALUES (?1,?2,?3,?4,?5,?6)",
-                rusqlite::params![session_w, ts, text_w, text_w, words, dur_ms],
+                rusqlite::params![session_w, ts, text_w, raw_w, words, dur_ms],
             )?;
             let id = conn.last_insert_rowid();
             *slot_w.lock().expect("slot") = Some(id);
@@ -2755,6 +2794,41 @@ pub(crate) mod tests {
         let (st, e) = send(&app, "DELETE", "/api/dictation/history/abc", None).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(e["error"], json!("dictation route not found"));
+        set_overrides(None, None, None);
+    }
+
+    #[tokio::test]
+    async fn dictate_takes_text_the_device_heard_without_running_an_engine() {
+        let _guard = ENGINE_LOCK.lock().await;
+        set_overrides(Some(false), Some(""), None); // no engine: none may be needed
+        let (app, _dir) = app();
+        let (st, _) = send(&app, "POST", "/api/dictation/dict", Some(json!({ "word": "Cloudflare", "correct": "" }))).await;
+        assert_eq!(st, StatusCode::CREATED);
+
+        let audio = base64::engine::general_purpose::STANDARD.encode(b"m4a-bytes");
+        let (st, r) = send(
+            &app,
+            "POST",
+            "/api/dictate",
+            Some(json!({ "text": "deployed to cloud flare today", "engine": "apple", "audio": audio,
+                         "mime": "audio/mp4", "session": "orch", "dur_ms": 2100 })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{r}");
+        assert_eq!(r["engine"], json!("apple"));
+        assert_eq!(r["text"], json!("deployed to Cloudflare today"), "the names pass still runs");
+        assert!(r["audio"].is_string(), "the audio is kept: {r}");
+
+        let (_, h) = send(&app, "GET", "/api/dictation/history?session=orch", None).await;
+        let row = &h["items"][0];
+        assert_eq!(row["text"], json!("deployed to Cloudflare today"));
+        assert_eq!(row["raw_text"], json!("deployed to cloud flare today"), "what the device heard is kept as heard");
+
+        // Text with no audio is enough; an engine name is cleaned, never trusted.
+        let (st, r) = send(&app, "POST", "/api/dictate", Some(json!({ "text": "hello", "engine": "x;drop" }))).await;
+        assert_eq!(st, StatusCode::OK, "{r}");
+        assert_eq!(r["engine"], json!("xdrop"));
+        assert!(r["audio"].is_null(), "{r}");
         set_overrides(None, None, None);
     }
 

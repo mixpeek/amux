@@ -3109,21 +3109,40 @@
   .card-isolated { font-size: var(--fs-4xs); font-weight: 600; letter-spacing: 0.04em;
     color: var(--yellow); border: 1px solid currentColor; border-radius: var(--radius-sm);
     padding: 0 var(--space-1); margin-right: var(--space-0-5); vertical-align: middle; white-space: nowrap; }
-  /* ── Dictation: compact recording popup (above the composer) ── */
+  /* ── Dictation: the listening pill (above the composer, or at the bottom of
+     the window when a hotkey started it). Bars and a clock while it listens;
+     words only when something went wrong. ── */
   .dict-popup { display: none; position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 60;
-    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-2xl); padding: var(--space-3) var(--space-3-5);
-    box-shadow: var(--shadow-lg); min-width: 250px; }
-  .dict-popup.open { display: block; }
-  .dict-popup-wave { display: flex; align-items: center; justify-content: center; gap: var(--space-0-5); height: 40px; margin-bottom: var(--space-2); }
-  .dict-popup-wave .dict-bar { width: 4px; height: 100%; border-radius: var(--radius-xs); background: var(--accent);
-    transform: scaleY(0.12); transition: transform .07s linear; will-change: transform; }
-  .dict-popup-meta { display: flex; align-items: center; gap: var(--space-1-5); font-size: var(--fs-sm); color: var(--dim); margin-bottom: var(--space-2-5); }
-  .dict-popup-dot { width: 8px; height: 8px; border-radius: var(--radius-round); background: var(--red); flex-shrink: 0;
+    align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-1-5) var(--space-1) var(--space-3);
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-pill);
+    box-shadow: var(--shadow-lg); white-space: nowrap; }
+  .dict-popup.open { display: flex; }
+  .dict-popup-wave { display: flex; align-items: center; gap: var(--space-0-5); height: 22px; }
+  .dict-popup-wave .dict-bar { width: 3px; height: 100%; border-radius: var(--radius-xs); background: var(--accent);
+    transform: scaleY(0.15); transition: transform .07s linear; will-change: transform; }
+  .dict-popup-meta { display: flex; align-items: center; gap: var(--space-1-5); font-size: var(--fs-sm); color: var(--dim);
+    font-variant-numeric: tabular-nums; }
+  .dict-popup-dot { width: 7px; height: 7px; border-radius: var(--radius-round); background: var(--red); flex-shrink: 0;
     animation: dictblink 1.1s ease-in-out infinite; }
   @keyframes dictblink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
-  .dict-popup-status { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
-  .dict-popup-btns { display: flex; gap: var(--space-1-5); justify-content: flex-end; }
-  .dict-popup-btns .btn { font-size: var(--fs-sm); padding: var(--space-1) var(--space-3); }
+  .dict-popup-status { overflow: hidden; text-overflow: ellipsis; max-width: 260px; color: var(--text); }
+  .dict-popup-status:empty { display: none; }
+  .dict-popup-btns { display: flex; gap: var(--space-1); }
+  .dict-popup-btns .btn { width: 28px; height: 28px; padding: 0; border-radius: var(--radius-round);
+    display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-sm); }
+  /* Held 🌐: letting go ends it, so no buttons. */
+  .dict-popup.dict-ptt .dict-popup-btns { display: none; }
+  .dict-popup.dict-ptt { padding-right: var(--space-3); }
+  /* Stopped, text on its way: the bars ripple and the clock stops blinking. */
+  .dict-popup.dict-busy .dict-popup-dot { animation: none; background: var(--dim); }
+  .dict-popup.dict-busy .dict-bar { transition: none; animation: dictbusy .9s ease-in-out infinite; }
+  .dict-popup.dict-busy .dict-bar:nth-child(2n) { animation-delay: .15s; }
+  .dict-popup.dict-busy .dict-bar:nth-child(3n) { animation-delay: .3s; }
+  @keyframes dictbusy { 0%,100% { transform: scaleY(0.15); } 50% { transform: scaleY(0.5); } }
+  .dict-popup.dict-said .dict-popup-wave, .dict-popup.dict-said .dict-popup-dot, .dict-popup.dict-said #dict-popup-time { display: none; }
+  @media (max-width: 600px) {
+    .dict-popup-btns .btn { width: 44px; height: 44px; }
+  }
   /* ── Dictation tab ── */
   .dict-recbar { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .dict-rec { width: 52px; height: 52px; min-width: 52px; border-radius: var(--radius-round); border: 1px solid var(--border);
@@ -10699,7 +10718,8 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .hk-trigger-row .input { flex: 1 1 auto; min-width: 0; }
 .hk-modal-foot { display: flex; gap: var(--space-2); align-items: center; }
 .hk-grow { flex: 1 1 auto; }
-.dict-popup.dict-floating { position: fixed; bottom: auto; right: auto; width: min(280px, calc(100vw - 16px)); z-index: 3000; }
+.dict-popup.dict-floating { position: fixed; left: 50%; right: auto; transform: translateX(-50%);
+  bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 3000; }
 @media (max-width: 600px) {
   .hk-all { padding: var(--space-2) var(--space-2-5); }
   .hk-row { gap: var(--space-2); }

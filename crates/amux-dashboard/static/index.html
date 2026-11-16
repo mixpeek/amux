@@ -3481,7 +3481,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
                  "Attach file" at the top. -->
             <button type="button" class="peek-more-danger" onclick="_peekMoreClose();_peekClearInput()" title="Clear the composer: text, saved draft, and any staged attachments">&#x1F5D1; Clear input</button>
           </div>
-          <!-- Compact recording popup: live volume bars + timer, right above the
+          <!-- The listening pill: live volume bars + timer, right above the
                composer. Stop → transcribe → text lands in the input. -->
           <div class="dict-popup" id="dict-popup">
             <div class="dict-popup-wave" id="dict-wave">
@@ -3496,8 +3496,8 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
               <span id="dict-popup-status" class="dict-popup-status">Listening…</span>
             </div>
             <div class="dict-popup-btns">
-              <button class="btn" onclick="_dictClosePopup(true)" title="Discard">Cancel</button>
-              <button class="btn primary" onclick="_dictStopRec()" title="Stop and transcribe">Done</button>
+              <button class="btn" onclick="_dictClosePopup(true)" title="Discard (Esc)" aria-label="Discard">&#x2715;</button>
+              <button class="btn primary" onclick="_dictStopRec()" title="Done: put the text in" aria-label="Done">&#x2713;</button>
             </div>
           </div>
         </div>

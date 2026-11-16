@@ -21,7 +21,7 @@ if [ "$DEV" = 1 ]; then BUNDLE_ID=com.amux.desktop.dev; fi
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
-SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-find.swift desktop/amux-rehome.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift desktop/amux-tabcolors.swift desktop/amux-recorder-core.swift desktop/amux-recorder.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
+SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-find.swift desktop/amux-dictation-core.swift desktop/amux-dictation.swift desktop/amux-rehome.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift desktop/amux-tabcolors.swift desktop/amux-recorder-core.swift desktop/amux-recorder.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
 BIN="$APP/Contents/MacOS/amux"
 ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
@@ -41,7 +41,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 MIN_MACOS=12.0
 # ScreenCaptureKit (system audio for the recorder) exists from macOS 13, so it
 # is weak-linked: on 12 the app runs and records the microphone only.
-FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -framework PDFKit -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
+FRAMEWORKS="-framework Cocoa -framework WebKit -framework Carbon -framework UserNotifications -framework ServiceManagement -framework AVFoundation -framework CoreMedia -framework PDFKit -framework Speech -Xlinker -weak_framework -Xlinker ScreenCaptureKit"
 compile() {  # $1 = output, $2 = optional -target
     # shellcheck disable=SC2086  # SRC and FRAMEWORKS are word lists
     xcrun swiftc -O -parse-as-library -D AMUX_APP ${2:+-target "$2"} -o "$1" $SRC $FRAMEWORKS

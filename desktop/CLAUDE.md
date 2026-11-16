@@ -4,7 +4,7 @@
 A Swift app (`amux-*.swift`) that shows the dashboard in WebKit windows, tabs and panes, with
 native panes, hotkeys, dictation, the recorder and workspaces. It talks to the page through
 script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`,
-`amuxRecorder`).
+`amuxRecorder`, `amuxDictation`).
 
 - Build: `AMUX_DESKTOP_NO_INSTALL=1 bash desktop/build-desktop.sh` builds `Amux.app` in the
   checkout without touching the installed app.
@@ -14,6 +14,10 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   `AMUX_DASHBOARD_DIR` (`palette-focus-e2e.py` shows how); otherwise the app talks to this Mac's
   running amux. `amux://test/key?k=f&mods=cmd` presses a key as AppKit routes it, and
   `amux://test/menu?title=Copy` chooses a menu item (`find-copy-e2e.py` uses both).
+- Dictation runs on device (`amux-dictation-core.swift`, macOS 26 SpeechAnalyzer) and talks
+  to the page through `amuxDictation`. `amux://test/globe?down=1|0` presses and lets go of 🌐
+  (`?tap=N` taps it), and `AMUX_DESKTOP_DICTATION_FILE=<audio>` makes a file the microphone in a
+  test copy, so `dictation-e2e.py` hears a known take without recording the room.
 - An agent's build is **Amux Dev** (`com.amux.desktop.dev`, no `amux://` handler, never a
   login item), a separate app from the owner's Amux. A test copy (`AMUX_DESKTOP_TEST=1`) is
   quiet: no Dock icon or menu bar, it never comes to the front or posts a notification, and

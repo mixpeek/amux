@@ -1297,7 +1297,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Data | `_dbSetMode` | onclick |
 | index.html | Query | `_dbSetMode` | onclick |
 | index.html | Structure | `_dbSetMode` | onclick |
-| index.html | Cancel | `_dictClosePopup` | onclick |
+| index.html | Discard | `_dictClosePopup` | onclick |
 | app.js | Copy | `_dictCopy` | onclick |
 | app.js | Insert into composer | `_dictInsertId` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |

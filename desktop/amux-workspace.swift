@@ -709,13 +709,7 @@ extension AppDelegate {
                     if self.globeDown { self.globeUsed = true }   // another modifier joined in
                     return e
                 }
-                if e.modifierFlags.contains(.function) {
-                    self.globeDown = true
-                    self.globeUsed = false
-                } else if self.globeDown {
-                    self.globeDown = false
-                    if !self.globeUsed { self.globeTapped() }
-                }
+                self.globeChanged(down: e.modifierFlags.contains(.function))
                 return e
             }
             guard self.globeDown else { return e }
@@ -724,15 +718,44 @@ extension AppDelegate {
             guard e.modifierFlags.contains(.function) else { self.globeDown = false; return e }
             // Any key with 🌐 means it was not a tap, Globe+arrow (Home, End) included.
             self.globeUsed = true
+            if self.globeHeld { return e }   // typing while dictating: the keys are the page's
             guard let k = globeKeyName(e) else { return e }
             if !e.isARepeat { self.sendGlobe("Globe+" + k) }
             return nil
         }
-        // Leaving amux with 🌐 held: its release goes to another app.
+        // Leaving amux with 🌐 held: its release goes to another app, so a
+        // take held open ends here.
         NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.globeDown = false
+            if self?.globeDown == true { self?.globeChanged(down: false) }
         }
     }
+
+    /// 🌐 pressed or let go. Let go alone it is a tap. Held alone past
+    /// globeHoldDelay it is "Globe Hold" (dictation, like Wispr Flow's fn),
+    /// and letting go is "Globe Release", which ends the take.
+    func globeChanged(down: Bool) {
+        if down {
+            globeDown = true
+            globeUsed = false
+            globeHoldTimer?.cancel()
+            let w = DispatchWorkItem { [weak self] in
+                guard let self = self, self.globeDown, !self.globeUsed else { return }
+                self.globeUsed = true
+                self.globeHeld = true
+                self.sendGlobe("Globe Hold")
+            }
+            globeHoldTimer = w
+            DispatchQueue.main.asyncAfter(deadline: .now() + globeHoldDelay, execute: w)
+        } else if globeDown {
+            globeDown = false
+            globeHoldTimer?.cancel()
+            if globeHeld { globeHeld = false; sendGlobe("Globe Release") }
+            else if !globeUsed { globeTapped() }
+        }
+    }
+
+    /// How long 🌐 is held before it dictates; a quicker press is a tap.
+    var globeHoldDelay: TimeInterval { 0.25 }
 
     /// A second tap within 0.45 s is "Globe Globe" (owner, 2026-11-03: "make
     /// hot key for starting dictation pressing globe twice"). The first tap
@@ -744,13 +767,17 @@ extension AppDelegate {
     }
 
     func sendGlobe(_ combo: String) {
-        guard let c = focusedPage() else { return }
+        // A quiet test copy has no key window: its shown page stands in.
+        guard let c = focusedPage() ?? (desktopTestMode ? controllers.first(where: { isShown($0) }) : nil) else { return }
         let lit = String(data: (try? JSONSerialization.data(withJSONObject: [combo])) ?? Data(), encoding: .utf8)?.dropFirst().dropLast() ?? ""
         // macOS starts its own dictation on 🌐🌐 when Keyboard > "Press 🌐 key to"
         // is Start Dictation (AppleFnUsageType 3); the page says so once.
         let macDictation = UserDefaults(suiteName: "com.apple.HIToolbox")?.integer(forKey: "AppleFnUsageType") == 3
-        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit), {mac_dictation: \(macDictation)}) : 'no_hook'") { r, _ in
-            dlog("verdict=globe_key combo=\(combo) mac_dictation=\(macDictation) page=\(c.viewHash) result=\(r ?? "-")")
+        // Wispr Flow dictates on a held fn (🌐) from any app; with it running
+        // both would take the same words, so the page leaves the hold to it.
+        let wispr = !desktopTestMode && !NSRunningApplication.runningApplications(withBundleIdentifier: "com.electron.wispr-flow").isEmpty
+        c.webView.evaluateJavaScript("typeof window._hkNativeKey === 'function' ? window._hkNativeKey(\(lit), {mac_dictation: \(macDictation), wispr: \(wispr)}) : 'no_hook'") { r, _ in
+            dlog("verdict=globe_key combo=\(combo) mac_dictation=\(macDictation) wispr=\(wispr) page=\(c.viewHash) result=\(r ?? "-")")
         }
     }
 
@@ -1045,6 +1072,14 @@ extension AppDelegate {
         case "/pointer": Pointer.testOverride = (NSPoint(x: num("x"), y: num("y")), q.contains { $0.name == "down" && $0.value == "1" })
         case "/pointer-clear": Pointer.testOverride = nil
         case "/recorder": recorderTestHook(q)
+        // 🌐 pressed (?down=1) or let go (?down=0), as the keyboard does it;
+        // ?tap=N taps it N times at once (two hook calls are too far apart).
+        case "/globe":
+            if let n = Int(q.first { $0.name == "tap" }?.value ?? "") {
+                for _ in 0..<n { globeChanged(down: true); globeChanged(down: false) }
+            } else {
+                globeChanged(down: q.first { $0.name == "down" }?.value == "1")
+            }
         // A sideways scroll over the focused pane's tab strip (?dx= in points).
         case "/pane-strip-scroll":
             if let g = arrangeTarget.flatMap({ w in controllers.first { $0.window === w } })?.grid, let f = g.focused { g.views[f]?.scrollStrip(by: num("dx")) }
