@@ -457,6 +457,10 @@ impl Store {
         let mut conn = Connection::open(db_path)?;
         configure_connection(&conn)?;
         migrate::apply_all_guarded(&mut conn, db_path)?;
+        // AMUX_LEDGER into the table the receipt trigger reads (api/ledger.rs).
+        if let Err(e) = crate::api::ledger::configure(&conn) {
+            tracing::warn!(error = %e, verdict = "ledger_config_unwritten", "AMUX_LEDGER not applied to the receipt trigger");
+        }
 
         let (write_tx, write_rx) = mpsc::channel::<WriteRequest>();
         let (events_tx, _) = tokio::sync::broadcast::channel(4096);
