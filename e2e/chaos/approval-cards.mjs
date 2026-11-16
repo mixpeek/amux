@@ -38,7 +38,7 @@ const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
 const checks = [];
 const check = (name, ok, detail) => {
   checks.push({name, ok: !!ok});
-  if (!ok) throw Error(name + ': ' + JSON.stringify(detail).slice(0, 2000));
+  if (!ok) throw Error(name + ': ' + String(JSON.stringify(detail)).slice(0, 2000));
   console.log('ok -', name);
 };
 const ownerToken = () => fs.readFileSync(path.join(amux.home, 'auth_token'), 'utf8').trim();
@@ -90,6 +90,13 @@ const formPost = (p, form) => new Promise((resolve, reject) => {
   });
   r.on('error', reject); r.write(data); r.end();
 });
+
+// One file mailbox, so a worker's external send has a sender and is held:
+// with no account at all it is refused before the hold (de0fc8719). A file
+// mailbox never sends; the email card below is released by scheduling, which
+// is recorded before the draft-only check a real send meets.
+fs.mkdirSync(path.join(amux.home, 'mailboxes'), {recursive: true});
+fs.writeFileSync(path.join(amux.home, 'mailboxes', 'e2e-cards@example.com.json'), JSON.stringify({account: 'e2e-cards@example.com', messages: []}));
 
 let ok = false;
 try {
