@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Claude Code Projects (2026): Coordinator Threads Compared | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Claude Code Projects compared: who coordinates the work, where agents run, Codex and Gemini CLI, sharing with a team, and price. Projects has Claude split a stream of tasks into parallel cloud threads; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board on a machine you control.">
+  <meta name="keywords" content="amux vs claude code projects, claude code projects, claude code projects alternative, claude code coordinator threads, claude code parallel cloud sessions, self-hosted claude code projects, claude projects for teams">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-claude-code-projects/">
+  <meta property="og:title" content="amux vs Claude Code Projects (2026): Coordinator Threads Compared">
+  <meta property="og:description" content="amux vs Claude Code Projects compared: who coordinates the work, where agents run, Codex and Gemini CLI, sharing with a team, and price. Projects has Claude split a stream of tasks into parallel cloud threads; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board on a machine you control.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-claude-code-projects/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Claude Code Projects (2026): Coordinator Threads Compared">
+  <meta name="twitter:description" content="amux vs Claude Code Projects compared: who coordinates the work, where agents run, Codex and Gemini CLI, sharing with a team, and price. Projects has Claude split a stream of tasks into parallel cloud threads; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board on a machine you control.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Claude Code Projects", "item": "https://amux.io/compare/amux-vs-claude-code-projects/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Claude Code Projects: Which Should Coordinate Your Agents?", "description": "amux vs Claude Code Projects compared: who coordinates the work, where agents run, Codex and Gemini CLI, sharing with a team, and price. Projects has Claude split a stream of tasks into parallel cloud threads; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board on a machine you control.", "url": "https://amux.io/compare/amux-vs-claude-code-projects/", "datePublished": "2026-11-16", "dateModified": "2026-11-16", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "image": "https://amux.io/og-image.png", "mainEntityOfPage": {"@type": "WebPage", "@id": "https://amux.io/compare/amux-vs-claude-code-projects/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What are Claude Code Projects?", "acceptedAnswer": {"@type": "Answer", "text": "A project is one ongoing conversation where Claude coordinates a stream of related work. You tell it what needs doing and it starts a thread for each task. Each thread is a separate Claude Code session, usually in Anthropic's cloud, on its own branch, and threads share the project's repositories, instructions and memory. It is in public beta on Pro, Max and Ultra plans."}}, {"@type": "Question", "name": "Is amux an alternative to Claude Code Projects?", "acceptedAnswer": {"@type": "Answer", "text": "For some jobs. Projects is the simplest way to have Claude split work across parallel cloud sessions and hand back pull requests, with nothing to host. amux is for running a team of agents on a machine you control: Claude Code, Codex and Gemini CLI on one shared board, teammates on the same server, your own tools in every session, a scheduler and a native iPhone app."}}, {"@type": "Question", "name": "Can I share a Claude Code project with my team?", "acceptedAnswer": {"@type": "Answer", "text": "Not during the beta. Anthropic's docs say a project belongs to one user, its threads cannot be shared, and there are no organization-level controls yet; Projects is not offered on Team or Enterprise plans. On amux you invite teammates to the same server, and everyone sees the same board and agents."}}, {"@type": "Question", "name": "Do Claude Code Projects run on my own machine?", "acceptedAnswer": {"@type": "Answer", "text": "Threads run in Anthropic's cloud by default. You can ask Claude to run a single thread on your computer through Remote Control, and that thread runs only while your computer is awake. Anthropic says running threads on your machine alongside your local tools is coming soon. amux runs every agent on the machine you install it on, or on your own amux Cloud server."}}, {"@type": "Question", "name": "Can Claude Code Projects use Codex or Gemini CLI?", "acceptedAnswer": {"@type": "Answer", "text": "No. Project threads are Claude Code sessions with Anthropic as the model provider. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents side by side."}}]}</script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Claude Code Projects</span></div>
+
+    <h1>amux vs Claude Code Projects: Which Should Coordinate Your Agents?</h1>
+    <p class="subtitle">Claude Code Projects and amux both run many coding agents in parallel and let you steer them from your phone. Compared on who coordinates the work, where the agents run, which agents you can use, sharing and price. Updated November 2026.</p>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> use <a href="#projects">Claude Code Projects</a> if you are on a Pro, Max or Ultra plan, your work lives in GitHub repositories, and you want Claude to split a goal into parallel cloud threads and hand back pull requests, with nothing to host. Use <a href="#amux">amux</a> if you want the agents on a machine you control, want Codex or Gemini CLI next to Claude Code, want teammates on the same board, or want your own skills, MCP servers and local tools in every agent's session.
+    </div>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-claude-code-projects">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-claude-code-projects" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo, and you can invite teammates to the same server.</p>
+    </div>
+
+    <h2 id="what">What are amux and Claude Code Projects?</h2>
+    <p><strong>amux</strong> is a self-hosted control plane for running a team of AI coding agents from one dashboard or your phone. It launches and monitors parallel Claude Code, Codex, Gemini CLI, OpenCode and Ollama sessions, with a shared kanban board agents claim tasks from, agent-to-agent messages, shared memory, a scheduler, email and browser automation. It is one Rust binary over tmux, runs on any Mac or Linux machine, and is source-available under MIT + Commons Clause.</p>
+    <p><strong><a href="https://code.claude.com/docs/en/claude-projects" target="_blank" rel="noopener">Claude Code Projects</a></strong> is one long-running conversation in which Claude acts as a coordinator. You send it work (a bug report, a stack trace, a list of tasks) and it starts a thread for each piece or passes it to the thread already working in that area. Each thread is a separate Claude Code session, usually in Anthropic's cloud, on its own branch, and it opens a pull request when the work calls for one. Threads share the project's repositories, instructions and memory, and an Overview pane shows which finished, which pull requests are ready and which thread is waiting on you. Anthropic <a href="https://claude.com/resources/articles/projects-redesigned" target="_blank" rel="noopener">announced the redesign</a> in November 2026; Projects is in public beta on Pro, Max and Ultra plans and rolling out gradually.</p>
+
+    <h2 id="table">amux vs Claude Code Projects comparison table</h2>
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:150px;"></th><th>amux</th><th>Claude Code Projects</th></tr></thead>
+        <tbody>
+          <tr><td>Best for</td><td>Running a team of agents on shared work, on your machine or an always-on server you control</td><td>Handing Claude a stream of related tasks on GitHub repositories and getting pull requests back</td></tr>
+          <tr><td>Who splits the work</td><td>You, or a lead agent you set up: tasks go on a shared board, agents claim them and message each other</td><td>Claude's coordinator conversation starts a thread per task and routes new work to existing threads</td></tr>
+          <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Claude Code only, with Anthropic as the model provider</td></tr>
+          <tr><td>Where agents run</td><td>Any Mac or Linux machine you self-host on, or your own server on amux Cloud</td><td>Anthropic's cloud; a thread can run on your computer through Remote Control</td></tr>
+          <tr><td>Laptop closed</td><td>Keeps working on amux Cloud or any always-on machine</td><td>Cloud threads keep working; a thread on your computer runs only while it is awake</td></tr>
+          <tr><td>Your local setup</td><td>Every agent runs with your own CLI config, skills, MCP servers and tools</td><td>Cloud threads get each repository's CLAUDE.md, but not the repository's skills, project settings or MCP config, and nothing from your machine</td></tr>
+          <tr><td>Interface</td><td>Web dashboard, iPhone and iPad app, Mac app, the terminal; Android through the installable web app</td><td>claude.ai/code, the Claude desktop app and the Claude mobile app; not the CLI, VS Code or JetBrains</td></tr>
+          <tr><td>Sharing</td><td>Invite teammates to the same server and board</td><td>A project belongs to one user and cannot be shared; no organization controls during the beta</td></tr>
+          <tr><td>Recovery</td><td>Resumes after usage limits; workers return after a macOS reboot; stall alerts</td><td>A cloud sandbox pauses between turns; if it cannot resume, the thread restarts from a fresh clone and uncommitted changes can be lost</td></tr>
+          <tr><td>Scheduled runs</td><td>Built-in scheduler and event subscriptions</td><td>Part of a project can run as a cloud scheduled task</td></tr>
+          <tr><td>Availability</td><td>Generally available</td><td>Public beta on Pro, Max and Ultra, rolling out gradually, with a waitlist; not on Team or Enterprise plans yet</td></tr>
+          <tr><td>License</td><td>MIT + Commons Clause, source-available</td><td>Part of Claude Code, proprietary (Anthropic commercial terms)</td></tr>
+          <tr><td>Price</td><td>Free to self-host; Cloud Solo $39, Team $69, Max $129 per month; agents use your own subscriptions or API keys</td><td>Included in the plan; a project draws on the same plan limits as your other Claude Code sessions and uses them faster</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:0.82rem;color:var(--fg-mute);">Projects details from Anthropic's <a href="https://code.claude.com/docs/en/claude-projects" target="_blank" rel="noopener">Projects docs</a> and <a href="https://claude.com/resources/articles/projects-redesigned" target="_blank" rel="noopener">announcement</a>, checked November 16, 2026. Projects is in beta, so its limits and plans may change.</p>
+
+    <h2 id="coordinate">Who coordinates the work?</h2>
+    <p>This is the main difference. In a project, Claude does the coordinating: you brief the project conversation the way you would brief a chief of staff, and it decides what becomes a thread, sends follow-ups to the thread already working in that area, and reports back. It sees what threads report, not every step they take. For a goal that splits cleanly by repository or by task (bring every service up to a new lint config, migrate the callers of an old endpoint), that saves you the dividing and the stitching.</p>
+    <p>amux puts the work on a shared kanban board. Agents claim cards, message each other and pass work along; you can run a lead agent that files and assigns cards, or describe what you want in the Intent tab and amux sends it to the right worker. Every agent and every card is visible to you and, on a shared server, to your teammates. You get more control over who does what, and you do more of the setup.</p>
+
+    <h2 id="where">Where do the agents run?</h2>
+    <p>Project threads are cloud sessions in Anthropic's cloud by default, so they keep working after you close your laptop and need nothing installed. The tradeoff is that a cloud thread starts from the project's repositories, instructions and connectors, not from your machine: your skills, settings, MCP servers and local tools are not there unless you add them to the project's environment. For a task that needs a local database or a tool behind your VPN, you can ask Claude to run that one thread on your computer through Remote Control, and then it runs only while the computer is awake.</p>
+    <p>amux runs wherever you install it, and each agent runs with the same CLI setup you use yourself. Self-hosted on a Mac or Linux machine that stays on, it keeps a fleet going overnight. <strong>amux Cloud</strong> provisions a whole dedicated server at <code>yourname.amux.io</code> in about three minutes: 4 vCPU and 8 GB on Solo, 8 vCPU and 16 GB on Team, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+
+    <h2 id="agents">Can I use Codex or Gemini CLI?</h2>
+    <p>Not in a project. Threads are Claude Code sessions with Anthropic as the model provider, and Projects is not offered through Amazon Bedrock, Google Cloud or Microsoft Foundry. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents side by side on one board, so you can give each task to the agent that suits it, or keep work moving on another provider when one plan hits its limit.</p>
+
+    <h2 id="cost">How much do they cost?</h2>
+    <p>Projects has no price of its own: it is part of Pro, Max and Ultra plans. Anthropic's docs warn that a project uses your plan's limits faster than single sessions, since several threads run at once, and let you pick the model and effort for the coordinator and for the threads. amux is free to self-host and uses the subscriptions or API keys you already have. amux Cloud costs $39/mo for Solo, $69/mo for Team and $129/mo for Max, for the server; model usage stays on your own accounts.</p>
+
+    <h2 id="choose">When should you choose amux or Claude Code Projects?</h2>
+    <h3 id="projects">Choose Claude Code Projects if</h3>
+    <ul>
+      <li>You are on Pro, Max or Ultra, use only Claude Code, and your work lives in GitHub repositories or uploaded files.</li>
+      <li>You want Claude to split a goal into parallel threads and return pull requests, without dividing the work yourself.</li>
+      <li>You want nothing to host or keep running, and you work alone.</li>
+    </ul>
+    <h3 id="amux">Choose amux if</h3>
+    <ul>
+      <li>You want the agents, their transcripts and your code on a machine you control.</li>
+      <li>You run Codex or Gemini CLI alongside Claude Code and want them on one board.</li>
+      <li>You want teammates working on the same board and the same agents.</li>
+      <li>You want every agent to have your own skills, MCP servers and local tools.</li>
+      <li>You want agents working with your laptop closed on your own server: <a href="/start/?source=amux-vs-claude-code-projects">amux Cloud</a> gives you a dedicated always-on server from $39/mo.</li>
+    </ul>
+    <p>Related: <a href="/compare/amux-vs-claude-code-agent-view/">amux vs Claude Code agent view</a>, <a href="/compare/amux-vs-claude-code-agent-teams/">amux vs Claude Code agent teams</a>, <a href="/compare/amux-vs-claude-managed-agents/">amux vs Claude Managed Agents</a>, <a href="/compare/amux-vs-claude-code-web-ui/">amux vs the Claude Code web UI</a>.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <h3>What are Claude Code Projects?</h3>
+    <p>A project is one ongoing conversation where Claude coordinates a stream of related work. You tell it what needs doing and it starts a thread for each task. Each thread is a separate Claude Code session, usually in Anthropic's cloud, on its own branch, and threads share the project's repositories, instructions and memory. It is in public beta on Pro, Max and Ultra plans.</p>
+    <h3>Is amux an alternative to Claude Code Projects?</h3>
+    <p>For some jobs. Projects is the simplest way to have Claude split work across parallel cloud sessions and hand back pull requests, with nothing to host. amux is for running a team of agents on a machine you control: Claude Code, Codex and Gemini CLI on one shared board, teammates on the same server, your own tools in every session, a scheduler and a native iPhone app.</p>
+    <h3>Can I share a Claude Code project with my team?</h3>
+    <p>Not during the beta. Anthropic's docs say a project belongs to one user, its threads cannot be shared, and there are no organization-level controls yet; Projects is not offered on Team or Enterprise plans. On amux you invite teammates to the same server, and everyone sees the same board and agents.</p>
+    <h3>Do Claude Code Projects run on my own machine?</h3>
+    <p>Threads run in Anthropic's cloud by default. You can ask Claude to run a single thread on your computer through Remote Control, and that thread runs only while your computer is awake. Anthropic says running threads on your machine alongside your local tools is coming soon. amux runs every agent on the machine you install it on, or on your own amux Cloud server.</p>
+    <h3>Can Claude Code Projects use Codex or Gemini CLI?</h3>
+    <p>No. Project threads are Claude Code sessions with Anthropic as the model provider. amux runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama agents side by side.</p>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-end">
+      <h3>Or let amux Cloud run it for you</h3>
+      <p>Your agents keep running when your laptop sleeps, and you steer them from your phone with the web app or the iOS app. You get your own always-on server at <code>yourname.amux.io</code> from $39/mo, signed in with your own Claude, ChatGPT or Gemini account or an API key.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-claude-code-projects">Start amux Cloud</a>
+        <a class="btn" href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">Self-host free on GitHub</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-claude-code-projects" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, twice the room of Solo, and you can invite teammates to the same server.</p>
+    </div>
+  </main>
+
+
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
+    </div>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a><a href="/own-your-data/">Your data</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>
