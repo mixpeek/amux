@@ -4274,6 +4274,70 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/api/audit/export",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/audit/holds",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/audit/holds/{id}/lift",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/audit/person",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/audit/person/erase",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/audit/kill-switch",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/mfa/enroll",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/enroll/confirm",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/verify",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/step-up",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/recovery-codes",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/mfa/reset",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/sso/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/scim/tokens",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/scim/tokens/{id}",
+        methods: &["DELETE"],
+    },
+    RouteEntry {
         path: "/api/trace/{id}",
         methods: &["GET"],
     },

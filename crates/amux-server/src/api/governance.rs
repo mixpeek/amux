@@ -474,13 +474,58 @@ pub fn subject(raw: &str) -> Option<Subject> {
     let email = s.strip_prefix("member:").unwrap_or(s).trim().to_ascii_lowercase();
     // A person is an email. `owner`, a worker or an app is not erasable here.
     let ok = email.len() >= 3 && email.contains('@') && !email.starts_with('@') && !email.ends_with('@')
-        && !email.contains(char::is_whitespace);
+        && !email.contains(char::is_whitespace) && !email.contains(['*', '?', '[', ']']);
     ok.then(|| Subject { actor: format!("member:{email}"), email })
 }
 
-/// Rows naming the person in any of the four personal columns.
-const PERSON_MATCH: &str = "(instr(lower(COALESCE(actor,'')), ?1) > 0 OR instr(lower(COALESCE(claimed,'')), ?1) > 0
-    OR instr(lower(COALESCE(on_behalf_of,'')), ?1) > 0 OR instr(lower(COALESCE(resource,'')), ?1) > 0)";
+/// SQL: does `col` name the email bound to `param` as a whole address? The
+/// email must stand alone: what precedes it is not a local-part character and
+/// what follows is not a domain character, so ann@x.io does not match
+/// joann@x.io (land review, 2026-11-16: an `instr` match would have exported,
+/// redacted and deleted another person's records). `subject` refuses GLOB
+/// metacharacters, so the email is literal.
+fn names(col: &str, param: &str) -> String {
+    let v = format!("lower(COALESCE({col},''))");
+    // After the address: the end, a non-domain character, or a sentence's
+    // full stop (a `.` that ends the text or is followed by a non-domain
+    // character).
+    let before = ["", "'*[^a-z0-9._%+-]' || "];
+    let after = ["", " || '[^a-z0-9.-]*'", " || '.'", " || '.[^a-z0-9-]*'"];
+    let mut alts = Vec::new();
+    for b in before {
+        for a in after {
+            alts.push(if b.is_empty() && a.is_empty() { format!("{v} = {param}") } else { format!("{v} GLOB {b}{param}{a}") });
+        }
+    }
+    format!("({})", alts.join(" OR "))
+}
+
+/// Ledger rows naming the person (`?1`) in any of the four personal columns.
+/// `prefix` qualifies the columns (`l.` in a join).
+fn person_match(prefix: &str) -> String {
+    let cols: Vec<String> = ["actor", "claimed", "on_behalf_of", "resource"]
+        .iter().map(|c| names(&format!("{prefix}{c}"), "?1")).collect();
+    format!("({})", cols.join(" OR "))
+}
+
+/// The receipt text with every whole mention of the person (`member:` form or
+/// bare email) replaced by `token`, on the same boundaries as `names`.
+fn redact_text(text: &str, email: &str, token: &str) -> String {
+    let re = match regex::Regex::new(&format!(r"(?i)(^|[^a-z0-9._%+-])(?:member:)?{}(\.?(?:[^a-z0-9.-]|$))", regex::escape(email))) {
+        Ok(re) => re,
+        Err(e) => {
+            // Unreachable for an escaped address; if it ever happens, erase
+            // too much of the receipt text rather than leave the name in it.
+            tracing::warn!(error = %e, verdict = "erase_redact_pattern_failed", measured = true, n_considered = 1,
+                "the erase pattern did not compile; the receipt text is redacted by plain substring");
+            return text.replace(email, token);
+        }
+    };
+    // Twice: a match consumes the boundary after it, so two adjacent mentions
+    // need a second pass.
+    let once = re.replace_all(text, |c: &regex::Captures| format!("{}{token}{}", &c[1], &c[2]));
+    re.replace_all(&once, |c: &regex::Captures| format!("{}{token}{}", &c[1], &c[2])).into_owned()
+}
 
 pub fn person(conn: &Connection, s: &Subject) -> rusqlite::Result<Value> {
     if let Err(e) = ledger::seal(conn) {
@@ -489,7 +534,7 @@ pub fn person(conn: &Connection, s: &Subject) -> rusqlite::Result<Value> {
     let ledger_rows: Vec<Value> = {
         let mut st = conn.prepare(&format!(
             "SELECT seq, event_id, ts, kind, actor, claimed, on_behalf_of, action, resource, decision, outcome, trace_id
-               FROM _amux_ledger WHERE {PERSON_MATCH} ORDER BY seq"))?;
+               FROM _amux_ledger WHERE {} ORDER BY seq", person_match("")))?;
         let it = st.query_map([&s.email], |r| Ok(json!({
             "seq": r.get::<_, i64>(0)?, "event_id": r.get::<_, String>(1)?, "ts": r.get::<_, i64>(2)?,
             "kind": r.get::<_, String>(3)?, "actor": r.get::<_, String>(4)?, "claimed": r.get::<_, Option<String>>(5)?,
@@ -499,18 +544,18 @@ pub fn person(conn: &Connection, s: &Subject) -> rusqlite::Result<Value> {
         it.collect::<rusqlite::Result<_>>()?
     };
     let interactions: Vec<Value> = {
-        let mut st = conn.prepare(
+        let mut st = conn.prepare(&format!(
             "SELECT id, method, path, actor, status, created_at FROM _amux_interactions
-              WHERE instr(lower(actor), ?1) > 0 ORDER BY created_at")?;
+              WHERE {} ORDER BY created_at", names("actor", "?1")))?;
         let it = st.query_map([&s.email], |r| Ok(json!({"id": r.get::<_, String>(0)?, "method": r.get::<_, String>(1)?,
             "path": r.get::<_, String>(2)?, "actor": r.get::<_, String>(3)?, "status": r.get::<_, Option<i64>>(4)?,
             "created_at": r.get::<_, i64>(5)?})))?;
         it.collect::<rusqlite::Result<_>>()?
     };
     let receipts: Vec<Value> = {
-        let mut st = conn.prepare(
+        let mut st = conn.prepare(&format!(
             "SELECT id, actor, action, resource, effect, created_at FROM _amux_policy_receipts
-              WHERE instr(lower(actor), ?1) > 0 OR instr(lower(COALESCE(rationale,'')), ?1) > 0 ORDER BY created_at")?;
+              WHERE {} OR {} ORDER BY created_at", names("actor", "?1"), names("rationale", "?1")))?;
         let it = st.query_map([&s.email], |r| Ok(json!({"id": r.get::<_, String>(0)?, "actor": r.get::<_, String>(1)?,
             "action": r.get::<_, Option<String>>(2)?, "resource": r.get::<_, Option<String>>(3)?,
             "effect": r.get::<_, Option<String>>(4)?, "created_at": r.get::<_, Option<String>>(5)?})))?;
@@ -557,7 +602,7 @@ pub fn erase(conn: &Connection, s: &Subject, p: &Principal, dry_run: bool) -> ru
     }
     let seqs: Vec<i64> = {
         let mut st = conn.prepare(&format!(
-            "SELECT seq FROM _amux_ledger WHERE redacted_at IS NULL AND {PERSON_MATCH} ORDER BY seq"))?;
+            "SELECT seq FROM _amux_ledger WHERE redacted_at IS NULL AND {} ORDER BY seq", person_match("")))?;
         let it = st.query_map([&s.email], |r| r.get(0))?;
         it.collect::<rusqlite::Result<_>>()?
     };
@@ -565,12 +610,12 @@ pub fn erase(conn: &Connection, s: &Subject, p: &Principal, dry_run: bool) -> ru
         let mut st = conn.prepare(&format!(
             "SELECT DISTINCT h.id FROM _amux_ledger l JOIN _amux_ledger_holds h
               WHERE l.redacted_at IS NULL AND {} AND {}",
-            PERSON_MATCH.replace("COALESCE(", "COALESCE(l."), ledger::HOLD_MATCH))?;
+            person_match("l."), ledger::HOLD_MATCH))?;
         let it = st.query_map([&s.email], |r| r.get(0))?;
         it.collect::<rusqlite::Result<_>>()?
     };
     let interactions: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM _amux_interactions WHERE instr(lower(actor), ?1) > 0", [&s.email], |r| r.get(0))?;
+        &format!("SELECT COUNT(*) FROM _amux_interactions WHERE {}", names("actor", "?1")), [&s.email], |r| r.get(0))?;
     if !held.is_empty() {
         counters::bump(&counters::ERASE_HELD, 1);
         tracing::warn!(holds = ?held, rows = seqs.len(), verdict = "erase_refused_legal_hold", measured = true,
@@ -588,7 +633,7 @@ pub fn erase(conn: &Connection, s: &Subject, p: &Principal, dry_run: bool) -> ru
     for seq in &seqs {
         conn.execute("INSERT INTO _amux_ledger_erase_gate (seq) VALUES (?1)", [seq])?;
     }
-    let redact = |col: &str| format!("{col} = CASE WHEN instr(lower(COALESCE({col},'')), ?2) > 0 THEN ?3 ELSE {col} END");
+    let redact = |col: &str| format!("{col} = CASE WHEN {} THEN ?3 ELSE {col} END", names(col, "?2"));
     let sql = format!(
         "UPDATE _amux_ledger SET {}, {}, {}, {}, redacted_at = ?4 WHERE seq = ?1",
         redact("actor"), redact("claimed"), redact("on_behalf_of"), redact("resource"));
@@ -609,15 +654,23 @@ pub fn erase(conn: &Connection, s: &Subject, p: &Principal, dry_run: bool) -> ru
     )?;
     // The working trails: interaction receipts are working state (14 days),
     // deleted; policy receipts keep their row with the name replaced.
-    conn.execute("DELETE FROM _amux_interaction_effects WHERE interaction_id IN
-        (SELECT id FROM _amux_interactions WHERE instr(lower(actor), ?1) > 0)", [&s.email])?;
-    let gone = conn.execute("DELETE FROM _amux_interactions WHERE instr(lower(actor), ?1) > 0", [&s.email])?;
-    let receipts = conn.execute(
-        "UPDATE _amux_policy_receipts SET actor = CASE WHEN instr(lower(actor), ?1) > 0 THEN ?2 ELSE actor END,
-                rationale = replace(replace(rationale, ?3, ?2), ?1, ?2)
-          WHERE instr(lower(actor), ?1) > 0 OR instr(lower(COALESCE(rationale,'')), ?1) > 0",
-        rusqlite::params![s.email, token, s.actor],
-    )?;
+    let by_actor = names("actor", "?1");
+    conn.execute(&format!("DELETE FROM _amux_interaction_effects WHERE interaction_id IN
+        (SELECT id FROM _amux_interactions WHERE {by_actor})"), [&s.email])?;
+    let gone = conn.execute(&format!("DELETE FROM _amux_interactions WHERE {by_actor}"), [&s.email])?;
+    let hits: Vec<(String, String, Option<String>)> = {
+        let mut st = conn.prepare(&format!(
+            "SELECT id, actor, rationale FROM _amux_policy_receipts WHERE {by_actor} OR {}", names("rationale", "?1")))?;
+        let it = st.query_map([&s.email], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        it.collect::<rusqlite::Result<_>>()?
+    };
+    let mut receipts = 0usize;
+    for (rid, actor, rationale) in &hits {
+        let actor = redact_text(actor, &s.email, &token);
+        let rationale = rationale.as_deref().map(|t| redact_text(t, &s.email, &token));
+        receipts += conn.execute("UPDATE _amux_policy_receipts SET actor = ?2, rationale = ?3 WHERE id = ?1",
+            rusqlite::params![rid, actor, rationale])?;
+    }
     counters::bump(&counters::ERASURES, 1);
     counters::bump(&counters::ERASED_ROWS, n as u64);
     tracing::warn!(erasure = %id, ledger_rows = n, interactions = gone, receipts, verdict = "person_erased",
@@ -904,7 +957,7 @@ mod tests {
             c.query_row("SELECT actor FROM _amux_ledger WHERE event_id='a1'", [], |r| r.get(0)).unwrap(),
             c.query_row("SELECT resource FROM _amux_ledger WHERE event_id='a2'", [], |r| r.get(0)).unwrap());
         assert_eq!((a1.as_str(), a2.as_str()), (token.as_str(), token.as_str()));
-        let left: i64 = c.query_row(&format!("SELECT COUNT(*) FROM _amux_ledger WHERE {PERSON_MATCH}"), ["ann@x.io"], |r| r.get(0)).unwrap();
+        let left: i64 = c.query_row(&format!("SELECT COUNT(*) FROM _amux_ledger WHERE {}", person_match("")), ["ann@x.io"], |r| r.get(0)).unwrap();
         assert_eq!(left, 0, "no row names her any more");
         for (id, h) in &before {
             let now: String = c.query_row("SELECT hash FROM _amux_ledger WHERE event_id=?1", [id], |r| r.get(0)).unwrap();
@@ -916,6 +969,31 @@ mod tests {
         // Bob is untouched.
         let b: String = c.query_row("SELECT actor FROM _amux_ledger WHERE event_id='b1'", [], |r| r.get(0)).unwrap();
         assert_eq!(b, "member:bob@x.io");
+    }
+
+    #[test]
+    fn erasing_ann_leaves_joann_whose_address_contains_hers() {
+        let c = db();
+        seed(&c);
+        ledger::append(&c, &ev("j1", 500, "member:joann@x.io", "worker:rothco"));
+        let ann = subject("ann@x.io").unwrap();
+        let export = person(&c, &ann).unwrap();
+        assert!(!export.to_string().contains("joann"), "ann's export holds only ann: {export}");
+        let v = erase(&c, &ann, &owner(), false).unwrap();
+        assert_eq!(v["ledger_rows"], 2, "a1 and a2, not joann's j1: {v}");
+        let j: String = c.query_row("SELECT actor FROM _amux_ledger WHERE event_id='j1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(j, "member:joann@x.io");
+        assert!(subject("a*@x.io").is_none(), "a glob character is not an address");
+        // A sentence's full stop is a boundary; a longer domain is not.
+        let n = |t: &str| c.query_row(&format!("SELECT {}", names("?2", "?1")), ["ann@x.io", t], |r| r.get::<_, bool>(0)).unwrap();
+        assert!(n("mail ann@x.io.") && n("ann@x.io. next") && n("member:ann@x.io"));
+        assert!(!n("ann@x.io.uk") && !n("joann@x.io") && !n("ann@x.iox"));
+    }
+
+    #[test]
+    fn receipt_text_loses_ann_and_keeps_joann() {
+        let t = redact_text("sent for member:ann@x.io, cc joann@x.io and Ann@X.io.", "ann@x.io", "erased:e1");
+        assert_eq!(t, "sent for erased:e1, cc joann@x.io and erased:e1.");
     }
 
     #[test]

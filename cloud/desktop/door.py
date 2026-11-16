@@ -1082,10 +1082,17 @@ JOIN_PAGE = PAGE.replace('<form method="post" action="/_door/login">', '<form me
     '<h1>amux</h1><p>%(host)s</p>', '<h1>Join %(host)s</h1><p>You were invited to this amux server. Choose the password you will sign in with.</p>').replace(
     '<label for="u">Username</label>', '<label for="u">Your email</label>').replace(
     'autocomplete="current-password" required>', 'autocomplete="new-password" minlength="10" required>').replace(
-    '<label for="c">Code from your authenticator app (if you set one up)</label><input id="c" name="code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9 ]*">\n', ''
+    # The join page has no code field; the password confirmation takes its place.
+    '<label for="c">Code from your authenticator app (if you set one up)</label><input id="c" name="code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9 ]*">\n',
     '<label for="p2">Password again</label><input id="p2" name="password2" type="password" autocomplete="new-password" required>').replace(
     '<input type="hidden" name="next" value="%(next)s">', '<input type="hidden" name="invite" value="%(next)s">').replace(
     '<button type="submit">Sign in</button>', '<button type="submit">Join</button>').replace('%(allow)s', '')
+
+# str.replace does nothing when its pattern is missing, so a change to PAGE's
+# markup would quietly drop a join-page field (land review, 2026-11-16).
+for _needle in ('action="/_door/join"', 'name="password2"', 'name="invite"', 'autocomplete="new-password" minlength="10"'):
+    if _needle not in JOIN_PAGE:
+        raise RuntimeError("door: JOIN_PAGE lost " + _needle + "; a PAGE markup change broke its replace chain")
 
 
 ALLOW_PAGE = """<!doctype html><html><head><meta charset="utf-8">
