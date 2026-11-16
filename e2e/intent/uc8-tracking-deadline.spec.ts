@@ -2,7 +2,7 @@
 // with the days left. A to-do she asks for is a card on her own board,
 // listed in Goals, and Done closes it.
 import { test, expect } from '@playwright/test';
-import { seed, deliveredSends, openHome, ask, reply, noJargon, pane, until } from './lib';
+import { goalRow, seed, deliveredSends, openHome, ask, reply, noJargon, pane, until } from './lib';
 
 test('open enrollment under Tracking with the days left', async ({ page, request }, info) => {
   await seed(request, info);
@@ -14,8 +14,8 @@ test('open enrollment under Tracking with the days left', async ({ page, request
   }, (v) => v.some((g: { tier: string; title: string }) => g.tier === 'tracking' && /enrollment/i.test(g.title)));
   await openHome(page);
   await pane(page, 'goals');
-  await expect(page.locator('.home-pane-title').filter({ hasText: 'Tracking' })).toBeVisible();
-  const card = page.locator('.home-card').filter({ hasText: /open enrollment/i }).first();
+  await expect(page.getByRole('tab', { name: /Tracking \(\d+\)/ })).toBeVisible();
+  const card = await goalRow(page, /open enrollment/i);
   await expect(card).toContainText(/\d+ days left|due today|1 day left/);
   await noJargon(page);
   expect(await deliveredSends(request), 'nothing was sent outside').toBe(sends);

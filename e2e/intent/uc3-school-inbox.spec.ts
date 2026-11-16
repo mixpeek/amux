@@ -2,7 +2,7 @@
 // produces the items, and the inferred goal "Never miss a school form" appears
 // under Goals with a status line.
 import { test, expect } from '@playwright/test';
-import { seed, deliveredSends, openHome, ask, reply, noJargon, pane, until } from './lib';
+import { goalRow, seed, deliveredSends, openHome, ask, reply, noJargon, pane, until } from './lib';
 
 test('school items now, and a standing goal for school forms', async ({ page, request }, info) => {
   await seed(request, info);
@@ -22,7 +22,7 @@ test('school items now, and a standing goal for school forms', async ({ page, re
   expect(card0.session, 'on the board of the helper it went to').toBe(goal.worker);
   expect(card0.owner_type).toBe('human');
   await pane(page, 'goals');
-  const card = page.locator('.home-card').filter({ hasText: /never miss a school form/i }).first();
+  const card = await goalRow(page, /never miss a school form/i);
   await expect(card).toBeVisible();
   await expect(card.locator('.home-status-line')).not.toHaveText(/^\s*$/);
   await noJargon(page);

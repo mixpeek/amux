@@ -16,7 +16,11 @@ test("an idea that checks whether Ezra's application is done", async ({ page, re
   const card = page.locator('#home-ideas .home-card').filter({ hasText: /application/i }).first();
   await expect(card).toBeVisible();
   await noJargon(page);
-  await card.getByRole('button', { name: 'Do it' }).click();
+  // From the keyboard, on an opened row: Enter on its play button starts it.
+  await card.click({ position: { x: 4, y: 4 } });
+  await expect(card).toHaveAttribute('aria-expanded', 'true');
+  await card.getByRole('button', { name: 'Do it' }).focus();
+  await page.keyboard.press('Enter');
   await expect(page.locator('#home-chat')).toBeVisible();
   await reply(page, /verdict:\s*(done|missing)/i);
   await noJargon(page);

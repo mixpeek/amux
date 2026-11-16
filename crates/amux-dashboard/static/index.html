@@ -791,16 +791,19 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
 </div>
 </div>
 <div id="home-view" class="home-view" style="display:none" aria-label="Intent">
+  <header id="home-hello" class="home-hello"><h1 id="home-greet" class="home-greet"></h1><div id="home-counts" class="home-counts"></div></header>
   <div class="home-main">
+    <section id="home-ideas" class="home-pane home-extra" aria-label="Ideas for you"><div id="home-ideas-body" class="home-pane-body"></div></section>
+    <section id="home-goals" class="home-pane home-extra" aria-label="Goals"><div id="home-goals-body" class="home-pane-body"></div></section>
     <section id="home-chat" class="home-pane"><div id="home-chat-body" class="home-pane-body"></div></section>
-    <section id="home-goals" class="home-pane home-extra" aria-label="Coming up"><div id="home-goals-body" class="home-pane-body"></div></section>
-    <section id="home-ideas" class="home-pane home-extra" aria-label="Ideas"><div id="home-ideas-body" class="home-pane-body"></div></section>
+    <section id="home-upcoming" class="home-pane home-extra" aria-label="Coming up"><div id="home-upcoming-body" class="home-pane-body"></div></section>
   </div>
   <form id="home-composer" class="home-composer" onsubmit="event.preventDefault();_homeSend()">
-    <div class="home-composer-row">
-      <textarea id="home-input" class="input home-input" rows="1" placeholder="Ask for anything" aria-label="What do you need?"
+    <div class="home-composer-box">
+      <span class="home-spark" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7z"/></svg></span>
+      <textarea id="home-input" class="home-input" rows="1" placeholder="What do you want to do?" aria-label="What do you want to do?"
         oninput="_homeGrow(this)" onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();_homeSend()}"></textarea>
-      <button id="home-send" type="submit" class="btn primary home-send">Send</button>
+      <button id="home-send" type="submit" class="btn primary home-send" aria-label="Send" title="Send"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M3.4 20.4l17.5-7.5a1 1 0 000-1.8L3.4 3.6a1 1 0 00-1.4 1.1L4 11l9 1-9 1-2 6.3a1 1 0 001.4 1.1z"/></svg></button>
     </div>
     <div class="home-trust">Nothing is sent to anyone or paid for without your OK.</div>
   </form>

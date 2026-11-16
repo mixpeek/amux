@@ -12409,6 +12409,7 @@ async function _homeRefresh() {
     // item_kind goal) lives under Goals, behind its Open button: listed here,
     // the pass's goals buried the request she had just made (final uc5).
     if (r.ok) _home.outcomes = (r.v.outcomes || []).filter(o => o.item_kind !== 'goal');
+    if (r.ok) _home.owner = r.v.owner || '';
     _homeRenderList();
     _homeExtrasLoad(false);
   }
@@ -12448,9 +12449,54 @@ function _homeAgo(ms) {
 function _homeStatusLabel(st) {
   return st === 'ready' ? 'Ready' : 'Working on it';
 }
+// Small line icons for the Intent screen's rows and section heads.
+const _HOME_ICO = {
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
+  bulb: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 00-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0012 3z"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+  chat: '<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.6A8 8 0 1121 12z"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  doc: '<path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+  check: '<path d="M5 12l5 5 9-10"/>',
+  play: '<path d="M8 5v14l11-7z"/>',
+};
+function _homeIco(name, cls) {
+  return '<span class="' + (cls || 'home-ico') + '" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (_HOME_ICO[name] || '') + '</svg></span>';
+}
+// A section of the Intent screen: an icon, its title, and "See all" when
+// there is more than it shows.
+function _homeSectionHead(ico, title, more, extra) {
+  return '<div class="home-sec-head">' + _homeIco(ico, 'home-sec-ico') + '<span class="home-pane-title">' + esc(title) + '</span>'
+    + (extra || '') + (more ? '<button type="button" class="home-link home-see-all" onclick="' + more.onclick + '">' + esc(more.label) + '</button>' : '') + '</div>';
+}
+// Tapping a row shows its details and its other actions, and hides them again.
+// Which rows are open survives the screen's refresh.
+function _homeToggleRow(ev, el) {
+  if (ev.target.closest('button, a, input, textarea')) return;
+  const open = el.classList.toggle('open');
+  el.setAttribute('aria-expanded', open ? 'true' : 'false');
+  const key = el.dataset.idea || el.dataset.goal;
+  _home.openRows = _home.openRows || new Set();
+  if (key) open ? _home.openRows.add(key) : _home.openRows.delete(key);
+}
+function _homeRowOpen(id) { return !!(_home.openRows && _home.openRows.has(id)); }
+function _homeRenderHello() {
+  const g = document.getElementById('home-greet'); const c = document.getElementById('home-counts');
+  if (!g || !c) return;
+  const h = new Date().getHours();
+  g.textContent = (h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening') + (_home.owner ? ', ' + _home.owner : '') + '.';
+  const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+  const parts = [];
+  if (_home.ideas) parts.push(n(_home.ideas.length, 'idea', 'ideas'));
+  if (_home.goals) parts.push(n(_home.goals.length, 'active goal', 'active goals'));
+  parts.push(n((_home.outcomes || []).length, 'request', 'requests'));
+  c.textContent = parts.join(' · ');
+}
 function _homeRenderList() {
   const el = document.getElementById('home-chat-body');
   if (!el) return;
+  _homeRenderHello();
   const list = _home.outcomes || [];
   if (!list.length) {
     el.innerHTML = '<div class="home-empty"><div class="home-empty-title" onclick="document.getElementById(\'home-input\')?.focus()">What can I help with?</div>'
@@ -12460,16 +12506,20 @@ function _homeRenderList() {
         .map(t => '<button type="button" class="btn home-example" onclick="_homeFill(this.textContent)">' + esc(t) + '</button>').join('') + '</div></div>';
     return;
   }
-  // The newest five, so what is coming up and ideas below stay in reach.
-  const shown = _home.outcomesAll ? list : list.slice(0, 5);
-  el.innerHTML = '<div class="home-pane-head"><span class="home-pane-title">Your requests</span>'
-    + (list.length > 5 ? '<button type="button" class="home-link" onclick="_home.outcomesAll=!_home.outcomesAll;_homeRenderList()">' + (_home.outcomesAll ? 'Show fewer' : 'Show all ' + list.length) + '</button>' : '')
-    + '</div><div class="home-list" role="list">' + shown.map(o =>
-    '<button type="button" role="listitem" class="home-row" data-outcome="' + esc(o.id) + '" onclick="_homeOpenOutcome(this.dataset.outcome)">'
-    + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title || 'Request') + '</span>'
-    + '<span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
-    + '<span class="home-row-snip">' + esc(_homePlainReply(o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140)) + '</span>'
-    + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + '</span></button>').join('') + '</div>';
+  // The newest three, so the screen reads at a glance; "See all" for the rest.
+  const shown = _home.outcomesAll ? list : list.slice(0, 3);
+  const more = list.length > 3 ? { label: _home.outcomesAll ? 'Show fewer' : 'See all ' + list.length, onclick: '_home.outcomesAll=!_home.outcomesAll;_homeRenderList()' } : null;
+  el.innerHTML = '<div class="home-sec">' + _homeSectionHead('layers', 'Your requests', more)
+    + '<div class="home-list" role="list">' + shown.map(o => {
+      const ready = o.status === 'ready';
+      const snip = _homePlainReply(o.latest_reply || '').replace(/[#*_`>]/g, '').slice(0, 140);
+      return '<button type="button" role="listitem" class="home-row home-item" data-outcome="' + esc(o.id) + '" onclick="_homeOpenOutcome(this.dataset.outcome)">'
+        + _homeIco('chat') + '<span class="home-item-text"><span class="home-row-title">' + esc(o.title || 'Request') + '</span>'
+        + '<span class="home-row-snip">' + esc(snip || _homeAgo(o.updated_ms)) + '</span></span>'
+        + (ready ? '<span class="home-pill ready">' + _homeStatusLabel(o.status) + '</span>'
+          : '<span class="home-ring" role="img" aria-label="' + _homeStatusLabel(o.status) + '" title="' + _homeStatusLabel(o.status) + '"></span>')
+        + '</button>';
+    }).join('') + '</div></div>';
 }
 // An answer, with each ```draft block (To:, Subject:, blank line, body) shown
 // as a card the person sends from their own mail: amux never sends it.
@@ -12585,7 +12635,7 @@ function _homeTurnReminders(thread, reminders, worker, now) {
 function _homeTodosHtml() {
   const t = _home.todos || [];
   if (!t.length) return '';
-  return '<div class="home-pane-head"><span class="home-pane-title">To-dos</span></div><div class="home-list">'
+  return '<div class="home-pane-head"><span class="home-pane-title home-sub-title">To-dos</span></div><div class="home-list">'
     + t.map(x => '<div class="home-card"><div class="home-card-top"><span class="home-card-title">' + esc(x.title) + '</span>'
       + '<button type="button" class="btn" onclick="_homeTodoDone(\'' + esc(x.id) + '\',this)">Done</button></div>'
       + (x.due ? '<div class="home-card-from">Due ' + esc(_homeLocalDate(x.due).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })) + '</div>' : '')
@@ -12741,7 +12791,7 @@ async function _homeSend() {
   if (!text || _home.sending) return;
   _home.sending = true;
   const btn = document.getElementById('home-send');
-  if (btn) { btn.disabled = true; btn.textContent = 'Sending'; }
+  if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); }
   const body = { text };
   if (_home.open) body.outcome = _home.open;
   if (!_home.open) {
@@ -12752,7 +12802,7 @@ async function _homeSend() {
   }
   const r = await _homeJson('/api/intent/outcomes', { method: 'POST', body: JSON.stringify(body) });
   _home.sending = false;
-  if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+  if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
   if (!r.ok) { showToast('Not sent: ' + (r.v.error || 'please try again') + '. Your message is kept.'); _homeRefresh(); return; }
   if (i) { i.value = ''; _homeGrow(i); }
   const id = r.v.outcome?.id;
@@ -12787,23 +12837,49 @@ function _homeSourcesText(sources) {
   }
   return seen.length ? 'From ' + seen.join('; ') : '';
 }
+function _homeIdeaIco(it) {
+  const k = (it.sources || []).map(x => x.kind);
+  return k.includes('email') ? 'mail' : k.includes('event') ? 'cal' : 'bulb';
+}
+// One short line saying where an idea came from: the email's sender and
+// subject, the calendar event, or the request it follows.
+function _homeIdeaSub(it) {
+  const src = it.sources || [];
+  const mail = src.find(x => x.kind === 'email');
+  if (mail) {
+    const [from, subject] = String(mail.text || '').split(' | ');
+    const who = String(from || '').replace(/^From\s+/, '').replace(/<[^>]*>/g, '').replace(/"/g, '').trim();
+    const name = who.includes('@') ? who.split('@')[0] : who;
+    return 'Email' + (name ? ' from ' + name : '') + (subject ? ': ' + subject.trim() : '');
+  }
+  const ev = src.find(x => x.kind === 'event');
+  if (ev) return 'Your calendar: ' + String(ev.text || '').trim();
+  return src.some(x => x.kind === 'outcome' || x.kind === 'request') ? 'Follows something you asked for' : _homeSourcesText(src);
+}
 function _homeRenderIdeas(v) {
   const el = document.getElementById('home-ideas-body');
   if (!el) return;
+  _homeRenderHello();
   const ideas = _home.ideas || [];
-  const head = '<div class="home-pane-head"><span class="home-pane-title">Ideas</span>'
-    + '<button type="button" class="btn" id="home-ideas-refresh" onclick="_homeIdeasRefresh()">Look for new ideas</button></div>';
+  const refresh = '<button type="button" class="home-link" id="home-ideas-refresh" onclick="_homeIdeasRefresh()">Look for new ideas</button>';
   if (!ideas.length) {
-    el.innerHTML = head + '<div class="home-empty"><div class="home-empty-sub">'
-      + (v && v.measured === false ? 'Ideas could not be checked just now.' : 'As you ask for things, ideas for the next useful step show up here.') + '</div></div>';
+    el.innerHTML = '<div class="home-sec">' + _homeSectionHead('bulb', 'Ideas for you', null) + '<div class="home-sec-empty">'
+      + (v && v.measured === false ? 'Ideas could not be checked just now.' : 'As you ask for things, ideas for the next useful step show up here.')
+      + ' ' + refresh + '</div></div>';
     return;
   }
-  el.innerHTML = head + '<div class="home-list">' + ideas.map(it =>
-    '<div class="home-card" data-idea="' + esc(it.id) + '"><div class="home-card-title">' + esc(it.title) + '</div>'
-    + '<div class="home-card-body">' + esc(it.body || '') + '</div>'
-    + '<div class="home-card-from">' + esc(_homeSourcesText(it.sources)) + '</div>'
-    + '<div class="home-card-actions"><button type="button" class="btn primary" onclick="_homeIdeaStart(\'' + esc(it.id) + '\')">Do it</button>'
-    + '<button type="button" class="btn" onclick="_homeIdeaDismiss(\'' + esc(it.id) + '\')">Not now</button></div></div>').join('') + '</div>';
+  const shown = _home.ideasAll ? ideas : ideas.slice(0, 3);
+  const more = ideas.length > 3 ? { label: _home.ideasAll ? 'Show fewer' : 'See all ' + ideas.length, onclick: '_home.ideasAll=!_home.ideasAll;_homeRenderIdeas()' } : null;
+  el.innerHTML = '<div class="home-sec">' + _homeSectionHead('bulb', 'Ideas for you', more) + '<div class="home-list">' + shown.map(it =>
+    '<div class="home-card home-item' + (_homeRowOpen(it.id) ? ' open' : '') + '" data-idea="' + esc(it.id) + '" role="button" tabindex="0" aria-expanded="' + _homeRowOpen(it.id) + '" onclick="_homeToggleRow(event,this)"'
+    + ' onkeydown="if(event.target===this&&(event.key===\'Enter\'||event.key===\' \')){event.preventDefault();_homeToggleRow(event,this)}">'
+    + _homeIco(_homeIdeaIco(it)) + '<div class="home-item-text"><div class="home-card-title">' + esc(it.title) + '</div>'
+    + '<div class="home-card-from" title="' + esc(_homeSourcesText(it.sources)) + '">' + esc(_homeIdeaSub(it)) + '</div>'
+    + '<div class="home-item-more"><div class="home-card-body">' + esc(it.body || '') + '</div>'
+    + '<div class="home-card-actions"><button type="button" class="btn" onclick="_homeIdeaDismiss(\'' + esc(it.id) + '\')">Not now</button></div></div></div>'
+    + '<button type="button" class="home-play" aria-label="Do it" title="Do it" onclick="_homeIdeaStart(\'' + esc(it.id) + '\')">'
+    + '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true">' + _HOME_ICO.play + '</svg></button></div>').join('')
+    + '</div><div class="home-sec-foot">' + refresh + '</div></div>';
 }
 async function _homeIdeasRefresh() {
   const b = document.getElementById('home-ideas-refresh');
@@ -12833,48 +12909,69 @@ function _homeDaysLeft(due) {
 }
 function _homeGoalCard(g) {
   const days = g.tier === 'tracking' ? _homeDaysLeft(g.due) : '';
+  const badge = g.pending_ask ? '<span class="home-badge wait">Awaiting you</span>'
+    : days ? '<span class="home-badge' + (/past|today|^1 day/.test(days) ? ' wait' : '') + '">' + esc(days) + '</span>' : '';
   const ask = g.pending_ask ? '<div class="home-ask"><div>' + esc(g.pending_ask) + '</div>'
     + '<button type="button" class="btn primary" onclick="_homeGoalApprove(\'' + esc(g.id) + '\')">Yes, go ahead</button>'
     + '<div class="ui-help">An email still waits for your OK in its conversation.</div></div>' : '';
-  return '<div class="home-card" data-goal="' + esc(g.id) + '"><div class="home-card-top"><span class="home-card-title">' + esc(g.title) + '</span>'
-    + (days ? '<span class="home-pill working">' + esc(days) + '</span>' : '') + '</div>'
+  return '<div class="home-card home-item' + (_homeRowOpen(g.id) ? ' open' : '') + '" data-goal="' + esc(g.id) + '" role="button" tabindex="0" aria-expanded="' + _homeRowOpen(g.id) + '" onclick="_homeToggleRow(event,this)"'
+    + ' onkeydown="if(event.target===this&&(event.key===\'Enter\'||event.key===\' \')){event.preventDefault();_homeToggleRow(event,this)}">'
+    + _homeIco(g.tier === 'tracking' ? 'cal' : 'target') + '<div class="home-item-text"><div class="home-card-title">' + esc(g.title) + '</div>'
     + '<div class="home-status-line">' + esc(g.status_line || 'Getting started...') + '</div>'
-    + (g.status_at ? '<div class="home-card-from">Checked ' + esc(_homeAgo(g.status_at)) + '</div>' : '')
-    + ask
-    + '<div class="home-card-actions">'
+    + '<div class="home-item-more">' + (g.status_at ? '<div class="home-card-from">Checked ' + esc(_homeAgo(g.status_at)) + '</div>' : '')
+    + ask + '<div class="home-card-actions">'
     + (g.outcome_id ? '<button type="button" class="btn" onclick="_homeSetPane(\'chat\',true);_homeOpenOutcome(\'' + esc(g.outcome_id) + '\')">Open</button>' : '')
     + '<button type="button" class="btn" onclick="_homeGoalRename(\'' + esc(g.id) + '\')">Reword</button>'
-    + '<button type="button" class="btn" onclick="_homeGoalDismiss(\'' + esc(g.id) + '\')">Stop</button></div></div>';
+    + '<button type="button" class="btn" onclick="_homeGoalDismiss(\'' + esc(g.id) + '\')">Stop</button></div></div></div>'
+    + badge + '</div>';
 }
+// Goals with a deadline (Tracking) and standing ones (Ongoing), one at a time.
+function _homeGoalTab(t) { _home.goalTab = t; _home.goalsAll = false; _homeRenderGoals(); }
 function _homeRenderGoals(v) {
+  _homeRenderUpcoming();
+  _homeRenderHello();
   const el = document.getElementById('home-goals-body');
   if (!el) return;
   const goals = _home.goals || [];
-  // The next five; "Show all" for the rest, so goals are not a long scroll away.
+  if (!goals.length) {
+    el.innerHTML = '<div class="home-sec">' + _homeSectionHead('target', 'Goals', null) + '<div class="home-sec-empty">'
+      + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
+    return;
+  }
+  const tracking = goals.filter(g => g.tier === 'tracking');
+  const ongoing = goals.filter(g => g.tier !== 'tracking');
+  const tab = _home.goalTab === 'ongoing' || !tracking.length ? 'ongoing' : 'tracking';
+  const list = tab === 'tracking' ? tracking : ongoing;
+  const shown = _home.goalsAll ? list : list.slice(0, 3);
+  const more = list.length > 3 ? { label: _home.goalsAll ? 'Show fewer' : 'See all ' + list.length, onclick: '_home.goalsAll=!_home.goalsAll;_homeRenderGoals()' } : null;
+  const tabBtn = (t, label, n) => '<button type="button" role="tab" class="home-seg-btn' + (tab === t ? ' on' : '') + '" aria-selected="' + (tab === t) + '"'
+    + (n ? '' : ' disabled') + ' onclick="_homeGoalTab(\'' + t + '\')">' + label + ' (' + n + ')</button>';
+  el.innerHTML = '<div class="home-sec">' + _homeSectionHead('target', 'Goals', more)
+    + '<div class="home-seg" role="tablist" aria-label="Goals">' + tabBtn('tracking', 'Tracking', tracking.length) + tabBtn('ongoing', 'Ongoing', ongoing.length) + '</div>'
+    + '<div class="home-pane-sub">' + (tab === 'tracking' ? 'Things with a deadline' : 'Kept up to date for you, week after week') + '</div>'
+    + '<div class="home-list" role="tabpanel">' + shown.map(_homeGoalCard).join('') + '</div></div>';
+}
+// What is coming up: the next week of the calendar, reminders and to-dos.
+function _homeRenderUpcoming() {
+  const el = document.getElementById('home-upcoming-body');
+  if (!el) return;
   // One row per subject here (the server keeps one per subject in each
   // conversation, so a conversation still shows its own).
   const remSeen = new Set();
   const remAll = (_home.reminders || []).filter(x => { const k = String(x.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); return !remSeen.has(k) && remSeen.add(k); });
   const remShown = _home.remindersAll ? remAll : remAll.slice(0, 5);
-  const rem = remAll.length ? '<div class="home-pane-head"><span class="home-pane-title">Reminders</span>'
-    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeExtrasLoad(true)">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
+  const rem = remAll.length ? '<div class="home-pane-head"><span class="home-pane-title home-sub-title">Reminders</span>'
+    + (remAll.length > 5 ? '<button type="button" class="home-link" onclick="_home.remindersAll=!_home.remindersAll;_homeRenderUpcoming()">' + (_home.remindersAll ? 'Show fewer' : 'Show all ' + remAll.length) + '</button>' : '')
     + '</div><div class="home-pane-sub">You get these here, at the time shown</div><div class="home-list">'
     + remShown.map(x => '<div class="home-card"><div class="home-card-title">' + esc(x.title) + '</div><div class="home-card-from">'
       + esc(_homeReminderWhen(x)) + '</div></div>').join('') + '</div>' : '';
   const fmtEv = (e) => { const d = _homeLocalDate(e.start); const allDay = e.all_day || String(e.start).length <= 10;
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + (allDay ? '' : ', ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })); };
-  const up = (_home.events || []).length ? '<div class="home-pane-head"><span class="home-pane-title">Coming up</span></div><div class="home-pane-sub">Your calendar for the next week</div><div class="home-list">'
+  const up = (_home.events || []).length ? '<div class="home-pane-sub">Your calendar for the next week</div><div class="home-list">'
     + _home.events.map(e => '<div class="home-agenda"><span class="home-agenda-when">' + esc(fmtEv(e)) + '</span><span class="home-agenda-what">' + esc(e.title || '')
       + (e.location ? ' · ' + esc(e.location) : '') + '</span></div>').join('') + '</div>' : '';
-  const tracking = goals.filter(g => g.tier === 'tracking');
-  const standing = goals.filter(g => g.tier !== 'tracking');
-  if (!goals.length) {
-    el.innerHTML = up + rem + _homeTodosHtml() + '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-empty"><div class="home-empty-sub">'
-      + (v && v.measured === false ? 'Goals could not be checked just now.' : 'When something keeps coming up, a goal appears here and is kept up to date for you.') + '</div></div>';
-    return;
-  }
-  el.innerHTML = up + rem + _homeTodosHtml() + (tracking.length ? '<div class="home-pane-head"><span class="home-pane-title">Tracking</span></div><div class="home-pane-sub">Things with a deadline</div><div class="home-list">' + tracking.map(_homeGoalCard).join('') + '</div>' : '')
-    + (standing.length ? '<div class="home-pane-head"><span class="home-pane-title">Goals</span></div><div class="home-pane-sub">Kept up to date for you, week after week</div><div class="home-list">' + standing.map(_homeGoalCard).join('') + '</div>' : '');
+  const todos = _homeTodosHtml();
+  el.innerHTML = up || rem || todos ? '<div class="home-sec">' + _homeSectionHead('cal', 'Coming up', null) + up + rem + todos + '</div>' : '';
 }
 async function _homeGoalDismiss(id) {
   if (!await showConfirm('Stop keeping track of this?', 'Stop')) return;

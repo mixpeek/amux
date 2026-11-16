@@ -528,10 +528,29 @@ async fn list(State(state): State<AppState>) -> Response {
                 v
             }).collect();
             let n = items.len();
-            Json(json!({"outcomes": items, "measured": true, "n_considered": n})).into_response()
+            Json(json!({"outcomes": items, "owner": owner_first_name(), "measured": true, "n_considered": n})).into_response()
         }
         Err(e) => Json(json!({"outcomes": [], "measured": false, "n_considered": 0, "why_unmeasured": e})).into_response(),
     }
+}
+
+/// The owner's first name for the Intent greeting, from AMUX_OWNER_NAME or
+/// else AMUX_OWNER_EMAIL; empty when neither is set, so nobody is greeted by
+/// someone else's name.
+pub(crate) fn owner_first_name() -> String {
+    first_name(std::env::var("AMUX_OWNER_NAME").ok().as_deref(), std::env::var("AMUX_OWNER_EMAIL").ok().as_deref())
+}
+
+pub(crate) fn first_name(name: Option<&str>, email: Option<&str>) -> String {
+    let raw = name.map(str::trim).filter(|n| !n.is_empty()).map(str::to_string)
+        .or_else(|| email.and_then(|e| e.split('@').next()).map(|l| l.split(['.', '_', '-', '+']).next().unwrap_or("").to_string()))
+        .unwrap_or_default();
+    let word = raw.split_whitespace().next().unwrap_or("");
+    if !word.chars().all(char::is_alphabetic) {
+        return String::new();
+    }
+    let mut c = word.chars();
+    c.next().map(|f| f.to_uppercase().chain(c.flat_map(char::to_lowercase)).collect()).unwrap_or_default()
 }
 
 async fn one(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -664,6 +683,15 @@ async fn home(State(state): State<AppState>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_greeting_names_the_owner_or_nobody() {
+        assert_eq!(first_name(Some("ethan steininger"), None), "Ethan");
+        assert_eq!(first_name(None, Some("dana.levin@example.com")), "Dana");
+        assert_eq!(first_name(Some("  "), Some("ops+x@example.com")), "Ops");
+        assert_eq!(first_name(None, None), "", "unset: no name, never a default one");
+        assert_eq!(first_name(None, Some("x7@example.com")), "", "not a name");
+    }
 
     fn post(author: &str) -> Value {
         json!({"author_key": author, "body": "x"})

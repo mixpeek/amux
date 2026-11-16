@@ -1,7 +1,7 @@
 // Use case 7: "Stay ahead of the family calendar" produces a goal whose status
 // line names the next event and what is ready for it.
 import { test, expect } from '@playwright/test';
-import { seed, deliveredSends, openHome, ask, noJargon, pane, until } from './lib';
+import { goalRow, seed, deliveredSends, openHome, ask, noJargon, pane, until } from './lib';
 
 test('a calendar goal whose status names the next event', async ({ page, request }, info) => {
   await seed(request, info);
@@ -15,7 +15,7 @@ test('a calendar goal whose status names the next event', async ({ page, request
   const goal = goals.find((g: { title: string }) => /calendar/i.test(g.title));
   expect(titles.some((t: string) => goal.status_line.includes(t)), `status names an event: ${goal.status_line}`).toBeTruthy();
   await pane(page, 'goals');
-  const card = page.locator('.home-card').filter({ hasText: /family calendar/i }).first();
+  const card = await goalRow(page, /family calendar/i);
   await expect(card.locator('.home-status-line')).toContainText(/next/i);
   await noJargon(page);
   expect(await deliveredSends(request), 'nothing was sent outside').toBe(sends);

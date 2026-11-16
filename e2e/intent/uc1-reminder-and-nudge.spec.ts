@@ -55,10 +55,10 @@ test('a reminder, and an idea to draft a nudge from the camp thread', async ({ p
     // alone has to bring simple mode back (her helpers do not count as a fleet).
     await page.evaluate(() => localStorage.removeItem('amux_home_choice'));
     await openHome(page);
-    // The list shows the newest five; an older request is behind "Show all".
+    // The list shows the newest three; an older request is behind "See all".
     const row = page.locator(`.home-row[data-outcome="${id}"]`);
     await expect(page.locator('#home-chat .home-row').first()).toBeVisible({ timeout: 20_000 });
-    if (!(await row.isVisible())) await page.locator('#home-chat .home-link', { hasText: /show all/i }).click();
+    if (!(await row.isVisible())) await page.locator('#home-chat .home-link', { hasText: /see all|show all/i }).click();
     await row.click();
     await expect(page.locator('.home-reminder').filter({ hasText: /camp/i })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('.home-reminder').filter({ hasText: /registration/i })).toHaveCount(0);

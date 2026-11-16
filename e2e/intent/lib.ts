@@ -41,6 +41,10 @@ export async function openHome(page: Page) {
   // "Everything else" ends the bar: the way out comes after Chat.
   const visible = await page.locator('.tab-bar > button').evaluateAll((bs) => bs.filter((b) => (b as HTMLElement).offsetParent !== null).map((b) => b.id));
   expect(visible.at(-1), `tab order: ${visible.join(', ')}`).toBe('tab-everything');
+  // The list (owner's mockup, 2026-11-15): a greeting, the ask box, then the sections.
+  await expect(page.locator('#home-greet')).toHaveText(/^Good (morning|afternoon|evening)/);
+  const top = async (sel: string) => (await page.locator(sel).boundingBox())?.y ?? -1;
+  expect(await top('#home-composer'), 'the ask box sits above the sections').toBeLessThan(await top('#home-main, .home-main'));
 }
 
 /** Say something in Chat and land in its thread. */
@@ -54,6 +58,9 @@ export async function ask(page: Page, text: string) {
   // An open conversation shows only itself: what is coming up and ideas wait on the list.
   await expect(page.locator('#home-goals'), 'coming up hides in a conversation').toBeHidden();
   await expect(page.locator('#home-ideas'), 'ideas hide in a conversation').toBeHidden();
+  await expect(page.locator('#home-hello'), 'the greeting hides in a conversation').toBeHidden();
+  const box = async (sel: string) => (await page.locator(sel).boundingBox())?.y ?? -1;
+  expect(await box('#home-composer'), 'the ask box is below the conversation').toBeGreaterThan(await box('.home-main'));
 }
 
 /** Wait for a helper answer in the open thread that matches `re`. */
@@ -100,6 +107,24 @@ export async function pane(page: Page, name: 'chat' | 'ideas' | 'goals') {
   const sec = page.locator(`#home-${name}`);
   await expect(sec).toBeVisible();
   await sec.scrollIntoViewIfNeeded();
+}
+
+/** A goal's row under Goals, on whichever tab (Tracking or Ongoing) holds it,
+ * past "See all" when the tab shows only its first three. */
+export async function goalRow(page: Page, re: RegExp) {
+  const row = page.locator('#home-goals .home-card').filter({ hasText: re }).first();
+  await expect(async () => {
+    if (await row.isVisible()) return;
+    for (const t of ['Tracking', 'Ongoing']) {
+      const tab = page.locator('#home-goals [role="tab"]', { hasText: t });
+      if ((await tab.count()) && (await tab.isEnabled())) await tab.click({ timeout: 2_000 });
+      const all = page.locator('#home-goals .home-see-all', { hasText: /see all/i });
+      if (await all.isVisible()) await all.click({ timeout: 2_000 });
+      if (await row.isVisible()) return;
+    }
+    throw new Error(`no goal row matching ${re}`);
+  }).toPass({ timeout: 30_000 });
+  return row;
 }
 
 /** Poll an API until `ok` holds (the ideas pass runs in the background). */
