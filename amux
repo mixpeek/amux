@@ -308,6 +308,24 @@ _curl() {
     local _door_tok; _door_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/front-door-owner" 2>/dev/null)"
     [[ -n "$_door_tok" ]] && _id+=(-H "X-Amux-Front-Door-Owner: $_door_tok")
   fi
+  # ONE TRACE PER UNIT OF WORK (governance PR 8, api/trace.rs). A caller that
+  # names its trace ($TRACEPARENT, or $AMUX_TRACE_ID with a fresh span) keeps
+  # it. Inside a worker, the server wrote the span of the last message it
+  # delivered to <home>/trace/<worker>.current, and this call descends from it.
+  # Otherwise nothing is sent and the server starts a trace at this origin.
+  if [[ "${AMUX_TRACE:-on}" != off && "${AMUX_TRACE:-on}" != 0 ]] && ! printf '%s\n' "$@" | grep -qi '^traceparent:'; then
+    local _tp="${TRACEPARENT:-}"
+    if [[ -z "$_tp" && "${AMUX_TRACE_ID:-}" =~ ^[0-9a-f]{32}$ ]]; then
+      local _span; _span=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+      [[ ${#_span} == 16 ]] && _tp="00-${AMUX_TRACE_ID}-${_span}-01"
+    fi
+    if [[ -z "$_tp" ]]; then
+      local _tw="${AMUX_SESSION:-${AMUX_WORKER:-${AMUX_ISOLATED_WORKER:-${AMUX_STATUS_WORKER:-}}}}"
+      local _tf="${AMUX_HOME:-${CC_HOME:-$HOME/.amux}}/trace/${_tw}.current"
+      [[ -n "$_tw" && "$_tw" != */* && -s "$_tf" ]] && _tp=$(head -1 "$_tf" 2>/dev/null)
+    fi
+    [[ "$_tp" =~ ^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$ ]] && _id+=(-H "traceparent: $_tp")
+  fi
   # Only the attempt that counts reaches stdout: a failed attempt's -w output
   # ("000") would otherwise land in the caller's capture ahead of the real one.
   local out; out=$(mktemp "${TMPDIR:-/tmp}/amux-curl.XXXXXX") || out=""

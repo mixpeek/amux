@@ -24,7 +24,7 @@ export function request(base, method, p, body, timeoutMs = 30000, extraHeaders =
     const r = https.request(base + p, { method, rejectUnauthorized: false, timeout: timeoutMs,
       headers: { 'Content-Type': 'application/json', ...(data ? { 'Content-Length': data.length } : {}), ...extraHeaders } }, res => {
       let buf = ''; res.on('data', c => buf += c);
-      res.on('end', () => { let j = {}; try { j = JSON.parse(buf || '{}'); } catch { j = { raw: buf }; } resolve({ status: res.statusCode, body: j }); });
+      res.on('end', () => { let j = {}; try { j = JSON.parse(buf || '{}'); } catch { j = { raw: buf }; } resolve({ status: res.statusCode, body: j, headers: res.headers }); });
     });
     r.on('timeout', () => r.destroy(new Error('timeout')));
     r.on('error', reject);
