@@ -6251,3 +6251,14 @@ SYMPTOM: four separate changes, each citing the one goal request `Amux-Request: 
 COST: a change to a recovery test landed with no fresh-context review; the gate passed it as reviewed. Any lane working a long owner request or a /goal hits the cap after its third change.
 MECHANISM: `scripts/land_review.py` `change_key` keys review state on the sorted `Amux-Request` ids of the range (`req:MSG-107374`), and falls back to the subject only when none is cited. The three-round cap is meant for one change reworked after findings; the key makes it one owner request instead.
 FIX: key the state on the request AND the changed paths (or the patch-id of the first round's diff), so a new change under the same request starts at round 1. A round whose diff shares no file with the earlier rounds is a new change.
+
+## A frustration report from an outside-group worker is delivered, but the answer to it is refused
+AREA: attribution
+SEVERITY: slows
+STATUS: open
+DATE: 2026-11-15
+SESSION: amux-frustrations
+CARD: AF-1243
+SYMPTOM: mixpeek-research (groups infra, new-features, ops) sent amux-frustrations (group amux) a FRUSTRATION ending "ask: fix or decline", and it arrived. After the fix landed (5dbfb5370), `amux send mixpeek-research` answered "worker group boundary refused ... Do not retry or reroute to another outside-group worker".
+COST: the reporter cannot learn its ask was answered; the answer sits only on AF-1242, which it does not read. One more round trip for the owner to relay it, or a lost close.
+FIX: allow one reply to a message whose server-stamped origin is the recipient, or have an inbound report name the card where its answer will be written.
