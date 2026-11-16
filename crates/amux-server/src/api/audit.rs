@@ -26,7 +26,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/", get(audit))
+    Router::new()
+        .route("/", get(audit))
+        // Export, legal hold, a person's data and the kill switch (governance PR 19).
+        .merge(super::governance::routes())
 }
 
 #[derive(Deserialize, Default)]

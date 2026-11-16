@@ -50,6 +50,10 @@ const MEMBER_TEAM_NAME_B64_HEADER: &str = "x-amux-local-member-team-name-b64";
 /// invites to run a server with him must manage its vault without signing in
 /// as the anonymous host owner.
 const MEMBER_ADMIN_HEADER: &str = "x-amux-local-member-admin";
+/// A verified member whose stored role is `auditor` (governance PR 19): reads
+/// the record (ledger, traces, approvals, at-rest report, audit export) and can
+/// change nothing. Set only by [`local_member_identity`]; stripped inbound.
+const MEMBER_AUDITOR_HEADER: &str = "x-amux-local-member-auditor";
 /// Names an automated owner-configured policy (the needs-input auto-approver)
 /// as the actor of an INTERNAL call. Stripped from inbound requests below with
 /// the member markers, so only server code can produce it. Before it existed
@@ -297,6 +301,20 @@ pub(crate) fn authorize_local_member_request(
     let scope = local_member_scope(headers)?;
     let path = uri.path();
 
+    // An auditor reads the record and nothing else, whatever their scope.
+    if local_member_is_auditor(headers) {
+        return (!auditor_may(method, path)).then(|| {
+            super::governance::counters::bump(&super::governance::counters::AUDITOR_REFUSED, 1);
+            tracing::warn!(path, method = %method, verdict = "auditor_refused", measured = true, n_considered = 1,
+                "an auditor asked for something outside the audit record");
+            err(StatusCode::FORBIDDEN, json!({
+                "error": "an auditor reads the audit record and changes nothing",
+                "code": "auditor_read_only",
+                "resource": path,
+            }))
+        });
+    }
+
     // Membership and invite administration is an owner capability, not a
     // consequence of seeing the whole workspace.
     if path == "/api/org" || path.starts_with("/api/org/") {
@@ -507,6 +525,7 @@ struct MemberIdentity {
     team_id: String,
     team_name: String,
     admin: bool,
+    auditor: bool,
 }
 
 #[cfg(test)]
@@ -522,6 +541,27 @@ pub(crate) fn test_member_headers(email: &str, admin: bool) -> HeaderMap {
 
 /// A verified member the host owner made an admin. An admin can do what only the
 /// owner could (managing vault secrets), and keeps their own name in every log.
+pub(crate) fn local_member_is_auditor(headers: &HeaderMap) -> bool {
+    is_verified_local_member(headers)
+        && headers.get(MEMBER_AUDITOR_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
+}
+
+/// What an auditor may reach: reads of the record, never a write.
+pub(crate) fn auditor_may(method: &Method, path: &str) -> bool {
+    if *method != Method::GET && *method != Method::HEAD {
+        return false;
+    }
+    path == "/api/identity"
+        || path == "/api/ledger"
+        || path.starts_with("/api/ledger/")
+        || path.starts_with("/api/trace/")
+        || path == "/api/approvals/cards"
+        || path == "/api/security/at-rest"
+        || path == "/api/audit"
+        || path.starts_with("/api/audit/")
+        || path == "/api/contract/counters"
+}
+
 pub(crate) fn local_member_is_admin(headers: &HeaderMap) -> bool {
     is_verified_local_member(headers)
         && headers.get(MEMBER_ADMIN_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
@@ -566,6 +606,7 @@ pub async fn local_member_identity(
     req.headers_mut().remove(MEMBER_TEAM_ID_HEADER);
     req.headers_mut().remove(MEMBER_TEAM_NAME_B64_HEADER);
     req.headers_mut().remove(MEMBER_ADMIN_HEADER);
+    req.headers_mut().remove(MEMBER_AUDITOR_HEADER);
     req.headers_mut().remove(POLICY_ACTOR_HEADER);
     req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
     // A published app's credential (governance PR 5): resolved here, before
@@ -604,6 +645,7 @@ pub async fn local_member_identity(
                 let admin = role == "admin" && level == "global";
                 Ok(MemberIdentity {
                     admin,
+                    auditor: role == "auditor",
                     id: row.get(0)?,
                     email: row.get(1)?,
                     // Corrupt rows fail closed. Defaulting here to Global
@@ -641,6 +683,9 @@ pub async fn local_member_identity(
         .insert(VERIFIED_MEMBER_HEADER, HeaderValue::from_static("1"));
     if member.admin {
         req.headers_mut().insert(MEMBER_ADMIN_HEADER, HeaderValue::from_static("1"));
+    }
+    if member.auditor {
+        req.headers_mut().insert(MEMBER_AUDITOR_HEADER, HeaderValue::from_static("1"));
     }
     req.headers_mut().insert(
         MEMBER_SCOPE_LEVEL_HEADER,
@@ -1519,12 +1564,12 @@ pub async fn patch_member(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
-    // {"role": "admin" | "member"}: the host owner makes a member an admin or
-    // takes it back. Org routes refuse members (authorize_local_member_request),
+    // {"role": "admin" | "member" | "auditor"}: the host owner makes a member an
+    // admin or an auditor (read-only, governance PR 19) or takes it back. Org routes refuse members (authorize_local_member_request),
     // so only the owner reaches this.
     if let Some(role) = body.get("role") {
-        let Some(role) = role.as_str().filter(|r| *r == "admin" || *r == "member").map(str::to_string) else {
-            return err(StatusCode::BAD_REQUEST, json!({"error": "role is \"admin\" or \"member\""}));
+        let Some(role) = role.as_str().filter(|r| matches!(*r, "admin" | "member" | "auditor")).map(str::to_string) else {
+            return err(StatusCode::BAD_REQUEST, json!({"error": "role is \"admin\", \"member\" or \"auditor\""}));
         };
         let (id_w, role_w) = (id.clone(), role.clone());
         let write = state

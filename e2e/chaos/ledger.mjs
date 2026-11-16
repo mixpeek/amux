@@ -128,7 +128,8 @@ try {
   const target = (await find(e => e.actor === 'worker:w-ledger' && e.kind === 'interaction'))[0];
   const refused = sql([`UPDATE _amux_ledger SET actor='owner' WHERE event_id='${target.event_id}'`]);
   check('h. with the triggers in place an UPDATE is refused', /append-only/.test(refused[0]), refused);
-  const forced = sql(['DROP TRIGGER amux_ledger_no_update',
+  // The actor column has its own trigger since migration 0163 (erasure).
+  const forced = sql(['DROP TRIGGER amux_ledger_no_update', 'DROP TRIGGER IF EXISTS amux_ledger_erase_only',
     `UPDATE _amux_ledger SET actor='owner' WHERE event_id='${target.event_id}'`]);
   check('h. an attacker with the file drops the trigger and rewrites the actor', !forced.some(l => l.startsWith('ERR')), forced);
   v = (await amux.req('GET', '/api/ledger/verify', undefined, 10000, OWNER())).body;
