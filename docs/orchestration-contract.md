@@ -243,6 +243,21 @@ name only. `scripts/push-consent.sh` lists another host's same-named lane as
 worker whose scope sets `GIT_AUTHOR_NAME` keeps it. Counters are under
 `agent_commit_identity`.
 
+**Agent CLI sandbox** (governance PR 16, `api/cli_sandbox.rs`): a Claude worker's
+launch writes `<home>/sandbox/<worker>.claude-settings.json` from its capabilities:
+writes allowed in its own folder, the user's home and temp; another worker's folder
+(as `capabilities.rs` draws it, minus `AMUX_CAP_FOLDERS` grants) and amux's secrets
+(owner token, `server.env`, connector grants, Gmail tokens, the vault, minted
+tokens, other workers' and other groups' env files) denied to the sandboxed shell
+and, through `permissions.deny`, to the Read and Edit tools; network `*` unless the
+owner sets `AMUX_CAP_NETWORK`; reads of other workers' folders denied only with
+`AMUX_CAP_READ_FOLDERS=own`. `AMUX_CLI_SANDBOX=report` (default) writes the layer
+disabled and does not pass it; `enforce` passes it with `--settings` and sets
+`failIfUnavailable`, so a host without the runtime (Linux: `bwrap` and `socat`)
+refuses to run the shell instead of running it unconfined; `off` writes nothing.
+`GET /api/workers/{name}/sandbox` shows each rule's source and the measured
+runtime; counters are under `cli_sandbox`. Codex lanes report `unsupported`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

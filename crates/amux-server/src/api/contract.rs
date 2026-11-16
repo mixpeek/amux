@@ -2430,6 +2430,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "loopback": super::loopback_trust::report(state.auth_token.is_some()),
         "connector_token": super::connector_scope::report(),
         "capabilities": super::capabilities::report(),
+        "cli_sandbox": super::cli_sandbox::report(),
         "schedule_authority": super::schedule_authority::report(),
         "agent_commit_identity": super::agent_commit::report(),
         "instruction_provenance": super::instruction_provenance::report(),
