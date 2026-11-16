@@ -194,6 +194,26 @@ approvals cannot be remembered. The needs-input auto-approver decides only
 held emails (under its `outbound` switch). `AMUX_APPROVAL_CARDS=off` files no
 cards; counters are under `approval_cards` in `GET /api/contract/counters`.
 
+A schedule keeps the creator the server proved (governance PR 13,
+`api/schedule_authority.rs`): `schedules.created_by` and `created_by_verified`,
+stamped from the ledger's principal resolver. Rows from before it are
+backfilled from `schedule_audit.by_who` and stay unverified. Every cron firing
+re-checks that the creator still has authority over the target worker: the
+owner and policies always do; a member must still sign in and have scope over
+it; a worker or app creator must still exist (or be approved); a missing target
+worker lapses whoever created it. An unverified legacy creator fires and is
+counted. A lapse is recorded in the ledger. `AMUX_SCHEDULE_AUTHORITY=report`
+(default) fires and counts `would_skip`; `enforce` pauses the schedule
+(`disabled_reason=authority_lapsed`, never deleted) and files one Needs-you card
+per schedule; `off` skips the check. `POST /api/schedules/{id}/reown` makes the
+caller (a person, scope-checked) its creator and re-enables a paused one.
+`POST /api/org/members/{email}/offboard[?dry_run=1]` (owner only) revokes the
+member's sign-ins and pending invites, pauses the schedules they created, hands
+workers they sponsor (`worker_sponsors`, `PUT /api/workers/{name}/sponsor`) back
+to the owner, revokes standing approvals they granted and returns apps they
+approved to pending, with one ledger event per item; nothing is deleted.
+Counters are under `schedule_authority`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

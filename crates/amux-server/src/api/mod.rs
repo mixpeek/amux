@@ -27,6 +27,7 @@ pub mod worker_identity;
 pub mod app_identity;
 pub mod capabilities;
 pub mod approval_cards;
+pub mod schedule_authority;
 pub mod connector_scope;
 pub mod email_scope;
 pub mod human_proof;
@@ -251,6 +252,7 @@ pub fn router_with_connector_transport(
     let store_for_reqlog = state.store.clone();
     capabilities::install_store(state.store.clone());
     approval_cards::install_store(state.store.clone());
+    schedule_authority::install_store(state.store.clone());
     let state_for_member_identity = state.clone();
     let protected = Router::new()
         .route("/api/sync", axum::routing::get(sync::delta_sync))
@@ -465,6 +467,7 @@ pub fn router_with_connector_transport(
         // Outbound phone calls (calls.rs, docs/design/phone-calls.md).
         .merge(calls::routes())
         .merge(approval_cards::routes())
+        .merge(schedule_authority::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
