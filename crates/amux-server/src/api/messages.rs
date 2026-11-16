@@ -126,7 +126,11 @@ pub(crate) fn native_peer_input_refusal(
         return Ok(Some(super::session_verbs::PeerInputRefusal { code:"peer_receive_denied", reason }));
     }
     if source.group_id.is_none() && receiver.group_id.is_none() {
-        return Ok(super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name));
+        let refusal = super::session_verbs::peer_input_refusal(&source.display_name, &receiver.display_name);
+        if let (true, Some(r)) = (ask_owner, &refusal) {
+            super::session_verbs::ask_owner_for_refused_message(&source.display_name, &receiver.display_name, r);
+        }
+        return Ok(refusal);
     }
     if super::session_verbs::owner_mention_grant_allows(&source.display_name, &receiver.display_name) {
         return Ok(None);

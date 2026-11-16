@@ -10295,6 +10295,7 @@ async fn steer_enqueue_precond_with_id(
     stable_id: Option<&str>,
 ) -> Result<StableEnqueueResult, &'static str> {
     if let Some(refusal) = queued_peer_input_refusal(sender, name) {
+        ask_owner_for_refused_message(sender, name, &refusal);
         return Err(refusal.code);
     }
     // ZERO AMUX HARNESS INTO AN ISOLATED LANE (Ethan, 2026-08-26: "isolated =
@@ -30182,11 +30183,18 @@ pub(crate) fn peer_input_refusal(origin: &str, target: &str) -> Option<PeerInput
         return None;
     }
     let open = super::worker_messaging::open_inbound_groups(&home, &target_groups);
-    let refusal = worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open);
-    if refusal.is_some() {
-        super::capabilities::existing_refusal(&home, origin, "message", &format!("worker {target}"), target);
+    worker_group_refusal(origin, target, &lane_groups(origin), &target_groups, &open)
+}
+
+/// Raise the owner's grant ask for a message a worker actually SENT and the
+/// group boundary refused. Called where input is sent or queued, never from
+/// `peer_input_refusal` itself: that check also filters every worker's view of
+/// its reachable peers and re-checks queued input each tick, and asking there
+/// counted 13,476 asks in the first 72 s after 7981dd0fd (2026-11-16).
+pub(crate) fn ask_owner_for_refused_message(origin: &str, target: &str, refusal: &PeerInputRefusal) {
+    if refusal.code == "worker_group_boundary" {
+        super::capabilities::existing_refusal(&crate::config::amux_home(), origin, "message", &format!("worker {target}"), target);
     }
-    refusal
 }
 
 /// Queue producers use an empty sender for system input and "owner" for saved
@@ -30960,6 +30968,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     if super::org::local_member_actor(headers).is_none() {
         let origin = hdr_worker(headers);
         if let Some(refusal) = peer_input_refusal(&origin, name) {
+            ask_owner_for_refused_message(&origin, name, &refusal);
             emit_event(state, name, "send.peer_input_refused", Some(json!({"origin":origin,"target":name,"code":refusal.code})), None, "group-scope").await;
             return jresp(StatusCode::FORBIDDEN, json!({"ok":false,"code":refusal.code,"error":refusal.reason,"submitted":false}));
         }
@@ -40185,6 +40194,17 @@ mod tests {
         // Isolation does not take admin reach away.
         std::fs::write(sessions.join("boss.env"), "CC_TAGS=beta, Admin\nCC_ISOLATED=1\n").unwrap();
         std::fs::write(sessions.join("peer.env"), "CC_TAGS=beta\n").unwrap();
+        // Checking reach, as every worker's lane listing does, asks the owner
+        // nothing; only a send does (13,476 asks in 72 s, 2026-11-16).
+        let asked = || crate::api::capabilities::counters::snapshot().iter()
+            .filter(|(k, _)| k.starts_with("message.")).map(|(_, v)| *v).sum::<u64>();
+        let before = asked();
+        std::fs::write(sessions.join("elsewhere.env"), "CC_TAGS=delta\n").unwrap();
+        assert_eq!(peer_input_refusal("peer", "elsewhere").map(|r| r.code), Some("worker_group_boundary"));
+        for _ in 0..50 {
+            assert!(peer_input_refusal("peer", "elsewhere").is_some());
+        }
+        assert!(asked() < before + 50, "a reach check must not raise the owner's ask");
         for (sender, allowed) in [("boss", true), ("peer", false)] {
             assert_eq!(is_admin_worker(sender), allowed, "{sender}");
             for target in ["raw", "closed"] {
