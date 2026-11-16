@@ -367,5 +367,33 @@ if grep -q '^Amux-Session: peer$' "$TMP/pane-msg"; then
   ok "explicit owning pane still recovers the registered lane"
 else no "own pane recovery must remain available"; fi
 
+echo "host and on-behalf-of cells (governance PR 15)"
+# Amux-Session names a lane, not a server: on 2026-11-10 a sandbox claimed three
+# commits a same-named lane made on a Mac. Amux-Host is the server's id.
+printf 'subject\n' > "$TMP/hmsg"
+AMUX_SESSION=lane-h AMUX_HOST_ID=abcdef0123456789 AMUX_HOME="$TMP/home" bash "$HOOK" "$TMP/hmsg" >/dev/null 2>&1
+if grep -q '^Amux-Host: abcdef0123456789$' "$TMP/hmsg"; then ok "AMUX_HOST_ID is stamped as Amux-Host"
+else no "Amux-Host from AMUX_HOST_ID" "$(cat "$TMP/hmsg")"; fi
+mkdir -p "$TMP/home/ledger" "$TMP/home/trace"
+printf '0011223344556677\n' > "$TMP/home/ledger/host-id"
+printf 'member:doron@example.com\n' > "$TMP/home/trace/lane-h.on-behalf-of"
+printf 'subject\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n' > "$TMP/hmsg2"
+AMUX_SESSION=lane-h AMUX_HOME="$TMP/home" bash "$HOOK" "$TMP/hmsg2" >/dev/null 2>&1
+if grep -q '^Amux-Host: 0011223344556677$' "$TMP/hmsg2"; then ok "with no env, the server's host-id file is stamped"
+else no "Amux-Host from ledger/host-id" "$(cat "$TMP/hmsg2")"; fi
+if grep -q '^On-behalf-of: member:doron@example.com$' "$TMP/hmsg2"; then ok "the delivery's person is stamped as On-behalf-of"
+else no "On-behalf-of from trace/<lane>.on-behalf-of" "$(cat "$TMP/hmsg2")"; fi
+if grep -q '^Co-Authored-By: Claude <noreply@anthropic.com>$' "$TMP/hmsg2"; then ok "Co-Authored-By is kept"
+else no "Co-Authored-By must survive" "$(cat "$TMP/hmsg2")"; fi
+printf 'rm -rf /\n' > "$TMP/home/trace/lane-h.on-behalf-of"
+printf 'subject\n' > "$TMP/hmsg3"
+AMUX_SESSION=lane-h AMUX_HOME="$TMP/home" bash "$HOOK" "$TMP/hmsg3" >/dev/null 2>&1
+if grep -q '^On-behalf-of:' "$TMP/hmsg3"; then no "a malformed on-behalf-of file must stamp nothing" "$(cat "$TMP/hmsg3")"
+else ok "a malformed on-behalf-of value is not stamped"; fi
+printf 'subject\n' > "$TMP/hmsg4"
+AMUX_SESSION= TMUX_PANE= AMUX_HOME="$TMP/home" bash "$HOOK" "$TMP/hmsg4" >/dev/null 2>&1
+if grep -q '^Amux-Host:\|^On-behalf-of:' "$TMP/hmsg4"; then no "a human's commit (no lane) gets no host/on-behalf-of" "$(cat "$TMP/hmsg4")"
+else ok "a human's own commit carries neither"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

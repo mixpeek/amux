@@ -213,7 +213,10 @@ pub fn public_key_pem(pk_hex: &str) -> Option<String> {
     ))
 }
 
-fn host_id(home: &Path) -> String {
+/// This host's stable id (`<home>/ledger/host-id`, 16 hex), minted once. The
+/// one source for "which amux server": checkpoints sign it and agent commits
+/// carry it as `Amux-Host` (agent_commit.rs).
+pub(crate) fn host_id(home: &Path) -> String {
     let p = ledger_dir(home).join("host-id");
     if let Ok(s) = std::fs::read_to_string(&p) {
         let s = s.trim().to_string();

@@ -72,11 +72,22 @@ if [ "$total" -eq 0 ]; then
 fi
 
 # ---- per-commit facts -------------------------------------------------------
+# This server's id, the same one agent commits carry as Amux-Host.
+HERE_HOST="${AMUX_HOST_ID:-}"
+if [ -z "$HERE_HOST" ] && [ -s "${AMUX_HOME:-$HOME/.amux}/ledger/host-id" ]; then
+  HERE_HOST=$(head -1 "${AMUX_HOME:-$HOME/.amux}/ledger/host-id" | tr -cd '0-9a-f')
+fi
 # lane<TAB>sha<TAB>rust_files<TAB>total_files
 facts=""
 for c in $shas; do
   lane=$(git log -1 --format='%(trailers:key=Amux-Session,valueonly,separator=)' "$c")
   [ -z "$lane" ] && lane="<no Amux-Session trailer>"
+  # A same-named lane on ANOTHER amux server is not you (governance PR 15):
+  # its Amux-Host differs, so it is listed as <lane>@<host8> and needs consent.
+  host=$(git log -1 --format='%(trailers:key=Amux-Host,valueonly,separator=)' "$c" | tr -cd '0-9a-f')
+  if [ -n "$host" ] && [ -n "$HERE_HOST" ] && [ "$host" != "$HERE_HOST" ]; then
+    lane="${lane}@$(printf '%s' "$host" | cut -c1-8)"
+  fi
   files=$(git show --name-only --format= "$c")
   nrs=$(printf '%s\n' "$files" | grep -c '\.rs$' || true)
   ntot=$(printf '%s\n' "$files" | grep -c . || true)
