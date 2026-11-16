@@ -782,6 +782,15 @@ impl S3 {
         }
     }
 
+    /// The newest checkpoint was read but the listing that finds newer ones
+    /// (checkpoints removed here) failed: not checked, never `ok`.
+    fn listing_unmeasured(key: &str, latest_matches: Option<bool>, why: String) -> Value {
+        tracing::warn!(target: "amux::ledger", verdict = "ledger_checkpoint_listing_unmeasured", measured = false,
+            n_considered = 1, why = %why, "the checkpoint sink's listing failed; removed checkpoints were not looked for");
+        json!({"configured": true, "checked": false, "ok": false, "latest_key": key, "latest_matches": latest_matches,
+            "measured": false, "n_considered": 1, "why_unmeasured": why})
+    }
+
     /// Does the sink hold this host's newest checkpoint, and nothing newer?
     pub async fn compare(&self, local: &Checkpoint) -> Value {
         let key = local.object_key(&self.prefix);
@@ -807,7 +816,10 @@ impl S3 {
             .await
         {
             Ok((200, t)) => t.split("<Key>").skip(1).filter_map(|s| s.split("</Key>").next()).map(str::to_string).collect(),
-            _ => vec![],
+            // A failed listing is not "nothing newer": the check for removed
+            // checkpoints did not run, so the comparison says so and is not ok.
+            Ok((s, _)) => return Self::listing_unmeasured(&key, latest_matches, format!("the sink's listing answered HTTP {s}")),
+            Err(e) => return Self::listing_unmeasured(&key, latest_matches, format!("the sink's listing failed: {e}")),
         };
         let ok = latest_matches == Some(true) && newer.is_empty();
         let reason = why.or(if newer.is_empty() { None } else {
@@ -1069,6 +1081,14 @@ mod tests {
         Event { event_id: id.into(), ts_ms: ts, kind: "interaction".into(), actor: "owner".into(),
             action: Some("POST /api/x".into()), resource: Some("worker:w".into()),
             outcome: Some("applied".into()), ..Default::default() }
+    }
+
+    #[test]
+    fn a_failed_listing_is_unmeasured_never_ok() {
+        let v = S3::listing_unmeasured("p/h/1.json", Some(true), "the sink's listing answered HTTP 403".into());
+        assert_eq!((v["ok"].as_bool(), v["checked"].as_bool(), v["measured"].as_bool()), (Some(false), Some(false), Some(false)), "{v}");
+        assert!(v["why_unmeasured"].as_str().unwrap().contains("403"));
+        assert!(v.get("newer_in_sink").is_none(), "no empty list that reads as nothing newer");
     }
 
     fn file_keystore() {

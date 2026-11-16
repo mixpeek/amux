@@ -1425,6 +1425,16 @@ fn decode_cte(cte: &str, data: &[u8]) -> Vec<u8> {
 /// module (compat32) yields for browser/curl bodies. Returns None when the
 /// body does not decompose into parts (Python's "invalid multipart" 400:
 /// `msg.get_payload()` not a list).
+/// The folder a multipart upload targets (its `dir` field), for the capability
+/// gate, which must see the same target the upload handler writes to.
+pub(crate) fn multipart_dir(ctype: &str, body: &[u8]) -> Option<String> {
+    parse_multipart(ctype, body)?
+        .into_iter()
+        .find(|p| p.name.as_deref() == Some("dir"))
+        .map(|p| String::from_utf8_lossy(&p.data).trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
 fn parse_multipart(ctype: &str, body: &[u8]) -> Option<Vec<MPart>> {
     let boundary = boundary_of(ctype)?;
     let delim: Vec<u8> = [b"--", boundary.as_bytes()].concat();

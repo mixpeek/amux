@@ -134,8 +134,17 @@ pub(crate) fn native_peer_input_refusal(
         &receiver.display_name, &receiver_groups).is_some() {
         return Ok(None);
     }
-    let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &receiver_groups);
-    Ok(super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups, &open))
+    let home = crate::config::amux_home();
+    let open = super::worker_messaging::open_inbound_groups(&home, &receiver_groups);
+    let refusal = super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups, &open);
+    // The same ask `amux send` raises (session_verbs): refused outside a shared
+    // group, the owner is asked whether to grant it (land review, 2026-11-16:
+    // this path refused and asked nobody).
+    if refusal.is_some() {
+        super::capabilities::existing_refusal(&home, &source.display_name, "message",
+            &format!("worker {}", receiver.display_name), &receiver.display_name);
+    }
+    Ok(refusal)
 }
 
 /// Recheck current group membership before a pending native message delivery.
@@ -1224,6 +1233,10 @@ mod tests {
         assert_eq!(status,StatusCode::CREATED);
         let count = || store.read().unwrap().query_row("SELECT count(*) FROM _amux_messages",[],|r|r.get::<_,i64>(0)).unwrap();
         let before = count();
+        let asked = || crate::api::capabilities::counters::snapshot().iter()
+            .filter(|(k, _)| k.starts_with("message.") && (k.ends_with("existing_refusal_uncarded") || k.ends_with(".refused")))
+            .map(|(_, v)| *v).sum::<u64>();
+        let asked_before = asked();
         for to in [json!(target),json!({"kind":"group","data":other.as_str()})] {
             let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
                 .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
@@ -1231,6 +1244,7 @@ mod tests {
             assert_eq!(response.status(),StatusCode::FORBIDDEN);
             assert_eq!(count(),before,"no partial parent/child persistence");
         }
+        assert!(asked() >= asked_before + 2, "each refusal raises the owner's message ask, as amux send does");
         let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
             .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
             .body(Body::from(json!({"to":{"kind":"group","data":own.as_str()},"body":"same group control"}).to_string())).unwrap()).await.unwrap();

@@ -653,6 +653,21 @@ fn body_paths(body: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The paths a request body names, read the way the handlers read them: every
+/// body as JSON whatever its Content-Type (the handlers parse JSON without
+/// looking at the header, so a gate that read only `*json*` let a `text/plain`
+/// move into another worker's folder through: land review, 2026-11-16), and a
+/// multipart upload by its `dir` field.
+fn body_target_paths(ct: &str, body: &[u8]) -> Vec<String> {
+    // Both readings, always: a JSON body labelled multipart is still read as
+    // JSON by the move handler (land review, round 2).
+    let mut paths = body_paths(body);
+    if ct.contains("multipart/form-data") {
+        paths.extend(super::fs::multipart_dir(ct, body));
+    }
+    paths
+}
+
 /// Middleware on `/api/fs/*`: a worker touching another worker's folder.
 pub async fn fs_gate(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let home = crate::config::amux_home();
@@ -661,18 +676,23 @@ pub async fn fs_gate(req: axum::extract::Request, next: axum::middleware::Next) 
     };
     let query = req.uri().query().unwrap_or("").to_string();
     let mut paths = qs_paths(&query);
-    let is_json = req
+    let ct = req
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("json"));
-    let req = if is_json {
+        .unwrap_or("")
+        .to_string();
+    let has_body = !matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD);
+    let req = if has_body {
         let (parts, body) = req.into_parts();
-        let bytes = match axum::body::to_bytes(body, 8 << 20).await {
+        // An upload is read whole by its handler too; anything else keeps the
+        // 8 MB bound the JSON path always had.
+        let limit = if ct.contains("multipart/form-data") { usize::MAX } else { 8 << 20 };
+        let bytes = match axum::body::to_bytes(body, limit).await {
             Ok(b) => b,
             Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, Json(json!({"error": "body too large"}))).into_response(),
         };
-        paths.extend(body_paths(&bytes));
+        paths.extend(body_target_paths(&ct, &bytes));
         axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
     } else {
         req
@@ -797,6 +817,19 @@ mod tests {
             FolderDecision::Allowed(why) => assert!(why.contains("group customers"), "{why}"),
             other => panic!("expected a grant, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_gate_reads_a_body_the_way_the_handlers_do() {
+        let move_body = br#"{"path":"/own/x","dest":"/other/x"}"#;
+        for ct in ["application/json", "text/plain", "", "multipart/form-data; boundary=x"] {
+            assert_eq!(body_target_paths(ct, move_body), vec!["/own/x", "/other/x"],
+                "a move labelled {ct:?} still names its destination");
+        }
+        let b = "----b";
+        let upload = format!("--{b}\r\nContent-Disposition: form-data; name=\"dir\"\r\n\r\n/other/inbox\r\n--{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhi\r\n--{b}--\r\n");
+        assert_eq!(body_target_paths(&format!("multipart/form-data; boundary={b}"), upload.as_bytes()),
+            vec!["/other/inbox"], "an upload is checked against the folder it writes into");
     }
 
     #[test]
