@@ -1246,6 +1246,40 @@ fn mail_time(when: &str) -> Option<i64> {
 
 /// The scheduled check. Cheap when nothing changed: no model call, no worker
 /// turn. When the inputs changed, the goal's worker is asked to update it.
+/// More new items than this in one check wake the worker without asking.
+const JUDGE_MAX: usize = 30;
+
+/// Asks which new items bear on a goal, by number.
+pub(crate) fn judge_prompt(title: &str, body: &str, items: &[&Src]) -> String {
+    let mut p = format!(
+        "A person's goal: {title}\nWhat is known about it:\n{}\n\nNew email and calendar items mention a word from the goal. \
+         Which of them could change what the person should know or do about this goal? An item that only shares a word \
+         (an ad, a newsletter, an alert about something else) does not. Answer with a JSON array of the item numbers \
+         that do, such as [2, 5], or [] for none, and nothing else.\n",
+        body.chars().take(800).collect::<String>());
+    for (i, s) in items.iter().enumerate() {
+        p.push_str(&format!("{}. {}\n", i + 1, s.text.chars().take(240).collect::<String>()));
+    }
+    p
+}
+
+/// How many items the answer says bear on the goal, or None when the answer
+/// is not an array of item numbers.
+pub(crate) fn judge_parse(answer: &str, n: usize) -> Option<usize> {
+    let arr = extract_array(answer)?;
+    let mut nums: Vec<u64> = Vec::new();
+    for v in &arr {
+        let k = v.as_u64()?;
+        if k == 0 || k as usize > n {
+            return None;
+        }
+        if !nums.contains(&k) {
+            nums.push(k);
+        }
+    }
+    Some(nums.len())
+}
+
 async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(g) = get_item(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no goal {id}")) };
     if g["status"] != "active" {
@@ -1306,6 +1340,29 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
         }
         Some(_) => {}
     }
+    // A goal word is a coarse filter: "cloud" in "Google Cloud Alerting" woke
+    // a cloud-spend goal on every check (11-16) with canary alerts that say
+    // nothing about spend. A cheap model call reads the new items against the
+    // goal; only when it finds none that bears on it is the worker spared.
+    // A failed or unreadable answer wakes the worker, as before.
+    let new_items: Vec<&Src> = found.iter().flatten().copied().collect();
+    let (judged, bearing) = if new_items.len() > JUDGE_MAX {
+        (false, new_items.len())
+    } else {
+        match super::lookup::helper_answer(&judge_prompt(g["title"].as_str().unwrap_or(""), g["body"].as_str().unwrap_or(""), &new_items)).await {
+            Ok((_, answer)) => match judge_parse(&answer, new_items.len()) {
+                Some(n) => (true, n),
+                None => (false, new_items.len()),
+            },
+            Err(_) => (false, new_items.len()),
+        }
+    };
+    if judged && bearing == 0 {
+        tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
+            verdict = "intent_goal_unrelated", "intent: new items mention a goal's words but none bears on it; no worker turn");
+        return Json(json!({"ok": true, "changed": false, "unrelated": true, "n_new": fresh.unwrap_or(0), "measured": true,
+            "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
+    }
     let mut delivered = false;
     if let Some(oid) = goal_outcome(&state, &id).as_deref() {
         delivered = super::intent_store::start_outcome(&state,
@@ -1313,7 +1370,8 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what, verdict = "intent_goal_changed",
+    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
+        judged, n_bearing = bearing, verdict = "intent_goal_changed",
         "intent: something new mentions a goal; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
@@ -1529,6 +1587,22 @@ mod tests {
     fn a_revoked_mailbox_is_left_out_and_a_timeout_is_not() {
         assert!(super::mail_account_revoked(r#"token refresh failed (400): {"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#));
         assert!(!super::mail_account_revoked("gmail list failed (503): backend error"));
+    }
+
+    #[test]
+    fn a_goal_check_asks_which_new_items_bear_on_it() {
+        let src = |t: &str| Src { id: "e:1".into(), kind: "email", text: t.into(), when: String::new() };
+        let a = src("From Google Cloud Alerting | [ALERT] canary failed");
+        let b = src("From Google Cloud Billing | 80% of budget reached");
+        let p = super::judge_prompt("Keep cloud spend under the monthly ceiling", "Now: 8k ceiling", &[&a, &b]);
+        assert!(p.contains("1. From Google Cloud Alerting") && p.contains("2. From Google Cloud Billing") && p.contains("8k ceiling"));
+        assert_eq!(super::judge_parse("[]", 2), Some(0), "none bears: the worker is spared");
+        assert_eq!(super::judge_parse("Here: [2]", 2), Some(1));
+        assert_eq!(super::judge_parse("[1, 2, 2]", 2), Some(2));
+        assert_eq!(super::judge_parse("[3]", 2), None, "a number past the list is not an answer");
+        assert_eq!(super::judge_parse("[0]", 2), None);
+        assert_eq!(super::judge_parse("[\"1\"]", 2), None);
+        assert_eq!(super::judge_parse("none of them", 2), None, "no array wakes the worker");
     }
 
     #[test]
