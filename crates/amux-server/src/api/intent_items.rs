@@ -1101,12 +1101,19 @@ pub(crate) fn goal_words(title: &str) -> Vec<String> {
         "under", "above", "below", "before", "after", "more", "less", "still", "again", "their", "there", "these", "those",
         "each", "next", "last", "today", "tomorrow", "monthly", "yearly", "never", "always", "straight", "right", "good"];
     let mut out: Vec<String> = Vec::new();
-    for w in fingerprint(title).split('-').filter(|w| w.len() > 3 && !VAGUE.contains(w)) {
+    for w in fingerprint(title).split('-').filter(|w| w.len() > 3 && !VAGUE.contains(w) && !w.chars().all(|c| c.is_ascii_digit())) {
         if !out.iter().any(|o| o == w) {
             out.push(w.to_string());
         }
     }
     out
+}
+
+/// The words a goal's check watches: its title's, or its body's when the
+/// title names nothing specific.
+pub(crate) fn goal_watch_words(title: &str, body: &str) -> Vec<String> {
+    let words = goal_words(title);
+    if words.is_empty() { goal_words(body) } else { words }
 }
 
 /// The events and mail that mention one of the goal's words. A plural or
@@ -1171,13 +1178,10 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     if g["status"] != "active" {
         return Json(json!({"ok": true, "skipped": true, "why": "the goal is not active", "measured": true, "n_considered": 0})).into_response();
     }
-    // The title's words first (they lead the Gmail queries), then the body's.
-    let mut words = goal_words(g["title"].as_str().unwrap_or(""));
-    for w in goal_words(g["body"].as_str().unwrap_or("")) {
-        if !words.contains(&w) {
-            words.push(w);
-        }
-    }
+    // The title's words. The body is the goal's own write-up (its "Now:"
+    // line, message ids, "Google"), so it is used only when the title names
+    // nothing specific: its words matched 16 unrelated emails for AMUX-6908.
+    let words = goal_watch_words(g["title"].as_str().unwrap_or(""), g["body"].as_str().unwrap_or(""));
     let queries: Vec<String> = words.iter().take(3).cloned().collect();
     let (mail, mail_measured) = mail_sources(&queries, 10).await;
     let all_events = calendar_sources(&state, 30);
@@ -1428,6 +1432,10 @@ mod tests {
         assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 1);
         // A goal that names nothing specific watches everything rather than nothing.
         assert_eq!(super::goal_words("Keep cloud spend under the monthly ceiling"), vec!["cloud", "spend", "ceiling"]);
+        assert_eq!(super::goal_words("message m:108581 at 2026"), vec!["message"], "a number is not a word");
+        let body = "Now: the 8k ceiling is set for Google Cloud.\nFrom:\n- message m:108581";
+        assert_eq!(super::goal_watch_words("Keep cloud spend under the monthly ceiling", body), vec!["cloud", "spend", "ceiling"], "the title decides");
+        assert!(super::goal_watch_words("Stay on track every week", body).contains(&"google".to_string()), "the body, when the title is vague");
         let vague = super::goal_words("Stay on track every week");
         assert!(vague.is_empty());
         assert_eq!(super::goal_watched(&vague, vec![], mail.clone()).1.len(), 3);
