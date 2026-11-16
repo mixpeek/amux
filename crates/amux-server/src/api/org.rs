@@ -54,6 +54,10 @@ const MEMBER_ADMIN_HEADER: &str = "x-amux-local-member-admin";
 /// the record (ledger, traces, approvals, at-rest report, audit export) and can
 /// change nothing. Set only by [`local_member_identity`]; stripped inbound.
 const MEMBER_AUDITOR_HEADER: &str = "x-amux-local-member-auditor";
+/// The member's session has proved a second factor (governance PR 20,
+/// mfa.rs): set only by [`local_member_identity`] from `org_invites.mfa_at`
+/// (or an SSO sign-in whose `amr` said so); stripped inbound.
+const MEMBER_SESSION_MFA_HEADER: &str = "x-amux-local-member-session-mfa";
 /// Names an automated owner-configured policy (the needs-input auto-approver)
 /// as the actor of an INTERNAL call. Stripped from inbound requests below with
 /// the member markers, so only server code can produce it. Before it existed
@@ -301,6 +305,12 @@ pub(crate) fn authorize_local_member_request(
     let scope = local_member_scope(headers)?;
     let path = uri.path();
 
+    // A person's own second factor (mfa.rs): every handler acts on the caller
+    // alone, so any member, auditors and scoped members included, reaches it.
+    if path == "/api/mfa" || path.starts_with("/api/mfa/") {
+        return None;
+    }
+
     // An auditor reads the record and nothing else, whatever their scope.
     if local_member_is_auditor(headers) {
         return (!auditor_may(method, path)).then(|| {
@@ -526,6 +536,7 @@ struct MemberIdentity {
     team_name: String,
     admin: bool,
     auditor: bool,
+    session: super::mfa::SessionFacts,
 }
 
 #[cfg(test)]
@@ -560,6 +571,26 @@ pub(crate) fn auditor_may(method: &Method, path: &str) -> bool {
         || path == "/api/audit"
         || path.starts_with("/api/audit/")
         || path == "/api/contract/counters"
+}
+
+/// Whether this member's session has proved a second factor (mfa.rs).
+pub(crate) fn local_member_session_mfa(headers: &HeaderMap) -> bool {
+    is_verified_local_member(headers)
+        && headers.get(MEMBER_SESSION_MFA_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
+}
+
+/// The session token a verified member's cookie carries, so a handler can mark
+/// that session (mfa.rs). `None` for a tailnet sign-in, which has no cookie.
+pub(crate) fn local_member_session_token(headers: &HeaderMap) -> Option<String> {
+    if !is_verified_local_member(headers) {
+        return None;
+    }
+    member_cookie(headers).map(str::to_string)
+}
+
+/// The cookie that signs a member in, for a session minted elsewhere (sso.rs).
+pub(crate) fn member_cookie_header(token: &str, max_age_secs: i64) -> String {
+    format!("{MEMBER_COOKIE}={token}; Path=/; Max-Age={max_age_secs}; HttpOnly; Secure; SameSite=Lax")
 }
 
 pub(crate) fn local_member_is_admin(headers: &HeaderMap) -> bool {
@@ -607,6 +638,7 @@ pub async fn local_member_identity(
     req.headers_mut().remove(MEMBER_TEAM_NAME_B64_HEADER);
     req.headers_mut().remove(MEMBER_ADMIN_HEADER);
     req.headers_mut().remove(MEMBER_AUDITOR_HEADER);
+    req.headers_mut().remove(MEMBER_SESSION_MFA_HEADER);
     req.headers_mut().remove(POLICY_ACTOR_HEADER);
     req.headers_mut().remove(super::human_proof::OWNER_PROOF_HEADER);
     // A published app's credential (governance PR 5): resolved here, before
@@ -631,11 +663,14 @@ pub async fn local_member_identity(
                          WHEN COALESCE(m.team_id,'')='' THEN m.scope_level ELSE 'worker' END, \
                     CASE WHEN t.id IS NOT NULL THEN t.scope_name \
                          WHEN COALESCE(m.team_id,'')='' THEN m.scope_name ELSE '__invalid_team_scope__' END, \
-                    COALESCE(t.id,''), COALESCE(t.name,''), COALESCE(m.role,'member') \
+                    COALESCE(t.id,''), COALESCE(t.name,''), COALESCE(m.role,'member'), \
+                    COALESCE(i.via,'invite'), i.mfa_at IS NOT NULL, \
+                    EXISTS(SELECT 1 FROM mfa_factors f WHERE f.subject='member:'||m.email AND f.confirmed_at IS NOT NULL) \
              FROM org_invites i JOIN org_members m ON m.id=i.used_by \
              LEFT JOIN org_teams t ON t.id=m.team_id \
-             WHERE i.token=?1 AND i.used_at IS NOT NULL",
-            [&token],
+             WHERE i.token=?1 AND i.used_at IS NOT NULL \
+               AND (COALESCE(i.via,'invite')<>'sso' OR i.expires_at > ?2)",
+            rusqlite::params![&token, chrono::Utc::now().timestamp()],
             |row| {
                 let level: String = row.get(2)?;
                 let name: String = row.get(3)?;
@@ -655,6 +690,11 @@ pub async fn local_member_identity(
                         .unwrap_or(MemberScope::Worker("__invalid_member_scope__".into())),
                     team_id: row.get(4)?,
                     team_name: row.get(5)?,
+                    session: super::mfa::SessionFacts {
+                        via_sso: row.get::<_, String>(7)? == "sso",
+                        mfa_ok: row.get(8)?,
+                        enrolled: row.get(9)?,
+                    },
                 })
             },
         ).optional()?)
@@ -679,8 +719,17 @@ pub async fn local_member_identity(
         tracing::warn!(target: "amux::local_invite", verdict = "member_header_rejected", field = "email", member_id = %member.id, "stored local member identity is not a valid HTTP header");
         return next.run(req).await;
     };
+    // SSO required, or a second factor owed (governance PR 20, mfa.rs).
+    if let Some(refused) = super::mfa::member_gate(req.method(), req.uri().path(), member.session) {
+        tracing::info!(target: "amux::local_invite", verdict = "member_session_step_owed", member_id = %member.id,
+            path = %req.uri().path(), "a member session owes a sign-in step");
+        return refused;
+    }
     req.headers_mut()
         .insert(VERIFIED_MEMBER_HEADER, HeaderValue::from_static("1"));
+    if member.session.mfa_ok {
+        req.headers_mut().insert(MEMBER_SESSION_MFA_HEADER, HeaderValue::from_static("1"));
+    }
     if member.admin {
         req.headers_mut().insert(MEMBER_ADMIN_HEADER, HeaderValue::from_static("1"));
     }

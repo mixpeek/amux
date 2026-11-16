@@ -106,7 +106,8 @@ pub fn can_read(h: &HeaderMap) -> bool {
 
 fn owner_only(h: &HeaderMap, what: &str) -> Option<Response> {
     if is_owner(h) {
-        return None;
+        // Each of these powers asks for a fresh second factor (mfa.rs).
+        return super::mfa::step_up_gate(h, what);
     }
     counters::bump(&counters::REFUSED_NOT_OWNER, 1);
     Some(refuse(StatusCode::FORBIDDEN, "owner_only", &format!("{what} is the owner's alone")))
