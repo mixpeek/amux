@@ -400,6 +400,9 @@ pub(crate) const SHIPPED_COMMANDS: &[(&str, &str)] = &[
     // publishing of apps/pages". A skill reaches isolated workers too, which
     // get no launch rules and so never see worker_links_guide.
     ("amux-publish", include_str!("../../../../skills/amux-publish.md")),
+    // Governance PR 21: access reviews, evidence packs and incident timelines
+    // from the ledger, traces and commits. Read-only; it recommends.
+    ("compliance", include_str!("../../../../skills/compliance.md")),
 ];
 
 /// The frontmatter line that lets amux keep a shipped command current. A user
@@ -784,6 +787,17 @@ mod write_tests {
         let desc = frontmatter_fields(publish).0;
         assert!(desc.contains("Netlify") && desc.contains("amux publish"),
             "the description is what makes a worker load it before an outside host: {desc}");
+    }
+
+    /// Governance PR 21: the compliance skill ships, names the three CLI reads
+    /// it is built on, and stays read-only and honest about unmeasured data.
+    #[test]
+    fn the_compliance_skill_ships_read_only() {
+        let c = SHIPPED_COMMANDS.iter().find(|(n, _)| *n == "compliance").expect("compliance is not shipped").1;
+        for verb in ["amux compliance access-review", "amux compliance timeline", "amux compliance evidence"] {
+            assert!(c.contains(verb), "the skill does not name {verb}");
+        }
+        assert!(c.contains("Read-only") && c.contains("measured"), "the skill must stay read-only and read `measured`");
     }
 
     /// The shipped copy carries the marker and a description, or it would be

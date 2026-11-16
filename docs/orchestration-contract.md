@@ -317,6 +317,14 @@ a Group a team; deactivate or delete runs the PR 13 offboarding. Sign-ins, facto
 provisioning are `identity` ledger rows; counters are under `sso`, `mfa` and `scim`. The sign-in
 door has its own TOTP (`door.py totp <user>`, `DOOR_MFA`). `docs/ops/identity-sso-mfa-scim.md`.
 
+Compliance reads (governance PR 21, `api/compliance.rs`, the shipped `/compliance` skill): `GET
+/api/compliance/access-review` (people, workers with their capabilities, apps, SCIM tokens and
+standing approvals, each with when the ledger last saw it, plus `findings` that recommend and
+never act) and `GET /api/compliance/timeline` (a trace, worker, actor or window merged from the
+ledger, the trace tree and trailer-matched commits, with the chain's verify result). Owner,
+auditor or admin. `amux compliance evidence` writes a hashed evidence pack from these and the
+existing read routes and exits 3 when it is incomplete. Counters are under `compliance`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

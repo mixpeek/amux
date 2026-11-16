@@ -111,6 +111,8 @@ pub mod social_browser;
 pub mod social_devto;
 pub mod social_publish;
 pub mod governance;
+// Governance PR 21: access review and incident timeline for the compliance skill.
+pub mod compliance;
 pub mod mfa;
 pub mod scim;
 pub mod sso;
@@ -485,6 +487,7 @@ pub fn router_with_connector_transport(
         .merge(mfa::routes())
         .merge(sso::routes())
         .merge(scim::routes())
+        .merge(compliance::routes())
         .merge(bridge::routes())
         .merge(land_queue::routes())
         .merge(vault::routes())
