@@ -36,6 +36,9 @@ pub fn tracks(method: &str, path: &str) -> bool {
     matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
         && path.starts_with("/api/")
         && path != "/api/client-debug"
+        // The agent CLIs' telemetry posts every few seconds; it is stored as tool
+        // events (cli_telemetry.rs), never as commands.
+        && !path.starts_with("/api/otel/")
         && !path.starts_with("/api/speedtest")
 }
 
