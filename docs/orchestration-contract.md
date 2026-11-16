@@ -83,6 +83,21 @@ with what to do) or `off`. Counts are under `published_app` in
 tree, a non-Linux host, or a non-loopback call carrying the owner token is not
 caught; governance PRs 16-17 close that.
 
+A held external email is seen and decided only by who may (2026-11-09,
+`api/email_scope.rs`). The pending list is scoped to the caller the server
+proved: the owner, an owner policy and a Global member see every draft, a
+scoped member the drafts of the workers in its scope, a worker only its own,
+an app or an unproven caller none. Approve and reject record the proven
+identity with `approver_verified: true`, never the name `X-Amux-Approver`
+claims; a worker may withdraw only its own draft and never approve; an app can
+do neither; a scoped member decides only inside its scope, in every mode but
+`off`. Every external send that `AMUX_EMAIL_EXTERNAL_ALLOW` or
+`AMUX_EMAIL_EXTERNAL_EXEMPT` lets skip the hold leaves a ledger row and a
+policy receipt (`email_external_bypass`) naming the rule and its layer.
+`AMUX_EMAIL_APPROVAL_SCOPE`: `report` (default, allowed and counted,
+`email_scope_would_refuse`), `enforce` (403 with the next step) or `off`.
+Counts are under `email_gate` in `GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |
