@@ -5811,7 +5811,11 @@ function _warnIgnoredFields(r, url, options) {
 }
 
 async function apiCall(url, options) {
-  if (!online) {
+  // A call the outbox must never hold (_OUTBOX_SKIP) goes to the network even
+  // when this tab believes it is offline. `online` is this tab's belief, and a
+  // worker delete pressed under a stale `false` was queued with no request
+  // sent (2026-11-16). The network answers, and a failure is shown, not queued.
+  if (!online && !_OUTBOX_SKIP.test(String(url))) {
     await _queueOp(url, options);
     return null;
   }
@@ -5865,7 +5869,14 @@ async function apiCall(url, options) {
     consecutiveFailures++;
     if (consecutiveFailures >= 2) setOnline(false);
     amuxTrack('api_unreachable', { url: url.split('?')[0], err: String(e).slice(0, 200) });
-    await _queueOp(url, options);
+    // A write the outbox refuses (a worker delete, an email release) was not
+    // done and will not be retried; returning null without a word read as
+    // "the click did nothing".
+    const queued = await _queueOp(url, options);
+    const method = ((options && options.method) || 'GET').toUpperCase();
+    if (!queued && method !== 'GET' && method !== 'HEAD') {
+      showToast('Not done: the server could not be reached. Try again when amux is back.');
+    }
     return null;
   }
 }
@@ -6019,7 +6030,14 @@ const _origFetch = window.fetch.bind(window);
 // banner said "Approved — sent for worker" while nothing was sent; the queue
 // then replayed the approval seven times. A human's release needs the server's
 // answer, never a promise to try later.
-const _OUTBOX_SKIP = /\/api\/(email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
+// `sessions/<name>/delete` joined 2026-11-16 for the same reason. The server
+// takes a worker delete only from a person in the dashboard, and it cannot be
+// undone. Queued, it waited on a replay that stalled across windows
+// (outbox_replay_lock_stalled): 8 deletes of two workers from two browsers over
+// four days, none in the request log, each press held 30 s at "accepted"
+// (press_busy_released_unsettled), and the workers stayed. A delete now goes
+// to the server or says it did not.
+const _OUTBOX_SKIP = /\/api\/(sessions\/[^/?#]+\/delete(?:[?#]|$)|email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -6046,7 +6064,10 @@ function _outboxAccepted() {
 // copy already changed the node) and sits under Pending operations for good
 // (Ethan's screenshot, 2026-10-18). Its change either landed or is one press
 // away, so the entries are dropped once at load, and the count is reported.
-const _OUTBOX_ANSWER_NOW = /\/api\/(?:files\/mdai\/(?:run|chat)(?:[?#]|$)|email\/(?:approve|reject)\/)/;
+// A worker delete queued before it joined the skip list is dropped the same
+// way: replayed days later it would remove a worker nobody is looking at, and
+// the person who pressed it has already seen the worker come back.
+const _OUTBOX_ANSWER_NOW = /\/api\/(?:files\/mdai\/(?:run|chat)(?:[?#]|$)|email\/(?:approve|reject)\/|sessions\/[^/?#]+\/delete(?:[?#]|$))/;
 function _outboxDropAnswerNow() {
   let dropped = 0, considered = 0;
   return _mutateQueue(current => {
