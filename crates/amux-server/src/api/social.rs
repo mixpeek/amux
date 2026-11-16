@@ -846,7 +846,9 @@ pub async fn snapshot_pass(ctx: &SocialCtx, state: &AppState) -> Value {
             Ok(p) => p,
             Err(_) => continue,
         };
-        let res = fetch_metrics(ctx, state, HeaderMap::new(), &post).await;
+        // The server itself reads its own posts' numbers: named as a job, so
+        // the connector mint records who it was for (governance PR 4).
+        let res = fetch_metrics(ctx, state, crate::api::org::policy_headers("job:social-metrics"), &post).await;
         let (metrics, measured, error) = match res {
             Ok(m) => (m, 1, None),
             Err(e) => (Value::Null, 0, Some(e)),

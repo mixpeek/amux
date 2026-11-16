@@ -420,7 +420,10 @@ pub async fn publish_pass(ctx: &SocialCtx, state: &AppState) -> Value {
     let (mut posted, mut retried, mut failed, mut uncertain) = (0, 0, 0, 0);
     for id in &due {
         let Some(c) = claim(state, *id, &me).await else { continue };
-        let mut headers = HeaderMap::new();
+        // The job acts for the worker that queued the post: the worker's
+        // connector scope applies, and the job's policy mark proves the call
+        // came from inside the server (governance PR 4, connector_scope.rs).
+        let mut headers = crate::api::org::policy_headers("job:social-publish");
         if let Ok(v) = HeaderValue::from_str(&c.session) {
             headers.insert("x-amux-session", v);
         }

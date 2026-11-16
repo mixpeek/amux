@@ -52,6 +52,20 @@ admitted, counted and named by caller, `loopback_would_be_refused`), `enforce`
 `GET /api/contract/counters` shows it under `loopback`, with
 `uncredentialed_callers` naming who still relies on locality.
 
+A connector token is minted for whoever the request proves, not for whoever a
+header names or omits (2026-11-09, `api/connector_scope.rs`). A lane's token
+holds the bearer to that worker's connectors scope; the owner, a member or an
+in-process job (its `org::policy_headers("job:<name>")` mark) prove themselves
+as for any other route; a request that proves nobody is anonymous. A worker
+header alone still narrows the bearer to that worker's scope, since a name can
+only restrict. `AMUX_CONNECTOR_TOKEN_SCOPE`: `report` (default, minted, counted,
+`connector_token_would_be_refused`), `enforce` (403 `connector_token_refused`
+with how to prove; a lane not yet minted a token is still served and counted) or
+`off`. Every mint writes a receipt (`GET /api/policy/receipts`, action
+`connector_token_mint`) with actor, on-behalf-of, account, scopes and verdict,
+never the bearer. Counts are under `connector_token` in
+`GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

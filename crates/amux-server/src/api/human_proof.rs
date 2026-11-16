@@ -61,7 +61,7 @@ pub fn set_owner_credential_configured(configured: bool) {
 /// An owner token, or a front door that has proven the owner here
 /// (governance PR 3, `loopback_trust.rs`): either way the owner's requests
 /// carry something the server checked, so the unproven can be refused.
-fn owner_credential_configured() -> bool {
+pub(crate) fn owner_credential_configured() -> bool {
     OWNER_CREDENTIAL_CONFIGURED.load(Ordering::Relaxed) || super::loopback_trust::front_door_active()
 }
 
