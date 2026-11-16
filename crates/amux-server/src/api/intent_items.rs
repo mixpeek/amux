@@ -1095,7 +1095,11 @@ async fn approve_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
 /// the ones that would match anything ("keep", "track").
 pub(crate) fn goal_words(title: &str) -> Vec<String> {
     const VAGUE: &[&str] = &["keep", "track", "make", "sure", "stay", "every", "goal", "help", "need", "want",
-        "about", "what", "when", "them", "they", "into", "over", "week", "weekly", "daily", "things"];
+        "about", "what", "when", "them", "they", "into", "over", "week", "weekly", "daily", "things",
+        // Common enough to match unrelated mail ("under the monthly ceiling"
+        // woke a cloud-spend goal on every check, 11-15).
+        "under", "above", "below", "before", "after", "more", "less", "still", "again", "their", "there", "these", "those",
+        "each", "next", "last", "today", "tomorrow", "monthly", "yearly", "never", "always", "straight", "right", "good"];
     let mut out: Vec<String> = Vec::new();
     for w in fingerprint(title).split('-').filter(|w| w.len() > 3 && !VAGUE.contains(w)) {
         if !out.iter().any(|o| o == w) {
@@ -1423,6 +1427,7 @@ mod tests {
         more.push(src("e:5", "From coach | Training moved to 7am"));
         assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 1);
         // A goal that names nothing specific watches everything rather than nothing.
+        assert_eq!(super::goal_words("Keep cloud spend under the monthly ceiling"), vec!["cloud", "spend", "ceiling"]);
         let vague = super::goal_words("Stay on track every week");
         assert!(vague.is_empty());
         assert_eq!(super::goal_watched(&vague, vec![], mail.clone()).1.len(), 3);
