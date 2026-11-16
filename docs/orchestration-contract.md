@@ -66,6 +66,23 @@ with how to prove; a lane not yet minted a token is still served and counted) or
 never the bearer. Counts are under `connector_token` in
 `GET /api/contract/counters`.
 
+A published app is its own principal with no amux access unless a person gave
+it some (2026-11-09, `api/app_identity.rs`). Publishing a port mints an app
+credential, returned once and stored only as its hash; the app sends it as
+`X-Amux-App-Token` and is attributed `app:<id>` on behalf of its publisher,
+held to the calls a person allowed (`api_allow`, `METHOD /api/path` rules; a
+worker can only ask, `api_requested`, and approving the link allows exactly
+that). It can never be given its own access controls, members, sign-in,
+connectors, the vault, grants or scopes. On Linux a loopback call from the
+app's process tree without its token is caught by process, including one that
+carries the worker token it inherited or the owner token it read from disk.
+`AMUX_PUBLISHED_APP_API`: `report` (default, allowed, counted per app and kind,
+`published_app_api_would_be_refused`), `enforce` (403 `published_app_api_refused`
+with what to do) or `off`. Counts are under `published_app` in
+`GET /api/contract/counters`. Still open: a process the app detaches from its
+tree, a non-Linux host, or a non-loopback call carrying the owner token is not
+caught; governance PRs 16-17 close that.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

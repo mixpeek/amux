@@ -2429,6 +2429,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "anonymous_owner": super::human_proof::report(),
         "loopback": super::loopback_trust::report(state.auth_token.is_some()),
         "connector_token": super::connector_scope::report(),
+        "published_app": super::app_identity::report(),
         "a2_pool": pool,
         "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
 }

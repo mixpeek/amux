@@ -75,6 +75,21 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
     if door_owner {
         super::loopback_trust::stamp_owner(req.headers_mut());
     }
+    // A published app's own credential (app_identity.rs, governance PR 5),
+    // resolved by the outermost middleware into `app:<id>`. On its allowlist it
+    // is admitted as that app; outside it, `report` lets the rest of this
+    // function decide as if no app were involved and `enforce` refuses.
+    match super::app_identity::gate_token(req.headers(), req.method().as_str(), req.uri().path()) {
+        super::app_identity::Gate::Admit => return next.run(req).await,
+        super::app_identity::Gate::Refuse(kind) => return super::app_identity::refused(kind),
+        super::app_identity::Gate::NotApp | super::app_identity::Gate::Continue => {}
+    }
+    // A loopback call from a published app's own process that did not send its
+    // app token: caught by process, whatever else it presented (the worker
+    // token it inherited, or the owner token it read from disk).
+    if let Some(r) = app_origin_refusal(&state, &req) {
+        return r;
+    }
     let Some(expected) = &state.auth_token else {
         // NO OWNER TOKEN IS NOT NO AUTHORIZATION. A host behind its own front
         // door runs with AMUX_AUTH_TOKEN=none, and member scopes must still
@@ -207,6 +222,34 @@ pub async fn require_bearer(State(state): State<AppState>, mut req: Request, nex
             "recovery": if owner_session == "valid" { "refresh_bootstrap" } else { "open_owner_or_invite_link" }
         })),
     ).into_response()
+}
+
+/// A refusal when this loopback API call came from a published app's process
+/// tree without its app token (app_identity.rs). `None` lets auth go on: not
+/// from an app, exempt, `off`, or counted in `report`. A request already
+/// proved as an app (its token) never reaches here.
+fn app_origin_refusal(state: &AppState, req: &Request) -> Option<Response> {
+    if super::app_identity::mode() == super::app_identity::Mode::Off
+        || exempt_from_credential(req)
+        || req.headers().contains_key(super::app_identity::ACTOR_HEADER)
+    {
+        return None;
+    }
+    let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().copied()?.0;
+    let super::app_identity::Origin::App(id) = super::app_identity::origin_of(peer) else { return None };
+    let presented = if state.auth_token.as_deref().is_some_and(|expected| {
+        provided_owner_token(req.headers(), req.uri()).is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+    }) {
+        super::app_identity::Presented::OwnerToken
+    } else if super::loopback_trust::worker_token_valid(req.headers()) {
+        super::app_identity::Presented::WorkerToken
+    } else {
+        super::app_identity::Presented::Nothing
+    };
+    match super::app_identity::gate_origin(&id, presented, req.method().as_str(), req.uri().path()) {
+        super::app_identity::Gate::Refuse(kind) => Some(super::app_identity::refused(kind)),
+        _ => None,
+    }
 }
 
 /// Public paths and non-API GETs (the dashboard shell) need no credential from
