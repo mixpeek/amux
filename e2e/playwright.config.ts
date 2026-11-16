@@ -98,10 +98,19 @@ const TARGETS = [
 for (const root of new Set([os.tmpdir(), ...(process.platform === 'darwin' ? ['/tmp'] : [])])) {
   reapStaleTmp(root, 'amux-e2e-');
 }
-const homes: Record<string, string> = Object.fromEntries(
-  TARGETS.map((t) => [t.name, fs.mkdtempSync(path.join(os.tmpdir(), `amux-e2e-${t.name}-`))]),
-);
-for (const home of Object.values(homes)) {
+// Playwright loads this file again in every worker process, and a second
+// mkdtemp there named a home no server uses. The runner makes the homes once
+// and hands them to its workers in AMUX_E2E_HOMES, which they inherit.
+const inheritedHomes = !!process.env.AMUX_E2E_HOMES;
+const homes: Record<string, string> = inheritedHomes
+  ? JSON.parse(process.env.AMUX_E2E_HOMES)
+  : Object.fromEntries(
+    TARGETS.map((t) => [t.name, fs.mkdtempSync(path.join(os.tmpdir(), `amux-e2e-${t.name}-`))]),
+  );
+process.env.AMUX_E2E_HOMES = JSON.stringify(homes);
+// Seeded once, by the runner: a worker rewriting server.env would undo what a
+// running spec wrote there.
+for (const home of inheritedHomes ? [] : Object.values(homes)) {
   fs.writeFileSync(
     path.join(home, 'server.env'),
     `ANTHROPIC_API_KEY=${E2E_ANTHROPIC_KEY}\n`,
@@ -254,6 +263,9 @@ export default defineConfig({
         ? { testMatch: fileMatchers(SPEC_SELECTION[t.name] as string[]) }
         : {}),
     name: t.name,
+    // The project's throwaway AMUX_HOME, for a spec that puts a fixture file
+    // where its server reads it (email-approval-scope.spec.ts).
+    metadata: { home: homes[t.name] },
     use: {
       ...t.use,
       baseURL: `https://localhost:${t.port}`,

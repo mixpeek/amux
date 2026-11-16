@@ -28,6 +28,11 @@ const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
   RUST_LOG: 'info', AMUX_BOARD_DRIVE_SECS: '0', AMUX_AUTOFIX_SECS: '0', AMUX_GHOST_RESCUE_SECS: '0',
   AMUX_MODEL_CATALOG_REFRESH_SECS: '0',
 }});
+// One file mailbox, so a worker's send has a sender and is held: with no
+// account at all it is refused before the hold (de0fc8719). A file mailbox
+// can never send, so nothing here reaches a provider.
+fs.mkdirSync(path.join(amux.home, 'mailboxes'), {recursive: true});
+fs.writeFileSync(path.join(amux.home, 'mailboxes', 'e2e-scope@example.com.json'), JSON.stringify({account: 'e2e-scope@example.com', messages: []}));
 const checks = [];
 const check = (name, ok, detail) => {
   checks.push({name, ok: !!ok});
