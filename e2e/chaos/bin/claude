@@ -12,6 +12,8 @@ plus one launch record per process, written before anything is painted:
   {"event": "launch", "cwd": <os.getcwd()>, "pid": <pid>, "argv": [...], "t": ...}
 The launch cwd is the agent's own report of where it runs, which is what a
 worktree test has to prove (not what amux believes it passed to tmux).
+With $FAKE_CLAUDE_PROBE_SH the launch record carries "probe": the output of
+that shell line run in the agent's place.
 With $FAKE_CLAUDE_ENV_KEYS (comma-separated names) the launch record also
 carries "env_sha256": {name: sha256 of its value, or null when unset}, so a
 test can prove a secret arrived without any log holding the secret.
@@ -133,6 +135,13 @@ def main():
         hashes = env_hashes()
         if hashes is not None:
             rec["env_sha256"] = hashes
+        # $FAKE_CLAUDE_PROBE_SH: a shell line run where the agent runs, its
+        # output kept in the launch record, so a test can see what the agent
+        # sees (a customer boundary's mounts, for one).
+        probe = os.environ.get("FAKE_CLAUDE_PROBE_SH", "")
+        if probe:
+            r = subprocess.run(["/bin/sh", "-c", probe], capture_output=True, text=True, timeout=30)
+            rec["probe"] = {"out": r.stdout, "err": r.stderr[-2000:], "rc": r.returncode}
         f.write(json.dumps(rec) + "\n")
         if os.environ.get("FAKE_CLAUDE_SPAWN_BACKGROUND") == "1":
             child = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL,

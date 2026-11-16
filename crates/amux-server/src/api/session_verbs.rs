@@ -18189,11 +18189,23 @@ pub(crate) async fn start_session(
     } else {
         String::new()
     };
-    let cmd = provider_command_in_workspace(
-        &work_dir,
-        &format!("{observer_prefix}{otel_prefix}{cmd}"),
-        isolated.then_some(name),
-    );
+    let inner = format!("{observer_prefix}{otel_prefix}{cmd}");
+    // The customer boundary (governance PR 17, customer_isolation.rs): a
+    // worker in a boundary group runs its CLI inside a mount namespace that
+    // holds its group's folders and nothing else of the home. Only boundary
+    // workers are touched; report mode (the default) only records the plan.
+    // Configuration, not a prompt, so isolated workers get it too (A9).
+    let inner = match super::customer_isolation::wrap(&home(), name, std::path::Path::new(&work_dir), &inner) {
+        Ok(Some(wrapped)) => wrapped,
+        Ok(None) => inner,
+        Err(why) => {
+            tracing::warn!(session = name, measured = true, n_considered = 1,
+                verdict = "customer_isolation_start_refused", %why,
+                "a boundary worker was not started: no isolation runner (governance PR 17)");
+            return (false, why);
+        }
+    };
+    let cmd = provider_command_in_workspace(&work_dir, &inner, isolated.then_some(name));
     tracing::info!(session = name, cwd = %work_dir, verdict = "provider_launch_workspace_pinned",
         "launching provider in resolved worker workspace");
     // Snapshot muse's session directory BEFORE the process exists, so the set
@@ -18317,16 +18329,22 @@ pub(crate) async fn start_session(
             send_key(name, "C-u").await;
             sleep_ms(100).await;
             let fresh_flag = format!("--name {}", sh_quote(name));
-            let cmd_fresh = provider_command_in_workspace(
-                &work_dir,
-                &format!(
-                    "{observer_prefix}{}",
-                    build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
-                        + &rules_opts
-                        + &sandbox_opts
-                ),
-                isolated.then_some(name),
+            let inner_fresh = format!(
+                "{observer_prefix}{}",
+                build_claude_cmd(&cfg, &flags, &default_flags, &fresh_flag, extra_flags)
+                    + &rules_opts
+                    + &sandbox_opts
             );
+            // The fresh start stays inside the same customer boundary (PR 17):
+            // a failed resume must not be the way out of it.
+            let inner_fresh = match super::customer_isolation::wrap(
+                &home(), name, std::path::Path::new(&work_dir), &inner_fresh)
+            {
+                Ok(Some(wrapped)) => wrapped,
+                Ok(None) => inner_fresh,
+                Err(why) => return (false, why),
+            };
+            let cmd_fresh = provider_command_in_workspace(&work_dir, &inner_fresh, isolated.then_some(name));
             shell_step!(&cmd_fresh, true);
             for _ in 0..10 {
                 sleep_ms(500).await;
@@ -29435,6 +29453,14 @@ async fn post_dispatch(
             if let Some(reason) = start_block_reason(name, &cfg) {
                 tracing::warn!(session = %name, reason = %reason, "session_start_refused: /start cannot launch this session");
                 return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason}));
+            }
+            // Same for a customer-boundary worker under enforce on a host with
+            // no isolation runner (governance PR 17).
+            if let Some(reason) = super::customer_isolation::start_refusal(&home(), name) {
+                tracing::warn!(session = %name, measured = true, n_considered = 1,
+                    verdict = "customer_isolation_start_refused", reason = %reason,
+                    "session_start_refused: /start cannot launch this session");
+                return jresp(StatusCode::CONFLICT, json!({"ok": false, "error": reason, "code": "customer_isolation_no_runner"}));
             }
             let prompt = body_str(body, "prompt");
             update_meta(name, &[("boot_start_scheduled", json!(true))]);

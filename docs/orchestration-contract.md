@@ -258,6 +258,24 @@ refuses to run the shell instead of running it unconfined; `off` writes nothing.
 `GET /api/workers/{name}/sandbox` shows each rule's source and the measured
 runtime; counters are under `cli_sandbox`. Codex lanes report `unsupported`.
 
+**Customer boundary** (governance PR 17, `api/customer_isolation.rs`): the owner
+marks a group (or a worker, or the whole server) with `AMUX_CAP_ISOLATION=boundary`;
+the most specific layer wins, so `none` on a worker opts it out. A boundary worker's
+agent CLI launches inside a mount namespace (`bwrap` on Linux, measured at launch;
+`docker` with `AMUX_ISOLATION_RUNNER=docker` and `AMUX_ISOLATION_IMAGE`): its folder,
+its boundary group's folders and `AMUX_CAP_FOLDERS` grants read-write; the rest of the
+user's home and amux's home absent, except hook scripts, `hooks/`, the TLS certificate
+(not its key), `bin/`, the worker's rules and sandbox files, `trace/`, `uploads/` and
+its own `status-events/`; `~/.claude` with only this worker's project transcripts; a
+private `/tmp` per boundary; network shared. The worker reaches the server over
+loopback with its own token. `AMUX_CUSTOMER_ISOLATION=report` (default) records the
+plan and wraps nothing; `enforce` wraps boundary workers and refuses to start one when
+no runner is available; `off` does nothing. Workers outside a boundary are never
+touched. `GET /api/workers/{name}/isolation` shows the mounts with their sources and
+the measured runner; counters are under `customer_isolation`. A boundary worker cannot
+use a git repository rooted above its folders (the home-folder repo), and `uploads/`
+and `trace/` are shared across boundaries.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |
