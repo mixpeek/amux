@@ -1124,17 +1124,34 @@ pub(crate) fn goal_watch_words(title: &str, body: &str) -> Vec<String> {
 }
 
 /// The events and mail that mention one of the goal's words. A plural or
-/// singular form counts ("dinner" matches "dinners").
+/// singular form counts ("dinner" matches "dinners"). A sender's address is
+/// not a mention: "email@email.shopify.com" woke an email-accounts goal and
+/// "marketing@plans.eventbrite.com" a plans goal (11-16).
 pub(crate) fn goal_relevant(words: &[String], srcs: &[Src]) -> Vec<Src> {
     srcs.iter()
         .filter(|s| {
-            let text = s.text.to_lowercase();
+            let text = without_addresses(&s.text).to_lowercase();
             text.split(|c: char| !c.is_alphanumeric()).any(|t| {
                 words.iter().any(|w| t == w || t.strip_suffix('s') == Some(w.as_str()) || w.strip_suffix('s') == Some(t))
             })
         })
         .cloned()
         .collect()
+}
+
+/// `text` without the `<address>` parts, so only what a person reads is matched.
+fn without_addresses(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('<') {
+        out.push_str(&rest[..i]);
+        match rest[i..].find('>') {
+            Some(j) if rest[i..i + j].contains('@') => rest = &rest[i + j + 1..],
+            _ => { out.push('<'); rest = &rest[i + 1..]; }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What a goal's check watches: the events and mail that mention it, or all
@@ -1531,6 +1548,12 @@ mod tests {
         // Relevant mail arriving is.
         more.push(src("e:5", "From coach | Training moved to 7am"));
         assert_eq!(super::news(&prev, None, super::goal_relevant(&words, &more).iter()).len(), 1);
+        // The sender's address is not a mention; the name and subject are.
+        let accts = super::goal_words("Keep my email accounts connected");
+        let mail2 = vec![src("e:6", "From Shopify New York <email@email.shopify.com> | This week: the Fall sale"),
+            src("e:7", "From Ethan <info@mixpeek.com> | amux: reconnect an email account"),
+            src("e:8", "From Email Team <a@b.co> | hello"), src("e:9", "From x <no at sign> | email")];
+        assert_eq!(super::goal_relevant(&accts, &mail2).iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["e:7", "e:8", "e:9"]);
         // A goal that names nothing specific watches everything rather than nothing.
         assert_eq!(super::goal_words("Keep cloud spend under the monthly ceiling"), vec!["cloud", "spend", "ceiling"]);
         assert_eq!(super::goal_words("message m:108581 at 2026"), vec!["message"], "a number is not a word");
