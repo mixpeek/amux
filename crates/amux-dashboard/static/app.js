@@ -1216,6 +1216,19 @@ let hiddenTags = new Set();
 // for that client"). One record, written from render() so any mutator that
 // re-renders is covered, including ones added later.
 const _LIST_VIEW_KEY = 'amux_list_view_v1';
+// A TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN LIST VIEW (owner, 2026-11-16: a
+// new tab opened with the first tab's search and Working filter, and a filter
+// set in one tab came back in the first tab after a reload). Each tab after
+// the first is an iframe on this origin, so the shared localStorage record is
+// the page's, not the tab's: a tab starts clean and keeps its own copy in
+// sessionStorage under its tab id, beside the bar's per-tab address
+// (_CHROME_TAB_VIEW_KEY). The page itself, and the app reopened, still restore
+// the shared record. The tab id is read here rather than through _isInTab,
+// which is declared further down and not yet initialised when this runs.
+const _LIST_VIEW_TAB_KEY = 'amux_list_view_v1:tab:';
+const _listViewTabId = (() => { try { return new URLSearchParams(location.search).get('_tab'); } catch (e) { return null; } })();
+function _listViewStore() { return _listViewTabId !== null ? sessionStorage : localStorage; }
+function _listViewKey() { return _listViewTabId !== null ? _LIST_VIEW_TAB_KEY + _listViewTabId : _LIST_VIEW_KEY; }
 let _listViewSaved = '';
 function _listViewSnapshot() {
   return JSON.stringify({ tag: activeTag || '', hidden: [...hiddenTags].sort(),
@@ -1224,7 +1237,10 @@ function _listViewSnapshot() {
 }
 function _restoreListView() {
   let v = null;
-  try { v = JSON.parse(localStorage.getItem(_LIST_VIEW_KEY) || 'null'); } catch (e) { v = null; }
+  try { v = JSON.parse(_listViewStore().getItem(_listViewKey()) || 'null'); } catch (e) { v = null; }
+  _applyListView(v);
+}
+function _applyListView(v) {
   if (!v || typeof v !== 'object') return;
   const arr = x => Array.isArray(x) ? x.filter(y => typeof y === 'string') : [];
   activeTag = typeof v.tag === 'string' ? v.tag : '';
@@ -1240,7 +1256,22 @@ function _saveListView() {
   const snap = _listViewSnapshot();
   if (snap === _listViewSaved) return;
   _listViewSaved = snap;
-  try { localStorage.setItem(_LIST_VIEW_KEY, snap); } catch (e) {}
+  try { _listViewStore().setItem(_listViewKey(), snap); } catch (e) {}
+}
+// Closing the first tab of the in-page tab bar moves this page to the next
+// tab's place (_chromeCloseTab): its list view comes too, or the page would
+// show the closed tab's search and filters on the next tab's screen.
+function _takeTabListView(id) {
+  let v = null;
+  try { v = JSON.parse(sessionStorage.getItem(_LIST_VIEW_TAB_KEY + id) || 'null'); } catch (e) { v = null; }
+  if (!v || typeof v !== 'object') v = {};
+  _applyListView(v);
+  _listViewSaved = '';   // the page's own record now holds this view
+  const inp = document.getElementById('search-input');
+  if (inp) inp.value = searchQuery;
+  const wrap = document.getElementById('search-wrap');
+  if (wrap) wrap.classList.toggle('has-value', !!searchQuery);
+  setLogSearchMode(logSearchMode);   // placeholder, button, chips, and a render
 }
 // The search box is in the static shell; fill it once the DOM exists.
 function _applyRestoredSearchInput() {
@@ -44004,9 +44035,14 @@ function _chromeCloseTab(id) {
     moveTo = _chromeTabLiveHash(next.id);
     if (fc) { const nf = fc.querySelector('iframe[data-tab-id="' + next.id + '"]'); if (nf) nf.remove(); }
     try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + next.id); } catch (e) {}
+    try { _takeTabListView(next.id); } catch (e) { console.warn('[tabs] could not carry the next tab\'s list view', e); }
+    try { sessionStorage.removeItem(_LIST_VIEW_TAB_KEY + next.id); } catch (e) {}
   }
   if (fc) { const iframe = fc.querySelector('iframe[data-tab-id="'+id+'"]'); if (iframe) iframe.remove(); }
   try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + id); } catch (e) {}
+  // A closed tab's list view goes with it: ids are reused (max + 1), so a later
+  // tab would otherwise open on the closed one's search and filters.
+  try { sessionStorage.removeItem(_LIST_VIEW_TAB_KEY + id); } catch (e) {}
   amuxTrack('chrome_tab_closed', {verdict: idx === 0 ? 'first_tab_page_moved_to_next' : 'later_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
   if (moveTo !== null) _chromePageGoTo(moveTo);
   _chromeTabs.splice(idx, 1);

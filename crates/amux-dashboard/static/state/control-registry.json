@@ -5622,6 +5622,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_takeTabListView": {
+      "kind": "command._takeTabListView",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_tapTraceEv": {
       "kind": "command._tapTraceEv",
       "feedback_required": true,
