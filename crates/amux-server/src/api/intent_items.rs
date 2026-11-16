@@ -1079,7 +1079,14 @@ async fn patch_goal(State(state): State<AppState>, Path(id): Path<String>, Json(
 /// The owner's OK for the step a goal's helper asked about (its ASK: line):
 /// said in the goal's own conversation, so the helper reads it there. An
 /// email still goes through the email API's own approval.
-async fn approve_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+/// The owner's yes to a step a goal's helper asked about. Only the owner gives
+/// it: the text goes to the helper as the owner's approval, so a worker that
+/// could post it would approve its own ask.
+async fn approve_goal(State(state): State<AppState>, headers: axum::http::HeaderMap, uri: axum::http::Uri,
+    Path(id): Path<String>) -> Response {
+    if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "intent_goal_approve_refused", "approve a goal's step") {
+        return *r;
+    }
     let Some(oid) = goal_outcome(&state, &id) else { return bad(StatusCode::NOT_FOUND, format!("no goal {id}")) };
     if let Err((code, e)) = super::intent_store::start_outcome(&state,
         "I approve what you asked to do for this goal. Go ahead with that one step; any outside email still goes through amux's own approval.",
@@ -1346,6 +1353,29 @@ mod tests {
             ("goal", "active"), ("goal", "paused"), ("goal", "done"), ("goal", "dismissed")] {
             assert_eq!(item_status(kind, card_status(kind, st)), st, "{kind} {st}");
         }
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_approves_a_goal_step() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        use axum::http::StatusCode;
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = super::routes().with_state(state);
+        let path = "/api/intent/goals/G-none/approve";
+        for (h, why) in [
+            (vec![("x-amux-session", "lane-t"), ("authorization", "Bearer owner-secret")], "a worker with the bearer"),
+            (vec![("x-amux-worker", "lane-t")], "a worker"),
+            (vec![], "no bearer"),
+        ] {
+            let (st, _) = call(&app, "POST", path, &h, Some(serde_json::json!({}))).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{why} must not approve");
+        }
+        // The owner passes the check and reaches the lookup.
+        let (st, v) = call(&app, "POST", path, &[("authorization", "Bearer owner-secret")], Some(serde_json::json!({}))).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
     }
 
     #[tokio::test]
