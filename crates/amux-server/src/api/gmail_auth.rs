@@ -853,7 +853,7 @@ pub async fn accounts(Extension(ctx): Extension<Arc<GmailAuthCtx>>) -> Response 
         .iter()
         .filter_map(|a| {
             let raw =
-                std::fs::read_to_string(ctx.home.join("gmail-tokens").join(format!("{a}.json")))
+                crate::integrations::secure_store::read_string(ctx.home.join("gmail-tokens").join(format!("{a}.json")))
                     .ok()?;
             let v: Value = serde_json::from_str(&raw).ok()?;
             v.get("identity_unverified")
@@ -926,10 +926,14 @@ async fn probe_health(ctx: &GmailAuthCtx, account: &str) -> String {
         Err(_) => return "storage_error".into(),
     };
     let path = oauth_store::gmail_path(&ctx.home, account);
-    let Some(tf) = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-    else {
+    let raw = match crate::integrations::secure_store::read_string(&path) {
+        Ok(raw) => raw,
+        // Sealed at rest with the key unavailable: the grant exists and may be
+        // fine, so say locked rather than send the owner to reconnect it.
+        Err(e) if crate::integrations::at_rest::is_locked(&e) => return "locked".into(),
+        Err(_) => return "not_connected".into(),
+    };
+    let Some(tf) = serde_json::from_str::<Value>(&raw).ok() else {
         return "not_connected".into();
     };
     let profile_url = format!("{GMAIL_BASE}/profile");
@@ -1308,7 +1312,7 @@ mod tests {
         // from the stored verifier (S256).
         let state = qparam(url, "state").unwrap();
         let pending: Value = serde_json::from_str(
-            &std::fs::read_to_string(home.path().join("gmail-pending.json")).unwrap(),
+            &crate::integrations::secure_store::read_string(home.path().join("gmail-pending.json")).unwrap(),
         )
         .unwrap();
         let entry = &pending[state];
@@ -1469,7 +1473,7 @@ mod tests {
 
         // ON DISK.
         let tok: Value = serde_json::from_str(
-            &std::fs::read_to_string(
+            &crate::integrations::secure_store::read_string(
                 home.path()
                     .join("gmail-tokens")
                     .join(format!("{ACCT}.json")),
@@ -1528,7 +1532,7 @@ mod tests {
         .await;
 
         let tok: Value = serde_json::from_str(
-            &std::fs::read_to_string(
+            &crate::integrations::secure_store::read_string(
                 home.path()
                     .join("gmail-tokens")
                     .join(format!("{ACCT}.json")),
@@ -1718,7 +1722,7 @@ mod tests {
             .unwrap()
             .to_string();
         let pending: Value = serde_json::from_str(
-            &std::fs::read_to_string(home.path().join("gmail-pending.json")).unwrap(),
+            &crate::integrations::secure_store::read_string(home.path().join("gmail-pending.json")).unwrap(),
         )
         .unwrap();
         let verifier = pending[&state]["verifier"].as_str().unwrap().to_string();
@@ -1746,7 +1750,7 @@ mod tests {
             .join("gmail-tokens")
             .join(format!("{ACCT}.json"));
         let tok: Value =
-            serde_json::from_str(&std::fs::read_to_string(&tok_path).unwrap()).unwrap();
+            serde_json::from_str(&crate::integrations::secure_store::read_string(&tok_path).unwrap()).unwrap();
         assert_eq!(
             tok,
             json!({

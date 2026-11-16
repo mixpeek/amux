@@ -276,6 +276,17 @@ the measured runner; counters are under `customer_isolation`. A boundary worker 
 use a git repository rooted above its folders (the home-folder repo), and `uploads/`
 and `trace/` are shared across boundaries.
 
+Connector grants are encrypted at rest (governance PR 18). Every grant file is sealed with
+AES-256-GCM through `secure_store`; a plain one is sealed on first read and by a pass at boot.
+`AMUX_KEY_PROVIDER` picks the key: `file`/`keychain` (the vault master key, a derived key per
+purpose), `env` (`AMUX_AT_REST_KEY`, injected by the operator) or `kms` (a stub that refuses).
+A grant that does not open is `locked` (mint 503, Gmail health `locked`), never "not
+connected". `GET /api/security/at-rest` reports each store measured from the files, including
+whether the key sits beside the data; counters are under `at_rest`. `AMUX_ENCRYPT_AT_REST=off`
+stops sealing; `amux security decrypt-grants` (owner, sealing off) rewrites grants as plain
+files. The database and Claude transcripts are not encrypted by amux:
+`docs/ops/encryption-at-rest.md`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |

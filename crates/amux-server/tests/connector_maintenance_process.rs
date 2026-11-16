@@ -106,6 +106,9 @@ impl Rig {
             .env("AMUX_MAINTENANCE_CHILD_HOME", &self.home)
             .env("AMUX_MAINTENANCE_PROVIDER", &self.provider)
             .env("AMUX_HOME", &self.home)
+            // These tests read grant files on disk to prove durability; sealing
+            // is covered by e2e/chaos/encryption-at-rest.mjs (governance PR 18).
+            .env("AMUX_ENCRYPT_AT_REST", "off")
             .env("AMUX_AUTOFIX_SECS", "0")
             .stdout(log.try_clone().unwrap())
             .stderr(log)
