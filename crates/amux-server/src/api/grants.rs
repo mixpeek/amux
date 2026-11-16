@@ -328,9 +328,13 @@ pub fn take_allowance(home: &Path, origin: &str, target: &str) -> Option<String>
 // HTTP
 // ---------------------------------------------------------------------------
 
-/// A request with NO worker origin is the human at the dashboard. Identical to
-/// the email gate's discriminator, and it is the reason a worker cannot approve
-/// its own ask.
+/// Who decided a grant when nothing proved it: recorded as a claim, never as
+/// "owner" (human_proof.rs).
+const UNPROVEN_DECIDER: &str = "unproven (no worker header)";
+
+/// A request that names a worker is refused outright: a worker cannot approve
+/// its own ask. The converse no longer holds: NO worker origin is not proof of
+/// a human, which `human_proof::check` decides from verified credentials.
 fn is_worker_origin(headers: &HeaderMap) -> bool {
     // An admin-group worker decides grants as the owner (Ethan, 2026-10-17).
     if super::session_verbs::admin_origin(headers, "grant_decision").is_some() { return false; }
@@ -409,6 +413,13 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         )
             .into_response();
     }
+    // No worker header is not the same as a human (human_proof.rs): only a
+    // credential the server verified is, and enforce mode refuses the rest.
+    let decider = match super::human_proof::check(&headers, "grant_approve") {
+        super::human_proof::Verdict::Refused => return super::human_proof::refusal("grant_approve"),
+        super::human_proof::Verdict::Proven(p) => p.actor(),
+        super::human_proof::Verdict::Unproven => UNPROVEN_DECIDER.to_string(),
+    };
     if valid_id(&id) && std::fs::read_to_string(grants_dir(&home).join(format!("{id}.json")))
         .ok().and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .is_some_and(|d| d["kind"] == "cross_group_send") {
@@ -433,11 +444,13 @@ async fn approve(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
                     let origin = p.get("origin").and_then(Value::as_str).unwrap_or_default();
                     let target = p.get("target").and_then(Value::as_str).unwrap_or_default();
                     write_allowance(&home, origin, target, &id);
-                    tracing::info!(grant = %id, origin, target, measured = true, n_considered = 1,
+                    tracing::info!(grant = %id, origin, target, approved_by = %decider, measured = true, n_considered = 1,
                         verdict = "vault_spend_approved", "owner approved one vault charge");
                     Json(json!({
                         "ok": true,
                         "granted": kind,
+                        "approved_by": decider,
+                        "approver_verified": decider != UNPROVEN_DECIDER,
                         "origin": origin,
                         "amount_usd": p.get("amount_usd"),
                         "merchant": p.get("merchant"),
@@ -480,7 +493,12 @@ async fn reject(headers: HeaderMap, AxPath(id): AxPath<String>) -> Response {
         )
             .into_response();
     }
-    match discard(&home, &id, "owner") {
+    let decider = match super::human_proof::check(&headers, "grant_reject") {
+        super::human_proof::Verdict::Refused => return super::human_proof::refusal("grant_reject"),
+        super::human_proof::Verdict::Proven(p) => p.actor(),
+        super::human_proof::Verdict::Unproven => UNPROVEN_DECIDER.to_string(),
+    };
+    match discard(&home, &id, &decider) {
         Some(_) => Json(json!({"ok": true, "rejected": id})).into_response(),
         None => (
             StatusCode::NOT_FOUND,
@@ -786,5 +804,35 @@ mod tests {
             list_pending(h.path()).is_empty(),
             ".approved.json is history, not queue"
         );
+    }
+
+    /// GOVERNANCE PR 2. No worker header is not a human: in enforce mode on a
+    /// server with an owner credential, an unproven approve or reject is
+    /// refused before it touches a grant, and a request carrying the
+    /// server-stamped owner proof goes through to the grant lookup.
+    #[tokio::test]
+    async fn an_unproven_request_cannot_decide_a_grant_in_enforce_mode() {
+        use crate::api::human_proof::{test_override, Mode, OWNER_PROOF_HEADER};
+        async fn code(r: Response) -> (StatusCode, Value) {
+            let st = r.status();
+            let b = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+            (st, serde_json::from_slice(&b).unwrap_or(Value::Null))
+        }
+        let _g = test_override::set(Mode::Enforce, true);
+        let (st, v) = code(approve(HeaderMap::new(), AxPath("grn_nonexistent".into())).await).await;
+        assert_eq!((st, v["code"].clone()), (StatusCode::FORBIDDEN, json!("anonymous_refused")), "{v}");
+        let (st, v) = code(reject(HeaderMap::new(), AxPath("grn_nonexistent".into())).await).await;
+        assert_eq!((st, v["code"].clone()), (StatusCode::FORBIDDEN, json!("anonymous_refused")), "{v}");
+        // CONTROL: the owner proof passes the gate (and finds no such grant),
+        // or the cells above pass for a handler that refuses everyone.
+        let mut owner = HeaderMap::new();
+        owner.insert(OWNER_PROOF_HEADER, axum::http::HeaderValue::from_static("1"));
+        let (st, v) = code(approve(owner, AxPath("grn_nonexistent".into())).await).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        // REPORT MODE allows the unproven, as before.
+        let _g = test_override::set(Mode::Report, true);
+        let (st, v) = code(approve(HeaderMap::new(), AxPath("grn_nonexistent".into())).await).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+        test_override::clear();
     }
 }

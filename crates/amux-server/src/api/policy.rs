@@ -339,7 +339,14 @@ async fn request_trust(state: &AppState, headers: &HeaderMap) -> Result<TrustLev
     }
     let actor_name = actor(headers);
     if actor_name == "api-anonymous" {
-        return Ok(TrustLevel::Trusted);
+        // No worker header used to mean Trusted on its own. Now only a
+        // credential the server verified is (human_proof.rs); in enforce mode
+        // the unproven rest is Untrusted, which asks before an external or
+        // irreversible action and never expands a capability.
+        return Ok(match super::human_proof::check(headers, "policy_trust") {
+            super::human_proof::Verdict::Refused => TrustLevel::Untrusted,
+            _ => TrustLevel::Trusted,
+        });
     }
     state
         .store

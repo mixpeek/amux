@@ -15,7 +15,7 @@
 //! Switch: `AMUX_EMAIL_SCHEDULED_SEND_SECS=0` disables the job.
 
 use crate::api::AppState;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::HeaderValue;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -33,7 +33,10 @@ pub(crate) async fn release(
     approver: &str,
     body: Option<String>,
 ) -> (u16, Value) {
-    let mut h = HeaderMap::new();
+    // An in-process release by an owner-configured policy: the person already
+    // decided when they scheduled it. The marker proves the call came from the
+    // server (human_proof.rs); X-Amux-Approver keeps that person's name.
+    let mut h = crate::api::org::policy_headers("policy:scheduled-send");
     let who = if approver.trim().is_empty() { "scheduled send" } else { approver };
     h.insert(
         "x-amux-approver",

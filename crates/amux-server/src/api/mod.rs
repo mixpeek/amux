@@ -24,6 +24,7 @@ pub mod calls;
 pub mod land_queue;
 pub mod land_red;
 pub mod worker_identity;
+pub mod human_proof;
 pub mod contract_fresh;
 pub mod prod_change;
 pub mod runner;
