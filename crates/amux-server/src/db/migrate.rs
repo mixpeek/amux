@@ -879,6 +879,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0163_cli_telemetry",
         sql: include_str!("../../migrations/0163_cli_telemetry.sql"),
     },
+    Migration {
+        version: 164,
+        name: "0164_ledger_checkpoints",
+        sql: include_str!("../../migrations/0164_ledger_checkpoints.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.

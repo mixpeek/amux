@@ -58,6 +58,9 @@ aes.workspace = true
 cbc.workspace = true
 pbkdf2.workspace = true
 hmac.workspace = true
+# Ed25519 signing of ledger checkpoints (governance PR 10). Already in the
+# tree through rustls, jsonwebtoken and rcgen at this version.
+ring = "0.17"
 base64.workspace = true
 toml.workspace = true
 futures.workspace = true

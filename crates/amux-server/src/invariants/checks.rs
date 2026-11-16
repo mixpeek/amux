@@ -1221,6 +1221,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("calls", "ended_at", false),
     // 0155: runtime_jobs/goal_check.rs writes the check's epoch seconds.
     ("goal_samples", "at", false),
+    // 0160: api/ledger_checkpoint.rs writes epoch milliseconds (now_ms).
+    ("_amux_ledger_checkpoints", "ts", true),
+    ("_amux_ledger_checkpoint_exports", "ts", true),
     // 0157: api/ledger.rs writes epoch milliseconds (the command's own ts;
     // prune stamps Utc::now().timestamp_millis()).
     ("_amux_ledger", "ts", true),

@@ -2432,6 +2432,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "published_app": super::app_identity::report(),
         "email_gate": super::email_scope::report(),
         "ledger": super::ledger::report(),
+        "ledger_checkpoints": super::ledger_checkpoint::report(),
         "trace": super::trace::report(),
         "cli_telemetry": super::cli_telemetry::report(),
         "a2_pool": pool,
