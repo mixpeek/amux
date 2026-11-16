@@ -18,6 +18,9 @@ sqlite3 "$DB" "CREATE TABLE schedules (id TEXT, command TEXT, enabled INTEGER, d
   INSERT INTO schedules VALUES ('S2', 'cd \$HOME/.amux/tmp/lane4/scheddir; ./run.sh', 1, NULL);
   INSERT INTO schedules VALUES ('S3', 'bash ~/.amux/tmp/lane1/oldidle/x.sh', 0, NULL);"
 export LANE_TMP_SCHED_DB="$DB"
+# The cells below use a few small files to stand for idle build output, so they
+# pin the directory keep at 1.5 MB; the lane7 cell checks the 64 MB default.
+export LANE_TMP_KEEP_DIR_KB=1500
 # Reapable content is BIG: a build artifact. A directory of a few small files
 # is now kept (next cell), so a one-byte file no longer stands for "idle junk".
 head -c 2000000 /dev/zero > "$R/lane1/oldidle/sub/f"; echo y > "$R/lane1/oldtopfreshinside/deep/new"
@@ -51,6 +54,16 @@ printf '%s' "$out" | grep -q '1 small dir(s)' && echo "ok   kept small dirs are 
 [ -f "$R/lane4/kc" ] && echo "ok   a small old file is kept" || { echo "FAIL small file reaped"; fail=1; }
 [ ! -e "$R/lane4/big.bin" ] && echo "ok   a large old file is still reaped" || { echo "FAIL large idle file kept"; fail=1; }
 printf '%s' "$out" | grep -q 'kept 2 named by an enabled schedule, 1 small file' && echo "ok   the keeps are counted in the log" || { echo "FAIL keep counts: $out"; fail=1; }
+# 2026-11-16: S1-investigation results, a few files over 1 MB in a 9-12 MB dir,
+# were reaped. With the default keep they stay; a dir past 64 MB still goes.
+mkdir -p "$R/lane7/s1-blast" "$R/lane7/extract"
+head -c 3000000 /dev/urandom > "$R/lane7/s1-blast/annotated.json"; head -c 3000000 /dev/urandom > "$R/lane7/s1-blast/api-view.jsonl"
+head -c 70000000 /dev/zero > "$R/lane7/extract/blob"
+touch -t 202609300000 "$R/lane7/s1-blast"/* "$R/lane7/s1-blast" "$R/lane7/extract/blob" "$R/lane7/extract"
+out7="$(env -u LANE_TMP_KEEP_DIR_KB LANE_TMP_ROOT="$R" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tmp 0")"
+[ -f "$R/lane7/s1-blast/annotated.json" ] && echo "ok   a few results files over 1 MB in a small dir are kept" || { echo "FAIL results dir reaped: $out7"; fail=1; }
+[ ! -e "$R/lane7/extract" ] && echo "ok   a dir past 64 MB is still reaped" || { echo "FAIL big extract kept"; fail=1; }
+printf '%s' "$out7" | grep -q 'under 65536K in all' && echo "ok   the log states the directory keep" || { echo "FAIL keep wording: $out7"; fail=1; }
 mkdir -p "$R/lane5/old"; touch -t 202609300000 "$R/lane5/old"
 # DESKT-95: lsof that cannot run must remove NOTHING. An empty in-use list used
 # to read as "nothing is in use" and lane2/inuse was deleted.
@@ -123,7 +136,7 @@ R10="$T/root10"; ST10="$T/state10"; SENT="$T/sent10"; mkdir -p "$R10/lab/cache" 
 head -c 2000000 /dev/zero > "$R10/lab/cache/sim.bin"; head -c 1300000 /dev/zero > "$R10/lab/build/o.bin"; head -c 2000000 /dev/zero > "$R10/lab/live/w.bin"
 find "$R10" -exec touch -t 202609300000 {} +
 rec="cp FILE $SENT/TARGET.\$\$.msg"
-tick10() { LANE_TMP_ROOT="$R10" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST10" LANE_TMP_NOTICE_KB=1500 LANE_TMP_NOTICE_CMD="$rec" "$@" bash -c ". '$F'; reap_lane_tmp 0"; }
+tick10() { LANE_TMP_KEEP_DIR_KB=1000 LANE_TMP_ROOT="$R10" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST10" LANE_TMP_NOTICE_KB=1500 LANE_TMP_NOTICE_CMD="$rec" "$@" bash -c ". '$F'; reap_lane_tmp 0"; }
 o1="$(tick10)"
 [ -d "$R10/lab/cache" ] && [ -d "$R10/lab/live" ] && printf '%s' "$o1" | grep -qF "lane tmp gave notice for $R10/lab/cache (1M): removed after 360 min if still idle (verdict=lane_tmp_notice_given)" \
   && echo "ok   a large idle entry is given notice, not removed" || { echo "FAIL notice: $o1"; fail=1; }
