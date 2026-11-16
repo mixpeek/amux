@@ -1165,6 +1165,25 @@ pub(crate) fn stored_keys(prev: Option<&str>) -> Option<BTreeSet<String>> {
     Some(rest.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect())
 }
 
+/// What a check stores: every item it sees now, then the ones seen before,
+/// newest first, up to `cap`. The mail read returns a capped list in no fixed
+/// order, so an email can drop out of one read and come back in the next;
+/// remembered, it is not news when it returns (AMUX-6908 woke twice in a row
+/// on 11-16 that way).
+pub(crate) fn remember_keys(prev: Option<&str>, cur: &[String], cap: usize) -> String {
+    let mut out: Vec<&str> = cur.iter().map(String::as_str).collect();
+    let mut have: BTreeSet<&str> = out.iter().copied().collect();
+    if let Some(rest) = prev.and_then(|p| p.strip_prefix("items:")) {
+        for k in rest.split(',').filter(|k| !k.is_empty()) {
+            if have.insert(k) {
+                out.push(k);
+            }
+        }
+    }
+    out.truncate(cap);
+    format!("items:{}", out.join(","))
+}
+
 /// How many of `cur` the last check had not seen. An item that left the
 /// window (an email older than a week, an event that passed) is no news.
 pub(crate) fn new_keys(prev: &BTreeSet<String>, cur: &[String]) -> usize {
@@ -1202,9 +1221,9 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     }
     let (events, mail) = goal_watched(&words, all_events, mail);
     let keys = watched_keys(&events, &mail);
-    let stored = format!("items:{}", keys.join(","));
     let key = format!("intent_goal_fp_{id}");
     let prev: Option<String> = state.store.read().ok().and_then(|c| c.query_row("SELECT value FROM prefs WHERE key=?1", [&key], |r| r.get(0)).ok());
+    let stored = remember_keys(prev.as_deref(), &keys, 400);
     let n = keys.len();
     let seen = stored_keys(prev.as_deref());
     let fresh = seen.as_ref().map(|p| new_keys(p, &keys));
@@ -1392,11 +1411,19 @@ mod tests {
         use super::{new_keys, stored_keys, watched_keys};
         let a = srcs();
         let keys = watched_keys(&a[2..], &a[1..2]);
-        let stored = format!("items:{}", keys.join(","));
+        let stored = super::remember_keys(None, &keys, 400);
         let prev = stored_keys(Some(&stored)).expect("stored keys read back");
         assert_eq!(new_keys(&prev, &watched_keys(&a[2..], &a[1..2])), 0, "the same inputs");
         // An item leaving the window is no news.
         assert_eq!(new_keys(&prev, &watched_keys(&a[3..], &a[1..2])), 0, "an item left");
+        // An item that drops out of one read and comes back is not news either.
+        let without = watched_keys(&a[3..], &a[1..2]);
+        let after_drop = super::remember_keys(Some(&stored), &without, 400);
+        let back = stored_keys(Some(&after_drop)).unwrap();
+        assert_eq!(new_keys(&back, &keys), 0, "an item came back");
+        // Newest first, up to the cap.
+        let k = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::remember_keys(Some("items:a,b,c"), &k(&["d", "a"]), 3), "items:d,a,b");
         // An edit to one is.
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
