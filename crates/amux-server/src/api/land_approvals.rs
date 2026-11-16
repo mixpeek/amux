@@ -40,6 +40,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/land/approvals", axum::routing::get(get_route).post(approve_route))
         .route("/api/land/approvals/request", axum::routing::post(request_route))
+        .route("/api/land/approvals/reject", axum::routing::post(reject_route))
 }
 
 /// Every load-modify-save of the file holds this, so two asks arriving at
@@ -232,6 +233,10 @@ async fn request_route(State(state): State<AppState>, headers: HeaderMap, Json(b
         }));
         save(&home, &all)
     };
+    if let Some(c) = &card {
+        super::approval_cards::link("land", patch_id.clone(), c.clone(), lane.clone(),
+            json!({"files": files.len()})).await;
+    }
     tracing::info!(patch_id = %patch_id, lane = %lane, card = ?card, card_error = ?card_err, saved = saved.is_ok(),
         measured = true, n_considered = 1, verdict = "land_approval_requested",
         "land gate: asked the owner to approve an owner-gated change");
@@ -242,7 +247,7 @@ async fn request_route(State(state): State<AppState>, headers: HeaderMap, Json(b
         .into_response()
 }
 
-async fn approve_route(State(state): State<AppState>, headers: HeaderMap, uri: Uri, Json(body): Json<Value>) -> Response {
+pub(crate) async fn approve_route(State(state): State<AppState>, headers: HeaderMap, uri: Uri, Json(body): Json<Value>) -> Response {
     let patch_id = body.get("patch_id").and_then(Value::as_str).unwrap_or("").trim().to_string();
     if let Err(r) = owner_only(&state, &headers, &uri, "land_approval_refused", "approve an owner-gated change") {
         return *r;
@@ -256,8 +261,14 @@ async fn approve_route(State(state): State<AppState>, headers: HeaderMap, uri: U
     let Some(rec) = all.get_mut(&patch_id).and_then(Value::as_object_mut) else {
         return bad(StatusCode::NOT_FOUND, "no approval was requested for that patch-id", "run scripts/land_gate.py to file it");
     };
+    if let Some(r) = super::approval_cards::duties("land", &patch_id, &headers) {
+        return r;
+    }
     let now = crate::config::now_f64();
-    let by = if state.auth_token.is_some() { super::auth::OWNER_TOKEN_ACTOR } else { "owner-by-absence" };
+    let proven = super::human_proof::proven(&headers).map(|p| p.actor());
+    let fallback = if state.auth_token.is_some() { super::auth::OWNER_TOKEN_ACTOR } else { "owner-by-absence" };
+    let by = proven.as_deref().unwrap_or(fallback).to_string();
+    let by = by.as_str();
     rec.insert("approved_at".into(), json!(now));
     rec.insert("approved_by".into(), json!(by));
     if let Some(note) = body.get("note").and_then(Value::as_str) {
@@ -288,10 +299,53 @@ async fn approve_route(State(state): State<AppState>, headers: HeaderMap, uri: U
             .await
             .is_ok_and(|w| w.applied);
     }
+    super::approval_cards::resolved("land", &patch_id, "approved", by, None).await;
     tracing::info!(patch_id = %patch_id, by, card = ?card, card_closed = closed, measured = true, n_considered = 1,
         verdict = "land_approval_granted", "land gate: the owner approved an owner-gated change");
     Json(json!({"ok": true, "patch_id": patch_id, "approved_at": now, "by": by, "card": card, "card_closed": closed}))
         .into_response()
+}
+
+/// POST /api/land/approvals/reject {patch_id, note?}: the owner declines an
+/// owner-gated diff. Recorded on the land record (so the gate keeps refusing
+/// it) and the card is discarded (governance PR 12).
+pub(crate) async fn reject_route(State(state): State<AppState>, headers: HeaderMap, uri: Uri, Json(body): Json<Value>) -> Response {
+    let patch_id = body.get("patch_id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if let Err(r) = owner_only(&state, &headers, &uri, "land_reject_refused", "reject an owner-gated change") {
+        return *r;
+    }
+    if !valid_patch_id(&patch_id) {
+        return bad(StatusCode::BAD_REQUEST, "patch_id must be a 40-character `git patch-id --stable`", "");
+    }
+    if let Some(r) = super::approval_cards::duties("land", &patch_id, &headers) {
+        return r;
+    }
+    let home = crate::config::amux_home();
+    let by = super::human_proof::proven(&headers).map(|p| p.actor()).unwrap_or_else(|| "owner-by-absence".into());
+    let note = body.get("note").and_then(Value::as_str).map(|n| n.chars().take(500).collect::<String>());
+    let saved = {
+        let _g = file_lock();
+        let mut all = load(&home);
+        let Some(rec) = all.get_mut(&patch_id).and_then(Value::as_object_mut) else {
+            return bad(StatusCode::NOT_FOUND, "no approval was requested for that patch-id", "");
+        };
+        if rec.get("approved_at").is_some_and(|v| !v.is_null()) {
+            return bad(StatusCode::CONFLICT, "that change was already approved", "");
+        }
+        rec.insert("rejected_at".into(), json!(crate::config::now_f64()));
+        rec.insert("rejected_by".into(), json!(by));
+        if let Some(n) = &note {
+            rec.insert("note".into(), json!(n));
+        }
+        save(&home, &all)
+    };
+    if let Err(e) = saved {
+        return bad(StatusCode::INTERNAL_SERVER_ERROR, "could not record the rejection", &e.to_string());
+    }
+    super::approval_cards::resolved("land", &patch_id, "rejected", &by, note.clone()).await;
+    tracing::info!(patch_id = %patch_id, by = %by, measured = true, n_considered = 1,
+        verdict = "land_approval_rejected", "land gate: the owner rejected an owner-gated change");
+    Json(json!({"ok": true, "patch_id": patch_id, "rejected": true, "by": by})).into_response()
 }
 
 #[cfg(test)]

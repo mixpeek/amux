@@ -171,6 +171,29 @@ worker and a CLI that is not reporting differ. Metrics are accepted and
 counted, not stored. Codex is not wired (it reads OTel from its config file).
 `AMUX_CLI_TELEMETRY=off` stops wiring launches and refuses posts.
 
+Approvals are Needs-you cards (governance PR 12, `api/approval_cards.rs`). A
+held external email, a spend grant, a worker's publish request, an owner-gated
+land and a capability ask each file one `needsyou` card tagged
+`approval:<kind>`, linked in `_amux_approval_cards` by `approval_ref`
+(`<kind>:<id>`). The item's own record stays the source of whether it was
+approved; the link holds only the card, the decision and the deciding
+request's span, and `GET /api/approvals/cards` names the decider from that
+span's ledger row. `POST /api/approvals/decide {approval_ref, decision,
+reason?, remember?}` runs the item's own approve or reject with the caller's
+identity, and every kind's own endpoint closes the card on success. On the
+board, `status=done` approves and `status=discarded` rejects; any other move of
+an undecided approval card is refused with `code: approval_card`. Workers and
+apps never decide, a member never decides their own request, and a scoped
+member decides only for workers in scope. "Remember" writes a
+`standing_approvals` row (`source = approval:<kind>`) with an exact key: the
+same recipients (email), the same merchant up to the approved amount (spend),
+the same kind of link (publish). The next identical request needs no card and
+its use is logged in `standing_approval_uses` (`door = approval`); these rows
+are not matched by keyword or copied into MEMORY.md. Land and capability
+approvals cannot be remembered. The needs-input auto-approver decides only
+held emails (under its `outbound` switch). `AMUX_APPROVAL_CARDS=off` files no
+cards; counters are under `approval_cards` in `GET /api/contract/counters`.
+
 Additions from goal spec 12:
 
 | # | Rule | Enforced at |
