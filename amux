@@ -10981,6 +10981,16 @@ cmd_land() {
     _land_precheck "$remote" "$branch" HEAD "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$HOME/.amux/logs/land.log" || return 3
     export AMUX_LAND_PRECHECKED=1
   fi
+  # --priority is decided BEFORE the gate (2026-11-16): the check used to run
+  # after it, so a --priority with no --reason, or one that names no grant,
+  # paid a full gate (7 min for a 9-file site restore) before being refused.
+  # The queue path below skips it once it has run here.
+  if [ "$priority" = 1 ] && [ "${AMUX_LAND_PRIORITY_CHECKED:-}" != 1 ] && [ "$detach" != 1 ]; then
+    mkdir -p "$HOME/.amux/logs"
+    _land_priority_check "$remote" "$branch" "${land_sha:-HEAD}" "$prio_reason" \
+      "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$HOME/.amux/logs/land.log" || return 2
+    export AMUX_LAND_PRIORITY_CHECKED=1
+  fi
   # LAND GATE (scripts/land_gate.py): in a repo whose origin/main has one, run
   # the checks main runs on origin/main plus this change before it queues, so
   # a red result comes back here instead of turning main red for every lane.
