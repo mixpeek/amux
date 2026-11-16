@@ -1142,26 +1142,40 @@ pub(crate) fn goal_watched(words: &[String], events: Vec<Src>, mail: Vec<Src>) -
 /// One key per event or email a goal watches, from its id and text: a new
 /// item, or an edit to one, is a new key. Sorted and without repeats.
 pub(crate) fn watched_keys(events: &[Src], mail: &[Src]) -> Vec<String> {
-    use std::hash::{Hash, Hasher};
-    let mut keys: Vec<String> = events
-        .iter()
-        .chain(mail.iter())
-        .map(|s| {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            s.id.hash(&mut h);
-            s.text.hash(&mut h);
-            format!("{:016x}", h.finish())
-        })
-        .collect();
+    let mut keys: Vec<String> = events.iter().chain(mail.iter()).map(item_key).collect();
     keys.sort();
     keys.dedup();
     keys
 }
 
+fn item_key(s: &Src) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.id.hash(&mut h);
+    s.text.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// The stored value's parts: when the last check ran (the `items@<unix>:`
+/// form, from 11-16; None for the plain `items:` form) and its keys.
+fn stored_parts(prev: Option<&str>) -> Option<(Option<i64>, &str)> {
+    let rest = prev?.strip_prefix("items")?;
+    if let Some(r) = rest.strip_prefix(':') {
+        return Some((None, r));
+    }
+    let (at, keys) = rest.strip_prefix('@')?.split_once(':')?;
+    Some((at.parse().ok(), keys))
+}
+
+/// When the last check ran, if it said.
+pub(crate) fn stored_at(prev: Option<&str>) -> Option<i64> {
+    stored_parts(prev)?.0
+}
+
 /// The keys stored by the last check, or None when there are none in this
 /// form (a new goal, or one stored as a single fingerprint before 11-15).
 pub(crate) fn stored_keys(prev: Option<&str>) -> Option<BTreeSet<String>> {
-    let rest = prev?.strip_prefix("items:")?;
+    let (_, rest) = stored_parts(prev)?;
     Some(rest.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect())
 }
 
@@ -1170,10 +1184,10 @@ pub(crate) fn stored_keys(prev: Option<&str>) -> Option<BTreeSet<String>> {
 /// order, so an email can drop out of one read and come back in the next;
 /// remembered, it is not news when it returns (AMUX-6908 woke twice in a row
 /// on 11-16 that way).
-pub(crate) fn remember_keys(prev: Option<&str>, cur: &[String], cap: usize) -> String {
+pub(crate) fn remember_keys(prev: Option<&str>, cur: &[String], cap: usize, now: i64) -> String {
     let mut out: Vec<&str> = cur.iter().map(String::as_str).collect();
     let mut have: BTreeSet<&str> = out.iter().copied().collect();
-    if let Some(rest) = prev.and_then(|p| p.strip_prefix("items:")) {
+    if let Some((_, rest)) = stored_parts(prev) {
         for k in rest.split(',').filter(|k| !k.is_empty()) {
             if have.insert(k) {
                 out.push(k);
@@ -1181,13 +1195,29 @@ pub(crate) fn remember_keys(prev: Option<&str>, cur: &[String], cap: usize) -> S
         }
     }
     out.truncate(cap);
-    format!("items:{}", out.join(","))
+    format!("items@{now}:{}", out.join(","))
 }
 
-/// How many of `cur` the last check had not seen. An item that left the
-/// window (an email older than a week, an event that passed) is no news.
-pub(crate) fn new_keys(prev: &BTreeSet<String>, cur: &[String]) -> usize {
-    cur.iter().filter(|k| !prev.contains(*k)).count()
+/// What is news since the last check: items it had not seen, less mail
+/// dated well before it ran. The memory starts at a deploy and the mail read
+/// returns a varying slice of older mail, so an old email turning up for the
+/// first time woke AMUX-6908 on every check (6, 13, 6 "new" on 11-16 with no
+/// new matching mail). An hour of slack keeps mail that arrived late.
+pub(crate) fn news<'a>(prev: &BTreeSet<String>, at: Option<i64>, srcs: impl Iterator<Item = &'a Src>) -> Vec<&'a Src> {
+    srcs.filter(|s| !prev.contains(&item_key(s)))
+        .filter(|s| match (at, s.kind, mail_time(&s.when)) {
+            (Some(at), "email", Some(t)) => t >= at - 3600,
+            _ => true,
+        })
+        .collect()
+}
+
+/// An email's date as unix seconds: RFC 2822 (Gmail, with or without a
+/// trailing "(UTC)") or RFC 3339 (file mailboxes).
+fn mail_time(when: &str) -> Option<i64> {
+    let w = when.trim();
+    let w = w.split(" (").next().unwrap_or(w);
+    chrono::DateTime::parse_from_rfc2822(w).or_else(|_| chrono::DateTime::parse_from_rfc3339(w)).ok().map(|d| d.timestamp())
 }
 
 /// The scheduled check. Cheap when nothing changed: no model call, no worker
@@ -1223,10 +1253,14 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     let keys = watched_keys(&events, &mail);
     let key = format!("intent_goal_fp_{id}");
     let prev: Option<String> = state.store.read().ok().and_then(|c| c.query_row("SELECT value FROM prefs WHERE key=?1", [&key], |r| r.get(0)).ok());
-    let stored = remember_keys(prev.as_deref(), &keys, 400);
+    let stored = remember_keys(prev.as_deref(), &keys, 400, chrono::Utc::now().timestamp());
     let n = keys.len();
     let seen = stored_keys(prev.as_deref());
-    let fresh = seen.as_ref().map(|p| new_keys(p, &keys));
+    let at = stored_at(prev.as_deref());
+    let found = seen.as_ref().map(|p| news(p, at, events.iter().chain(mail.iter())));
+    // What woke it, so a goal that wakes every check shows why in the log.
+    let what: Vec<String> = found.iter().flatten().take(3).map(|s| s.text.chars().take(80).collect()).collect();
+    let fresh = found.as_ref().map(Vec::len);
     if prev.as_deref() != Some(stored.as_str()) {
         logged("store write", state.store.write_async(move |c| {
             c.execute("INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key, stored])?;
@@ -1255,7 +1289,7 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
              prepare what is needed (read and draft only), and give me the new STATUS: line.",
             Some(oid), None, None, json!([])).await.is_ok();
     }
-    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), verdict = "intent_goal_changed",
+    tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what, verdict = "intent_goal_changed",
         "intent: something new mentions a goal; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
@@ -1408,26 +1442,36 @@ mod tests {
 
     #[test]
     fn a_check_wakes_only_for_something_new() {
-        use super::{new_keys, stored_keys, watched_keys};
+        use super::{news, stored_at, stored_keys, watched_keys};
+        let n = |prev: &std::collections::BTreeSet<String>, at: Option<i64>, v: &[Src]| news(prev, at, v.iter()).len();
         let a = srcs();
-        let keys = watched_keys(&a[2..], &a[1..2]);
-        let stored = super::remember_keys(None, &keys, 400);
+        let keys = watched_keys(&a[1..], &[]);
+        let stored = super::remember_keys(None, &keys, 400, 1_763_280_000);
+        assert_eq!(stored_at(Some(&stored)), Some(1_763_280_000), "the check time is kept");
         let prev = stored_keys(Some(&stored)).expect("stored keys read back");
-        assert_eq!(new_keys(&prev, &watched_keys(&a[2..], &a[1..2])), 0, "the same inputs");
+        assert_eq!(n(&prev, None, &a[1..]), 0, "the same inputs");
         // An item leaving the window is no news.
-        assert_eq!(new_keys(&prev, &watched_keys(&a[3..], &a[1..2])), 0, "an item left");
+        assert_eq!(n(&prev, None, &a[2..]), 0, "an item left");
         // An item that drops out of one read and comes back is not news either.
-        let without = watched_keys(&a[3..], &a[1..2]);
-        let after_drop = super::remember_keys(Some(&stored), &without, 400);
-        let back = stored_keys(Some(&after_drop)).unwrap();
-        assert_eq!(new_keys(&back, &keys), 0, "an item came back");
-        // Newest first, up to the cap.
+        let after_drop = super::remember_keys(Some(&stored), &watched_keys(&a[2..], &[]), 400, 1);
+        assert_eq!(n(&stored_keys(Some(&after_drop)).unwrap(), None, &a[1..]), 0, "an item came back");
+        // Newest first, up to the cap; the plain form from 11-15 still reads.
         let k = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(super::remember_keys(Some("items:a,b,c"), &k(&["d", "a"]), 3), "items:d,a,b");
+        assert_eq!(super::remember_keys(Some("items:a,b,c"), &k(&["d", "a"]), 3, 7), "items@7:d,a,b");
+        assert_eq!(stored_at(Some("items:a")), None);
         // An edit to one is.
         let mut b = a.clone();
         b[2].text = "Parent-teacher conferences moved".into();
-        assert_eq!(new_keys(&prev, &watched_keys(&b[2..], &b[1..2])), 1, "an item changed");
+        assert_eq!(n(&prev, None, &b[1..]), 1, "an item changed");
+        // An email it never saw, dated well before the last check, resurfaced
+        // from older mail: not news. One that came in late (within the hour) is.
+        let mail = |when: &str| Src { id: format!("e:{when}"), kind: "email", text: "From GCP | Budget".into(), when: when.into() };
+        let at = Some(1_763_280_000); // 2025-11-16T08:00:00Z
+        assert_eq!(n(&prev, at, &[mail("Sun, 16 Nov 2025 05:00:00 +0000 (UTC)")]), 0, "old mail resurfacing");
+        assert_eq!(n(&prev, at, &[mail("Sun, 16 Nov 2025 07:30:00 +0000")]), 1, "late mail");
+        assert_eq!(n(&prev, at, &[mail("2025-11-16T09:00:00Z")]), 1, "new mail, RFC 3339");
+        assert_eq!(n(&prev, at, &[mail("")]), 1, "an undated email still counts");
+        assert_eq!(n(&prev, None, &[mail("Sun, 16 Nov 2025 05:00:00 +0000")]), 1, "no check time: by key only");
         // A fingerprint from before 11-15, or none, reads as nothing stored.
         assert_eq!(stored_keys(Some("0123456789abcdef")), None);
         assert_eq!(stored_keys(None), None);
@@ -1453,10 +1497,10 @@ mod tests {
         let prev: std::collections::BTreeSet<String> = super::watched_keys(&[], &rel).into_iter().collect();
         let mut more = vec![src("e:4", "From bank | Statement ready")];
         more.extend(mail.iter().rev().cloned());
-        assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 0);
+        assert_eq!(super::news(&prev, None, super::goal_relevant(&words, &more).iter()).len(), 0);
         // Relevant mail arriving is.
         more.push(src("e:5", "From coach | Training moved to 7am"));
-        assert_eq!(super::new_keys(&prev, &super::watched_keys(&[], &super::goal_relevant(&words, &more))), 1);
+        assert_eq!(super::news(&prev, None, super::goal_relevant(&words, &more).iter()).len(), 1);
         // A goal that names nothing specific watches everything rather than nothing.
         assert_eq!(super::goal_words("Keep cloud spend under the monthly ceiling"), vec!["cloud", "spend", "ceiling"]);
         assert_eq!(super::goal_words("message m:108581 at 2026"), vec!["message"], "a number is not a word");
