@@ -35,6 +35,17 @@
     </video:video>
   </url>
   <url>
+    <loc>https://amux.io/demos/intent/</loc>
+    <video:video>
+      <video:thumbnail_loc>https://amux.io/demos/intent/poster.jpg?v=060640ea</video:thumbnail_loc>
+      <video:title>Intent | amux demo</video:title>
+      <video:description>Say what you want in plain words. amux reads your email and calendar, suggests what to do next, keeps your goals current, and answers in one conversation. Nothing is sent or paid for without your OK.</video:description>
+      <video:content_loc>https://amux.io/demos/intent/demo.mp4?v=060640ea</video:content_loc>
+      <video:publication_date>2026-11-16</video:publication_date>
+      <video:family_friendly>yes</video:family_friendly>
+    </video:video>
+  </url>
+  <url>
     <loc>https://amux.io/demos/messages/</loc>
     <video:video>
       <video:thumbnail_loc>https://amux.io/demos/messages/poster.jpg?v=6276ecc6</video:thumbnail_loc>

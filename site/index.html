@@ -138,7 +138,7 @@
 
   /* what it does */
   section { padding: 136px 0 0; }
-  .points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; max-width: 920px; margin: 0 auto; text-align: center; }
+  .points { display: grid; grid-template-columns: repeat(4, 1fr); gap: 40px; max-width: 1080px; margin: 0 auto; text-align: center; }
   .point h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -0.01em; }
   .point p { margin: 0; color: var(--fg-2); font-size: 15px; }
 
@@ -166,6 +166,7 @@
   .hero-walk a { color: var(--fg-2); text-underline-offset: 3px; }
   .hero-walk a:hover { color: var(--fg); }
   @media (max-width: 1160px) { .stage .phone { right: -8px; bottom: -36px; width: 170px; } }
+  @media (max-width: 1000px) { .points { grid-template-columns: repeat(2, 1fr); } }
   @media (max-width: 700px) {
     .hero { padding-top: 48px; }
     .hero-cta .btn { flex: 1 1 100%; max-width: 360px; }
@@ -263,6 +264,7 @@
 <section id="features">
   <div class="container">
     <div class="points">
+      <div class="point reveal"><h3>Just ask</h3><p>Say what you want in plain words. Ideas come from your email and calendar. <a href="/demos/intent/">Watch</a></p></div>
       <div class="point reveal"><h3>One board</h3><p>Agents claim tasks atomically, so two never grab the same one.</p></div>
       <div class="point reveal"><h3>Agents talk</h3><p>@mention a worker to hand off work or ask for a review.</p></div>
       <div class="point reveal"><h3>Runs overnight</h3><p>Rides out usage limits and asks you only what needs you.</p></div>
