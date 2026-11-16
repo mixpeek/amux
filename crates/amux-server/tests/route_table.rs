@@ -464,6 +464,13 @@ fn every_directly_routed_api_path_is_in_the_table() {
             if segs.len() < 2 {
                 continue;
             }
+            // A call into another crate is never one of our routers. A nest
+            // written `x::routes().layer(axum::middleware::from_fn(gate))`
+            // otherwise reads `axum::middleware::from_fn` as an api module
+            // and reports it unreadable.
+            if matches!(segs[0], "axum" | "tower" | "tower_http") {
+                continue;
+            }
             let module = segs[segs.len() - 2];
             let func = segs[segs.len() - 1];
             // A router-producing call is `snake_module::snake_fn`. This also

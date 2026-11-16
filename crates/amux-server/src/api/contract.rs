@@ -2429,6 +2429,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "anonymous_owner": super::human_proof::report(),
         "loopback": super::loopback_trust::report(state.auth_token.is_some()),
         "connector_token": super::connector_scope::report(),
+        "capabilities": super::capabilities::report(),
         "published_app": super::app_identity::report(),
         "email_gate": super::email_scope::report(),
         "ledger": super::ledger::report(),

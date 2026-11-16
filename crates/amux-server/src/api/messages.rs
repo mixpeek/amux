@@ -129,7 +129,11 @@ pub(crate) fn native_peer_input_refusal(
         return Ok(None);
     }
     let source_groups = source.group_id.into_iter().collect();
-    let receiver_groups = receiver.group_id.into_iter().collect();
+    let receiver_groups: std::collections::BTreeSet<String> = receiver.group_id.into_iter().collect();
+    if super::capabilities::message_granted(&crate::config::amux_home(), &source.display_name,
+        &receiver.display_name, &receiver_groups).is_some() {
+        return Ok(None);
+    }
     let open = super::worker_messaging::open_inbound_groups(&crate::config::amux_home(), &receiver_groups);
     Ok(super::session_verbs::worker_group_refusal(&source.id, &receiver.id, &source_groups, &receiver_groups, &open))
 }
