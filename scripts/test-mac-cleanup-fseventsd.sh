@@ -13,6 +13,8 @@ export AMUX_CLEANUP_FSEVENTSD_CMD=true
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
 export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"
+export AMUX_CLEANUP_LANE_TMP=0     # the ticks below must not sweep the live ~/.amux/tmp
+export AMUX_CLEANUP_USER_TMP=0     # nor the live per-user temp dir
 export AMUX_CLEANUP_CHURN_SAMPLE_CMD=off   # cells 1-2 pin the census; cell 3 drives the FSEvents sample
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0

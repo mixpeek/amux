@@ -116,6 +116,33 @@ out9="$(LANE_TMP_ROOT="$R9" LANE_TMP_IDLE_MIN=1440 bash -c ". '$F'; reap_lane_tm
 [ -d "$R9/w/dirty" ] && printf '%s' "$out9" | grep -qF "lane tmp kept $R9/w/dirty: a git checkout with unsaved work (uncommitted changes) (verdict=lane_tmp_unsaved_work_kept)" && echo "ok   a checkout with uncommitted changes is kept and named" || { echo "FAIL dirty checkout: $out9"; fail=1; }
 [ -d "$R9/w/ahead" ] && printf '%s' "$out9" | grep -qF "(commits on no remote)" && echo "ok   a checkout with commits on no remote is kept" || { echo "FAIL unpushed checkout: $out9"; fail=1; }
 [ ! -e "$R9/w/clean" ] && printf '%s' "$out9" | grep -q '2 git checkout(s) with unsaved work' && echo "ok   a clean checkout of pushed commits is still reaped, and the kept ones counted" || { echo "FAIL clean checkout: $out9"; fail=1; }
+# mixpeek-research, 2026-11-15: a 1.3 GB read-only cache was removed three
+# times; reads change no mtime. An idle entry at or over LANE_TMP_NOTICE_KB is
+# given notice first, its lane is told, and it goes only after the notice.
+R10="$T/root10"; ST10="$T/state10"; SENT="$T/sent10"; mkdir -p "$R10/lab/cache" "$R10/lab/build" "$R10/lab/live" "$SENT"
+head -c 2000000 /dev/zero > "$R10/lab/cache/sim.bin"; head -c 1300000 /dev/zero > "$R10/lab/build/o.bin"; head -c 2000000 /dev/zero > "$R10/lab/live/w.bin"
+find "$R10" -exec touch -t 202609300000 {} +
+rec="cp FILE $SENT/TARGET.\$\$.msg"
+tick10() { LANE_TMP_ROOT="$R10" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST10" LANE_TMP_NOTICE_KB=1500 LANE_TMP_NOTICE_CMD="$rec" "$@" bash -c ". '$F'; reap_lane_tmp 0"; }
+o1="$(tick10)"
+[ -d "$R10/lab/cache" ] && [ -d "$R10/lab/live" ] && printf '%s' "$o1" | grep -qF "lane tmp gave notice for $R10/lab/cache (1M): removed after 360 min if still idle (verdict=lane_tmp_notice_given)" \
+  && echo "ok   a large idle entry is given notice, not removed" || { echo "FAIL notice: $o1"; fail=1; }
+[ ! -e "$R10/lab/build" ] && echo "ok   an idle entry under the notice size is removed at once" || { echo "FAIL small entry kept: $o1"; fail=1; }
+m1=$(cat "$SENT"/lab.*.msg 2>/dev/null)
+[ "$(ls "$SENT" | wc -l | tr -d ' ')" = 1 ] && printf '%s' "$m1" | grep -qF -- "- $R10/lab/cache (1M" && printf '%s' "$m1" | grep -qF -- "- $R10/lab/live (1M" && printf '%s' "$m1" | grep -qF '.amux-keep' \
+  && printf '%s' "$o1" | grep -qF 'lane tmp told lab about 2 entr(ies) (verdict=lane_tmp_notice_sent)' && echo "ok   the lane gets one message naming each entry and how to keep it" || { echo "FAIL message: $(ls "$SENT") $m1 $o1"; fail=1; }
+o2="$(tick10)"
+[ -d "$R10/lab/cache" ] && [ "$(ls "$SENT" | wc -l | tr -d ' ')" = 1 ] && printf '%s' "$o2" | grep -qF '2 large entr(ies) inside their 360 min notice' \
+  && echo "ok   inside its notice an entry is kept and the lane is not told again" || { echo "FAIL second tick: $o2"; fail=1; }
+touch "$R10/lab/live/w.bin"; tick10 >/dev/null
+! grep -q '^lab/live' "$ST10/lane-tmp-notice.tsv" && grep -q '^lab/cache' "$ST10/lane-tmp-notice.tsv" && echo "ok   a write during the notice withdraws it" || { echo "FAIL withdraw: $(cat "$ST10/lane-tmp-notice.tsv")"; fail=1; }
+o4="$(tick10 env LANE_TMP_NOTICE_MIN=0)"
+[ ! -e "$R10/lab/cache" ] && [ -d "$R10/lab/live" ] && ! grep -q '^lab/cache' "$ST10/lane-tmp-notice.tsv" && printf '%s' "$o4" | grep -qF "lane tmp removed $R10/lab/cache" \
+  && echo "ok   after its notice a still-idle entry is removed and its notice cleared" || { echo "FAIL after notice: $o4"; fail=1; }
+mkdir -p "$R10/iso/cache"; head -c 2000000 /dev/zero > "$R10/iso/cache/x.bin"; find "$R10/iso" -exec touch -t 202609300000 {} +
+o5="$(LANE_TMP_ROOT="$R10" LANE_TMP_IDLE_MIN=1440 STATE_DIR="$ST10" LANE_TMP_NOTICE_KB=1500 LANE_TMP_NOTICE_CMD=false bash -c ". '$F'; reap_lane_tmp 0")"
+[ -d "$R10/iso/cache" ] && printf '%s' "$o5" | grep -qF 'could not tell iso about 1 entr(ies); they still wait 360 min (verdict=lane_tmp_notice_undelivered)' \
+  && echo "ok   a lane that cannot be told is logged and its entry still waits" || { echo "FAIL undelivered: $o5"; fail=1; }
 kill "$holder" 2>/dev/null; wait 2>/dev/null
 rm -f "$F"; rm -rf -- "${T:?}"
 exit $fail

@@ -12,6 +12,9 @@ export AMUX_CLEANUP_FSEVENTSD_CMD=true   # the live fseventsd must not decide a 
 export AMUX_CLEANUP_SQLITE_PS_CMD=true   # the live process table must not decide a test (DESKT-94)
 export AMUX_CLEANUP_HEALTH_PROBES=off    # the health probes must not stop or read live processes in a test
 export AMUX_CLEANUP_CLAUDE_TMP_ROOT="$FIX/no-claude-tmp"   # never the live session temp tree (DESKT-77)
+export AMUX_CLEANUP_LANE_TMP_ROOT="$FIX/lanetmp"   # never the live ~/.amux/tmp: the end-to-end ticks below swept it
+export AMUX_CLEANUP_LANE_TMP_NOTICE_CMD=false     # and must not message a real lane
+export AMUX_CLEANUP_USER_TMP=0                    # nor the live per-user temp dir
 trap 'rm -rf -- "${FIX:?}"' EXIT
 fails=0
 [ -x "$TICK" ] || { echo "FAIL: $TICK missing or not executable, no cell below ran"; exit 1; }
@@ -212,6 +215,7 @@ if [ "$(uname)" = Darwin ]; then
   mkhist 13 0 > "$FIX/hist.json"      # a flat disk: the trend must not fire, only the floor knob
   out=$(tick 0 "$REC"); rm -f "$FIX/sent.log"
   check "the done line carries the elapsed time"       "yes" "$(has "$out" 'done elapsed=[0-9]*s')"
+  check "the lane tmp pass sweeps the fixture, not ~/.amux/tmp" "yes" "$(has "$out" "lane tmp: removed .*($FIX/lanetmp)")"
   check "a normal run prints no timing WARN"           "no"  "$(has "$out" 'WARN tick took')"
   out=$(AMUX_CLEANUP_TICK_WARN_S=0 tick 0 "$REC")
   check "control: past the warn line it says so"       "yes" "$(has "$out" 'WARN tick took [0-9]*s, over 0s')"
