@@ -2427,6 +2427,7 @@ async fn counters_route(axum::extract::State(state): axum::extract::State<AppSta
         "rule10": super::worker_identity::report(&home, &lanes),
         "worker_identity": super::worker_identity::identity_report(&home, &lanes),
         "anonymous_owner": super::human_proof::report(),
+        "loopback": super::loopback_trust::report(state.auth_token.is_some()),
         "a2_pool": pool,
         "contract": "docs/orchestration-contract.md (rule 14)"})).into_response()
 }

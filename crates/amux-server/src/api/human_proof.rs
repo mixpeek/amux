@@ -58,8 +58,11 @@ pub fn set_owner_credential_configured(configured: bool) {
     OWNER_CREDENTIAL_CONFIGURED.store(configured, Ordering::Relaxed);
 }
 
+/// An owner token, or a front door that has proven the owner here
+/// (governance PR 3, `loopback_trust.rs`): either way the owner's requests
+/// carry something the server checked, so the unproven can be refused.
 fn owner_credential_configured() -> bool {
-    OWNER_CREDENTIAL_CONFIGURED.load(Ordering::Relaxed)
+    OWNER_CREDENTIAL_CONFIGURED.load(Ordering::Relaxed) || super::loopback_trust::front_door_active()
 }
 
 pub fn mode() -> Mode {
@@ -257,7 +260,7 @@ pub fn report() -> Value {
         "how_to_enforce": if credential {
             format!("{MODE_ENV}=enforce in server.env, then restart, once would_refuse stays 0")
         } else {
-            "not on this server: it has no owner credential (AMUX_AUTH_TOKEN=none), so the owner's requests cannot be told from anonymous ones yet".to_string()
+            "not on this server yet: it has no owner token (AMUX_AUTH_TOKEN=none) and no front door has proven the owner here, so the owner's requests cannot be told from anonymous ones".to_string()
         },
     })
 }

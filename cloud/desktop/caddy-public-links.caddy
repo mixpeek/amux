@@ -13,6 +13,7 @@ handle @pub_link {
   request_header -X-Amux-Session
   request_header -X-Amux-Worker
   request_header -X-Amux-Worker-Token
+  request_header -X-Amux-Front-Door-Owner
   request_header -X-Door-User
   # Nothing of the visitor's or the owner's session travels either way.
   request_header -Cookie

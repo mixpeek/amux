@@ -665,10 +665,14 @@ $TLS_LINE
     # Cookie, Basic or a cloud.amux.io token, checked by amux-door. On success
     # X-Door-User is the verified person and X-Amux-Member their amux member
     # token. Anything the client sent under either name is removed first.
+    # For the owner the door also returns X-Amux-Front-Door-Owner, the secret
+    # amux checks so it can tell the owner from a local process (governance
+    # PR 3); a client's own copy is removed here the same way.
     request_header -X-Amux-Member
+    request_header -X-Amux-Front-Door-Owner
     forward_auth 127.0.0.1:8890 {
       uri /_door/check
-      copy_headers X-Door-User X-Amux-Member
+      copy_headers X-Door-User X-Amux-Member X-Amux-Front-Door-Owner
     }
     log_append door_user {http.request.header.X-Door-User}
     # A client that names its own lane (the amux CLI from another machine
