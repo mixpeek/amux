@@ -1263,21 +1263,21 @@ pub(crate) fn judge_prompt(title: &str, body: &str, items: &[&Src]) -> String {
     p
 }
 
-/// How many items the answer says bear on the goal, or None when the answer
-/// is not an array of item numbers.
-pub(crate) fn judge_parse(answer: &str, n: usize) -> Option<usize> {
+/// Which items (by index) the answer says bear on the goal, or None when the
+/// answer is not an array of item numbers.
+pub(crate) fn judge_parse(answer: &str, n: usize) -> Option<Vec<usize>> {
     let arr = extract_array(answer)?;
-    let mut nums: Vec<u64> = Vec::new();
+    let mut nums: Vec<usize> = Vec::new();
     for v in &arr {
-        let k = v.as_u64()?;
-        if k == 0 || k as usize > n {
+        let k = v.as_u64()? as usize;
+        if k == 0 || k > n {
             return None;
         }
-        if !nums.contains(&k) {
-            nums.push(k);
+        if !nums.contains(&(k - 1)) {
+            nums.push(k - 1);
         }
     }
-    Some(nums.len())
+    Some(nums)
 }
 
 async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -1346,17 +1346,19 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     // goal; only when it finds none that bears on it is the worker spared.
     // A failed or unreadable answer wakes the worker, as before.
     let new_items: Vec<&Src> = found.iter().flatten().copied().collect();
-    let (judged, bearing) = if new_items.len() > JUDGE_MAX {
-        (false, new_items.len())
+    let picked = if new_items.len() > JUDGE_MAX {
+        None
     } else {
         match super::lookup::helper_answer(&judge_prompt(g["title"].as_str().unwrap_or(""), g["body"].as_str().unwrap_or(""), &new_items)).await {
-            Ok((_, answer)) => match judge_parse(&answer, new_items.len()) {
-                Some(n) => (true, n),
-                None => (false, new_items.len()),
-            },
-            Err(_) => (false, new_items.len()),
+            Ok((_, answer)) => judge_parse(&answer, new_items.len()),
+            Err(_) => None,
         }
     };
+    let judged = picked.is_some();
+    let bearing = picked.as_ref().map_or(new_items.len(), Vec::len);
+    // Which items the model said bear on the goal, so a wrong call is visible.
+    let bearing_items: Vec<String> = picked.iter().flatten().take(3)
+        .map(|&i| new_items[i].text.chars().take(80).collect()).collect();
     if judged && bearing == 0 {
         tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
             verdict = "intent_goal_unrelated", "intent: new items mention a goal's words but none bears on it; no worker turn");
@@ -1371,7 +1373,7 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
             Some(oid), None, None, json!([])).await.is_ok();
     }
     tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
-        judged, n_bearing = bearing, verdict = "intent_goal_changed",
+        judged, n_bearing = bearing, bearing_items = ?bearing_items, verdict = "intent_goal_changed",
         "intent: something new mentions a goal; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
@@ -1596,9 +1598,9 @@ mod tests {
         let b = src("From Google Cloud Billing | 80% of budget reached");
         let p = super::judge_prompt("Keep cloud spend under the monthly ceiling", "Now: 8k ceiling", &[&a, &b]);
         assert!(p.contains("1. From Google Cloud Alerting") && p.contains("2. From Google Cloud Billing") && p.contains("8k ceiling"));
-        assert_eq!(super::judge_parse("[]", 2), Some(0), "none bears: the worker is spared");
-        assert_eq!(super::judge_parse("Here: [2]", 2), Some(1));
-        assert_eq!(super::judge_parse("[1, 2, 2]", 2), Some(2));
+        assert_eq!(super::judge_parse("[]", 2), Some(vec![]), "none bears: the worker is spared");
+        assert_eq!(super::judge_parse("Here: [2]", 2), Some(vec![1]), "numbered from 1, kept as an index");
+        assert_eq!(super::judge_parse("[1, 2, 2]", 2), Some(vec![0, 1]));
         assert_eq!(super::judge_parse("[3]", 2), None, "a number past the list is not an answer");
         assert_eq!(super::judge_parse("[0]", 2), None);
         assert_eq!(super::judge_parse("[\"1\"]", 2), None);
