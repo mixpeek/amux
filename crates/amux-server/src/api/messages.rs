@@ -109,8 +109,11 @@ pub(crate) fn message_by_id(conn: &Connection, id: &str) -> rusqlite::Result<Opt
     .optional()
 }
 
+/// `ask_owner`: raise the owner's grant ask on a group refusal. True only where
+/// a message is CREATED; the delivery re-check of a queued message passes false,
+/// or every pump tick re-asks (582 counted in minutes on 2026-11-16).
 pub(crate) fn native_peer_input_refusal(
-    conn: &Connection, origin: &str, target: &str,
+    conn: &Connection, origin: &str, target: &str, ask_owner: bool,
 ) -> rusqlite::Result<Option<super::session_verbs::PeerInputRefusal>> {
     if origin.is_empty() || origin == target { return Ok(None); }
     let Some(source) = queries::get_worker(conn, origin)? else {
@@ -140,7 +143,7 @@ pub(crate) fn native_peer_input_refusal(
     // The same ask `amux send` raises (session_verbs): refused outside a shared
     // group, the owner is asked whether to grant it (land review, 2026-11-16:
     // this path refused and asked nobody).
-    if refusal.is_some() {
+    if ask_owner && refusal.is_some() {
         super::capabilities::existing_refusal(&home, &source.display_name, "message",
             &format!("worker {}", receiver.display_name), &receiver.display_name);
     }
@@ -160,7 +163,7 @@ pub(crate) fn pending_receive_refusal(conn: &Connection, message: &str, target: 
         }
     };
     let Actor::Worker { id } = actor else { return Ok(None); };
-    Ok(native_peer_input_refusal(conn, id.as_str(), target)?.map(|refusal| refusal.reason))
+    Ok(native_peer_input_refusal(conn, id.as_str(), target, false)?.map(|refusal| refusal.reason))
 }
 
 /// Queue the AtTurnBoundary delivery command for one recipient. The
@@ -474,7 +477,7 @@ pub async fn create_message(
             // fan-out child. Body actor metadata cannot bypass receive policy.
             for recipient in recipients {
                 if let Some(worker) = queries::get_worker(conn, recipient.as_str())? {
-                    if let Some(refusal) = native_peer_input_refusal(conn, &origin, &worker.id)? {
+                    if let Some(refusal) = native_peer_input_refusal(conn, &origin, &worker.id, true)? {
                         return finish(&slot_w, CreateOutcome::Refused { code:refusal.code, why:refusal.reason }, no_write());
                     }
                 }
@@ -1245,6 +1248,12 @@ mod tests {
             assert_eq!(count(),before,"no partial parent/child persistence");
         }
         assert!(asked() >= asked_before + 2, "each refusal raises the owner's message ask, as amux send does");
+        // The delivery re-check of a queued message refuses without asking again.
+        let rechecked = asked();
+        for _ in 0..50 {
+            assert!(native_peer_input_refusal(&store.read().unwrap(), &peer, &target, false).unwrap().is_some());
+        }
+        assert!(asked() < rechecked + 50, "a re-check must not raise the ask on every pump tick");
         let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
             .header(header::CONTENT_TYPE,"application/json").header("X-Amux-Session",&peer)
             .body(Body::from(json!({"to":{"kind":"group","data":own.as_str()},"body":"same group control"}).to_string())).unwrap()).await.unwrap();
