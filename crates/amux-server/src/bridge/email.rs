@@ -153,10 +153,17 @@ pub fn command_text(subject: &str, body: &str) -> Option<String> {
     super::self_chat::is_command(&words).then_some(words)
 }
 
+/// The search for mail the owner sent themselves. `from:me` matches the From
+/// header, which anyone can write: a forged mail "from" the owner that a filter
+/// or a lenient spam verdict keeps out of Spam would read as the owner speaking.
+/// Gmail files only mail this account actually sent under Sent, so `in:sent`
+/// is the part a stranger cannot forge.
+const OWNER_QUERY: &str = "in:sent from:me to:me newer_than:2d";
+
 pub async fn poll_once(state: &crate::api::AppState) -> Result<usize, String> {
     let acct = account().ok_or("no account")?;
     let c = client();
-    let list = c.inbox_messages(&acct, 25, "from:me to:me newer_than:2d", 0.0, None).await?;
+    let list = c.inbox_messages(&acct, 25, OWNER_QUERY, 0.0, None).await?;
     let msgs: Vec<Value> = list["messages"].as_array().cloned().unwrap_or_default();
     let mine = |m: &Value| addr(m["from"].as_str().unwrap_or("")) == acct.to_lowercase()
         && m["to"].as_str().unwrap_or("").to_lowercase().contains(&acct.to_lowercase());
@@ -301,6 +308,13 @@ pub fn spawn(state: crate::api::AppState) -> tokio::task::JoinHandle<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owner_search_reads_only_mail_this_account_sent() {
+        // A forged From header passes `from:me`; only Sent proves the account sent it.
+        assert!(OWNER_QUERY.split_whitespace().any(|w| w == "in:sent"), "{OWNER_QUERY}");
+        assert!(OWNER_QUERY.contains("from:me") && OWNER_QUERY.contains("to:me"), "{OWNER_QUERY}");
+    }
 
     #[test]
     fn the_subject_or_first_line_is_the_command() {
