@@ -1374,6 +1374,10 @@ pub struct StorageReport {
     pub kept_card_referenced: usize,
     pub upload_refs_error: Option<String>,
     pub memory_entries_removed: usize,
+    /// Expired scratchpad items MOVED to scratchpad-expired/ (still on disk, so
+    /// not counted in `files_removed` / `bytes_freed`).
+    pub scratchpad_moved: usize,
+    pub scratchpad_moved_bytes: u64,
     pub run_logs: super::log_retention::Report,
     pub diagnostic_dirs: Vec<(String, super::log_retention::Report)>,
     pub dirs_removed: usize,
@@ -1581,10 +1585,8 @@ pub async fn storage_tick(state: &AppState, home: &Path) -> StorageReport {
     .await;
     rep.memory_entries_removed = crate::api::session_verbs::sweep_transcript_evidence();
     // Scratchpad expiry (Ethan, 2026-10-09: "everything should expire after 1
-    // week, configurable in the scratchpad tab").
-    let (sp_files, sp_bytes) = crate::api::scratchpad::sweep(home);
-    rep.files_removed += sp_files;
-    rep.bytes_freed += sp_bytes;
+    // week, configurable in the scratchpad tab"). It moves, so it frees nothing.
+    (rep.scratchpad_moved, rep.scratchpad_moved_bytes) = crate::api::scratchpad::sweep(home);
 
     // Directory-level pruning (evidence captures, etc.).
     let (mut dirs, mut dir_bytes) = (0usize, 0u64);
@@ -1660,6 +1662,7 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
                 || r.vacuumed
                 || r.rotated_logs_removed > 0
                 || r.memory_entries_removed > 0
+                || r.scratchpad_moved > 0
                 || r.run_logs.removed > 0;
             if any_work {
                 tracing::info!(
@@ -1675,6 +1678,7 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
                     rotated_logs_removed = r.rotated_logs_removed,
                     rotated_logs_freed = r.rotated_logs_freed,
                     memory_entries_removed = r.memory_entries_removed,
+                    scratchpad_moved = r.scratchpad_moved,
                     run_log_dirs_removed = r.run_logs.removed,
                     run_log_bytes_freed = r.run_logs.bytes_freed,
                     "storage sweep tick"
@@ -1717,6 +1721,7 @@ pub async fn debug_storage() -> axum::Json<Value> {
             "kept_card_referenced": r.kept_card_referenced,
             "upload_references": {"measured": r.upload_refs_error.is_none(), "why_unmeasured": r.upload_refs_error},
             "memory_entries_removed": r.memory_entries_removed,
+            "scratchpad_moved": r.scratchpad_moved, "scratchpad_moved_bytes": r.scratchpad_moved_bytes,
             "run_logs": r.run_logs,
             "diagnostic_dirs": r.diagnostic_dirs,
             "dirs_removed": r.dirs_removed, "dir_bytes_freed": r.dir_bytes_freed,
