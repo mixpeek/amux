@@ -7,7 +7,7 @@
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 F="$(mktemp "${TMPDIR:-/tmp}/rs.XXXXXX")"
-sed -n '/^_land_refusal_spares() {/,/^}/p' "$AM" > "$F"
+{ sed -n '/^_grep_all() {/,/^}/p' "$AM"; sed -n '/^_land_refusal_spares() {/,/^}/p' "$AM"; } > "$F"
 # shellcheck disable=SC1090
 . "$F"; rm -f "$F"
 T="$(mktemp -d "${TMPDIR:-/tmp}/rs.XXXXXX")"; cd "$T" || exit 1

@@ -17,7 +17,7 @@ key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"
 printf 'lane-cicd\n%s\n%s\n1\n' "$FIX" "$(git rev-parse --git-common-dir)" > "$q/001791000000-111"
 F="$(mktemp "${TMPDIR:-/tmp}/liff.XXXXXX")"
-sed -n '/^_land_inflight_fixes() {/,/^}/p' "$AM" > "$F"
+{ sed -n '/^_grep_all() {/,/^}/p' "$AM"; sed -n '/^_land_inflight_fixes() {/,/^}/p' "$AM"; } > "$F"
 fail=0
 [ -s "$F" ] || { echo "FAIL _land_inflight_fixes not found"; exit 1; }
 run() { HOME="$H" bash -c ". '$F'; _land_inflight_fixes origin main \"\$1\" \"\$2\"" _ "$1" "$2"; }

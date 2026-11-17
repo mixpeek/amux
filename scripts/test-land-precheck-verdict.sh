@@ -6,7 +6,7 @@
 set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 F="$(mktemp "${TMPDIR:-/tmp}/verdict.XXXXXX")"
-sed -n '/^_land_precheck_verdict() {/,/^}/p' "$AM" > "$F"
+{ sed -n '/^_grep_all() {/,/^}/p' "$AM"; sed -n '/^_land_precheck_verdict() {/,/^}/p' "$AM"; } > "$F"
 # shellcheck disable=SC1090
 . "$F"; rm -f "$F"
 fail=0

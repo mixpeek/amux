@@ -9,7 +9,7 @@ set -uo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 F="$(mktemp "${TMPDIR:-/tmp}/blame.XXXXXX")"
 n="$(grep -n '  _land_named_waiters() {' "$AM" | cut -d: -f1)"
-{ echo '_land_file_named_waiters() { :; }'; sed -n "$n,/^  }/p" "$AM"; sed -n '/^  _land_blame_lines() {/,/^  }/p' "$AM"; } > "$F"
+{ echo '_land_file_named_waiters() { :; }'; sed -n '/^_grep_all() {/,/^}/p' "$AM"; sed -n "$n,/^  }/p" "$AM"; sed -n '/^  _land_blame_lines() {/,/^  }/p' "$AM"; } > "$F"
 # shellcheck disable=SC1090
 . "$F"; rm -f "$F"
 fail=0
