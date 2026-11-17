@@ -148,3 +148,41 @@ test('when the app cannot dictate on device, the page records the take itself', 
   expect(await asked(page)).toEqual(['start']);
   await page.evaluate(() => (window as any)._dictClosePopup(true));
 });
+
+// Owner, 2026-11-17: "when I press the button that was used to invoke the
+// dictation, that should close the dictation". The app sends a double tap as
+// "Globe" then "Globe Globe": the tail of a stopping double tap starts nothing.
+test('🌐 again finishes a take, a single tap included, and does not start another', async ({ page }) => {
+  await settle(page);
+  await box(page, 'x', 1);
+  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe', {}))).toBe('ran');
+  expect(await asked(page)).toEqual(['start']);
+  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe', {}))).toBe('stopped');
+  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe', {}))).toBe('stop_tap_tail');
+  expect(await asked(page)).toEqual(['start', 'stop']);
+});
+
+test('a start the app refuses as busy clears the pill and says why', async ({ page }) => {
+  await settle(page);
+  await box(page, '', 0);
+  await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe', {}));
+  await app(page, { type: 'busy' });
+  await expect(page.locator('#dict-popup-status')).toHaveText('Dictation is already running in another tab');
+  expect(await page.evaluate(() => (globalThis as any).eval('_dictRecording'))).toBe(false);
+});
+
+// Owner, 2026-11-17: "There should also only be one dictation running per amux
+// client." Two pages of one browser: starting in the second stops the first.
+test('starting a take in another tab stops the take running here', async ({ page, context }) => {
+  await settle(page);
+  await box(page, 'x', 1);
+  await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe', {}));
+  expect(await asked(page)).toEqual(['start']);
+  const other = await context.newPage();
+  await settle(other);
+  await box(other, 'y', 1);
+  await other.evaluate(() => (window as any)._hkNativeKey('Globe Globe', {}));
+  await expect.poll(() => asked(page)).toEqual(['start', 'stop']);
+  expect(await asked(other)).toEqual(['start']);
+  await other.close();
+});

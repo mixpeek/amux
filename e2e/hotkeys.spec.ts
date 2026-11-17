@@ -85,7 +85,8 @@ test('🌐🌐 starts dictation even when storage hangs, and 🌐🌐 again fini
   // The pill shows bars and a clock while it listens, no words.
   await expect.poll(() => page.evaluate(() => (globalThis as any).eval('_dictRecording && !!_dictRecorder && _dictRecorder.state === "recording"')), { timeout: 4000 }).toBe(true);
   expect(await page.evaluate(() => (globalThis as any).eval('_dictRecording'))).toBe(true);
-  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe'))).toBe('ran');
+  // 🌐 during a take finishes it directly (2026-11-17), so this says 'stopped'.
+  expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe'))).toBe('stopped');
   expect(await page.evaluate(() => (globalThis as any).eval('_dictRecording'))).toBe(false);
   await page.evaluate(() => { (globalThis as any).eval('_idb').set = (window as any).__realSet; (window as any)._dictClosePopup(true); });
   // The row shows as 🌐🌐, not as a name.

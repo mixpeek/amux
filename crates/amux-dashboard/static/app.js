@@ -29670,8 +29670,21 @@ function _dictClosePopup(cancel) {
 }
 let _dictCancelled = false;
 
+// ONE TAKE PER CLIENT (owner, 2026-11-17: "There should also only be one
+// dictation running per amux client"). Each tab or pane is its own page with
+// its own recorder; starting a take here stops one running in any other page
+// of this browser or app, which inserts what it heard where it was started.
+const _dictTabId = Math.random().toString(36).slice(2);
+const _dictBus = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('amux-dictation') : null;
+if (_dictBus) _dictBus.onmessage = e => {
+  const m = e.data || {};
+  if (m.op !== 'start' || m.tab === _dictTabId || !_dictRecording) return;
+  _dictBeacon('dict_stopped_for_other_tab', {});
+  _dictStopRec();
+};
 async function _dictStartRec() {
   if (_dictRecording) return;
+  try { _dictBus?.postMessage({ op: 'start', tab: _dictTabId }); } catch (e) { console.warn('dictation: could not tell other tabs', e); }
   const nat = _dictNativeBridge();
   if (nat) { _dictNativeStart(nat); return; }
   if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
@@ -29861,6 +29874,12 @@ window._dictNativeEvent = function (ev) {
     _dictNativeOffUntil = Date.now() + 60000;
     _dictBeacon('dict_native_unavailable', { why: String(ev.why || '').slice(0, 120) });
     if (take && !_dictCancelled) _dictStartRec();
+    return;
+  }
+  if (ev.type === 'busy') {
+    // The app runs one take at a time; another tab or pane holds it.
+    _dictBeacon('dict_native_busy', {});
+    _dictPillSays('Dictation is already running in another tab', 2500);
     return;
   }
   _dictBeacon('dict_native_error', { error: String(ev.why || '').slice(0, 160) });
@@ -78251,7 +78270,7 @@ document.addEventListener('keydown', e => {
 // key). A recording takes it like any combination; otherwise the hotkey bound
 // to it runs. `info.mac_dictation` is true when macOS also starts its own
 // dictation on 🌐🌐, which the owner is told once.
-let _hkMacDictWarned = false, _hkWisprWarned = false;
+let _hkMacDictWarned = false, _hkWisprWarned = false, _hkGlobeStoppedAt = 0;
 window._hkNativeKey = function (combo, info) {
   combo = String(combo || '');
   // Letting go of a held 🌐 ends the take holding it started.
@@ -78260,6 +78279,17 @@ window._hkNativeKey = function (combo, info) {
     return 'release_ignored';
   }
   if (!/^Globe( Globe| Hold|\+[A-Z0-9]|\+Space)?$/.test(combo)) return 'not_globe';
+  // 🌐 while a take records finishes it (owner, 2026-11-17: "when I press the
+  // button that was used to invoke the dictation, that should close the
+  // dictation"), a single tap included: only 🌐🌐 was bound, and a lone tap
+  // went nowhere. The app sends a double tap as "Globe" then "Globe Globe",
+  // so a "Globe Globe" right after a stop is the rest of that tap.
+  if ((combo === 'Globe' || combo === 'Globe Globe') && _dictRecording && !_dictPtt) {
+    _dictStopRec(); _hkGlobeStoppedAt = Date.now();
+    _hkBeacon('hotkey_globe_stopped_take', { trigger: combo });
+    return 'stopped';
+  }
+  if (combo === 'Globe Globe' && Date.now() - _hkGlobeStoppedAt < 600) return 'stop_tap_tail';
   if (_hkRecording && _hkRecordTake) { _hkRecordTake(combo); return 'recorded'; }
   const h = _hkList.find(x => !x.deleted && x.enabled && x.type === 'keys' && x.trigger === combo);
   if (!h) { _hkBeacon('hotkey_globe_unbound', { trigger: combo }); return 'unbound'; }

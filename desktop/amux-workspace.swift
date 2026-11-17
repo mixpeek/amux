@@ -768,7 +768,8 @@ extension AppDelegate {
 
     func sendGlobe(_ combo: String) {
         // A quiet test copy has no key window: its shown page stands in.
-        guard let c = focusedPage() ?? (desktopTestMode ? controllers.first(where: { isShown($0) }) : nil) else { return }
+        // A running take owns 🌐, wherever focus has gone since.
+        guard let c = NativeDictation.shared.owner ?? focusedPage() ?? (desktopTestMode ? controllers.first(where: { isShown($0) }) : nil) else { return }
         let lit = String(data: (try? JSONSerialization.data(withJSONObject: [combo])) ?? Data(), encoding: .utf8)?.dropFirst().dropLast() ?? ""
         // macOS starts its own dictation on 🌐🌐 when Keyboard > "Press 🌐 key to"
         // is Start Dictation (AppleFnUsageType 3); the page says so once.

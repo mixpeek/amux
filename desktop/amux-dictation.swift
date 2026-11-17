@@ -23,6 +23,11 @@ final class NativeDictation {
     private var cancelled = false
     private var feeding = false
 
+    /// The page whose take is running, if any. 🌐 goes there rather than to the
+    /// focused page (owner, 2026-11-17: a take kept running in one worker's page
+    /// while 🌐 in another worker's page started a second one).
+    var owner: DashboardWindowController? { (take != nil || starting) ? page : nil }
+
     func message(_ d: [String: Any], from c: DashboardWindowController) {
         switch d["op"] as? String {
         case "start": start(hints: (d["hints"] as? [String]) ?? [], page: c)
@@ -39,7 +44,13 @@ final class NativeDictation {
     }
 
     private func start(hints: [String], page c: DashboardWindowController) {
-        guard take == nil, !starting else { dlog("verdict=dictation_native_busy view=\(c.viewHash)"); return }
+        guard take == nil, !starting else {
+            // One take per app. The asking page is told, or its pill would sit
+            // on "recording" with nothing behind it.
+            dlog("verdict=dictation_native_busy view=\(c.viewHash)")
+            if c !== page { send(["type": "busy"], to: c) }
+            return
+        }
         guard #available(macOS 26.0, *) else {
             send(["type": "unavailable", "why": "on-device dictation needs macOS 26"], to: c)
             return
