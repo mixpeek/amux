@@ -65,7 +65,7 @@
     <table>
       <thead><tr><th>Tool</th><th>Type</th><th>Open source?</th><th>Stars</th><th>Architecture</th><th>Best for</th></tr></thead>
       <tbody>
-        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Yes (MIT + Commons Clause)</td><td>434★</td><td>tmux/herdr + Rust binary + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
+        <tr><td><strong>amux</strong></td><td>Coding fleet orchestrator</td><td>Source-available (MIT + Commons Clause)</td><td>562★</td><td>tmux/herdr + Rust binary + SQLite</td><td>Parallel Claude Code / Codex / Gemini fleets</td></tr>
         <tr><td><strong>LangGraph</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>47k+★</td><td>Directed graph, Python</td><td>Custom stateful multi-agent pipelines</td></tr>
         <tr><td><strong>CrewAI</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>31k+★</td><td>Role-based crews, Python</td><td>Task-delegating agent teams with structured roles</td></tr>
         <tr><td><strong>AutoGen</strong></td><td>Agent framework</td><td>Yes (MIT)</td><td>38k+★</td><td>Conversation-based, Python</td><td>Microsoft ecosystem, conversation-driven agents</td></tr>
@@ -79,8 +79,8 @@
     </table>
 
     <h2>amux</h2>
-    <p>Self-hosted control plane for running an AI engineering team from a single dashboard or your phone. amux is not a framework — you don't write agent code. You configure workers (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Agents resume after usage limits overnight, and stall detection alerts you. Built-in scratchpad, pinned notes, vault secrets, goal keeper, companion chat, and workspace isolation (per-agent git worktrees). Web dashboard + native iOS app for monitoring. Single Rust binary, zero external dependencies. 525 GitHub stars.</p>
-    <p><strong>New in October 2026:</strong> built-in scratchpad tab for shared fleet notes, companion chat inherits worker model, workspace isolation (per-agent git worktrees), pinned notes with token-efficient startup injection, and goal keeper for overnight task tracking. <strong>New in September 2026:</strong> board hygiene runtime job, mobile terminal streaming, session log rotation. Install: <code>curl -fsSL https://amux.io/install.sh | bash</code>. 525 GitHub stars.</p>
+    <p>Self-hosted control plane for running an AI engineering team from a single dashboard or your phone. amux is not a framework — you don't write agent code. You configure workers (Claude Code, Codex, Gemini CLI), queue tasks on the shared kanban board, and let the fleet run. Agents resume after usage limits overnight, and stall detection alerts you. Built-in scratchpad, pinned notes, vault secrets, goal keeper, companion chat, and workspace isolation (per-agent git worktrees). Web dashboard + native iOS app for monitoring. Single Rust binary, zero external dependencies. 562 GitHub stars.</p>
+    <p><strong>New in October 2026:</strong> built-in scratchpad tab for shared fleet notes, companion chat inherits worker model, workspace isolation (per-agent git worktrees), pinned notes with token-efficient startup injection, and goal keeper for overnight task tracking. <strong>New in September 2026:</strong> board hygiene runtime job, mobile terminal streaming, session log rotation. Install: <code>curl -fsSL https://amux.io/install.sh | bash</code>. 562 GitHub stars.</p>
     <p><strong>Architecture:</strong> tmux or herdr sessions managed by a Rust binary (axum server). SQLite for state. REST API for inter-session coordination. Static SPA dashboard served from the same binary.</p>
     <p><strong>Best for:</strong> Developers shipping code who want 10–50× throughput with minimal setup. Not a framework — you don't program agents, you run them. <a href="/compare/amux-vs-langraph/">amux vs LangGraph →</a></p>
 
