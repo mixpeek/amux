@@ -65,6 +65,9 @@ pub fn routes() -> Router<AppState> {
         .route("/history/{id}", axum::routing::delete(delete_history))
         .route("/history/{id}/edit", axum::routing::post(edit_history))
         .route("/dict", get(list_dict).post(add_dict))
+        // What dictation listens with and knows about, kept on the server so every device
+        // (browser, Mac app, phone) dictates the same way (DictSettings).
+        .route("/settings", get(get_settings).put(put_settings))
         .route(
             "/dict/{id}",
             axum::routing::patch(patch_dict).delete(delete_dict),
@@ -1071,7 +1074,138 @@ pub(crate) fn dictation_key(conn: &rusqlite::Connection) -> (String, &'static st
     (env_gemini_key(), "server")
 }
 
-/// py:27237 `_dictation_vocab` — personal vocabulary as prompt context.
+// ---- settings: microphone and context sources ------------------------------
+
+/// The `prefs` key holding `DictSettings` as JSON.
+pub(crate) const SETTINGS_KEY: &str = "dictation_settings";
+const MIC_MAX: usize = 200;
+const CONTEXT_MAX: usize = 4000;
+const CONTACTS_MAX: usize = 200;
+
+/// Dictation settings shared by every device. `mic` is a microphone's NAME, because a
+/// browser's device ids differ per site and per device; each client matches the name
+/// against its own inputs and says so when the microphone is not connected there.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub(crate) struct DictSettings {
+    /// "" is the system default.
+    pub mic: String,
+    /// Free text about the speaker and what they talk about, given to the transcriber.
+    pub context: String,
+    /// Worker names as a source: the prompt lists them and the name-recovery pass uses them.
+    pub workers: bool,
+    /// CRM contact names as a source, for the people you dictate about.
+    pub contacts: bool,
+}
+
+impl Default for DictSettings {
+    fn default() -> Self {
+        Self { mic: String::new(), context: String::new(), workers: true, contacts: false }
+    }
+}
+
+pub(crate) fn read_settings(conn: &rusqlite::Connection) -> DictSettings {
+    conn.query_row("SELECT value FROM prefs WHERE key = ?1", [SETTINGS_KEY], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| match serde_json::from_str(&v) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!("dictation_settings verdict=unreadable error={e}");
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn contact_names(conn: &rusqlite::Connection) -> Vec<String> {
+    conn.prepare("SELECT name FROM crm_contacts WHERE trim(name) != '' ORDER BY name LIMIT ?1")
+        .and_then(|mut st| {
+            st.query_map([CONTACTS_MAX as i64], |r| r.get::<_, String>(0))
+                .map(|it| it.flatten().collect::<Vec<_>>())
+        })
+        .unwrap_or_default()
+}
+
+fn dict_count(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM dictation_dict", [], |r| r.get(0)).unwrap_or(0)
+}
+
+/// GET /api/dictation/settings — the settings, and how much each source holds, so the page
+/// can say "12 workers, 40 words, 0 contacts" beside each switch.
+async fn get_settings(State(state): State<AppState>) -> Response {
+    let store = state.store.clone();
+    let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let conn = store.read()?;
+        let s = read_settings(&conn);
+        Ok(json!({
+            "settings": s,
+            "sources": {
+                "workers": session_env_stems().len(),
+                "dictionary": dict_count(&conn),
+                "contacts": contact_names(&conn).len(),
+            },
+            "measured": true,
+        }))
+    })
+    .await;
+    match read {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => internal(e),
+        Err(e) => internal(e),
+    }
+}
+
+/// PUT /api/dictation/settings — the whole settings object.
+async fn put_settings(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
+    let mut s: DictSettings = match serde_json::from_slice(&body) {
+        Ok(s) => s,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": format!("invalid settings: {e}") })),
+    };
+    s.mic = s.mic.trim().to_string();
+    s.context = s.context.trim().to_string();
+    if s.mic.chars().count() > MIC_MAX {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": format!("microphone name is over {MIC_MAX} characters") }));
+    }
+    if s.context.chars().count() > CONTEXT_MAX {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": format!("context is over {CONTEXT_MAX} characters") }));
+    }
+    let value = match serde_json::to_string(&s) {
+        Ok(v) => v,
+        Err(e) => return internal(e),
+    };
+    let stored = value.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            conn.execute(
+                "INSERT INTO prefs (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+                rusqlite::params![SETTINGS_KEY, stored],
+            )?;
+            Ok(WriteOutcome {
+                applied: true,
+                events: vec![PendingEvent {
+                    entity_type: EntityType::Other("pref".into()),
+                    entity_id: SETTINGS_KEY.into(),
+                    mutation: MutationKind::Updated,
+                    payload: None,
+                }],
+            })
+        })
+        .await;
+    match res {
+        Ok(_) => {
+            tracing::info!(
+                "dictation_settings verdict=saved mic_set={} context_chars={} workers={} contacts={}",
+                !s.mic.is_empty(), s.context.chars().count(), s.workers, s.contacts
+            );
+            Json(json!({ "ok": true, "settings": s })).into_response()
+        }
+        Err(e) => internal(e),
+    }
+}
+
+/// py:27237 `_dictation_vocab` — personal vocabulary as prompt context, plus the context
+/// sources in `DictSettings` (the speaker's note, contact names). Recordings use it too.
 pub(crate) fn dictation_vocab(conn: &rusqlite::Connection) -> String {
     let mut terms: Vec<String> = Vec::new();
     let mut fixes: Vec<String> = Vec::new();
@@ -1100,6 +1234,22 @@ pub(crate) fn dictation_vocab(conn: &rusqlite::Connection) -> String {
         out.push(format!(
             "Always apply these corrections: {}",
             fixes.join("; ")
+        ));
+    }
+    let settings = read_settings(conn);
+    if settings.contacts {
+        let people = contact_names(conn);
+        if !people.is_empty() {
+            out.push(format!(
+                "People the speaker knows; spell their names EXACTLY as written: {}",
+                people.join(", ")
+            ));
+        }
+    }
+    if !settings.context.is_empty() {
+        out.push(format!(
+            "About the speaker and what they talk about (use it to resolve unclear words, never copy it into the output):\n{}",
+            settings.context
         ));
     }
     out.join("\n")
@@ -1136,7 +1286,11 @@ fn dictation_prompt(conn: &rusqlite::Connection, session: &str) -> String {
             .into(),
         "Preserve the speaker's wording and intent; do not paraphrase.".into(),
     ];
-    let names: Vec<String> = session_env_stems().into_iter().take(80).collect();
+    let names: Vec<String> = if read_settings(conn).workers {
+        session_env_stems().into_iter().take(80).collect()
+    } else {
+        Vec::new()
+    };
     if !names.is_empty() {
         parts.push(format!(
             "These are the user's session names — if a spoken phrase sounds like one \
@@ -1910,8 +2064,12 @@ fn dict_target_names(conn: &rusqlite::Connection) -> Vec<String> {
 
 /// py `_dn_targets` — session env stems + dictation_dict words.
 fn dn_targets(conn: &rusqlite::Connection) -> Vec<(String, String, String)> {
-    let mut names = session_env_stems();
+    let settings = read_settings(conn);
+    let mut names = if settings.workers { session_env_stems() } else { Vec::new() };
     names.extend(dict_target_names(conn));
+    if settings.contacts {
+        names.extend(contact_names(conn));
+    }
     targets_from_names(names)
 }
 
@@ -3068,5 +3226,58 @@ pub(crate) mod tests {
             py_dumps(&[("a", json!(true)), ("b", json!("x")), ("n", json!(0))]),
             r#"{"a": true, "b": "x", "n": 0}"#
         );
+    }
+
+    /// Settings live on the server: saved once, read back by every device, and the
+    /// sources they switch on reach the prompt (and off, leave it).
+    #[tokio::test]
+    async fn settings_are_saved_on_the_server_and_shape_the_prompt() {
+        let (app, dir) = app();
+        let (st, v) = send(&app, "GET", "/api/dictation/settings", None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(v["settings"]["workers"], json!(true), "worker names are on by default");
+        assert_eq!(v["settings"]["contacts"], json!(false));
+        assert_eq!(v["measured"], json!(true));
+
+        let db = dir.path().join("dictation-api-test.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO crm_contacts (id, name, created, updated) VALUES ('c1', 'Doron Ashkenazi', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let body = json!({"mic": " Shure MV7 ", "context": "I build amux and Mixpeek.", "workers": false, "contacts": true});
+        let (st, v) = send(&app, "PUT", "/api/dictation/settings", Some(body)).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["settings"]["mic"], json!("Shure MV7"), "the name is trimmed");
+
+        let (_, v) = send(&app, "GET", "/api/dictation/settings", None).await;
+        assert_eq!(v["settings"]["mic"], json!("Shure MV7"));
+        assert_eq!(v["sources"]["contacts"], json!(1));
+
+        let vocab = dictation_vocab(&conn);
+        assert!(vocab.contains("Doron Ashkenazi"), "{vocab}");
+        assert!(vocab.contains("I build amux and Mixpeek."), "{vocab}");
+        let prompt = dictation_prompt(&conn, "");
+        assert!(!prompt.contains("session names"), "worker names off leaves them out: {prompt}");
+        assert!(dn_targets(&conn).iter().any(|t| format!("{t:?}").to_lowercase().contains("doron")), "contacts feed the name pass");
+
+        let off = json!({"mic": "", "context": "", "workers": true, "contacts": false});
+        send(&app, "PUT", "/api/dictation/settings", Some(off)).await;
+        let vocab = dictation_vocab(&conn);
+        assert!(!vocab.contains("Doron") && !vocab.contains("About the speaker"), "{vocab}");
+    }
+
+    #[tokio::test]
+    async fn settings_refuse_what_they_cannot_keep() {
+        let (app, _dir) = app();
+        let long = "x".repeat(CONTEXT_MAX + 1);
+        let (st, v) = send(&app, "PUT", "/api/dictation/settings", Some(json!({"context": long}))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+        let (st, _) = send(&app, "PUT", "/api/dictation/settings", Some(json!({"workers": "yes"}))).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let (_, v) = send(&app, "GET", "/api/dictation/settings", None).await;
+        assert_eq!(v["settings"]["context"], json!(""), "a refused write changes nothing");
     }
 }

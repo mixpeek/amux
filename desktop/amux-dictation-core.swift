@@ -1,6 +1,10 @@
 import Foundation
 import AVFoundation
 import Speech
+#if os(macOS)
+import CoreAudio
+import AudioToolbox
+#endif
 
 // Dictation's engine in the Mac app (owner, 2026-11-16: "Improve the dictation
 // flow ... until its as clean as wisprflow"). Wispr Flow put text in a median
@@ -100,10 +104,28 @@ final class DictationTake {
         try await analyzer.start(inputSequence: stream)
     }
 
-    /// The microphone, from now until finish() or cancel().
-    func startMic() throws {
+    /// The microphone, from now until finish() or cancel(). `input` names the microphone
+    /// chosen in Dictation settings ("" is the system default). One that is not connected
+    /// falls back to the default, and the returned note says so.
+    @discardableResult
+    func startMic(input name: String = "") throws -> String? {
         let e = AVAudioEngine()
         let input = e.inputNode
+        var note: String?
+        #if os(macOS)
+        if !name.isEmpty {
+            if let dev = recorderInputDevices().first(where: { $0.name == name }), let unit = input.audioUnit {
+                var id = dev.id
+                let st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
+                                              UInt32(MemoryLayout<AudioDeviceID>.size))
+                NSLog("amux-dictation: verdict=%@ device=%@ status=%d", st == noErr ? "dictation_input_device" : "dictation_input_switch_failed", name, st)
+                if st != noErr { note = "Could not switch to \(name); using the default microphone." }
+            } else {
+                NSLog("amux-dictation: verdict=dictation_input_missing device=%@", name)
+                note = "\(name) is not connected; using the default microphone."
+            }
+        }
+        #endif
         let fmt = input.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
             throw DictationError.unavailable("no microphone input is available")
@@ -112,6 +134,7 @@ final class DictationTake {
         e.prepare()
         try e.start()
         engine = e
+        return note
     }
 
     /// One buffer of the take, in any format: to the recognizer, the level and the kept copy.

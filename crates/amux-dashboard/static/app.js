@@ -29603,6 +29603,7 @@ async function _dictLoad() {
       fetch(API + '/api/dictation/history?session=' + encodeURIComponent(asked), { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
+      _dictSettingsLoad(),
     ]);
     if ((peekSession || '') !== asked) { _peekStale(asked, 'dictation'); return; }
     _dictItems = h.items || []; _dictTotalWords = h.total_words || 0;
@@ -29613,6 +29614,104 @@ async function _dictLoad() {
   if (tw) tw.textContent = _dictTotalWords ? _dictTotalWords.toLocaleString() + ' words' : '';
   _dictPendingBadge();
   _dictRender();
+}
+// Dictation settings live on the server (GET/PUT /api/dictation/settings), so the browser,
+// the Mac app and the phone dictate with the same microphone and the same context.
+// `mic` is a microphone's NAME: each device matches it against its own inputs.
+let _dictSettings = null, _dictSources = null, _dictSettingsAt = 0, _dictMicWarned = '';
+async function _dictSettingsLoad() {
+  try {
+    const r = await fetch(API + '/api/dictation/settings', { headers: _authHeaders() });
+    const d = await r.json();
+    if (d && d.settings) { _dictSettings = d.settings; _dictSources = d.sources || null; _dictSettingsAt = Date.now(); }
+  } catch (e) { console.warn('dictation: settings did not load', e); }
+  return _dictSettings;
+}
+// Before a take: the saved settings, refreshed in the background when older than a minute.
+async function _dictSettingsEnsure() {
+  if (!_dictSettings) await _dictSettingsLoad();
+  else if (Date.now() - _dictSettingsAt > 60000) _dictSettingsLoad();
+  return _dictSettings || { mic: '', context: '', workers: true, contacts: false };
+}
+// Saves run one at a time, and each carries every edit made so far: two quick changes (a
+// switch, then the context) sent at once could land out of order and the older one
+// overwrote the newer on the server.
+let _dictSettingsWant = null, _dictSettingsQueue = Promise.resolve();
+function _dictSettingsSave(patch) {
+  _dictSettingsWant = Object.assign({ mic: '', context: '', workers: true, contacts: false },
+    _dictSettingsWant || _dictSettings || {}, patch);
+  const next = Object.assign({}, _dictSettingsWant);
+  const run = _dictSettingsQueue.then(() => _dictSettingsPut(next));
+  _dictSettingsQueue = run.catch(() => false);
+  return run;
+}
+async function _dictSettingsPut(next) {
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/dictation/settings', { method: 'PUT',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(next) });
+    d = await r.json();
+    if (!r.ok || !d.settings) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) {
+    showToast('Dictation settings were not saved: ' + e.message);
+    _dictSettingsWant = null;
+    // The controls show what was asked; put them back to what the server holds.
+    if (_dictSub === 'settings') _dictRenderSettings();
+    return false;
+  }
+  const micChanged = (_dictSettings || {}).mic !== d.settings.mic;
+  _dictSettings = d.settings; _dictSettingsAt = Date.now();
+  // A warm stream is the old microphone: the next take opens the new one.
+  if (micChanged && _dictStream) {
+    try { _dictStream.getTracks().forEach(t => t.stop()); } catch (e) { console.warn('dictation: could not release the previous microphone', e); }
+    _dictStream = null;
+  }
+  _dictMicWarned = '';
+  showToast('Dictation settings saved');
+  // No repaint here: the controls already show the saved values, and a repaint would wipe
+  // context typed while this save was in flight.
+  return true;
+}
+// Microphone names this device can use: the Mac app's own inputs, and the browser's.
+// Browsers hide names until the microphone is allowed once; `hidden` says so.
+async function _dictMicNames() {
+  const names = new Set();
+  let hidden = false;
+  if (typeof _nativeRec !== 'undefined' && _nativeRec && Array.isArray(_nativeRec.inputs)) _nativeRec.inputs.forEach(n => n && names.add(n));
+  try {
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      for (const d of await navigator.mediaDevices.enumerateDevices()) {
+        if (d.kind !== 'audioinput' || d.deviceId === 'default' || d.deviceId === 'communications') continue;
+        if (d.label) names.add(d.label); else hidden = true;
+      }
+    }
+  } catch (e) { console.warn('dictation: could not list microphones', e); }
+  return { names: [...names].sort(), hidden };
+}
+async function _dictMicReveal() {
+  try {
+    const st = await navigator.mediaDevices.getUserMedia({ audio: true });
+    st.getTracks().forEach(t => t.stop());
+  } catch (e) { showToast('The microphone was not allowed, so its name cannot be shown.'); return; }
+  _dictRenderSettings();
+}
+// getUserMedia's audio constraint for the chosen microphone, matched by name. Not
+// connected here: the default microphone, said once rather than silently.
+async function _dictMicConstraint() {
+  const want = ((_dictSettings || {}).mic || '').trim();
+  if (!want || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return {};
+  try {
+    const dev = (await navigator.mediaDevices.enumerateDevices()).find(d => d.kind === 'audioinput' && d.label === want);
+    if (dev) return { deviceId: { exact: dev.deviceId } };
+  } catch (e) { console.warn('dictation: could not list microphones', e); }
+  _dictMicMissing(want);
+  return {};
+}
+function _dictMicMissing(name) {
+  _dictBeacon('dict_mic_missing', { native: false });
+  if (_dictMicWarned === name) return;
+  _dictMicWarned = name;
+  showToast(name + ' is not connected here; dictating with the default microphone.');
 }
 function _dictSetSub(s) {
   _dictSub = s;
@@ -29686,6 +29785,7 @@ async function _dictStartRec() {
   if (_dictRecording) return;
   try { _dictBus?.postMessage({ op: 'start', tab: _dictTabId }); } catch (e) { console.warn('dictation: could not tell other tabs', e); }
   const nat = _dictNativeBridge();
+  if (nat && !_dictSettings) await _dictSettingsEnsure();
   if (nat) { _dictNativeStart(nat); return; }
   if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
   _dictCancelled = false;
@@ -29705,8 +29805,10 @@ async function _dictStartRec() {
       _dictBeacon('mic_permission_slow', { mac });
     }, 6000);
     try {
+      await _dictSettingsEnsure();
+      const mic = await _dictMicConstraint();
       _dictStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } } });
+        audio: Object.assign({ echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } }, mic) });
     } catch(e) {
       showToast(mac ? 'The microphone is off for amux. Turn it on in System Settings → Privacy & Security → Microphone.' : 'Microphone access denied');
       _dictBeacon('mic_permission_refused', { mac, error: String(e && e.name || e).slice(0, 80) });
@@ -29830,7 +29932,8 @@ function _dictNativeBridge() {
 }
 // Words the recognizer should expect: worker names and your dictionary.
 function _dictNativeHints() {
-  const names = (typeof sessions !== 'undefined' ? sessions : []).map(x => x && x.name).filter(Boolean);
+  const useNames = !_dictSettings || _dictSettings.workers !== false;
+  const names = useNames ? (typeof sessions !== 'undefined' ? sessions : []).map(x => x && x.name).filter(Boolean) : [];
   const words = (_dictWords || []).map(w => (w.correct || '').trim() || w.word).filter(Boolean);
   return [...new Set(names.concat(words))].slice(0, 200);
 }
@@ -29840,7 +29943,8 @@ function _dictNativeStart(bridge) {
   _dictRecording = true; _dictStartedAt = Date.now();
   document.getElementById('dict-rec-btn')?.classList.add('recording');
   _dictTick();
-  bridge.postMessage({ op: 'start', hints: _dictNativeHints() });
+  bridge.postMessage({ op: 'start', hints: _dictNativeHints(), input: ((_dictSettings || {}).mic || '') });
+  if (_dictSettings && _dictSettings.mic) _dictSettingsEnsure();
 }
 function _dictNativeStop() {
   if (_dictNative) _dictNative.stopAt = Date.now();
@@ -29864,6 +29968,12 @@ window._dictNativeEvent = function (ev) {
   if (!ev || !ev.type) return;
   if (ev.type === 'level') { if (_dictNative) _dictLevel(ev.v); return; }
   if (ev.type === 'started') return;
+  // The app could not use the chosen microphone and took the default (amux-dictation-core.swift).
+  if (ev.type === 'notice') {
+    _dictBeacon('dict_mic_missing', { native: true });
+    if (_dictMicWarned !== String(ev.why)) { _dictMicWarned = String(ev.why); showToast(ev.why); }
+    return;
+  }
   const take = _dictNative;
   _dictNative = null;
   if (ev.type === 'done') { _dictNativeDone(ev, take); return; }
@@ -30398,6 +30508,7 @@ function _dictRenderHistory() {
       + '<div class="dict-acts">'
       + '<button title="Copy" onclick="_dictCopy(' + it.id + ')">&#128203;</button>'
       + '<button title="Insert into composer" onclick="_dictInsertId(' + it.id + ')">&#8629;</button>'
+      + '<button title="Teach: correct a word it got wrong (select the word first)" onclick="_dictTeach(' + it.id + ')">&#128214;</button>'
       + '<button title="AI edit" onclick="_dictAiEdit(' + it.id + ')">&#10024;</button>'
       + (it.ai_edited ? '<button title="Undo AI edit" onclick="_dictUndo(' + it.id + ')">&#8630;</button>' : '')
       + '<button title="Delete" class="danger" onclick="_dictDelete(' + it.id + ')">&#128465;</button>'
@@ -30406,6 +30517,17 @@ function _dictRenderHistory() {
   body.innerHTML = html;
 }
 function _dictById(id) { return _dictItems.find(i => i.id === id); }
+// Teach the dictionary from a past dictation: the word selected in that row becomes the
+// misspelling to correct, and every later dictation applies the fix (server prompt).
+function _dictTeach(id) {
+  const it = _dictById(id);
+  if (!it) return;
+  const row = document.getElementById('dict-row-' + id);
+  const sel = window.getSelection && window.getSelection();
+  let word = '';
+  if (sel && row && sel.rangeCount && row.contains(sel.anchorNode)) word = String(sel).trim();
+  _dictAddWord(null, { word, heard: it.raw_text && it.raw_text !== it.text ? it.raw_text : '' });
+}
 function _dictCopy(id) { const it = _dictById(id); if (it) { navigator.clipboard?.writeText(it.text); showToast('Copied'); } }
 function _dictInsertId(id) { const it = _dictById(id); if (it) { _dictInsert(it.text); showToast('Added to composer'); } }
 async function _dictAiEdit(id) {
@@ -30451,15 +30573,17 @@ function _dictRenderDict() {
   }
   body.innerHTML = html;
 }
-async function _dictAddWord(existing) {
+async function _dictAddWord(existing, teach) {
   const w = existing || null;
-  const isFix = w ? !!w.correct : false;
-  const html = '<div class="dict-modal-row"><label>Correct a misspelling</label>'
+  const t = teach || null;
+  const isFix = w ? !!w.correct : !!t;
+  const html = (t && t.heard ? '<div class="dict-sethint">Heard: ' + esc(t.heard) + '</div>' : '')
+    + '<div class="dict-modal-row"><label>Correct a misspelling</label>'
     + '<input type="checkbox" id="dictm-fix" ' + (isFix ? 'checked' : '') + ' onchange="_dictModalToggle()"></div>'
     + '<div id="dictm-single" style="' + (isFix ? 'display:none' : '') + '">'
     + '<input id="dictm-word" class="dict-modal-input" placeholder="Add a new word" value="' + (w && !isFix ? esc(w.word) : '') + '"></div>'
     + '<div id="dictm-pair" style="' + (isFix ? '' : 'display:none') + ';display:' + (isFix ? 'flex' : 'none') + ';gap:var(--space-2);align-items:center;">'
-    + '<input id="dictm-mis" class="dict-modal-input" placeholder="Misspelling" value="' + (w && isFix ? esc(w.word) : '') + '">'
+    + '<input id="dictm-mis" class="dict-modal-input" placeholder="Misspelling" value="' + (w && isFix ? esc(w.word) : t ? esc(t.word) : '') + '">'
     + '<span style="color:var(--dim)">&rarr;</span>'
     + '<input id="dictm-cor" class="dict-modal-input" placeholder="Correct spelling" value="' + (w && isFix ? esc(w.correct) : '') + '"></div>';
   const ok = await showFormModal(w ? 'Edit vocabulary' : 'Add to vocabulary', html, w ? 'Save' : 'Add word');
@@ -30497,9 +30621,25 @@ function _dictRenderSettings() {
   const c = _dictCfg || {};
   const using = c.source === 'byo' ? 'your own Gemini key'
     : c.source === 'server' ? "this amux server's Gemini key" : 'nothing configured';
+  const ds = _dictSettings || { mic: '', context: '', workers: true, contacts: false };
+  const src = _dictSources || {};
+  // A repaint (the tab's background reload) keeps context typed but not saved yet.
+  const prevCtx = document.getElementById('dict-context');
+  const typed = prevCtx && prevCtx.value !== (ds.context || '') ? prevCtx.value : null;
+  const count = (n, one, many) => (typeof n === 'number') ? ' <span class="dict-sethint">(' + n + ' ' + (n === 1 ? one : many) + ')</span>' : '';
   body.innerHTML =
     '<div class="dict-settings">'
-    + '<div class="dict-set-row"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
+    + '<div class="dict-set-row"><b>Microphone</b><span id="dict-mic-host"><select id="dict-mic" class="input" disabled><option>Loading…</option></select></span></div>'
+    + '<div class="dict-sethint" id="dict-mic-note">Saved on the server: every device that has this microphone dictates with it, and the others use their default.</div>'
+    + '<div class="dict-set-row"><b>What dictation knows</b><span></span></div>'
+    + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-workers"' + (ds.workers !== false ? ' checked' : '') + ' onchange="_dictSettingsSave({workers:this.checked})"> Worker names' + count(src.workers, 'worker', 'workers') + '</span></label>'
+    + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-contacts"' + (ds.contacts ? ' checked' : '') + ' onchange="_dictSettingsSave({contacts:this.checked})"> CRM contact names' + count(src.contacts, 'contact', 'contacts') + '</span></label>'
+    + '<div class="dict-set-row"><span><input type="checkbox" checked disabled> Dictionary' + count(src.dictionary, 'word', 'words') + '</span>'
+    + '<button type="button" class="btn" onclick="_dictSetSub(\'dict\')">Edit</button></div>'
+    + '<div class="dict-sethint">About you and what you talk about: names, products, jargon. Dictation uses it to settle unclear words.</div>'
+    + '<textarea id="dict-context" class="input dict-context" rows="4" maxlength="4000" placeholder="e.g. I run Mixpeek; I talk about amux workers, Rust, GKE and our customers TubeScience and Wexus.">' + esc(ds.context || '') + '</textarea>'
+    + '<div class="dict-set-actions"><button class="btn primary" id="dict-context-save" onclick="_dictSettingsSave({context:(document.getElementById(\'dict-context\')||{}).value||\'\'})">Save context</button></div>'
+    + '<div class="dict-set-row dict-set-gap"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
     + '<div class="dict-set-row"><b>Currently using</b><span>' + using + '</span></div>'
     + '<div class="dict-sethint">Which engine Dictate and Recordings use is one setting: '
     + '<button type="button" class="btn" onclick="_transcriptionOpenSettings()">Transcription settings</button></div>'
@@ -30515,6 +30655,21 @@ function _dictRenderSettings() {
     + '<div class="dict-sethint" style="margin-top:var(--space-3-5);">Audio never touches this page’s JavaScript beyond the '
     + 'recording itself — it is uploaded to your amux server, which calls Gemini and returns only text.</div>'
     + '</div>';
+  if (typed !== null) { const ta = document.getElementById('dict-context'); if (ta) ta.value = typed; }
+  _dictRenderMicPicker();
+}
+async function _dictRenderMicPicker() {
+  const host = document.getElementById('dict-mic-host');
+  if (!host) return;
+  const want = ((_dictSettings || {}).mic || '');
+  const { names, hidden } = await _dictMicNames();
+  const opts = [''].concat(names);
+  if (want && !names.includes(want)) opts.push(want);
+  host.innerHTML = '<select id="dict-mic" class="input" onchange="_dictSettingsSave({mic:this.value})">'
+    + opts.map(n => '<option value="' + esc(n) + '"' + (n === want ? ' selected' : '') + '>'
+      + esc(n ? (names.includes(n) ? n : n + ' (not connected here)') : 'Default microphone') + '</option>').join('')
+    + '</select>'
+    + (hidden ? ' <button type="button" class="btn" onclick="_dictMicReveal()">Show names</button>' : '');
 }
 async function _dictSaveKey() {
   const k = (document.getElementById('dict-key-input')?.value || '').trim();

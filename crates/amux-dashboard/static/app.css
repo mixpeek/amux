@@ -11361,3 +11361,8 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .wfw-error { color: var(--red); }
 .wfw-error[hidden] { display: none; }
 .wfw-actions { flex-wrap: wrap; }
+
+/* Dictation settings: the context note and its Save (app.js _dictRenderSettings). */
+.dict-context { width: 100%; margin-top: var(--space-1-5); }
+.dict-set-actions { display: flex; justify-content: flex-end; margin-top: var(--space-1-5); }
+.dict-set-gap { margin-top: var(--space-3); }

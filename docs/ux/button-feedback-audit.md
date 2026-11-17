@@ -224,6 +224,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Delete | `_dictOutboxDel` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Save | `_dictSaveKey` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Save context | `_dictSettingsSave` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Teach: correct a word it got wrong (select the w | `_dictTeach` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Hold to dictate (or click to start/stop) | `_dictToggleRec` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Undo AI edit | `_dictUndo` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Dismiss failed change | `_dismissQueuedOp` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1300,7 +1302,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Structure | `_dbSetMode` | onclick |
 | index.html | Discard | `_dictClosePopup` | onclick |
 | app.js | Copy | `_dictCopy` | onclick |
+| app.js | Show names | `_dictMicReveal` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |
+| app.js | Edit | `_dictSetSub` | onclick |
 | index.html | Dictionary | `_dictSetSub` | onclick |
 | index.html | History | `_dictSetSub` | onclick |
 | index.html | Settings | `_dictSetSub` | onclick |

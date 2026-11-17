@@ -1506,6 +1506,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictMicConstraint": {
+      "kind": "command._dictMicConstraint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictMicMissing": {
+      "kind": "command._dictMicMissing",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictNativeDone": {
       "kind": "command._dictNativeDone",
       "feedback_required": true,
@@ -1578,6 +1590,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictSettingsPut": {
+      "kind": "command._dictSettingsPut",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictSettingsSave": {
+      "kind": "command._dictSettingsSave",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictStartRec": {
       "kind": "command._dictStartRec",
       "feedback_required": true,
@@ -1586,6 +1610,12 @@
     },
     "_dictStoreHung": {
       "kind": "command._dictStoreHung",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictTeach": {
+      "kind": "command._dictTeach",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

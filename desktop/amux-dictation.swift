@@ -8,9 +8,10 @@ import AVFoundation
 // until you let go (amux-workspace.swift sends "Globe Hold" and "Globe
 // Release"), the way Wispr Flow's fn key does.
 //
-// Messages from the page (amuxDictation): {op: "start", hints: [String]},
+// Messages from the page (amuxDictation): {op: "start", hints: [String],
+// input: String (the microphone's name from Dictation settings, "" = default)},
 // {op: "stop"}, {op: "cancel"}. Back to the page (window._dictNativeEvent):
-// {type: "started"}, {type: "level", v}, {type: "unavailable", why} (the
+// {type: "started"}, {type: "level", v}, {type: "notice", why}, {type: "unavailable", why} (the
 // page then records the take itself, as in a browser), {type: "error", why},
 // and {type: "done", text, audio (base64 AAC), mime, ms, finish_ms}.
 
@@ -30,7 +31,7 @@ final class NativeDictation {
 
     func message(_ d: [String: Any], from c: DashboardWindowController) {
         switch d["op"] as? String {
-        case "start": start(hints: (d["hints"] as? [String]) ?? [], page: c)
+        case "start": start(hints: (d["hints"] as? [String]) ?? [], input: (d["input"] as? String) ?? "", page: c)
         case "stop": stop()
         case "cancel": cancel()
         default: break
@@ -43,7 +44,7 @@ final class NativeDictation {
         c.webView.evaluateJavaScript("typeof window._dictNativeEvent === 'function' && window._dictNativeEvent(\(json))", completionHandler: nil)
     }
 
-    private func start(hints: [String], page c: DashboardWindowController) {
+    private func start(hints: [String], input: String, page c: DashboardWindowController) {
         guard take == nil, !starting else {
             // One take per app. The asking page is told, or its pill would sit
             // on "recording" with nothing behind it.
@@ -65,7 +66,7 @@ final class NativeDictation {
             AVCaptureDevice.requestAccess(for: .audio) { ok in
                 DispatchQueue.main.async {
                     dlog("verdict=mic_permission_\(ok ? "granted" : "refused") view=\(c.viewHash) for=dictation")
-                    if ok { self.start(hints: hints, page: c) }
+                    if ok { self.start(hints: hints, input: input, page: c) }
                     else { self.send(["type": "error", "why": "amux was not allowed the microphone."], to: c) }
                 }
             }
@@ -86,7 +87,7 @@ final class NativeDictation {
                 if desktopTestMode, let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_DICTATION_FILE"] {
                     try self.feedFile(path, into: t)
                 } else {
-                    try t.startMic()
+                    if let why = try t.startMic(input: input) { self.send(["type": "notice", "why": why]) }
                     self.watchForSilence(t)
                 }
                 self.take = t

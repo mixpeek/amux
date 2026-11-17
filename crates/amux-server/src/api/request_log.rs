@@ -4083,6 +4083,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: ANY,
     },
     RouteEntry {
+        path: "/api/dictation/settings",
+        methods: &["GET", "PUT"],
+    },
+    RouteEntry {
         path: "/api/dictate",
         methods: &["POST"],
     },
