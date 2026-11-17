@@ -755,6 +755,8 @@ jobs:
           # unless it is the last line, so this test could fail and the step pass.
           bash scripts/test-land-regenerate.sh
           NO_REGEN=1 bash scripts/test-land-regenerate.sh
+          bash scripts/test-land-regenerate-delete.sh
+          bash scripts/test-grep-all-pipefail.sh
           bash scripts/test-land-regenerate-always.sh && bash scripts/test-land-regenerate-always.sh "" conflict && bash scripts/test-land-regenerate-always.sh "" failing && bash scripts/test-land-regenerate-always.sh "" worktree
       - name: land precheck verdict and attributed cancel (1/8)
         run: |

@@ -19,6 +19,21 @@
 
 set -euo pipefail
 
+# _grep_all FLAGS PATTERN: `grep -q` for a pipe. Under `set -o pipefail`,
+# `printf ... | grep -q` is a race: grep -q exits at its first match, a writer
+# with bytes left dies of SIGPIPE, and pipefail reports the MATCH as a failure.
+# mixpeek-cicd, 2026-11-17: 7 misses in 3000 tries on a 3001-byte list, and in
+# _land_regenerate 5 of 153 regenerate commits in 30 days deleted a file the
+# generators had kept. This reads all of its input, so the writer never sees a
+# closed pipe. Same flags as grep; a -q in the first word is dropped.
+_grep_all() {
+  local a=("$@")
+  a[0]="${a[0]//q/}"
+  [ "${a[0]}" = "-" ] && a=("${a[@]:1}")
+  grep "${a[@]}" >/dev/null
+}
+
+
 # ── READ THE WHOLE SCRIPT BEFORE RUNNING ANY OF IT (AMUX-3891) ──────────────
 #
 # Everything below lives inside one `{ ... }` compound command, and the script
@@ -301,7 +316,7 @@ _curl() {
   # server (a remote one has its own token), and never inside a lane, which
   # names itself with its minted token instead.
   if [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/auth_token" ]] \
-    && ! printf '%s\n' "$@" | grep -qi '^Authorization:'; then
+    && ! printf '%s\n' "$@" | _grep_all -qi '^Authorization:'; then
     local _owner_tok; _owner_tok="$(tr -d '\r\n' < "${CC_HOME:-$HOME/.amux}/auth_token" 2>/dev/null)"
     [[ -n "$_owner_tok" ]] && _id+=(-H "Authorization: Bearer $_owner_tok")
   elif [[ "$own" == 1 && -z "${AMUX_SESSION:-}${AMUX_WORKER:-}${AMUX_WORKER_TOKEN:-}" && -s "${CC_HOME:-$HOME/.amux}/front-door-owner" ]]; then
@@ -317,7 +332,7 @@ _curl() {
   # it. Inside a worker, the server wrote the span of the last message it
   # delivered to <home>/trace/<worker>.current, and this call descends from it.
   # Otherwise nothing is sent and the server starts a trace at this origin.
-  if [[ "${AMUX_TRACE:-on}" != off && "${AMUX_TRACE:-on}" != 0 ]] && ! printf '%s\n' "$@" | grep -qi '^traceparent:'; then
+  if [[ "${AMUX_TRACE:-on}" != off && "${AMUX_TRACE:-on}" != 0 ]] && ! printf '%s\n' "$@" | _grep_all -qi '^traceparent:'; then
     local _tp="${TRACEPARENT:-}"
     if [[ -z "$_tp" && "${AMUX_TRACE_ID:-}" =~ ^[0-9a-f]{32}$ ]]; then
       local _span; _span=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -3289,7 +3304,7 @@ for s in data:
     if [[ "$lc" == "paused" ]]; then
       echo "${YELLOW}paused${RESET} $name"
       paused=$((paused + 1))
-    elif [[ "$lc" == "paused" ]] || echo "$resp" | grep -q '"noop"'; then
+    elif [[ "$lc" == "paused" ]] || echo "$resp" | _grep_all -q '"noop"'; then
       echo "${DIM}$name already paused${RESET}"
       skipped=$((skipped + 1))
     else
@@ -4695,7 +4710,7 @@ so the driver parks this card and resumes it when the blocker completes."
         "$api/api/board") || die "cannot reach the board to create the blocker task"
       # A full todo queue refuses the create (todo_wip_limit_reached); the
       # blocker still has to exist, so file it in backlog and say so.
-      if printf '%s' "$created" | grep -q 'todo_wip_limit_reached'; then
+      if printf '%s' "$created" | _grep_all -q 'todo_wip_limit_reached'; then
         created=$(_curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Worker: $worker" \
           -d "$(T="$title" S="$worker" I="$id" python3 -c 'import json,os;print(json.dumps({"title":os.environ["T"],"session":os.environ["S"],"status":"backlog","tags":["blocks:"+os.environ["I"]]}))')" \
           "$api/api/board") || die "cannot reach the board to create the blocker task"
@@ -5327,7 +5342,7 @@ if os.environ["Y"].strip():
 body["tags"] = tags
 body["desc_append"] = note
 print(json.dumps(body))' )
-      echo "$result" | grep -q '"__error"' && die "amux board $verb: $(echo "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin)["__error"])')"
+      echo "$result" | _grep_all -q '"__error"' && die "amux board $verb: $(echo "$result" | python3 -c 'import json,sys; print(json.load(sys.stdin)["__error"])')"
       result=$(printf '%s' "$result" | _curl -sk -X PATCH -H 'Content-Type: application/json' \
             -H "X-Amux-Worker: ${AMUX_WORKER:-${AMUX_SESSION:-}}" -d @- "$AMUX_API/api/board/$id")
       echo "$result" | _board_outcome "$id" "" "$([[ $verb == triage ]] && echo "put in triage" || echo accepted)"
@@ -8555,7 +8570,7 @@ cmd_url() {
     # A dead port returns an EMPTY body, not a connection refusal, so liveness
     # asserts the /health body looks like an amux server — not merely that the
     # socket answered (something else may have grabbed the port).
-    if _curl -sk -m 3 "$resolved/health" 2>/dev/null | grep -q '"server"'; then
+    if _curl -sk -m 3 "$resolved/health" 2>/dev/null | _grep_all -q '"server"'; then
       printf 'amux url: %s (via %s) — /health responds as an amux server\n' "$resolved" "$src" >&2
       return 0
     fi
@@ -8848,7 +8863,9 @@ verdict=land_message_reused_allowed (AMUX_LAND_ALLOW_REUSED_MESSAGE=1)"
     [ "$rcm" -gt 1 ] && out="$out
 verdict=land_${m}_unmeasured rc=$rcm (the guard could not run; nothing refused on it)" && rcm=0
     printf '%s\n' "$out" | while IFS= read -r line; do
-      [ -n "$line" ] && printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$m guard: $line" >> "$log"
+      # An if: a bare && as the loop's last command returns 1 on an empty last
+      # line, and under pipefail and set -e that ends the land.
+      if [ -n "$line" ]; then printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$m guard: $line" >> "$log"; fi
     done
     if [ "$rcm" = 1 ]; then
       printf '%s\n' "$out" | grep -E '^(refused|hint):' | sed 's/^/amux land: /' >&2
@@ -8948,7 +8965,7 @@ _land_inflight_fixes() {
     base="$(git merge-base "$remote/$branch" "$sha" 2>/dev/null)" || continue
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      printf '%s' "$text" | grep -qF -- "$f" && { echo "$who's queued ticket $tk changes $f"; break; }
+      printf '%s' "$text" | _grep_all -qF -- "$f" && { echo "$who's queued ticket $tk changes $f"; break; }
     done <<< "$(git diff --name-only "$base" "$sha" 2>/dev/null)"
   done
 }
@@ -9006,16 +9023,16 @@ _land_precheck_verdict() {
   local killed=0
   case "$rc" in 124|126|127) killed=1 ;; *) [ "$rc" -gt 128 ] 2>/dev/null && killed=1 ;; esac
   case "$rc" in
-    0) if printf '%s\n' "$out" | grep -qiE '^land-precheck: .*nothing checked'; then echo unmeasured; else echo pass; fi; return ;;
+    0) if printf '%s\n' "$out" | _grep_all -qiE '^land-precheck: .*nothing checked'; then echo unmeasured; else echo pass; fi; return ;;
   esac
   if [ "$killed" = 1 ]; then
       # UNMEASURED before "passed": the check's own kill line reads "UNMEASURED:
       # stopped by SIGTERM after 419s ... (the legs before it passed)", and the
       # pass test matched it, so killed checks were logged as passes and their
       # batches went to a 35-minute gate (gs12-retrievers 18:23Z, 2026-10-02).
-      if printf '%s\n' "$out" | grep -qE '✗|(^|[^A-Za-z])FAIL|REFUSED'; then echo refuse
-      elif printf '%s\n' "$out" | grep -qE '^land-precheck: .*UNMEASURED'; then echo unmeasured
-      elif printf '%s\n' "$out" | grep -qE '^land-precheck: .*passed'; then echo pass
+      if printf '%s\n' "$out" | _grep_all -qE '✗|(^|[^A-Za-z])FAIL|REFUSED'; then echo refuse
+      elif printf '%s\n' "$out" | _grep_all -qE '^land-precheck: .*UNMEASURED'; then echo unmeasured
+      elif printf '%s\n' "$out" | _grep_all -qE '^land-precheck: .*passed'; then echo pass
       else echo unmeasured; fi
       return
   fi
@@ -9132,6 +9149,14 @@ _land_pick_tree() {
 # tree, as with a fresh extract); its index lives beside it, and git's own stat
 # check proves it clean. rc 1 means use a fresh extract. Runs under the land
 # lock, which is per repo and branch and keys the directory.
+# Release the persistent extract's lock, if this run holds one.
+_land_regen_unlock() {
+  local f="${TMPDIR:-/tmp}/amux-land-regen-lock.$$" lk
+  [ -f "$f" ] || return 0
+  lk="$(cat "$f")"; rm -f -- "$f"
+  [ "$(cat "$lk/pid" 2>/dev/null)" = "$$" ] && rm -rf -- "${lk:?}"
+  return 0
+}
 _land_regen_extract() {
   local tip="$1" inputs="$2" key dir idx fidx tidx T
   [ "${AMUX_LAND_REGEN_REUSE:-1}" = 1 ] || return 1
@@ -9139,6 +9164,24 @@ _land_regen_extract() {
   key="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | git hash-object --stdin | cut -c1-12)" || return 1
   dir="${AMUX_LAND_REGEN_ROOT:-$HOME/.amux/land-regen}/$key-$(printf '%s' "${branch:-main}" | tr '/' '_')"
   idx="$dir.index"
+  # ONE RUN AT A TIME (mixpeek-dev, 2026-11-17 12:56Z: a land's regenerate
+  # commit deleted docs/api-reference/openapi.json). The extract is shared by
+  # every land on this machine for this repository and branch, so a second
+  # run's reset (read-tree --reset, clean -fdqx) can empty files under the
+  # first run's generators, and a file missing after them reads as deleted. A
+  # busy extract sends this run to a fresh one; a lock whose pid is gone is
+  # taken over.
+  local lk="$dir.lock" holder
+  if ! mkdir "$lk" 2>/dev/null; then
+    holder="$(cat "$lk/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && [ "$holder" != "$$" ] && kill -0 "$holder" 2>/dev/null; then
+      _land_log "regenerate extract: $dir is in use by pid $holder; using a fresh extract (verdict=land_regen_extract_busy)"
+      return 1
+    fi
+  fi
+  echo "$$" > "$lk/pid"
+  printf '%s
+' "$lk" > "${TMPDIR:-/tmp}/amux-land-regen-lock.$$"
   mkdir -p "$dir" || return 1
   # The tree a fresh extract would hold: the tip's entries under the inputs,
   # submodules excluded (an archive never extracts them).
@@ -9244,7 +9287,7 @@ _land_regenerate() {
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-regen.XXXXXX")"
     # shellcheck disable=SC2086  # one pathspec per line on purpose
     if ! git archive "$tip" ${inputs:+-- $inputs} | tar -x -C "$tmp" 2>/dev/null; then
-      rm -rf -- "${tmp:?}"
+      rm -rf -- "${tmp:?}"; _land_regen_unlock
       _land_log "regenerate: could not extract $(git rev-parse --short "$tip") (inputs: ${inputs:-whole tree}); nothing pushed"
       return 1
     fi
@@ -9294,6 +9337,7 @@ _land_regenerate() {
     local log; log="$HOME/.amux/logs/land/$(date -u +%Y%m%dT%H%M%SZ)-${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}-$$-regenerate.log"
     mkdir -p "${log%/*}"; printf '%s\n' "$out" > "$log"
     [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
+    _land_regen_unlock
     _land_log "regenerate failed (rc $rc after $(( $(date +%s) - t0 ))s: $cmd). Output: $log"
     return 1
   fi
@@ -9308,10 +9352,25 @@ _land_regenerate() {
     local blob; blob="$(git hash-object -w "$tmp/$p")"
     GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "$( [ -x "$tmp/$p" ] && echo 100755 || echo 100644 ),$blob,$p"
   done <<< "$after"
+  # A TRACKED FILE IS NEVER DROPPED IN SILENCE (mixpeek-dev, 2026-11-17: this
+  # loop removed docs/api-reference/openapi.json, a file every generator ran
+  # without deleting). A file the generators left missing is refused, with its
+  # path, unless the repository says its generators may delete
+  # (amux.landRegenerateMayDelete true).
+  local gone="" may_delete
+  may_delete="$(_land_cfg --at "$tip" --get amux.landRegenerateMayDelete 2>/dev/null || true)"
   while read -r p; do
     [ -n "$p" ] || continue
-    printf '%s\n' "$after" | grep -qxF -- "$p" || GIT_INDEX_FILE="$idx" git update-index --force-remove -- "$p"
+    printf '%s\n' "$after" | _grep_all -qxF -- "$p" && continue
+    git cat-file -e "$tip:$p" 2>/dev/null && gone="$gone${gone:+ }$p"
+    GIT_INDEX_FILE="$idx" git update-index --force-remove -- "$p"
   done <<< "$before"
+  _land_regen_unlock
+  if [ -n "$gone" ] && [ "$may_delete" != true ]; then
+    rm -f -- "${idx:?}"; [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
+    _land_log "regenerate refused: the generators left tracked file(s) missing, so this render is dropped and every tracked file is kept: $gone (verdict=land_regenerate_refused_delete; set amux.landRegenerateMayDelete true if they may delete)"
+    return 1
+  fi
   tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
   rm -f -- "${idx:?}"; [ "$reused" = 1 ] || rm -rf -- "${tmp:?}"
   if [ "$tree" = "$(git rev-parse "$tip^{tree}")" ]; then
@@ -9364,7 +9423,7 @@ _land_priority_check() {
   # Fix forward of a red on main: allowed with no grant when a card the reason
   # cites names this lane as the red's owner on one line (mixpeek-override,
   # 2026-10-03: a grant per CI red made every fix a round trip through it).
-  if printf '%s' "$reason" | grep -qiE -- "${AMUX_LAND_PRIORITY_FIXFWD_RE:-fix[- ]?forward}"; then
+  if printf '%s' "$reason" | _grep_all -qiE -- "${AMUX_LAND_PRIORITY_FIXFWD_RE:-fix[- ]?forward}"; then
     local card url text owner_re="${AMUX_LAND_PRIORITY_OWNER_RE:-owns|owner|routed to|fix[- ]?forward}"
     url="${AMUX_URL:-$(amux url 2>/dev/null || true)}"
     for card in $(printf '%s' "$reason" | grep -oE '\b[A-Z][A-Z0-9]*-[0-9]+\b' | sort -u); do
@@ -9373,14 +9432,14 @@ _land_priority_check() {
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(0)
 print(d.get("title") or ""); print(d.get("desc") or "")' 2>/dev/null)"
-      if printf '%s\n' "$text" | grep -F -- "$me" | grep -qiE -- "$owner_re"; then
+      if printf '%s\n' "$text" | grep -F -- "$me" | _grep_all -qiE -- "$owner_re"; then
         printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "priority allowed: fix forward, $card names $me as the red's owner; reason: $reason" >> "$log"
         return 0
       fi
     done
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "priority fix-forward unproven: no card in the reason names $me as an owner$([ -n "$url" ] || echo " (no amux url to read cards)"); reason: $reason" >> "$log"
   fi
-  if printf '%s' "$reason" | grep -qiE -- "${AMUX_LAND_PRIORITY_GRANT_RE:-grant}"; then
+  if printf '%s' "$reason" | _grep_all -qiE -- "${AMUX_LAND_PRIORITY_GRANT_RE:-grant}"; then
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "priority allowed by grant; reason: $reason" >> "$log"
     return 0
   fi
@@ -9738,9 +9797,9 @@ _land_refusal_spares() {
   [ -n "$mine" ] || return 1
   while read -r f; do
     [ -n "$f" ] || continue
-    printf '%s\n' "$mine" | grep -qxF -- "$f" && return 1
+    printf '%s\n' "$mine" | _grep_all -qxF -- "$f" && return 1
     # A path printed relative to a subdirectory (server/...) still counts as ours.
-    printf '%s\n' "$mine" | grep -qE -- "(^|/)${f//./\\.}$" && return 1
+    printf '%s\n' "$mine" | _grep_all -qE -- "(^|/)${f//./\\.}$" && return 1
   done <<< "$paths"
   return 0
 }
@@ -12163,7 +12222,7 @@ p.communicate(msg.encode())
       for p in $frontier; do next="$next $(pgrep -P "$p" 2>/dev/null | tr '\n' ' ')"; done
       [ -n "${next// /}" ] || break
       for p in $next; do
-        if ps -o command= -p "$p" 2>/dev/null | grep -qE 'git push|git-push|pre-push'; then found=0; break 2; fi
+        if ps -o command= -p "$p" 2>/dev/null | _grep_all -qE 'git push|git-push|pre-push'; then found=0; break 2; fi
       done
       frontier="$next"
     done
@@ -12653,7 +12712,7 @@ p.communicate(msg.encode())
   local _win_skip=0
   if [ "$priority" = 1 ]; then
     if [ "$(_land_cfg --bool --get amux.landWindowExemptGatePath 2>/dev/null || echo true)" != false ] \
-       || printf '%s' "${prio_reason:-}" | grep -qiE -- "${AMUX_LAND_PRIORITY_GRANT_RE:-grant}|${AMUX_LAND_PRIORITY_FIXFWD_RE:-fix[- ]?forward}"; then
+       || printf '%s' "${prio_reason:-}" | _grep_all -qiE -- "${AMUX_LAND_PRIORITY_GRANT_RE:-grant}|${AMUX_LAND_PRIORITY_FIXFWD_RE:-fix[- ]?forward}"; then
       _win_skip=1
     else
       _land_log "landing window applies to this --priority push: amux.landWindowExemptGatePath is false and its reason names no grant or fix-forward"
@@ -12782,10 +12841,10 @@ p.communicate(msg.encode())
         # but skipping it outright dropped all three waiters of retrievers'
         # 18:52Z batch when the tip's own commit was the one refused.
         if [ "${c:0:10}" = "${2:0:10}" ]; then
-          printf '%s\n' "$1" | grep -qiE -- "^[[:space:]]*${c:0:10}[0-9a-f]* (drops|reverts|removes|adds|re-adds|deletes|touches)" && { hit=1; break; }
+          printf '%s\n' "$1" | _grep_all -qiE -- "^[[:space:]]*${c:0:10}[0-9a-f]* (drops|reverts|removes|adds|re-adds|deletes|touches)" && { hit=1; break; }
           continue
         fi
-        printf '%s' "$1" | grep -qi -- "${c:0:10}" && { hit=1; break; }
+        printf '%s' "$1" | _grep_all -qi -- "${c:0:10}" && { hit=1; break; }
       done
       [ -n "$hit" ] && printf '%s ' "$tk"
     done <<< "$stack_map"
@@ -12839,7 +12898,7 @@ $(git diff-tree --no-commit-id --name-only -r "$c" 2>/dev/null || true)"
       done
       while read -r f; do
         [ -n "$f" ] || continue
-        if printf '%s\n' "$files" | grep -qxF -- "$f"; then
+        if printf '%s\n' "$files" | _grep_all -qxF -- "$f"; then
           owned="$owned
 $f"
           case " $owners " in *" $tk "*) ;; *) owners="$owners $tk" ;; esac
@@ -12848,7 +12907,7 @@ $f"
     done <<< "$stack_map"
     while read -r f; do
       [ -n "$f" ] || continue
-      printf '%s\n' "$owned" | grep -qxF -- "$f" || { all=0; break; }
+      printf '%s\n' "$owned" | _grep_all -qxF -- "$f" || { all=0; break; }
     done <<< "$paths"
     if [ "$all" = 1 ] && [ -n "$owners" ]; then
       printf '%s ' $owners
@@ -13230,10 +13289,10 @@ $f"
       | AMUX_TL="$_tl" perl -MTime::HiRes=time -ne 'BEGIN{$|=1; $t0=time; open($o,">>",$ENV{AMUX_TL}) or die} printf $o "%8.1fs %s", time-$t0, $_; print')" || rc=$?
     _land_leg_summary "$_tl" "$(( $(date +%s) - _t0p ))"
     _land_heal_core_worktree "the push and its hook (rc $rc)"
-    if [ $rc -ne 0 ] && printf '%s\n' "$out" | grep -q 'closed by remote host'; then
+    if [ $rc -ne 0 ] && printf '%s\n' "$out" | _grep_all -q 'closed by remote host'; then
       _land_log "WARN verdict=push_connection_lost: $remote closed the connection during the push, $(( $(date +%s) - _t0p ))s in (a hook that long outlived it)"
     fi
-    if [ $rc -ne 0 ] && [ "$_net" -lt "$_net_max" ] && printf '%s\n' "$out" | grep -qE "^(fatal: unable to access .*: (Could not resolve host|Failed to connect|Couldn't connect|Connection timed out|Operation timed out|Connection reset|Recv failure|SSL_ERROR_SYSCALL|The requested URL returned error: 5[0-9][0-9])|fatal: unable to connect|ssh: Could not resolve hostname|error: RPC failed|send-pack: unexpected disconnect)"; then
+    if [ $rc -ne 0 ] && [ "$_net" -lt "$_net_max" ] && printf '%s\n' "$out" | _grep_all -qE "^(fatal: unable to access .*: (Could not resolve host|Failed to connect|Couldn't connect|Connection timed out|Operation timed out|Connection reset|Recv failure|SSL_ERROR_SYSCALL|The requested URL returned error: 5[0-9][0-9])|fatal: unable to connect|ssh: Could not resolve hostname|error: RPC failed|send-pack: unexpected disconnect)"; then
       _net=$((_net + 1))
       _net_wait=$(( ${AMUX_LAND_NET_BACKOFF_S:-60} * _net )); [ "$_net_wait" -gt 180 ] && _net_wait=180
       _land_log "WARN push did not reach $remote (network: $(printf '%s\n' "$out" | grep -m1 -oE "(Could not resolve host[^']*|Failed to connect[^']*|Couldn't connect[^']*|Connection timed out|Operation timed out|Connection reset[^']*|Recv failure[^']*|SSL_ERROR_SYSCALL|returned error: 5[0-9][0-9]|unable to connect[^']*|Could not resolve hostname[^']*|RPC failed[^']*|unexpected disconnect[^']*)")); retry $_net of $_net_max in ${_net_wait}s, holding the lock"
@@ -13272,7 +13331,7 @@ $f"
       [ "${_lb:-0}" -gt 0 ] && _land_log "verdict=checkout_left_behind behind=$_lb: this checkout's $branch still points at the pre-land HEAD. amux sync-checkout advances it when that loses nothing"
       return 0
     fi
-    if printf '%s' "$out" | grep -qE 'non-fast-forward|fetch first|\[rejected\]|cannot lock ref'; then
+    if printf '%s' "$out" | _grep_all -qE 'non-fast-forward|fetch first|\[rejected\]|cannot lock ref'; then
       _land_log "lost a race to a push outside land (attempt $i); refetching"
       continue
     fi
