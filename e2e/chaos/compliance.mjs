@@ -186,6 +186,11 @@ try {
   check('d. a malformed trace is refused', r.status === 400 && r.body.code === 'bad_trace_id', r);
 
   // e. The evidence pack, through the CLI.
+  // The pack's checkpoint key exists only after a checkpoint: a read never
+  // creates it (#433), and a pack from a host with none is rightly
+  // "incomplete". A real host writes one each hour; take one here.
+  r = await amux.req('POST', '/api/ledger/checkpoints', {}, 30000, OWNER());
+  check('e. a checkpoint is written, so the signing key exists', r.status === 200 || r.status === 201, r);
   const outDir = path.join(root, 'pack');
   let c = cli('evidence', '--out', outDir);
   check('e. evidence exits 0', c.status === 0, c);
