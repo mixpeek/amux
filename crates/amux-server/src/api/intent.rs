@@ -2,7 +2,8 @@
 //! (docs/design/intent-first.md, phase 1).
 //!
 //! A person says what they want; this decides how it gets done, using the
-//! workers that already exist and creating one only when none fits. It merges
+//! workers that already exist; when none fits, the standing helper takes it
+//! (`intent_store::resolve_target`), and no worker is created. It merges
 //! the two routers amux had: `outcome_plan` (always created a worker) and
 //! `orchestrate/plan` (routed a spoken command, never created). Four actions:
 //!
@@ -10,7 +11,7 @@
 //!   Computed, no model call (ethos rule 2).
 //! - `answer`: a quick question the helper model answers itself.
 //! - `send`: an existing worker owns this work.
-//! - `create`: nothing fits; a new worker is named, placed and typed.
+//! - `create`: nothing fits; the request goes to the standing helper.
 //!
 //! The helper model makes the judgment. Every worker, directory and group it
 //! names is validated against what exists, and every correction it needed is
@@ -105,13 +106,10 @@ pub(crate) fn fallback_title(text: &str) -> String {
     format!("{out}...")
 }
 
-pub(crate) fn build_prompt(
-    text: &str,
-    roster: &[RosterEntry],
-    places: &BTreeMap<String, Place>,
-    groups: &BTreeSet<String>,
-    hints: &str,
-) -> String {
+/// The router's prompt. A request no worker fits goes to the standing helper
+/// (`intent_store::resolve_target`), so it asks for no new worker's name,
+/// directory or groups.
+pub(crate) fn build_prompt(text: &str, roster: &[RosterEntry], hints: &str) -> String {
     let mut p = String::from(
         "You route a person's request inside amux, where AI workers do work for them. \
          Decide ONE action:\n\
@@ -122,26 +120,16 @@ pub(crate) fn build_prompt(
          helpers, workers, access or this decision.\n\
          - \"send\": an existing worker below already owns this kind of work (judge by its \
          description, groups and directory, not by keywords). Name it exactly.\n\
-         - \"create\": no worker fits. Describe a new one in \"create\".\n\
+         - \"create\": no worker below fits. Leave \"worker\" empty: the request goes to the person's \
+         standing helper. amux never starts a new worker for it.\n\
          Prefer send when a worker clearly fits; prefer create over sending to a poor fit.\n\
-         For create: name the AREA the helper will keep handling, not this one request, so later requests \
-         reuse it (family-admin, meals, money, school, work-crm): 1 to 3 lowercase words joined by '-', at \
-         most 24 characters, never filler such as need, worker, want. desc says that area in one plain \
-         sentence (\"Handles the family's school forms, camp and calendar\"). dir is a directory from the list where this \
-         work's files live, copied exactly, or \"\" when the work is not about files (email, calendar, \
-         errands, planning). worker_type is \"chat\" for everyday tasks, research and questions about \
-         email or calendar, \"coding\" when it changes code or files in a repository. model is haiku, \
-         sonnet or opus (sonnet unless the work is unusually hard or trivial). effort is low, medium or \
-         high: how hard it should think (low for a quick lookup, high for planning or reconciling).\n\
          Always give: title (at most 7 plain words naming the outcome, no worker names), why (one \
          short sentence a non-technical person understands, about the request, never the words worker, \
          agent, session, model, terminal or AI; say \"helper\" if you must), and candidates (up to 3 workers you \
          considered, each with a short why).\n\
          Reply with ONLY a JSON object:\n\
          {\"action\":\"answer|send|create\",\"worker\":\"<exact name or empty>\",\"answer\":\"...\",\
-         \"title\":\"...\",\"why\":\"...\",\"candidates\":[{\"worker\":\"...\",\"why\":\"...\"}],\
-         \"create\":{\"name\":\"...\",\"dir\":\"...\",\"groups\":[...],\"desc\":\"...\",\
-         \"worker_type\":\"chat|coding\",\"model\":\"...\",\"effort\":\"low|medium|high\"}}\n\n",
+         \"title\":\"...\",\"why\":\"...\",\"candidates\":[{\"worker\":\"...\",\"why\":\"...\"}]}\n\n",
     );
     if !hints.trim().is_empty() {
         p.push_str("PAST CORRECTIONS BY THE OWNER (route like these):\n");
@@ -160,11 +148,6 @@ pub(crate) fn build_prompt(
             if w.dir.is_empty() { String::new() } else { format!(" (dir {})", w.dir) },
         ));
     }
-    p.push_str("\nDIRECTORIES:\n");
-    for dir in places.keys() {
-        p.push_str(&format!("- {dir}\n"));
-    }
-    p.push_str(&format!("\nGROUPS: {}\n", groups.iter().cloned().collect::<Vec<_>>().join(", ")));
     p
 }
 
@@ -350,7 +333,7 @@ pub(crate) async fn plan_request(text: &str, outcome: Option<(&str, &str)>, hint
     let places = outcome_plan::candidate_dirs(&home, &dirs_home());
     let groups: BTreeSet<String> = roster.iter().flat_map(|w| w.groups.iter().cloned()).collect();
     let taken = outcome_plan::taken_names(&home);
-    let prompt = build_prompt(text, &roster, &places, &groups, hints);
+    let prompt = build_prompt(text, &roster, hints);
     let model_started = std::time::Instant::now();
     let (via, decision, corrections, fallback_reason) = match super::lookup::helper_answer(&prompt).await {
         Ok((via, answer)) => match parse_object(&answer) {
@@ -501,10 +484,15 @@ mod tests {
 
     #[test]
     fn the_prompt_never_offers_an_isolated_worker() {
-        let (r, p, g, _) = fixture();
-        let prompt = build_prompt("x", &r, &p, &g, "");
+        let (r, _, _, _) = fixture();
+        let prompt = build_prompt("x", &r, "");
         assert!(prompt.contains("- family [chat"));
         assert!(!prompt.contains("private-notes"));
+        // No worker is created, so the prompt asks for no new one's name or setup.
+        assert!(prompt.contains("never starts a new worker"));
+        for gone in ["worker_type", "DIRECTORIES:", "GROUPS:", "\"create\":{"] {
+            assert!(!prompt.contains(gone), "{gone} is still in the prompt");
+        }
     }
 
     #[test]
