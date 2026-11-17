@@ -2992,8 +2992,8 @@ function _connectionSecurityPending(on) {
     const node=document.getElementById(id); if(node) node.disabled=on;
   }
 }
-// The iOS app's native bridge (WebView.swift, `amuxApp`): "settings" opens the app's
-// Settings with amux Cloud sign-in; "switch-server" returns to its setup screen.
+// The iOS app's native bridge (WebView.swift, `amuxApp`): "switch-server" and "settings"
+// open the app's server switcher, where every saved server is one tap away and stays loaded.
 function _appBridge(op) {
   const h = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxApp;
   if (!h) return false;
@@ -3004,7 +3004,7 @@ function _connectionSessionControls() {
   const cloud = document.getElementById('connection-cloud-account');
   if (cloud) cloud.style.display = inApp ? '' : 'none';
   const out = document.getElementById('connection-sign-out');
-  if (out && inApp) out.textContent = 'Sign out and switch server';
+  if (out && inApp) out.textContent = 'Switch server';
   // A server behind the sign-in door (amux Cloud and dedicated hosts): its owner limits which
   // addresses may reach it on the door's own page (cloud/desktop/door.py, /_door/allowlist).
   const allow = document.getElementById('connection-allowlist');

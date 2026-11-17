@@ -23,7 +23,8 @@ final class DashboardPageTests: XCTestCase {
                   "https://sandbox.amux.io",
                   "https://sandbox.amux.io/#view=apps&open=abc",
                   "https://sandbox.amux.io:443/?x=1#peek=mtp-demo",
-                  "https://SANDBOX.amux.io/sign-in"] {
+                  "https://SANDBOX.amux.io/sign-in",
+                  "https://sandbox.amux.io/_door/login?next=%2F"] {
             XCTAssertTrue(DashboardPage.isDashboard(URL(string: s)!, server: server), s)
         }
         XCTAssertTrue(DashboardPage.isDashboard(nil, server: server), "no page yet")

@@ -3,11 +3,47 @@ import WebKit
 
 struct ContentView: View {
     @EnvironmentObject var serverManager: ServerManager
+    @State private var showSettings = false
+
+    var body: some View {
+        // Every open server keeps its web view (ServerPanes.swift); only the first is shown.
+        // The others stay loaded underneath, hidden from touch and VoiceOver, so switching
+        // back to one is instant and keeps the view the owner left from.
+        ZStack {
+            Color(red: 0.051, green: 0.067, blue: 0.09).ignoresSafeArea()
+            ForEach(serverManager.panes.panes) { pane in
+                let active = pane.key == serverManager.panes.active?.key
+                ServerPaneView(pane: pane, isActive: active, showSettings: $showSettings)
+                    .opacity(active ? 1 : 0)
+                    .allowsHitTesting(active)
+                    .accessibilityHidden(!active)
+                    .zIndex(active ? 1 : 0)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: serverManager.panes.active?.key)
+        // The Settings long-press lives on the web view as a UIKit recognizer
+        // (WebView.makeUIView). A SwiftUI LongPressGesture here sat over the
+        // whole WKWebView and, on iPad, swallowed the page's taps: "I cant
+        // navigate the amux app on my ipad ... nothing clicks" (MSG-90700).
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .environmentObject(serverManager)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+}
+
+/// One server's dashboard and the native controls around it: the offline strip, the way
+/// back from a page that is not the dashboard, and the error screen.
+struct ServerPaneView: View {
+    let pane: ServerPanes.Pane
+    let isActive: Bool
+    @Binding var showSettings: Bool
     @State private var isLoading = false
     @State private var canGoBack = false
     @State private var canGoForward = false
     @State private var offDashboard = false
-    @State private var showSettings = false
     @State private var webViewRef: WKWebView?
     @State private var loadError: String?
     @State private var offline: OfflineCopy.Badge?
@@ -23,9 +59,9 @@ struct ContentView: View {
             if let badge = offline, loadError == nil {
                 offlineStrip(badge)
             }
-            if let url = serverManager.serverURL {
-                WebView(
-                    url: url,
+            WebView(
+                    url: pane.url,
+                    isActive: isActive,
                     isLoading: $isLoading,
                     canGoBack: $canGoBack,
                     canGoForward: $canGoForward,
@@ -34,13 +70,13 @@ struct ContentView: View {
                     offline: $offline,
                     onWebView: { webViewRef = $0 },
                     onNavigationAction: handleNavigation,
-                    onLongPress: { showSettings = true }
+                    onLongPress: { showSettings = true },
+                    onAppBridge: { _ in showSettings = true }
                 )
                 .id(webViewId)
                 // With the strip shown it owns the status-bar area, so the
                 // page starts below it and its safe-area padding drops to 0.
                 .ignoresSafeArea(edges: (offline != nil && loadError == nil) ? .bottom : .all)
-            }
             }
 
             // A page opened from the dashboard (a public app, a shared file,
@@ -86,11 +122,9 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 32)
-                    if let url = serverManager.serverURL {
-                        Text(url.absoluteString)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+                    Text(pane.url.absoluteString)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     HStack(spacing: 16) {
                         Button("Retry") {
                             loadError = nil
@@ -109,14 +143,6 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
             }
-        }
-        // The Settings long-press lives on the web view as a UIKit recognizer
-        // (WebView.makeUIView). A SwiftUI LongPressGesture here sat over the
-        // whole WKWebView and, on iPad, swallowed the page's taps: "I cant
-        // navigate the amux app on my ipad ... nothing clicks" (MSG-90700).
-        .sheet(isPresented: $showSettings) {
-            SettingsView()
-                .environmentObject(serverManager)
         }
     }
 
@@ -164,7 +190,8 @@ struct ContentView: View {
     /// keeps the view the owner left from. A page opened from a deep link has
     /// none behind it, so that loads the dashboard instead.
     private func backToDashboard() {
-        guard let server = serverManager.serverURL, let web = webViewRef else { return }
+        guard let web = webViewRef else { return }
+        let server = pane.url
         if let item = web.backForwardList.backList.last(where: { DashboardPage.isDashboard($0.url, server: server) }) {
             web.go(to: item)
         } else {
@@ -174,7 +201,7 @@ struct ContentView: View {
 
     private func handleNavigation(_ action: WKNavigationAction) -> WKNavigationActionPolicy {
         guard let url = action.request.url,
-              let serverHost = serverManager.serverURL?.host else {
+              let serverHost = pane.url.host else {
             return .allow
         }
         if action.navigationType == .linkActivated && url.host != serverHost {
@@ -191,7 +218,6 @@ struct SettingsView: View {
     @EnvironmentObject var serverManager: ServerManager
     @Environment(\.dismiss) var dismiss
     @State private var showAddServer = false
-    @State private var addError = false
 
     var body: some View {
         NavigationStack {
@@ -204,12 +230,12 @@ struct SettingsView: View {
                     }
                 }
                 .sheet(isPresented: $showAddServer) {
+                    // A server just added is the one wanted: it opens, and the sheet closes.
                     AddServerView(onAdd: { name, url in
-                        if serverManager.addServer(name: name, urlString: url) {
-                            showAddServer = false
-                        } else {
-                            addError = true
-                        }
+                        guard serverManager.addServer(name: name, urlString: url) else { return false }
+                        showAddServer = false
+                        switchTo(url)
+                        return true
                     })
                 }
         }
@@ -229,12 +255,47 @@ struct SettingsView: View {
         Section("Servers") {
             ForEach(serverManager.savedServers) { server in
                 serverRow(server)
+                    .swipeActions {
+                        Button(role: .destructive) { remove(server) } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                    }
+                    .contextMenu {
+                        Button { UIPasteboard.general.string = server.url } label: {
+                            Label("Copy Address", systemImage: "doc.on.doc")
+                        }
+                        Button(role: .destructive) { remove(server) } label: {
+                            Label("Remove", systemImage: "trash")
+                        }
+                    }
             }
-            .onDelete(perform: serverManager.removeServer)
+        }
+    }
+
+    /// Switching is one tap: a tick under the finger, the sheet closes, and the server's page
+    /// shows (at once when it is already open, ServerPanes.swift).
+    private func switchTo(_ url: String) {
+        UISelectionFeedbackGenerator().selectionChanged()
+        serverManager.selectServer(url)
+        dismiss()
+    }
+
+    private func remove(_ server: SavedServer) {
+        guard let i = serverManager.savedServers.firstIndex(where: { $0.id == server.id }) else { return }
+        serverManager.removeServer(at: IndexSet(integer: i))
+    }
+
+    private func statusColor(_ status: ServerStatus) -> Color {
+        switch status {
+        case .online: return .green
+        case .offline: return .red
+        case .checking: return .secondary
         }
     }
 
     private func serverRow(_ server: SavedServer) -> some View {
+        let active = serverManager.isActive(server)
+        return Button { if active { dismiss() } else { switchTo(server.url) } } label: {
         HStack(spacing: 12) {
             Image(systemName: server.serverType.icon)
                 .foregroundColor(.secondary)
@@ -250,8 +311,9 @@ struct SettingsView: View {
                         .clipShape(Capsule())
                     if let status = serverManager.serverStatus[server.url] {
                         Circle()
-                            .fill(status == .online ? Color.green : Color.red)
+                            .fill(statusColor(status))
                             .frame(width: 6, height: 6)
+                            .accessibilityLabel(status == .online ? "online" : status == .offline ? "offline" : "checking")
                     }
                     Text(server.url.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: ""))
                         .font(.caption2)
@@ -260,20 +322,22 @@ struct SettingsView: View {
                 }
             }
             Spacer()
-            if serverManager.serverURL?.absoluteString == server.url {
+            if active {
                 Image(systemName: "checkmark.circle.fill").foregroundColor(.accentColor)
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            serverManager.selectServer(server.url)
-            dismiss()
         }
+        .foregroundStyle(.primary)
+        .accessibilityAddTraits(active ? .isSelected : [])
+        .accessibilityIdentifier("server-row")
     }
 
     private var addSection: some View {
         Section {
-            Button("Add Server") { showAddServer = true }
+            Button { showAddServer = true } label: {
+                Label("Add Server", systemImage: "plus")
+            }
         }
     }
 
@@ -291,7 +355,8 @@ struct SettingsView: View {
 
 struct AddServerView: View {
     @Environment(\.dismiss) var dismiss
-    var onAdd: (String, String) -> Void
+    /// Returns false when the address is not one the app can open.
+    var onAdd: (String, String) -> Bool
     @State private var name = ""
     @State private var url = ""
     @State private var showError = false
@@ -303,6 +368,8 @@ struct AddServerView: View {
                     TextField("Name (e.g. Home Mac)", text: $name)
                     TextField("URL (e.g. https://amux.tail-xxxx.ts.net:8824)", text: $url)
                         .keyboardType(.URL)
+                        .submitLabel(.go)
+                        .onSubmit { if !url.isEmpty { showError = !onAdd(name.isEmpty ? url : name, url) } }
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
@@ -322,8 +389,7 @@ struct AddServerView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Add") {
-                        showError = false
-                        onAdd(name.isEmpty ? url : name, url)
+                        showError = !onAdd(name.isEmpty ? url : name, url)
                     }
                     .disabled(url.isEmpty)
                 }

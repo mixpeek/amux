@@ -6,6 +6,9 @@ private let logger = Logger(subsystem: "io.amux.app", category: "WebView")
 
 struct WebView: UIViewRepresentable {
     let url: URL
+    /// This server's page is the one on screen (ServerPanes.swift). Only that web view owns
+    /// the recorder and notification bridges, which talk to one page at a time.
+    var isActive: Bool = true
     @Binding var isLoading: Bool
     @Binding var canGoBack: Bool
     @Binding var canGoForward: Bool
@@ -21,6 +24,9 @@ struct WebView: UIViewRepresentable {
     var onWebView: (WKWebView) -> Void = { _ in }
     let onNavigationAction: (WKNavigationAction) -> WKNavigationActionPolicy
     var onLongPress: () -> Void = {}
+    /// The dashboard asked the app for something (`amuxApp` bridge, app.js `_appBridge`):
+    /// "switch-server" or "settings".
+    var onAppBridge: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -100,11 +106,14 @@ struct WebView: UIViewRepresentable {
         config.userContentController.add(context.coordinator, name: "amuxNotify")
         // Teleprompter selfie takes go to Photos through this bridge (AA-39).
         config.userContentController.addScriptMessageHandler(MediaBridge(), contentWorld: .page, name: "amuxMedia")
+        // The dashboard's Switch server and amux Cloud account buttons (app.js _appBridge).
+        // The page called this bridge for weeks before the app registered it, so in the app
+        // both buttons were hidden or did nothing.
+        config.userContentController.add(context.coordinator, name: "amuxApp")
         config.userContentController.addUserScript(script)
 
         context.coordinator.requestedURL = url
-        RecorderBridge.shared.setUp(webView: webView)
-        NotifyBridge.shared.setUp(webView: webView)
+        if isActive { context.coordinator.takeBridges(webView) }
         context.coordinator.loadFromServer(webView, url)
         logger.info("Loading URL: \(url.absoluteString)")
         return webView
@@ -134,7 +143,9 @@ struct WebView: UIViewRepresentable {
         // and an unreachable new server fell back to the old server's page
         // (land-gate review, 2026-11-12).
         let previous = context.coordinator.parent.url
+        let wasActive = context.coordinator.parent.isActive
         context.coordinator.parent = self
+        if isActive && !wasActive { context.coordinator.takeBridges(webView) }
         if context.coordinator.requestedURL != url {
             context.coordinator.requestedURL = url
             if DashboardPage.root(of: previous) != DashboardPage.root(of: url) {
@@ -142,6 +153,16 @@ struct WebView: UIViewRepresentable {
             }
             context.coordinator.loadFromServer(webView, url)
         }
+    }
+
+    /// A server's pane closed (ServerPanes.limit, a removed server): stop its page, so its
+    /// live connection to the server ends with it.
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.stopLoading()
+        webView.configuration.userContentController.removeAllScriptMessageHandlers()
+        coordinator.disarmWatchdog()
+        coordinator.stopReconnectProbe()
+        logger.info("ios_server_pane verdict=closed host=\(coordinator.parent.url.host ?? "-", privacy: .public)")
     }
 
     // MARK: - Coordinator
@@ -264,7 +285,7 @@ struct WebView: UIViewRepresentable {
             reconnectTimer = t
         }
 
-        private func stopReconnectProbe() {
+        func stopReconnectProbe() {
             reconnectTimer?.invalidate()
             reconnectTimer = nil
         }
@@ -366,8 +387,21 @@ struct WebView: UIViewRepresentable {
             watchdog = nil
         }
 
+        /// The page on screen gets the recorder and notification bridges.
+        func takeBridges(_ webView: WKWebView) {
+            RecorderBridge.shared.setUp(webView: webView)
+            NotifyBridge.shared.setUp(webView: webView)
+        }
+
         // JS console → os_log bridge
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "amuxApp" {
+                let op = (message.body as? [String: Any])?["op"] as? String ?? ""
+                logger.info("ios_app_bridge op=\(op, privacy: .public) active=\(self.parent.isActive)")
+                guard parent.isActive else { return }
+                parent.onAppBridge(op)
+                return
+            }
             if message.name == "amuxNotify" {
                 NotifyBridge.shared.handle(message.body as? [String: Any] ?? [:])
                 return

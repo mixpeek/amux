@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct AmuxApp: App {
+    @UIApplicationDelegateAdaptor(AmuxAppDelegate.self) private var appDelegate
     @StateObject private var serverManager = ServerManager()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -33,7 +34,10 @@ struct AmuxApp: App {
         // Shares queued while offline (ShareOutbox) go out when the app opens
         // or comes back to the foreground, as well as on the next share.
         .onChange(of: scenePhase) { phase in
-            if phase == .active { Task { await ShareOutbox.drainShared() } }
+            guard phase == .active else { return }
+            Task { await ShareOutbox.drainShared() }
+            // A server picked from the Home Screen icon before the app was running.
+            serverManager.takeQuickAction()
         }
     }
 }

@@ -24,7 +24,9 @@ enum DashboardPage {
         guard url.host?.lowercased() == server.host?.lowercased(), port(url) == port(server) else {
             return false
         }
-        return entryPaths.contains(url.path)
+        // The sign-in door in front of an amux Cloud server (cloud/desktop/door.py) is a way in
+        // too: switching to a server signed out showed "< amux" over its sign-in form.
+        return entryPaths.contains(url.path) || url.path.hasPrefix("/_door/")
     }
 
     /// The dashboard's root on `server`, dropping any deep-link path or hash.

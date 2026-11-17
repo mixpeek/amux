@@ -127,8 +127,12 @@ struct ServerPickerView: View {
                             .background(Color(uiColor: .secondarySystemGroupedBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
 
+                        // Go on the keyboard connects: the keyboard covers the Connect button
+                        // on a phone, so a person had to dismiss it first.
                         TextField("https://amux.tail-xxxx.ts.net:8824", text: $customURL)
                             .keyboardType(.URL)
+                            .submitLabel(.go)
+                            .onSubmit { if !customURL.isEmpty { connect() } }
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .padding(12)
@@ -147,15 +151,7 @@ struct ServerPickerView: View {
                             .font(.caption)
                     }
 
-                    Button(action: {
-                        urlError = false
-                        let name = customName.isEmpty ? customURL : customName
-                        if serverManager.addServer(name: name, urlString: customURL) {
-                            serverManager.selectServer(customURL)
-                        } else {
-                            urlError = true
-                        }
-                    }) {
+                    Button(action: connect) {
                         Text("Connect")
                             .font(.headline)
                             .frame(maxWidth: .infinity)
@@ -172,6 +168,16 @@ struct ServerPickerView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(uiColor: .systemBackground))
+        }
+    }
+
+    private func connect() {
+        urlError = false
+        let name = customName.isEmpty ? customURL : customName
+        if serverManager.addServer(name: name, urlString: customURL) {
+            serverManager.selectServer(customURL)
+        } else {
+            urlError = true
         }
     }
 
