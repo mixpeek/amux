@@ -1679,6 +1679,7 @@ pub fn spawn(state: AppState) -> Option<super::PeriodicTask> {
                     rotated_logs_freed = r.rotated_logs_freed,
                     memory_entries_removed = r.memory_entries_removed,
                     scratchpad_moved = r.scratchpad_moved,
+                    scratchpad_moved_bytes = r.scratchpad_moved_bytes,
                     run_log_dirs_removed = r.run_logs.removed,
                     run_log_bytes_freed = r.run_logs.bytes_freed,
                     "storage sweep tick"

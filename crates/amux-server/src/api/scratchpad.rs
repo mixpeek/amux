@@ -71,7 +71,10 @@ fn move_out(src: &Path, dst: &Path) -> bool {
     // Another filesystem: copy, check the length, and only then remove.
     let Ok(len) = std::fs::copy(src, dst) else { return false };
     if std::fs::metadata(src).map(|m| m.len()).ok() != Some(len) {
-        let _ = std::fs::remove_file(dst);
+        if let Err(e) = std::fs::remove_file(dst) {
+            tracing::warn!(file = %dst.display(), error = %e, verdict = "scratchpad_partial_copy_left",
+                "a short copy of an expired scratchpad item could not be removed; the original stays");
+        }
         return false;
     }
     std::fs::remove_file(src).is_ok()
