@@ -1253,8 +1253,10 @@ const JUDGE_MAX: usize = 30;
 pub(crate) fn judge_prompt(title: &str, body: &str, items: &[&Src]) -> String {
     let mut p = format!(
         "A person's goal: {title}\nWhat is known about it:\n{}\n\nNew email and calendar items mention a word from the goal. \
-         Which of them could change what the person should know or do about this goal? An item that only shares a word \
-         (an ad, a newsletter, an alert about something else) does not. Answer with a JSON array of the item numbers \
+         Which of them are about the goal's own subject and could change what the person should know or do about it? \
+         Judge each item by what it reports, never by who sent it: a service's alert about something else (an outage, \
+         slow requests, a failing check, a security warning) does not bear on a goal about that service's cost, and an \
+         ad or newsletter that only shares a word does not either. Answer with a JSON array of the item numbers \
          that do, such as [2, 5], or [] for none, and nothing else.\n",
         body.chars().take(800).collect::<String>());
     for (i, s) in items.iter().enumerate() {
@@ -1346,22 +1348,28 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
     // goal; only when it finds none that bears on it is the worker spared.
     // A failed or unreadable answer wakes the worker, as before.
     let new_items: Vec<&Src> = found.iter().flatten().copied().collect();
+    let mut judge_via = String::new();
     let picked = if new_items.len() > JUDGE_MAX {
         None
     } else {
         match super::lookup::helper_answer(&judge_prompt(g["title"].as_str().unwrap_or(""), g["body"].as_str().unwrap_or(""), &new_items)).await {
-            Ok((_, answer)) => judge_parse(&answer, new_items.len()),
+            Ok((via, answer)) => {
+                judge_via = via;
+                judge_parse(&answer, new_items.len())
+            }
             Err(_) => None,
         }
     };
     let judged = picked.is_some();
     let bearing = picked.as_ref().map_or(new_items.len(), Vec::len);
     // Which items the model said bear on the goal, so a wrong call is visible.
-    let bearing_items: Vec<String> = picked.iter().flatten().take(3)
-        .map(|&i| new_items[i].text.chars().take(80).collect()).collect();
+    // 160 characters: at 80 a Google alert's subject was cut at its
+    // "[ALERT - No severity]" prefix, so the log could not say which alert.
+    let bearing_items: Vec<String> = picked.iter().flatten().take(5)
+        .map(|&i| new_items[i].text.chars().take(160).collect()).collect();
     if judged && bearing == 0 {
         tracing::info!(goal = %id, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
-            verdict = "intent_goal_unrelated", "intent: new items mention a goal's words but none bears on it; no worker turn");
+            judge_via = %judge_via, verdict = "intent_goal_unrelated", "intent: new items mention a goal's words but none bears on it; no worker turn");
         return Json(json!({"ok": true, "changed": false, "unrelated": true, "n_new": fresh.unwrap_or(0), "measured": true,
             "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
     }
@@ -1373,7 +1381,7 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
             Some(oid), None, None, json!([])).await.is_ok();
     }
     tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
-        judged, n_bearing = bearing, bearing_items = ?bearing_items, verdict = "intent_goal_changed",
+        judged, judge_via = %judge_via, n_bearing = bearing, bearing_items = ?bearing_items, verdict = "intent_goal_changed",
         "intent: something new mentions a goal; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
@@ -1598,6 +1606,7 @@ mod tests {
         let b = src("From Google Cloud Billing | 80% of budget reached");
         let p = super::judge_prompt("Keep cloud spend under the monthly ceiling", "Now: 8k ceiling", &[&a, &b]);
         assert!(p.contains("1. From Google Cloud Alerting") && p.contains("2. From Google Cloud Billing") && p.contains("8k ceiling"));
+        assert!(p.contains("never by who sent it"), "an alert from the same service is judged by what it reports");
         assert_eq!(super::judge_parse("[]", 2), Some(vec![]), "none bears: the worker is spared");
         assert_eq!(super::judge_parse("Here: [2]", 2), Some(vec![1]), "numbered from 1, kept as an index");
         assert_eq!(super::judge_parse("[1, 2, 2]", 2), Some(vec![0, 1]));
