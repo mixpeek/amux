@@ -55,3 +55,39 @@ test('render() saves the view on every repaint', () => {
   assert.ok(r.indexOf('_saveListView();') > 0 && r.indexOf('_saveListView();') < r.indexOf('if (openMenu'),
     'the save must run before the menu guard can return early');
 });
+
+// Owner, 2026-11-16: a new tab of the in-page tab bar opened with the first
+// tab's search and filter, and a tab's filter came back in the first tab after
+// a reload. A tab (?_tab=<id>) starts clean and keeps its own copy.
+test('a tab of the in-page tab bar keeps its own list view and leaves the page\'s alone', () => {
+  const mem = () => { const s = {}; return { getItem: k => (k in s ? s[k] : null), setItem: (k, v) => { s[k] = String(v); } }; };
+  const localStorage = mem(), sessionStorage = mem();
+  const i = src.indexOf("const _LIST_VIEW_KEY");
+  const body = src.slice(i, src.indexOf('_restoreListView();', i));
+  const make = (search) => new Function('localStorage', 'sessionStorage', 'location', `
+    let activeTag = '', hiddenTags = new Set(), filterProviders = new Set(), filterModels = new Set(),
+        filterStatuses = new Set(), searchQuery = '', logSearchMode = false;
+    ${body}
+    return { _restoreListView, _saveListView,
+      set(v) { filterStatuses = new Set(v.statuses); searchQuery = v.q; },
+      get() { return { statuses: [...filterStatuses], searchQuery }; } };`)(localStorage, sessionStorage, { search });
+  const page = make('');
+  page.set({ statuses: ['working'], q: 'alpha' });
+  page._saveListView();
+
+  const tab = make('?_tab=2');
+  tab._restoreListView();
+  assert.deepEqual(tab.get(), { statuses: [], searchQuery: '' }, 'a new tab starts clean');
+  tab.set({ statuses: ['stopped'], q: 'beta' });
+  tab._saveListView();
+
+  const pageAgain = make('');
+  pageAgain._restoreListView();
+  assert.deepEqual(pageAgain.get(), { statuses: ['working'], searchQuery: 'alpha' }, 'the page keeps its own view');
+  const tabAgain = make('?_tab=2');
+  tabAgain._restoreListView();
+  assert.deepEqual(tabAgain.get(), { statuses: ['stopped'], searchQuery: 'beta' }, 'the tab is rebuilt on its own view');
+  const otherTab = make('?_tab=3');
+  otherTab._restoreListView();
+  assert.deepEqual(otherTab.get(), { statuses: [], searchQuery: '' }, 'another tab does not see it');
+});
