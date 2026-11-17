@@ -123,6 +123,17 @@ grep -q "workflow run fast.yml --repo o/r --ref mq/[0-9]*-[0-9]*-a1 -f base_sha=
 grep -q '"phase": "landed"' "$H/.amux/logs/land-mq.jsonl" && ok "enforce green: the ledger records the landing" || bad "no landed ledger line"
 done_case
 
+# --- enforce, green, while another land's young mq ref is on origin
+# (mixpeek-ops-server, 2026-11-17: the sweep's loop status ended the land under
+# set -e with exit 1 and no message.)
+setup; queue_on; commit_file g1 x
+young="mq/$(date +%s)-424242-a1"
+git push -q origin "HEAD:refs/heads/$young" 2>/dev/null
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has g1; } && ok "enforce green beside another land's young mq ref: lands" || bad "young mq ref rc=$rc; $(tail -5 "$H/out")"
+git --git-dir="$H/origin.git" rev-parse -q --verify "refs/heads/$young" >/dev/null && ok "the young mq ref is left for its own land" || bad "the young mq ref was swept"
+done_case
+
 # --- enforce, red alone
 setup; queue_on; base="$(git rev-parse origin/main)"; commit_file bad x
 land; rc=$?

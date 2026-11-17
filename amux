@@ -11414,11 +11414,18 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
 _land_mq_sweep() {
   local cut ref name
   cut=$(( $(date +%s) - 2 * $(_land_mq_cfg BudgetMin 75) * 60 ))
+  # A loop exits with its body's last status: a young ref (another lane's
+  # land in flight) ended it on a false test, and under set -e the whole land
+  # exited 1 with no word right after "merge queue: enforce" (mixpeek-ops-server,
+  # 2026-11-17: three lands lost). Each branch now decides inside an `if`, and
+  # the loop's status cannot reach the caller.
   git ls-remote "$remote" 'refs/heads/mq/*' 2>/dev/null | while read -r _ ref; do
     name="${ref#refs/heads/mq/}"
     case "${name%%-*}" in ''|*[!0-9]*) continue ;; esac
-    [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ] && _land_mq_drop_ref "$name"
-  done
+    if [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ]; then
+      _land_mq_drop_ref "$name" || _land_log "merge queue: could not delete stale mq/$name (verdict=mq_sweep_drop_failed)"
+    fi
+  done || true
   return 0
 }
 
