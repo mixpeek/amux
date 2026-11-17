@@ -40,6 +40,24 @@ test('the word pairs a correction yields', async ({ page }) => {
   expect(await c('send it now', 'send it now', 'send now'), 'a deletion is not a misheard word').toEqual([]);
   expect(await c('send it', 'send it', 'send it today'), 'an addition is not a misheard word').toEqual([]);
   expect(await c('hello there', 'typed words hello there', 'changed words hello there'), 'words the person typed are not offered').toEqual([]);
+  expect(await c('send it please', 'send it please', 'typed words'), 'replacing the whole text is not a fix').toEqual([]);
+  expect(await c('ethan', 'ethan', 'Ethan'), 'a one-word dictation can be fixed').toEqual([{ from: 'ethan', to: 'Ethan' }]);
+});
+
+test('the offer comes as soon as the corrected word ends', async ({ page }) => {
+  const posted = await setup(page);
+  await page.evaluate(() => {
+    const t = document.createElement('textarea');
+    t.id = 'dict-fix-box';
+    t.style.cssText = 'position:fixed;top:120px;left:40px;width:300px;height:80px;z-index:99999';
+    document.body.appendChild(t);
+    t.value = 'ping mix peak about pricing'; (window as any)._dictWatchField(t, 'ping mix peak about pricing', '');
+    t.value = 'ping Mixpeek  about pricing';
+    t.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }));
+  });
+  await expect(page.locator('#modal-msg')).toContainText('mix peak', { timeout: 1500 });
+  await page.locator('#modal-btns .btn.primary').click();
+  await expect.poll(() => posted.length).toBe(1);
 });
 
 test('editing a dictated word offers it, and Add saves heard -> typed', async ({ page }) => {

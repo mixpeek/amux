@@ -30275,12 +30275,23 @@ function _dictWatchField(el, dictated, before) {
   _dictWatched.set(el, w);
   if (el._dictWatchBound) return;
   el._dictWatchBound = true;
-  el.addEventListener('input', () => {
+  // Asked as soon as the corrected word is finished (owner, 2026-11-17: "once
+  // I edit the word, it should immediately show that prompt"): a space,
+  // punctuation or a line break ends the word, and so does leaving the field.
+  // A pause of 2.5 s is the fallback for an edit with no word end.
+  el.addEventListener('input', e => {
     const cur = _dictWatched.get(el);
     if (!cur) return;
     clearTimeout(cur.timer);
     if (Date.now() > cur.until || !el.value.trim()) { _dictWatched.delete(el); return; }
-    cur.timer = setTimeout(() => _dictOfferCorrection(el), 2500);
+    const ended = e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph' || /[\s.,;:!?)]$/.test(e.data || '');
+    cur.timer = setTimeout(() => _dictOfferCorrection(el), ended ? 150 : 2500);
+  });
+  el.addEventListener('blur', () => {
+    const cur = _dictWatched.get(el);
+    if (!cur || cur.base === el.value) return;
+    clearTimeout(cur.timer);
+    _dictOfferCorrection(el);
   });
 }
 function _dictWordKey(w) { return String(w || '').replace(/^[\s"'(\[{]+|[\s"'.,;:!?)\]}]+$/g, ''); }
@@ -30294,6 +30305,10 @@ function _dictCorrections(dictated, before, after) {
   while (ja > i && jb > i && a[ja - 1] === b[jb - 1]) { ja--; jb--; }
   const from = a.slice(i, ja).map(_dictWordKey).filter(Boolean), to = b.slice(i, jb).map(_dictWordKey).filter(Boolean);
   if (!from.length || !to.length || from.length > 3 || to.length > 3) return [];
+  // Every word changed is new text, not a fixed word (live e2e, 2026-11-17:
+  // "send it please" -> "typed words" was offered). A one-word field is the
+  // exception: correcting it is a fix.
+  if (i === 0 && ja === a.length && a.length > 1) return [];
   const heard = new Set(String(dictated || '').split(/\s+/).map(w => _dictWordKey(w).toLowerCase()));
   if (!from.every(w => heard.has(w.toLowerCase()))) return [];
   const f = from.join(' '), t = to.join(' ');
