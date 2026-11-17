@@ -573,6 +573,14 @@ fn err(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// True when `origin` names a worker this server has never registered, on a
+/// server that registers workers at all.
+pub(crate) fn unknown_origin(origin: &str) -> bool {
+    !origin.is_empty()
+        && crate::config::amux_home().join("sessions").is_dir()
+        && !super::session_verbs::env_path(origin).exists()
+}
+
 /// Python `_hdr_worker`: X-Amux-Worker canonical, X-Amux-Session accepted.
 /// The urgent-alert handler truncates it to 64 chars.
 pub(crate) fn hdr_worker(headers: &HeaderMap) -> String {
@@ -776,6 +784,23 @@ async fn post_owner(
         tracing::warn!(
             "[urgent-alert] PROVENANCE MISMATCH: verified origin={origin:?} but claimed session={session:?} — recording both"
         );
+    }
+    // A page from a worker this server has never registered is not a page.
+    // Test harnesses run the CLI with made-up worker names under a temporary
+    // HOME, the CLI falls back to localhost:8824, and they paged the owner by
+    // email and iMessage: about 100 of the last 500 pages came from "three",
+    // "four-skew" and "w" (land remote-lease tests), found 2026-11-17 while
+    // checking that urgent pages reach his phone. A home with no sessions
+    // directory at all (a fresh test home) cannot judge, so it is not checked.
+    if unknown_origin(&origin) {
+        tracing::warn!(origin = %origin, claimed = %session, measured = true, n_considered = 1,
+            verdict = "owner_alert_unknown_origin",
+            "[urgent-alert] REFUSED: the calling worker is not registered on this server (a test's or another home's); nobody was paged");
+        return Json(json!({
+            "error": format!("refused: {origin} is not a worker on this server, so nobody was paged (a test, or a worker from another home)"),
+            "sent": false, "origin": origin, "claimed": session,
+        }))
+        .into_response();
     }
 
     // STANDING APPROVALS (AMUX-5270), before the dedupe guard and before any
@@ -1849,6 +1874,28 @@ mod tests {
             .filter(|r| r["deduped"] == json!(true))
             .count();
         assert_eq!(dedup_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn an_owner_page_from_an_unregistered_worker_pages_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions").join("real-lane.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let mock = MockChannels::ok();
+        let app = app(mock.clone());
+        let (_, v) = send(&app, "POST", "/api/alert/owner", &[("x-amux-worker", "four-skew")],
+            Some(json!({ "message": "amux land: main has waited 2s for the remote land lease", "session": "amux" }))).await;
+        assert_eq!(v["sent"], json!(false), "{v}");
+        assert!(v["error"].as_str().unwrap().contains("four-skew"), "{v}");
+        assert!(mock.pushes.lock().unwrap().is_empty() && mock.smses.lock().unwrap().is_empty() && mock.emails.lock().unwrap().is_empty(),
+            "a test's page reaches no channel");
+        let (st, v) = send(&app, "POST", "/api/alert/owner", &[("x-amux-worker", "real-lane")],
+            Some(json!({ "message": "prod is down", "session": "real-lane" }))).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(v.get("error").is_none(), "a registered worker still pages: {v}");
+        let (_, v) = send(&app, "POST", "/api/alert/owner", &[], Some(json!({ "message": "disk is full", "session": "cli" }))).await;
+        assert!(v.get("error").is_none(), "the owner's own CLI (no worker header) still pages: {v}");
     }
 
     #[tokio::test]
