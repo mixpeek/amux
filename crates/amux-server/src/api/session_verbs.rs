@@ -19513,6 +19513,18 @@ pub(crate) async fn stop_session_process(name: &str) -> (bool, String) {
     // process's name file) is not ported; the /rename fallback below pins the
     // resumable name to the amux name, which is what the fresh-start path
     // records anyway.
+    //
+    // ONE ESCAPE FIRST: an open dialog swallows typed commands (2026-11-16).
+    // Two workers sat in Claude's /status panel ("Esc to cancel") for six
+    // days; every stop typed /rename and /exit into it, waited the full 15 s
+    // below for an exit that never came, and only then hard-killed. A delete
+    // runs this stop first, so it outlasted the dashboard's 15 s write bound,
+    // was cancelled before it finished, and the workers survived 8 deletes.
+    // A single Escape closes a dialog and is a no-op at an empty prompt; it
+    // interrupts a running turn, which a stop ends anyway. Exactly one: a
+    // second Escape opens Claude's rewind menu, another dialog.
+    send_key(name, "Escape").await;
+    sleep_ms(200).await;
     let _ = send_literal(name, &format!("/rename {name}")).await;
     sleep_ms(150).await;
     send_key(name, "Enter").await;
@@ -19534,6 +19546,19 @@ pub(crate) async fn stop_session_process(name: &str) -> (bool, String) {
             return (true, "stopped".into());
         }
     }
+    // The agent did not act on /exit. Say so before the hard kill: a stop that
+    // only succeeds this way takes 15 s+, and a caller with a shorter bound
+    // (the dashboard's 15 s write) abandons it with no other trace.
+    let tail = strip_ansi(&tmux_capture(name, 3).await);
+    tracing::warn!(
+        session = name,
+        waited_ms = 15_000u64,
+        verdict = "stop_exit_unanswered",
+        measured = true,
+        n_considered = 1,
+        tail = %tail.trim_end(),
+        "worker did not exit on /exit within 15s; hard-killing its pane children"
+    );
     // Hard kill: the pane shell's children (py:25028).
     if let Some(out) = tmux(&["list-panes", "-t", &stq, "-F", "#{pane_pid}"]).await {
         if out.status.success() {
@@ -52265,6 +52290,108 @@ with open(sys.argv[3],'ab',buffering=0) as log:
             !delivered.contains(&0x1b),
             "paste retry must not interrupt a newly accepted turn: {delivered:?}"
         );
+    }
+
+    /// 2026-11-16: two workers left in Claude's /status panel survived 8
+    /// dashboard deletes. Stop typed /exit into the panel, waited 15 s, and the
+    /// delete it serves was abandoned by the dashboard's 15 s write bound. The
+    /// stand-in below is that panel: it ignores every key but Escape, then acts
+    /// on /exit like the real prompt.
+    #[tokio::test]
+    #[ignore = "real tmux dialog replay; no model or production worker; run explicitly"]
+    #[allow(clippy::await_holding_lock)] // the AMUX_HOME guard spans the stop
+    async fn real_tmux_stop_closes_an_open_dialog_before_exit() {
+        struct Pane(String);
+        impl Drop for Pane {
+            fn drop(&mut self) {
+                let st = session_target(&self.0);
+                let _ = std::process::Command::new("tmux")
+                    .args(["kill-session", "-t", &st])
+                    .output();
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let keys = home.path().join("keys.bin");
+        let lane = format!(
+            "stop-dialog-{}-{}",
+            std::process::id(),
+            (now_f64() * 1_000_000.0) as u64
+        );
+        let pane = Pane(tmux_name(&lane));
+        let panel = r#"import os,select,sys,time,tty
+tty.setraw(sys.stdin.fileno())
+def paint(s):
+    sys.stdout.write('\x1b[2J\x1b[H'+s.replace('\n','\r\n')); sys.stdout.flush()
+paint(' Status   Config   Usage\n\n   Session name:   lane\n   Model:          stand-in\n\n   Esc to cancel\n')
+mode='dialog'; buf=b''; end=time.monotonic()+40
+with open(sys.argv[1],'ab',buffering=0) as log:
+    while time.monotonic()<end:
+        if not select.select([sys.stdin],[],[],0.2)[0]: continue
+        key=os.read(sys.stdin.fileno(),1); log.write(key)
+        if mode=='dialog':
+            if key==b'\x1b': mode='prompt'; paint('❯ ')
+            continue
+        if key==b'\x15': buf=b''
+        elif key in (b'\r',b'\n'):
+            if buf.strip()==b'/exit': paint('bye\n'); sys.exit(0)
+            buf=b''; paint('❯ ')
+        elif key!=b'\x1b': buf+=key
+"#;
+        let output = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &pane.0,
+                "-x",
+                "200",
+                "-y",
+                "24",
+                "sh",
+                "-c",
+                r#"python3 -c "$1" "$2"; PS1='$ ' exec sh -i"#,
+                "sh",
+                panel,
+                keys.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !tmux_capture(&lane, 25).await.contains("Esc to cancel") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stand-in never drew its dialog"
+            );
+            sleep_ms(50).await;
+        }
+        assert!(is_running(&lane).await, "a worker in a dialog is running");
+
+        let started = std::time::Instant::now();
+        let (ok, detail) = stop_session_process(&lane).await;
+        let took = started.elapsed();
+        let delivered = std::fs::read(&keys).unwrap();
+        assert!(ok, "stop failed: {detail}");
+        assert_eq!(
+            detail, "stopped",
+            "the worker exited on /exit, not by hard kill (took {took:?})"
+        );
+        assert!(
+            took < Duration::from_secs(10),
+            "a stop must answer well inside the dashboard's 15 s bound: {took:?}"
+        );
+        assert_eq!(
+            delivered.iter().filter(|&&b| b == 0x1b).count(),
+            1,
+            "exactly one Escape: a second opens Claude's rewind menu: {delivered:?}"
+        );
+        assert_eq!(delivered.first(), Some(&0x1b), "the Escape goes before any typed command");
     }
 
     #[tokio::test]
