@@ -671,7 +671,7 @@ async fn create_card(state: &AppState, body: Value) -> Result<String, String> {
 }
 
 /// Change a card through the board's own update. Done carries its evidence.
-async fn patch_card(state: &AppState, id: &str, mut body: Value) -> Result<(), String> {
+pub(crate) async fn patch_card(state: &AppState, id: &str, mut body: Value) -> Result<(), String> {
     if body["status"] == "done" && body.get("evidence").is_none() {
         body["evidence"] = json!("none: the owner closed it from Home");
     }

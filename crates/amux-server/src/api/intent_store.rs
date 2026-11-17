@@ -24,7 +24,7 @@
 
 use super::AppState;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -298,38 +298,15 @@ fn summary(o: &OutcomeRow, posts: &[Value]) -> Value {
     })
 }
 
-// ---- creating a worker for a `create` decision -------------------------------
+// ---- where a request no worker fits goes -----------------------------------
 
-/// Create the worker a `create` decision describes: not isolated (decided
-/// 2026-11-12), started, with no first prompt (the request arrives through the
-/// outcome thread so the answer comes back there). Returns its actual name.
-pub(crate) async fn create_worker(state: &AppState, spec: &Value) -> Result<String, String> {
-    let mut body = json!({
-        "name": spec["name"], "desc": spec["desc"], "creator": "amux",
-        "worker_type": spec["worker_type"].as_str().filter(|t| !t.is_empty()).unwrap_or("chat"),
-        "start": true,
-    });
-    if let Some(d) = spec["dir"].as_str().filter(|d| !d.is_empty()) {
-        body["dir"] = json!(d);
-    }
-    if let Some(m) = spec["model"].as_str().filter(|m| !m.is_empty()) {
-        body["model"] = json!(m);
-    }
-    if let Some(e) = spec["effort"].as_str().filter(|e| super::intent::CREATE_EFFORTS.contains(e)) {
-        body["flags"] = json!(format!("--effort {e}"));
-    }
-    if let Some(g) = spec["groups"].as_array().filter(|g| !g.is_empty()) {
-        body["tags"] = json!(g);
-    }
-    let resp = super::sessions_legacy::create_session_legacy(State(state.clone()), HeaderMap::new(), Some(Json(body))).await;
-    let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap_or_default();
-    let v: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
-    if status.is_success() {
-        Ok(v["name"].as_str().map(str::to_string).unwrap_or_else(|| spec["name"].as_str().unwrap_or("").to_string()))
-    } else {
-        Err(v["error"].as_str().unwrap_or("the new helper could not be created").to_string())
-    }
+/// The one standing helper a request goes to when no worker fits. Intent
+/// never creates workers (Ethan, 2026-11-16: "Intent shuld not be creating chat
+/// workers", "I feel like the workers just get overwhelming"): in four days it
+/// had made 12, one per topic, and each drifted. `AMUX_INTENT_HELPER` names it.
+pub(crate) fn intent_helper() -> String {
+    std::env::var("AMUX_INTENT_HELPER").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "personal".to_string())
 }
 
 // ---- handlers ----------------------------------------------------------------
@@ -413,66 +390,40 @@ fn push_source(sources: &mut Value, s: Value) {
 /// The worker a `send`/`create` plan lands on, creating it when needed. A
 /// create that fails falls back to a send to the plan's first candidate, if
 /// any, and otherwise is an error the caller shows.
-async fn resolve_target(state: &AppState, _text: &str, mut plan: Value) -> Result<(String, Value), (StatusCode, String)> {
+async fn resolve_target(_state: &AppState, _text: &str, mut plan: Value) -> Result<(String, Value), (StatusCode, String)> {
     match plan["action"].as_str() {
         Some("send") | Some("continue") => Ok((plan["worker"].as_str().unwrap_or("").to_string(), plan)),
         _ => {
-            let spec = plan["create"].clone();
-            match create_worker(state, &spec).await {
-                Ok(name) => {
-                    wait_until_running(&name).await;
-                    plan["worker"] = json!(name);
-                    Ok((name, plan))
-                }
-                Err(e) => {
-                    // Two requests at once can both ask for the same new
-                    // helper; the second create fails with "already exists"
-                    // while the helper it wanted is right there (run I, uc1
-                    // desktop: the person saw "Not sent").
-                    let roster = super::orchestrate::roster_entries(&crate::config::amux_home());
-                    let fallback = create_fallback(&roster, &spec, &plan);
-                    tracing::warn!(error = %e, fallback = ?fallback, measured = true, n_considered = roster.len(),
-                        verdict = "intent_create_failed",
-                        "intent: the router asked for a new worker and it could not be created");
-                    let Some(name) = fallback else {
-                        return Err((StatusCode::BAD_GATEWAY, format!("could not start a helper for this: {e}")));
-                    };
-                    wait_until_running(&name).await;
-                    plan["action"] = json!("send");
-                    plan["worker"] = json!(name);
-                    Ok((name, plan))
-                }
-            }
+            // No worker is created. The helper it wanted, when that name is
+            // already a worker; otherwise the one standing helper. Never one of
+            // the router's rejected candidates: a poor fit is how a dentist
+            // reminder landed on cloud-spend and rewrote what it was for.
+            let roster = super::orchestrate::roster_entries(&crate::config::amux_home());
+            let helper = intent_helper();
+            let wanted = plan["create"]["name"].as_str().unwrap_or("").to_string();
+            let Some(name) = no_create_target(&roster, &wanted, &helper) else {
+                tracing::warn!(wanted = %wanted, helper = %helper, measured = true, n_considered = roster.len(),
+                    verdict = "intent_no_helper",
+                    "intent: no worker fits this request and the standing helper is not set up; nothing was sent");
+                return Err((StatusCode::BAD_GATEWAY, format!(
+                    "no helper fits this, and the standing helper {helper} is not set up (amux no longer creates helpers; set AMUX_INTENT_HELPER or create {helper})")));
+            };
+            tracing::info!(wanted = %wanted, to = %name, measured = true, n_considered = roster.len(),
+                verdict = "intent_create_routed_to_helper",
+                "intent: no worker fit; sent to the standing helper instead of creating one");
+            plan["action"] = json!("send");
+            plan["worker"] = json!(name);
+            plan["create"] = Value::Null;
+            Ok((name, plan))
         }
     }
 }
 
-/// A request posted while the helper is still starting used to be lost; wait
-/// (bounded) for it to run. Delivery retries a failure too
-/// (conversations::delivery_retryable).
-async fn wait_until_running(name: &str) {
-    let mut waited_ms = 0u64;
-    while !super::session_verbs::is_running(name).await && waited_ms < 10_000 {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        waited_ms += 250;
-    }
-    tracing::info!(worker = %name, waited_ms, measured = true, n_considered = 1,
-        verdict = "intent_helper_ready_wait", "intent: waited for a new helper before its first request");
-}
-
-/// Where a request goes when its new helper could not be created: the helper
-/// of that name if one exists now (a concurrent request made it), else the
-/// plan's first candidate. Never an isolated worker (A9).
-fn create_fallback(roster: &[super::orchestrate::RosterEntry], spec: &Value, plan: &Value) -> Option<String> {
-    let routable = |n: &str| roster.iter().any(|w| w.name == n && !w.isolated);
-    let wanted = spec["name"].as_str().unwrap_or("");
-    if !wanted.is_empty() && routable(wanted) {
-        return Some(wanted.to_string());
-    }
-    plan["candidates"].as_array()?.iter()
-        .filter_map(|c| c["worker"].as_str())
-        .find(|n| routable(n))
-        .map(str::to_string)
+/// Where a request no worker fits goes: the worker it named, when that name is
+/// already a routable worker, else the standing helper, when it is routable.
+fn no_create_target(roster: &[super::orchestrate::RosterEntry], wanted: &str, helper: &str) -> Option<String> {
+    let routable = |n: &str| !n.is_empty() && roster.iter().any(|w| w.name == n && !w.isolated);
+    [wanted, helper].into_iter().find(|n| routable(n)).map(str::to_string)
 }
 
 /// One plain line about where a request went, e.g. "Sent to family: it
@@ -573,16 +524,9 @@ async fn change(State(state): State<AppState>, Path(id): Path<String>, Json(body
     let request = o.sources.as_array().and_then(|a| a.iter().find(|s| s["kind"] == "request"))
         .and_then(|s| s["text"].as_str()).unwrap_or("").to_string();
     let to = if body["new"].as_bool().unwrap_or(false) {
-        let taken = super::outcome_plan::taken_names(&crate::config::amux_home());
-        let spec = super::intent::fallback_decision(&request, &taken).create.unwrap_or(json!({}));
-        let mut spec = spec;
-        if let Some(n) = body["name"].as_str().and_then(super::outcome_plan::clean_name) {
-            spec["name"] = json!(super::outcome_plan::unique(&n, &taken));
-        }
-        match create_worker(&state, &spec).await {
-            Ok(n) => n,
-            Err(e) => return bad(StatusCode::BAD_GATEWAY, e),
-        }
+        tracing::info!(outcome = %id, measured = true, n_considered = 1, verdict = "intent_new_helper_refused",
+            "intent: a move to a new helper was refused; amux no longer creates helpers");
+        return bad(StatusCode::BAD_REQUEST, "amux no longer starts new helpers; move this to an existing one");
     } else {
         let w = body["worker"].as_str().unwrap_or("").trim().to_string();
         let roster = super::orchestrate::roster_entries(&crate::config::amux_home());
@@ -601,6 +545,14 @@ async fn change(State(state): State<AppState>, Path(id): Path<String>, Json(body
     }
     o.worker = to.clone();
     remember(&id, &to);
+    // A goal's card is on its helper's board; it moves with the conversation,
+    // or archiving the old helper would archive a live goal with it.
+    if let Some(item) = o.item_id.clone() {
+        if let Err(e) = super::intent_items::patch_card(&state, &item, json!({"session": to})).await {
+            tracing::warn!(outcome = %id, card = %item, error = %e, verdict = "intent_override_card_not_moved",
+                "intent: the outcome moved but its card stayed on the old helper's board");
+        }
+    }
     let note_line = format!("Moved to {}", plain_name(&to));
     if let Err(e) = super::intent_record::write(&state, &format!("o:{id}"), &note_line, json!({"change": ch})).await {
         return bad(StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -731,16 +683,14 @@ mod tests {
     }
 
     #[test]
-    fn a_create_that_lost_a_race_goes_to_the_helper_it_wanted() {
+    fn a_request_no_worker_fits_goes_to_the_standing_helper_and_nothing_is_created() {
         use super::super::orchestrate::RosterEntry;
         let w = |n: &str, iso: bool| RosterEntry { name: n.into(), isolated: iso, ..Default::default() };
-        let roster = vec![w("family-helper", false), w("private-notes", true), w("family", false)];
-        let plan = json!({"candidates": [{"worker": "private-notes"}, {"worker": "family"}]});
-        assert_eq!(create_fallback(&roster, &json!({"name": "family-helper"}), &plan).as_deref(), Some("family-helper"));
-        // Not created by anyone: the first routable candidate, never an isolated one.
-        assert_eq!(create_fallback(&roster, &json!({"name": "camp"}), &plan).as_deref(), Some("family"));
-        assert_eq!(create_fallback(&roster, &json!({"name": "private-notes"}), &plan).as_deref(), Some("family"));
-        assert_eq!(create_fallback(&roster, &json!({"name": "camp"}), &json!({})), None);
+        let roster = vec![w("family-helper", false), w("private-notes", true), w("personal", false)];
+        assert_eq!(no_create_target(&roster, "family-helper", "personal").as_deref(), Some("family-helper"), "a name that is already a worker");
+        assert_eq!(no_create_target(&roster, "dental-care", "personal").as_deref(), Some("personal"), "a new name goes to the helper");
+        assert_eq!(no_create_target(&roster, "private-notes", "personal").as_deref(), Some("personal"), "never an isolated worker");
+        assert_eq!(no_create_target(&roster, "camp", "missing").as_deref(), None, "no helper: nothing, and nothing created");
     }
 
     #[test]
