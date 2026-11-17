@@ -147,6 +147,17 @@ async fn serve_path(
         )
             .into_response();
     }
+    // The public-link namespace is never the dashboard shell. The routes above
+    // claim every canonical `/pub/{id}...`, so whatever reaches this fallback
+    // with that prefix (bare `/pub` or `/pub/`, or a case variant such as
+    // `/PUB/` or `/Pub/x` that a case-insensitive proxy rule lets through)
+    // is not a link. Serving the shell there put the dashboard, and on a
+    // tunnelled host the owner bearer, behind a path the owner had opened
+    // to anyone.
+    let lower = path.to_ascii_lowercase();
+    if lower == "pub" || lower.starts_with("pub/") {
+        return public_links::not_found();
+    }
     // Non-API, non-GET: 405 as before. The SPA shell is a GET-only artifact and
     // handing it back for a POST would be worse than the bare 405 this replaces
     // — the whole point of the JSON 404 above is that a caller can tell "no such
@@ -475,7 +486,8 @@ fn owner_bootstrap_allowed(
     // and its session cookie (desktop/test/split-button-e2e.py). It only
     // removes trust; the API's own check is AMUX_RS_NO_LOOPBACK_BYPASS.
     let local = super::fs::browser_is_on_this_machine(peer, authority.as_deref())
-        && !std::env::var("AMUX_RS_SHELL_AS_REMOTE").is_ok_and(|v| v == "1");
+        && !std::env::var("AMUX_RS_SHELL_AS_REMOTE").is_ok_and(|v| v == "1")
+        && !relayed_without_front_door(headers);
     if let Some((peer_field, authority_field)) = withheld_bootstrap_record(
         state.auth_token.is_some(),
         local,
@@ -504,6 +516,32 @@ fn owner_bootstrap_allowed(
         );
     }
     local
+}
+
+/// Proxy headers that mean the socket peer is a relay, not the browser.
+/// cloudflared sends `Cf-Connecting-Ip` and `X-Forwarded-For`; Caddy and
+/// nginx send `X-Forwarded-For` or `Forwarded`. A browser talking to this
+/// server directly sends none of them.
+const RELAY_HEADERS: &[&str] = &["forwarded", "x-forwarded-for", "x-real-ip", "cf-connecting-ip"];
+
+/// A request that came through a reverse proxy is not "this machine", even
+/// though the proxy connects from loopback.
+///
+/// A tunnel (cloudflared, ngrok, a local Caddy) connects to amux from
+/// 127.0.0.1, so before this every browser that reached the shell through one
+/// was handed the owner bearer. That was safe only while the proxy's own
+/// sign-in covered every path. A proxy rule that opens `/pub/*` to everyone
+/// for public links also opens the shell, because unknown paths fall back to
+/// it, and a case-insensitive rule opens `/PUB/` and `/Pub/x` too. The owner
+/// still gets in through a tunnel by signing in once (`?_token=`, which sets
+/// the HttpOnly owner session), the same way a remote browser does.
+///
+/// A host behind amux's own sign-in front door (loopback_trust.rs) keeps the
+/// old behaviour: its Caddy always forwards, and the door already stands in
+/// front of every path there.
+fn relayed_without_front_door(headers: &HeaderMap) -> bool {
+    RELAY_HEADERS.iter().any(|h| headers.contains_key(*h))
+        && !super::loopback_trust::front_door_active()
 }
 
 /// Whether this shell-serve is the withheld case, and the two fields the log
@@ -1170,6 +1208,65 @@ mod tests {
             StatusCode::METHOD_NOT_ALLOWED,
             "no SPA shell for a POST"
         );
+    }
+
+    /// A tunnel (cloudflared, ngrok, Caddy) connects from loopback. Its
+    /// forwarding headers say the browser is elsewhere, so the shell it
+    /// relays must not carry the owner bearer.
+    #[tokio::test]
+    async fn a_shell_relayed_through_a_loopback_proxy_withholds_the_owner_bearer() {
+        use tower::ServiceExt;
+        let app = routes().with_state(state(Some("tok123")));
+        for (name, value) in [
+            ("cf-connecting-ip", "203.0.113.7"),
+            ("x-forwarded-for", "203.0.113.7"),
+            ("x-real-ip", "203.0.113.7"),
+            ("forwarded", "for=203.0.113.7"),
+        ] {
+            let mut request = axum::http::Request::builder()
+                .uri("https://amux.example.com/")
+                .header(name, value)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(ConnectInfo("127.0.0.1:50000".parse::<SocketAddr>().unwrap()));
+            let res = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{name}");
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("tok123"), "{name}: owner bearer leaked through a relay");
+            assert!(body.contains("window._AMUX_AUTH_WITHHELD=true;"), "{name}");
+        }
+        // The same loopback peer with no relay header is still this machine.
+        let local = shell(&app, "https://amux.example.com/", None, Some("127.0.0.1")).await;
+        assert!(local.contains("window._AMUX_AUTH_TOKEN=\"tok123\""), "{local}");
+    }
+
+    /// Anything under the public-link prefix that is not a canonical link is a
+    /// 404, never the dashboard shell: a proxy that opens `/pub/*` to everyone
+    /// (case-insensitively, as Cloudflare Access does) must not open the shell.
+    #[tokio::test]
+    async fn non_link_paths_under_pub_are_404_not_the_shell() {
+        use tower::ServiceExt;
+        let app = routes().with_state(state(Some("tok123")));
+        for uri in ["/pub", "/pub/", "/PUB/", "/Pub", "/pUb/x/", "/PUB/0123456789abcdef0123456789abcdef/"] {
+            let mut request = axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(ConnectInfo("127.0.0.1:50000".parse::<SocketAddr>().unwrap()));
+            let res = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{uri}");
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("tok123") && !body.contains("<!DOCTYPE"), "{uri}: {body}");
+        }
+        // Paths that merely start with the letters are untouched.
+        let shell_page = shell(&app, "/public", None, Some("127.0.0.1")).await;
+        assert!(shell_page.contains("AMUX-BOOTSTRAP"), "/public still falls back to the shell");
     }
 
     #[tokio::test]
