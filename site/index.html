@@ -24,6 +24,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is amux?","acceptedAnswer":{"@type":"Answer","text":"amux is a self-hosted control plane for running an AI engineering team. It runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agents in parallel on one shared task board, and you steer them from the web dashboard, the iPhone app or the Mac app. It is one Rust binary plus SQLite, source-available under MIT + Commons Clause."}},{"@type":"Question","name":"Can I run my coding agents from my phone?","acceptedAnswer":{"@type":"Answer","text":"Yes. The iPhone and iPad app and the installable web dashboard show every worker's live status. From your phone you can type into any session, approve actions and answer the prompts that block an agent."}},{"@type":"Question","name":"How do several agents avoid stepping on each other?","acceptedAnswer":{"@type":"Answer","text":"They share one task board with atomic claiming, so two agents never take the same task. Agents can @mention each other to hand off work or ask for a review."}},{"@type":"Question","name":"Do my agents keep running when my laptop sleeps?","acceptedAnswer":{"@type":"Answer","text":"Only if the machine running amux stays awake. Self-hosted amux runs on your own Mac or Linux machine. amux Cloud is your own always-on server at yourname.amux.io, so agents keep working overnight and you check in from your phone."}},{"@type":"Question","name":"What does amux cost?","acceptedAnswer":{"@type":"Answer","text":"Self-hosting is free, with every feature. You pay your model provider as usual. amux Cloud is Solo $39/mo, Team $69/mo (the pick for freelancers, agencies and small teams running agents across several projects) or Max $129/mo."}}]}</script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"amux in 47 seconds: an AI engineering team on one dashboard","description":"The real amux dashboard: start workers, watch a live terminal, answer the one question that needs you, let agents brief each other, tile their terminals and watch the board drain itself.","thumbnailUrl":"https://amux.io/home/demo-desktop.jpg","contentUrl":"https://amux.io/home/demo-desktop.mp4","uploadDate":"2026-10-18","duration":"PT47S"}</script>
 <style>
   /* amux homepage v4 (2026-11-03): quiet and demo-led. A short hero, the real
@@ -143,6 +144,16 @@
   .point p { margin: 0; color: var(--fg-2); font-size: 15px; }
 
   /* two ways to run it */
+  .qas { max-width: 720px; margin: 0 auto; }
+  .qas h2 { margin: 0 0 16px; font-size: 22px; letter-spacing: -0.01em; text-align: center; }
+  .qa { border-bottom: 1px solid var(--line); }
+  .qa summary { padding: 14px 0; min-height: 44px; box-sizing: border-box; font-weight: 600; cursor: pointer; list-style: none; }
+  .qa summary::-webkit-details-marker { display: none; }
+  .qa summary::before { content: "+"; display: inline-block; width: 18px; color: var(--fg-3); }
+  .qa[open] summary::before { content: "\2212"; }
+  .qa p { margin: 0 0 16px 18px; color: var(--fg-2); font-size: 15px; }
+  .qa a, .qa-more a { color: var(--fg); text-underline-offset: 3px; }
+  .qa-more { margin: 16px 0 0; text-align: center; font-size: 14px; }
   .ways { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 880px; margin: 0 auto; }
   .way { padding: 28px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); display: flex; flex-direction: column; gap: 16px; }
   .way h3 { margin: 0; font-size: 20px; }
@@ -295,6 +306,21 @@
           <a class="plan" href="/start/?plan=max"><b>Max</b><span>$129</span></a>
         </div>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== FAQ (EXP-163) =================== -->
+<section id="faq" data-cta-loc="exp163-faq">
+  <div class="container">
+    <div class="qas reveal">
+      <h2>Questions</h2>
+      <details class="qa"><summary>What is amux?</summary><p>amux is a self-hosted control plane for running an AI engineering team. It runs Claude Code, Codex, Gemini CLI, OpenCode and Ollama-backed agents in parallel on one shared task board, and you steer them from the web dashboard, the iPhone app or the Mac app. It is one Rust binary plus SQLite, source-available under MIT + Commons Clause.</p></details>
+      <details class="qa"><summary>Can I run my coding agents from my phone?</summary><p>Yes. The iPhone and iPad app and the installable web dashboard show every worker&#x27;s live status. From your phone you can type into any session, approve actions and answer the prompts that block an agent.</p></details>
+      <details class="qa"><summary>How do several agents avoid stepping on each other?</summary><p>They share one task board with atomic claiming, so two agents never take the same task. Agents can @mention each other to hand off work or ask for a review.</p></details>
+      <details class="qa"><summary>Do my agents keep running when my laptop sleeps?</summary><p>Only if the machine running amux stays awake. Self-hosted amux runs on your own Mac or Linux machine. amux Cloud is your own always-on server at yourname.amux.io, so agents keep working overnight and you check in from your phone. <a href="/start/?source=home-faq">Start amux Cloud</a></p></details>
+      <details class="qa"><summary>What does amux cost?</summary><p>Self-hosting is free, with every feature. You pay your model provider as usual. amux Cloud is Solo $39/mo, Team $69/mo (the pick for freelancers, agencies and small teams running agents across several projects) or Max $129/mo. <a href="/pricing/">See pricing</a></p></details>
+      <p class="qa-more"><a href="/faq/">More questions</a></p>
     </div>
   </div>
 </section>
