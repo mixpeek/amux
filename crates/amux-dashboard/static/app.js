@@ -30243,8 +30243,93 @@ function _dictInsert(text) {
   if (typeof _hkDictDeliver === 'function' && _hkDictDeliver(text)) return;
   const inp = document.getElementById('peek-cmd-input');
   if (!inp) { navigator.clipboard?.writeText(text); showToast('Copied (composer not open)'); return; }
+  const was = inp.value;
   inp.value = inp.value && inp.value.trim() ? (inp.value.replace(/\s+$/,'') + ' ' + text) : text;
+  _dictWatchField(inp, text, was);
   inp.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// ── Learn from a corrected dictation (Ethan, 2026-11-17: "if I have to change
+// or modify or edit or retype a word, it should prompt me to ask if that
+// change should be added to the dictionary so that it knows moving forward") ──
+// When dictated text lands in a field, the field is watched. A pause after an
+// edit that REPLACES dictated words (not one that only adds or deletes) offers
+// "<heard> -> <typed>" for the dictionary, through the shared confirm. A fix you
+// decline is not offered again; a fix already in the dictionary is not offered.
+const _dictWatched = new WeakMap();
+const _DICT_WATCH_MS = 10 * 60 * 1000;
+function _dictWatchField(el, dictated, before) {
+  if (!el || !dictated) return;
+  // A second dictation into a watched field adds to it: its first words can
+  // still be corrected (land review, 2026-11-17). An edit made before it
+  // arrived is settled first, against the value from just before the new
+  // text, or the new snapshot would swallow it.
+  const prev = _dictWatched.get(el), live = prev && Date.now() <= prev.until;
+  if (live) {
+    clearTimeout(prev.timer);
+    const fix = _dictCorrections(prev.dictated, prev.base, before ?? prev.base)[0];
+    if (fix) _dictAskFix(fix, el);
+  }
+  const w = { base: el.value, dictated: (live ? prev.dictated + ' ' : '') + String(dictated),
+    until: Date.now() + _DICT_WATCH_MS, timer: 0 };
+  _dictWatched.set(el, w);
+  if (el._dictWatchBound) return;
+  el._dictWatchBound = true;
+  el.addEventListener('input', () => {
+    const cur = _dictWatched.get(el);
+    if (!cur) return;
+    clearTimeout(cur.timer);
+    if (Date.now() > cur.until || !el.value.trim()) { _dictWatched.delete(el); return; }
+    cur.timer = setTimeout(() => _dictOfferCorrection(el), 2500);
+  });
+}
+function _dictWordKey(w) { return String(w || '').replace(/^[\s"'(\[{]+|[\s"'.,;:!?)\]}]+$/g, ''); }
+// The words an edit REPLACED in dictated text: one region, 1 to 3 words each
+// side, every replaced word from the dictation. [{from, to}] or [].
+function _dictCorrections(dictated, before, after) {
+  const a = String(before || '').split(/\s+/).filter(Boolean), b = String(after || '').split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  let ja = a.length, jb = b.length;
+  while (ja > i && jb > i && a[ja - 1] === b[jb - 1]) { ja--; jb--; }
+  const from = a.slice(i, ja).map(_dictWordKey).filter(Boolean), to = b.slice(i, jb).map(_dictWordKey).filter(Boolean);
+  if (!from.length || !to.length || from.length > 3 || to.length > 3) return [];
+  const heard = new Set(String(dictated || '').split(/\s+/).map(w => _dictWordKey(w).toLowerCase()));
+  if (!from.every(w => heard.has(w.toLowerCase()))) return [];
+  const f = from.join(' '), t = to.join(' ');
+  return f === t ? [] : [{ from: f, to: t }];
+}
+async function _dictOfferCorrection(el) {
+  const w = _dictWatched.get(el);
+  if (!w || !document.contains(el)) return;
+  const now = el.value;
+  const fixes = _dictCorrections(w.dictated, w.base, now);
+  w.base = now;
+  if (fixes.length) await _dictAskFix(fixes[0], el);
+}
+async function _dictAskFix({ from, to }, el) {
+  const key = from.toLowerCase() + '\u2192' + to.toLowerCase();
+  let declined = [];
+  try { declined = JSON.parse(localStorage.getItem('amux_dict_declined') || '[]'); } catch (e) { console.warn('dictation: unreadable declined list', e); }
+  if (declined.includes(key)) return;
+  try {
+    const d = await fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json());
+    const words = Array.isArray(d) ? d : (d.words || []);
+    if (words.some(x => String(x.word || '').toLowerCase() === from.toLowerCase())) return;
+  } catch (e) { console.warn('dictation: could not read the dictionary; offering the fix anyway', e); }
+  _dictBeacon('dict_correction_offered', { words: from.split(' ').length });
+  const ok = await showConfirm('You changed \u201c' + from + '\u201d to \u201c' + to + '\u201d. Add it to your dictionary so dictation gets it right next time?', 'Add to dictionary');
+  if (!ok) {
+    declined.push(key);
+    try { localStorage.setItem('amux_dict_declined', JSON.stringify(declined.slice(-200))); } catch (e) { console.warn('dictation: could not save the declined fix', e); }
+    _dictBeacon('dict_correction_declined', {});
+  } else {
+    const r = await fetch(API + '/api/dictation/dict', { method: 'POST',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ word: from, correct: to }) }).catch(() => null);
+    _dictBeacon(r && r.ok ? 'dict_correction_added' : 'dict_correction_add_failed', {});
+    showToast(r && r.ok ? 'Added to dictionary' : 'Could not add it to the dictionary');
+  }
+  try { if (document.contains(el)) el.focus(); } catch (e) { console.warn('dictation: could not refocus the field', e); }
 }
 
 // ── History ──
@@ -78117,6 +78202,7 @@ function _hkDictDeliver(text) {
   const gap = pre && !/\s$/.test(pre) ? ' ' : '';
   const tail = post && !/^[\s.,;:!?)]/.test(post) ? ' ' : '';
   t.el.value = pre + gap + text + tail + post;
+  _dictWatchField(t.el, text, v);
   const caret = (pre + gap + text).length;
   try { t.el.focus(); t.el.setSelectionRange(caret, caret); } catch (e) {}
   t.el.dispatchEvent(new Event('input', { bubbles: true }));

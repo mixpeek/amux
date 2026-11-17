@@ -219,6 +219,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Delete | `_dictDelWord` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Delete | `_dictDelete` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Edit | `_dictEditWord` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Insert into composer | `_dictInsertId` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Dictate | `_dictOpenPopup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Delete | `_dictOutboxDel` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1299,7 +1300,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Structure | `_dbSetMode` | onclick |
 | index.html | Discard | `_dictClosePopup` | onclick |
 | app.js | Copy | `_dictCopy` | onclick |
-| app.js | Insert into composer | `_dictInsertId` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |
 | index.html | Dictionary | `_dictSetSub` | onclick |
 | index.html | History | `_dictSetSub` | onclick |

@@ -1440,6 +1440,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictAskFix": {
+      "kind": "command._dictAskFix",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictBeacon": {
       "kind": "command._dictBeacon",
       "feedback_required": true,
@@ -1476,6 +1482,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictInsert": {
+      "kind": "command._dictInsert",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictInsertId": {
+      "kind": "command._dictInsertId",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictLiveClear": {
       "kind": "command._dictLiveClear",
       "feedback_required": true,
@@ -1490,6 +1508,12 @@
     },
     "_dictNativeDone": {
       "kind": "command._dictNativeDone",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictOfferCorrection": {
+      "kind": "command._dictOfferCorrection",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -1592,6 +1616,12 @@
     },
     "_dictUpload": {
       "kind": "command._dictUpload",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictWatchField": {
+      "kind": "command._dictWatchField",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -2714,6 +2744,12 @@
     },
     "_hkDelete": {
       "kind": "command._hkDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_hkDictDeliver": {
+      "kind": "command._hkDictDeliver",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
