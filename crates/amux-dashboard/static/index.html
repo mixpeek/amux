@@ -318,6 +318,21 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
           <button class="settings-tab-btn" data-stab="device" onclick="event.stopPropagation();_settingsTab('device')">Device</button>
           <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
           <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
+          <button class="settings-tab-btn" data-stab="dictation" onclick="event.stopPropagation();_settingsTab('dictation')">Dictation</button>
+        </div>
+        <!-- One dictionary and one set of dictation settings serve every worker (and the Mac
+             app and the phone), so they live here; each worker's Dictation tab keeps only its
+             own History (owner, 2026-11-17). -->
+        <div class="settings-tab-panel" id="stab-dictation" data-stab="dictation">
+        <section class="settings-section" id="settings-dictionary-section">
+          <div class="settings-section-label">Dictionary</div>
+          <div id="dict-dict-body"></div>
+        </section>
+        <div class="settings-sep"></div>
+        <section class="settings-section" id="settings-dictation-section">
+          <div class="settings-section-label">Dictation</div>
+          <div id="dict-set-body"></div>
+        </section>
         </div>
         <div class="settings-tab-panel active" id="stab-account" data-stab="account">
         <div class="settings-section" id="settings-usage-section">
@@ -3722,11 +3737,9 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
       <span class="dict-total"><span id="dict-total-words"></span><span id="dict-pending" class="dict-pending"></span></span>
     </div>
     <div class="dict-subtabs">
-      <button class="dict-subtab active" id="dict-subtab-history" onclick="_dictSetSub('history')">History</button>
-      <button class="dict-subtab" id="dict-subtab-dict" onclick="_dictSetSub('dict')">Dictionary</button>
-      <button class="dict-subtab" id="dict-subtab-settings" onclick="_dictSetSub('settings')">Settings</button>
-      <span style="flex:1;"></span>
+      <span class="dict-subtab active" id="dict-subtab-history">History</span>
       <input type="search" id="dict-search" class="dict-search" placeholder="Search&hellip;" oninput="_dictRenderHistory()">
+      <button type="button" class="btn" id="dict-open-settings" onclick="_dictOpenSettings()" title="The dictionary and dictation settings, shared by every worker">Dictionary &amp; settings</button>
     </div>
     <div id="dict-outbox-strip"></div>
       <div id="dict-body" class="dict-body"></div>

@@ -1536,6 +1536,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictOpenSettings": {
+      "kind": "command._dictOpenSettings",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictOutboxAdd": {
       "kind": "command._dictOutboxAdd",
       "feedback_required": true,

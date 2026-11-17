@@ -3161,6 +3161,10 @@
   .dict-subtab.active { color: var(--text); background: var(--bg); }
   .dict-search { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-0-5) var(--space-2);
     font-size: var(--fs-sm); color: var(--text); outline: none; max-width: 190px; }
+  /* History, the search and the way to the shared dictionary: one row at every width. */
+  .dict-subtabs span.dict-subtab { cursor: default; }
+  .dict-subtabs .dict-search { flex: 1; min-width: 0; max-width: none; }
+  #dict-open-settings { white-space: nowrap; flex-shrink: 0; }
   .dict-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: var(--space-2-5) var(--space-3); }
 
   /* Pending dictation clips — 44px touch targets, readable on a 375px screen. */
@@ -3208,6 +3212,7 @@
     .dict-acts button { min-width: 34px; min-height: 34px; font-size: var(--fs-2xl); }
     .dict-rec { width: 58px; height: 58px; min-width: 58px; }
     .dict-search { max-width: 130px; }
+    #dict-open-settings, .dict-subtabs .dict-search { min-height: 44px; }
   }
   /* Saved-messages modal: scope tabs (this session / all) + per-session badge. */
   .sm-scope-tab { flex: 1; padding: var(--space-1-5) var(--space-2-5); font-size: var(--fs-md); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--dim); cursor: pointer; font-family: inherit; min-height: 36px; }

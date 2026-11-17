@@ -29592,7 +29592,7 @@ async function _peekMessagesLoad(more) {
 // with amux context (session names + your vocabulary) — the API key never
 // reaches this page. Result lands in the composer for review, never auto-sent.
 let _dictRecording = false, _dictRecorder = null, _dictChunks = [], _dictStream = null;
-let _dictStartedAt = 0, _dictSub = 'history';
+let _dictStartedAt = 0;
 let _dictItems = [], _dictWords = [], _dictTotalWords = 0, _dictCfg = null;
 let _dictCount = 0;   // history rows for peekSession — drives the tab badge without opening the tab
 
@@ -29656,7 +29656,7 @@ async function _dictSettingsPut(next) {
     showToast('Dictation settings were not saved: ' + e.message);
     _dictSettingsWant = null;
     // The controls show what was asked; put them back to what the server holds.
-    if (_dictSub === 'settings') _dictRenderSettings();
+    _dictRenderSettings();
     return false;
   }
   const micChanged = (_dictSettings || {}).mic !== d.settings.mic;
@@ -29713,17 +29713,39 @@ function _dictMicMissing(name) {
   _dictMicWarned = name;
   showToast(name + ' is not connected here; dictating with the default microphone.');
 }
-function _dictSetSub(s) {
-  _dictSub = s;
-  ['history','dict','settings'].forEach(k => document.getElementById('dict-subtab-' + k)?.classList.toggle('active', k === s));
-  const srch = document.getElementById('dict-search');
-  if (srch) srch.style.display = s === 'history' ? '' : 'none';
-  _dictRender();
-}
+// The dictionary and the settings are one server-wide value each, so they live in
+// Settings > Dictation; a worker's Dictation tab shows only its own History.
 function _dictRender() {
-  if (_dictSub === 'history') _dictRenderHistory();
-  else if (_dictSub === 'dict') _dictRenderDict();
-  else _dictRenderSettings();
+  _dictRenderHistory();
+  _dictRenderGlobal();
+}
+function _dictGlobalShown() {
+  const p = document.getElementById('stab-dictation');
+  return !!(p && p.classList.contains('active') && document.getElementById('settings-menu')?.classList.contains('open'));
+}
+function _dictRenderGlobal() {
+  if (!_dictGlobalShown()) return;
+  _dictRenderDict();
+  _dictRenderSettings();
+}
+// Settings > Dictation opened: the dictionary, key source and settings, fresh.
+async function _dictGlobalLoad() {
+  try {
+    const [d, c] = await Promise.all([
+      fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
+      _dictSettingsLoad(),
+    ]);
+    _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
+  } catch (e) { console.warn('dictation: the dictionary did not load', e); }
+  _dictRenderDict();
+  _dictRenderSettings();
+}
+function _dictOpenSettings(section) {
+  const menu = document.getElementById('settings-menu');
+  if (menu && !menu.classList.contains('open')) toggleSettings();
+  _settingsTab('dictation');
+  if (section) document.getElementById(section)?.scrollIntoView({ block: 'start' });
 }
 
 // ── Recording ──
@@ -30555,7 +30577,7 @@ async function _dictDelete(id) {
 
 // ── Dictionary ──
 function _dictRenderDict() {
-  const body = document.getElementById('dict-body');
+  const body = document.getElementById('dict-dict-body');
   if (!body) return;
   let html = '<div class="dict-dictbar"><span class="dict-dicthint">Terms and names amux should always spell correctly '
     + 'in your dictation.</span><button class="btn primary" onclick="_dictAddWord()">Add new</button></div>';
@@ -30599,7 +30621,7 @@ async function _dictAddWord(existing, teach) {
     await fetch(API + '/api/dictation/dict', { method: 'POST',
       headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ word, correct }) });
   }
-  showToast(w ? 'Updated' : 'Added to vocabulary'); _dictLoad();
+  showToast(w ? 'Updated' : 'Added to vocabulary'); _dictGlobalLoad();
 }
 function _dictModalToggle() {
   const fix = document.getElementById('dictm-fix')?.checked;
@@ -30611,12 +30633,12 @@ function _dictEditWord(id) { const w = _dictWords.find(x => x.id === id); if (w)
 async function _dictDelWord(id) {
   await fetch(API + '/api/dictation/dict/' + id, { method: 'DELETE', headers: _authHeaders() });
   showToast('Word removed from dictionary');
-  _dictLoad();
+  _dictGlobalLoad();
 }
 
 // ── Settings (BYO key) ──
 function _dictRenderSettings() {
-  const body = document.getElementById('dict-body');
+  const body = document.getElementById('dict-set-body');
   if (!body) return;
   const c = _dictCfg || {};
   const using = c.source === 'byo' ? 'your own Gemini key'
@@ -30635,7 +30657,7 @@ function _dictRenderSettings() {
     + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-workers"' + (ds.workers !== false ? ' checked' : '') + ' onchange="_dictSettingsSave({workers:this.checked})"> Worker names' + count(src.workers, 'worker', 'workers') + '</span></label>'
     + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-contacts"' + (ds.contacts ? ' checked' : '') + ' onchange="_dictSettingsSave({contacts:this.checked})"> CRM contact names' + count(src.contacts, 'contact', 'contacts') + '</span></label>'
     + '<div class="dict-set-row"><span><input type="checkbox" checked disabled> Dictionary' + count(src.dictionary, 'word', 'words') + '</span>'
-    + '<button type="button" class="btn" onclick="_dictSetSub(\'dict\')">Edit</button></div>'
+    + '<button type="button" class="btn" onclick="_dictOpenSettings(\'settings-dictionary-section\')">Edit</button></div>'
     + '<div class="dict-sethint">About you and what you talk about: names, products, jargon. Dictation uses it to settle unclear words.</div>'
     + '<textarea id="dict-context" class="input dict-context" rows="4" maxlength="4000" placeholder="e.g. I run Mixpeek; I talk about amux workers, Rust, GKE and our customers TubeScience and Wexus.">' + esc(ds.context || '') + '</textarea>'
     + '<div class="dict-set-actions"><button class="btn primary" id="dict-context-save" onclick="_dictSettingsSave({context:(document.getElementById(\'dict-context\')||{}).value||\'\'})">Save context</button></div>'
@@ -30678,12 +30700,12 @@ async function _dictSaveKey() {
     headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ key: k }) });
   const d = await r.json();
   if (d.error) { showToast('Could not save key'); return; }
-  showToast('Using your Gemini key'); _dictLoad();
+  showToast('Using your Gemini key'); _dictGlobalLoad();
 }
 async function _dictClearKey() {
   await fetch(API + '/api/dictation/config', { method: 'POST',
     headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ key: '' }) });
-  showToast('Reverted to the server key'); _dictLoad();
+  showToast('Reverted to the server key'); _dictGlobalLoad();
 }
 
 // Peek Cost tab: this session's token/cost breakdown by task (reuses _costRender)
@@ -59292,6 +59314,7 @@ async function _vaultAudit(key) {
 }
 function _settingsTab(name) {
   if (name === 'integrations') setTimeout(() => { _chatgptAppLoad(); }, 0);
+  if (name === 'dictation') setTimeout(() => { _dictGlobalLoad(); }, 0);
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>

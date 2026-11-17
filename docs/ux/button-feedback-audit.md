@@ -221,6 +221,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Edit | `_dictEditWord` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Insert into composer | `_dictInsertId` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | Dictate | `_dictOpenPopup` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Edit | `_dictOpenSettings` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Dictionary  settings | `_dictOpenSettings` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Delete | `_dictOutboxDel` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Retry | `_dictRetry` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Save | `_dictSaveKey` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
@@ -674,6 +676,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Alerts | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Connect | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Device | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Dictation | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Workers | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ⋯ | `_showExploreMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1304,10 +1307,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy | `_dictCopy` | onclick |
 | app.js | Show names | `_dictMicReveal` | onclick |
 | app.js | ▶ Play | `_dictPlay` | onclick |
-| app.js | Edit | `_dictSetSub` | onclick |
-| index.html | Dictionary | `_dictSetSub` | onclick |
-| index.html | History | `_dictSetSub` | onclick |
-| index.html | Settings | `_dictSetSub` | onclick |
 | index.html | Done | `_dictStopRec` | onclick |
 | index.html | Dismiss | `_dismissOrgBanner` | onclick |
 | app.js | _dpEl.querySelector('.amux-dp-clear') | `_dpClear` | addEventListener |
