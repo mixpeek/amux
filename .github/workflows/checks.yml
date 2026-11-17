@@ -1049,6 +1049,7 @@ jobs:
           ./scripts/test-build-disk-clear.sh
           python3 scripts/test-cargo-target-guard.py
           python3 scripts/test-cargo-budget.py
+          bash scripts/test-safe-cargo-sizing.sh
           ./scripts/test-build-activation-authority.sh
           ./scripts/test-build-restamp.sh || exit 1
           ./scripts/test-build-activation-launcher.sh

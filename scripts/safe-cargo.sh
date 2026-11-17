@@ -125,8 +125,14 @@ if [ -z "$_host_mb" ]; then
 fi
 case "$_host_mb" in ''|*[!0-9]*) _host_mb=0 ;; esac
 if [ "$_host_mb" -gt 0 ]; then
+  # The ceiling scales with the host: 12 GB is right for the 16 GB sandbox, and
+  # on a 96 GB Mac a warm-cache `cargo check --workspace --all-targets` peaked at
+  # 12.9 GB and was killed (pre-commit, 2026-11-17), refusing three commits as
+  # an unattributable "clippy failure". A sixth of the host, two builds at a
+  # time, is a third of RAM at most.
+  _ceil=$(( _host_mb / 6 )); [ "$_ceil" -ge 12288 ] || _ceil=12288
   _host_cap=$(( _host_mb * 70 / 100 ))
-  [ "$_host_cap" -le 12288 ] || _host_cap=12288
+  [ "$_host_cap" -le "$_ceil" ] || _host_cap=$_ceil
   export AMUX_CARGO_MAX_RSS_MB="${AMUX_CARGO_MAX_RSS_MB:-$_host_cap}"
   if [ "$_host_mb" -lt 16384 ]; then
     export AMUX_CARGO_MAX_CONCURRENT="${AMUX_CARGO_MAX_CONCURRENT:-1}"

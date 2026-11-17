@@ -48,6 +48,18 @@ def main():
             seen.add(f)
             offenders.append(f)
     if not offenders:
+        # The cargo budget stopping the build is not a lint failure, and it
+        # leaves no file span: say so, with its numbers (2026-11-17: a memory
+        # stop read as an unattributable clippy failure on three commits).
+        stop = re.search(r'"event":\s*"cargo_budget_stopped".*?"reason":\s*"(\w+)"(?:.*?"peak_rss_bytes":\s*(\d+))?', out)
+        if stop:
+            peak = int(stop.group(2) or 0) // 1048576
+            cap = os.environ.get("AMUX_CARGO_MAX_RSS_MB", "?")
+            print(f"\namux lint-blame: no lint failed. The cargo budget stopped the build "
+                  f"(reason={stop.group(1)}" + (f", peak {peak} MB, cap {cap} MB" if peak else "") +
+                  "), so nothing was checked. Retry when fewer builds run, or raise "
+                  "AMUX_CARGO_MAX_RSS_MB. (verdict=lint_blame_budget_stop)")
+            return
         # NOT "everything is fine" — it means the parse found no file spans, and
         # saying so is the difference between a silent aid and a broken one.
         print("\namux lint-blame: could not attribute this failure — no file spans "
