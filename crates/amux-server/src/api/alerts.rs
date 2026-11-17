@@ -576,9 +576,13 @@ fn err(status: StatusCode, body: Value) -> Response {
 /// True when `origin` names a worker this server has never registered, on a
 /// server that registers workers at all.
 pub(crate) fn unknown_origin(origin: &str) -> bool {
-    !origin.is_empty()
-        && crate::config::amux_home().join("sessions").is_dir()
-        && !super::session_verbs::env_path(origin).exists()
+    if origin.is_empty() {
+        return false;
+    }
+    // One resolver for both questions (land review): the sessions directory is
+    // the parent of the worker's own registration file.
+    let reg = super::session_verbs::env_path(origin);
+    reg.parent().is_some_and(|d| d.is_dir()) && !reg.exists()
 }
 
 /// Python `_hdr_worker`: X-Amux-Worker canonical, X-Amux-Session accepted.
