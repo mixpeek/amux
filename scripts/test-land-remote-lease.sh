@@ -88,6 +88,11 @@ other_lease() { # <holder> <expires_at>: a lease written by someone else
 }
 L="$H/.amux/logs/land.log"
 printf '#!/bin/sh\necho "$*" >> "%s/alert.log"\n' "$H" > "$H/alert"; chmod +x "$H/alert"
+# Every case, not only the alert case: a land that times out on the lease runs
+# `amux alert`, and with this temp HOME the CLI falls back to localhost:8824,
+# the owner's real server. Cases three and four-skew paged Ethan by email and
+# iMessage (alerts 488 on 11-12, 493 and 494 on 11-17).
+export AMUX_LAND_REMOTE_LEASE_ALERT_CMD="$H/alert"
 
 if part a; then
 # 1
