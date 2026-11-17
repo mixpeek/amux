@@ -3000,6 +3000,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_kmKeydown": {
+      "kind": "command._kmKeydown",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_kmSend": {
+      "kind": "command._kmSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_lazyLib": {
       "kind": "command._lazyLib",
       "feedback_required": true,

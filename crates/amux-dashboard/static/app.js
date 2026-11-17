@@ -43347,6 +43347,110 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// ── Key mode: the keyboard does what the key chips do ─────────────────────
+// Answering a picker or a yes/no prompt meant reaching for the ↑ ↓ Enter Esc
+// chips (2026-11-17). Ctrl+; in the worker view turns key mode on: arrows,
+// Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker's pane
+// through the same keys endpoint the chips use, in the order pressed. Any other
+// key turns it off and reaches the composer as usual; so do Ctrl+; again,
+// closing the worker view and 10s without a key. The badge on the composer
+// says it is on, because Esc here goes to the worker instead of closing the view.
+const _KM_IDLE_MS = 10000;
+const _KM_MAP = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Enter',
+  Escape: 'Escape', Tab: 'Tab', ' ': 'Space', Backspace: 'BSpace', Home: 'Home', End: 'End',
+  PageUp: 'PageUp', PageDown: 'PageDown' };
+const _KM_CHARS = new Set(['y', 'n', '1', '2', '3']);
+const _KM_GLYPH = { Up: '↑', Down: '↓', Left: '←', Right: '→', Enter: '↵', Escape: 'Esc', Tab: 'Tab', BTab: '⇧Tab',
+  Space: 'Space', BSpace: '⌫' };
+const _KM_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS', 'CapsLock', 'Fn']);
+let _km = null; // { session, timer, sent, chain }
+
+function _kmIsToggle(e) {
+  return e.ctrlKey && !e.metaKey && !e.altKey && (e.code === 'Semicolon' || e.key === ';');
+}
+// The tmux key name for a keydown, or null when key mode does not forward it.
+function _kmKeyName(e) {
+  if (e.metaKey || e.altKey || e.ctrlKey) return null;
+  if (e.key === 'Tab' && e.shiftKey) return 'BTab';
+  if (e.shiftKey && e.key !== 'Tab' && !/^Arrow|^Page|^Home$|^End$/.test(e.key)) return null;
+  if (_KM_MAP[e.key]) return _KM_MAP[e.key];
+  if (_KM_CHARS.has(e.key)) return e.key;
+  return null;
+}
+function _kmRender(lastKey) {
+  const wrap = document.querySelector('#peek-overlay .peek-composer-input');
+  if (!wrap) return;
+  let badge = document.getElementById('peek-keymode-badge');
+  if (!_km) {
+    wrap.classList.remove('key-mode');
+    if (badge) badge.remove();
+    return;
+  }
+  wrap.classList.add('key-mode');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = 'peek-keymode-badge';
+    badge.className = 'keymode-badge';
+    badge.setAttribute('role', 'status');
+    badge.title = 'Arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker. Ctrl+; or any other key to stop.';
+    wrap.appendChild(badge);
+  }
+  badge.innerHTML = '<span class="keymode-label">⌨ Keys → worker</span>'
+    + (lastKey ? '<kbd class="keymode-last">' + esc(_KM_GLYPH[lastKey] || lastKey) + '</kbd>' : '')
+    + '<span class="keymode-hint">⌃; to stop</span>';
+}
+function _kmArm() {
+  clearTimeout(_km.timer);
+  _km.timer = setTimeout(() => _kmExit('idle'), _KM_IDLE_MS);
+}
+function _kmEnter(session) {
+  if (_workerRenderer(session) !== 'terminal') { showToast('Key mode needs a terminal worker'); return; }
+  _km = { session, timer: 0, sent: 0, chain: Promise.resolve() };
+  _kmArm();
+  _kmRender();
+  if (typeof amuxTrack === 'function') amuxTrack('key_mode', { on: true, session, ver: APP_VER, measured: true, n_considered: 1 });
+}
+function _kmExit(reason) {
+  if (!_km) return;
+  clearTimeout(_km.timer);
+  const { session, sent } = _km;
+  _km = null;
+  _kmRender();
+  if (typeof amuxTrack === 'function') amuxTrack('key_mode', { on: false, reason, session, keys_sent: sent, ver: APP_VER, measured: true, n_considered: 1 });
+}
+// Keys go one after another so a fast ↓ ↓ Enter lands in that order.
+function _kmSend(keys) {
+  const session = _km.session;
+  _km.sent++;
+  _stopKeyBeacon(session, keys, 'key-mode');
+  _km.chain = _km.chain.then(() => doKeys(session, keys)).then((r) => {
+    if (r && !r.accepted) showToast(`${keys} was not sent${r.message ? ': ' + r.message : ''}`);
+    _refreshPeekSoon();
+  }).catch((err) => console.warn('amux: key mode send failed', err));
+}
+function _kmKeydown(e) {
+  if (e.isComposing || e.keyCode === 229) return;
+  const ov = document.getElementById('peek-overlay');
+  const open = !!(ov && ov.classList.contains('active') && peekSession);
+  if (_km && (!open || _km.session !== peekSession)) _kmExit('peek-closed');
+  if (!open) return;
+  if (_kmIsToggle(e)) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (_km) _kmExit('toggle'); else _kmEnter(peekSession);
+    return;
+  }
+  if (!_km || _KM_MODIFIERS.has(e.key)) return;
+  const k = _kmKeyName(e);
+  if (!k) { _kmExit('typing'); return; } // falls through to the composer
+  e.preventDefault(); e.stopImmediatePropagation();
+  _kmArm();
+  _kmRender(k);
+  _kmSend(k);
+}
+// Capture on window runs before the composer's own keydown (history, newline)
+// and the document handler that closes the view on Escape.
+window.addEventListener('keydown', _kmKeydown, true);
+
 // ⌃F outside a text box opens the Mac app's Find bar (desktop/amux-find.swift);
 // in a text box it stays the Mac's move-forward and a terminal gets it as
 // usual. ⌘F reaches the app's Edit > Find on its own. A Hotkey bound to ⌃F
@@ -78545,6 +78649,8 @@ const _HK_ACTIONS = {
 const _HK_BUILTIN = [
   { combo: 'Mod+K', label: 'Search', desc: 'Open search from anywhere' },
   { combo: 'Mod+Enter', label: 'Send', desc: 'Send what you typed to the worker' },
+  { combo: /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'Ctrl+;' : 'Mod+;', label: 'Key mode',
+    desc: 'In a worker: arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker until you type something else' },
   { combo: 'Mod+S', label: 'Save', desc: 'Save in an editor (files, MDAI, card detail)' },
   { combo: 'Mod+=', label: 'Zoom in', desc: 'Make the page larger' },
   { combo: 'Mod+-', label: 'Zoom out', desc: 'Make the page smaller' },

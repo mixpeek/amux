@@ -2871,6 +2871,18 @@
   .peek-cmd-row .btn { min-height: 30px; padding: var(--space-1) var(--space-2-5); font-size: var(--fs-md); }
   .peek-composer-input { flex: 1; min-width: 0; position: relative; }
   .peek-composer-input .send-input { display: block; min-height: 44px; }
+  /* Key mode (Ctrl+;): keys go to the worker, so the composer says so. The
+     badge sits on the composer's top edge: no new row on a phone. */
+  .peek-composer-input.key-mode .send-input { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .keymode-badge {
+    position: absolute; top: 0; right: var(--space-2); transform: translateY(-50%);
+    display: flex; align-items: center; gap: var(--space-1-5); pointer-events: none;
+    padding: var(--space-0-5) var(--space-2); border-radius: var(--radius-pill);
+    background: var(--accent); color: var(--on-accent); font: 600 var(--fs-xs) var(--font-ui); white-space: nowrap;
+  }
+  .keymode-badge .keymode-last { font: inherit; padding: 0 var(--space-1); border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--on-accent) 22%, transparent); }
+  .keymode-badge .keymode-hint { opacity: .75; font-weight: 400; }
   .peek-cmd-row > .peek-more-wrap { align-self: flex-end; }
   .peek-cmd-row .peek-attach-btn { width: 44px; height: 44px; justify-content: center; }
   /* Mobile: 16px input font stops iOS Safari from zooming in on focus (both the
