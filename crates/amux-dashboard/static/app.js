@@ -2214,7 +2214,7 @@ function showConnHistory() {
       + blips.length + ' momentary fallback' + (blips.length === 1 ? '' : 's') + ' to polling, under '
       + Math.round(_CONN_BLIP_MS / 1000) + 's each, recovered automatically. Not listed above.</div></div>'
     : '';
-  const pending = offlineQueue.length + drafts.length;
+  const pending = offlineQueue.length + drafts.length + _dictPendingN;
   // Render pending outbox items inline in the connection modal so the user
   // can see what "N pending" means without opening a second modal (Ethan
   // 2026-09-14: "this should be in the 1 pending modal").
@@ -2244,10 +2244,22 @@ function showConnHistory() {
         + '<div style="flex:1;min-width:0;">Create &amp; start ' + esc(d.name) + '</div>'
         + '<span style="color:var(--dim);flex-shrink:0;font-size:var(--fs-sm);">draft</span></div>'
     ).join('');
+    // Dictation clips, the same rows: what is waiting, its error, one tap to send again.
+    const clipRows = _dictPendingRows.map(c => {
+      const age = Math.floor((Date.now() - (c.last || c.started || Date.now())) / 60000);
+      return '<div class="conn-clip-row" style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1) var(--space-0-5);font-size:var(--fs-md);">'
+        + '<span style="flex-shrink:0;">' + (c.error ? '🔴' : '🎙') + '</span>'
+        + '<div style="flex:1;min-width:0;"><div>' + esc(_dictClipLabel(c)) + '</div>'
+        + (c.error ? '<div style="color:var(--red);font-size:var(--fs-xs);">' + esc(c.error).substring(0, 100) + '</div>' : '')
+        + '</div>'
+        + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;font-size:var(--fs-sm);">' + (age < 1 ? 'just now' : age + 'm ago') + '</span>'
+        + ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>'
+        + '</div>';
+    }).join('');
     pendingHtml = '<div style="margin-top:var(--space-2-5);padding-top:var(--space-2);border-top:1px solid var(--border);">'
       + '<div style="display:flex;align-items:center;gap:var(--space-1-5);margin-bottom:var(--space-1);"><b style="font-size:var(--fs-lg);">Pending operations</b>'
       + '<span style="font-size:var(--fs-xs);color:var(--dim);">' + pending + '</span></div>'
-      + draftRows + itemRows
+      + draftRows + itemRows + clipRows
       // forceRetry, not runSyncBanner: replay skips blocked changes, and since
       // 07b42586 this modal is the only place a failed change is shown, so
       // its Retry has to re-arm them or a failed change can never be retried.
@@ -4600,11 +4612,11 @@ function updateConnectionStatus() {
       el.textContent = blockedCount + ' failed';
     } else if (!online) {
       el.className = 'conn-status offline';
-      const total = offlineQueue.length + drafts.length;
+      const total = offlineQueue.length + drafts.length + _dictPendingN;
       el.textContent = total ? total + ' pending' : 'Offline';
-    } else if (offlineQueue.some(_outboxNeedsAttention) || drafts.length) {
+    } else if (offlineQueue.some(_outboxNeedsAttention) || drafts.length || _dictAttentionN) {
       el.className = 'conn-status polling';
-      el.textContent = (offlineQueue.length + drafts.length) + ' pending';
+      el.textContent = (offlineQueue.length + drafts.length + _dictPendingN) + ' pending';
     } else if (_syncPillText) {
       el.className = 'conn-status polling';
       el.textContent = _syncPillText;
@@ -4878,7 +4890,7 @@ function _syncBackoffReset() { _syncBackoffMs = 0; }
 function _scheduleSyncRetry() {
   clearTimeout(_syncRetryTimer);
   const pending = offlineQueue.some(q => q.state !== 'blocked' || _outboxUncertainMessage(q)) || drafts.length || _uploadSyncPending
-    || _outboxOwnedMissing() > 0;
+    || _dictSyncPending || _outboxOwnedMissing() > 0;
   if (!pending) { _syncBackoffMs = 0; return; }
   _syncBackoffMs = _syncBackoffMs ? Math.min(_syncBackoffMs * 2, _SYNC_MAX_MS) : _SYNC_MIN_MS;
   _syncRetryTimer = setTimeout(() => { runSyncBanner(true); }, _syncBackoffMs);
@@ -5108,7 +5120,7 @@ function _connPillClick() {
   // sync checklist leaves blocked ops out on purpose, so sending the tap there
   // showed a list without the failure the badge named (AMUX-5371).
   const failed = offlineQueue.some(q => q.state === 'blocked' && !_outboxUncertainMessage(q));
-  const pending = offlineQueue.length || drafts.length || _syncPillText;
+  const pending = offlineQueue.length || drafts.length || _dictPendingN || _syncPillText;
   if (failed || !pending) return showConnHistory();
   // Pending work opens BOTH: the status modal (what is queued, connection
   // history, retry) and the checklist at the bottom. 0ccc6e06c (09-24) made a
@@ -5167,7 +5179,12 @@ async function _runSyncBanner(quiet = false, token = null) {
   _syncSetPhase('read_upload_list');
   const uploads = await _upqListBounded();
   _uploadSyncPending = uploads.length > 0;
-  const totalOps = draftCount + queue.length + uploads.length;
+  // Dictation clips ride the same pass as messages and uploads (owner,
+  // 2026-11-17): one checklist, one pending count, one retry loop. An automatic
+  // pass keeps each clip's backoff; a pass someone asked for sends them all.
+  _syncSetPhase('read_dictation_list');
+  const clips = await _dictSyncClips(!quiet);
+  const totalOps = draftCount + queue.length + uploads.length + clips.length;
   if (!totalOps) return;
 
   // Build item list
@@ -5175,6 +5192,7 @@ async function _runSyncBanner(quiet = false, token = null) {
   drafts.forEach(d => items.push({ key:'draft:' + d.name, label: 'Create & start "' + d.name + '"', status: 'pending', type: 'draft', draft: d }));
   queue.forEach(q => items.push({ key:'queue:' + q.id, label: describeOp(q), status: 'pending', type: 'queue', item: q }));
   uploads.forEach(file => items.push({ key:'upload:' + file.id, label: 'Upload ' + file.name, status: 'pending', type: 'upload', file }));
+  clips.forEach(clip => items.push({ key:'clip:' + clip.id, label: _dictClipLabel(clip), status: 'pending', type: 'clip', clip }));
 
   // A retry updates its rows; it must not erase already-acknowledged files or
   // blocked changes from the visible reconnect receipt. Dismiss starts a new list.
@@ -5392,6 +5410,31 @@ async function _runSyncBanner(quiet = false, token = null) {
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     renderBanner();
   }
+  const clipItems = items.filter(i => i.type === 'clip' && i.replay !== false);
+  if (clipItems.length && !_dictFlushing) {
+    _dictFlushing = Date.now();
+    _syncSetPhase('dictation');
+    let sent = 0;
+    try {
+      for (const item of clipItems) {
+        item.status = 'running'; renderBanner();
+        if (!quiet) await _dictOutboxPatch(item.clip.id, { attempts: 0, last: 0 });
+        if (await _dictTrySend(item.clip.id, false) !== null) { item.status = 'done'; sent++; }
+        else {
+          const now = (await _dictOutbox()).find(x => x.id === item.clip.id);
+          item.status = 'failed'; item.label += ' \u2014 ' + ((now && now.error) || 'not sent');
+        }
+        renderBanner();
+      }
+    } finally { _dictFlushing = 0; }
+    try { amuxTrack('dictation_sync_pass', {sent, failed: clipItems.length - sent, forced: quiet ? 0 : 1,
+      measured: true, n_considered: clipItems.length}); } catch (_) {}
+    if (sent) {
+      showToast(sent + ' queued dictation' + (sent === 1 ? '' : 's') + ' transcribed');
+      if (_peekTab === 'dictation') _dictLoad();
+    }
+  }
+  if (clips.length) await _dictPendingBadge();
   _uploadSyncPending = (await _upqListBounded()).length > 0;
   if (uploads.length) {
     _upqRenderBadge();
@@ -5749,7 +5792,7 @@ async function clearQueue() {
 }
 async function forceRetry() {
   closeQueueModal();
-  if (!offlineQueue.length && !drafts.length) return;
+  if (!offlineQueue.length && !drafts.length && !_dictPendingN) return;
   const rearmed = offlineQueue.filter(q => q.state === 'blocked').length;
   if (rearmed) {
     // A failed change re-armed by the owner: visible in /api/client-debug so a
@@ -5776,7 +5819,7 @@ async function forceRetry() {
 // Auto-retry queued ops when page becomes visible (returning from background on mobile)
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
-    if ((offlineQueue.length || drafts.length) && online) {
+    if ((offlineQueue.length || drafts.length || _dictPendingN) && online) {
       runSyncBanner();
     } else if (!online && navigator.onLine !== false) {
       consecutiveFailures = 0;
@@ -30318,7 +30361,12 @@ async function _dictFlushOffline() {
     }
   } finally { _dictFlushing = 0; }
 }
-async function _dictRetry(id) { await _dictOutboxPatch(id, { attempts: 0, last: 0 }); await _dictTrySend(id, true); }
+async function _dictRetry(id) {
+  await _dictOutboxPatch(id, { attempts: 0, last: 0 });
+  if (_dictFlushing) return showToast('Already sending queued recordings; this one is next');
+  await _dictTrySend(id, true);
+  await _dictPendingBadge();
+}
 
 // Play the stored audio back. You asked for it to feel like a recording — so the
 // clip is a thing you can hear before deciding to retry or bin it.
@@ -30332,10 +30380,39 @@ async function _dictPlay(id) {
   } catch(e) { showToast('Playback failed'); }
 }
 
+// The outbox's view of queued clips: kept in step by _dictPendingBadge, read
+// synchronously by the connection pill and its modal. `var`, because the pill
+// can render before this part of the file has run.
+var _dictPendingN = 0, _dictAttentionN = 0, _dictSyncPending = false, _dictPendingRows = [];
+function _dictClipLabel(c) {
+  const secs = Math.round((c.ms || 0) / 1000);
+  return 'Transcribe recording (' + secs + 's' + (c.session ? ', ' + c.session : '') + ')';
+}
+// Clips the sync pass should send now: not done, not mid-send, and (unless
+// someone asked) past their backoff. A clip left `sending` by a reload counts.
+async function _dictSyncClips(forced) {
+  const out = [];
+  for (const it of (await _dictOutbox())) {
+    if (it.state === 'done' || !it.blob) continue;
+    if (it.state === 'sending' && !_dictSendingStale(it)) continue;
+    if (!forced && !_dictReady(it)) continue;
+    if (it.state === 'sending') {
+      try { amuxTrack('dictation_stale_sending_recovered', {id: it.id, age_ms: Date.now() - (it.sending_at || 0),
+        had_sending_at: !!it.sending_at, bytes: (it.blob && it.blob.size) || 0, measured: true, n_considered: 1}); } catch (_) {}
+    }
+    out.push(it);
+  }
+  return out;
+}
 async function _dictPendingBadge() {
   let q = [];
   try { q = (await _idb.get('dict_pending')) || []; } catch(e) {}
   const n = q.filter(x => x.state !== 'done').length;
+  _dictPendingRows = q.filter(x => x.state !== 'done').map(({blob, ...rest}) => rest);
+  _dictPendingN = n;
+  _dictSyncPending = n > 0;
+  _dictAttentionN = _dictPendingRows.filter(x => x.error || (x.attempts || 0) >= _DICT_MAX_AUTO || _dictSendingStale(x)).length;
+  try { updateConnectionStatus(); } catch (e) { console.warn('dictation: the pending count did not repaint', e); }
   // Repaint the shared badge too: a clip added or drained changes the ONE
   // pending count, and the Files/Explore surfaces have no other trigger for it.
   try { _upqRenderBadge(); } catch (e) {}
@@ -30385,8 +30462,12 @@ function _dictOutboxHTML(q) {
   return h;
 }
 
-window.addEventListener('online', () => { setTimeout(_dictFlushOffline, 1500); });
-setInterval(() => { if (typeof online === 'undefined' || online) _dictFlushOffline(); }, 45000);
+// Queued clips go out with the outbox's own pass (runSyncBanner), which already
+// runs on reconnect and on its backoff timer; this tick only wakes it for clips.
+window.addEventListener('online', () => { setTimeout(() => { if (_dictPendingN) runSyncBanner(true); }, 1500); });
+setInterval(() => { if ((typeof online === 'undefined' || online) && _dictPendingN) runSyncBanner(true); }, 45000);
+// A clip queued before this page loaded counts from the start, not from the first Dictation open.
+setTimeout(() => { _dictPendingBadge().then(() => { if (_dictPendingN && (typeof online === 'undefined' || online)) runSyncBanner(true); }); }, 2000);
 
 // Put text in the composer (append, don't clobber) — never auto-send.
 function _dictInsert(text) {
