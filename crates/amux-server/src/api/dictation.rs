@@ -1537,9 +1537,10 @@ fn mlx_python_blocking() -> Option<String> {
         .clone()
 }
 
-/// Whether the MLX engine can run here: not turned off, model on disk, an
-/// interpreter with mlx_whisper.
-async fn mlx_available() -> bool {
+/// Whether the MLX engine is installed here: not turned off, model on disk, an
+/// interpreter with mlx_whisper. Takes no lock: `whisper_start` calls it with
+/// the WHISPER lock held (tokio's Mutex is not reentrant).
+async fn mlx_installed() -> bool {
     #[cfg(test)]
     if tests::WHISPER_OVERRIDE.lock().expect("whisper override").is_some() {
         return false;
@@ -1548,10 +1549,16 @@ async fn mlx_available() -> bool {
     if name.is_empty() || ["off", "none", "0"].contains(&name.to_lowercase().as_str()) {
         return false;
     }
-    if WHISPER.lock().await.mlx_failed || mlx_model_dir().is_none() {
+    if mlx_model_dir().is_none() {
         return false;
     }
     tokio::task::spawn_blocking(mlx_python_blocking).await.ok().flatten().is_some()
+}
+
+/// Installed, and its worker has not failed to start in this process.
+/// Takes the WHISPER lock: never call it while holding that lock.
+async fn mlx_available() -> bool {
+    !WHISPER.lock().await.mlx_failed && mlx_installed().await
 }
 
 /// The dictionary as plain terms for Whisper's prompt: correct spellings, then
@@ -1844,7 +1851,7 @@ pub(crate) async fn local_status() -> Result<String, String> {
 /// loading costs 0.6-2.6s, paying it per request would erase the latency
 /// win the local path exists for). Called with the WHISPER lock held.
 async fn whisper_start(st: &mut WhisperState) {
-    if mlx_available().await {
+    if !st.mlx_failed && mlx_installed().await {
         if let (Some(py), Some(dir)) = (tokio::task::spawn_blocking(mlx_python_blocking).await.ok().flatten(), mlx_model_dir()) {
             let cmd = tokio::process::Command::new(&py);
             if spawn_worker(st, cmd, MLX_WORKER_PY, &[("AMUX_MLX_MODEL_DIR", dir.to_string_lossy().into_owned()), ("HF_HUB_OFFLINE", "1".into())], "mlx-whisper").await {
@@ -2643,6 +2650,15 @@ pub(crate) mod tests {
         assert!(save_audio(0, "audio/webm", b"x").is_none(), "no row, no clip");
         remove_audio(990_001);
         assert!(!std::path::Path::new(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn the_mlx_install_check_takes_no_lock() {
+        // whisper_start runs with the WHISPER lock held and asks this; a check
+        // that took the lock again deadlocked the first clip (land review F1).
+        let _held = super::WHISPER.lock().await;
+        let r = tokio::time::timeout(std::time::Duration::from_secs(5), super::mlx_installed()).await;
+        assert!(r.is_ok(), "mlx_installed waited on the WHISPER lock");
     }
 
     #[test]
