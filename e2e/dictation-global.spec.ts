@@ -4,6 +4,7 @@
 // inside every worker's tab and read as per-worker; 2026-11-18: "it shouldnt be in
 // settings it should be its own tab on the global workers page").
 import { test, expect, Page } from './fixtures';
+import { cleanup } from './teardown';
 
 async function openWorkerDictation(page: Page) {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
@@ -21,6 +22,10 @@ test('a worker shows its History; the shared dictionary and settings open in the
       body: b ? JSON.stringify(b) : undefined });
     return { ok: r.ok, json: await r.json().catch(() => null) };
   }, [method, path, body]);
+  const removeWord = async () => {
+    const words = (await api('GET', '/api/dictation/dict')).json || [];
+    for (const w of words.filter((x: any) => x.word === word)) await api('DELETE', '/api/dictation/dict/' + w.id);
+  };
   await openWorkerDictation(page);
   expect((await api('POST', '/api/dictation/dict', { word, correct: '' })).ok).toBe(true);
   try {
@@ -50,8 +55,7 @@ test('a worker shows its History; the shared dictionary and settings open in the
     await row.locator('button[title="Delete"]').click();
     await expect(page.locator('#dict-dict-body')).not.toContainText(word);
   } finally {
-    const words = (await api('GET', '/api/dictation/dict')).json || [];
-    for (const w of words.filter((x: any) => x.word === word)) await api('DELETE', '/api/dictation/dict/' + w.id);
+    await cleanup('remove the test word from the shared dictionary', removeWord, info);
   }
 });
 
