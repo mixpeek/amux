@@ -464,6 +464,16 @@ pub async fn dictate(
         engine = "gemini";
     }
 
+    // Spoken lists come out as lists (owner, 2026-11-17: "the formatting stuff
+    // like Wispr Flow does, where I'm doing a list ... format the output
+    // accordingly"). Every engine's text passes here, the Mac app's included.
+    let listed = format_spoken_list(&text);
+    if listed != text {
+        tracing::info!(engine, items = listed.lines().filter(|l| l.starts_with(|c: char| c.is_ascii_digit())).count(),
+            measured = true, n_considered = 1, verdict = "dictation_list_formatted",
+            "[dictation] a spoken list was formatted as a numbered list");
+        text = listed;
+    }
     let words = text.split_whitespace().count() as i64;
     let ts = chrono::Utc::now().timestamp_millis();
     let slot: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
@@ -2354,6 +2364,62 @@ fn strip_core(chunk: &str) -> (String, String) {
 /// py:27558 `_dictation_fix_names` — map spoken session names back onto
 /// their exact spelling. Pure function over an explicit target list so
 /// tests can drive it hermetically; `dn_targets` supplies the live list.
+/// A spoken enumeration as a numbered list: "Two things. One is X. Two is
+/// that Y." becomes "Two things.\n1. X.\n2. Y.". A list needs at least two
+/// markers in order from one (one/first, two/second, ...), each opening a
+/// sentence, so "one of the" or a lone "first" in prose is left alone. Text
+/// before the first marker stays as the intro line; "is", "is that" and a
+/// comma or colon after a marker are dropped. Text with no such run is
+/// returned unchanged, so a transcript already formatted passes through.
+pub(crate) fn format_spoken_list(text: &str) -> String {
+    const WORDS: [(&str, usize); 30] = [
+        ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5), ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10),
+        ("first", 1), ("second", 2), ("third", 3), ("fourth", 4), ("fifth", 5), ("sixth", 6), ("seventh", 7), ("eighth", 8), ("ninth", 9), ("tenth", 10),
+        ("firstly", 1), ("secondly", 2), ("thirdly", 3), ("fourthly", 4), ("fifthly", 5), ("sixthly", 6), ("seventhly", 7), ("eighthly", 8), ("ninthly", 9), ("tenthly", 10),
+    ];
+    static MARK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = MARK.get_or_init(|| {
+        regex::Regex::new(r"(?i)(?:^|[.!?]\s+)(?:number\s+)?([a-z]+)(?:\s+is\s+that|\s+is|\s*[,:])?\s+").expect("list marker regex")
+    });
+    // (number, where the sentence starts, where the item text starts)
+    let mut marks: Vec<(usize, usize, usize)> = Vec::new();
+    for c in re.captures_iter(text) {
+        let (Some(all), Some(w)) = (c.get(0), c.get(1)) else { continue };
+        let Some(&(_, n)) = WORDS.iter().find(|(k, _)| k.eq_ignore_ascii_case(w.as_str())) else { continue };
+        // Bare "Two things" opens no item: a marker needs "is", a comma or a
+        // colon after it, or to be one of the -ly / "number" forms.
+        let tail = &text[w.end()..all.end()];
+        let bare = !tail.contains([',', ':']) && !tail.to_lowercase().contains("is");
+        if bare && !w.as_str().to_lowercase().ends_with("ly") && !all.as_str().to_lowercase().contains("number") {
+            continue;
+        }
+        let start = if all.start() == 0 { 0 } else { all.start() + 1 };
+        marks.push((n, start, all.end()));
+    }
+    // The run 1, 2, 3 ... in order, from the first "one".
+    let mut run: Vec<(usize, usize, usize)> = Vec::new();
+    for m in marks {
+        if m.0 == run.len() + 1 {
+            run.push(m);
+        }
+    }
+    if run.len() < 2 {
+        return text.to_string();
+    }
+    let mut out = text[..run[0].1].trim().to_string();
+    for (i, &(n, _, body)) in run.iter().enumerate() {
+        let end = run.get(i + 1).map(|r| r.1).unwrap_or(text.len());
+        let item = text[body..end].trim();
+        let mut cs = item.chars();
+        let item = cs.next().map(|f| f.to_uppercase().collect::<String>() + cs.as_str()).unwrap_or_default();
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("{n}. {item}"));
+    }
+    out
+}
+
 pub(crate) fn fix_names_with_targets(
     text: &str,
     targets: &[(String, String, String)],
@@ -2661,6 +2727,28 @@ pub(crate) mod tests {
         assert!(save_audio(0, "audio/webm", b"x").is_none(), "no row, no clip");
         remove_audio(990_001);
         assert!(!std::path::Path::new(&path).exists());
+    }
+
+    #[test]
+    fn a_spoken_list_comes_out_as_a_numbered_list() {
+        let said = "Two things. One is we want the formatting like Wispr Flow does. So that's important. \
+                    Two is that every input should be supported. Three is when I press the button, it should close.";
+        assert_eq!(
+            super::format_spoken_list(said),
+            "Two things.\n1. We want the formatting like Wispr Flow does. So that's important.\n\
+             2. Every input should be supported.\n3. When I press the button, it should close."
+        );
+        assert_eq!(super::format_spoken_list("First, buy milk. Second, call mom."), "1. Buy milk.\n2. Call mom.");
+        assert_eq!(super::format_spoken_list("Firstly we ship. Secondly we test."), "1. We ship.\n2. We test.");
+        for prose in [
+            "One of the workers is slow.",
+            "First, check the log. Then restart it.",
+            "Two things matter here. Three people agreed.",
+            "1. Already a list.\n2. Second item.",
+            "",
+        ] {
+            assert_eq!(super::format_spoken_list(prose), prose, "left alone: {prose}");
+        }
     }
 
     #[tokio::test]
