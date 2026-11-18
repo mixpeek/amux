@@ -34,7 +34,7 @@ function fixture(names = [], shared = {}) {
       removeItem(k) { stored.delete(k); }, key(i) { return [...stored.keys()][i] ?? null; }, get length() { return stored.size; }},
     setTimeout(fn, delay) { timers.set(++tid, fn); timerDelays.set(tid, delay); return tid; }, clearTimeout(id) { timers.delete(id); timerDelays.delete(id); },
     API: '', offlineQueue: [], drafts: [], online: true, _syncFlight: null, _syncRetryTimer: null, _syncBackoffMs: 0, _SYNC_MIN_MS: 2000, _SYNC_MAX_MS: 60000, _OUTBOX_STALLED_MS:600000,
-    _interactionReplay:q => ({id:q.id}), _interactionAcknowledge:async () => {}, _interactionSet() {}, _upqList:async () => [], _uploadSyncPending:false, _syncChecklist:[], _localWriteError: '', _syncBannerRequested: false, _syncBannerAuto: false, _syncChecklistAt: 0, _syncPillText: '', peekSession: null, _swOfflineNotice: null,
+    _interactionReplay:q => ({id:q.id}), _interactionAcknowledge:async () => {}, _interactionSet() {}, _upqList:async () => [], _uploadSyncPending:false, _dictSyncClips:async () => [], _dictPendingBadge:async () => {}, _dictPendingN:0, _dictAttentionN:0, _dictSyncPending:false, _dictPendingRows:[], _dictFlushing:0, _syncChecklist:[], _localWriteError: '', _syncBannerRequested: false, _syncBannerAuto: false, _syncChecklistAt: 0, _syncPillText: '', peekSession: null, _swOfflineNotice: null,
     // Chat tab (AMUX-5350): no chat open, every worker renders as a terminal.
     _chat: {name: null}, _chatShowing: () => false, _workerRenderer: () => 'terminal', _workersAsOfNote: () => '',
     window:{isSecureContext:true}, APP_VER:'test', _writeError: '', _outboxActive: new Set(), _bdSaveRequests: new Set(), consecutiveFailures: 0,
