@@ -58,7 +58,7 @@
     "oxlint-tsgolint": "7.0.2001",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
-    "vite": "8.2.2",
+    "vite": "8.3.8",
     "wrangler": "4.130.0"
   },
   "type": "module",
