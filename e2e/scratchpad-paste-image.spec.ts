@@ -82,3 +82,27 @@ test('an image pasted into the capture box while typing goes into the note', asy
   const body = await (await page.request.get('/api/file?path=' + encodeURIComponent(dir + '/' + note), { headers: auth })).json();
   expect(String(body.content)).toContain('![](' + name + ')');
 });
+
+// AF-1261: a paste made before the scratchpad config answered went to the
+// fallback folder: "not a directory" on CI, the wrong folder on an install
+// with a configured one. The page is put back in its before-config state and
+// the config answer is held, so the paste lands first; the image must still
+// go to the configured folder.
+test('an image pasted before the scratchpad folder is known still goes to that folder', async ({ page }) => {
+  test.setTimeout(90_000);
+  await openScratchpad(page);
+  const auth = { Authorization: `Bearer ${await token(page)}` };
+  const dir = await scratchpadDir(page.request, auth);
+  await page.route(/\/api\/scratchpad\/config(?:\?.*)?$/, async r => { await new Promise(res => setTimeout(res, 2500)); await r.continue(); });
+  await page.evaluate(() => {
+    const g = globalThis as any;
+    try { localStorage.removeItem('amux_sp_root'); } catch (e) { console.warn('test: no localStorage', e); }
+    g.eval("_spRootRead = null; _SP_ROOT = '~/sp-fallback-not-here'; _spPath = _SP_ROOT;");
+  });
+  const box = page.locator('#sp-capture');
+  await box.fill('early paste ');
+  await pasteImage(page, '#sp-capture');
+  await expect.poll(async () => linkIn(await box.inputValue())).not.toBe('');
+  const name = linkIn(await box.inputValue());
+  await expect.poll(async () => (await page.request.get('/api/file/raw?path=' + encodeURIComponent(dir + '/' + name), { headers: auth })).status(), { timeout: 20_000 }).toBe(200);
+});

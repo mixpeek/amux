@@ -37811,7 +37811,11 @@ function _spHandlePaste(e, box) {
   const text = e.clipboardData?.getData('text/plain') || '';
   if (box && box.value.trim()) {
     // Typing: an image goes into the note, saved beside it (Ethan, 2026-11-08).
-    if (images.length) _pasteImagesIntoNote(e, box, _spPath.replace(/\/$/, ''));
+    // The folder is read only after the config answer (_spLoadRoot), as every
+    // other scratchpad write does: a paste made before it went to the fallback
+    // folder ("not a directory" on CI, AF-1261; the wrong folder on an install
+    // with a configured one).
+    if (images.length) _pasteImagesIntoNote(e, box, async () => { await _spLoadRoot(); return _spPath.replace(/\/$/, ''); });
     return;
   }
   if (!images.length && !text.trim()) return;
@@ -37841,7 +37845,8 @@ function _pasteImagesIntoNote(e, ta, dir) {
   ta.value = before + lead + ins + '\n' + ta.value.slice(en);
   ta.selectionStart = ta.selectionEnd = s + lead.length + ins.length + 1;
   ta.dispatchEvent(new Event('input', { bubbles: true }));
-  _uploadOrQueue(named, dir, 'file').then(({ queued, failed }) => {
+  // `dir` is a folder, or a function that resolves one once it is known.
+  Promise.resolve(typeof dir === 'function' ? dir() : dir).then(d => _uploadOrQueue(named, d, 'file')).then(({ queued, failed }) => {
     if (window._clientDebug) window._clientDebug('note-paste-image', { verdict: failed ? 'upload_failed' : 'queued', measured: true, n_considered: named.length, queued, failed });
     if (failed) showToast('Could not save the pasted image');
   });
