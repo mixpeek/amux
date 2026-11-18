@@ -1537,6 +1537,11 @@ fn mlx_python_blocking() -> Option<String> {
         .clone()
 }
 
+/// The engine name local dictation runs as: "mlx-whisper" or "whisper".
+pub(crate) async fn local_engine_name() -> &'static str {
+    if mlx_available().await { "mlx-whisper" } else { "whisper" }
+}
+
 /// Whether the MLX engine is installed here: not turned off, model on disk, an
 /// interpreter with mlx_whisper. Takes no lock: `whisper_start` calls it with
 /// the WHISPER lock held (tokio's Mutex is not reentrant).
@@ -2472,6 +2477,7 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
                 Err(e) => return internal(e),
             };
             let local = whisper_available().await;
+            let mlx = local && mlx_available().await;
             py_json_response(
                 StatusCode::OK,
                 &[
@@ -2481,13 +2487,15 @@ pub async fn config(State(state): State<AppState>, req: Request) -> Response {
                     ("local", json!(local)),
                     (
                         "local_model",
-                        json!(if local {
+                        json!(if mlx {
+                            mlx_model_name()
+                        } else if local {
                             whisper_model_name()
                         } else {
                             String::new()
                         }),
                     ),
-                    ("engine", json!(if local { "whisper" } else { "gemini" })),
+                    ("engine", json!(if mlx { "mlx-whisper" } else if local { "whisper" } else { "gemini" })),
                 ],
             )
         }

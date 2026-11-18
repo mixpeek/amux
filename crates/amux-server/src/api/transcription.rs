@@ -155,7 +155,7 @@ async fn status(state: &AppState) -> anyhow::Result<Value> {
         "setting": SETTING,
         "choices": ["auto", "local", "gemini"],
         "gemini": {"configured": gemini, "source": if gemini { src } else { "none" }, "model": super::dictation::dictation_model()},
-        "dictate": {"uses": engine_name(&d, "whisper"), "local": match &dictate_local { Ok(m) => json!({"available": true, "model": m}), Err(w) => json!({"available": false, "why": w}) }},
+        "dictate": {"uses": engine_name(&d, super::dictation::local_engine_name().await), "local": match &dictate_local { Ok(m) => json!({"available": true, "model": m}), Err(w) => json!({"available": false, "why": w}) }},
         "recordings": {"uses": engine_name(&r, "whisper.cpp"), "local": match &rec_local { Ok(m) => json!({"available": true, "model": m}), Err(w) => json!({"available": false, "why": w}) }},
     }))
 }

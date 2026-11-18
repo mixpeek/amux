@@ -95,3 +95,23 @@ test('the Dictation tab opens from the main tab strip and from its address', asy
   await expect(page.locator('#dictation-view')).toBeVisible();
   await expect(page.locator('#tab-dictation')).toHaveClass(/active/);
 });
+
+// The page says which engine actually transcribes, from GET /api/transcription
+// (owner, 2026-11-18: "Make sure the dictation tab global tab page is accurate").
+test('the Dictation tab names the engine that runs and what it falls back to', async ({ page }) => {
+  const status = (dictate: any, engine = 'auto') => ({ choices: ['auto', 'local', 'gemini'], engine,
+    gemini: { configured: true, model: 'gemini-2.5-flash', source: 'server' }, dictate,
+    recordings: { local: { available: true, model: 'ggml-base.en.bin' }, uses: { available: true, engine: 'whisper.cpp' } } });
+  let reply: any = status({ local: { available: true, model: 'mlx-community/whisper-large-v3-turbo (MLX)' }, uses: { available: true, engine: 'mlx-whisper' } });
+  await page.route(/\/api\/transcription$/, r => r.fulfill({ json: reply }));
+  await openWorkerDictation(page);
+  await page.locator('#dict-open-settings').click();
+  await expect(page.locator('#dict-engine-now')).toHaveText('Whisper large-v3-turbo on this Mac (MLX, GPU)');
+  await expect(page.locator('#dict-engine-fallback')).toHaveText("Gemini (gemini-2.5-flash, this server's key) when the local engine cannot answer");
+
+  // No local engine: Gemini is what runs, and the page says why local is not.
+  reply = status({ local: { available: false, why: "no Whisper 'base' model in ~/.amux/models/whisper" }, uses: { available: true, engine: 'gemini' } });
+  await page.evaluate(() => (globalThis as any).eval('_dictGlobalLoad')());
+  await expect(page.locator('#dict-engine-now')).toHaveText("Gemini (gemini-2.5-flash, this server's key)");
+  await expect(page.locator('#dict-engine-fallback')).toContainText('Local engine unavailable');
+});

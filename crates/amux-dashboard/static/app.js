@@ -29772,12 +29772,13 @@ function _dictRenderGlobal() {
 // The Dictation tab opened: the dictionary, key source and settings, fresh.
 async function _dictGlobalLoad() {
   try {
-    const [d, c] = await Promise.all([
+    const [d, c, tx] = await Promise.all([
       fetch(API + '/api/dictation/dict', { headers: _authHeaders() }).then(r => r.json()),
       fetch(API + '/api/dictation/config', { headers: _authHeaders() }).then(r => r.json()),
+      fetch(API + '/api/transcription', { headers: _authHeaders() }).then(r => r.json()).catch(() => null),
       _dictSettingsLoad(),
     ]);
-    _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {};
+    _dictWords = Array.isArray(d) ? d : []; _dictCfg = c || {}; _dictTx = tx;
   } catch (e) { console.warn('dictation: the dictionary did not load', e); }
   _dictRenderDict();
   _dictRenderSettings();
@@ -29848,7 +29849,10 @@ async function _dictStartRec() {
   if (_dictRecording) return;
   try { _dictBus?.postMessage({ op: 'start', tab: _dictTabId }); } catch (e) { console.warn('dictation: could not tell other tabs', e); }
   const nat = _dictNativeBridge();
-  if (nat && !_dictSettings) await _dictSettingsEnsure();
+  // Never wait on the settings read here: a take that started late let a quick
+  // hold-and-release of the Globe key land before its start, so the take ran on.
+  // They load at boot (below); a first take before that uses the default mic.
+  if (nat && !_dictSettings) _dictSettingsEnsure();
   if (nat) { _dictNativeStart(nat); return; }
   if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('Recording not supported in this browser'); return; }
   _dictCancelled = false;
@@ -30494,6 +30498,9 @@ function _dictOutboxHTML(q) {
 // runs on reconnect and on its backoff timer; this tick only wakes it for clips.
 window.addEventListener('online', () => { setTimeout(() => { if (_dictPendingN) runSyncBanner(true); }, 1500); });
 setInterval(() => { if ((typeof online === 'undefined' || online) && _dictPendingN) runSyncBanner(true); }, 45000);
+// The Mac app is told the saved microphone on each take's start; read it now so
+// the first take has it without waiting.
+if (typeof _dictNativeBridge === 'function' && _dictNativeBridge()) setTimeout(() => { _dictSettingsLoad(); }, 0);
 // A clip queued before this page loaded counts from the start, not from the first Dictation open.
 setTimeout(() => { _dictPendingBadge().then(() => { if (_dictPendingN && (typeof online === 'undefined' || online)) runSyncBanner(true); }); }, 2000);
 
@@ -30746,12 +30753,42 @@ async function _dictDelWord(id) {
 }
 
 // ── Settings (BYO key) ──
+// What actually transcribes, from GET /api/transcription (the same status the
+// server's engine choice reads), so the page cannot claim an engine that is
+// not the one running (owner, 2026-11-18: "make sure the dictation tab ... is
+// accurate").
+var _dictTx = null;
+function _dictEngineLabel(engine, model) {
+  const m = String(model || '').replace(/^mlx-community\//, '').replace(/ \(MLX\)$/, '');
+  if (engine === 'mlx-whisper') return 'Whisper ' + m.replace(/^whisper-/, '') + ' on this Mac (MLX, GPU)';
+  if (engine === 'whisper') return 'Whisper ' + m + ' on this Mac (CPU)';
+  if (engine === 'gemini') return 'Gemini (' + (_dictTx?.gemini?.model || 'cloud') + ')';
+  return '';
+}
+function _dictEngineRows() {
+  const tx = _dictTx;
+  if (!tx || !tx.dictate) return '<div class="dict-set-row"><b>Engine</b><span>Could not read the engine status</span></div>';
+  const uses = tx.dictate.uses || {}, local = tx.dictate.local || {}, gem = tx.gemini || {};
+  const keyFrom = gem.source === 'byo' ? 'your own key' : gem.source === 'server' ? "this server's key" : '';
+  const now = uses.available
+    ? (uses.engine === 'gemini' ? 'Gemini (' + esc(gem.model || '') + ', ' + keyFrom + ')' : esc(_dictEngineLabel(uses.engine, local.model)))
+    : 'Nothing can transcribe: ' + esc(uses.why_unavailable || 'no engine');
+  let fallback = '';
+  if (uses.engine !== 'gemini' && uses.available) {
+    fallback = tx.engine === 'local' ? 'None: the setting is Local only'
+      : gem.configured ? 'Gemini (' + esc(gem.model || '') + ', ' + keyFrom + ') when the local engine cannot answer'
+      : 'None: no Gemini key is set';
+  } else if (!local.available && local.why) {
+    fallback = 'Local engine unavailable: ' + esc(local.why);
+  }
+  return '<div class="dict-set-row dict-set-gap"><b>Browser and phone</b><span id="dict-engine-now">' + now + '</span></div>'
+    + (fallback ? '<div class="dict-set-row"><b>' + (uses.engine === 'gemini' ? 'Local' : 'Fallback') + '</b><span id="dict-engine-fallback">' + fallback + '</span></div>' : '')
+    + '<div class="dict-set-row"><b>Mac app</b><span>Apple on-device speech, then the same name and dictionary pass</span></div>';
+}
 function _dictRenderSettings() {
   const body = document.getElementById('dict-set-body');
   if (!body) return;
   const c = _dictCfg || {};
-  const using = c.source === 'byo' ? 'your own Gemini key'
-    : c.source === 'server' ? "this amux server's Gemini key" : 'nothing configured';
   const ds = _dictSettings || { mic: '', context: '', workers: true, contacts: false };
   const src = _dictSources || {};
   // A repaint (the tab's background reload) keeps context typed but not saved yet.
@@ -30770,11 +30807,10 @@ function _dictRenderSettings() {
     + '<div class="dict-sethint">About you and what you talk about: names, products, jargon. Dictation uses it to settle unclear words.</div>'
     + '<textarea id="dict-context" class="input dict-context" rows="4" maxlength="4000" placeholder="e.g. I run Mixpeek; I talk about amux workers, Rust, GKE and our customers TubeScience and Wexus.">' + esc(ds.context || '') + '</textarea>'
     + '<div class="dict-set-actions"><button class="btn primary" id="dict-context-save" onclick="_dictSettingsSave({context:(document.getElementById(\'dict-context\')||{}).value||\'\'})">Save context</button></div>'
-    + '<div class="dict-set-row dict-set-gap"><b>Transcription</b><span>' + esc(c.model || '') + '</span></div>'
-    + '<div class="dict-set-row"><b>Currently using</b><span>' + using + '</span></div>'
+    + _dictEngineRows()
     + '<div class="dict-sethint">Which engine Dictate and Recordings use is one setting: '
     + '<button type="button" class="btn" onclick="_transcriptionOpenSettings()">Transcription settings</button></div>'
-    + '<div class="dict-sethint">Bring your own Gemini API key (optional). If set, amux uses it instead of the '
+    + '<div class="dict-sethint">Bring your own Gemini API key for the Gemini engine (optional). If set, amux uses it instead of the '
     + 'server\'s key. It is stored on the amux server and is <b>never sent back to any browser</b>. '
     + 'Get one at <span style="color:var(--accent)">aistudio.google.com/apikey</span>.</div>'
     + '<div style="display:flex;gap:var(--space-2);margin-top:var(--space-2);">'
@@ -30784,7 +30820,7 @@ function _dictRenderSettings() {
     + (c.source === 'byo' ? '<button class="btn" onclick="_dictClearKey()">Remove</button>' : '')
     + '</div>'
     + '<div class="dict-sethint" style="margin-top:var(--space-3-5);">Audio never touches this page’s JavaScript beyond the '
-    + 'recording itself — it is uploaded to your amux server, which calls Gemini and returns only text.</div>'
+    + 'recording itself: it is uploaded to your amux server, which transcribes it on this Mac (Gemini only when the engine above says so) and returns only text.</div>'
     + '</div>';
   if (typed !== null) { const ta = document.getElementById('dict-context'); if (ta) ta.value = typed; }
   _dictRenderMicPicker();

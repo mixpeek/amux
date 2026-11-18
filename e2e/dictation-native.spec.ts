@@ -87,6 +87,9 @@ test('the text still goes in when the server cannot be reached, and a selection 
   await input.evaluate((t: HTMLTextAreaElement) => t.setSelectionRange(4, 9));
   await page.route('**/api/dictate', route => route.fulfill({ status: 500, json: { error: 'down' } }));
   await page.evaluate(() => (window as any)._hkNativeKey('Globe Hold', {}));
+  // Each take is started (after the saved settings are read) before the app answers it.
+  const starts = async () => (await asked(page)).filter(op => op === 'start').length;
+  await expect.poll(starts).toBe(1);
   await page.evaluate(() => (window as any)._hkNativeKey('Globe Release'));
   await app(page, { type: 'done', text: 'right', ms: 900, finish_ms: 40 });
   await expect(input).toHaveValue('say right here');
@@ -94,6 +97,7 @@ test('the text still goes in when the server cannot be reached, and a selection 
   // Words dictated before a word get a space after them.
   await input.evaluate((t: HTMLTextAreaElement) => { t.value = 'world'; t.setSelectionRange(0, 0); });
   await page.evaluate(() => (window as any)._hkNativeKey('Globe Hold', {}));
+  await expect.poll(starts).toBe(2);
   await page.evaluate(() => (window as any)._hkNativeKey('Globe Release'));
   await app(page, { type: 'done', text: 'Hello', ms: 900, finish_ms: 40 });
   await expect(input).toHaveValue('Hello world');
@@ -117,6 +121,10 @@ test('a take that fails says why in the pill, then the pill goes', async ({ page
   await settle(page);
   await box(page, '', 0);
   await page.evaluate(() => (window as any)._hkNativeKey('Globe Hold', {}));
+  // The app answers a take it was asked to start: the page reads the saved
+  // dictation settings first, so an error sent before that start was
+  // overwritten by it and the pill never closed.
+  await expect.poll(() => asked(page)).toContain('start');
   await app(page, { type: 'error', why: 'The microphone is off for amux.' });
   await expect(page.locator('#dict-popup-status')).toHaveText('The microphone is off for amux.');
   await expect(page.locator('#dict-popup')).not.toHaveClass(/open/, { timeout: 6000 });
@@ -130,7 +138,7 @@ test('with Wispr Flow running, holding 🌐 is left to it and amux says so once'
   await expect(page.locator('.toast', { hasText: 'Wispr Flow' })).toHaveCount(1);
   // 🌐🌐 still dictates with amux.
   expect(await page.evaluate(() => (window as any)._hkNativeKey('Globe Globe', { wispr: true }))).toBe('ran');
-  expect(await asked(page)).toEqual(['start']);
+  await expect.poll(() => asked(page)).toEqual(['start']);
   await page.evaluate(() => (window as any)._dictClosePopup(true));
 });
 
