@@ -57,4 +57,13 @@ test('a clip that can no longer be read says so once, sends nothing, and offers 
   expect(html).toContain('_dictOutboxDel(');
   const auto = await page.evaluate(async () => ((await (globalThis as any).eval('_dictSyncClips')(true)) || []).length);
   expect(auto, 'the automatic pass leaves it alone').toBe(0);
+  // The connection modal offers no Send again for it either (land review F2).
+  await page.evaluate(() => (globalThis as any).eval('_dictPendingBadge')());
+  const rows = await page.evaluate(() => (globalThis as any).eval('_dictPendingRows'));
+  expect(rows.map((r: any) => r.state)).toEqual(['unreadable']);
+  expect(rows.some((r: any) => 'bytes' in r || 'blob' in r), 'the rows carry no audio').toBe(false);
+  await page.locator('#conn-status').click();
+  const clip = page.locator('#conn-hist-modal .conn-clip-row');
+  await expect(clip).toContainText('can no longer be read');
+  await expect(clip.getByRole('button', { name: 'Send again' })).toHaveCount(0);
 });

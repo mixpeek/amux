@@ -2253,7 +2253,8 @@ function showConnHistory() {
         + (c.error ? '<div class="conn-clip-err">' + esc(c.error).substring(0, 100) + '</div>' : '')
         + '</div>'
         + '<span class="conn-clip-age">' + (age < 1 ? 'just now' : age + 'm ago') + '</span>'
-        + ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>'
+        // An unreadable clip has nothing to send again; it can only be deleted.
+        + (c.state === 'unreadable' ? '' : ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>')
         + '</div>';
     }).join('');
     pendingHtml = '<div style="margin-top:var(--space-2-5);padding-top:var(--space-2);border-top:1px solid var(--border);">'
@@ -30284,8 +30285,15 @@ async function _dictTrySend(id, interactive) {
   // Read the audio before sending it. A clip whose stored copy can no longer be
   // read made fetch reject at once ("Load failed") with nothing sent, so Retry
   // could never work; it now says what happened, once.
-  let body;
-  try { body = await it.blob.arrayBuffer(); }
+  // Bounded: on WebKit a broken stored file can hang a read instead of failing
+  // it, which held the send pass and blocked Retry ("Already sending queued
+  // recordings; this one is next", owner's iPhone, 2026-11-18).
+  let body, readTimer;
+  try {
+    body = await Promise.race([it.blob.arrayBuffer(), new Promise((_, reject) => {
+      readTimer = setTimeout(() => reject(Object.assign(new Error('the read did not finish'), { name: 'ReadTimeout' })), 15000);
+    })]);
+  }
   catch (e) {
     const why = String((e && (e.name || e.message)) || 'unreadable').slice(0, 80);
     await _dictOutboxPatch(id, { state: 'unreadable', error: 'The recording on this device can no longer be read' });
@@ -30293,7 +30301,7 @@ async function _dictTrySend(id, interactive) {
     if (interactive) _dictStatus('This recording can no longer be read on this device. Delete it.');
     if (_peekTab === 'dictation') _dictRender();
     return null;
-  }
+  } finally { clearTimeout(readTimer); }
   await _dictOutboxPatch(id, { state: 'sending', sending_at: Date.now() });
   if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
   if (_peekTab === 'dictation') _dictRender();
@@ -30426,7 +30434,7 @@ async function _dictPendingBadge() {
   let q = [];
   try { q = (await _idb.get('dict_pending')) || []; } catch(e) {}
   const n = q.filter(x => x.state !== 'done').length;
-  _dictPendingRows = q.filter(x => x.state !== 'done').map(({blob, ...rest}) => rest);
+  _dictPendingRows = q.filter(x => x.state !== 'done').map(({blob, bytes, ...rest}) => rest);
   _dictPendingN = n;
   _dictSyncPending = n > 0;
   _dictAttentionN = _dictPendingRows.filter(x => x.error || (x.attempts || 0) >= _DICT_MAX_AUTO || _dictSendingStale(x)).length;
