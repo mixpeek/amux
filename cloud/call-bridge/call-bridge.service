@@ -1,0 +1,18 @@
+# /etc/systemd/system/amux-call-bridge.service on the cloud host.
+# Keys live in /etc/amux/call-bridge.env (XAI_API_KEY, TWILIO_ACCOUNT_SID,
+# TWILIO_AUTH_TOKEN, BRIDGE_SECRET, BRIDGE_PUBLIC_URL=https://cloud.amux.io/call-bridge).
+[Unit]
+Description=amux call bridge (Twilio <-> xAI realtime voice)
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/amux/call-bridge.env
+Environment=BRIDGE_HOST=127.0.0.1 BRIDGE_PORT=8790
+ExecStart=/usr/bin/python3 /opt/amux/call-bridge/bridge.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/amux-call-bridge.log
+StandardError=append:/var/log/amux-call-bridge.log
+
+[Install]
+WantedBy=multi-user.target
