@@ -1005,7 +1005,41 @@ impl EnvFile {
 }
 
 pub(crate) fn parse_env(name: &str) -> EnvFile {
-    EnvFile::load(&env_path(name))
+    if let Some(hit) = ENV_MEMO.with(|m| m.borrow().as_ref().and_then(|m| m.get(name).cloned())) {
+        return hit;
+    }
+    let env = EnvFile::load(&env_path(name));
+    ENV_MEMO.with(|m| {
+        if let Some(m) = m.borrow_mut().as_mut() {
+            m.insert(name.to_string(), env.clone());
+        }
+    });
+    env
+}
+
+thread_local! {
+    static ENV_MEMO: std::cell::RefCell<Option<std::collections::HashMap<String, EnvFile>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with each worker's env file read from disk at most once. A roster
+/// asks the send check about every pair of workers, and each check re-read
+/// several env files: at every server start (every deploy) composing all 65
+/// workers' rosters read about 25,000 files and held amux-server-rs over 300%
+/// CPU on two cleanup ticks in a row (Mac RCA 20261118-153034). Nested calls
+/// share the outer memo; it is dropped when the outermost call returns.
+pub(crate) fn with_env_memo<T>(f: impl FnOnce() -> T) -> T {
+    let outer = ENV_MEMO.with(|m| m.borrow().is_some());
+    if !outer {
+        ENV_MEMO.with(|m| *m.borrow_mut() = Some(std::collections::HashMap::new()));
+    }
+    let out = f();
+    if !outer {
+        let read = ENV_MEMO.with(|m| m.borrow_mut().take().map(|m| m.len()).unwrap_or(0));
+        tracing::debug!(env_files_read = read, measured = true, n_considered = read, verdict = "env_memo_scope",
+            "a listing read each worker env file once");
+    }
+    out
 }
 
 /// One setting for a lane, resolved WORKER > GROUP > GLOBAL (AMUX-2930).
@@ -19683,6 +19717,28 @@ fn intent_helper_archive_refusal(name: &str, body: &Value) -> Option<Value> {
 }
 
 #[cfg(test)]
+mod env_memo_tests {
+    use super::{parse_env, with_env_memo};
+
+    #[test]
+    fn a_listing_reads_each_env_file_once_and_only_inside_the_scope() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let name = "memo-probe".to_string();
+        let path = super::env_path(&name);
+        std::fs::write(&path, "CC_TAGS=ops\n").unwrap();
+        with_env_memo(|| {
+            assert_eq!(parse_env(&name).get("CC_TAGS"), Some("ops"));
+            std::fs::write(&path, "CC_TAGS=admin\n").unwrap();
+            assert_eq!(parse_env(&name).get("CC_TAGS"), Some("ops"), "the second read is the memo, not the disk");
+            with_env_memo(|| assert_eq!(parse_env(&name).get("CC_TAGS"), Some("ops"), "a nested scope shares it"));
+        });
+        assert_eq!(parse_env(&name).get("CC_TAGS"), Some("admin"), "outside the scope every read is fresh");
+    }
+}
+
+#[cfg(test)]
 mod env_merge_keeps_text_tests {
     use super::EnvFile;
 
@@ -21758,9 +21814,9 @@ fn reachable_lanes(
     me: &str,
     lanes: &[(String, std::collections::HashMap<String, String>)],
 ) -> Vec<(String, std::collections::HashMap<String, String>)> {
-    super::worker_messaging::without_refusal_logs(|| {
+    super::worker_messaging::without_refusal_logs(|| with_env_memo(|| {
         lanes.iter().filter(|(n, _)| n == me || peer_input_refusal(me, n).is_none()).cloned().collect()
-    })
+    }))
 }
 
 /// The longest description the roster prints. Descriptions are meant to be one
@@ -30872,7 +30928,9 @@ pub(crate) fn send_origin_for(origin: &str, name: &str) -> SendOrigin {
 pub(crate) fn speaks_for_owner(origin: &str) -> bool {
     if chat_speaks_for_owner(origin) { return true; }
     let admin = is_admin_worker(origin);
-    if admin {
+    // A roster asking who a worker may reach passes no gate; logging it wrote
+    // 2,250 INFO lines per server start (Mac RCA 20261118-153034).
+    if admin && !super::worker_messaging::quiet() {
         tracing::info!(origin, verdict = "admin_group_owner_reach", measured = true, n_considered = 1,
             "an admin-group worker passed an owner-only gate");
     }

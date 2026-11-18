@@ -64,6 +64,12 @@ fn logging() -> bool {
     !QUIET.with(|q| q.get())
 }
 
+/// True inside `without_refusal_logs`: the caller is building a listing, not
+/// passing a real message through a gate.
+pub(crate) fn quiet() -> bool {
+    QUIET.with(|q| q.get())
+}
+
 pub(crate) fn worker_group_refusal(
     origin: &str, target: &str,
     origin_groups: &std::collections::BTreeSet<String>,
