@@ -26,6 +26,14 @@ class LevelPrepTests(unittest.TestCase):
         self.assertEqual(classify(self.card(type="chore", title="inventory filenames"))["level"], 0)
         self.assertEqual(classify(self.card(type="code", title="inventory filenames"))["level"], 2)
 
+    def test_review_regressions(self):
+        self.assertEqual(classify(self.card(type="chore", title="list files and investigate discrepancies"))["level"], 2)
+        self.assertEqual(classify(self.card(type="chore", title="list files", desc="Investigate discrepancies"))["level"], 2)
+        for suffix in ("", " ", "\nnot a verification command"):
+            self.assertEqual(classify(self.card(type="code", desc="one change scripts/example.py\nVERIFY:" + suffix))["level"], 2)
+        self.assertEqual(classify(self.card(type="code", desc="one change scripts/example.py\nVERIFY: python scripts/example.py"))["level"], 1)
+        self.assertEqual(classify(self.card(type="code", desc="sealed file, one change scripts/example.py\nVERIFY: python scripts/example.py"))["level"], 3)
+
     def test_invalid_records_and_duplicates(self):
         for payload in (None, {}, {"cards": {}}, {"cards": [None]}, {"cards": [{"title": "x"}]}, {"cards": [self.card(id=" ")]}, {"cards": [self.card(), self.card()]}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
