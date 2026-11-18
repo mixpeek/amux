@@ -6262,3 +6262,15 @@ CARD: AF-1243
 SYMPTOM: mixpeek-research (groups infra, new-features, ops) sent amux-frustrations (group amux) a FRUSTRATION ending "ask: fix or decline", and it arrived. After the fix landed (5dbfb5370), `amux send mixpeek-research` answered "worker group boundary refused ... Do not retry or reroute to another outside-group worker".
 COST: the reporter cannot learn its ask was answered; the answer sits only on AF-1242, which it does not read. One more round trip for the owner to relay it, or a lost close.
 FIX: allow one reply to a message whose server-stamped origin is the recipient, or have an inbound report name the card where its answer will be written.
+
+## A cleanup deleted another lane's paused colima VM, because nothing says who owns a VM or why it is stopped
+AREA: resources
+SEVERITY: loses-work
+STATUS: open
+DATE: 2026-11-17
+SESSION: backend
+CARD: AF-1273
+SYMPTOM: At 20:00:05 ET the desktop worker ran `colima delete` on mixpeek-hikes, goal-shared and gs12-local to free disk (228G to 490G). mixpeek-hikes was backend's local Mixpeek stack, stopped about 3 minutes earlier to relieve memory. Its data volume (scratch namespaces of manifest-loop runs 1 to 8, plugin records), image and local registry were lost, and a later `colima start` recreated a default 2 CPU, 2 GiB VM.
+COST: about 30 minutes to rebuild, plus run state that cannot be recovered.
+MECHANISM: the desktop worker's own ask recommended only goal-shared and gs12-local, said it could not tell which worker owns each VM, and asked for a yes; the owner's reply named all three. No record links a VM to its lane or a stop to its reason, so neither the owner nor the worker could see mixpeek-hikes was backend's and paused, not abandoned. mac-cleanup-tick.sh never deletes a VM.
+FIX: record a VM's owning lane at creation and each stop's reason; before deleting a VM another lane owns, show its owner, last use and data size, and snapshot its data volume or ask that lane. A guard refusing `colima delete` of an owned VM is a boundaries.toml change for the owner.
