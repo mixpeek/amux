@@ -3213,9 +3213,14 @@
   .dict-set-row span { color: var(--dim); }
   .dict-sethint { font-size: var(--fs-sm); color: var(--dim); line-height: 1.6; margin-top: var(--space-2-5); }
   @media (max-width: 600px) {
-    .dict-row { flex-wrap: wrap; }
-    .dict-time { min-width: 0; }
-    .dict-acts button { min-width: 34px; min-height: 34px; font-size: var(--fs-2xl); }
+    /* One row of time and actions, then the text at full width (owner, 2026-11-18:
+       the text was squeezed into a column of two or three words beside five
+       buttons). */
+    .dict-row { flex-wrap: wrap; align-items: center; }
+    .dict-time { min-width: 0; order: 0; }
+    .dict-row .dict-acts { order: 1; margin-left: auto; }
+    .dict-row .dict-text { order: 2; flex: 1 1 100%; }
+    .dict-acts button { min-width: 44px; min-height: 44px; font-size: var(--fs-2xl); }
     .dict-rec { width: 58px; height: 58px; min-width: 58px; }
     .dict-search { max-width: 130px; }
     #dict-open-settings, .dict-subtabs .dict-search { min-height: 44px; }
