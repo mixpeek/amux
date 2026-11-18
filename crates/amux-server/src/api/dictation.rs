@@ -1558,7 +1558,10 @@ async fn mlx_installed() -> bool {
 /// Installed, and its worker has not failed to start in this process.
 /// Takes the WHISPER lock: never call it while holding that lock.
 async fn mlx_available() -> bool {
-    !WHISPER.lock().await.mlx_failed && mlx_installed().await
+    // A local, so the guard drops here: as one `&&` expression the temporary
+    // guard lived across the install probe's await (land review F3).
+    let failed = WHISPER.lock().await.mlx_failed;
+    !failed && mlx_installed().await
 }
 
 /// The dictionary as plain terms for Whisper's prompt: correct spellings, then
