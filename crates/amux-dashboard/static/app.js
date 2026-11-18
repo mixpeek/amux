@@ -30110,7 +30110,10 @@ async function _dictOutbox() {
   let timer;
   try {
     return await Promise.race([
-      _idb.get('dict_pending').then(v => v || []),
+      // A clip is stored as its bytes (`bytes`) and handed to readers as a Blob,
+      // the way the upload outbox stores files. Older clips still carry `blob`.
+      _idb.get('dict_pending').then(v => (v || []).map(x => x && x.bytes && !x.blob
+        ? Object.assign({}, x, { blob: new Blob([x.bytes], { type: x.mime || 'audio/webm' }) }) : x)),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('dict_read_timeout')), _DICT_READ_MS); }),
     ]);
   } catch (e) {
@@ -30191,10 +30194,15 @@ function _dictUpdate(mutate) {
 }
 // Returns the new clip's id, or null when this device could not save it (the
 // caller then sends the recording straight from memory).
+// The clip is stored as its BYTES. On iOS a Blob kept in IndexedDB is a file
+// reference that can stop being readable (owner's iPhone, 2026-11-18: a 104 s
+// clip read "Sending… Load failed" on every Retry and no request ever reached
+// the server, after a storage write had failed); bytes are kept in the record.
 async function _dictOutboxAdd(blob, mime, ms) {
   const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   try {
-    await _dictUpdate(q => q.concat([{ id, blob, mime, ms, ts: Date.now(), session: peekSession || '',
+    const bytes = await blob.arrayBuffer();
+    await _dictUpdate(q => q.concat([{ id, bytes, mime, ms, ts: Date.now(), session: peekSession || '',
       state: 'pending', attempts: 0, last: 0, error: '', text: '' }]));
     return id;
   } catch (e) {
@@ -30273,6 +30281,19 @@ async function _dictTrySend(id, interactive) {
     await _dictOutboxPatch(id, { state: 'offline', error: 'no connection' });
     return null;
   }
+  // Read the audio before sending it. A clip whose stored copy can no longer be
+  // read made fetch reject at once ("Load failed") with nothing sent, so Retry
+  // could never work; it now says what happened, once.
+  let body;
+  try { body = await it.blob.arrayBuffer(); }
+  catch (e) {
+    const why = String((e && (e.name || e.message)) || 'unreadable').slice(0, 80);
+    await _dictOutboxPatch(id, { state: 'unreadable', error: 'The recording on this device can no longer be read' });
+    _dictBeacon('dict_clip_unreadable', { id, bytes: it.blob.size || 0, why, stored_as: it.bytes ? 'bytes' : 'blob' });
+    if (interactive) _dictStatus('This recording can no longer be read on this device. Delete it.');
+    if (_peekTab === 'dictation') _dictRender();
+    return null;
+  }
   await _dictOutboxPatch(id, { state: 'sending', sending_at: Date.now() });
   if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
   if (_peekTab === 'dictation') _dictRender();
@@ -30282,7 +30303,7 @@ async function _dictTrySend(id, interactive) {
   const timer = setTimeout(() => ctl.abort(), 120000);   // slow links need room
   try {
     const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': it.mime || 'audio/webm' }),
-                                 body: it.blob, signal: ctl.signal });
+                                 body, signal: ctl.signal });
     clearTimeout(timer);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
@@ -30390,7 +30411,7 @@ function _dictClipLabel(c) {
 async function _dictSyncClips(forced) {
   const out = [];
   for (const it of (await _dictOutbox())) {
-    if (it.state === 'done' || !it.blob) continue;
+    if (it.state === 'done' || it.state === 'unreadable' || !it.blob) continue;
     if (it.state === 'sending' && !_dictSendingStale(it)) continue;
     if (!forced && !_dictReady(it)) continue;
     if (it.state === 'sending') {
@@ -30443,7 +30464,9 @@ function _dictOutboxHTML(q) {
   let h = '<div class="dict-day">PENDING</div>';
   for (const it of live.slice().reverse()) {
     const secs = Math.round((it.ms || 0) / 1000);
-    const label = { sending: 'Sending…', offline: 'Waiting for connection', failed: 'Failed', pending: 'Queued' }[it.state] || it.state;
+    const label = { sending: 'Sending…', offline: 'Waiting for connection', failed: 'Failed', pending: 'Queued',
+      unreadable: 'Can no longer be read' }[it.state] || it.state;
+    const gone = it.state === 'unreadable';   // nothing to play or re-send; only Delete helps
     const err = it.error ? '<div class="dict-err">' + esc(it.error) + '</div>' : '';
     const attempts = (it.attempts || 0) > 1 ? ' · ' + it.attempts + ' tries' : '';
     h += '<div class="dict-item dict-item-pending">'
@@ -30451,8 +30474,8 @@ function _dictOutboxHTML(q) {
       +  '<span class="dict-meta">' + secs + 's · ' + _dictKB((it.blob && it.blob.size) || 0) + attempts + '</span></div>'
       +  err
       +  '<div class="dict-actions">'
-      +    '<button class="btn small" onclick="_dictPlay(\'' + it.id + '\')">▶ Play</button>'
-      +    '<button class="btn small primary" onclick="_dictRetry(\'' + it.id + '\')">Retry</button>'
+      +    (gone ? '' : '<button class="btn small" onclick="_dictPlay(\'' + it.id + '\')">▶ Play</button>'
+      +      '<button class="btn small primary" onclick="_dictRetry(\'' + it.id + '\')">Retry</button>')
       +    '<button class="btn small" onclick="_dictOutboxDel(\'' + it.id + '\')">Delete</button>'
       +  '</div></div>';
   }
