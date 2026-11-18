@@ -37,6 +37,22 @@ test('a clip is stored as its bytes and sends them', async ({ page }) => {
   expect(sent, 'the request carried the clip').toEqual([3000]);
 });
 
+test('two senders reaching one clip at once upload it once', async ({ page }) => {
+  const sent = await boot(page);
+  await page.route(/\/api\/dictate\?.*/, async r => {
+    await new Promise(res => setTimeout(res, 300));
+    await r.fulfill({ json: { text: 'sent once' } });
+  });
+  const texts = await page.evaluate(async () => {
+    const g = globalThis as any;
+    const id = await g.eval('_dictOutboxAdd')(new Blob([new Uint8Array(1200).fill(3)], { type: 'audio/webm' }), 'audio/webm', 1200);
+    const send = g.eval('_dictTrySend');
+    return Promise.all([send(id, false), send(id, true)]);
+  });
+  expect(texts, 'both callers get the one result').toEqual(['sent once', 'sent once']);
+  expect(sent.filter(n => n === 1200), 'one upload').toHaveLength(1);
+});
+
 test('a clip that can no longer be read says so once, sends nothing, and offers only Delete', async ({ page }) => {
   const sent = await boot(page);
   await page.evaluate(async (w) => {

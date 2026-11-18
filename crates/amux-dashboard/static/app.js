@@ -30293,7 +30293,23 @@ async function _dictSendDirect(blob, mime, ms) {
 // One attempt against a stored clip. Never discards audio: a failure of ANY kind
 // leaves the item in the outbox with its error, so Retry re-sends the same
 // recording instead of asking you to say it again.
-async function _dictTrySend(id, interactive) {
+// One send per clip at a time. The background pass, the sync banner and a
+// Retry can each reach the same clip; a second caller joins the send already
+// in flight, so a clip is uploaded and transcribed once (AF-1289: the stored
+// clip went out twice, [3000, 3000]). dictation_send_joined counts the joins.
+const _dictInflight = new Map();
+function _dictTrySend(id, interactive) {
+  const running = _dictInflight.get(id);
+  if (running) {
+    try { amuxTrack('dictation_send_joined', {id, interactive: !!interactive, measured: true, n_considered: 1}); }
+    catch (e) { console.warn('dictation_send_joined not tracked', e); }
+    return running;
+  }
+  const p = _dictTrySendOnce(id, interactive).finally(() => _dictInflight.delete(id));
+  _dictInflight.set(id, p);
+  return p;
+}
+async function _dictTrySendOnce(id, interactive) {
   const q = await _dictOutbox();
   const it = q.find(x => x.id === id);
   if (!it || !it.blob) return null;

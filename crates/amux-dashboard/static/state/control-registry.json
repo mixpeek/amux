@@ -1638,6 +1638,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictTrySendOnce": {
+      "kind": "command._dictTrySendOnce",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictUndo": {
       "kind": "command._dictUndo",
       "feedback_required": true,
