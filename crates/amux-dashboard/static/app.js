@@ -9562,6 +9562,72 @@ document.addEventListener('mouseout', (e) => {
 });
 ['scroll', 'mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_wkHoverLink) _wkHoverHide(); }, true));
 
+// HOVER PREVIEW OF A LINKED FILE (owner, 2026-11-18: "file path is clickable
+// and on mouseover shows a preview"). Any .md-file-link to a file: the head of
+// the file, rendered as markdown for .md and as text otherwise, in the same
+// inert card as an @worker preview. A click still opens the file. Pointers
+// that hover only. Reads are cached for 30 s so moving across a list of paths
+// does not refetch.
+let _fhTimer = null, _fhLink = null;
+const _fhCache = new Map();
+async function _fhRead(path) {
+  const hit = _fhCache.get(path);
+  if (hit && Date.now() - hit.at < 30000) return hit;
+  let res;
+  try {
+    const r = await fetch(API + '/api/file/raw?path=' + encodeURIComponent(path), { headers: _authHeaders(), signal: AbortSignal.timeout(6000) });
+    if (!r.ok) res = { error: r.status === 404 ? 'No file at this path' : 'Could not read it (' + r.status + ')' };
+    else {
+      const type = r.headers.get('content-type') || '';
+      if (!/^text\/|json|xml|javascript|markdown/i.test(type) && !/\.(md|txt|json|ya?ml|toml|csv|rs|js|ts|py|sh)$/i.test(path)) res = { error: 'No preview for this kind of file' };
+      else { const t = await r.text(); res = { text: t.slice(0, 6000), cut: t.length > 6000 }; }
+    }
+  } catch (e) { res = { error: 'Could not read it' }; }
+  res.at = Date.now();
+  _fhCache.set(path, res);
+  return res;
+}
+async function _fhShow(a) {
+  const path = a.dataset.file || '';
+  const pop = _wkHoverCard();
+  pop.innerHTML = '<div class="worker-hovercard-none">Loading ' + esc(path.split('/').pop()) + '…</div>';
+  pop.hidden = false;
+  const res = await _fhRead(path);
+  if (_fhLink !== a) return;
+  const head = '<div class="file-hovercard-path">' + esc(path) + '</div>';
+  let body;
+  if (res.error) body = '<div class="worker-hovercard-none">' + esc(res.error) + '</div>';
+  else if (/\.md$/i.test(path)) body = '<div class="file-hovercard-body md-body">' + renderMarkdown(res.text, path) + '</div>';
+  else body = '<pre class="file-hovercard-body">' + esc(res.text) + '</pre>';
+  pop.innerHTML = head + body + (res.cut ? '<div class="worker-hovercard-none">…</div>' : '');
+  const r = a.getBoundingClientRect(), pr = pop.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight, gap = 6;
+  let top = r.bottom + gap;
+  if (top + pr.height > vh - 8 && r.top - gap - pr.height >= 8) top = r.top - gap - pr.height;
+  pop.style.top = Math.max(8, Math.min(top, vh - pr.height - 8)) + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, vw - pr.width - 8)) + 'px';
+}
+function _fhHide() {
+  clearTimeout(_fhTimer); _fhTimer = null; _fhLink = null;
+  const pop = document.getElementById('worker-hovercard');
+  if (pop) pop.hidden = true;
+}
+document.addEventListener('mouseover', (e) => {
+  if (!window.matchMedia('(hover: hover)').matches) return;
+  const a = e.target.closest && e.target.closest('.md-file-link[data-file]:not([data-dir])');
+  if (!a || a === _fhLink) return;
+  _fhHide();
+  _fhLink = a;
+  _fhTimer = setTimeout(() => { if (_fhLink === a && a.isConnected) _fhShow(a); }, 350);
+});
+document.addEventListener('mouseout', (e) => {
+  if (!_fhLink) return;
+  const to = e.relatedTarget;
+  if (to && _fhLink.contains(to)) return;
+  if (e.target.closest && e.target.closest('.md-file-link') === _fhLink) _fhHide();
+});
+['scroll', 'mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_fhLink) _fhHide(); }, true));
+
 // One worker's card, as the worker list draws it. Top level so a hover
 // preview of an @worker mention draws the same card (owner, 2026-11-09).
 function _renderSessionCard(s) {
@@ -33861,6 +33927,30 @@ function _mdxKeydown(e) {
   }
 }
 
+// Tab in the file editor for files that are not markdown (owner, 2026-11-18:
+// "make sure the editor has the same kind of formatting stuff like tabbing to
+// indent"). Markdown gets _mdxKeydown; everything else got nothing, so Tab
+// left the editor. Tab inserts two spaces or indents the selected lines;
+// Shift+Tab outdents them. Undo keeps working (execCommand insertText).
+document.addEventListener('keydown', (e) => {
+  const ta = e.target;
+  if (!ta || ta.id !== 'file-edit-ta' || ta.readOnly || e.key !== 'Tab' || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (typeof _mdxActive === 'function' && _mdxActive()) return;
+  e.preventDefault();
+  const v = ta.value, a = ta.selectionStart, b = ta.selectionEnd, ind = '  ';
+  const put = (from, to, text, ca, cb) => {
+    ta.setSelectionRange(from, to);
+    if (!document.execCommand || !document.execCommand('insertText', false, text)) { ta.setRangeText(text, from, to, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+    ta.setSelectionRange(ca, cb);
+  };
+  if (a === b && !e.shiftKey) { put(a, b, ind, a + ind.length, a + ind.length); return; }
+  const s = v.lastIndexOf('\n', a - 1) + 1, end = b > a && v[b - 1] === '\n' ? b - 1 : b;
+  const lines = v.slice(s, end).split('\n');
+  const out = lines.map(l => e.shiftKey ? l.replace(/^( {1,2}|\t)/, '') : ind + l).join('\n');
+  const first = e.shiftKey ? (lines[0].match(/^( {1,2}|\t)/) || [''])[0].length * -1 : ind.length;
+  put(s, end, out, Math.max(s, a + first), s + out.length);
+}, true);
+
 // ── Diff ──
 // Line by line: the saved file (or a past commit) against the source now.
 function _mdxDiffLines(a, b) {
@@ -49961,6 +50051,29 @@ function _mdUseWikiLinks() {   // and math (the same marked.use call)
     },
     renderer(t) {
       return '<a href="#peek=' + encodeURIComponent(t.name) + '" class="md-worker-link" data-worker="' + esc(t.name) + '" title="Open ' + esc(t.name) + '">@' + esc(t.name) + '</a>';
+    },
+  }, {
+    // A file path written as plain text in a file's preview is a link to that
+    // file (owner, 2026-11-18: "file path is clickable and on mouseover shows
+    // a preview"). Absolute or ~/ paths only; trailing punctuation stays text.
+    // Same gate as @worker: a preview asked for it.
+    name: 'filePath', level: 'inline',
+    start(src) {
+      if (!_mdWorkerLinks) return undefined;
+      const m = /(^|[\s(])(?:~|\/(?:Users|home|Volumes|private|opt|tmp|var|etc))\//.exec(src);
+      return m ? m.index + m[1].length : undefined;
+    },
+    tokenizer(src) {
+      if (!_mdWorkerLinks) return undefined;
+      const m = /^(?:~|\/(?:Users|home|Volumes|private|opt|tmp|var|etc))\/[^\s<>()\[\]"'`]+/.exec(src);
+      if (!m) return undefined;
+      const path = m[0].replace(/[.,;:!?]+$/, '');
+      if (path.split('/').filter(Boolean).length < 2) return undefined;
+      return { type: 'filePath', raw: path, path };
+    },
+    renderer(t) {
+      const isDir = t.path.endsWith('/');
+      return '<a href="#" class="md-file-link md-path-link" data-file="' + esc(t.path) + '"' + (isDir ? ' data-dir="1"' : '') + ' title="' + esc(t.path) + '">' + esc(t.path) + '</a>';
     },
   }, {
     // #tag in the editor's preview: a chip, and a click finds the others.

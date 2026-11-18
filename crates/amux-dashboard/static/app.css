@@ -11096,6 +11096,9 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .worker-hovercard > .card { margin: 0; border: none; box-shadow: none; }
 .worker-hovercard .card-menu-btn { display: none; }   /* nothing in a preview takes a click */
 .worker-hovercard-none { padding: var(--space-3); color: var(--dim); font-size: var(--fs-md); }
+/* A linked file's preview in the same card: its path, then the head of the file. */
+.file-hovercard-path { padding: var(--space-2) var(--space-3); font-family: var(--font-mono, monospace); font-size: var(--fs-xs); color: var(--dim); border-bottom: 1px solid var(--border); word-break: break-all; }
+.file-hovercard-body { margin: 0; padding: var(--space-2) var(--space-3); font-size: var(--fs-sm); overflow: hidden; max-height: min(50vh, 440px); white-space: pre-wrap; word-break: break-word; }
 
 /* Scheduled sends in the Email tab (app.js _emailSchedPaint). The reschedule
    row is the banner's own form, restyled for the page background. */
