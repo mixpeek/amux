@@ -1008,7 +1008,7 @@ cmd_register() {
 
   echo "${GREEN}registered${RESET} ${BOLD}$name${RESET} → $resolved_dir"
   [[ -n "$preserved" ]] && echo "  ${DIM}preserved: $(printf '%s\n' "$preserved" | sed -E 's/=.*//' | paste -sd, -)${RESET}"
-  [[ -n "$CC_FLAGS_STR" ]] && echo "  flags: $CC_FLAGS_STR"
+  if [[ -n "$CC_FLAGS_STR" ]]; then echo "  flags: $CC_FLAGS_STR"; fi
 }
 
 # amux worktree <name> [show|profiles|widen <profile-or-folder>...|profile <p>]

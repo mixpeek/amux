@@ -47,6 +47,19 @@ has "$F" "CC_DIR=\"$TMP\""                 "CC_DIR updated"
 check "CC_DESC appears exactly once" "1" "$(grep -c '^CC_DESC=' "$F")"
 check "CC_FLAGS appears exactly once" "1" "$(grep -c '^CC_FLAGS=' "$F")"
 
+# A successful register exits 0, with and without flags. With no flags the verb's
+# last line was `[[ -n "$CC_FLAGS_STR" ]] && echo ...`, a false test that made a
+# successful register exit 1, so an agent checking the exit code read success as
+# failure (found by the amux Claude Code plugin's smoke test, 2026-11-18).
+set +e
+CC_HOME="$TMP" "$AMUX_BIN" register wnew --dir "$TMP" >/dev/null 2>&1; rc_plain=$?
+CC_HOME="$TMP" "$AMUX_BIN" register wnew2 --dir "$TMP" --provider codex >/dev/null 2>&1; rc_prov=$?
+CC_HOME="$TMP" "$AMUX_BIN" register wnew3 --model opus --dir "$TMP" >/dev/null 2>&1; rc_flags=$?
+set -e
+check "register with no flags exits 0" "0" "$rc_plain"
+check "register with only --provider exits 0" "0" "$rc_prov"
+check "register with flags exits 0" "0" "$rc_flags"
+
 rm -rf "$TMP"
 echo "register merge: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
