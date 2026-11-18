@@ -13795,7 +13795,22 @@ async function _changeWorkerPaused(session, paused) {
 async function archiveSession(session) {
   closeAllMenus();
   const done = _cardBusy(session, 'Archiving');
-  const r = await apiCall(API + '/api/sessions/' + session + '/archive', { method: 'POST', headers: { 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') } });
+  const url = API + '/api/sessions/' + session + '/archive';
+  const post = body => fetch(url, { method: 'POST', body: JSON.stringify(body),
+    headers: _authHeaders({ 'Content-Type': 'application/json', 'X-Amux-UI-Token': (window._AMUX_UI_TOKEN || '') }) });
+  let r = null;
+  try {
+    let res = await post({});
+    let d = await res.json().catch(() => ({}));
+    // The worker Intent sends unmatched requests to: the server says what breaks, and asks.
+    if (res.status === 409 && d.code === 'intent_helper') {
+      if (!(await showConfirm(d.error, 'Archive anyway', true))) { done(); return; }
+      res = await post({ confirm_helper: true });
+      d = await res.json().catch(() => ({}));
+    }
+    if (res.ok && d.ok !== false) r = d;
+    else showToast((d && d.error) || ('Could not archive ' + session));
+  } catch (e) { showToast('Could not archive ' + session + ': ' + ((e && e.message) || e)); }
   done();
   if (r) {
     _expiredWorkerInventory.delete(session);

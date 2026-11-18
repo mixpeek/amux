@@ -19638,6 +19638,40 @@ async fn sync_worker_row_archived(state: &AppState, name: &str, archived: bool) 
     }
 }
 
+/// Archiving the worker Intent sends unmatched requests to needs a second yes
+/// (`{"confirm_helper": true}`). On 2026-11-17 `personal` was archived; Intent
+/// then had nowhere to send what no worker fits, dropped 9 goal check-ins
+/// ("nothing was sent"), and 45 of its schedules were paused, all unseen for a
+/// day. The refusal names what breaks, so the dashboard can ask.
+fn intent_helper_archive_refusal(name: &str, body: &Value) -> Option<Value> {
+    let helper = crate::api::intent_store::intent_helper();
+    if name != helper || body.get("confirm_helper").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    tracing::warn!(session = name, measured = true, n_considered = 1, verdict = "intent_helper_archive_refused",
+        "refused archiving the Intent standing helper without confirm_helper");
+    Some(json!({
+        "error": format!("{name} is where Intent sends requests no other worker fits. Archived, those requests are not delivered and its schedules pause. Archive it anyway, or point AMUX_INTENT_HELPER at another worker first."),
+        "code": "intent_helper",
+    }))
+}
+
+#[cfg(test)]
+mod intent_helper_archive_tests {
+    use super::intent_helper_archive_refusal;
+    use serde_json::json;
+
+    #[test]
+    fn the_standing_helper_needs_a_second_yes_to_archive() {
+        let helper = crate::api::intent_store::intent_helper();
+        let r = intent_helper_archive_refusal(&helper, &json!({})).expect("a bare archive of the helper is refused");
+        assert_eq!(r["code"], json!("intent_helper"));
+        assert!(r["error"].as_str().unwrap().contains("not delivered"), "{r}");
+        assert!(intent_helper_archive_refusal(&helper, &json!({"confirm_helper": true})).is_none(), "confirmed goes ahead");
+        assert!(intent_helper_archive_refusal("some-other-worker", &json!({})).is_none(), "other workers archive as before");
+    }
+}
+
 async fn archive_session(state: &AppState, name: &str) -> (bool, String) {
     let f = env_path(name);
     if !f.exists() {
@@ -29606,6 +29640,9 @@ async fn post_dispatch(
                     StatusCode::FORBIDDEN,
                     json!({"error": "cannot archive pinned session — unpin first"}),
                 );
+            }
+            if let Some(refusal) = intent_helper_archive_refusal(name, body) {
+                return jresp(StatusCode::CONFLICT, refusal);
             }
             let (ok, msg) = archive_session(state, name).await;
             if ok {
