@@ -200,8 +200,14 @@ def main():
         n = len(Approvals.requests)
         r = run(work, "push", "origin", "main", env=agent)
         check("a push cannot drop its own tier", r.returncode != 0, True)
-        check("and the ask lists both owner files", len(Approvals.requests) > n and
-              sorted(Approvals.requests[-1]["files"]) == ["boundaries.toml", "scripts/review-tiers.txt"], True)
+        # The pushed hook reads the account's real global scope, which this
+        # test cannot redirect by design. With the owner's approval off there,
+        # review-tiers.txt is waived and only the boundary registry is asked.
+        real_off = (land_gate._env_value(os.path.join(land_gate.SCOPE_HOME, "amux.env"),
+                                         land_gate.OWNER_APPROVAL_KEY) or "").lower() in land_gate._OFF
+        want = ["boundaries.toml"] if real_off else ["boundaries.toml", "scripts/review-tiers.txt"]
+        check("and the ask lists the owner files still gated", len(Approvals.requests) > n and
+              sorted(Approvals.requests[-1]["files"]) == want, True)
 
         # AMUX_LAND_OWNER_APPROVAL: the owner turns his approval off at global
         # or group scope (Ethan, 2026-11-13: "I dont want to approve PRs").
