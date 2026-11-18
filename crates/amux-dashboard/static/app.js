@@ -33944,11 +33944,15 @@ document.addEventListener('keydown', (e) => {
     ta.setSelectionRange(ca, cb);
   };
   if (a === b && !e.shiftKey) { put(a, b, ind, a + ind.length, a + ind.length); return; }
-  const s = v.lastIndexOf('\n', a - 1) + 1, end = b > a && v[b - 1] === '\n' ? b - 1 : b;
+  // A caret (no selection) outdents its whole line: wherever it sits, even
+  // inside the leading spaces (land review F1).
+  const lineEnd = v.indexOf('\n', b) < 0 ? v.length : v.indexOf('\n', b);
+  const s = v.lastIndexOf('\n', a - 1) + 1, end = a === b ? lineEnd : (v[b - 1] === '\n' ? b - 1 : b);
   const lines = v.slice(s, end).split('\n');
   const out = lines.map(l => e.shiftKey ? l.replace(/^( {1,2}|\t)/, '') : ind + l).join('\n');
   const first = e.shiftKey ? (lines[0].match(/^( {1,2}|\t)/) || [''])[0].length * -1 : ind.length;
-  put(s, end, out, Math.max(s, a + first), s + out.length);
+  if (a === b) put(s, end, out, Math.max(s, a + first), Math.max(s, a + first));
+  else put(s, end, out, Math.max(s, a + first), s + out.length);
 }, true);
 
 // ── Diff ──

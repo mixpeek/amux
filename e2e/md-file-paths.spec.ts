@@ -64,4 +64,8 @@ test('Tab indents and Shift+Tab outdents in the editor for a code file', async (
   await expect(ta).toHaveValue('  def f():\n    return 1\n');
   await page.keyboard.press('Shift+Tab');
   await expect(ta).toHaveValue('def f():\n  return 1\n');
+  // A caret inside the leading spaces outdents its line too (land review F1).
+  await ta.evaluate((t: HTMLTextAreaElement) => t.setSelectionRange(10, 10));
+  await page.keyboard.press('Shift+Tab');
+  await expect(ta).toHaveValue('def f():\nreturn 1\n');
 });
