@@ -3161,6 +3161,12 @@
   .dict-subtab.active { color: var(--text); background: var(--bg); }
   .dict-search { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-0-5) var(--space-2);
     font-size: var(--fs-sm); color: var(--text); outline: none; max-width: 190px; }
+  /* A queued recording in the connection modal's pending list, laid out like an outbox op. */
+  .conn-clip-row { display: flex; gap: var(--space-2); align-items: baseline; padding: var(--space-1) var(--space-0-5); font-size: var(--fs-md); }
+  .conn-clip-ico { flex-shrink: 0; }
+  .conn-clip-body { flex: 1; min-width: 0; }
+  .conn-clip-err { color: var(--red); font-size: var(--fs-xs); }
+  .conn-clip-age { color: var(--dim); flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: var(--fs-sm); }
   /* History, the search and the way to the shared dictionary: one row at every width. */
   .dict-subtabs span.dict-subtab { cursor: default; }
   .dict-subtabs .dict-search { flex: 1; min-width: 0; max-width: none; }

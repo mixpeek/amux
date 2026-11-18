@@ -2247,12 +2247,12 @@ function showConnHistory() {
     // Dictation clips, the same rows: what is waiting, its error, one tap to send again.
     const clipRows = _dictPendingRows.map(c => {
       const age = Math.floor((Date.now() - (c.last || c.started || Date.now())) / 60000);
-      return '<div class="conn-clip-row" style="display:flex;gap:var(--space-2);align-items:baseline;padding:var(--space-1) var(--space-0-5);font-size:var(--fs-md);">'
-        + '<span style="flex-shrink:0;">' + (c.error ? '🔴' : '🎙') + '</span>'
-        + '<div style="flex:1;min-width:0;"><div>' + esc(_dictClipLabel(c)) + '</div>'
-        + (c.error ? '<div style="color:var(--red);font-size:var(--fs-xs);">' + esc(c.error).substring(0, 100) + '</div>' : '')
+      return '<div class="conn-clip-row">'
+        + '<span class="conn-clip-ico">' + (c.error ? '🔴' : '🎙') + '</span>'
+        + '<div class="conn-clip-body"><div>' + esc(_dictClipLabel(c)) + '</div>'
+        + (c.error ? '<div class="conn-clip-err">' + esc(c.error).substring(0, 100) + '</div>' : '')
         + '</div>'
-        + '<span style="color:var(--dim);flex-shrink:0;font-variant-numeric:tabular-nums;font-size:var(--fs-sm);">' + (age < 1 ? 'just now' : age + 'm ago') + '</span>'
+        + '<span class="conn-clip-age">' + (age < 1 ? 'just now' : age + 'm ago') + '</span>'
         + ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>'
         + '</div>';
     }).join('');
@@ -5428,7 +5428,7 @@ async function _runSyncBanner(quiet = false, token = null) {
       }
     } finally { _dictFlushing = 0; }
     try { amuxTrack('dictation_sync_pass', {sent, failed: clipItems.length - sent, forced: quiet ? 0 : 1,
-      measured: true, n_considered: clipItems.length}); } catch (_) {}
+      measured: true, n_considered: clipItems.length}); } catch (e) { console.warn('dictation: sync pass beacon failed', e); }
     if (sent) {
       showToast(sent + ' queued dictation' + (sent === 1 ? '' : 's') + ' transcribed');
       if (_peekTab === 'dictation') _dictLoad();
@@ -30400,7 +30400,7 @@ async function _dictSyncClips(forced) {
     if (!forced && !_dictReady(it)) continue;
     if (it.state === 'sending') {
       try { amuxTrack('dictation_stale_sending_recovered', {id: it.id, age_ms: Date.now() - (it.sending_at || 0),
-        had_sending_at: !!it.sending_at, bytes: (it.blob && it.blob.size) || 0, measured: true, n_considered: 1}); } catch (_) {}
+        had_sending_at: !!it.sending_at, bytes: (it.blob && it.blob.size) || 0, measured: true, n_considered: 1}); } catch (e) { console.warn('dictation: stale-send beacon failed', e); }
     }
     out.push(it);
   }
