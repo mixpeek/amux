@@ -75,6 +75,10 @@ amux Concierge builds and runs workflow automation for non-technical business ow
 - [Dental practices](https://amux.io/solutions/dental-practices/): amux Concierge automates insurance eligibility checks, predeterminations, denial follow-up and multi-location reporting for dental practices, on your own computer with a BAA.
 - [Merchant cash advance funders](https://amux.io/solutions/merchant-cash-advance/): amux Concierge automates broker submission triage, bank statement review, decision packets and compliance records for merchant cash advance funders. Done for you, with underwriters approving every decision.
 
+## Agent plugins
+
+- [amux plugins for Claude Code, Codex and Gemini CLI](https://github.com/mixpeek/amux-plugins): setup, delegate and status skills. Hand a task to a background amux worker (Claude Code, Codex or Gemini CLI) that keeps running after your session ends, or ask which workers need you, from inside the agent you use. Install: Claude Code `/plugin marketplace add mixpeek/amux-plugins` then `/plugin install amux@amux`; Codex `codex plugin marketplace add mixpeek/amux-plugins` then `codex plugin add amux@amux`; Gemini CLI `gemini extensions install https://github.com/mixpeek/amux-plugins`.
+
 ## Documentation
 
 - [Documentation](https://amux.io/docs/): Reference for amux: installation, CLI commands, web dashboard, REST API (sessions, board, notes, CRM, email, browser, scheduler), kanban board with atomic task claiming, notes, CRM, email with owner approval for outbound sends, browser automation with saved sign-in profiles, scheduler, skills and slash commands, inter-session messaging, recovery (usage limits, restarts, reboots), PWA and mobile apps, authentication, TLS/HTTPS, configuration and architecture.

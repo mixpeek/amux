@@ -50,6 +50,16 @@ curl -fsSL https://github.com/mixpeek/amux/releases/download/desktop-latest/Amux
 
 The Mac app is a native window on the system WebKit (about 1.5 MB). It opens several windows and tabs, keeps pinned notes floating above other apps, shows a menu bar readout and a Dock badge when agents need you, and toggles with Control-Option-Space. Every window keeps its place: quit, crash or restart and each one reopens on the same display and Desktop, showing the same worker, tab or file. Save the arrangement as a named workspace and switch with Control-Command-1 to 9. Windows snap to a grid as you drag, and Window > Arrange tiles them. It is not notarized yet: if you download the .dmg or .zip in a browser, macOS blocks the first open, so go to System Settings, Privacy & Security, and click **Open Anyway**. To build it yourself: `make desktop`.
 
+## From Claude Code, Codex or Gemini CLI
+
+Hand a task to a background amux worker, or ask which of your agents need you, without leaving the agent you are in. The [amux plugins](https://github.com/mixpeek/amux-plugins) add `setup`, `delegate` and `status`:
+
+```text
+Claude Code:  /plugin marketplace add mixpeek/amux-plugins   then   /plugin install amux@amux
+Codex:        codex plugin marketplace add mixpeek/amux-plugins && codex plugin add amux@amux
+Gemini CLI:   gemini extensions install https://github.com/mixpeek/amux-plugins
+```
+
 <p align="center"><a href="https://amux.io"><img src="site/amux.gif" alt="amux dashboard running parallel agents" width="920"/></a></p>
 
 <p align="center"><a href="https://amux.io/walkthrough/"><img src="site/walkthrough/amux-walkthrough-desktop-short.jpg" alt="Watch the amux walkthrough" width="920"/></a><br/><a href="https://amux.io/walkthrough/"><b>▶ Watch the walkthrough</b></a> (desktop and phone, with transcript)</p>

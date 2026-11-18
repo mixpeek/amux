@@ -588,6 +588,21 @@ curl -sk -X POST -H 'Content-Type: application/json' \
 
 <p>Skills can contain any logic &mdash; shell scripts, Python code, or complex multi-step workflows. They're the primary way to teach agents project-specific operations like &ldquo;deploy to staging&rdquo; or &ldquo;run the test suite.&rdquo;</p>
 
+<h3 id="agent-plugins">Use amux from Claude Code, Codex or Gemini CLI</h3>
+
+<p>The <a href="https://github.com/mixpeek/amux-plugins" target="_blank" rel="noopener">amux plugins</a> add three skills to the agent you already use: <code>setup</code> installs or connects amux, <code>delegate</code> starts a background worker on your repo and hands it a task, and <code>status</code> reports which workers are waiting on you. They work through the <code>amux</code> CLI on your machine and ask before installing anything or starting a worker.</p>
+
+<pre><code># Claude Code
+/plugin marketplace add mixpeek/amux-plugins
+/plugin install amux@amux
+
+# Codex
+codex plugin marketplace add mixpeek/amux-plugins
+codex plugin add amux@amux
+
+# Gemini CLI
+gemini extensions install https://github.com/mixpeek/amux-plugins</code></pre>
+
 <h2 id="channels">Channels</h2>
 
 <p>1:1 inter-session messaging with @mentions. Sessions can send messages to each other for real-time coordination.</p>
