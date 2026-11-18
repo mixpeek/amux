@@ -29785,6 +29785,8 @@ async function _dictGlobalLoad() {
   _dictRenderSettings();
 }
 function _dictOpenSettings(section) {
+  // Settings opens from the main header, which a worker's view covers.
+  if (typeof peekSession !== 'undefined' && peekSession) closePeek();
   const menu = document.getElementById('settings-menu');
   if (menu && !menu.classList.contains('open')) toggleSettings();
   _settingsTab('dictation');
@@ -59400,6 +59402,8 @@ function _settingsTab(name) {
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.stab === name));
+  // On a phone the tab strip scrolls sideways: bring the chosen tab into it.
+  menu.querySelector('.settings-tab-btn.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const panels = menu.querySelectorAll('.settings-tab-panel');
   let matched = false;
   panels.forEach(p => {

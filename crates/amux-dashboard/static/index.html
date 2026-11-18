@@ -3739,7 +3739,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
     <div class="dict-subtabs">
       <span class="dict-subtab active" id="dict-subtab-history">History</span>
       <input type="search" id="dict-search" class="dict-search" placeholder="Search&hellip;" oninput="_dictRenderHistory()">
-      <button type="button" class="btn" id="dict-open-settings" onclick="_dictOpenSettings()" title="The dictionary and dictation settings, shared by every worker">Dictionary &amp; settings</button>
+      <button type="button" class="btn" id="dict-open-settings" onclick="event.stopPropagation();_dictOpenSettings()" title="The dictionary and dictation settings, shared by every worker">Dictionary &amp; settings</button>
     </div>
     <div id="dict-outbox-strip"></div>
       <div id="dict-body" class="dict-body"></div>

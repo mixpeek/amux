@@ -8,11 +8,13 @@ import { test, expect, Page } from './fixtures';
 
 const W = 'zz-rec-sync';
 
-async function boot(page: Page) {
+async function boot(page: Page, { stub = true } = {}) {
   const dictated: string[] = [];
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [
     { name: W, dir: '/tmp/rec-sync', running: true, status: 'idle', flags: '', steering: [] }] }));
-  await page.route(/\/api\/dictate\?.*/, r => { dictated.push(r.request().url()); return r.fulfill({ json: { text: 'hello from the clip' } }); });
+  // The fixtures fail a stub nothing used, so a test that expects no send observes instead.
+  if (stub) await page.route(/\/api\/dictate\?.*/, r => { dictated.push(r.request().url()); return r.fulfill({ json: { text: 'hello from the clip' } }); });
+  else page.on('request', r => { if (/\/api\/dictate\?/.test(r.url())) dictated.push(r.url()); });
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.goto('/');
   await page.waitForFunction(() => (globalThis as any).eval('typeof _idb') === 'object'
@@ -65,7 +67,7 @@ test('the outbox pass delivers a waiting clip and lists it in the sync checklist
 
 test('an automatic pass keeps a clip\'s backoff, and a clip mid-send is not sent twice', async ({ page, browserName }) => {
   webkitGap(browserName);
-  const dictated = await boot(page);
+  const dictated = await boot(page, { stub: false });
   await seed(page, [
     { id: 'clip-backoff', session: W, state: 'failed', attempts: 3, last: Date.now(), error: 'network', ms: 1000, mime: 'audio/webm' },
     { id: 'clip-live', session: W, state: 'sending', sending_at: Date.now() - 5000, ms: 1000, mime: 'audio/webm', attempts: 0 }]);

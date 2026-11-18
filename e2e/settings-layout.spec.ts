@@ -10,7 +10,7 @@ test('settings tabs, folds and the style guide sit where the owner put them', as
   await page.waitForFunction(() => typeof (window as any)._settingsTab === 'function');
   await page.locator('#settings-btn').click();
   const menu = page.locator('#settings-menu');
-  await expect(menu.locator('.settings-tab-btn')).toHaveText(['Account', 'Connect', 'Device', 'Workers', 'Alerts']);
+  await expect(menu.locator('.settings-tab-btn')).toHaveText(['Account', 'Connect', 'Device', 'Workers', 'Alerts', 'Dictation']);
 
   // Account: no style guide here.
   await expect(page.locator('#style-guide-btn')).toBeHidden();

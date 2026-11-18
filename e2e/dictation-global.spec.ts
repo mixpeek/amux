@@ -15,10 +15,16 @@ async function openWorkerDictation(page: Page) {
 
 test('a worker shows its History; the shared dictionary and settings open in Settings', async ({ page }, info) => {
   const word = 'Zorblax' + info.project.name;
-  const added = await page.request.post('/api/dictation/dict', { data: { word, correct: '' } });
-  expect(added.ok()).toBe(true);
+  const api = (method: string, path: string, body?: any) => page.evaluate(async ([m, p, b]) => {
+    const r = await fetch(p as string, { method: m as string, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json' }),
+      body: b ? JSON.stringify(b) : undefined });
+    return { ok: r.ok, json: await r.json().catch(() => null) };
+  }, [method, path, body]);
+  await openWorkerDictation(page);
+  expect((await api('POST', '/api/dictation/dict', { word, correct: '' })).ok).toBe(true);
   try {
-    await openWorkerDictation(page);
+    // A fresh open of the worker's tab after the word was added.
+    await page.evaluate(() => { (window as any).setPeekTab('dictation'); });
     // No per-worker Dictionary or Settings tab.
     await expect(page.locator('#dict-subtab-dict')).toHaveCount(0);
     await expect(page.locator('#dict-subtab-settings')).toHaveCount(0);
@@ -27,6 +33,7 @@ test('a worker shows its History; the shared dictionary and settings open in Set
 
     await page.locator('#dict-open-settings').click();
     await expect(page.locator('#settings-menu')).toHaveClass(/open/);
+    await expect(page.locator('#stab-dictation')).toBeVisible();
     await expect(page.locator('.settings-tab-btn[data-stab="dictation"]')).toHaveClass(/active/);
     await expect(page.locator('#dict-dict-body')).toContainText(word);
     await expect(page.locator('#dict-set-body #dict-mic')).toBeAttached();
@@ -40,8 +47,8 @@ test('a worker shows its History; the shared dictionary and settings open in Set
     await row.locator('button[title="Delete"]').click();
     await expect(page.locator('#dict-dict-body')).not.toContainText(word);
   } finally {
-    const words = await (await page.request.get('/api/dictation/dict')).json();
-    for (const w of words.filter((x: any) => x.word === word)) await page.request.delete('/api/dictation/dict/' + w.id);
+    const words = (await api('GET', '/api/dictation/dict')).json || [];
+    for (const w of words.filter((x: any) => x.word === word)) await api('DELETE', '/api/dictation/dict/' + w.id);
   }
 });
 
