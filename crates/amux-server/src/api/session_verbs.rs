@@ -957,7 +957,13 @@ impl EnvFile {
             while i < lines.len() {
                 if key_of(&lines[i]).as_deref() == Some(key.as_str()) {
                     match value {
-                        Some(v) if !placed => { lines[i] = format!("{key}={}", Self::plain_quote(v)); placed = true; i += 1; }
+                        Some(v) if !placed => {
+                            // An `export KEY=` line stays an export (land review F1).
+                            let export = if lines[i].trim_start().starts_with("export ") { "export " } else { "" };
+                            lines[i] = format!("{export}{key}={}", Self::plain_quote(v));
+                            placed = true;
+                            i += 1;
+                        }
                         _ => { lines.remove(i); }
                     }
                 } else {
@@ -19692,8 +19698,10 @@ mod env_merge_keeps_text_tests {
         assert_eq!(EnvFile::merge_plain_text(old, &[set("B", None)]),
             "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\n\nZ=9\n", "a delete removes every line that sets it");
         assert_eq!(EnvFile::merge_plain_text(old, &[set("B", Some("5"))]),
-            "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\nB=5\n\nZ=9\n", "a duplicate key ends as one line");
+            "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\nexport B=5\n\nZ=9\n", "a duplicate key ends as one line, where the first one stood");
         assert_eq!(EnvFile::merge_plain_text("", &[set("K", Some("v"))]), "K=v\n");
+        assert_eq!(EnvFile::merge_plain_text("# n\nexport K=1\n", &[set("K", Some("2"))]), "# n\nexport K=2\n",
+            "an export line stays an export");
     }
 }
 
