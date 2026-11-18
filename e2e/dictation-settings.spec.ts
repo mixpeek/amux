@@ -39,11 +39,11 @@ async function settle(page: Page, opts: { native?: boolean } = {}): Promise<void
 }
 
 async function openSettings(page: Page) {
-  // The settings are server-wide, so they live in Settings > Dictation; a worker's
+  // The settings are server-wide, so they live in the Dictation tab; a worker's
   // Dictation tab links there.
   await page.evaluate(() => { (window as any).openPeek('dict-worker'); (window as any).setPeekTab('dictation'); });
   await page.locator('#dict-open-settings').click();
-  await expect(page.locator('#stab-dictation')).toBeVisible();
+  await expect(page.locator('#dictation-view')).toBeVisible();
   await expect(page.locator('#dict-mic')).toBeEnabled();
 }
 

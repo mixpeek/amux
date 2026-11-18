@@ -29756,22 +29756,19 @@ function _dictMicMissing(name) {
   _dictMicWarned = name;
   showToast(name + ' is not connected here; dictating with the default microphone.');
 }
-// The dictionary and the settings are one server-wide value each, so they live in
-// Settings > Dictation; a worker's Dictation tab shows only its own History.
+// The dictionary and the settings are one server-wide value each, so they have their
+// own Dictation tab; a worker's Dictation tab shows only its own History.
 function _dictRender() {
   _dictRenderHistory();
   _dictRenderGlobal();
 }
-function _dictGlobalShown() {
-  const p = document.getElementById('stab-dictation');
-  return !!(p && p.classList.contains('active') && document.getElementById('settings-menu')?.classList.contains('open'));
-}
+function _dictGlobalShown() { return activeView === 'dictation' && !peekSession; }
 function _dictRenderGlobal() {
   if (!_dictGlobalShown()) return;
   _dictRenderDict();
   _dictRenderSettings();
 }
-// Settings > Dictation opened: the dictionary, key source and settings, fresh.
+// The Dictation tab opened: the dictionary, key source and settings, fresh.
 async function _dictGlobalLoad() {
   try {
     const [d, c] = await Promise.all([
@@ -29785,11 +29782,9 @@ async function _dictGlobalLoad() {
   _dictRenderSettings();
 }
 function _dictOpenSettings(section) {
-  // Settings opens from the main header, which a worker's view covers.
+  // The Dictation tab is in the main tab strip, which a worker's view covers.
   if (typeof peekSession !== 'undefined' && peekSession) closePeek();
-  const menu = document.getElementById('settings-menu');
-  if (menu && !menu.classList.contains('open')) toggleSettings();
-  _settingsTab('dictation');
+  if (activeView !== 'dictation') switchView('dictation');
   if (section) document.getElementById(section)?.scrollIntoView({ block: 'start' });
 }
 
@@ -44676,7 +44671,7 @@ function switchView(view) {
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
-    ['calls', 'calls', 'flex'],
+    ['calls', 'calls', 'flex'], ['dictation', 'dictation', 'flex'],
     ['home', 'home', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
@@ -44708,6 +44703,7 @@ function switchView(view) {
   if (view === 'pages') _pagesEnter(); else if (typeof _pagesLeave === 'function' && _pagesCur) _pagesLeave();
   if (view === 'tasks') _tasksLoad('main', true);
   if (view === 'hotkeys') _hkEnter();
+  if (view === 'dictation') _dictGlobalLoad();
   // The Messages TAB is a fleet-wide view reached from the main session list —
   // it opens unfiltered. It used to inherit `peekSession || _lastPeekedSession`,
   // so tapping Messages showed one session's history scoped by whichever peek
@@ -59397,7 +59393,6 @@ async function _vaultAudit(key) {
 }
 function _settingsTab(name) {
   if (name === 'integrations') setTimeout(() => { _chatgptAppLoad(); }, 0);
-  if (name === 'dictation') setTimeout(() => { _dictGlobalLoad(); }, 0);
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>

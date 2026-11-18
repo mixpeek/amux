@@ -318,21 +318,6 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
           <button class="settings-tab-btn" data-stab="device" onclick="event.stopPropagation();_settingsTab('device')">Device</button>
           <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
           <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
-          <button class="settings-tab-btn" data-stab="dictation" onclick="event.stopPropagation();_settingsTab('dictation')">Dictation</button>
-        </div>
-        <!-- One dictionary and one set of dictation settings serve every worker (and the Mac
-             app and the phone), so they live here; each worker's Dictation tab keeps only its
-             own History (owner, 2026-11-17). -->
-        <div class="settings-tab-panel" id="stab-dictation" data-stab="dictation">
-        <section class="settings-section" id="settings-dictionary-section">
-          <div class="settings-section-label">Dictionary</div>
-          <div id="dict-dict-body"></div>
-        </section>
-        <div class="settings-sep"></div>
-        <section class="settings-section" id="settings-dictation-section">
-          <div class="settings-section-label">Dictation</div>
-          <div id="dict-set-body"></div>
-        </section>
         </div>
         <div class="settings-tab-panel active" id="stab-account" data-stab="account">
         <div class="settings-section" id="settings-usage-section">
@@ -779,6 +764,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
   <button id="tab-files" onclick="switchView('files')"><span class="tab-ico">🗂</span><span class="tab-lbl">Files</span></button>
   <button id="tab-scratchpad" onclick="switchView('scratchpad')"><span class="tab-ico">📝</span><span class="tab-lbl">Scratchpad</span></button>
   <button id="tab-record" onclick="switchView('record')"><span class="tab-ico">🎙</span><span class="tab-lbl">Record</span></button>
+  <button id="tab-dictation" title="Dictation: the dictionary and settings every worker, the Mac app and the phone dictate with" onclick="switchView('dictation')"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span></button>
   <button id="tab-mdai" onclick="switchView('mdai')"><span class="tab-ico">&#x2726;</span><span class="tab-lbl">MDAI</span></button>
   <button id="tab-pages" title="Apps: apps with a backend, and files shared outside amux" onclick="switchView('pages')"><span class="tab-ico">&#x25A4;</span><span class="tab-lbl">Apps</span></button>
   <button id="tab-photos" onclick="switchView('photos')"><span class="tab-ico">&#x1F5BC;</span><span class="tab-lbl">Photos</span></button>
@@ -929,6 +915,23 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
   </div>
   <div id="hk-status" class="ui-help" aria-live="polite"></div>
   <div id="hk-body" class="hk-body"></div>
+</div>
+<!-- Dictation: one dictionary and one set of settings serve every worker, the Mac app
+     and the phone, so they have their own tab here; each worker's Dictation tab keeps
+     only its own History (owner, 2026-11-18: "it should be its own tab on the global
+     workers page"). -->
+<div id="dictation-view" class="hk-all" style="display:none;">
+  <div class="hk-head">
+    <div><h2>Dictation</h2><p class="ui-help">The words and settings dictation uses for every worker, in the Mac app and on the phone.</p></div>
+  </div>
+  <section class="settings-section" id="settings-dictionary-section">
+    <div class="settings-section-label">Dictionary</div>
+    <div id="dict-dict-body"></div>
+  </section>
+  <section class="settings-section" id="settings-dictation-section">
+    <div class="settings-section-label">Settings</div>
+    <div id="dict-set-body"></div>
+  </section>
 </div>
 <div id="scheduler-view" class="sx-all" style="display:none;">
   <div class="sx-head">

@@ -1,7 +1,8 @@
 // The dictionary and dictation settings are one server-wide value each, so they
-// live in Settings > Dictation and each worker's Dictation tab keeps only its own
-// History (owner, 2026-11-17: the Dictionary and Settings sub-tabs sat inside every
-// worker's tab and read as per-worker).
+// have their own Dictation tab beside Workers and each worker's Dictation tab keeps
+// only its own History (owner, 2026-11-17: the Dictionary and Settings sub-tabs sat
+// inside every worker's tab and read as per-worker; 2026-11-18: "it shouldnt be in
+// settings it should be its own tab on the global workers page").
 import { test, expect, Page } from './fixtures';
 
 async function openWorkerDictation(page: Page) {
@@ -13,7 +14,7 @@ async function openWorkerDictation(page: Page) {
   await expect(page.locator('#dict-open-settings')).toBeVisible();
 }
 
-test('a worker shows its History; the shared dictionary and settings open in Settings', async ({ page }, info) => {
+test('a worker shows its History; the shared dictionary and settings open in the Dictation tab', async ({ page }, info) => {
   const word = 'Zorblax' + info.project.name;
   const api = (method: string, path: string, body?: any) => page.evaluate(async ([m, p, b]) => {
     const r = await fetch(p as string, { method: m as string, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json' }),
@@ -32,9 +33,11 @@ test('a worker shows its History; the shared dictionary and settings open in Set
     await expect(page.locator('#dict-search')).toBeVisible();
 
     await page.locator('#dict-open-settings').click();
-    await expect(page.locator('#settings-menu')).toHaveClass(/open/);
-    await expect(page.locator('#stab-dictation')).toBeVisible();
-    await expect(page.locator('.settings-tab-btn[data-stab="dictation"]')).toHaveClass(/active/);
+    await expect(page.locator('#peek-overlay')).not.toHaveClass(/active/);
+    await expect(page.locator('#dictation-view')).toBeVisible();
+    await expect(page.locator('#tab-dictation')).toHaveClass(/active/);
+    await expect(page.locator('#settings-menu')).not.toHaveClass(/open/);
+    await expect(page.locator('#settings-menu .settings-tab-btn[data-stab="dictation"]')).toHaveCount(0);
     await expect(page.locator('#dict-dict-body')).toContainText(word);
     await expect(page.locator('#dict-set-body #dict-mic')).toBeAttached();
 
@@ -42,7 +45,7 @@ test('a worker shows its History; the shared dictionary and settings open in Set
     await page.locator('#dict-set-body button', { hasText: 'Edit' }).click();
     await expect(page.locator('#settings-dictionary-section')).toBeInViewport();
 
-    // Deleting a word from Settings refreshes the list there.
+    // Deleting a word from the Dictation tab refreshes the list there.
     const row = page.locator('#dict-dict-body .dict-wordrow', { hasText: word });
     await row.locator('button[title="Delete"]').click();
     await expect(page.locator('#dict-dict-body')).not.toContainText(word);
@@ -66,10 +69,25 @@ test('phone: the worker dictation bar is one row and its controls are touchable'
     expect(b.x + b.width, sel + ' fits the screen').toBeLessThanOrEqual(vp.width + 1);
   }
   expect((await page.locator('#dict-open-settings').boundingBox())!.height).toBeGreaterThanOrEqual(44);
-  // The Settings tab strip scrolls sideways to reach Dictation rather than wrapping.
+  // The Dictation tab fits the phone: nothing wider than the screen.
   await page.locator('#dict-open-settings').click();
-  await expect(page.locator('#stab-dictation')).toBeVisible();
-  const tabs = (await page.locator('#settings-tabs').boundingBox())!;
-  expect(tabs.height).toBeLessThanOrEqual(60);
-  await expect(page.locator('.settings-tab-btn[data-stab="dictation"]')).toBeInViewport();
+  await expect(page.locator('#dictation-view')).toBeVisible();
+  await expect(page.locator('#dict-set-body #dict-mic')).toBeAttached();
+  const wide = await page.evaluate(() => [...document.querySelectorAll('#dictation-view *')]
+    .filter(e => (e as HTMLElement).offsetParent && e.getBoundingClientRect().right > innerWidth + 1).map(e => e.id || e.className).slice(0, 5));
+  expect(wide).toEqual([]);
+});
+
+test('the Dictation tab opens from the main tab strip and from its address', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/#view=dictation');
+  await page.addLocatorHandler(page.locator('#sw-fail-bar'), async (bar) => { await bar.locator('button').last().click(); });
+  await expect(page.locator('#dictation-view')).toBeVisible();
+  await expect(page.locator('#dict-dict-body .dict-dictbar')).toBeVisible();
+  await expect(page.locator('#dict-set-body #dict-mic')).toBeAttached();
+  await page.evaluate(() => (window as any).switchView('sessions'));
+  await expect(page.locator('#dictation-view')).toBeHidden();
+  await page.evaluate(() => document.getElementById('tab-dictation')!.click());
+  await expect(page.locator('#dictation-view')).toBeVisible();
+  await expect(page.locator('#tab-dictation')).toHaveClass(/active/);
 });
