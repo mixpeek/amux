@@ -2883,6 +2883,16 @@
   .keymode-badge .keymode-last { font: inherit; padding: 0 var(--space-1); border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--on-accent) 22%, transparent); }
   .keymode-badge .keymode-hint { opacity: .75; font-weight: 400; }
+  /* How to turn it on: a quiet hint on the focused, empty composer, on a
+     desktop only (a phone has no arrow keys to send). */
+  .keymode-hint-idle {
+    display: none; position: absolute; top: 0; right: var(--space-2); transform: translateY(-50%);
+    padding: 0 var(--space-1-5); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--dim); font: var(--fs-xs) var(--font-ui); white-space: nowrap; pointer-events: none;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .peek-composer-input:not(.key-mode) .send-input:focus:placeholder-shown ~ .keymode-hint-idle { display: block; }
+  }
   .peek-cmd-row > .peek-more-wrap { align-self: flex-end; }
   .peek-cmd-row .peek-attach-btn { width: 44px; height: 44px; justify-content: center; }
   /* Mobile: 16px input font stops iOS Safari from zooming in on focus (both the

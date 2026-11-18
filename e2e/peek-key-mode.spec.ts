@@ -29,6 +29,14 @@ test('Ctrl+; forwards keys in order, Esc reaches the worker, typing turns it off
   await expect(overlay).toBeVisible();
   await input.focus();
 
+  // The focused, empty composer says how to turn key mode on (desktop only).
+  const hint = page.locator('#peek-keymode-hint');
+  if (test.info().project.name === 'desktop') {
+    await expect(hint).toBeVisible();
+    await expect(hint).toHaveText(/^(⌃;|Ctrl\+;) keys$/);
+    await page.screenshot({ path: test.info().outputPath('key-mode-hint.png') });
+  }
+
   // Off: arrows stay with the composer.
   await page.keyboard.press('ArrowDown');
   await page.waitForTimeout(300);
@@ -78,4 +86,95 @@ test('key mode refuses a worker that is not a terminal', async ({ page }) => {
   await expect(page.locator('#peek-overlay')).toBeVisible();
   await page.keyboard.press('Control+;');
   await expect(page.locator('#peek-keymode-badge')).toHaveCount(0);
+});
+
+test('key mode follows its Hotkeys binding: rebinding moves the toggle, the hint and the badge', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  const keys: string[] = [];
+  await page.route(/\/api\/sessions\/km-r\/keys$/, async (route) => {
+    keys.push(JSON.parse(route.request().postData() || '{}').keys);
+    await route.fulfill({ json: { ok: true, detail: 'sent' } });
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+  // What saving a new combination in the Hotkeys tab leaves in the list.
+  await page.evaluate(() => {
+    const g = globalThis as any;
+    g.eval('_hkList').find((h: any) => h.id === 'hk-key-mode').trigger = 'Alt+Shift+K';
+    g.eval('sessions').push({ name: 'km-r', status: 'active', running: true, renderer: 'terminal' });
+    g.openPeek('km-r');
+  });
+  const badge = page.locator('#peek-keymode-badge');
+  await page.locator('#peek-cmd-input').focus();
+  if (test.info().project.name === 'desktop')
+    await expect(page.locator('#peek-keymode-hint')).toHaveText(/^(⇧⌥K|⌥⇧K|Alt\+Shift\+K) keys$/);
+
+  await page.keyboard.press('Control+;');
+  await page.waitForTimeout(200);
+  await expect(badge).toHaveCount(0);
+
+  await page.keyboard.press('Alt+Shift+K');
+  await expect(badge).toBeVisible();
+  await expect(badge).toContainText(/(⌥⇧K|Alt\+Shift\+K) to stop/);
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => keys).toEqual(['Down']);
+  await page.keyboard.press('Alt+Shift+K');
+  await expect(badge).toHaveCount(0);
+});
+
+test('key mode turns off after 10s idle unless its Hotkeys setting says stay on', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.clock.install();
+  // The hotkeys pref is shared by the specs on this server: capture the save, keep it local.
+  const saved: any[] = [];
+  await page.route(/\/api\/prefs$/, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    saved.push(JSON.parse(route.request().postData() || '{}'));
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+  const badge = page.locator('#peek-keymode-badge');
+  const openWorker = () => page.evaluate(() => {
+    const g = globalThis as any;
+    if (!g.eval('sessions').some((s: any) => s.name === 'km-i'))
+      g.eval('sessions').push({ name: 'km-i', status: 'active', running: true, renderer: 'terminal' });
+    g.openPeek('km-i');
+  });
+
+  // Default: idle turns it off.
+  await openWorker();
+  await page.locator('#peek-cmd-input').focus();
+  await page.keyboard.press('Control+;');
+  await expect(badge).toBeVisible();
+  await page.clock.runFor(11000);
+  await expect(badge).toHaveCount(0);
+  await page.evaluate(() => (globalThis as any).closePeek());
+
+  // Untick it in the Key mode hotkey's dialog.
+  await page.evaluate("switchView('hotkeys')");
+  await page.evaluate(() => (globalThis as any)._hkOpenDialog('hk-key-mode'));
+  const dlg = page.locator('#hk-dialog');
+  const idle = dlg.locator('#hk-km-idle');
+  await expect(idle).toBeVisible();
+  await expect(idle).toBeChecked();
+  await dlg.locator('#hk-action').selectOption('search');
+  await expect(idle).toBeHidden(); // only Key mode has it
+  await dlg.locator('#hk-action').selectOption('key_mode');
+  await idle.uncheck();
+  await page.screenshot({ path: test.info().outputPath('key-mode-setting.png') });
+  await dlg.locator('#hk-save').click();
+  await expect(dlg).toBeHidden();
+  const list = JSON.parse(saved.at(-1).value);
+  expect(list.find((h: any) => h.id === 'hk-key-mode').idle_off).toBe(false);
+
+  // Now it stays on through a long pause, and still turns off by the shortcut.
+  await openWorker();
+  await page.locator('#peek-cmd-input').focus();
+  await page.keyboard.press('Control+;');
+  await expect(badge).toBeVisible();
+  await page.clock.runFor(60000);
+  await expect(badge).toBeVisible();
+  await page.keyboard.press('Control+;');
+  await expect(badge).toHaveCount(0);
 });

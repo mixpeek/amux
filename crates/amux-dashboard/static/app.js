@@ -43353,8 +43353,11 @@ document.addEventListener('keydown', (e) => {
 // Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker's pane
 // through the same keys endpoint the chips use, in the order pressed. Any other
 // key turns it off and reaches the composer as usual; so do Ctrl+; again,
-// closing the worker view and 10s without a key. The badge on the composer
+// closing the worker view and 10s without a key (a setting on the hotkey can
+// keep it on while idle). The badge on the composer
 // says it is on, because Esc here goes to the worker instead of closing the view.
+// The toggle is the `key_mode` hotkey (Hotkeys tab), so it can be rebound; the
+// badge and the hint shown on the focused composer name whatever it is bound to.
 const _KM_IDLE_MS = 10000;
 const _KM_MAP = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Enter: 'Enter',
   Escape: 'Escape', Tab: 'Tab', ' ': 'Space', Backspace: 'BSpace', Home: 'Home', End: 'End',
@@ -43365,9 +43368,47 @@ const _KM_GLYPH = { Up: '↑', Down: '↓', Left: '←', Right: '→', Enter: '�
 const _KM_MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS', 'CapsLock', 'Fn']);
 let _km = null; // { session, timer, sent, chain }
 
-function _kmIsToggle(e) {
-  return e.ctrlKey && !e.metaKey && !e.altKey && (e.code === 'Semicolon' || e.key === ';');
+// The enabled key_mode hotkeys, and whether this keydown is one of them.
+function _kmBindings() {
+  return (typeof _hkList !== 'undefined' ? _hkList : [])
+    .filter(h => h.action === 'key_mode' && h.type === 'keys' && h.enabled && !h.deleted);
 }
+function _kmIsToggle(e) {
+  const combo = typeof _hkComboFromEvent === 'function' ? _hkComboFromEvent(e) : '';
+  return !!combo && _kmBindings().some(h => h.trigger === combo);
+}
+// The first binding as glyphs (⌃; on a Mac, Ctrl+; elsewhere), or ''.
+function _kmComboLabel() {
+  const h = _kmBindings()[0];
+  if (!h) return '';
+  const mac = typeof _HK_IS_MAC !== 'undefined' && _HK_IS_MAC;
+  const glyph = mac ? { Mod: '⌘', Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Globe: '🌐' } : { Mod: 'Ctrl', Alt: 'Alt', Shift: 'Shift', Globe: '🌐' };
+  const parts = String(h.trigger).split(/[+ ]/).filter(Boolean).map(k => glyph[k] || k);
+  return parts.join(mac ? '' : '+');
+}
+function _kmToggle() {
+  const ov = document.getElementById('peek-overlay');
+  if (!(ov && ov.classList.contains('active') && peekSession)) { showToast('Key mode works in a worker: open one first'); return; }
+  if (_km) _kmExit('toggle'); else _kmEnter(peekSession);
+}
+// The hint on a focused, empty composer: how to turn key mode on. Desktop
+// only (CSS), since a phone has no arrow keys to send.
+function _kmHintRender() {
+  const wrap = document.querySelector('#peek-overlay .peek-composer-input');
+  if (!wrap) return;
+  const label = _kmComboLabel();
+  let hint = document.getElementById('peek-keymode-hint');
+  if (!label) { if (hint) hint.remove(); return; }
+  if (!hint) {
+    hint = document.createElement('kbd');
+    hint.id = 'peek-keymode-hint';
+    hint.className = 'keymode-hint-idle';
+    wrap.appendChild(hint);
+  }
+  hint.textContent = label + ' keys';
+  hint.title = 'Press ' + label + ' to send arrows, Enter and Esc straight to the worker. Change it in the Hotkeys tab.';
+}
+document.addEventListener('focusin', (e) => { if (e.target && e.target.id === 'peek-cmd-input') _kmHintRender(); });
 // The tmux key name for a keydown, or null when key mode does not forward it.
 function _kmKeyName(e) {
   if (e.metaKey || e.altKey || e.ctrlKey) return null;
@@ -43392,23 +43433,29 @@ function _kmRender(lastKey) {
     badge.id = 'peek-keymode-badge';
     badge.className = 'keymode-badge';
     badge.setAttribute('role', 'status');
-    badge.title = 'Arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker. Ctrl+; or any other key to stop.';
+    badge.title = 'Arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker. '
+    + (_kmComboLabel() ? _kmComboLabel() + ' or a' : 'A') + 'ny other key to stop.';
     wrap.appendChild(badge);
   }
   badge.innerHTML = '<span class="keymode-label">⌨ Keys → worker</span>'
     + (lastKey ? '<kbd class="keymode-last">' + esc(_KM_GLYPH[lastKey] || lastKey) + '</kbd>' : '')
-    + '<span class="keymode-hint">⌃; to stop</span>';
+    + '<span class="keymode-hint">' + esc(_kmComboLabel() || 'Any other key') + ' to stop</span>';
+}
+// The idle turn-off is a setting on the Key mode hotkey (on unless unticked).
+function _kmIdleOff() {
+  const h = _kmBindings()[0];
+  return !h || h.idle_off !== false;
 }
 function _kmArm() {
   clearTimeout(_km.timer);
-  _km.timer = setTimeout(() => _kmExit('idle'), _KM_IDLE_MS);
+  if (_kmIdleOff()) _km.timer = setTimeout(() => _kmExit('idle'), _KM_IDLE_MS);
 }
 function _kmEnter(session) {
   if (_workerRenderer(session) !== 'terminal') { showToast('Key mode needs a terminal worker'); return; }
   _km = { session, timer: 0, sent: 0, chain: Promise.resolve() };
   _kmArm();
   _kmRender();
-  if (typeof amuxTrack === 'function') amuxTrack('key_mode', { on: true, session, ver: APP_VER, measured: true, n_considered: 1 });
+  if (typeof amuxTrack === 'function') amuxTrack('key_mode', { on: true, session, idle_off: _kmIdleOff(), ver: APP_VER, measured: true, n_considered: 1 });
 }
 function _kmExit(reason) {
   if (!_km) return;
@@ -43434,11 +43481,7 @@ function _kmKeydown(e) {
   const open = !!(ov && ov.classList.contains('active') && peekSession);
   if (_km && (!open || _km.session !== peekSession)) _kmExit('peek-closed');
   if (!open) return;
-  if (_kmIsToggle(e)) {
-    e.preventDefault(); e.stopImmediatePropagation();
-    if (_km) _kmExit('toggle'); else _kmEnter(peekSession);
-    return;
-  }
+  if (_kmIsToggle(e)) return; // the Hotkeys dispatcher runs _kmToggle
   if (!_km || _KM_MODIFIERS.has(e.key)) return;
   const k = _kmKeyName(e);
   if (!k) { _kmExit('typing'); return; } // falls through to the composer
@@ -78643,14 +78686,14 @@ const _HK_ACTIONS = {
   open_hotkeys: { label: 'Open Hotkeys', desc: 'Come back to this tab', ico: '⌘', tone: 'gray', run: () => switchView('hotkeys') },
   go_back: { label: 'Back', desc: 'Go back to the previous tab, worker, card or file', ico: '‹', tone: 'gray', run: () => navBack() },
   go_forward: { label: 'Forward', desc: 'Go forward again after going back', ico: '›', tone: 'gray', run: () => navForward() },
+  key_mode: { label: 'Key mode', desc: 'In a worker: arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker until you type something else',
+    ico: '⌨', tone: 'blue', run: () => _kmToggle() },
 };
 // Shortcuts bound elsewhere in amux. Shown so this tab is the whole map, and
 // so a new hotkey cannot silently shadow one of them.
 const _HK_BUILTIN = [
   { combo: 'Mod+K', label: 'Search', desc: 'Open search from anywhere' },
   { combo: 'Mod+Enter', label: 'Send', desc: 'Send what you typed to the worker' },
-  { combo: /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'Ctrl+;' : 'Mod+;', label: 'Key mode',
-    desc: 'In a worker: arrows, Enter, Esc, Tab, Space, Backspace and y/n/1/2/3 go to the worker until you type something else' },
   { combo: 'Mod+S', label: 'Save', desc: 'Save in an editor (files, MDAI, card detail)' },
   { combo: 'Mod+=', label: 'Zoom in', desc: 'Make the page larger' },
   { combo: 'Mod+-', label: 'Zoom out', desc: 'Make the page smaller' },
@@ -78670,6 +78713,9 @@ const _HK_DEFAULTS = [
   { id: 'hk-back', action: 'go_back', type: 'keys', trigger: 'Mod+[', enabled: true, remove: true, indicator: false },
   { id: 'hk-forward', action: 'go_forward', type: 'keys', trigger: 'Mod+]', enabled: true, remove: true, indicator: false },
   { id: 'hk-record', action: 'record', type: 'keys', trigger: 'Alt+Shift+R', enabled: true, remove: true, indicator: false },
+  // ⌃; on a Mac (⌘; is taken by the system spelling menu), Ctrl+; elsewhere.
+  { id: 'hk-key-mode', action: 'key_mode', type: 'keys', trigger: /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'Ctrl+;' : 'Mod+;',
+    enabled: true, remove: true, indicator: false },
 ];
 let _hkList = _HK_DEFAULTS.map(h => Object.assign({}, h));
 let _hkLoaded = false;
@@ -79004,6 +79050,7 @@ function _hkOpenDialog(id) {
     + '<button type="button" class="btn" id="hk-record" onclick="_hkRecord()">Record shortcut</button></div>'
     + '<span class="ui-help" id="hk-trigger-help"></span></div>'
     + '<label class="sx-check" id="hk-remove-row"><input type="checkbox" id="hk-remove"><span><b>Remove the trigger text</b><span class="ui-help">Delete the typed trigger (like ##) when it fires</span></span></label>'
+    + '<label class="sx-check" id="hk-km-idle-row"><input type="checkbox" id="hk-km-idle"><span><b>Turn off after ' + (_KM_IDLE_MS / 1000) + ' seconds without a key</b><span class="ui-help">Off: key mode stays on until you press the shortcut again, type, or close the worker</span></span></label>'
     + '<label class="sx-check"><input type="checkbox" id="hk-indicator"><span><b>Show a small indicator</b><span class="ui-help">A short toast when it fires</span></span></label>'
     + '<div class="hk-modal-foot">'
     + (src ? '<button class="btn danger" onclick="_hkDelete()">' + (_HK_DEFAULTS.some(d => d.id === src.id) ? 'Remove' : 'Delete') + '</button>' : '')
@@ -79015,7 +79062,9 @@ function _hkOpenDialog(id) {
   ov.querySelector('#hk-trigger').value = e.trigger;
   ov.querySelector('#hk-remove').checked = !!e.remove;
   ov.querySelector('#hk-indicator').checked = !!e.indicator;
+  ov.querySelector('#hk-km-idle').checked = e.idle_off !== false;
   ov.querySelectorAll('input[name="hk-type"]').forEach(r => r.addEventListener('change', _hkTypeUI));
+  ov.querySelector('#hk-action').addEventListener('change', _hkTypeUI);
   _hkTypeUI();
   ov.classList.add('active');
   setTimeout(() => ov.querySelector('#hk-action').focus(), 0);
@@ -79025,6 +79074,7 @@ function _hkTypeUI() {
   document.getElementById('hk-trigger-label').textContent = text ? 'Text trigger' : 'Shortcut';
   document.getElementById('hk-record').hidden = text;
   document.getElementById('hk-remove-row').style.display = text ? '' : 'none';
+  document.getElementById('hk-km-idle-row').style.display = document.getElementById('hk-action').value === 'key_mode' ? '' : 'none';
   const act = _HK_ACTIONS[document.getElementById('hk-action').value];
   document.getElementById('hk-action').title = act ? act.desc : '';
   document.getElementById('hk-record').style.display = text ? 'none' : '';
@@ -79073,6 +79123,8 @@ async function _hkSaveDialog() {
     remove: document.getElementById('hk-remove').checked,
     indicator: document.getElementById('hk-indicator').checked,
   });
+  if (next.action === 'key_mode') next.idle_off = document.getElementById('hk-km-idle').checked;
+  else delete next.idle_off;
   delete next.isNew;
   const why = _hkConflict(next, _hkList);
   const t = document.getElementById('hk-trigger');
