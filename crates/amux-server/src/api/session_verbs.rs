@@ -1029,17 +1029,22 @@ thread_local! {
 /// CPU on two cleanup ticks in a row (Mac RCA 20261118-153034). Nested calls
 /// share the outer memo; it is dropped when the outermost call returns.
 pub(crate) fn with_env_memo<T>(f: impl FnOnce() -> T) -> T {
-    let outer = ENV_MEMO.with(|m| m.borrow().is_some());
-    if !outer {
-        ENV_MEMO.with(|m| *m.borrow_mut() = Some(std::collections::HashMap::new()));
+    // Dropped on return AND on unwind: a panic inside `f` must not leave this
+    // thread reading stale env files for the rest of its life (land review F2).
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            let read = ENV_MEMO.with(|m| m.borrow_mut().take().map(|m| m.len()).unwrap_or(0));
+            tracing::debug!(env_files_read = read, measured = true, n_considered = read, verdict = "env_memo_scope",
+                "a listing read each worker env file once");
+        }
     }
-    let out = f();
-    if !outer {
-        let read = ENV_MEMO.with(|m| m.borrow_mut().take().map(|m| m.len()).unwrap_or(0));
-        tracing::debug!(env_files_read = read, measured = true, n_considered = read, verdict = "env_memo_scope",
-            "a listing read each worker env file once");
+    if ENV_MEMO.with(|m| m.borrow().is_some()) {
+        return f();
     }
-    out
+    ENV_MEMO.with(|m| *m.borrow_mut() = Some(std::collections::HashMap::new()));
+    let _clear = Clear;
+    f()
 }
 
 /// One setting for a lane, resolved WORKER > GROUP > GLOBAL (AMUX-2930).
@@ -19735,6 +19740,11 @@ mod env_memo_tests {
             with_env_memo(|| assert_eq!(parse_env(&name).get("CC_TAGS"), Some("ops"), "a nested scope shares it"));
         });
         assert_eq!(parse_env(&name).get("CC_TAGS"), Some("admin"), "outside the scope every read is fresh");
+        // A panic inside the scope still clears the memo for this thread.
+        let caught = std::panic::catch_unwind(|| with_env_memo(|| { let _ = parse_env(&name); panic!("inside the scope") }));
+        assert!(caught.is_err());
+        std::fs::write(&path, "CC_TAGS=gtm\n").unwrap();
+        assert_eq!(parse_env(&name).get("CC_TAGS"), Some("gtm"), "no memo survives the panic");
     }
 }
 
