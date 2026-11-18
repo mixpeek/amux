@@ -51,6 +51,30 @@ pub struct WorkerSnapshot {
 }
 
 /// Walk the parent chain to find which worker owns a process.
+/// Each pane's direct child with that child's children, sorted, per worker.
+/// amux launches the provider through `sh -c "cd … && … claude …"`, so the
+/// direct child is that `sh` and Claude is one level down; a provider started
+/// directly is the direct child, and its own children inherit its environment.
+fn provider_trees(parents: &HashMap<u32, u32>, panes: &HashMap<u32, String>) -> Vec<(String, Vec<u32>)> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&pid, &ppid) in parents {
+        children.entry(ppid).or_default().push(pid);
+    }
+    let mut trees = Vec::new();
+    for (&shell, worker) in panes {
+        let mut direct = children.get(&shell).cloned().unwrap_or_default();
+        direct.sort_unstable();
+        for child in direct {
+            let mut tree = vec![child];
+            let mut below = children.get(&child).cloned().unwrap_or_default();
+            below.sort_unstable();
+            tree.extend(below);
+            trees.push((worker.clone(), tree));
+        }
+    }
+    trees
+}
+
 fn find_owner<'a>(
     pid: u32,
     panes: &'a HashMap<u32, String>,
@@ -116,13 +140,11 @@ pub fn sample_workers() -> Vec<WorkerSnapshot> {
         pid_rss.insert(pid, rss_kb);
     }
 
-    // The pane shell's direct children are the worker's provider process.
-    // Record which Claude config folder each runs under (read once per pid),
-    // so transcript readers follow a wrapper's CLAUDE_CONFIG_DIR.
-    for (&pid, &ppid) in &parents {
-        if let Some(w) = panes.get(&ppid) {
-            crate::api::claude_config::observe(w, pid);
-        }
+    // Record which Claude config folder each worker's provider runs under (read
+    // once per process tree), so transcript readers follow a wrapper's
+    // CLAUDE_CONFIG_DIR.
+    for (worker, tree) in provider_trees(&parents, &panes) {
+        crate::api::claude_config::observe_tree(&worker, &tree);
     }
 
     // Map pids to workers and aggregate
@@ -299,6 +321,20 @@ mod tests {
             Some("test-worker")
         );
         assert_eq!(find_owner(400, &panes, &parents), None);
+    }
+
+    #[test]
+    fn a_provider_under_the_launch_shell_is_in_its_workers_tree() {
+        // tv-player on a real host, 2026-11-17: pane zsh 32837 runs
+        // `/bin/sh -c "cd … && … claude …"` (35143), and Claude is 35144.
+        let mut panes = HashMap::new();
+        panes.insert(32837u32, "tv-player".to_string());
+        let mut parents = HashMap::new();
+        parents.insert(35143u32, 32837u32);
+        parents.insert(35144u32, 35143u32);
+        parents.insert(35200u32, 35144u32); // an MCP server under Claude: too deep
+        parents.insert(99u32, 1u32); // not in any pane
+        assert_eq!(provider_trees(&parents, &panes), vec![("tv-player".to_string(), vec![35143, 35144])]);
     }
 
     #[test]

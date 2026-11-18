@@ -12,8 +12,10 @@
 //!
 //! The wrapper is the only thing that knows the folder, so it is read from the
 //! running process: the `worker-resources` job already maps every pane process
-//! to its worker every 30 s and calls [`observe`] with each pane's direct
-//! children. A pid is read once. The folder is stored in the worker's meta as
+//! to its worker every 30 s and calls [`observe_tree`] with each pane's direct
+//! child and that child's children (the provider sits one level down when
+//! launched through `sh -c`). A process tree is read once. The folder is
+//! stored in the worker's meta as
 //! `cc_config_dir` and [`for_session`] answers from it, so readers stay sync
 //! and cheap.
 
@@ -141,7 +143,7 @@ pub(crate) fn process_config_dir(_pid: u32) -> Option<String> {
 /// What one observation changed, for the caller's log and for tests.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Observed {
-    /// This pid was read before; nothing was done.
+    /// This process tree was read before; nothing was done.
     Seen,
     /// The environment could not be read.
     Unreadable,
@@ -164,23 +166,50 @@ pub(crate) fn decide(recorded: &str, observed: &str, default: &Path) -> Option<S
     (norm != recorded.trim()).then_some(norm)
 }
 
-/// Read `pid`'s config folder once and record it as `name`'s. A new non-default
-/// folder also gets amux's status hooks, the same entries `~/.claude` carries,
-/// so the next Claude started there reports its state.
-pub(crate) fn observe(name: &str, pid: u32) -> Observed {
-    static READ: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+/// The folder a pane's process tree runs under, from the readings of the
+/// pane's direct child and of that child's children (`None` = unreadable).
+///
+/// amux launches Claude as `sh -c "cd … && … claude …"`, so the direct child
+/// is that `sh` and Claude is one level below it; a wrapper that exports (or
+/// unsets) CLAUDE_CONFIG_DIR and execs Claude changes it only there. Reading
+/// the `sh` alone recorded nothing for every worker on `~/.claude-team`
+/// (2026-11-17: zero `claude_config_dir_recorded` on a host running five of
+/// them). So the level below is the authority whenever any of it is readable:
+/// a non-default folder there wins, else the default. The direct child's own
+/// reading counts only when nothing below it can be read (a provider started
+/// directly, before it has children). `None` when nothing could be read.
+pub(crate) fn tree_config_dir(child: Option<&str>, below: &[Option<String>]) -> Option<String> {
+    let readable: Vec<&str> = below.iter().flatten().map(|s| s.trim()).collect();
+    if readable.is_empty() {
+        return child.map(|s| s.trim().to_string());
+    }
+    Some(readable.iter().find(|s| !s.is_empty()).copied().unwrap_or("").to_string())
+}
+
+/// Read a pane's process tree once and record its config folder as `name`'s.
+/// `pids` is the pane's direct child followed by that child's children. A new
+/// non-default folder also gets amux's status hooks, the same entries
+/// `~/.claude` carries, so the next Claude started there reports its state.
+pub(crate) fn observe_tree(name: &str, pids: &[u32]) -> Observed {
+    // Keyed by the whole tree, not the first pid: the `sh` is there before
+    // Claude starts, and a reading taken then must not stand for good.
+    static READ: OnceLock<Mutex<HashMap<Vec<u32>, String>>> = OnceLock::new();
     {
         let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-        if read.get(&pid).is_some_and(|w| w == name) {
+        if read.get(pids).is_some_and(|w| w == name) {
             return Observed::Seen;
         }
         // Bounded: pids are reused and workers come and go.
         if read.len() > 4096 {
             read.clear();
         }
-        read.insert(pid, name.to_string());
+        read.insert(pids.to_vec(), name.to_string());
     }
-    let Some(observed) = process_config_dir(pid) else {
+    let Some((&pid, below)) = pids.split_first() else {
+        return Observed::Unreadable;
+    };
+    let below: Vec<Option<String>> = below.iter().map(|&p| process_config_dir(p)).collect();
+    let Some(observed) = tree_config_dir(process_config_dir(pid).as_deref(), &below) else {
         return Observed::Unreadable;
     };
     let default = claude_home();
@@ -374,5 +403,63 @@ mod tests {
         let _ = child.wait();
         assert_eq!(got.as_deref(), Some("/tmp/amux-config-dir-probe"));
         assert_eq!(process_config_dir(u32::MAX >> 1), None, "a pid that does not exist is unreadable, not default");
+    }
+
+    #[test]
+    fn the_level_below_the_launch_shell_decides_the_folder() {
+        let team = Some("/Users/x/.claude-team".to_string());
+        let default = Some(String::new());
+        // amux's `sh -c` holds no CLAUDE_CONFIG_DIR; the Claude under it does.
+        assert_eq!(tree_config_dir(Some(""), std::slice::from_ref(&team)).as_deref(), Some("/Users/x/.claude-team"));
+        // Claude started directly, with MCP children that inherit its folder.
+        assert_eq!(tree_config_dir(team.as_deref(), &[team.clone(), None]).as_deref(),
+            Some("/Users/x/.claude-team"));
+        // A wrapper that UNSETS an inherited folder for a personal repo: the
+        // shell's stale value must not win over what Claude actually runs under.
+        assert_eq!(tree_config_dir(Some("/Users/x/.claude-team"), std::slice::from_ref(&default)).as_deref(), Some(""));
+        // Nothing below yet (Claude not started): the shell's own reading.
+        assert_eq!(tree_config_dir(Some(""), &[]).as_deref(), Some(""));
+        assert_eq!(tree_config_dir(Some(""), &[None]).as_deref(), Some(""));
+        // Nothing readable at all is unmeasured, not default.
+        assert_eq!(tree_config_dir(None, &[None, None]), None);
+    }
+
+    /// The launch shape from a real host: `sh -c "…; true"` cannot exec its
+    /// command, so it stays the pane's direct child, and only the process under
+    /// it carries CLAUDE_CONFIG_DIR.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_folder_set_below_the_launch_shell_is_read_from_the_tree() {
+        let exe = std::env::current_exe().unwrap();
+        let mut sh = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"CLAUDE_CONFIG_DIR=/tmp/amux-tree-probe AMUX_ENV_PROBE_SLEEPER=1 "$0" --exact api::claude_config::tests::env_probe_sleeper --ignored --test-threads=1 >/dev/null 2>&1; true"#,
+            ])
+            .arg(&exe)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .spawn()
+            .unwrap();
+        let mut got = None;
+        let mut shell_reading = None;
+        for _ in 0..100 {
+            let below: Vec<u32> = std::process::Command::new("pgrep")
+                .args(["-P", &sh.id().to_string()])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect())
+                .unwrap_or_default();
+            shell_reading = process_config_dir(sh.id());
+            let readings: Vec<Option<String>> = below.iter().map(|&p| process_config_dir(p)).collect();
+            got = tree_config_dir(shell_reading.as_deref(), &readings);
+            if got.as_deref() == Some("/tmp/amux-tree-probe") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let _ = std::process::Command::new("pkill").args(["-P", &sh.id().to_string()]).status();
+        let _ = sh.kill();
+        let _ = sh.wait();
+        assert_ne!(shell_reading.as_deref(), Some("/tmp/amux-tree-probe"), "the launch shell itself never holds it");
+        assert_eq!(got.as_deref(), Some("/tmp/amux-tree-probe"));
     }
 }
