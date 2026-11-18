@@ -59012,6 +59012,7 @@ function _vaultGroupsOf(i) { return String(i.target || '').split(',').map(g => g
 const _vault = { items: [], workers: [], groups: [], keystore: '', tab: 'secrets', q: '', scope: '', group: '',
   worker: '', sort: 'name', prov: null, revealed: {}, timers: {}, loadErr: '' };
 const _VAULT_ICONS = {
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L20 3M16 7l3 3M13.5 9.5l2 2"/>',
   card: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>',
   shield: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
@@ -59287,7 +59288,10 @@ function _vaultTableHtml(list, idPrefix) {
       return '<tr class="vault-row" data-id="' + esc(i.id) + '">'
         + '<td data-label="Name"><div class="vault-name"><code>' + esc(i.key) + '</code>' + _vaultIdBadge(i.id) + (i.note ? '<span class="ui-help">' + esc(i.note) + '</span>' : '') + '</div></td>'
         + '<td data-label="Value"><div class="vault-value"><span class="vault-mask' + (shown ? ' revealed' : '') + '" id="' + idPrefix + esc(i.id) + '">' + (shown ? esc(_vault.revealed[i.id]) : '••••••••••••') + '</span>'
-        + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button></div></td>'
+        + '<button class="vault-icon-btn" aria-label="' + (shown ? 'Hide ' : 'Reveal ') + esc(i.key) + '" aria-pressed="' + shown + '" title="' + (shown ? 'Hide' : 'Reveal (recorded in the audit log)') + '" onclick="_vaultReveal(\'' + escJs(i.id) + '\')">' + _vaultIcon(shown ? 'eyeOff' : 'eye') + '</button>'
+        // Copy only while revealed (owner, 2026-11-18): it reads the value by id, never from the markup.
+        + (shown ? '<button class="vault-icon-btn vault-copy" aria-label="Copy ' + esc(i.key) + '" title="Copy the value" onclick="_vaultCopy(\'' + escJs(i.id) + '\')">' + _vaultIcon('copy') + '</button>' : '')
+        + '</div></td>'
         + '<td data-label="Scope">' + _vaultChip(i.scope) + '</td>'
         + '<td data-label="Provisioned to">' + _vaultProvisionedTo(i) + forWorker + '</td>'
         + '<td data-label="Updated"><span title="' + esc(new Date((i.updated || 0) * 1000).toLocaleString()) + '">' + esc(timeAgo(i.updated)) + '</span><span class="ui-help"> · v' + esc(String(i.version || 1)) + '</span></td>'
@@ -59329,6 +59333,11 @@ function _vaultMenu(event, id) {
 function _vaultMask(id) {
   clearTimeout(_vault.timers[id]); delete _vault.timers[id];
   delete _vault.revealed[id];
+}
+function _vaultCopy(id) {
+  if (!Object.prototype.hasOwnProperty.call(_vault.revealed, id)) { showToast('Reveal it first'); return; }
+  const item = (_vault.items || []).find(x => x.id === id);
+  _copyTextWithToast(_vault.revealed[id], 'Copied ' + ((item && item.key) || 'the value'));
 }
 function _vaultMaskAll() { for (const id of Object.keys(_vault.revealed)) _vaultMask(id); }
 async function _vaultReveal(id) {

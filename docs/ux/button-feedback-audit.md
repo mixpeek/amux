@@ -1596,6 +1596,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Try confirmation dialog | `_uiGuideDialog` | onclick |
 | app.js | Preview next theme | `_uiGuideTheme` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Payment Method | `_vaultCardAdd` | onclick |
+| app.js | Copy  | `_vaultCopy` | onclick |
 | app.js | ${_vaultIcon(plus)}Add Secret | `_vaultEdit` | onclick |
 | app.js | …Add Secret | `_vaultEdit` | onclick |
 | app.js | Show value | `_vaultEye` | onclick |

@@ -172,11 +172,24 @@ test('Vault page: the full secret lifecycle without leaking a value', async ({ p
     // Reveal: shown on request, masked again by the timer.
     await page.clock.install();
     const gRow = page.locator('.vault-row', { hasText: G });
+    // Copy appears only while a value is revealed (owner, 2026-11-18).
+    await expect(gRow.getByRole('button', { name: `Copy ${G}` })).toHaveCount(0);
+    await page.evaluate(() => {
+      (window as any)._copied = [];
+      Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: async (t: string) => { (window as any)._copied.push(t); } } });
+    });
     await gRow.getByRole('button', { name: `Reveal ${G}` }).click();
     await expect(gRow.locator('.vault-mask')).toHaveText(VALUES.global);
+    const copy = gRow.getByRole('button', { name: `Copy ${G}` });
+    await expect(copy).toBeVisible();
+    expect(await copy.evaluate(b => b.outerHTML), 'the value is read by id, never put in the button').not.toContain(VALUES.global);
+    await copy.click();
+    await expect.poll(() => page.evaluate(() => (window as any)._copied)).toEqual([VALUES.global]);
     await page.clock.fastForward(21_000);
     await expect(gRow.locator('.vault-mask')).not.toContainText(VALUES.global);
     await expect(gRow.getByRole('button', { name: `Reveal ${G}` })).toBeVisible();
+    await expect(gRow.getByRole('button', { name: `Copy ${G}` })).toHaveCount(0);
 
     // Rotate: a new value, version 2.
     await rowAction(page, K, 'Rotate value');
