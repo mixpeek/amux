@@ -48,9 +48,11 @@ test('a clip left "sending" by a reload is sent again and leaves the queue', asy
   await seed(page, [{ id: 'clip-stale', session: W, state: 'sending', sending_at: Date.now() - 600000, ms: 3000, mime: 'audio/webm', attempts: 0 }]);
   await page.evaluate(() => (globalThis as any).eval('_dictFlushOffline')());
   await expect.poll(() => dictated.length, { message: 'the stuck clip was sent' }).toBe(1);
-  const left = await page.evaluate(async () => ((await (globalThis as any).eval('_idb').get('dict_pending')) || [])
-    .filter((x: any) => x.state !== 'done').length);
-  expect(left).toBe(0);
+  // The route counts the request when it arrives; the page marks the clip done
+  // only once it reads the reply, so the queue drains a moment later.
+  await expect.poll(() => page.evaluate(async () => ((await (globalThis as any).eval('_idb').get('dict_pending')) || [])
+    .filter((x: any) => x.state !== 'done').length), { message: 'the clip left the queue' }).toBe(0);
+  expect(dictated.length, 'sent once, not again by the outbox pass').toBe(1);
 });
 
 test('a clip that is really sending is left alone', async ({ page }) => {
