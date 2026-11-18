@@ -935,30 +935,50 @@ impl EnvFile {
     /// same lock and reload under it, so concurrent UI saves cannot resurrect
     /// a stale copy of another setting merely because their serialization
     /// formats differ.
+    /// The file's text with `updates` applied IN PLACE: the line that sets a
+    /// key is replaced (or removed for `None`), a new key is appended, and
+    /// every other line, comments and order included, is kept byte for byte.
+    /// It used to rebuild the file from a sorted map, so one Scope-tab change
+    /// re-sorted the owner's global env and deleted his comments (2026-11-18:
+    /// the note explaining the numeric thread caps after a CPU RCA).
+    pub(crate) fn merge_plain_text(old: &str, updates: &[(String, Option<String>)]) -> String {
+        let key_of = |line: &str| -> Option<String> {
+            let t = line.trim_start();
+            let t = t.strip_prefix("export ").unwrap_or(t);
+            if t.starts_with('#') { return None; }
+            let (k, _) = t.split_once('=')?;
+            let k = k.trim();
+            (!k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| k.to_string())
+        };
+        let mut lines: Vec<String> = old.lines().map(str::to_string).collect();
+        for (key, value) in updates {
+            let mut placed = false;
+            let mut i = 0;
+            while i < lines.len() {
+                if key_of(&lines[i]).as_deref() == Some(key.as_str()) {
+                    match value {
+                        Some(v) if !placed => { lines[i] = format!("{key}={}", Self::plain_quote(v)); placed = true; i += 1; }
+                        _ => { lines.remove(i); }
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if let (Some(v), false) = (value, placed) {
+                lines.push(format!("{key}={}", Self::plain_quote(v)));
+            }
+        }
+        let mut text = lines.join("\n");
+        if !text.is_empty() { text.push('\n'); }
+        text
+    }
+
     pub(crate) fn merge_plain(
         path: &Path,
         updates: &[(String, Option<String>)],
     ) -> std::io::Result<()> {
         let _guard = env_write_lock().lock().unwrap_or_else(|e| e.into_inner());
-        // Read with the worker-file parser: it un-escapes the double-quoted
-        // values Self::write produces, which crate::config::parse_env_file
-        // does not, so a round trip here cannot grow backslashes.
-        let mut current: std::collections::BTreeMap<String, String> =
-            Self::load(path).pairs.into_iter().collect();
-        for (key, value) in updates {
-            match value {
-                Some(value) => {
-                    current.insert(key.clone(), value.clone());
-                }
-                None => {
-                    current.remove(key);
-                }
-            }
-        }
-        let text: String = current
-            .iter()
-            .map(|(key, value)| format!("{key}={}\n", Self::plain_quote(value)))
-            .collect();
+        let text = Self::merge_plain_text(&std::fs::read_to_string(path).unwrap_or_default(), updates);
         use std::io::Write as _;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -19654,6 +19674,27 @@ fn intent_helper_archive_refusal(name: &str, body: &Value) -> Option<Value> {
         "error": format!("{name} is where Intent sends requests no other worker fits. Archived, those requests are not delivered and its schedules pause. Archive it anyway, or point AMUX_INTENT_HELPER at another worker first."),
         "code": "intent_helper",
     }))
+}
+
+#[cfg(test)]
+mod env_merge_keeps_text_tests {
+    use super::EnvFile;
+
+    #[test]
+    fn a_merge_changes_its_keys_and_keeps_every_other_line() {
+        let old = "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\nexport B=2\nB=3\n\nZ=9\n";
+        let set = |k: &str, v: Option<&str>| (k.to_string(), v.map(str::to_string));
+        assert_eq!(
+            EnvFile::merge_plain_text(old, &[set("OMP_NUM_THREADS", Some("8")), set("NEW", Some("x"))]),
+            "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=8\nexport B=2\nB=3\n\nZ=9\nNEW=x\n",
+            "the value changes where it stands, the comment and order stay, a new key goes last"
+        );
+        assert_eq!(EnvFile::merge_plain_text(old, &[set("B", None)]),
+            "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\n\nZ=9\n", "a delete removes every line that sets it");
+        assert_eq!(EnvFile::merge_plain_text(old, &[set("B", Some("5"))]),
+            "A=1\n# Why the caps: an RCA.\nOMP_NUM_THREADS=4\nB=5\n\nZ=9\n", "a duplicate key ends as one line");
+        assert_eq!(EnvFile::merge_plain_text("", &[set("K", Some("v"))]), "K=v\n");
+    }
 }
 
 #[cfg(test)]
