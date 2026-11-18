@@ -507,7 +507,6 @@ fn parse_swap_pct(text: &str) -> Option<f64> {
 /// Scoped to prefixes a harness mints, never to a worker name. A real lane is
 /// somebody's work in progress and is not this job's to end.
 fn stale_test_panes(grace_s: u64) -> Vec<String> {
-    const HARNESS: [&str; 3] = ["e2e-", "board-reviewer-", "callback-b-"];
     let out = std::process::Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name} #{session_created}"])
         .output();
@@ -523,14 +522,53 @@ fn stale_test_panes(grace_s: u64) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let (name, created) = line.rsplit_once(' ')?;
-            let bare = name.strip_prefix("amux-")?;
-            if !HARNESS.iter().any(|p| bare.starts_with(p)) {
-                return None;
-            }
-            let age = now.saturating_sub(created.trim().parse::<u64>().ok()?);
-            (age >= grace_s).then(|| name.to_string())
+            let created = created.trim().parse::<u64>().ok()?;
+            harness_pane_is_stale(name, created, now, grace_s, |bare| {
+                crate::api::session_verbs::env_path(bare).exists()
+            })
+            .then(|| name.to_string())
         })
         .collect()
+}
+
+/// Prefixes only a test harness mints for its throwaway panes.
+const HARNESS_PREFIXES: [&str; 3] = ["e2e-", "board-reviewer-", "callback-b-"];
+
+/// The one rule for what the pressure arm may kill: a pane a harness minted,
+/// old enough that no run still owns it, that NO registered worker owns.
+///
+/// The prefix alone is not proof. 2026-11-17: an owner named a real worker
+/// `e2e-audit`, and at 85% swap this job killed it mid-task 30 minutes after
+/// it started ("reaped a stale test pane", pane=amux-e2e-audit). A worker's
+/// `sessions/<name>.env` is what makes it a lane; harness panes have none.
+fn harness_pane_is_stale(
+    session: &str,
+    created: u64,
+    now: u64,
+    grace_s: u64,
+    registered: impl Fn(&str) -> bool,
+) -> bool {
+    let Some(bare) = session.strip_prefix("amux-") else {
+        return false;
+    };
+    if !HARNESS_PREFIXES.iter().any(|p| bare.starts_with(p)) {
+        return false;
+    }
+    if now.saturating_sub(created) < grace_s {
+        return false;
+    }
+    if registered(bare) {
+        tracing::info!(
+            job = JOB,
+            pane = session,
+            verdict = "harness_prefix_worker_spared",
+            measured = true,
+            n_considered = 1,
+            "mac-health: a pane with a test-harness prefix belongs to a registered worker; not reaping it"
+        );
+        return false;
+    }
+    true
 }
 
 fn test_pane_grace_s() -> u64 {
@@ -1150,12 +1188,36 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_worker_with_a_harness_prefix_is_never_reaped() {
+        // 2026-11-17: `e2e-audit` was a real worker, killed at 85% swap 30
+        // minutes after it started. Its sessions/<name>.env is what makes it a
+        // lane; the harness panes beside it have none.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(home.path().join("sessions/e2e-audit.env"), "CC_DIR=\"/tmp\"\n").unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let registered = |bare: &str| crate::api::session_verbs::env_path(bare).exists();
+        let (now, grace) = (10_000, 1_800);
+        assert!(
+            !harness_pane_is_stale("amux-e2e-audit", 0, now, grace, registered),
+            "a registered worker is somebody's work in progress"
+        );
+        assert!(
+            harness_pane_is_stale("amux-e2e-life-desktop-1788996104537", 0, now, grace, registered),
+            "an unregistered harness pane is still reaped"
+        );
+    }
+
+    #[test]
     fn the_pressure_arm_reaps_only_harness_panes_and_only_when_stale() {
         // The rule this job must not get wrong: a real lane is somebody's work
         // in progress. Only prefixes a HARNESS mints are eligible, and only
-        // once they are old enough that no run still owns them.
-        const HARNESS: [&str; 3] = ["e2e-", "board-reviewer-", "callback-b-"];
-        let eligible = |bare: &str| HARNESS.iter().any(|p| bare.starts_with(p));
+        // once they are old enough that no run still owns them. This calls the
+        // shipped rule; a copy of its prefix list here stayed green while the
+        // rule killed a registered worker named e2e-audit (2026-11-17).
+        let (now, grace) = (10_000, 1_800);
+        let eligible =
+            |bare: &str| harness_pane_is_stale(&format!("amux-{bare}"), 0, now, grace, |_| false);
 
         // Real workers, including ones whose names merely CONTAIN a harness
         // word — a prefix test and a substring test differ exactly here.
@@ -1185,9 +1247,13 @@ mod tests {
 
         // Age gates independently of the name: a pane from a RUNNING test is
         // not stale, and reaping it would kill the run that owns it.
-        let grace = test_pane_grace_s();
+        let fresh = now - grace + 1;
+        assert!(!harness_pane_is_stale("amux-e2e-life-desktop-1", fresh, now, grace, |_| false));
+        assert!(harness_pane_is_stale("amux-e2e-life-desktop-1", now - grace, now, grace, |_| false));
+        // Only amux's own panes, never another tmux user's.
+        assert!(!harness_pane_is_stale("e2e-life-desktop-1", 0, now, grace, |_| false));
         assert!(
-            grace > 0,
+            test_pane_grace_s() > 0,
             "a zero grace would reap panes belonging to a live run"
         );
         assert!(mem_reap_swap_pct() > 0.0 && mem_reap_swap_pct() <= 100.0);
