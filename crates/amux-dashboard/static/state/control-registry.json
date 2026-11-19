@@ -1452,6 +1452,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictClearAll": {
+      "kind": "command._dictClearAll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictClearKey": {
       "kind": "command._dictClearKey",
       "feedback_required": true,
@@ -1580,6 +1586,12 @@
     },
     "_dictRetry": {
       "kind": "command._dictRetry",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictRetryAll": {
+      "kind": "command._dictRetryAll",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

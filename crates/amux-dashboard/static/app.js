@@ -30498,6 +30498,30 @@ async function _dictRetry(id) {
   await _dictPendingBadge();
 }
 
+// Try every clip that can still be sent, now, ignoring its backoff.
+async function _dictRetryAll() {
+  const ids = new Set((await _dictOutbox()).filter(x => x.state !== 'done' && x.state !== 'unreadable').map(x => x.id));
+  if (!ids.size) return;
+  try { await _dictUpdate(q => q.map(x => ids.has(x.id) ? Object.assign({}, x, { attempts: 0, last: 0 }) : x)); }
+  catch (e) { showToast('This device could not update the recordings yet; try again'); return; }
+  _dictBeacon('dict_retry_all', { n: ids.size });
+  if (_dictFlushing) { showToast('Already sending queued recordings; these go next'); return; }
+  showToast('Sending ' + ids.size + ' recording' + (ids.size === 1 ? '' : 's') + '…');
+  await _dictFlushOffline();
+  if (_peekTab === 'dictation') _dictRender();
+}
+// Delete every clip that has not been transcribed, after one confirm.
+async function _dictClearAll() {
+  const n = (await _dictOutbox()).filter(x => x.state !== 'done').length;
+  if (!n) return;
+  const ok = await showConfirm('Delete the ' + n + ' recording' + (n === 1 ? '' : 's') + ' that ' + (n === 1 ? 'was' : 'were')
+    + ' not transcribed? The audio is removed from this device.', 'Delete ' + n, true);
+  if (!ok) return;
+  try { await _dictUpdate(q => q.filter(x => x.state === 'done')); _dictBeacon('dict_clear_all', { n }); }
+  catch (e) { showToast('This device could not delete the recordings yet; try again'); }
+  if (_peekTab === 'dictation') _dictRender();
+}
+
 // Play the stored audio back. You asked for it to feel like a recording — so the
 // clip is a thing you can hear before deciding to retry or bin it.
 async function _dictPlay(id) {
@@ -30573,7 +30597,12 @@ function _dictTabBadge(pending) {
 function _dictOutboxHTML(q) {
   const live = q.filter(x => x.state !== 'done');
   if (!live.length) return '';
-  let h = '<div class="dict-day">PENDING</div>';
+  // Every clip at once (owner, 2026-11-19: "I should have a way to clear, try
+  // again or whatever these"), on the heading's own row so a phone gets no new row.
+  const resend = live.filter(x => x.state !== 'unreadable').length;
+  let h = '<div class="dict-day dict-pending-head"><span>PENDING</span><span class="dict-pending-acts">'
+    + (resend ? '<button class="btn small" onclick="_dictRetryAll()">Try all again</button>' : '')
+    + '<button class="btn small" onclick="_dictClearAll()">Clear all</button></span></div>';
   for (const it of live.slice().reverse()) {
     const secs = Math.round((it.ms || 0) / 1000);
     const label = { sending: 'Sending…', offline: 'Waiting for connection', failed: 'Failed', pending: 'Queued',
