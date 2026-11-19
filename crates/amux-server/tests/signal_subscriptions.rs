@@ -612,3 +612,39 @@ async fn the_catalog_and_a_dry_run_show_what_a_subscription_would_see() {
     let (_, v) = get(&app, "/api/subscriptions/events?pattern=test.*").await;
     assert!(v["events"].as_array().unwrap().iter().any(|e| e["type"] == "test.catalog"), "{v}");
 }
+
+// amux-security, 2026-11-19: a worker emits as itself and its event reaches
+// only its own subscriptions.
+#[tokio::test]
+async fn a_worker_cannot_emit_as_someone_else() {
+    let (app, _store, _dir) = app();
+    for body in [json!({"type": "email.received", "source": "email"}), json!({"type": "deploy.wake", "session": "amux"})] {
+        let (st, v) = post_as(&app, "/api/subscriptions/emit", body, Some("rogue-lane")).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
+        assert_eq!(v["code"], "emit_as_self");
+    }
+    let (st, v) = post_as(&app, "/api/subscriptions/emit", json!({"type": "custom.ping", "source": "rogue-lane"}), Some("rogue-lane")).await;
+    assert_eq!(st, StatusCode::OK, "naming itself is fine: {v}");
+    assert_eq!(v["source"], "rogue-lane");
+    assert_eq!(v["session"], "rogue-lane");
+}
+
+#[tokio::test]
+async fn a_worker_event_fires_only_that_workers_own_subscriptions() {
+    let (app, _store, _dir) = app();
+    post_json(&app, "/api/subscriptions",
+        json!({"name": "owner-mail", "pattern": "email.received", "action": "shell", "action_target": "true"})).await;
+    let (st, v) = post_as(&app, "/api/subscriptions",
+        json!({"name": "self-mail", "pattern": "email.received", "action": "send", "action_target": "gtm-test", "action_template": "mail"}), Some("gtm-test")).await;
+    assert!(st.is_success(), "a worker makes its own subscription: {v}");
+    let (st, v) = post_as(&app, "/api/subscriptions/emit", json!({"type": "email.received", "data": {"subject": "x"}}), Some("gtm-test")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let fired: Vec<String> = v["subscriptions_fired"].as_array().unwrap().iter()
+        .map(|f| f["subscription"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(fired, vec!["self-mail".to_string()], "the owner's subscription does not take a worker's event");
+    // The owner's own emit (no worker header) still fires the owner's subscription.
+    let (_, v) = post_json(&app, "/api/subscriptions/emit", json!({"type": "email.received", "session": "x"})).await;
+    let fired: Vec<String> = v["subscriptions_fired"].as_array().unwrap().iter()
+        .map(|f| f["subscription"].as_str().unwrap_or("").to_string()).collect();
+    assert!(fired.contains(&"owner-mail".to_string()), "{fired:?}");
+}
