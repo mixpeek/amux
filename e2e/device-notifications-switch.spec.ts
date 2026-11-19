@@ -68,6 +68,14 @@ test('a device switched off ends a push subscription left behind, even when the 
     localStorage.setItem('amux_walkthrough_done', '1');
     localStorage.setItem('amux_notifs', '0');
     (window as any)._unsubscribed = 0;
+    // Playwright's WebKit has no PushManager or Notification, so the page's
+    // reconcile returned before it looked and this case could only time out
+    // on ios-safari (AF-1278). Supply them where missing; the subscription
+    // below is a fake either way.
+    if (!('PushManager' in window)) (window as any).PushManager = function PushManager() {};
+    if (typeof Notification === 'undefined') {
+      (window as any).Notification = class { static permission = 'default'; static requestPermission = async () => 'default'; };
+    }
     const sub = { endpoint: 'https://push.example/left-behind', unsubscribe: async () => { (window as any)._unsubscribed++; return true; } };
     const reg = { pushManager: { getSubscription: async () => ((window as any)._unsubscribed ? null : sub) } };
     Object.defineProperty(ServiceWorkerContainer.prototype, 'ready', { configurable: true, get: () => Promise.resolve(reg) });
