@@ -33251,6 +33251,7 @@ function _mdxShow(data, mode) {
     ta.value = data.content || '';
     // A file opens at its top, caret and scroll both.
     ta.setSelectionRange(0, 0);
+    _mdxHistReset(ta);
     ta.scrollTop = 0;
     _mdx.base = ta.value;
     _mdx.opened = ta.value;
@@ -33554,6 +33555,7 @@ async function _mdxFollow() {
   const at = ta.selectionStart;
   ta.value = text;
   try { ta.setSelectionRange(Math.min(at, text.length), Math.min(at, text.length)); } catch (e) {}
+  _mdxHistReset(ta);   // another writer's text: history starts again from it
   _fileData.content = text;
   _mdx.opened = text;
   if (etag) _fileData.etag = etag;
@@ -33569,10 +33571,58 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && _md
 // ── Editing commands ──
 function _mdxIndent() { return parseInt(localStorage.getItem('amux_mdx_indent') || '2', 10) === 4 ? 4 : 2; }
 // Replace [start, end) with `text` through the browser's own editing, so ⌘Z undoes it.
+// THE EDITOR'S OWN UNDO HISTORY (owner, 2026-11-19: "Undo / redo doesnt work
+// in the markdown editor - fix it. The button should works and the
+// shortcuts"). The browser's stack undid one typed character per press in
+// Chromium and is emptied by any direct ta.value write (a file reload, the /
+// menu fallback), and the Mac app's Edit menu bypassed the page. So the editor
+// keeps the states itself: typing groups into one step until a pause or a word
+// ends, each tool is one step, and the buttons, the keys and the Edit menu
+// (beforeinput historyUndo/historyRedo) all step through it.
+const _MDX_UNDO_GAP_MS = 800, _MDX_UNDO_MAX = 300;
+function _mdxHistReset(ta) {
+  _mdx.undo = [{ v: ta.value, s: ta.selectionStart, e: ta.selectionEnd }];
+  _mdx.undoAt = 0; _mdx.undoOpen = false; _mdx.undoLast = 0;
+}
+function _mdxHistRecord(ta, e) {
+  if (!_mdx.undo) { _mdxHistReset(ta); return; }
+  const top = _mdx.undo[_mdx.undoAt];
+  if (top && top.v === ta.value) return;
+  const now = Date.now();
+  const typing = !_mdx.undoTool && e && /^(insertText|deleteContentBackward|deleteContentForward)$/.test(e.inputType || '');
+  const state = { v: ta.value, s: ta.selectionStart, e: ta.selectionEnd };
+  if (typing && _mdx.undoOpen && _mdx.undoAt > 0 && now - _mdx.undoLast < _MDX_UNDO_GAP_MS) {
+    _mdx.undo[_mdx.undoAt] = state;   // the same typing step, grown
+  } else {
+    _mdx.undo.length = _mdx.undoAt + 1;
+    _mdx.undo.push(state);
+    if (_mdx.undo.length > _MDX_UNDO_MAX) _mdx.undo.shift();
+    _mdx.undoAt = _mdx.undo.length - 1;
+  }
+  // A space or a line break ends the word, so the next key starts a new step.
+  _mdx.undoOpen = typing && !/\s$/.test((e && e.data) || '') && e.inputType !== 'insertLineBreak';
+  _mdx.undoLast = now;
+  _mdx.undoTool = false;
+}
+function _mdxHistStep(dir) {
+  const ta = document.getElementById('file-edit-ta');
+  if (!ta || ta.readOnly) return;
+  if (!_mdx.undo) _mdxHistReset(ta);
+  const to = _mdx.undoAt + dir;
+  ta.focus();
+  if (to < 0 || to >= _mdx.undo.length) { _mdxBeacon(dir < 0 ? 'undo_none' : 'redo_none', {}); return; }
+  const st = _mdx.undo[to];
+  _mdx.undoAt = to; _mdx.undoOpen = false;
+  ta.value = st.v;
+  try { ta.setSelectionRange(st.s, st.e); } catch (e) { console.warn('[mdx] undo could not place the caret', e); }
+  _mdxChanged();   // highlight, preview, and the save that undo owes the file
+  _mdxLevelSync();
+}
 function _mdxReplace(start, end, text, selStart, selEnd) {
   const ta = document.getElementById('file-edit-ta');
   if (!ta || ta.readOnly) return;
   ta.focus();
+  _mdx.undoTool = true;   // one undo step, apart from typing
   ta.setSelectionRange(start, end);
   let ok = false;
   try { ok = document.execCommand('insertText', false, text); } catch (e) {}
@@ -33731,8 +33781,8 @@ function _mdxLevelAt() {
   return m ? m[1].length : 0;
 }
 Object.assign(_mdxTools, {
-  undo() { const ta = document.getElementById('file-edit-ta'); ta.focus(); document.execCommand('undo'); },
-  redo() { const ta = document.getElementById('file-edit-ta'); ta.focus(); document.execCommand('redo'); },
+  undo() { _mdxHistStep(-1); },
+  redo() { _mdxHistStep(1); },
   strike() { _mdxWrap('~~', '~~', 'struck text'); },
   quote() {
     _mdxPrefix(ls => { const all = ls.every(l => /^\s*>/.test(l) || !l.trim()); return ls.map(l => !l.trim() ? l : all ? l.replace(/^(\s*)>\s?/, '$1') : '> ' + l); });
@@ -33942,6 +33992,8 @@ function _mdxKeydown(e) {
   if (ta.readOnly) return;
   if (_mdxSlashKey(e)) return;
   const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.altKey && e.key.toLowerCase() === 'z') { e.preventDefault(); _mdxHistStep(e.shiftKey ? 1 : -1); return; }
+  if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'y') { e.preventDefault(); _mdxHistStep(1); return; }
   if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'x') { e.preventDefault(); _mdxTools.strike(); return; }
   if (mod && !e.altKey && !e.shiftKey) {
     const k = e.key.toLowerCase();
@@ -34198,7 +34250,13 @@ function _mdxBind() {
   if (_mdxBound) return;
   _mdxBound = true;
   const ta = document.getElementById('file-edit-ta');
-  ta.addEventListener('input', e => { if (_mdxActive()) { if (e.isTrusted) _mdx.tickSaving = false; _mdxChanged(); _mdxSlashInput(); } });
+  ta.addEventListener('input', e => { if (_mdxActive()) { if (e.isTrusted) _mdx.tickSaving = false; _mdxHistRecord(ta, e); _mdxChanged(); _mdxSlashInput(); } });
+  // The Mac app's Edit menu and a context menu's Undo reach the page as these.
+  ta.addEventListener('beforeinput', e => {
+    if (!_mdxActive() || (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo')) return;
+    e.preventDefault();
+    _mdxHistStep(e.inputType === 'historyUndo' ? -1 : 1);
+  });
   ta.addEventListener('scroll', () => { if (_mdxActive()) _mdxSyncScroll(); });
   ['keyup', 'click', 'select'].forEach(ev => ta.addEventListener(ev, () => { if (_mdxActive()) { _mdxStatus(); _mdxLevelSync(); } }));
   ta.addEventListener('blur', () => { if (_mdxSlash) _mdxSlashClose(); });

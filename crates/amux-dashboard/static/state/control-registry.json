@@ -3468,6 +3468,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdxHistStep": {
+      "kind": "command._mdxHistStep",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdxHistoryAct": {
       "kind": "command._mdxHistoryAct",
       "feedback_required": true,
