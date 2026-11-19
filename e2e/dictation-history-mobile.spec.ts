@@ -16,13 +16,18 @@ test('a dictation in History reads at full width on a phone, actions on one row 
   await page.evaluate(() => { (window as any).openPeek('dict-mobile-worker'); (window as any).setPeekTab('dictation'); });
   const row = page.locator('.dict-row').first();
   await expect(row.locator('.dict-text')).toContainText('Baltimore');
-  const r = (await row.boundingBox())!;
-  const text = (await row.locator('.dict-text').boundingBox())!;
-  const acts = (await row.locator('.dict-acts').boundingBox())!;
-  const time = (await row.locator('.dict-time').boundingBox())!;
-  expect(text.width, 'the text spans the row').toBeGreaterThan(r.width * 0.8);
-  expect(text.y, 'the text sits below the time and the actions').toBeGreaterThanOrEqual(acts.y + acts.height - 1);
-  expect(Math.abs(acts.y - time.y), 'time and actions share the first row').toBeLessThan(acts.height);
+  // Measured until the row settles: on ios-safari one CI run read the boxes
+  // mid-layout (text at 356, actions ending at 373, AF-1295), and every local
+  // repeat passed. A layout that never settles still fails here.
+  await expect(async () => {
+    const r = (await row.boundingBox())!;
+    const text = (await row.locator('.dict-text').boundingBox())!;
+    const acts = (await row.locator('.dict-acts').boundingBox())!;
+    const time = (await row.locator('.dict-time').boundingBox())!;
+    expect(text.width, 'the text spans the row').toBeGreaterThan(r.width * 0.8);
+    expect(text.y, 'the text sits below the time and the actions').toBeGreaterThanOrEqual(acts.y + acts.height - 1);
+    expect(Math.abs(acts.y - time.y), 'time and actions share the first row').toBeLessThan(acts.height);
+  }).toPass({ timeout: 5000 });
   for (const b of await row.locator('.dict-acts button').all()) {
     const bb = (await b.boundingBox())!;
     expect(Math.min(bb.width, bb.height), 'a 44px touch target').toBeGreaterThanOrEqual(44);
