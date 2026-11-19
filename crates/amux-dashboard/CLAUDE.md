@@ -39,9 +39,9 @@ moves markup. Before calling it done:
   (`e2e/messages-mobile-one-row.spec.ts` measures both). On desktop, check nothing pushes the
   main view down or sideways.
 - If the change takes space, the spec asserts it: a box height, a row count, or that it is not
-  rendered on a phone. Specimen: 423371450 removed the "Conversations from Intent" cards from a
-  worker's Messages tab on phones, where they took the top third of the screen, and
-  `e2e/peek-messages-intent-convs-mobile.spec.ts` checks the desktop still shows them.
+  rendered on a phone. Specimen: the "Conversations from Intent" cards took the top third of a
+  worker's Messages tab on a phone; they moved to their own Intent tab, shown only for a worker
+  that has some, and `e2e/peek-intent-tab.spec.ts` pins it on the tab row.
 - Say in the commit message which widths you checked and what you saw.
 
 ## CSS and the phone

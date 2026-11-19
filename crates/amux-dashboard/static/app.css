@@ -11371,7 +11371,6 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 }
 .peek-msg-convs:empty { display: none; }
 .peek-msg-convs { padding: var(--space-2-5) var(--space-2-5) 0; display: flex; flex-direction: column; gap: var(--space-1-5); }
-.peek-msg-convs-head { font-weight: 600; font-size: var(--fs-md); color: var(--dim); }
 
 /* Workflow wizard (#wfw-overlay) */
 .wfw-brief { white-space: pre-wrap; max-height: 40vh; overflow: auto; font-size: var(--fs-sm);

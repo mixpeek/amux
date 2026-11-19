@@ -11203,12 +11203,14 @@ function _applyPeekTabVisibility() {
       // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
       const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
       // A type with no worktree has no Worktree tab to show.
-      const typeHides = t.id === 'git' && _peekType.worktree === 'unsupported';
+      const typeHides = (t.id === 'git' && _peekType.worktree === 'unsupported')
+        || (t.id === 'intent' && !(peekSession && _peekIntentList().length));
       // Schedules are shown for isolated workers too: a schedule is owner
       // configuration and delivers into them (Ethan, 2026-09-26).
       el.style.display = !alwaysShown && (peekHiddenTabs.has(t.id) || typeHides) ? 'none' : '';
     }
   });
+  _peekIntentTabPaint();
 }
 _loadPeekTabPrefs();
 // Tab-customizer geometry beacon (AF-45). Ethan reported three times that the
@@ -13203,6 +13205,8 @@ function _homeOutcomeIndexLoad(force) {
     const changed = JSON.stringify(Object.keys(by).map(k => [k, by[k].length])) !== JSON.stringify(Object.keys(_homeOutcomeIndex.by).map(k => [k, _homeOutcomeIndex.by[k].length]));
     _homeOutcomeIndex = { at: Date.now(), by, loading: false };
     if (changed && activeView === 'sessions') { try { render(); } catch (e) { console.warn('[home] card re-render failed', e); } }
+    // The worker view's Intent tab shows only when this worker has some.
+    if (peekSession) { try { _applyPeekTabVisibility(); } catch (e) { console.warn('[home] Intent tab repaint failed', e); } }
   }).catch(() => { _homeOutcomeIndex.loading = false; });
 }
 function _homeCardOutcomes(name) {
@@ -13212,21 +13216,29 @@ function _homeCardOutcomes(name) {
   const names = list.slice(0, 3).map(o => o.title).join(' · ');
   return '<div class="card-outcomes" title="Conversations from Intent routed to this worker">From Intent: ' + esc(names) + (list.length > 3 ? ' +' + (list.length - 3) : '') + '</div>';
 }
-// The conversations from Chat routed to this worker, at the top of its
-// Messages tab: conversations are organized by conversation, and a worker
-// shows the ones it owns where its messages already are. Empty shows nothing.
-// Not on a phone (owner, 2026-11-19: "remove this on messages page mobile"):
-// the messages are the screen there, so it is neither fetched nor shown.
+// The conversations from Intent routed to this worker, in its own Intent tab
+// (owner, 2026-11-19: "These should be in a separate intent tab in the worker
+// details page"). They used to sit above the Messages list, where on a phone
+// they took the top third of the screen. The tab shows only for a worker that
+// has some (_peekIntentList), with their count.
+function _peekIntentList(name) {
+  _homeOutcomeIndexLoad(false);
+  return (_homeOutcomeIndex.by[name || peekSession] || []);
+}
+function _peekIntentTabPaint() {
+  const n = peekSession ? _peekIntentList().length : 0;
+  const c = document.getElementById('peek-tab-intent-count');
+  if (c) { c.textContent = n ? String(n) : ''; c.classList.toggle('has-count', n > 0); }
+}
 async function _peekConvsLoad() {
   const el = document.getElementById('peek-msg-convs');
   if (!el || !peekSession) return;
-  if (window.matchMedia && matchMedia('(max-width: 600px)').matches) { el.innerHTML = ''; return; }
   const who = peekSession;
   let v = null;
   try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] conversations for the worker view did not load', e); }
   if (peekSession !== who) return;
   const mine = ((v && v.outcomes) || []).filter(o => o.worker === who);
-  el.innerHTML = !mine.length ? '' : '<div class="peek-msg-convs-head">Conversations from Intent</div><div class="home-list">'
+  el.innerHTML = !mine.length ? '<div class="dict-empty">No conversations from Intent for this worker.</div>' : '<div class="home-list">'
     + mine.slice(0, 8).map(o => '<button type="button" class="home-row" onclick="_homeOpenFromPeek(\'' + esc(o.id) + '\')">'
       + '<span class="home-row-top"><span class="home-row-title">' + esc(o.title) + '</span><span class="home-pill ' + (o.status === 'ready' ? 'ready' : 'working') + '">' + _homeStatusLabel(o.status) + '</span></span>'
       + '<span class="home-row-when">' + esc(_homeAgo(o.updated_ms)) + (o.overridden ? ' · moved here by Change' : '') + '</span></button>').join('') + '</div>';
@@ -16150,8 +16162,14 @@ function setPeekTab(tab) {
     else tasksP.classList.remove('active');
   }
   const messages = document.getElementById('peek-messages-panel');
-  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); _peekConvsLoad(); }
+  if (tab === 'messages') { messages.classList.add('active'); _peekMessagesLoad(); }
   else { messages.classList.remove('active'); }
+  document.getElementById('peek-tab-intent')?.classList.toggle('active', tab === 'intent');
+  const intentP = document.getElementById('peek-intent-panel');
+  if (intentP) {
+    if (tab === 'intent') { intentP.classList.add('active'); _peekConvsLoad(); }
+    else intentP.classList.remove('active');
+  }
   const costPanel = document.getElementById('peek-cost-panel');
   if (tab === 'cost') { costPanel.classList.add('active'); _peekCostLoad(); }
   else { costPanel.classList.remove('active'); }
@@ -23809,11 +23827,11 @@ function peekMsgPrev(event) { _peekMsgMove(-1, event); }
 // are highlighted and up/down steps between them.
 const _PEEK_TAB_ITEMS = {
   chat: '.chat-msg', schedules: '.sx-row, .sx-fleet-run', messages: '.pm-row', logs: '.wlog-row',
-  commits: '.commits-item', shell: '.peek-shell-card', issues: '.peek-issue-item', dictation: '.dict-row',
+  commits: '.commits-item', shell: '.peek-shell-card', issues: '.peek-issue-item', dictation: '.dict-row', intent: '.home-row',
   scope: '.worker-config-row', cost: '.cost-row, .cost-day', tasks: '.board-card, .peek-issue-item',
 };
 const _PEEK_TAB_LABELS = { chat: 'chat', schedules: 'schedules and runs', messages: 'messages', logs: 'logs',
-  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks' };
+  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks', intent: 'conversations' };
 let _peekTabIdx = -1, _peekTabObs = null, _peekTabObsRoot = null, _peekTabApplying = false, _peekTabTimer = 0;
 function _peekTabName() { return document.getElementById('peek-overlay')?.dataset.peekTab || 'terminal'; }
 function _peekTabRoot(tab = _peekTabName()) {

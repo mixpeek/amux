@@ -4182,6 +4182,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekIntentList": {
+      "kind": "command._peekIntentList",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekIntentTabPaint": {
+      "kind": "command._peekIntentTabPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekKbdBeacon": {
       "kind": "command._peekKbdBeacon",
       "feedback_required": true,
