@@ -9587,9 +9587,20 @@ async function _fhRead(path) {
   _fhCache.set(path, res);
   return res;
 }
+// Every file link: a markdown link carries the full path; a path in worker
+// output (Messages, Chat, a peek) is relative to the worker, so it is resolved
+// the way its context menu resolves it.
+const _FH_LINKS = '.md-file-link[data-file]:not([data-dir]), .file-link[data-path], .md-link[data-path]';
+async function _fhPath(a) {
+  if (a.classList.contains('md-file-link')) return a.dataset.file || '';
+  const raw = (a.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
+  try { return (await _resolveLinkedPath(raw)) || raw; }
+  catch (e) { console.warn('[hover] could not resolve a linked path', e); return raw; }
+}
 async function _fhShow(a) {
-  const path = a.dataset.file || '';
   const pop = _wkHoverCard();
+  const path = await _fhPath(a);
+  if (_fhLink !== a || !path) return;
   pop.innerHTML = '<div class="worker-hovercard-none">Loading ' + esc(path.split('/').pop()) + '…</div>';
   pop.hidden = false;
   const res = await _fhRead(path);
@@ -9614,7 +9625,7 @@ function _fhHide() {
 }
 document.addEventListener('mouseover', (e) => {
   if (!window.matchMedia('(hover: hover)').matches) return;
-  const a = e.target.closest && e.target.closest('.md-file-link[data-file]:not([data-dir])');
+  const a = e.target.closest && e.target.closest(_FH_LINKS);
   if (!a || a === _fhLink) return;
   _fhHide();
   _fhLink = a;
@@ -9624,9 +9635,17 @@ document.addEventListener('mouseout', (e) => {
   if (!_fhLink) return;
   const to = e.relatedTarget;
   if (to && _fhLink.contains(to)) return;
-  if (e.target.closest && e.target.closest('.md-file-link') === _fhLink) _fhHide();
+  if (e.target.closest && e.target.closest(_FH_LINKS) === _fhLink) _fhHide();
 });
-['scroll', 'mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_fhLink) _fhHide(); }, true));
+['mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_fhLink) _fhHide(); }, true));
+// Only a scroll that moves the link hides its card (owner, 2026-11-19: "file
+// preview mouseover not working"): any scroll anywhere used to, and a live
+// terminal or list scrolls all the time, so the card closed as it opened.
+document.addEventListener('scroll', (e) => {
+  if (!_fhLink) return;
+  const t = e.target;
+  if (t === document || t === document.documentElement || (t && t.contains && t.contains(_fhLink))) _fhHide();
+}, true);
 
 // One worker's card, as the worker list draws it. Top level so a hover
 // preview of an @worker mention draws the same card (owner, 2026-11-09).
