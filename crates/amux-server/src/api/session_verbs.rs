@@ -1362,6 +1362,7 @@ pub(crate) fn load_meta(name: &str) -> Map<String, Value> {
 }
 
 pub(crate) fn save_meta(name: &str, meta: &Map<String, Value>) {
+    let _guard = meta_write_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let _ = std::fs::create_dir_all(sessions_dir());
     // Write-then-rename. A plain write truncates first, and `load_meta` maps
     // an unparsable (half-written) file to an EMPTY map, so a concurrent
@@ -1377,6 +1378,80 @@ pub(crate) fn save_meta(name: &str, meta: &Map<String, Value>) {
     tracing::warn!(session = %name, measured = true, n_considered = 1,
         verdict = "meta_atomic_write_fallback", "atomic meta write failed; writing in place");
     let _ = std::fs::write(&path, body);
+}
+
+// Identity-bound stops hold this lock from reading durable identity through
+// signaling. Every metadata replacement takes it at the atomic write point.
+fn meta_write_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+fn persisted_session_ids(meta: &Map<String, Value>) -> Vec<String> {
+    ["cc_conversation_id", "codex_session_id"]
+        .into_iter()
+        .filter_map(|key| meta.get(key).and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn stop_bound_root(name: &str, root: i32, expected: &[String]) -> Result<(), String> {
+    let _guard = meta_write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut actual = persisted_session_ids(&load_meta(name));
+    actual.sort();
+    let mut expected = expected.to_vec();
+    expected.sort();
+    if actual.is_empty() || actual != expected {
+        return Err("session identity changed; reload current IDs before retrying".into());
+    }
+    crate::api::session_pidfd::stop_pane_children(root).map_err(|error| error.to_string())
+}
+
+async fn stop_bound_post(name: &str, body: &Value) -> Response {
+    if !valid_session_name(name) {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error":"invalid session name"}));
+    }
+    let Some(ids) = body.get("session_ids").and_then(Value::as_array) else {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error":"session_ids must be an array"}));
+    };
+    let mut expected = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(id) = id.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error":"session_ids must contain non-empty strings"}));
+        };
+        if expected.iter().any(|prior| prior == id) {
+            return jresp(StatusCode::BAD_REQUEST, json!({"error":"session_ids must be unique"}));
+        }
+        expected.push(id.to_owned());
+    }
+    if expected.is_empty() {
+        return jresp(StatusCode::BAD_REQUEST, json!({"error":"session_ids must not be empty"}));
+    }
+    let lock = session_op_lock(name);
+    let _guard = lock.lock().await;
+    if backend_of_cfg(&parse_env(name)) == "herdr" {
+        return jresp(StatusCode::NOT_IMPLEMENTED, json!({"error":"bound stop is unsupported for herdr sessions"}));
+    }
+    let target = pt(name);
+    let pane = tmux(&["list-panes", "-t", &target, "-F", "#{pane_pid}"]).await;
+    let Some(output) = pane.filter(|output| output.status.success()) else {
+        return jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"could not locate worker pane"}));
+    };
+    let roots: Vec<_> = String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().parse::<i32>().ok()).collect();
+    if roots.len() != 1 {
+        return jresp(StatusCode::CONFLICT, json!({"error":"expected exactly one worker pane"}));
+    }
+    let n = name.to_owned();
+    let result = tokio::task::spawn_blocking(move || stop_bound_root(&n, roots[0], &expected)).await;
+    match result {
+        Ok(Ok(())) => j200(json!({"ok":true,"stopped":true})),
+        Ok(Err(message)) if message.starts_with("session identity changed") => jresp(StatusCode::CONFLICT, json!({"error":message})),
+        Ok(Err(message)) => jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error":message})),
+        Err(error) => jresp(StatusCode::SERVICE_UNAVAILABLE, json!({"error":error.to_string()})),
+    }
 }
 
 pub(crate) fn update_meta(name: &str, updates: &[(&str, Value)]) {
@@ -29566,6 +29641,7 @@ async fn post_dispatch(
     body: &Value,
 ) -> Response {
     match action {
+        "stop-bound" => stop_bound_post(name, body).await,
         "transcripts" => match backup_session_jsonl(name, "manual") {
             Some(path) => j200(json!({"ok": true, "path": path})),
             None => j200(json!({"ok": false, "message": "nothing to backup"})),
@@ -59650,5 +59726,50 @@ mod send_author_tests {
         assert_eq!(w("[11:31 AM ethan@mixpeek.com] hi", "ethan@mixpeek.com"), None, "already named");
         assert_eq!(w("/compact", "doron@mixpeek.com"), None, "slash commands stay verbatim");
         assert_eq!(w("hi", ""), None, "the local owner has no header and nothing changes");
+    }
+}
+
+#[cfg(test)]
+mod bound_stop_tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::process::{Child, Command, Stdio};
+
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn bound_stop_rejects_replaced_identity_and_retry_targets_current_process() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        let name = "cw2156-bound-stop-replace";
+        let meta: Map<String, Value> = serde_json::from_value(json!({
+            "cc_conversation_id":"replacement-conversation",
+            "codex_session_id":"replacement-codex"
+        })).unwrap();
+        save_meta(name, &meta);
+        // Recovery reads identity from the durable session record, not a
+        // transient stop plan that would be lost when the server restarts.
+        let recovered = load_meta(name);
+        assert_eq!(recovered, meta);
+        let mut root = ChildGuard(Command::new("sh")
+            .args(["-c", "sleep 30 & echo $!; wait"])
+            .stdout(Stdio::piped()).spawn().unwrap());
+        let child_pid: i32 = std::io::BufReader::new(root.0.stdout.take().unwrap())
+            .lines().next().unwrap().unwrap().parse().unwrap();
+        let stale = vec!["old-conversation".to_string(), "old-codex".to_string()];
+        assert!(stop_bound_root(name, root.0.id() as i32, &stale).is_err());
+        assert!(root.0.try_wait().unwrap().is_none(), "replacement pane root remains alive");
+        assert!(crate::api::session_pidfd::ProcessIdentity::read(child_pid).is_ok(), "replacement child remains alive");
+        let current = persisted_session_ids(&recovered);
+        stop_bound_root(name, root.0.id() as i32, &current).unwrap();
+        assert!(root.0.try_wait().unwrap().is_none(), "pane shell is retained");
+        assert!(crate::api::session_pidfd::ProcessIdentity::read(child_pid).is_err(), "current session child was stopped");
     }
 }

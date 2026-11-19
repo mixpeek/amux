@@ -91,6 +91,7 @@ pub fn routes() -> Router<AppState> {
         // before the /{id} wildcard like clear-done.
         .route("/lease-next", post(lease_next_item))
         .route("/{id}", get(get_item).patch(patch_item_route).delete(delete_item))
+        .route("/{id}/conditional-patch", post(conditional_patch_item))
         .route("/{id}/archive", post(archive_item))
         .route("/{id}/restore", post(restore_item))
         // The inverse of DELETE (AF-922) — see undelete_item's own doc comment.
@@ -10106,7 +10107,7 @@ fn patch_archived_value(value: &Value) -> i64 {
     ))
 }
 
-const PATCH_CONTROL: [&str; 14] = [
+const PATCH_CONTROL: [&str; 15] = [
     // Persisted in the attributed archive log, not a standalone column.
     "archive_outcome",
     // The lane ASSERTS that this card was folded into another. It is not read
@@ -10114,6 +10115,7 @@ const PATCH_CONTROL: [&str; 14] = [
     // canonical `capture folded into <ID>` line that `folded_into()` parses.
     "folded_into",
     "expect_rev",
+    "expect_revs",
     "gate_ack",
     "gate_checked",
     "reverify",
@@ -11235,6 +11237,26 @@ pub async fn patch_item(
             let Some(row) = bs::get_issue(conn, &id_w)? else {
                 return finish(&slot_w, PatchOut::NotFound, no_write());
             };
+
+            // Controller read sets guard ownership and dependencies in the same
+            // writer transaction as the mutation. A stale snapshot refuses the
+            // whole patch before any field is staged.
+            if let Some(raw) = map.get("expect_revs") {
+                let Some(expected) = raw.as_object().filter(|v| {
+                    !v.is_empty() && v.len() <= 4096 && v.contains_key(&id_w)
+                        && v.iter().all(|(key, rev)| !key.is_empty() && rev.as_i64().is_some_and(|n| n >= 0))
+                }) else {
+                    return finish(&slot_w, PatchOut::Refused(StatusCode::BAD_REQUEST,
+                        json!({"error":"invalid conditional read set"})), no_write());
+                };
+                for (key, rev) in expected {
+                    let current = bs::get_issue(conn, key)?;
+                    if current.as_ref().is_none_or(|r| Some(r.rev) != rev.as_i64()) {
+                        return finish(&slot_w, PatchOut::Refused(StatusCode::CONFLICT,
+                            json!({"error":"conditional read set changed", "item":id_w, "changed":key})), no_write());
+                    }
+                }
+            }
 
 
             // Optimistic concurrency: expect_rev checks the PYTHON counter.
@@ -15614,6 +15636,36 @@ pub async fn patch_item(
             (StatusCode::OK, Json(body)).into_response()
         }
     }
+}
+
+/// Apply a PATCH only if every revision in the caller's read set is current.
+/// The read-set check is carried into patch_item's writer transaction.
+async fn conditional_patch_item(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(envelope) = body.as_object() else {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"expected conditional patch object"}));
+    };
+    let valid_keys = envelope.contains_key("expect_revs") && envelope.contains_key("patch")
+        && envelope.keys().all(|key| matches!(key.as_str(), "expect_revs" | "patch"));
+    let Some(expected) = envelope.get("expect_revs").and_then(Value::as_object) else {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"expect_revs must be an object"}));
+    };
+    let Some(patch) = envelope.get("patch").and_then(Value::as_object) else {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"patch must be an object"}));
+    };
+    if !valid_keys || expected.is_empty() || expected.len() > 4096 || !expected.contains_key(&id)
+        || expected.iter().any(|(key, rev)| key.is_empty() || rev.as_i64().is_none_or(|v| v < 0))
+        || patch.contains_key("expect_rev") || patch.contains_key("expect_revs")
+    {
+        return err(StatusCode::BAD_REQUEST, json!({"error":"invalid conditional read set"}));
+    }
+    let mut guarded = patch.clone();
+    guarded.insert("expect_revs".into(), Value::Object(expected.clone()));
+    patch_item_route(State(state), Path(id), headers, Json(Value::Object(guarded))).await
 }
 
 #[cfg(test)]

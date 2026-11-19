@@ -9358,3 +9358,76 @@ async fn an_unchanged_board_with_nothing_stale_still_answers_304() {
     let (st, _, _) = send_with(&app, "GET", "/api/board", None, &[("if-none-match", &etag)]).await;
     assert_eq!(st, StatusCode::NOT_MODIFIED);
 }
+
+// CW-2156: revision guarded reassignment refuses stale controllers atomically.
+#[tokio::test]
+async fn conditional_patch_stale_reassignment_preserves_new_owner() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({"title":"reassignment race", "status":"backlog", "session":"lane-a"})).await;
+    let id = card["id"].as_str().unwrap();
+    let path = format!("/api/board/{id}");
+    let (_, _, snapshot) = send(&app, "GET", &path, None).await;
+    let mut revs = serde_json::Map::new();
+    revs.insert(id.into(), snapshot["rev"].clone());
+    let (status, _, response) = send(&app, "PATCH", &path, Some(json!({"session":"lane-b"}))).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (status, _, response) = send(&app, "POST", &format!("{path}/conditional-patch"),
+        Some(json!({"expect_revs":revs, "patch":{"session":"lane-c"}}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    let (_, _, current) = send(&app, "GET", &path, None).await;
+    assert_eq!(current["session"], "lane-b");
+    assert_eq!(current["status"], snapshot["status"]);
+}
+
+#[tokio::test]
+async fn conditional_patch_rejects_owner_aba_and_terminal_transition_without_partial_mutation() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({"title":"owner ABA race", "status":"backlog", "session":"lane-a"})).await;
+    let id = card["id"].as_str().unwrap();
+    let path = format!("/api/board/{id}");
+    let (_, _, snapshot) = send(&app, "GET", &path, None).await;
+    let mut revs = serde_json::Map::new();
+    revs.insert(id.into(), snapshot["rev"].clone());
+    for owner in ["lane-b", "lane-a"] {
+        let (status, _, response) = send(&app, "PATCH", &path, Some(json!({"session":owner}))).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+    }
+    let (status, _, response) = send(&app, "POST", &format!("{path}/conditional-patch"),
+        Some(json!({"expect_revs":revs.clone(), "patch":{"session":"lane-c", "status":"todo"}}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    let (_, _, current) = send(&app, "GET", &path, None).await;
+    assert_eq!(current["session"], "lane-a");
+    assert_eq!(current["status"], snapshot["status"]);
+
+    let (_, _, pre_terminal) = send(&app, "GET", &path, None).await;
+    let mut current_revs = serde_json::Map::new();
+    current_revs.insert(id.into(), pre_terminal["rev"].clone());
+    let (status, _, response) = send(&app, "PATCH", &path, Some(json!({
+        "status":"done", "gate_ack":true, "evidence":"none: terminal race test"
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (status, _, response) = send(&app, "POST", &format!("{path}/conditional-patch"),
+        Some(json!({"expect_revs":current_revs, "patch":{"session":"lane-c", "status":"todo"}}))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    let (_, _, current) = send(&app, "GET", &path, None).await;
+    assert_eq!(current["session"], "lane-a");
+    assert_eq!(current["status"], "done");
+}
+
+#[tokio::test]
+async fn conditional_patch_competing_callers_have_one_winner() {
+    let (app, _dir) = app();
+    let card = create(&app, json!({"title":"competing reassignment", "status":"backlog", "session":"lane-a"})).await;
+    let id = card["id"].as_str().unwrap();
+    let path = format!("/api/board/{id}/conditional-patch");
+    let mut revs = serde_json::Map::new();
+    revs.insert(id.into(), card["rev"].clone());
+    let body_a = json!({"expect_revs":revs.clone(), "patch":{"session":"lane-b"}});
+    let body_b = json!({"expect_revs":revs, "patch":{"session":"lane-c"}});
+    let (a, b) = tokio::join!(send(&app, "POST", &path, Some(body_a)), send(&app, "POST", &path, Some(body_b)));
+    let mut statuses = [a.0.as_u16(), b.0.as_u16()];
+    statuses.sort();
+    assert_eq!(statuses, [200, 409]);
+    let (_, _, current) = send(&app, "GET", &format!("/api/board/{id}"), None).await;
+    assert!(matches!(current["session"].as_str(), Some("lane-b" | "lane-c")));
+}
