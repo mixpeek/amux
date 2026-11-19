@@ -22,6 +22,25 @@ mkrepo() {  # $1 dir, $2 "amux" makes it look like the server's repo
 }
 mkrepo "$T/other" plain 101
 mkrepo "$T/srv" amux 202
+# AF-1304: a request committed and never pushed. MSG-505 (inside the window) is
+# on a local branch; MSG-606 (30 days old, outside it) is on a detached
+# worktree's HEAD, like 47722b4fe on the shared checkout.
+git -C "$T/other" checkout -q -b local-only
+echo y > "$T/other/g"; git -C "$T/other" add -A
+git -C "$T/other" -c user.name=t -c user.email=t@e commit -qm "export button" -m "Amux-Request: MSG-505"
+# MSG-101 landed on main; this second commit for it changes something else and
+# was never pushed: a stray, while the request itself reads landed.
+echo w > "$T/other/k"; git -C "$T/other" add -A
+git -C "$T/other" -c user.name=t -c user.email=t@e commit -qm "launch thread follow-up" -m "Amux-Request: MSG-101"
+git -C "$T/other" checkout -q -
+git -C "$T/other" worktree add -q --detach "$T/other-wt" origin/main
+# A rebased copy of the commit that landed MSG-202: same change, new sha. It is
+# not stray, because its change is on main.
+git -C "$T/srv" checkout -q -b rebased
+git -C "$T/srv" -c user.name=t -c user.email=t@e commit -q --amend -m "work, rebased" -m "Amux-Request: MSG-202"
+git -C "$T/srv" checkout -q -
+echo z > "$T/other-wt/h"; git -C "$T/other-wt" add -A
+git -C "$T/other-wt" -c user.name=t -c user.email=t@e commit -qm "gate fix" -m "Amux-Request: MSG-606"
 NOW=$(($(date +%s) * 1000))
 cat > "$T/api.py" <<PY
 import http.server, json, sys
@@ -32,7 +51,9 @@ def health():  # read per request: the test flips it between runs
 HIST = [{"id": 101, "ts": $NOW - 3600000, "session": "w-other", "sender": "owner", "kind": "human", "text": "post the launch thread"},
         {"id": 202, "ts": $NOW - 3600000, "session": "w-srv", "sender": "owner", "kind": "human", "text": "fix the card count"},
         {"id": 303, "ts": $NOW - 1800000, "session": "w-other", "sender": "owner", "kind": "human", "text": "hows mac perf?"},
-        {"id": 404, "ts": $NOW - 1700000, "session": "w-other", "sender": "owner", "kind": "human", "text": "make sure u fix it"}]
+        {"id": 404, "ts": $NOW - 1700000, "session": "w-other", "sender": "owner", "kind": "human", "text": "make sure u fix it"},
+        {"id": 505, "ts": $NOW - 1600000, "session": "w-other", "sender": "owner", "kind": "human", "text": "add the export button"}]
+OLD = {"606": {"id": 606, "ts": $NOW - 30 * 86400000, "session": "w-other", "sender": "owner", "kind": "human", "text": "the gate re-creates its checkout"}}
 # The server's answered rule (AF-1059), as GET /api/task-history/requests reports it.
 REQS = {"w-other": [{"id": "MSG-303", "status": "answered", "evidence": "replied: The Mac is healthy"}]}
 class H(http.server.BaseHTTPRequestHandler):
@@ -40,6 +61,7 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path
         body = SESS if p.startswith("/api/sessions") else health() if p.startswith("/health") \
+            else (OLD.get(p.split("/api/history/")[1].split("?")[0]) or next((h for h in HIST if str(h["id"]) == p.split("/api/history/")[1].split("?")[0]), {})) if p.startswith("/api/history/") \
             else (HIST if "offset=0" in p else []) if p.startswith("/api/history") \
             else {"measured": True, "tasks": {}} if p.startswith("/api/task-history/at") \
             else {"measured": True, "requests": REQS.get(p.split("session=")[1].split("&")[0], [])} if p.startswith("/api/task-history/requests") else {}
@@ -70,6 +92,30 @@ pass=$((pass+1))
 echo "$OUT" | grep -E '^open +w-other +MSG-404' >/dev/null || fail "an unanswered ask stays open: $OUT"
 pass=$((pass+1))
 echo "$OUT" | grep -q ', 1 answered, ' || fail "the summary counts answered: $OUT"
+pass=$((pass+1))
+# AF-1304: committed but not on origin/main reads stranded, not open, and one
+# older than the window is still listed, with where its commit is.
+echo "$OUT" | grep -E '^stranded +w-other +MSG-505 ' >/dev/null || fail "a request committed on a local branch reads stranded: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -E '^stranded +w-other +MSG-606 ' >/dev/null || fail "a stranded request older than the window is still listed: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -q 'stranded: 2 request(s) committed but not on origin/main' && echo "$OUT" | grep -qF "MSG-606 w-other" && echo "$OUT" | grep -qF "$T/other-wt" || fail "the stranded lines name the commit and the worktree: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -q 'stray: 1 commit(s) citing a request that landed' && echo "$OUT" | grep -qE '^  MSG-101 w-other [0-9a-f]{9} in local-only' || fail "a landed request's unpushed commit is listed as a stray: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -E '^landed +w-other +MSG-101' >/dev/null || fail "and the request itself still reads landed: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -qE '^  MSG-202 ' && fail "a rebased copy of a landed commit is not a stray: $OUT"
+pass=$((pass+1))
+# Land review F1: the summary's parts add up to its total, stranded included.
+echo "$OUT" | python3 -c '
+import re,sys
+line=[l for l in sys.stdin.read().splitlines() if "requests from the owner" in l][0]
+total=int(line.split()[0]); parts=[int(x) for x in re.findall(r"(\d+) (?:open|stranded|on main not live|live|landed|answered|closed)", line.split(":",1)[1])]
+sys.exit(0 if sum(parts)==total else "summary %d != parts %s: %s" % (total, parts, line))' || fail "the summary parts must add up to the total: $OUT"
+pass=$((pass+1))
+OPEN=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other --open 2>&1)
+echo "$OPEN" | grep -E '^stranded +w-other +MSG-606 ' >/dev/null || fail "--open keeps a stranded request: $OPEN"
 pass=$((pass+1))
 # Land review F1: /health with no commit makes live() None for EVERY repo; the
 # amux repo's work must stay on main, not read "landed elsewhere".

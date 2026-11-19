@@ -10199,6 +10199,97 @@ def landed(repo):
                 m.setdefault(mid, sha.strip())
     landed_by_repo[key] = m
     return m
+# STRANDED (velocity audit 2026-11-19, AF-1304): MSG-99512 was committed as
+# 47722b4fe on 2026-10-28 and never pushed. It sat 22 days as the one unpushed
+# commit on the shared checkout, and once it was older than the window this
+# command showed nothing about it. Commits on a local branch or a worktree's
+# HEAD that cite a request and are not on origin/main are read at any age:
+#   stranded  no commit on origin/main cites the request at all;
+#   stray     the request landed, but this commit's change (by patch id) did not.
+# Per repository, like landed(), so twelve worktrees cost one pass.
+stranded_by_repo, history_cache = {}, {}
+def _patch_ids(repo, shas):
+    """{commit: patch id}, for many commits in one git call each way."""
+    if not shas:
+        return {}
+    show = subprocess.run(["git", "-C", repo, "show", "--no-color", "--format=commit %H", *shas],
+                          capture_output=True, text=True).stdout
+    out = subprocess.run(["git", "-C", repo, "patch-id", "--stable"], input=show, capture_output=True, text=True).stdout
+    return {c: p for p, c in (l.split() for l in out.splitlines() if len(l.split()) == 2)}
+def _lines_on_main(repo, sha):
+    """True when the lines this commit adds are in origin/main's copy of its
+    files: a change that landed squashed or rebased with edits has no matching
+    patch id, but its lines are there (the governance PRs, squash-merged)."""
+    diff = subprocess.run(["git", "-C", repo, "show", "--no-color", "--format=", "--unified=0", sha],
+                          capture_output=True, text=True).stdout
+    added, path, cache = 0, None, {}
+    for line in diff.splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else None
+        elif line.startswith("+") and path and line[1:].strip():
+            if path not in cache:
+                cache[path] = {l.strip() for l in subprocess.run(["git", "-C", repo, "show", "origin/main:" + path],
+                                                                  capture_output=True, text=True).stdout.splitlines()}
+            added += 1
+            if line[1:].strip() not in cache[path]:
+                return False
+    return added > 0
+def stranded(repo):
+    """{mid: {"main": bool, "stray": [(sha, where)]}} for requests cited off origin/main."""
+    if not repo or not os.path.isdir(repo):
+        return {}
+    key = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                         capture_output=True, text=True).stdout.strip() or repo
+    if key in stranded_by_repo:
+        return stranded_by_repo[key]
+    heads, where = [], {}
+    wl = subprocess.run(["git", "-C", repo, "worktree", "list", "--porcelain"], capture_output=True, text=True).stdout
+    path = ""
+    for line in wl.splitlines():
+        if line.startswith("worktree "):
+            path = line[9:]
+        elif line.startswith("HEAD ") and len(line) > 5:
+            heads.append(line[5:].strip())
+            where.setdefault(line[5:].strip(), path)
+    log = subprocess.run(["git", "-C", repo, "log", "--no-merges", "--branches", *heads, "--not", "origin/main",
+                          "--source", "--format=%H%x1f%S%x1f%B%x1e"], capture_output=True, text=True).stdout
+    cand = {}
+    for rec in log.split("\x1e"):
+        parts = rec.strip("\n").split("\x1f", 2)
+        if len(parts) != 3:
+            continue
+        sha, src, body = parts
+        for mid in set(re.findall(r"MSG-(\d+)", body)):
+            cand.setdefault(mid, []).append((sha.strip(), where.get(src.strip()) or src.strip()))
+    # Every request origin/main ever cited, in one pass (not one --grep each).
+    on_main = {}
+    if cand:
+        main_log = subprocess.run(["git", "-C", repo, "log", "--no-merges", "origin/main", "--grep", "MSG-",
+                                   "--format=%H%x1f%B%x1e"], capture_output=True, text=True).stdout
+        for rec in main_log.split("\x1e"):
+            parts = rec.strip("\n").split("\x1f", 1)
+            if len(parts) == 2:
+                for mid in set(re.findall(r"MSG-(\d+)", parts[1])):
+                    if mid in cand:
+                        on_main.setdefault(mid, []).append(parts[0].strip())
+    need = [c[0] for mid in on_main for c in cand[mid]] + [x for mid in on_main for x in on_main[mid]]
+    pid = _patch_ids(repo, sorted(set(need)))
+    m = {}
+    for mid, commits in cand.items():
+        if mid not in on_main:
+            m[mid] = {"main": False, "stray": commits[:1]}
+            continue
+        landed_ids = {pid.get(x) for x in on_main[mid]} - {None}
+        stray = [c for c in commits if pid.get(c[0]) not in landed_ids and not _lines_on_main(repo, c[0])]
+        if stray:
+            m[mid] = {"main": True, "stray": stray}
+    stranded_by_repo[key] = m
+    return m
+def history_row(mid):
+    if mid not in history_cache:
+        h = get("/api/history/" + mid)
+        history_cache[mid] = h if isinstance(h, dict) else {}
+    return history_cache[mid]
 def live(repo, sha):
     if not build or not os.path.isdir(os.path.join(repo, "crates", "amux-server")):
         return None
@@ -10222,6 +10313,7 @@ def answered_for(w):
         d = get("/api/task-history/requests?session=%s&days=%g" % (urllib.parse.quote(w), days)) or {}
         answered_cache[w] = {r["id"]: r.get("evidence", "") for r in d.get("requests") or [] if r.get("status") == "answered"}
     return answered_cache[w]
+seen_stranded, strays = {}, []
 by_session = {}
 for h in owner_hist:
     by_session.setdefault(h.get("session"), []).append(h)
@@ -10239,6 +10331,7 @@ for w in workers:
         repo = subprocess.run(["git", "-C", repo, "rev-parse", "--show-toplevel"],
                               capture_output=True, text=True).stdout.strip() or repo
     lm = landed(repo)
+    sm = stranded(repo)
     for h in hist:
         if h.get("session") != w or h.get("sender") != "owner" or h.get("kind") != "human":
             continue
@@ -10275,9 +10368,32 @@ for w in workers:
             st, ev = "open", ""
         if sha:
             lm_sha["MSG-" + mid] = sha
+        if st == "open" and mid in sm and not sm[mid]["main"]:
+            st, ev = "stranded", sm[mid]["stray"][0][0][:9]
+            seen_stranded[mid] = True
         rows.append({"worker": w, "id": "MSG-" + mid, "age_h": round((now - h["ts"]) / 3600000, 1),
                      "status": st, "evidence": ev, "repo": repo, "isolated": bool(s.get("isolated")),
                      "text": re.sub(r"\s+", " ", text)[:200]})
+        if st == "stranded":
+            rows[-1]["where"] = sm[mid]["stray"][0][1]
+    # Older than the window: still listed, because nothing else will show it.
+    for mid, info in sorted(sm.items()):
+        if mid in seen_stranded or mid in closed:
+            continue
+        h = history_row(mid)
+        if h.get("session") != w or h.get("sender") != "owner" or h.get("kind") != "human":
+            continue
+        seen_stranded[mid] = True
+        if info["main"]:
+            for ssha, swhere in info["stray"]:
+                strays.append({"worker": w, "id": "MSG-" + mid, "sha": ssha[:9], "where": swhere})
+            continue
+        if mid in lm:
+            continue
+        ssha, swhere = info["stray"][0]
+        rows.append({"worker": w, "id": "MSG-" + mid, "age_h": round((now - h.get("ts", now)) / 3600000, 1),
+                     "status": "stranded", "evidence": ssha[:9], "where": swhere, "repo": repo,
+                     "isolated": bool(s.get("isolated")), "text": re.sub(r"\s+", " ", (h.get("text") or "").strip())[:200]})
 # WHICH TASK CLOSED IT (Ethan, 2026-10-18): the worker's task at the moment the
 # request landed (its commit's time) or was closed by hand, from the Tasks
 # history. One batched lookup; "" when the worker had no recorded task then.
@@ -10303,8 +10419,8 @@ for r in rows:
     t = tasks_at.get(when.get(r["id"], "")) or {}
     r["task"] = t.get("task") or ""
     r["task_ts"] = t.get("ts")
-counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "on-main", "live", "landed", "answered", "closed")}
-summary = {"measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
+counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "stranded", "on-main", "live", "landed", "answered", "closed")}
+summary = {"stray_commits": strays, "measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
 # keeps the last green image while main is red, and said so only in its log.
@@ -10320,12 +10436,12 @@ if held and gate.get("verdict") in ("ci_gate_held_back", "ci_gate_no_green", "ci
     summary["held_by_ci"] = dict(gate, requests=len(held))
     for r in held:
         r["held_by_ci"] = True
-if only_open:
-    rows = [r for r in rows if r["status"] == "open"]
+if only_open:  # a stranded request is not done either
+    rows = [r for r in rows if r["status"] in ("open", "stranded")]
 if raw:
     print(json.dumps(dict(summary, requests=rows), indent=1))
     sys.exit(0)
-order = {"open": 0, "on-main": 1, "live": 2, "landed": 2, "answered": 3, "closed": 3}
+order = {"open": 0, "stranded": 0, "on-main": 1, "live": 2, "landed": 2, "answered": 3, "closed": 3}
 for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"])):
     answered = r["status"] == "answered"
     print("%-8s %-18s %-10s %6sh  %-10s %s" % ("held" if r.get("held_by_ci") else r["status"], r["worker"][:18], r["id"], r["age_h"],
@@ -10334,9 +10450,18 @@ for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"
         print("%59s %s" % ("", r["evidence"][:120]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
-print("%d requests from the owner over %g days (%d acks not counted): %d open, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d answered, %d closed%s" % (
-    summary["n_considered"], days, dropped, counts["open"], counts["on-main"], counts["live"], counts["landed"], counts["answered"], counts["closed"],
+print("%d requests from the owner over %g days (%d acks not counted): %d open, %d stranded, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d answered, %d closed%s" % (
+    summary["n_considered"], days, dropped, counts["open"], counts["stranded"], counts["on-main"], counts["live"], counts["landed"], counts["answered"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
+if counts["stranded"]:
+    print("stranded: %d request(s) committed but not on origin/main, at any age; push or land the commit, or close the request:" % counts["stranded"])
+    for r in rows:
+        if r["status"] == "stranded":
+            print("  %s %s %s in %s" % (r["id"], r["worker"], r["evidence"], r.get("where") or "?"))
+if strays:
+    print("stray: %d commit(s) citing a request that landed are not on origin/main (their change, by patch id, never landed):" % len(strays))
+    for x in strays:
+        print("  %s %s %s in %s" % (x["id"], x["worker"], x["sha"], x["where"] or "?"))
 if summary.get("held_by_ci"):
     g = summary["held_by_ci"]
     # The gate's verdict words, said as what they mean. "none" read as nothing
