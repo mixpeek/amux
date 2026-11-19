@@ -467,7 +467,14 @@ pub async fn outbound_once(state: &AppState) -> usize {
     for p in work {
         let worker_post = p.author_key.starts_with("worker:");
         let is_shared = state.store.read().map(|c| shared(&c, &p.platform, &p.conversation)).unwrap_or(true);
-        if worker_post && is_shared && p.state.as_deref() != Some("approved") {
+        // A standing "approve and remember" for this worker in this chat lets
+        // the post through; each use is recorded (approval_cards::standing_use).
+        let remembered = worker_post && is_shared && p.state.as_deref() != Some("approved") && {
+            let worker = p.author_key.trim_start_matches("worker:");
+            crate::api::approval_cards::standing_use("chat", worker, &chat_key(&p.platform, &p.conversation), None,
+                &crate::api::approval_cards::approval_ref("chat", &p.id), &format!("post into {}", label(&p.platform))).await.is_some()
+        };
+        if worker_post && is_shared && p.state.as_deref() != Some("approved") && !remembered {
             let card = hold_for_owner(state, &p).await;
             record(state, &p, "held", None, None, card).await;
             tracing::info!(id = %p.id, platform = %p.platform, measured = true, n_considered = 1, verdict = "bridge_outbound_held",
@@ -500,7 +507,45 @@ pub async fn outbound_once(state: &AppState) -> usize {
     n
 }
 
+/// The match key a remembered chat approval is stored under: one platform's
+/// one conversation.
+pub(crate) fn chat_key(platform: &str, conversation: &str) -> String {
+    format!("chat:{platform}:{conversation}")
+}
+
+/// A held post is the same approval as a held email (owner, 2026-11-20: "make
+/// sure all outbound messages, even outbound Slack, go through the same amux
+/// approval flow"): one Needs-you approval card, decided by Approve, Reject or
+/// Approve and remember, through approval_cards. Before this it filed its own
+/// card that only a link could decide and nothing could remember.
 async fn hold_for_owner(state: &AppState, p: &Pending) -> Option<String> {
+    if crate::api::approval_cards::enabled() {
+        let worker = p.author_key.trim_start_matches("worker:").to_string();
+        let ask = crate::api::approval_cards::Ask {
+            kind: "chat",
+            item_id: p.id.clone(),
+            requester: worker.clone(),
+            title: format!("Send {}'s {} message: {}", p.author_name, label(&p.platform), p.body.chars().take(80).collect::<String>()),
+            question: format!("Send {}'s message into the {} chat ({})?", p.author_name, label(&p.platform), p.conv),
+            unblocks: "The message goes into the chat exactly as written. Rejecting drops it; nothing is sent.".into(),
+            desc: format!("{} wants to send this into a {} chat that includes someone other than you (linked to {}):\n\n{}",
+                p.author_name, label(&p.platform), p.conv, p.body.chars().take(3000).collect::<String>()),
+            ask_type: "customer_outbound",
+            expires_at: None,
+            meta: json!({"key": chat_key(&p.platform, &p.conversation), "platform": p.platform, "conv": p.conv}),
+        };
+        let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let mw = made.clone();
+        let _ = state.store.write_async(move |conn| {
+            let card = crate::api::approval_cards::file_in(conn, &ask, crate::config::now_f64())?;
+            if let Ok(mut g) = mw.lock() { *g = card.clone(); }
+            Ok(crate::db::WriteOutcome { applied: card.is_some(), events: vec![] })
+        }).await;
+        let card = made.lock().ok().and_then(|g| g.clone());
+        if card.is_some() {
+            return card;
+        }
+    }
     let link = format!("/#bridge-approve={}", urlencode(&p.id));
     let new = crate::db::board_store::NewIssue {
         title: format!("Approve {}'s {} reply before it reaches someone outside", p.author_name, label(&p.platform)),
@@ -541,6 +586,25 @@ fn urlencode(s: &str) -> String {
 
 /// The owner approved a held post: the next pass sends it.
 pub async fn approve(state: &AppState, id: &str) -> Result<Value, String> {
+    approve_by(state, id, "owner").await
+}
+
+/// The owner rejected a held post: it is dropped, never sent.
+pub async fn reject(state: &AppState, id: &str, by: &str) -> Result<Value, String> {
+    let i = id.to_string();
+    let changed = state.store.write_async(move |conn| {
+        let n = conn.execute("UPDATE bridge_outbound SET state='rejected' WHERE id=?1 AND state='held'", params![i])?;
+        Ok(crate::db::WriteOutcome { applied: n == 1, events: vec![] })
+    }).await.map_err(|e| e.to_string())?;
+    if !changed.applied {
+        return Err("no held reply with that id".into());
+    }
+    crate::api::approval_cards::resolved("chat", id, "rejected", by, None).await;
+    tracing::info!(id, measured = true, n_considered = 1, verdict = "bridge_outbound_rejected", "bridge: the owner rejected a held reply; it is not sent");
+    Ok(json!({"ok": true, "id": id, "state": "rejected"}))
+}
+
+pub async fn approve_by(state: &AppState, id: &str, by: &str) -> Result<Value, String> {
     let i = id.to_string();
     let card = state.store.read().ok().and_then(|c| c.query_row(
         "SELECT card FROM bridge_outbound WHERE id=?1 AND state='held'", params![i], |r| r.get::<_, Option<String>>(0)).optional().ok().flatten()).flatten();
@@ -560,6 +624,7 @@ pub async fn approve(state: &AppState, id: &str) -> Result<Value, String> {
             Ok(crate::db::WriteOutcome { applied: matches!(r, Ok(Ok(_))), events: vec![] })
         }).await;
     }
+    crate::api::approval_cards::resolved("chat", id, "approved", by, None).await;
     tracing::info!(id, measured = true, n_considered = 1, verdict = "bridge_outbound_approved", "bridge: the owner approved a held reply");
     notify_outbound();
     Ok(json!({"ok": true, "id": id, "state": "approved"}))
@@ -640,6 +705,88 @@ mod tests {
         let c = store.read().unwrap();
         let ids: Vec<i64> = pending(&c).unwrap().iter().map(|p| p.post_id).collect();
         assert_eq!(ids, vec![2], "only the answer in the chat's own thread goes back, though its old link names #general");
+    }
+
+    /// A test home whose Slack goes to `base`, with a store and an AppState.
+    fn slack_home(base: &str) -> (tempfile::TempDir, crate::api::AppState) {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("server.env"),
+            format!("SLACK_BOT_TOKEN=xoxb-test\nAMUX_BRIDGE_SLACK_BASE={base}\nAMUX_BRIDGE_OWNERS=slack:UOWNER\n")).unwrap();
+        let store = std::sync::Arc::new(crate::db::Store::open(&home.path().join("amux.db")).unwrap());
+        let state = crate::api::AppState { store, started: std::time::Instant::now(), build_hash: "test".into(),
+            auth_token: None, reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        (home, state)
+    }
+
+    /// A Slack chat with a guest in it, linked to the `sales` worker's thread,
+    /// and one post from that worker waiting to go out.
+    fn shared_slack_chat(state: &crate::api::AppState, chan: &str, body: &str) {
+        let (chan, body) = (chan.to_string(), body.to_string());
+        state.store.write(move |c| {
+            c.execute("INSERT INTO bridge_links (platform, conversation, kind, conv, last_post_id, linked_by, linked_at)
+                       VALUES ('slack', ?1, 'group', 'w:sales', 0, 't', 0)", [&chan])?;
+            c.execute("INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts)
+                       VALUES (1, 'w:sales', 'person:guest', 'Dana', 'can you send the deck?', 0)", [])?;
+            c.execute("INSERT INTO bridge_inbound (post_id, platform, conversation, platform_msg_id, sender_id, sender_name, is_owner, received_at)
+                       VALUES (1, 'slack', ?1, 'S1', 'UGUEST', 'Dana', 0, 0)", [&chan])?;
+            c.execute("INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts)
+                       VALUES (2, 'w:sales', 'worker:sales', 'sales', ?1, 0)", [&body])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+    }
+
+    /// Owner, 2026-11-20: "make sure all outbound messages, even outbound
+    /// Slack, go through the same amux approval flow". A worker's post into a
+    /// Slack chat that includes someone other than the owner is held as a
+    /// `chat` approval card, nothing reaches Slack, and once approved it is
+    /// sent exactly as written to a local stand-in that speaks Slack's API.
+    #[tokio::test]
+    async fn a_worker_slack_post_to_a_shared_chat_waits_for_approval_then_sends() {
+        let got: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+        let g2 = got.clone();
+        let app = axum::Router::new().route("/chat.postMessage", axum::routing::post(move |axum::Json(b): axum::Json<Value>| {
+            let g = g2.clone();
+            async move { g.lock().unwrap().push(b); axum::Json(json!({"ok": true, "ts": "1700000000.000100"})) }
+        }));
+        let lis = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = lis.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(lis, app).await.ok() });
+        let (home, state) = slack_home(&format!("http://{addr}"));
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        shared_slack_chat(&state, "C123", "Here is the deck: https://example.com/deck");
+
+        outbound_once(&state).await;
+        let id = "2|slack|C123";
+        let (st, card): (String, Option<String>) = state.store.read().unwrap().query_row(
+            "SELECT state, card FROM bridge_outbound WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(st, "held", "a worker's post into a chat with someone else waits");
+        assert!(card.is_some(), "and it has a card");
+        let (kind, key): (String, String) = state.store.read().unwrap().query_row(
+            "SELECT kind, json_extract(meta,'$.key') FROM _amux_approval_cards WHERE item_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((kind.as_str(), key.as_str()), ("chat", "chat:slack:C123"), "the same approval cards as a held email");
+        assert!(got.lock().unwrap().is_empty(), "nothing reached Slack while it was held");
+
+        approve_by(&state, id, "owner").await.unwrap();
+        outbound_once(&state).await;
+        let sent = got.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "approved, it is sent once");
+        assert_eq!(sent[0]["channel"], json!("C123"));
+        assert!(sent[0]["text"].as_str().unwrap().contains("Here is the deck: https://example.com/deck"));
+        outbound_once(&state).await;
+        assert_eq!(got.lock().unwrap().len(), 1, "and never again");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_slack_post_is_never_sent() {
+        let (home, state) = slack_home("http://127.0.0.1:9");
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        shared_slack_chat(&state, "C9", "x");
+        outbound_once(&state).await;
+        reject(&state, "2|slack|C9", "owner").await.unwrap();
+        outbound_once(&state).await;
+        let st: String = state.store.read().unwrap().query_row(
+            "SELECT state FROM bridge_outbound WHERE id='2|slack|C9'", [], |r| r.get(0)).unwrap();
+        assert_eq!(st, "rejected", "a rejected post stays rejected; the pass does not pick it up");
     }
 
     #[test]

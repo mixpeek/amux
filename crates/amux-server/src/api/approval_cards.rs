@@ -49,7 +49,7 @@ use super::AppState;
 pub const MODE_ENV: &str = "AMUX_APPROVAL_CARDS";
 const CREATOR: &str = "approval-cards";
 /// Kinds a standing approval can answer.
-const REMEMBERABLE: [&str; 3] = ["email", "grant", "publish"];
+const REMEMBERABLE: [&str; 4] = ["email", "grant", "publish", "chat"];
 
 static STORE: OnceLock<crate::db::SharedStore> = OnceLock::new();
 
@@ -652,6 +652,7 @@ pub fn remember_in(conn: &Connection, link: &Link, granted_by: &str, until: Opti
     }
     let (category, allowed, amount) = match link.kind.as_str() {
         "email" => ("customer_outbound", format!("{worker} may email {} without asking", key.trim_start_matches("to:")), None),
+        "chat" => ("customer_outbound", format!("{worker} may post into {} without asking", key.trim_start_matches("chat:")), None),
         "grant" => {
             let amt = link.meta["amount_usd"].as_f64();
             ("budget", format!("{worker} may charge {} up to ${:.2} without asking",
@@ -701,6 +702,14 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
                 super::email::approve(axum::Extension(ctx), headers, AxPath(id), b).await
             } else {
                 super::email::reject(axum::Extension(ctx), headers, AxPath(id), b).await
+            }
+        }
+        "chat" => {
+            let by = super::human_proof::proven(&headers).map(|p| p.actor()).unwrap_or_else(|| "unproven".into());
+            let r = if approve { crate::bridge::approve_by(state, &id, &by).await } else { crate::bridge::reject(state, &id, &by).await };
+            match r {
+                Ok(v) => Json(v).into_response(),
+                Err(e) => bad(StatusCode::NOT_FOUND, &e),
             }
         }
         "grant" => {
