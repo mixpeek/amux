@@ -23,6 +23,27 @@ add the hook to the shared one. Specimen, 2026-10-16: the MDAI tab grew its own 
 breadcrumb and "Folder" line beside the Files tab, and Ethan asked for it to be "the same file
 directory / file view as any other file view". Catalogue: `docs/ui-style-guide.md`.
 
+## Every UX change: test it on desktop and on a phone
+
+Ethan, 2026-11-19: "whenever you introduce something that changes amux ux you test it on
+desktop and mobile to ensure it doesnt disrupt real estate." A UX change is anything a person
+sees or touches: a control, a view, a list, a banner, a row of cards, CSS, or JS that adds or
+moves markup. Before calling it done:
+
+- Run its e2e spec on `desktop`, `mobile` and `ios-safari`, the three projects in
+  `e2e/playwright.config.ts`. A phone-only or desktop-only behaviour still runs on all three
+  and asserts the other side is unchanged.
+- Screenshot it at 1280 px and at 375 px, in the real dashboard (the live server, or
+  `AMUX_DASHBOARD_DIR` pointed at your static files), and look at both. On the phone, count the
+  rows above and below the content, and check the content keeps at least half the screen
+  (`e2e/messages-mobile-one-row.spec.ts` measures both). On desktop, check nothing pushes the
+  main view down or sideways.
+- If the change takes space, the spec asserts it: a box height, a row count, or that it is not
+  rendered on a phone. Specimen: 423371450 removed the "Conversations from Intent" cards from a
+  worker's Messages tab on phones, where they took the top third of the screen, and
+  `e2e/peek-messages-intent-convs-mobile.spec.ts` checks the desktop still shows them.
+- Say in the commit message which widths you checked and what you saw.
+
 ## CSS and the phone
 
 - New UI fits the existing `@media (max-width: 600px)` breakpoints. Touch targets are at least
