@@ -22588,15 +22588,14 @@ fn not_found() -> Response {
 
 /// py:801 _UI_TOKEN — sha256("amux-ui-guard:" + AUTH_TOKEN)[:40].
 fn ui_token(state: &AppState) -> String {
+    ui_token_of(state.auth_token.as_deref())
+}
+
+/// The dashboard's UI token for a server whose API token is `auth`.
+pub(crate) fn ui_token_of(auth: Option<&str>) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
-    h.update(
-        format!(
-            "amux-ui-guard:{}",
-            state.auth_token.clone().unwrap_or_default()
-        )
-        .as_bytes(),
-    );
+    h.update(format!("amux-ui-guard:{}", auth.unwrap_or_default()).as_bytes());
     hex::encode(h.finalize()).chars().take(40).collect()
 }
 
@@ -22626,7 +22625,7 @@ fn session_destructive_allowed(state: &AppState, headers: &HeaderMap) -> bool {
 /// The request is the owner's own dashboard: a verified invited member, or
 /// the UI token the dashboard page carries. Unlike
 /// `session_destructive_allowed`, no environment switch widens it.
-fn owner_ui_proof(state: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn owner_ui_proof(state: &AppState, headers: &HeaderMap) -> bool {
     if super::org::is_verified_local_member(headers) {
         return true;
     }

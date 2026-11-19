@@ -251,6 +251,25 @@ pub(crate) fn hdr_worker(headers: &HeaderMap) -> Option<String> {
 /// member wrote from the dashboard was held for approval (sandbox, 2026-11-12).
 /// Only the server-verified member's own actor counts: a lane that sends
 /// `member:<someone>` without the marker is still a lane.
+/// The lane an email request is held to when it names none (AMUX-3510
+/// fail-closed, 2026-11-19).
+pub(crate) const UNATTRIBUTED_LANE: &str = "unattributed";
+
+/// FAIL CLOSED: a send or reply with no worker header that does not prove it
+/// is the owner (the dashboard's UI token, or a verified member) is held as
+/// the lane "unattributed", not waved through as a person. On 2026-11-19 the
+/// isolated worker `random` (no AMUX_SESSION, so an empty X-Amux-Session)
+/// sent to an outside list at once: an empty header read as the owner, and
+/// the external-send gate only runs for a lane.
+fn held_unless_owner(state: &AppState, mut headers: HeaderMap) -> HeaderMap {
+    if hdr_worker(&headers).is_none() && !crate::api::session_verbs::owner_ui_proof(state, &headers) {
+        tracing::warn!(measured = true, n_considered = 1, verdict = "email_unattributed_caller_held",
+            "an email request named no worker and carried no owner proof; it is treated as lane `unattributed`");
+        headers.insert("x-amux-session", axum::http::HeaderValue::from_static(UNATTRIBUTED_LANE));
+    }
+    headers
+}
+
 pub(crate) fn hdr_lane(headers: &HeaderMap) -> Option<String> {
     let caller = hdr_worker(headers)?;
     (super::org::local_member_actor(headers) != Some(caller.as_str())).then_some(caller)
@@ -593,6 +612,7 @@ pub async fn send(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let headers = held_unless_owner(&state, headers);
     // Reject threading headers — Python's exact refusal (threaded replies
     // belong on /reply, where In-Reply-To/References are derived correctly).
     for forbidden_key in ["in_reply_to", "references", "inReplyTo"] {
@@ -892,6 +912,7 @@ pub async fn reply(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let headers = held_unless_owner(&state, headers);
     reply_with(Some(&state), ctx, headers, body).await
 }
 
@@ -3098,6 +3119,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_thread_guard_blocks_with_candidate_and_force_bypasses() {
+        let ui = crate::api::session_verbs::ui_token_of(None);
         let home = temp_home();
         let meta = json!({
             "id": "g9", "threadId": "T7",
@@ -3123,7 +3145,7 @@ mod tests {
             "POST",
             "/api/email/send",
             Some(json!({ "to": "ceo@customer.com", "subject": "s", "body": "b", "from": ACCT })),
-            &[],
+            &[("x-amux-ui-token", ui.as_str())],
         )
         .await;
         assert_eq!(st, StatusCode::CONFLICT, "{e}");
@@ -3156,7 +3178,7 @@ mod tests {
                 json!({ "to": "ceo@customer.com", "subject": "s", "body": "b",
                          "from": ACCT, "force_new_thread": true }),
             ),
-            &[],
+            &[("x-amux-ui-token", ui.as_str())],
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{res}");
@@ -3305,6 +3327,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_failure_marks_email_unavailable_in_registry() {
+        let ui = crate::api::session_verbs::ui_token_of(None);
         let home = temp_home();
         let http = MockHttp::new(vec![
             // Guard probe fails open (no answer -> latest_matching None).
@@ -3325,7 +3348,7 @@ mod tests {
             "POST",
             "/api/email/send",
             Some(json!({ "to": "x@customer.com", "subject": "s", "body": "b", "from": ACCT })),
-            &[],
+            &[("x-amux-ui-token", ui.as_str())],
         )
         .await;
         // 403, not 502 (AMUX-3809). This test is named for the REGISTRY half —
@@ -3417,6 +3440,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_send_naming_no_worker_and_proving_no_owner_is_held() {
+        // AMUX-3510 fail-closed (2026-11-19): an isolated worker sent with an
+        // empty X-Amux-Session and its outside email went out at once.
+        for hdrs in [vec![], vec![("x-amux-session", "")]] {
+            let home = temp_home();
+            let http = MockHttp::new(vec![
+                ("GET", "/messages?q=", 200, json!({ "messages": [] })),
+                ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+                ("POST", "/messages/send", 200, json!({ "id": "leak", "threadId": "t" })),
+            ]);
+            let (app, _d, _r) = app_with(http.clone(), home.path());
+            let (st, res) = send_req(&app, "POST", "/api/email/send",
+                Some(json!({ "to": "members@outside-club.com", "subject": "S", "body": "b", "from": ACCT })), &hdrs).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{hdrs:?}: {res}");
+            assert_eq!(res["code"], json!("approval_required"));
+            assert!(http.calls.lock().unwrap().iter().all(|(m, u, _)| !(m == "POST" && u.contains("/send"))),
+                "nothing reached the transport");
+            let (_, lst) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+            assert_eq!(lst["pending"][0]["session"], json!(UNATTRIBUTED_LANE), "held under its true name");
+        }
+    }
+
+    #[tokio::test]
     async fn a_human_send_and_an_exempt_lane_still_flow() {
         // Human context (no worker origin): external sends flow — the
         // dashboard composer is Ethan himself.
@@ -3440,7 +3486,7 @@ mod tests {
                 json!({ "to": "ceo@customer.com", "subject": "Hi", "body": "b",
                          "from": ACCT, "force_new_thread": true }),
             ),
-            &[],
+            &[("x-amux-ui-token", &crate::api::session_verbs::ui_token_of(None))],
         )
         .await;
         assert_eq!(st, StatusCode::OK, "{res}");
