@@ -147,8 +147,27 @@ async fn history(req: Request) -> Response {
         };
     }
     let limit = qs_get(&qs, "limit").and_then(|v| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);
-    let log = git(vec!["log".into(), "--follow".into(), format!("-n{limit}"),
-                       "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s".into(), "--".into(), rel.clone()]).await;
+    // HEAD AND WHERE THE WORK LANDS (owner, 2026-11-19: "the history is just
+    // not right neither is diffs"). A shared checkout's HEAD stays behind its
+    // remote while work lands through `amux land` / graft-push: the amux
+    // checkout read 0 commits for a file with dozens on origin/main. The log
+    // reads HEAD, its upstream and the remote's default branch together.
+    let mut refs = vec!["HEAD".to_string()];
+    for spec in ["@{upstream}", "refs/remotes/origin/HEAD"] {
+        if let Some(o) = git(vec!["rev-parse".into(), "--abbrev-ref".into(), "--symbolic-full-name".into(), spec.into()]).await {
+            let r = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if o.status.success() && !r.is_empty() && r != "HEAD" && !refs.contains(&r) {
+                refs.push(r);
+            }
+        }
+    }
+    // --topo-order: newer before older even when commits share a second or a
+    // clock was off, which date order across two tips does not promise.
+    let mut args: Vec<String> = vec!["log".into(), "--follow".into(), "--topo-order".into(), format!("-n{limit}"),
+                                     "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s".into()];
+    args.extend(refs.iter().cloned());
+    args.extend(["--".into(), rel.clone()]);
+    let log = git(args).await;
     let Some(log) = log.filter(|o| o.status.success()) else {
         return j(503, json!({"measured": false, "n_considered": 0, "in_repo": true, "why_unmeasured": "git log failed or timed out"}));
     };
@@ -160,10 +179,23 @@ async fn history(req: Request) -> Response {
                                           "at": f[3].parse::<i64>().unwrap_or(0), "subject": f[4]}))
         })
         .collect();
-    let dirty = git(vec!["status".into(), "--porcelain".into(), "--".into(), rel.clone()]).await
-        .map(|o| !o.stdout.is_empty());
+    // Uncommitted means the file differs from the newest commit listed, not
+    // from a HEAD that may be far behind it.
+    let dirty = match commits.first().and_then(|c| c["sha"].as_str()) {
+        Some(sha) => {
+            let disk = git(vec!["hash-object".into(), "--".into(), rel.clone()]).await;
+            let committed = git(vec!["rev-parse".into(), format!("{sha}:{rel}")]).await;
+            match (disk, committed) {
+                (Some(d), Some(c)) if d.status.success() && c.status.success() => Some(d.stdout != c.stdout),
+                _ => None,
+            }
+        }
+        None => git(vec!["status".into(), "--porcelain".into(), "--".into(), rel.clone()]).await.map(|o| !o.stdout.is_empty()),
+    };
+    tracing::debug!(rel = %rel, refs = ?refs, commits = commits.len(), measured = true, n_considered = commits.len(),
+        verdict = "file_history_read", "file history read across HEAD and the remote branch");
     j(200, json!({"measured": true, "n_considered": commits.len(), "in_repo": true, "repo": top, "rel": rel,
-                  "commits": commits, "uncommitted": dirty}))
+                  "commits": commits, "uncommitted": dirty, "refs": refs}))
 }
 
 // ---------------------------------------------------------------------------

@@ -34144,13 +34144,14 @@ async function _mdxRenderHistory() {
   const alt = document.getElementById('mdx-alt');
   if (!alt || !_fileData) return;
   const path = _fileData.path;
-  if (_mdx.histFor && _mdx.histFor.path === path) { _mdxDrawHistory(_mdx.histFor.data); return; }
+  // Read again after 15 s: a commit or a land since the last read must show.
+  if (_mdx.histFor && _mdx.histFor.path === path && Date.now() - (_mdx.histFor.at || 0) < 15000) { _mdxDrawHistory(_mdx.histFor.data); return; }
   alt.innerHTML = '<div class="mdx-empty">Reading history…</div>';
   try {
     const r = await fetch(API + '/api/file/history?path=' + encodeURIComponent(path), { headers: _authHeaders() });
     const d = await r.json();
     if (!r.ok || d.measured === false) throw new Error(d.why_unmeasured || d.error || ('HTTP ' + r.status));
-    _mdx.histFor = { path, data: d };
+    _mdx.histFor = { path, data: d, at: Date.now() };
     if (_mdx.tab === 'history' && _fileData && _fileData.path === path) _mdxDrawHistory(d);
   } catch (e) {
     alt.innerHTML = '<div class="ui-error">History could not be read: ' + esc(e.message || String(e)) + '</div>';
