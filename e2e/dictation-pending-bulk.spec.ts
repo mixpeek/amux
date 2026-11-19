@@ -69,3 +69,22 @@ test('Try all again sends every clip that gave up, past its backoff', async ({ p
   await expect.poll(() => sent.length).toBe(3);
   await expect(page.locator('#dict-outbox-strip .dict-pending-head')).toHaveCount(0);
 });
+
+// Owner, 2026-11-19, on the Mac app: "4 pending but theres nothing". There the
+// store answered slowly (dict_storage_hung): the count's read came back, the
+// list's own read gave up after 5 s and showed none. The list and both buttons
+// now use the rows the count read.
+test('a list read that gives up still shows the clips the count found, and Clear all clears them', async ({ page }) => {
+  await boot(page, 2);
+  await page.evaluate(() => {
+    (globalThis as any).eval('_dictOutbox = async () => []');   // the read that timed out on the Mac app
+    (window as any).setPeekTab('terminal'); (window as any).setPeekTab('dictation');
+  });
+  await expect(page.locator('#dict-pending')).toHaveText('2 pending');
+  await expect(page.locator('#dict-outbox-strip .dict-item-pending')).toHaveCount(2);
+  await page.locator('#dict-outbox-strip').getByRole('button', { name: 'Clear all' }).click();
+  await expect(page.locator('#modal-msg')).toContainText('Delete the 2 recordings');
+  await page.locator('#modal-btns').getByRole('button', { name: 'Delete 2' }).click();
+  await expect(page.locator('#dict-outbox-strip .dict-pending-head')).toHaveCount(0);
+  await expect(page.locator('#dict-pending')).toHaveText('');
+});

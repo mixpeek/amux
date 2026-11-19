@@ -30518,7 +30518,8 @@ async function _dictRetry(id) {
 
 // Try every clip that can still be sent, now, ignoring its backoff.
 async function _dictRetryAll() {
-  const ids = new Set((await _dictOutbox()).filter(x => x.state !== 'done' && x.state !== 'unreadable').map(x => x.id));
+  await _dictPendingBadge();
+  const ids = new Set(_dictPendingRows.filter(x => x.state !== 'unreadable').map(x => x.id));
   if (!ids.size) return;
   try { await _dictUpdate(q => q.map(x => ids.has(x.id) ? Object.assign({}, x, { attempts: 0, last: 0 }) : x)); }
   catch (e) { showToast('This device could not update the recordings yet; try again'); return; }
@@ -30530,7 +30531,8 @@ async function _dictRetryAll() {
 }
 // Delete every clip that has not been transcribed, after one confirm.
 async function _dictClearAll() {
-  const n = (await _dictOutbox()).filter(x => x.state !== 'done').length;
+  await _dictPendingBadge();
+  const n = _dictPendingRows.length;
   if (!n) return;
   const ok = await showConfirm('Delete the ' + n + ' recording' + (n === 1 ? '' : 's') + ' that ' + (n === 1 ? 'was' : 'were')
     + ' not transcribed? The audio is removed from this device.', 'Delete ' + n, true);
@@ -30580,7 +30582,8 @@ async function _dictPendingBadge() {
   let q = [];
   try { q = (await _idb.get('dict_pending')) || []; } catch(e) {}
   const n = q.filter(x => x.state !== 'done').length;
-  _dictPendingRows = q.filter(x => x.state !== 'done').map(({blob, bytes, ...rest}) => rest);
+  _dictPendingRows = q.filter(x => x.state !== 'done')
+    .map(({blob, bytes, ...rest}) => Object.assign(rest, { size: (bytes && bytes.byteLength) || (blob && blob.size) || 0 }));
   _dictPendingN = n;
   _dictSyncPending = n > 0;
   _dictAttentionN = _dictPendingRows.filter(x => x.error || (x.attempts || 0) >= _DICT_MAX_AUTO || _dictSendingStale(x)).length;
@@ -30630,7 +30633,7 @@ function _dictOutboxHTML(q) {
     const attempts = (it.attempts || 0) > 1 ? ' · ' + it.attempts + ' tries' : '';
     h += '<div class="dict-item dict-item-pending">'
       +  '<div class="dict-item-head"><span class="dict-state dict-state-' + esc(it.state) + '">' + label + '</span>'
-      +  '<span class="dict-meta">' + secs + 's · ' + _dictKB((it.blob && it.blob.size) || 0) + attempts + '</span></div>'
+      +  '<span class="dict-meta">' + secs + 's · ' + _dictKB(it.size || (it.blob && it.blob.size) || 0) + attempts + '</span></div>'
       +  err
       +  '<div class="dict-actions">'
       +    (gone ? '' : '<button class="btn small" onclick="_dictPlay(\'' + it.id + '\')">▶ Play</button>'
@@ -30767,10 +30770,13 @@ function _dictRenderHistory() {
   if (!body) return;
   // Pending clips render first and out-of-band: they are the ones needing a
   // decision (retry / play / bin), and they must show even when history is empty.
-  _dictOutbox().then(ob => {
-    const strip = _dictOutboxHTML(ob);
+  // From the rows the pending count read, not a second read: on the Mac app a
+  // slow store let the count answer "4 pending" while _dictOutbox() gave up
+  // after 5 s and the list showed none (owner, 2026-11-19, with
+  // dict_storage_hung beacons from that device).
+  _dictPendingBadge().then(() => {
     const host = document.getElementById('dict-outbox-strip');
-    if (host) host.innerHTML = strip;
+    if (host) host.innerHTML = _dictOutboxHTML(_dictPendingRows);
   });
   const q = (document.getElementById('dict-search')?.value || '').trim().toLowerCase();
   const items = q ? _dictItems.filter(i => (i.text||'').toLowerCase().includes(q)) : _dictItems;

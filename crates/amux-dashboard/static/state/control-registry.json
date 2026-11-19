@@ -1584,6 +1584,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_dictRender": {
+      "kind": "command._dictRender",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_dictRenderHistory": {
+      "kind": "command._dictRenderHistory",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_dictRetry": {
       "kind": "command._dictRetry",
       "feedback_required": true,
