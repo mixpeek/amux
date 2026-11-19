@@ -13215,9 +13215,12 @@ function _homeCardOutcomes(name) {
 // The conversations from Chat routed to this worker, at the top of its
 // Messages tab: conversations are organized by conversation, and a worker
 // shows the ones it owns where its messages already are. Empty shows nothing.
+// Not on a phone (owner, 2026-11-19: "remove this on messages page mobile"):
+// the messages are the screen there, so it is neither fetched nor shown.
 async function _peekConvsLoad() {
   const el = document.getElementById('peek-msg-convs');
   if (!el || !peekSession) return;
+  if (window.matchMedia && matchMedia('(max-width: 600px)').matches) { el.innerHTML = ''; return; }
   const who = peekSession;
   let v = null;
   try { const r = await fetch(API + '/api/intent/outcomes', { headers: _authHeaders() }); v = r.ok ? await r.json() : null; } catch (e) { console.warn('[home] conversations for the worker view did not load', e); }
