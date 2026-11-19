@@ -536,11 +536,15 @@ async fn hold_for_owner(state: &AppState, p: &Pending) -> Option<String> {
         };
         let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let mw = made.clone();
-        let _ = state.store.write_async(move |conn| {
+        let filed = state.store.write_async(move |conn| {
             let card = crate::api::approval_cards::file_in(conn, &ask, crate::config::now_f64())?;
             if let Ok(mut g) = mw.lock() { *g = card.clone(); }
             Ok(crate::db::WriteOutcome { applied: card.is_some(), events: vec![] })
         }).await;
+        if let Err(e) = filed {
+            tracing::warn!(id = %p.id, error = %e, measured = true, n_considered = 1, verdict = "bridge_approval_card_unfiled",
+                "bridge: a held reply's approval card could not be filed; it falls back to the bridge's own card");
+        }
         let card = made.lock().ok().and_then(|g| g.clone());
         if card.is_some() {
             return card;
