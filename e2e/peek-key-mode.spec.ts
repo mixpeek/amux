@@ -2,9 +2,30 @@
 // and the rest to the worker from the keyboard, as the key chips do. Keys
 // requests are captured, never delivered.
 import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
+
+// The worker list is served by a route, so a sessions refresh returns the same
+// worker. Pushing into the live `sessions` array raced a refresh on mobile: the
+// worker vanished and an unknown worker reads as a terminal (PR #465 review).
+async function boot(page: Page, name: string, renderer: 'terminal' | 'chat') {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [
+    { name, dir: '/tmp/km', running: true, status: 'active', renderer, flags: '', steering: [] }] }));
+  await page.goto('/');
+  await page.waitForFunction(n => typeof (window as any).openPeek === 'function'
+    && (globalThis as any).eval('sessions').some((s: any) => s.name === n), name);
+}
+// Opens the worker and checks the page still knows it, with its renderer.
+async function openWorker(page: Page, name: string, renderer: 'terminal' | 'chat') {
+  await page.evaluate(n => (globalThis as any).openPeek(n), name);
+  await expect(page.locator('#peek-overlay')).toBeVisible();
+  expect(await page.evaluate(n => {
+    const s = (globalThis as any).eval('sessions').find((x: any) => x.name === n);
+    return s && s.renderer;
+  }, name)).toBe(renderer);
+}
 
 test('Ctrl+; forwards keys in order, Esc reaches the worker, typing turns it off', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   const keys: string[] = [];
   const beacons: any[] = [];
   await page.route(/\/api\/sessions\/km-w\/keys$/, async (route) => {
@@ -16,21 +37,19 @@ test('Ctrl+; forwards keys in order, Esc reaches the worker, typing turns it off
       try { const b = JSON.parse(r.postData() || '{}'); if (b.kind === 'interrupt-key') beacons.push(b); } catch (e) {}
     }
   });
-  await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
-  await page.evaluate(() => {
-    const g = globalThis as any;
-    g.eval('sessions').push({ name: 'km-w', status: 'active', running: true, renderer: 'terminal' });
-    g.openPeek('km-w');
-  });
+  await boot(page, 'km-w', 'terminal');
+  await openWorker(page, 'km-w', 'terminal');
   const overlay = page.locator('#peek-overlay');
   const input = page.locator('#peek-cmd-input');
   const badge = page.locator('#peek-keymode-badge');
   await expect(overlay).toBeVisible();
   await input.focus();
 
-  // The focused, empty composer says how to turn key mode on (desktop only).
+  // The focused, empty composer says how to turn key mode on, on a device
+  // that can hover with a fine pointer; a touch-only phone never gets the hint.
   const hint = page.locator('#peek-keymode-hint');
+  const finePointer = await page.evaluate(() => matchMedia('(hover: hover) and (pointer: fine)').matches);
+  if (!finePointer) await expect(hint).toHaveCount(0);
   if (test.info().project.name === 'desktop') {
     await expect(hint).toBeVisible();
     await expect(hint).toHaveText(/^(⌃;|Ctrl\+;) keys$/);
@@ -75,35 +94,27 @@ test('Ctrl+; forwards keys in order, Esc reaches the worker, typing turns it off
 });
 
 test('key mode refuses a worker that is not a terminal', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
-  await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
-  await page.evaluate(() => {
-    const g = globalThis as any;
-    g.eval('sessions').push({ name: 'km-chat', status: 'active', running: true, renderer: 'chat' });
-    g.openPeek('km-chat');
-  });
+  await boot(page, 'km-chat', 'chat');
+  await openWorker(page, 'km-chat', 'chat');
+  // Still a chat worker at the moment the shortcut is pressed.
+  expect(await page.evaluate(() => (globalThis as any)._workerRenderer('km-chat'))).toBe('chat');
   await expect(page.locator('#peek-overlay')).toBeVisible();
   await page.keyboard.press('Control+;');
   await expect(page.locator('#peek-keymode-badge')).toHaveCount(0);
 });
 
 test('key mode follows its Hotkeys binding: rebinding moves the toggle, the hint and the badge', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   const keys: string[] = [];
   await page.route(/\/api\/sessions\/km-r\/keys$/, async (route) => {
     keys.push(JSON.parse(route.request().postData() || '{}').keys);
     await route.fulfill({ json: { ok: true, detail: 'sent' } });
   });
-  await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+  await boot(page, 'km-r', 'terminal');
   // What saving a new combination in the Hotkeys tab leaves in the list.
   await page.evaluate(() => {
-    const g = globalThis as any;
-    g.eval('_hkList').find((h: any) => h.id === 'hk-key-mode').trigger = 'Alt+Shift+K';
-    g.eval('sessions').push({ name: 'km-r', status: 'active', running: true, renderer: 'terminal' });
-    g.openPeek('km-r');
+    (globalThis as any).eval('_hkList').find((h: any) => h.id === 'hk-key-mode').trigger = 'Alt+Shift+K';
   });
+  await openWorker(page, 'km-r', 'terminal');
   const badge = page.locator('#peek-keymode-badge');
   await page.locator('#peek-cmd-input').focus();
   if (test.info().project.name === 'desktop')
@@ -123,7 +134,6 @@ test('key mode follows its Hotkeys binding: rebinding moves the toggle, the hint
 });
 
 test('key mode turns off after 10s idle unless its Hotkeys setting says stay on', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
   await page.clock.install();
   // The hotkeys pref is shared by the specs on this server: capture the save, keep it local.
   const saved: any[] = [];
@@ -132,18 +142,11 @@ test('key mode turns off after 10s idle unless its Hotkeys setting says stay on'
     saved.push(JSON.parse(route.request().postData() || '{}'));
     await route.fulfill({ json: { ok: true } });
   });
-  await page.goto('/');
-  await page.waitForFunction(() => typeof (window as any).openPeek === 'function');
+  await boot(page, 'km-i', 'terminal');
   const badge = page.locator('#peek-keymode-badge');
-  const openWorker = () => page.evaluate(() => {
-    const g = globalThis as any;
-    if (!g.eval('sessions').some((s: any) => s.name === 'km-i'))
-      g.eval('sessions').push({ name: 'km-i', status: 'active', running: true, renderer: 'terminal' });
-    g.openPeek('km-i');
-  });
 
   // Default: idle turns it off.
-  await openWorker();
+  await openWorker(page, 'km-i', 'terminal');
   await page.locator('#peek-cmd-input').focus();
   await page.keyboard.press('Control+;');
   await expect(badge).toBeVisible();
@@ -169,7 +172,7 @@ test('key mode turns off after 10s idle unless its Hotkeys setting says stay on'
   expect(list.find((h: any) => h.id === 'hk-key-mode').idle_off).toBe(false);
 
   // Now it stays on through a long pause, and still turns off by the shortcut.
-  await openWorker();
+  await openWorker(page, 'km-i', 'terminal');
   await page.locator('#peek-cmd-input').focus();
   await page.keyboard.press('Control+;');
   await expect(badge).toBeVisible();

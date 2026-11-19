@@ -43391,12 +43391,14 @@ function _kmToggle() {
   if (!(ov && ov.classList.contains('active') && peekSession)) { showToast('Key mode works in a worker: open one first'); return; }
   if (_km) _kmExit('toggle'); else _kmEnter(peekSession);
 }
-// The hint on a focused, empty composer: how to turn key mode on. Desktop
-// only (CSS), since a phone has no arrow keys to send.
+// The hint on a focused, empty composer: how to turn key mode on. Only with a
+// fine pointer that can hover (a desktop): a touch-only phone has no arrow keys
+// to send, so it never gets the element (the CSS rule is the same test).
+const _KM_HINT_MQ = '(hover: hover) and (pointer: fine)';
 function _kmHintRender() {
   const wrap = document.querySelector('#peek-overlay .peek-composer-input');
   if (!wrap) return;
-  const label = _kmComboLabel();
+  const label = window.matchMedia && window.matchMedia(_KM_HINT_MQ).matches ? _kmComboLabel() : '';
   let hint = document.getElementById('peek-keymode-hint');
   if (!label) { if (hint) hint.remove(); return; }
   if (!hint) {
