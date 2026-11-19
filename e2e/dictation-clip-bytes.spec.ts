@@ -7,7 +7,7 @@ import { test, expect, Page } from './fixtures';
 
 const W = 'zz-rec-bytes';
 
-async function boot(page: Page) {
+async function boot(page: Page, hold = true) {
   const sent: number[] = [];
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [
     { name: W, dir: '/tmp/rec-bytes', running: true, status: 'idle', flags: '', steering: [] }] }));
@@ -16,6 +16,12 @@ async function boot(page: Page) {
   await page.goto('/');
   await page.waitForFunction(() => (globalThis as any).eval('typeof _idb') === 'object'
     && (globalThis as any).eval('typeof _dictOutboxAdd') === 'function');
+  // Hold the app's own background send pass, which skips while a pass is
+  // marked running. Otherwise it can send a test's clip first, and the test's
+  // send then re-runs a finished clip (kept so a transcript can be re-run):
+  // two uploads on iOS Safari, from the race rather than the app. Retry
+  // waits for a running pass, so a test of Retry boots without the hold.
+  if (hold) await page.evaluate(() => (globalThis as any).eval('_dictFlushing = Date.now()'));
   return sent;
 }
 
@@ -54,7 +60,7 @@ test('two senders reaching one clip at once upload it once', async ({ page }) =>
 });
 
 test('a clip that can no longer be read says so once, sends nothing, and offers only Delete', async ({ page }) => {
-  const sent = await boot(page);
+  const sent = await boot(page, false);
   await page.evaluate(async (w) => {
     const g = globalThis as any;
     await g.eval('_idb').set('dict_pending', [{ id: 'clip-gone', bytes: new Uint8Array(2400).buffer, mime: 'audio/webm',
