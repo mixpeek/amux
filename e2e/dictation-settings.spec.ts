@@ -59,27 +59,38 @@ async function reset(page: Page) {
 
 test.afterEach(async ({ page }, info) => { if (info.project.name === 'desktop') await reset(page); });
 
-test('the microphone, sources and context are saved on the server and shown back', async ({ page }) => {
+// Owner, 2026-11-20: "dictation mic settings should be client specific not
+// server saved". The microphone is this device's; context and sources stay on
+// the server for every device.
+test('the microphone is saved on this device, sources and context on the server', async ({ page }) => {
   await settle(page);
   await openSettings(page);
   const mic = page.locator('#dict-mic');
   await expect(mic.locator('option')).toHaveText(['Default microphone', 'MacBook Pro Microphone', 'Shure MV7']);
 
   await mic.selectOption('Shure MV7');
-  await expect.poll(async () => (await serverSettings(page)).settings.mic).toBe('Shure MV7');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('amux_dict_mic'))).toBe('Shure MV7');
 
   await page.locator('#dict-src-workers').uncheck();
   await page.locator('#dict-src-contacts').check();
   await page.locator('#dict-context').fill('I run Mixpeek and talk about TubeScience.');
   await page.locator('#dict-context-save').click();
   await expect.poll(async () => (await serverSettings(page)).settings).toEqual({
-    mic: 'Shure MV7', context: 'I run Mixpeek and talk about TubeScience.', workers: false, contacts: true });
+    mic: '', context: 'I run Mixpeek and talk about TubeScience.', workers: false, contacts: true });
 
-  // Another device: a fresh page reads the same settings from the server.
+  // This device after a reload: still its own microphone.
   await page.reload();
   await page.waitForFunction(() => typeof (window as any)._dictSettingsSave === 'function');
   await openSettings(page);
   await expect(page.locator('#dict-mic')).toHaveValue('Shure MV7');
+
+  // Another device (nothing in its storage): its default microphone, and the
+  // same context and sources from the server.
+  await page.evaluate(() => localStorage.removeItem('amux_dict_mic'));
+  await page.reload();
+  await page.waitForFunction(() => typeof (window as any)._dictSettingsSave === 'function');
+  await openSettings(page);
+  await expect(page.locator('#dict-mic')).toHaveValue('');
   await expect(page.locator('#dict-src-workers')).not.toBeChecked();
   await expect(page.locator('#dict-src-contacts')).toBeChecked();
   await expect(page.locator('#dict-context')).toHaveValue('I run Mixpeek and talk about TubeScience.');
@@ -87,7 +98,7 @@ test('the microphone, sources and context are saved on the server and shown back
 
 test('dictating in a browser opens the chosen microphone, and says so when it is not connected', async ({ page }) => {
   await settle(page);
-  await page.evaluate(() => (window as any)._dictSettingsSave({ mic: 'Shure MV7' }));
+  await page.evaluate(() => (window as any)._dictSetMic('Shure MV7'));
   await page.evaluate(() => (window as any)._dictStartRec());
   await expect.poll(() => page.evaluate(() => (window as any)._gum.length)).toBe(1);
   const first = await page.evaluate(() => (window as any)._gum[0]);
@@ -96,7 +107,7 @@ test('dictating in a browser opens the chosen microphone, and says so when it is
   await expect.poll(() => page.evaluate('_dictRecording')).toBe(false);
 
   // A saved microphone this device does not have: the default, with a note.
-  await page.evaluate(() => (window as any)._dictSettingsSave({ mic: 'Rode NT-USB' }));
+  await page.evaluate(() => (window as any)._dictSetMic('Rode NT-USB'));
   await page.evaluate(() => { const w = window as any; if (w._dictStream) { w._dictStream.getTracks().forEach((t: any) => t.stop()); w._dictStream = null; } });
   await page.evaluate(() => (window as any)._dictStartRec());
   await expect.poll(() => page.evaluate(() => (window as any)._gum.length)).toBe(2);
@@ -110,7 +121,7 @@ test('dictating in a browser opens the chosen microphone, and says so when it is
 
 test('the Mac app is asked for the chosen microphone, and worker names stay out when switched off', async ({ page }) => {
   await settle(page, { native: true });
-  await page.evaluate(() => (window as any)._dictSettingsSave({ mic: 'Shure MV7', workers: false }));
+  await page.evaluate(() => { (window as any)._dictSetMic('Shure MV7'); (window as any)._dictSettingsSave({ workers: false }); });
   await page.evaluate(() => (window as any)._dictStartRec());
   await expect.poll(() => page.evaluate(() => (window as any)._asked.length)).toBeGreaterThan(0);
   const start = await page.evaluate(() => (window as any)._asked.find((m: any) => m.op === 'start'));

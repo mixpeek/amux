@@ -29860,10 +29860,34 @@ async function _dictMicReveal() {
   } catch (e) { showToast('The microphone was not allowed, so its name cannot be shown.'); return; }
   _dictRenderSettings();
 }
+// The microphone is this device's own choice (owner, 2026-11-20: "dictation mic
+// settings should be client specific not server saved"): a phone, a laptop and
+// the Mac app each keep theirs in localStorage. A device that never chose one
+// starts from the server's old shared value, so nobody's pick is lost.
+const _DICT_MIC_KEY = 'amux_dict_mic';
+function _dictMic() {
+  try {
+    const own = localStorage.getItem(_DICT_MIC_KEY);
+    if (own !== null) return own;
+  } catch (e) { console.warn('dictation: could not read this device\'s microphone', e); }
+  return ((_dictSettings || {}).mic || '');
+}
+function _dictSetMic(name) {
+  const was = _dictMic();
+  try { localStorage.setItem(_DICT_MIC_KEY, name || ''); }
+  catch (e) { showToast('This browser would not save the microphone'); return; }
+  // A warm stream is the old microphone: the next take opens the new one.
+  if (was !== (name || '') && _dictStream) {
+    try { _dictStream.getTracks().forEach(t => t.stop()); } catch (e) { console.warn('dictation: could not release the previous microphone', e); }
+    _dictStream = null;
+  }
+  _dictMicWarned = '';
+  showToast(name ? 'This device dictates with ' + name : 'This device dictates with its default microphone');
+}
 // getUserMedia's audio constraint for the chosen microphone, matched by name. Not
 // connected here: the default microphone, said once rather than silently.
 async function _dictMicConstraint() {
-  const want = ((_dictSettings || {}).mic || '').trim();
+  const want = _dictMic().trim();
   if (!want || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return {};
   try {
     const dev = (await navigator.mediaDevices.enumerateDevices()).find(d => d.kind === 'audioinput' && d.label === want);
@@ -30131,7 +30155,7 @@ function _dictNativeStart(bridge) {
   _dictRecording = true; _dictStartedAt = Date.now();
   document.getElementById('dict-rec-btn')?.classList.add('recording');
   _dictTick();
-  bridge.postMessage({ op: 'start', hints: _dictNativeHints(), input: ((_dictSettings || {}).mic || '') });
+  bridge.postMessage({ op: 'start', hints: _dictNativeHints(), input: _dictMic() });
   if (_dictSettings && _dictSettings.mic) _dictSettingsEnsure();
 }
 function _dictNativeStop() {
@@ -30970,7 +30994,7 @@ function _dictRenderSettings() {
   body.innerHTML =
     '<div class="dict-settings">'
     + '<div class="dict-set-row"><b>Microphone</b><span id="dict-mic-host"><select id="dict-mic" class="input" disabled><option>Loading…</option></select></span></div>'
-    + '<div class="dict-sethint" id="dict-mic-note">Saved on the server: every device that has this microphone dictates with it, and the others use their default.</div>'
+    + '<div class="dict-sethint" id="dict-mic-note">Saved on this device only: each phone, laptop and Mac app keeps its own microphone.</div>'
     + '<div class="dict-set-row"><b>What dictation knows</b><span></span></div>'
     + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-workers"' + (ds.workers !== false ? ' checked' : '') + ' onchange="_dictSettingsSave({workers:this.checked})"> Worker names' + count(src.workers, 'worker', 'workers') + '</span></label>'
     + '<label class="dict-set-row"><span><input type="checkbox" id="dict-src-contacts"' + (ds.contacts ? ' checked' : '') + ' onchange="_dictSettingsSave({contacts:this.checked})"> CRM contact names' + count(src.contacts, 'contact', 'contacts') + '</span></label>'
@@ -31000,11 +31024,11 @@ function _dictRenderSettings() {
 async function _dictRenderMicPicker() {
   const host = document.getElementById('dict-mic-host');
   if (!host) return;
-  const want = ((_dictSettings || {}).mic || '');
+  const want = _dictMic();
   const { names, hidden } = await _dictMicNames();
   const opts = [''].concat(names);
   if (want && !names.includes(want)) opts.push(want);
-  host.innerHTML = '<select id="dict-mic" class="input" onchange="_dictSettingsSave({mic:this.value})">'
+  host.innerHTML = '<select id="dict-mic" class="input" onchange="_dictSetMic(this.value)">'
     + opts.map(n => '<option value="' + esc(n) + '"' + (n === want ? ' selected' : '') + '>'
       + esc(n ? (names.includes(n) ? n : n + ' (not connected here)') : 'Default microphone') + '</option>').join('')
     + '</select>'
