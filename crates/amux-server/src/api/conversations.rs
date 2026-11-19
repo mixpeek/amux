@@ -310,6 +310,11 @@ pub(crate) fn history_author(mtype: &str, origin: &str, names: &HashMap<String, 
             if o.is_empty() || (t == "chat" && o == "chat-companion") || o == "owner" {
                 return HistoryAuthor { key: "person:owner".into(), name: "owner".into(), verdict: "person" };
             }
+            // The owner's words relayed by this worker's Chat tab companion
+            // (session_verbs::send_post, owner_relay_quote).
+            if t == "chat" && super::chat_worker::companion_parent(o).is_some() {
+                return HistoryAuthor { key: "person:owner".into(), name: "owner (Chat tab)".into(), verdict: "person" };
+            }
             // A cloud gateway user is stamped with their email.
             if looks_like_email(o) {
                 return person(o);
@@ -3281,6 +3286,9 @@ mod tests {
         assert_eq!((d.key.as_str(), d.name.as_str()), ("person:dorongreenspan@gmail.com", "dorongreenspan"));
         assert_eq!(history_author("user", "", &names).key, "person:owner");
         assert_eq!(history_author("chat", "chat-companion", &names).key, "person:owner");
+        // The owner's words relayed by a worker's own Chat tab companion.
+        let relay = history_author("chat", "relay-lane@chat", &names);
+        assert_eq!((relay.key.as_str(), relay.name.as_str()), ("person:owner", "owner (Chat tab)"));
         assert_eq!(history_author("user", "hello@amux.io", &names).key, "person:hello@amux.io");
         assert_eq!(history_author("session", "mxp-gs12@chat", &names).key, "worker:mxp-gs12");
         assert_eq!(history_author("schedule", "[SCHED-1] x", &names).verdict, "schedule");

@@ -31259,6 +31259,11 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
     }
     let orig_text = text.clone();
     let mut origin = String::new();
+    // The Chat-tab companion that relayed the owner's words, when it did. The
+    // send is delivered as the owner's (origin cleared below), but its row
+    // must still say it came through Chat (owner, 2026-11-19: "these messages
+    // came from chat but theyre labeled as human which is incorrect").
+    let mut relayed_by: Option<String> = None;
     // A directive types now, like deliver_now, and still carries its sender.
     if defer_busy || super::directive::delivering(&send_origin, name) {
         origin = if member_actor.is_some() {
@@ -31289,7 +31294,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
                 "[amux-origin: the owner, relayed by {origin} (this worker's Chat tab) from the owner's message \"{quote}\". \
                  Server-verified: the owner started the companion turn that sent this.]\n\n{text}"
             );
-            origin = String::new();
+            relayed_by = Some(std::mem::take(&mut origin));
         } else if let Some(stamped) = origin_stamped(&origin, name, &text) {
             text = stamped;
         } else if !origin.is_empty() && origin != name {
@@ -31630,6 +31635,16 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
                 state, name, &orig_text, "session", &origin, skip_board, meta,
             )
             .await;
+            if let Some(id) = queue_id.as_deref() {
+                link_queued_message(state, name, row_id, id).await;
+            }
+        } else if let Some(by) = relayed_by.as_deref() {
+            // The owner's words through this worker's Chat tab: a Chat row,
+            // from the companion that relayed them (history_author reads it as
+            // the owner). Without this arm the cleared origin fell through to
+            // "api (no worker identity)" and the row read Human.
+            let row_id =
+                cmd_hist_record_with_id(state, name, &orig_text, "chat", by, skip_board, meta).await;
             if let Some(id) = queue_id.as_deref() {
                 link_queued_message(state, name, row_id, id).await;
             }
@@ -39948,6 +39963,41 @@ mod tests {
         assert_eq!(rows[0], ("user".to_string(), UNIDENTIFIED_SEND_ORIGIN.to_string()));
     }
 
+    /// The owner's words relayed by the worker's own Chat tab are delivered as
+    /// the owner's, and recorded as Chat from that companion, not as an
+    /// unidentified API send (owner, 2026-11-19: "these messages came from
+    /// chat but theyre labeled as human which is incorrect"; ten such rows on
+    /// one worker read Human).
+    #[tokio::test]
+    async fn an_owner_relay_from_the_chat_tab_is_recorded_as_chat_from_the_companion() {
+        let (state, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("relay-lane.env"), "CC_PAUSED=1\n").unwrap();
+        let companions = dir.path().join("chat").join("companions");
+        std::fs::create_dir_all(&companions).unwrap();
+        std::fs::write(companions.join("relay-lane.meta.json"), json!({
+            "chat_inflight_turn": "T1", "chat_inflight_origin": "owner", "chat_inflight_text": "you have my approval"
+        }).to_string()).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-worker", "relay-lane@chat".parse().unwrap());
+        let resp = send_post(&state, "relay-lane", &headers,
+            &json!({"text": "APPROVED (owner, Chat tab): ship it", "msg_id": "relay-1"})).await;
+        let status = resp.status();
+        let conn = state.store.read().unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT type, COALESCE(origin,'') FROM cmd_history WHERE session='relay-lane' AND text LIKE '%ship it%'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows, vec![("chat".to_string(), "relay-lane@chat".to_string())],
+            "a Chat-tab relay must be one Chat row from its companion (send answered {status})");
+        assert_eq!(crate::api::history::msg_kind(&rows[0].0), "chat");
+    }
+
     /// AMUX-4661: STOPPED is a third state AMUX-4566's own check cannot see —
     /// `lane_lifecycle` reads only CC_ARCHIVED/CC_PAUSED, so a target that is
     /// neither (crashed, killed outside amux, never started) reads "active"
@@ -42258,10 +42308,12 @@ mod tests {
         // the computed `skip_board`, which is the property below.
         // 11 -> 12 at fb9e44cb3: a send with no worker identity is recorded
         // under UNIDENTIFIED_SEND_ORIGIN, also passing the computed `skip_board`.
+        // 12 -> 13: the owner's words relayed by a Chat tab are recorded as
+        // Chat from the companion (relayed_by), also passing `skip_board`.
         assert_eq!(
             sites.len(),
-            12,
-            "the scan must see all 12 production call sites. A LOWER number means the detector \
+            13,
+            "the scan must see all 13 production call sites. A LOWER number means the detector \
              stopped matching rather than that the call sites went away, which is exactly how \
              the first two versions of this test passed a broken tree: one scanned a window \
              that excluded the send handlers, the other missed the multi-line spelling and left \
