@@ -31,7 +31,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macOS 26: the dictation core uses the macOS 26 Speech APIs (SpeechAnalyzer,
+    # SpeechTranscriber), which the macos-15 image's SDK does not have.
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
