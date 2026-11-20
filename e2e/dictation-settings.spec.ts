@@ -121,7 +121,9 @@ test('dictating in a browser opens the chosen microphone, and says so when it is
 
 test('the Mac app is asked for the chosen microphone, and worker names stay out when switched off', async ({ page }) => {
   await settle(page, { native: true });
-  await page.evaluate(() => { (window as any)._dictSetMic('Shure MV7'); (window as any)._dictSettingsSave({ workers: false }); });
+  // Wait for the save: its "saved" toast landing after the notice below would
+  // replace the notice's text in the one toast element.
+  await page.evaluate(() => { (window as any)._dictSetMic('Shure MV7'); return (window as any)._dictSettingsSave({ workers: false }); });
   await page.evaluate(() => (window as any)._dictStartRec());
   await expect.poll(() => page.evaluate(() => (window as any)._asked.length)).toBeGreaterThan(0);
   const start = await page.evaluate(() => (window as any)._asked.find((m: any) => m.op === 'start'));
@@ -155,10 +157,12 @@ test('Teach turns a word in a past dictation into a dictionary correction on the
   await page.locator('#dictm-cor').fill('TubeScience');
   await page.getByRole('button', { name: 'Add word' }).click();
 
-  const words = await page.evaluate(async () =>
-    (await fetch('/api/dictation/dict', { headers: (window as any)._authHeaders() })).json());
-  const added = words.find((w: any) => w.word === 'tube science');
-  expect(added?.correct).toBe('TubeScience');
+  // The click starts the save; read the server until it has landed.
+  const dictWord = () => page.evaluate(async () =>
+    ((await (await fetch('/api/dictation/dict', { headers: (window as any)._authHeaders() })).json()) as any[])
+      .find((w: any) => w.word === 'tube science'));
+  await expect.poll(async () => (await dictWord())?.correct).toBe('TubeScience');
+  const added = await dictWord();
   await page.evaluate(async (id) => {
     await fetch('/api/dictation/dict/' + id, { method: 'DELETE', headers: (window as any)._authHeaders() });
   }, added.id);
