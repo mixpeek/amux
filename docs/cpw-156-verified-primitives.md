@@ -34,7 +34,7 @@ Content-Type: application/json
 {"expect_revs":{"<target-id>":17,"<dependency-id>":4},"patch":{"session":"new-owner"}}
 ```
 
-`expect_revs` must include the target and every card whose revision informed the decision. The server checks the whole read set under the board writer transaction before applying the ordinary patch. A missing or changed row returns a conflict with no partial mutation. Optional `not_after` is a Unix timestamp deadline for external evidence freshness. The patch cannot override guard fields. Existing gates, ownership checks, and normal patch semantics still apply.
+`expect_revs` must include the target and every card whose revision informed the decision. The server checks the whole read set under the board writer transaction before applying the ordinary patch. A missing or changed row returns a conflict with no partial mutation. There is no `not_after` deadline field: the conditional-patch endpoint rejects it with 400, so callers enforce evidence freshness themselves before calling. The patch cannot override guard fields. Existing gates, ownership checks, and normal patch semantics still apply.
 
 ## Verification
 
