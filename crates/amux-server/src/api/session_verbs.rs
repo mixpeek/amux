@@ -11299,6 +11299,53 @@ pub(crate) async fn reconcile_stuck_on_submit(state: &AppState, session: &str, p
     }
 }
 
+/// Acknowledge or release a reservation wherever it is now. A rename moves
+/// send_dedup rows to the new name in its own transaction, so a send in flight
+/// across it finishes under the old name and matched nothing: the reservation
+/// stayed, and every retry of that message ID under the new name answered
+/// "still pending" (503) until it aged into "uncertain"
+/// (worker-rename-follows.spec.ts, red on main 2026-11-20). The rename journal
+/// cannot say where it went in time, because it is written after that
+/// transaction. So when the name has no worker any more, the one unsettled
+/// reservation with this message ID under a worker that does exist is this
+/// one. `sql` takes ?1 session, ?2 msg_id, ?3 `extra`.
+fn send_dedup_at_reservation(
+    conn: &rusqlite::Connection,
+    session: &str,
+    msg_id: &str,
+    sql: &str,
+    extra: Option<&str>,
+) -> rusqlite::Result<usize> {
+    let run = |name: &str| match extra {
+        Some(x) => conn.execute(sql, rusqlite::params![name, msg_id, x]),
+        None => conn.execute(sql, rusqlite::params![name, msg_id]),
+    };
+    let changed = run(session)?;
+    if changed > 0 || env_path(session).exists() {
+        return Ok(changed);
+    }
+    let moved: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT session FROM send_dedup WHERE msg_id=?1 AND session<>?2 AND receipt_id IS NULL",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![msg_id, session], |r| r.get::<_, String>(0))?;
+        rows.filter_map(Result::ok).filter(|n| env_path(n).exists()).collect()
+    };
+    let [to] = moved.as_slice() else {
+        if !moved.is_empty() {
+            tracing::warn!(target:"amux::message_acceptance", session, candidates=moved.len(),
+                measured=true, n_considered=moved.len(), verdict="send_dedup_rename_ambiguous",
+                "a send's worker is gone and its message ID is unsettled under several workers; settled none");
+        }
+        return Ok(0);
+    };
+    let changed = run(to)?;
+    tracing::info!(target:"amux::message_acceptance", session, renamed_to=%to, changed,
+        measured=true, n_considered=1, verdict="send_dedup_followed_rename",
+        "the worker was renamed while this send was in flight; its reservation was settled under the new name");
+    Ok(changed)
+}
+
 async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_id: &str) {
     if msg_id.is_empty() {
         return;
@@ -11308,9 +11355,12 @@ async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_i
     let result = state
         .store
         .write_async(move |conn| {
-            let changed = conn.execute(
-                "UPDATE send_dedup SET receipt_id=? WHERE session=? AND msg_id=?",
-                rusqlite::params![receipt, session, identity],
+            let changed = send_dedup_at_reservation(
+                conn,
+                &session,
+                &identity,
+                "UPDATE send_dedup SET receipt_id=?3 WHERE session=?1 AND msg_id=?2",
+                Some(&receipt),
             )?;
             if changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -11330,15 +11380,21 @@ async fn send_dedup_accept(state: &AppState, name: &str, msg_id: &str, receipt_i
 }
 
 async fn send_dedup_forget(state: &AppState, name: &str, msg_id: &str) {
+    if msg_id.is_empty() {
+        return;
+    }
     let session = name.to_string();
     let msg_id = msg_id.to_string();
     let _ = state
         .store
         .write_async(move |conn| {
             ensure_fleet_tables(conn)?;
-            conn.execute(
-                "DELETE FROM send_dedup WHERE session=? AND msg_id=?",
-                rusqlite::params![session, msg_id],
+            send_dedup_at_reservation(
+                conn,
+                &session,
+                &msg_id,
+                "DELETE FROM send_dedup WHERE session=?1 AND msg_id=?2",
+                None,
             )?;
             Ok(crate::db::WriteOutcome {
                 applied: true,
@@ -49958,6 +50014,48 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
             Some(json!({"desc": "fresh lane"}))).await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert!(parse_env("fo-new").get("CC_DESC") != Some("fresh lane"));
+    }
+
+    #[tokio::test]
+    async fn a_send_in_flight_across_a_rename_settles_its_reservation_under_the_new_name() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let (state, _dir) = state();
+        std::fs::write(env_path("rf-old"), "CC_DESC=\"lane\"\n").unwrap();
+        // Three sends reserve their IDs, then the worker is renamed under them:
+        // the env file and the rows have moved, and the rename journal is not
+        // written yet (rename_session emits it after its transaction).
+        for id in ["refused", "accepted", "elsewhere"] {
+            assert!(send_dedup_gate(&state, "rf-old", id).await.is_none());
+        }
+        std::fs::rename(env_path("rf-old"), env_path("rf-new")).unwrap();
+        state.store.write_async(|conn| {
+            conn.execute("UPDATE send_dedup SET session='rf-new' WHERE session='rf-old'", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).await.unwrap();
+        // A worker that still holds its name is never redirected.
+        std::fs::write(env_path("rf-live"), "CC_DESC=\"lane\"\n").unwrap();
+        send_dedup_forget(&state, "rf-live", "elsewhere").await;
+        assert!(send_dedup_gate(&state, "rf-new", "elsewhere").await.is_some(),
+            "a release under a live name must not settle another worker's reservation");
+        // Nor is a reservation moved to a name no worker holds.
+        assert!(send_dedup_gate(&state, "rf-ghost", "orphan").await.is_none());
+        send_dedup_forget(&state, "rf-gone", "orphan").await;
+        assert!(send_dedup_gate(&state, "rf-ghost", "orphan").await.is_some(),
+            "only a reservation under a worker that exists is this send's");
+        // Each finishes under the name it arrived with.
+        send_dedup_forget(&state, "rf-old", "refused").await;
+        send_dedup_accept(&state, "rf-old", "accepted", "receipt-1").await;
+        // The refused one is sendable again to the new name, not "still pending".
+        assert!(send_dedup_gate(&state, "rf-new", "refused").await.is_none(),
+            "a released reservation must not block the retry under the new name");
+        let body = |r: Response| async move {
+            serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).unwrap()
+        };
+        let accepted = body(send_receipt(&state, "rf-new", "accepted")).await;
+        assert_eq!(accepted["accepted"], true, "{accepted}");
+        assert_eq!(accepted["id"], "receipt-1", "{accepted}");
     }
 
     /// The owner-addendum rename matrix: noop, happy-path cascade with
