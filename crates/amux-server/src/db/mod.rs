@@ -1632,6 +1632,42 @@ mod af937_writer_lock_tests {
         assert!(logs.contains("8823"), "the warning must carry the other process's port too: {logs}");
     }
 
+    /// A stale sidecar can outlive its writer after a crash. The PID text is
+    /// not the lock: when the kernel lock is free, startup must acquire it,
+    /// replace the stale identity, and avoid reporting a live contender.
+    #[test]
+    fn a_dead_pid_in_an_unlocked_sidecar_is_reconciled_on_startup() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("t.db");
+        let lock_path = holder_lock_path(&db_path);
+        let stale_pid = u32::MAX;
+        std::fs::write(
+            &lock_path,
+            format!(r#"{{"pid":{stale_pid},"port":8823}}"#),
+        )
+        .unwrap();
+
+        let (opened, logs) = with_captured_logs(|| Store::open(&db_path));
+        let store = opened.expect("stale holder metadata must not block startup");
+        assert!(store.holds_writer_lock(), "free kernel lock must be acquired");
+        assert!(
+            !logs.contains("concurrent_writer_detected"),
+            "stale metadata alone must not look like a live writer: {logs}"
+        );
+
+        let mut payload = String::new();
+        std::fs::File::open(lock_path)
+            .unwrap()
+            .read_to_string(&mut payload)
+            .unwrap();
+        let holder: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(holder["pid"], std::process::id());
+        assert_ne!(holder["pid"], stale_pid);
+        assert_eq!(holder["port"], crate::config::canonical_port());
+    }
+
     /// The false-positive this design specifically avoids: the SAME process
     /// reopening db_path while its first handle is still alive (exactly what
     /// board_drive.rs's crash-recovery tests do to simulate a restart without
