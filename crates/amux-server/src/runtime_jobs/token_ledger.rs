@@ -825,36 +825,8 @@ fn scan_pending(
 /// every later turn on that lane, which is not.
 const MAX_CLAIM_WINDOW_S: i64 = 24 * 3600;
 
-/// How long one writer acquisition may spend applying claim windows (AMUX-4750).
-///
-/// A TIME BUDGET, after counting failed twice. The chunk was sized by dividing
-/// a total by an item count: 500 windows was "~200ms" at an implied 0.4ms per
-/// UPDATE, and measured 738ms. Resized to 150 on the corrected 1.5ms, it
-/// measured 696ms, implying ~4.6ms. The per-window cost is not a constant to
-/// divide by — most windows match nothing and return instantly while a few scan
-/// a real range — so no fixed count bounds the worst case. Elapsed time does,
-/// directly, and it is what the card actually asks about.
-///
-/// The hold is this budget plus at most one UPDATE, because the check happens
-/// after each one rather than before. That overshoot is real and measured: at a
-/// 200ms budget the worst hold was 292ms, so a single UPDATE can cost ~90ms.
-/// 120 + ~90 is ~210ms, inside the 250ms this card asks for, at roughly 33
-/// acquisitions for a full pass.
-const HOLD_BUDGET_MS: u128 = 120;
-
-/// Ledger rows one UPDATE may attribute (AMUX-4750).
-///
-/// THE TIME BUDGET CANNOT BOUND A HOLD BELOW ITS SLOWEST SINGLE STATEMENT, and
-/// at a 120ms budget the worst hold measured 563ms, so one UPDATE took ~440ms.
-/// That one is not waste: a 24-hour window over a busy lane genuinely matches
-/// thousands of rows, and each is a write plus an index update.
-///
-/// So the statement gets a cap too. A window with more rows than this attributes
-/// the rest on a later cycle, which is safe here for a reason specific to this
-/// job: it re-derives every window from scratch every 120 seconds and only ever
-/// fills rows still unattributed, so an interrupted window is resumed rather
-/// than lost. A job without that property would need a cursor instead.
-const ROWS_PER_UPDATE: i64 = 2_000;
+// Bound each transaction by ledger rows rather than by claim windows.
+const ATTRIBUTION_BATCH_SIZE: i64 = 500;
 
 /// Fill `token_ledger.task` for turns that fall inside a card's claim window on
 /// the SAME lane. Only touches unattributed rows.
@@ -933,130 +905,96 @@ fn claim_windows(
     wins
 }
 
-pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
-    let now = chrono::Utc::now().timestamp();
-    // READ PHASE, off the writer. The snapshot can be a moment stale relative
-    // to the write below and it does not matter: a claim recorded in that gap
-    // is picked up on the next cycle, and the UPDATE only ever fills rows that
-    // are still unattributed, so nothing is overwritten by arriving late.
-    let (wins, bounds) = store
-        .read_async(move |conn| {
-            // Separate MIN and MAX let SQLite seek from each end of the
-            // (task, ts) index instead of scanning every unattributed row.
-            // A blank session cannot match any claim window.
-            let bounds: (Option<i64>, Option<i64>) = conn.query_row(
-                "SELECT (SELECT MIN(ts) FROM token_ledger WHERE task='' AND session<>''), \
-                        (SELECT MAX(ts) FROM token_ledger WHERE task='' AND session<>'')",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let (Some(lo), Some(hi)) = bounds else {
-                return Ok((Vec::new(), None));
-            };
-            let mut attempts: Vec<(String, String, i64, i64)> = Vec::new();
-            // The live source. `min(a, b)` is SQLite's two-argument scalar min.
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT card, worker, started_at, \
-                        min(COALESCE(ended_at, ?1), started_at + ?2) \
-                 FROM task_attempts \
-                 WHERE COALESCE(worker,'') <> '' AND COALESCE(card,'') <> '' \
-                 ORDER BY started_at",
-            ) {
-                if let Ok(rows) = stmt.query_map([now, MAX_CLAIM_WINDOW_S], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                }) {
-                    attempts.extend(rows.flatten());
-                }
-            }
+type AttributionRow = (i64, i64, String, String);
+struct AttributionBatch {
+    watermark: i64,
+    rows: Vec<AttributionRow>,
+    tasks: Vec<Option<String>>,
+}
 
-            // The historical source: one interval per claim, ending at that
-            // lane's next claim. `data` carries {"issue": "<id>", ...}.
-            let claims: Vec<(String, String, i64)> = {
-                let mut stmt = conn.prepare(
-                    "SELECT session, data, CAST(ts AS INTEGER) FROM session_events \
-                     WHERE type='task.claimed' AND COALESCE(session,'') <> '' \
-                     ORDER BY session, ts",
-                )?;
-                let rows = stmt.query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                        r.get::<_, i64>(2)?,
-                    ))
-                })?;
-                rows.flatten().collect()
-            };
-            Ok((claim_windows(attempts, claims, now), Some((lo, hi))))
-        })
-        .await?;
-
-    let Some((lo, hi)) = bounds else {
-        // Nothing is unattributed. Taking the writer to prove that is the cost
-        // this whole job used to pay unconditionally.
-        return Ok(());
+// Read one consistent snapshot without holding the serialized writer.
+fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<Option<AttributionBatch>> {
+    let tx = conn.unchecked_transaction()?;
+    let conn = &tx;
+    let watermark: i64 = conn.query_row(
+        "SELECT ledger_id FROM token_attribution_state WHERE id=1", [], |r| r.get(0),
+    )?;
+    let rows: Vec<(i64, i64, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, session, task FROM token_ledger WHERE id>?1 ORDER BY id LIMIT ?2"
+        )?;
+        let rows = stmt.query_map(rusqlite::params![watermark, ATTRIBUTION_BATCH_SIZE], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
     };
-    let pending: Vec<(String, String, i64, i64)> = wins
-        .into_iter()
-        .filter(|(task, session, from, to)| {
-            !session.trim().is_empty() && !task.trim().is_empty() && to >= from
-                // Overlaps the unattributed range, so the UPDATE can match.
-                && *from <= hi && *to >= lo
-        })
-        .collect();
-    if pending.is_empty() {
-        return Ok(());
+    if rows.is_empty() { return Ok(None); }
+    let lo = rows.iter().map(|r| r.1).min().unwrap();
+    let hi = rows.iter().map(|r| r.1).max().unwrap();
+    let mut attempts = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT card, worker, started_at, min(COALESCE(ended_at, ?1), started_at + ?2) \
+         FROM task_attempts WHERE COALESCE(worker,'')<>'' AND COALESCE(card,'')<>'' \
+         AND started_at<=?3 AND min(COALESCE(ended_at, ?1), started_at + ?2)>=?4 \
+         ORDER BY started_at"
+    ) {
+        let found = stmt.query_map(rusqlite::params![now, MAX_CLAIM_WINDOW_S, hi, lo], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
+        attempts.extend(found.collect::<rusqlite::Result<Vec<_>>>()?);
     }
-    // BOUND THE HOLD, not the total work (AMUX-4750). Moving the derivation out
-    // left ~10,000 UPDATEs, and at ~0.4ms each that is still a ~4s hold on the
-    // single writer, which is a floor under every non-GET request in the fleet.
-    // Chunking does not make the job cheaper; it stops any one interactive write
-    // being stuck behind all of it. 500 x ~0.4ms is ~200ms, inside the 250ms
-    // this card asks for, and the loop yields the writer between chunks.
-    let pending = std::sync::Arc::new(pending);
-    let mut done = 0usize;
-    while done < pending.len() {
-        let consumed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (windows, counter, start_at) = (pending.clone(), consumed.clone(), done);
-        store
-            .write_async(move |conn| {
-                let started = std::time::Instant::now();
-                // rowid-IN, because a plain UPDATE..LIMIT needs a nonstandard
-                // SQLite build flag — the same shape the retention trims use.
-                let mut stmt = conn.prepare_cached(
-                    "UPDATE token_ledger SET task=?1 WHERE rowid IN ( \
-                       SELECT rowid FROM token_ledger \
-                        WHERE task='' AND session=?2 AND COALESCE(session,'') <> '' \
-                          AND ts>=?3 AND ts<=?4 LIMIT ?5)",
-                )?;
-                let mut n = 0usize;
-                for (task, session, from, to) in &windows[start_at..] {
-                    stmt.execute(rusqlite::params![task, session, from, to, ROWS_PER_UPDATE])?;
-                    n += 1;
-                    if started.elapsed().as_millis() >= HOLD_BUDGET_MS {
-                        break;
-                    }
-                }
-                counter.store(n, std::sync::atomic::Ordering::Relaxed);
-                Ok(WriteOutcome {
-                    applied: n > 0,
-                    events: vec![],
-                })
-            })
-            .await?;
-        let n = consumed.load(std::sync::atomic::Ordering::Relaxed);
-        // A zero would mean the closure applied nothing, which cannot happen
-        // while windows remain — but looping on it forever is the failure mode
-        // worth refusing outright rather than reasoning about.
-        if n == 0 {
-            tracing::warn!(
-                target: "amux::token_ledger",
-                verdict = "attribute_no_progress",
-                remaining = pending.len() - done,
-                "a writer acquisition applied no claim window; stopping rather than spinning"
-            );
-            break;
-        }
-        done += n;
+    // A claim older than this cannot overlap the batch because of the cap.
+    // Claims up to hi include every successor that could end a window before
+    // a ledger turn; successors after hi cannot change attribution in the batch.
+    let claims = {
+        let mut stmt = conn.prepare(
+            "SELECT session, data, CAST(ts AS INTEGER) FROM session_events \
+             WHERE type='task.claimed' AND COALESCE(session,'')<>'' \
+             AND CAST(ts AS INTEGER)>=?1 AND CAST(ts AS INTEGER)<=?2 ORDER BY session, ts"
+        )?;
+        let found = stmt.query_map(rusqlite::params![lo.saturating_sub(MAX_CLAIM_WINDOW_S), hi], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default(), r.get::<_, i64>(2)?))
+        })?;
+        found.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let wins = claim_windows(attempts, claims, now);
+    let tasks = rows.iter().map(|(_, ts, session, task)| {
+        if !task.is_empty() || session.trim().is_empty() { return None; }
+        wins.iter().find(|(card, lane, from, to)| {
+            !card.trim().is_empty() && !lane.trim().is_empty() && lane == session && to >= from && ts >= from && ts <= to
+        }).map(|(card, _, _, _)| card.clone())
+    }).collect();
+    Ok(Some(AttributionBatch { watermark, rows, tasks }))
+}
+
+// The writer rechecks the snapshot before applying it. Session repair can
+// rewind the cursor while the read is in flight, including when it is zero.
+fn apply_attribution(conn: &rusqlite::Connection, batch: AttributionBatch) -> rusqlite::Result<bool> {
+    let watermark: i64 = conn.query_row("SELECT ledger_id FROM token_attribution_state WHERE id=1", [], |r| r.get(0))?;
+    if watermark != batch.watermark { return Ok(false); }
+    let current: Vec<AttributionRow> = {
+        let mut stmt = conn.prepare("SELECT id, ts, session, task FROM token_ledger WHERE id>?1 ORDER BY id LIMIT ?2")?;
+        let rows = stmt.query_map(rusqlite::params![watermark, ATTRIBUTION_BATCH_SIZE], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if current != batch.rows { return Ok(false); }
+    let mut update = conn.prepare_cached("UPDATE token_ledger SET task=?1 WHERE id=?2 AND task=''")?;
+    for ((id, _, _, _), task) in batch.rows.iter().zip(batch.tasks.iter()) {
+        if let Some(task) = task { update.execute(rusqlite::params![task, id])?; }
+    }
+    conn.execute("UPDATE token_attribution_state SET ledger_id=?1 WHERE id=1", [batch.rows.last().unwrap().0])?;
+    Ok(true)
+}
+
+pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
+    loop {
+        let batch = store.read_async(|conn| Ok(plan_attribution(conn, chrono::Utc::now().timestamp())?)).await?;
+        let Some(batch) = batch else { break; };
+        store.write_async(move |conn| {
+            let applied = apply_attribution(conn, batch)?;
+            Ok(WriteOutcome { applied, events: vec![] })
+        }).await?;
+        // A stale snapshot is retried from the current watermark.
     }
     Ok(())
 }
@@ -1549,6 +1487,58 @@ mod tests {
         let st = crate::db::Store::open(&dir.path().join("ledger-test.db")).unwrap();
         crate::test_tempdirs::keep(dir);
         std::sync::Arc::new(st)
+    }
+
+    #[tokio::test]
+    async fn watermark_advances_and_revisits_repaired_owner() {
+        let st = store();
+        let now = chrono::Utc::now().timestamp();
+        st.write(move |c| {
+            crate::db::attempts::ensure_table(c)?;
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('CARD',1,'lane',1,?1)", [now - 10])?;
+            c.execute("INSERT INTO token_ledger(ts,session,conversation) VALUES (?1,'','first'),(?1,'lane','second')", [now])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        {
+            let c = st.read().unwrap();
+            assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+            assert_eq!(c.query_row("SELECT task FROM token_ledger WHERE id=2", [], |r| r.get::<_, String>(0)).unwrap(), "CARD");
+        }
+        st.write(|c| {
+            c.execute("UPDATE token_ledger SET session='lane' WHERE id=1", [])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert_eq!(st.read().unwrap().query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        attribute_tasks(&st).await.unwrap();
+        let c = st.read().unwrap();
+        assert_eq!(c.query_row("SELECT count(*) FROM token_ledger WHERE task='CARD'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn watermark_batch_failure_rolls_back_and_retry_skips_nothing() {
+        let st = store();
+        let now = chrono::Utc::now().timestamp();
+        st.write(move |c| {
+            crate::db::attempts::ensure_table(c)?;
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('CARD',1,'lane',1,?1)", [now - 10])?;
+            c.execute("INSERT INTO token_ledger(ts,session,conversation) VALUES (?1,'lane','first'),(?1,'lane','second')", [now])?;
+            c.execute_batch("CREATE TRIGGER fail_second BEFORE UPDATE OF task ON token_ledger WHEN NEW.id=2 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        assert!(attribute_tasks(&st).await.is_err());
+        {
+            let c = st.read().unwrap();
+            assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(c.query_row("SELECT count(*) FROM token_ledger WHERE task<>''", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        }
+        st.write(|c| { c.execute_batch("DROP TRIGGER fail_second")?; Ok(WriteOutcome { applied: true, events: vec![] }) }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        attribute_tasks(&st).await.unwrap();
+        let c = st.read().unwrap();
+        assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(c.query_row("SELECT count(*) FROM token_ledger WHERE task='CARD'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     }
 
     /// AMUX-4581: the two misattributions the token audit measured, reproduced
