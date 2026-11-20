@@ -941,6 +941,18 @@ pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
     // are still unattributed, so nothing is overwritten by arriving late.
     let (wins, bounds) = store
         .read_async(move |conn| {
+            // Separate MIN and MAX let SQLite seek from each end of the
+            // (task, ts) index instead of scanning every unattributed row.
+            // A blank session cannot match any claim window.
+            let bounds: (Option<i64>, Option<i64>) = conn.query_row(
+                "SELECT (SELECT MIN(ts) FROM token_ledger WHERE task='' AND session<>''), \
+                        (SELECT MAX(ts) FROM token_ledger WHERE task='' AND session<>'')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let (Some(lo), Some(hi)) = bounds else {
+                return Ok((Vec::new(), None));
+            };
             let mut attempts: Vec<(String, String, i64, i64)> = Vec::new();
             // The live source. `min(a, b)` is SQLite's two-argument scalar min.
             if let Ok(mut stmt) = conn.prepare(
@@ -974,20 +986,7 @@ pub async fn attribute_tasks(store: &SharedStore) -> anyhow::Result<()> {
                 })?;
                 rows.flatten().collect()
             };
-            // The ts range that still has anything to attribute. A window
-            // outside it cannot match a row, so issuing its UPDATE is a
-            // guaranteed no-op — and in the steady state that is nearly all of
-            // them, because this job re-derives the whole of history every
-            // cycle and history was attributed on the first one.
-            let bounds: Option<(i64, i64)> = conn
-                .query_row(
-                    "SELECT MIN(ts), MAX(ts) FROM token_ledger WHERE task=''",
-                    [],
-                    |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)),
-                )
-                .ok()
-                .and_then(|(lo, hi)| Some((lo?, hi?)));
-            Ok((claim_windows(attempts, claims, now), bounds))
+            Ok((claim_windows(attempts, claims, now), Some((lo, hi))))
         })
         .await?;
 
@@ -1653,6 +1652,7 @@ mod tests {
                  cache_write, output, cost_usd, task) VALUES \
                  (?1,'lane-a','conv-a','m',10,0,0,1,0.5,''), \
                  (?1,'lane-b','conv-b','m',10,0,0,1,0.5,''), \
+                 (?1,'','conv-blank','m',10,0,0,1,0.5,''), \
                  (?2,'lane-a','conv-old','m',10,0,0,1,0.5,'')",
                 [now - 300, now - 40 * 3600],
             )?;
@@ -1687,6 +1687,7 @@ mod tests {
             "",
             "a turn 40h BEFORE the claim is outside the window and must stay unattributed"
         );
+        assert_eq!(task_of("conv-blank"), "", "blank sessions stay unattributed");
     }
 
     async fn ledger(store: &SharedStore) -> Vec<(String, String, i64)> {
