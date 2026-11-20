@@ -908,6 +908,7 @@ fn claim_windows(
 type AttributionRow = (i64, i64, String, String);
 struct AttributionBatch {
     watermark: i64,
+    generation: i64,
     rows: Vec<AttributionRow>,
     tasks: Vec<Option<String>>,
 }
@@ -916,8 +917,8 @@ struct AttributionBatch {
 fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<Option<AttributionBatch>> {
     let tx = conn.unchecked_transaction()?;
     let conn = &tx;
-    let watermark: i64 = conn.query_row(
-        "SELECT ledger_id FROM token_attribution_state WHERE id=1", [], |r| r.get(0),
+    let (watermark, generation): (i64, i64) = conn.query_row(
+        "SELECT ledger_id, generation FROM token_attribution_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     let rows: Vec<(i64, i64, String, String)> = {
         let mut stmt = conn.prepare(
@@ -964,14 +965,14 @@ fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<O
             !card.trim().is_empty() && !lane.trim().is_empty() && lane == session && to >= from && ts >= from && ts <= to
         }).map(|(card, _, _, _)| card.clone())
     }).collect();
-    Ok(Some(AttributionBatch { watermark, rows, tasks }))
+    Ok(Some(AttributionBatch { watermark, generation, rows, tasks }))
 }
 
 // The writer rechecks the snapshot before applying it. Session repair can
 // rewind the cursor while the read is in flight, including when it is zero.
 fn apply_attribution(conn: &rusqlite::Connection, batch: AttributionBatch) -> rusqlite::Result<bool> {
-    let watermark: i64 = conn.query_row("SELECT ledger_id FROM token_attribution_state WHERE id=1", [], |r| r.get(0))?;
-    if watermark != batch.watermark { return Ok(false); }
+    let (watermark, generation): (i64, i64) = conn.query_row("SELECT ledger_id, generation FROM token_attribution_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    if watermark != batch.watermark || generation != batch.generation { return Ok(false); }
     let current: Vec<AttributionRow> = {
         let mut stmt = conn.prepare("SELECT id, ts, session, task FROM token_ledger WHERE id>?1 ORDER BY id LIMIT ?2")?;
         let rows = stmt.query_map(rusqlite::params![watermark, ATTRIBUTION_BATCH_SIZE], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
@@ -1514,6 +1515,62 @@ mod tests {
         let c = st.read().unwrap();
         assert_eq!(c.query_row("SELECT count(*) FROM token_ledger WHERE task='CARD'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
         assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn late_attempt_attributes_previously_unmatched_turn() {
+        let st = store();
+        let now = chrono::Utc::now().timestamp();
+        st.write(move |c| {
+            crate::db::attempts::ensure_table(c)?;
+            c.execute("INSERT INTO token_ledger(ts,session,conversation) VALUES (?1,'lane','late')", [now])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        st.write(move |c| {
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('CARD',1,'lane',1,?1)", [now - 10])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        let c = st.read().unwrap();
+        assert_eq!(c.query_row("SELECT task FROM token_ledger WHERE conversation='late'", [], |r| r.get::<_, String>(0)).unwrap(), "CARD");
+    }
+
+    #[tokio::test]
+    async fn late_claim_attributes_previously_unmatched_turn() {
+        let st = store();
+        let now = chrono::Utc::now().timestamp();
+        st.write(move |c| {
+            c.execute("INSERT INTO token_ledger(ts,session,conversation) VALUES (?1,'lane','late-claim')", [now])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        st.write(move |c| {
+            c.execute("INSERT INTO session_events(ts,session,type,data) VALUES (?1,'lane','task.claimed','{\"issue\":\"CARD\"}')", [now - 10])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        let c = st.read().unwrap();
+        assert_eq!(c.query_row("SELECT task FROM token_ledger WHERE conversation='late-claim'", [], |r| r.get::<_, String>(0)).unwrap(), "CARD");
+    }
+
+    #[test]
+    fn late_attempt_invalidates_snapshot_at_zero_watermark() {
+        let st = store();
+        let now = chrono::Utc::now().timestamp();
+        st.write(move |c| {
+            c.execute("INSERT INTO token_ledger(ts,session,conversation) VALUES (?1,'lane','race')", [now])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let batch = plan_attribution(&st.read().unwrap(), now).unwrap().unwrap();
+        st.write(move |c| {
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('CARD',1,'lane',1,?1)", [now - 10])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        st.write(move |c| {
+            assert!(!apply_attribution(c, batch)?);
+            Ok(WriteOutcome { applied: false, events: vec![] })
+        }).unwrap();
     }
 
     #[tokio::test]

@@ -1230,6 +1230,14 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
     // populated database" gate failed (AMUX-5374). IF NOT EXISTS keeps the
     // version-collision protection attempts.rs documents.
     crate::db::attempts::ensure_table(conn)?;
+    conn.execute_batch("CREATE TRIGGER IF NOT EXISTS token_attribution_revisit_attempt_insert
+        AFTER INSERT ON task_attempts BEGIN
+          UPDATE token_attribution_state SET ledger_id = 0, generation = generation + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS token_attribution_revisit_attempt_update
+        AFTER UPDATE OF worker, card, started_at, ended_at ON task_attempts BEGIN
+          UPDATE token_attribution_state SET ledger_id = 0, generation = generation + 1 WHERE id = 1;
+        END;")?;
     Ok(())
 }
 
