@@ -16,6 +16,12 @@ name: rust-flake-rerun
 # well and main stays red. A compile, clippy or unit-test failure is never
 # re-run. Each re-run leaves a warning annotation and a job summary naming the
 # failed jobs, so a spec that keeps needing one shows up.
+#
+# The every-two-hours full-suite run (schedule, b8d48aeb5) is re-run the same
+# way. It came after this workflow, whose `push` filter then skipped it, and
+# with about three independent flakes in each full run it was red 40 of 40
+# times from 2026-11-17 to 11-20 (AF-1322), so main read red all day and real
+# breaks were buried under the flakes.
 
 on:
   workflow_run:
@@ -31,7 +37,7 @@ jobs:
   rerun-flaky-e2e:
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule') &&
       github.event.workflow_run.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
