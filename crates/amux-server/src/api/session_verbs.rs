@@ -59759,7 +59759,7 @@ mod bound_stop_tests {
         let recovered = load_meta(name);
         assert_eq!(recovered, meta);
         let mut root = ChildGuard(Command::new("sh")
-            .args(["-c", "sleep 30 & echo $!; wait"])
+            .args(["-c", "sleep 30 & echo $!; while :; do sleep 1; done"])
             .stdout(Stdio::piped()).spawn().unwrap());
         let child_pid: i32 = std::io::BufReader::new(root.0.stdout.take().unwrap())
             .lines().next().unwrap().unwrap().parse().unwrap();
@@ -59770,6 +59770,8 @@ mod bound_stop_tests {
         let current = persisted_session_ids(&recovered);
         stop_bound_root(name, root.0.id() as i32, &current).unwrap();
         assert!(root.0.try_wait().unwrap().is_none(), "pane shell is retained");
-        assert!(crate::api::session_pidfd::ProcessIdentity::read(child_pid).is_err(), "current session child was stopped");
+        let child_state = std::fs::read_to_string(format!("/proc/{child_pid}/stat")).ok()
+            .and_then(|s| s.rsplit_once(')').map(|(_, r)| r.trim_start().chars().next().unwrap_or('X')));
+        assert!(child_state.is_none_or(|c| c == 'Z' || c == 'X'), "current session child was stopped; state {child_state:?}");
     }
 }

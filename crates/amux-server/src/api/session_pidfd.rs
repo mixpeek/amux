@@ -223,7 +223,7 @@ mod tests {
     fn stopped_pane_children_leave_root_alive() {
         let mut root = ChildGuard(
             Command::new("sh")
-                .args(["-c", "sleep 30 & echo $!; wait"])
+                .args(["-c", "sleep 30 & echo $!; while :; do sleep 1; done"])
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .unwrap(),
