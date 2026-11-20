@@ -11222,7 +11222,10 @@ function _applyPeekTabVisibility() {
       // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
       const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
       // A type with no worktree has no Worktree tab to show.
+      // A chat worker's first tab is already its chat, so the companion Chat tab
+      // would be a second "Chat" beside it (owner screenshot, 2026-11-20).
       const typeHides = (t.id === 'git' && _peekType.worktree === 'unsupported')
+        || (t.id === 'chat' && _primaryRenderer === 'chat')
         || (t.id === 'intent' && !(peekSession && _peekIntentList().length));
       // Schedules are shown for isolated workers too: a schedule is owner
       // configuration and delivers into them (Ethan, 2026-09-26).
@@ -16090,6 +16093,12 @@ function _peekChatMenuItem(s) {
 }
 
 function setPeekTab(tab) {
+  // A chat worker has no companion Chat tab (_applyPeekTabVisibility): a remembered or
+  // linked 'chat' opens its own chat, the first tab.
+  if (tab === 'chat' && peekSession && _workerRenderer(peekSession) === 'chat') {
+    console.info('[peek] verdict=chat_tab_folded_into_primary worker=' + peekSession);
+    tab = 'terminal';
+  }
   _peekTab = tab;
   // CSS reads this to drop chrome a tab does not use (phone real estate).
   const _po = document.getElementById('peek-overlay'); if (_po) _po.dataset.peekTab = tab;
