@@ -49,7 +49,20 @@ async function expectOfferShown(page: Page) {
     await expect(page.locator('#cloud-offer')).toBeVisible({ timeout: 10000 });
   } catch (e) {
     const r = await page.request.get('/api/prefs?key=cloud_offer', { headers: await token(page) });
-    throw new Error(`#cloud-offer never showed; the server's cloud_offer pref is ${await r.text()}. `
+    // A trigger this page DID record and no offer on screen means the app took
+    // it down after showing it. Two paths do that: _homeEnter under
+    // intent-simple, and _cloudOfferInit on an identity read that is not the
+    // owner. This state says which (runs 44811290053 to 44876041784 held
+    // {"phone":<ts>} at 4.4s into the test, which this page recorded itself).
+    const app = await page.evaluate(() => {
+      const w = window as any;
+      return { activeView: w.eval('typeof activeView === "undefined" ? null : activeView'),
+        intentSimple: document.body.classList.contains('intent-simple'),
+        homeSettled: !!w._homeChoiceSettled, verdict: w._cloudOfferVerdict ?? null,
+        local: localStorage.getItem('amux_cloud_offer'), homeChoice: localStorage.getItem('amux_home_choice') };
+    }).catch(err => ({ unreadable: String(err) }));
+    throw new Error(`#cloud-offer never showed; the server's cloud_offer pref is ${await r.text()}; `
+      + `the page holds ${JSON.stringify(app)}. `
       + 'A trigger this page did not record means another context on this server spent it '
       + '(every context must start with the fixtures.ts dismissed seed).\n' + String(e));
   }
