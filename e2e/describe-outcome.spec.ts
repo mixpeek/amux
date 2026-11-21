@@ -8,7 +8,7 @@
 // name, directory and groups from the text and attachments; no /goal.
 import { test, expect } from './fixtures';
 
-test('Describe what you want starts a planned worker from one box, with remembered defaults and no /goal', async ({ page }) => {
+test('Describe what you want starts a planned worker from one box, with saved presets and no /goal', async ({ page }) => {
   test.setTimeout(90_000);
   const creates: any[] = [];
   const prefs: any[] = [];
@@ -19,6 +19,7 @@ test('Describe what you want starts a planned worker from one box, with remember
     localStorage.setItem('amux_walkthrough_done', '1');
     localStorage.removeItem('amux_outcome_draft');
     localStorage.removeItem('amux_outcome_defaults');
+    localStorage.removeItem('amux_outcome_presets');
   });
   // No real worker: the create is answered here, and nothing else is written.
   await page.route('**/api/sessions', async route => {
@@ -37,10 +38,10 @@ test('Describe what you want starts a planned worker from one box, with remember
   await page.route('**/api/prefs**', async route => {
     if (route.request().method() === 'POST') {
       const b = route.request().postDataJSON();
-      if (b.key === 'outcome_defaults') { prefs.push(b); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
+      if (b.key === 'outcome_presets') { prefs.push(b); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
       return route.fallback();
     }
-    if (route.request().url().includes('key=outcome_defaults')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":""}' });
+    if (/key=outcome_(defaults|presets)/.test(route.request().url())) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":""}' });
     return route.fallback();
   });
   await page.goto('/');
@@ -62,8 +63,17 @@ test('Describe what you want starts a planned worker from one box, with remember
   await expect(page.locator('#outcome-constraints')).toHaveValue(/Do not spend money/);
   await expect(page.locator('#outcome-goal')).toHaveCount(0);
   await expect(page.locator('#outcome-dir')).toHaveValue('');
+  // Presets: None is picked, nothing is remembered unless asked, and the
+  // old "Remember these as my defaults" box is gone.
+  await expect(page.locator('#outcome-preset')).toHaveValue('');
+  await expect(page.locator('#outcome-remember')).toHaveCount(0);
+  await expect(page.locator('#outcome-save-preset')).not.toBeChecked();
+  await expect(page.locator('#outcome-preset-name')).toBeHidden();
   await page.locator('#outcome-group').fill('ui-work');
   await page.locator('#outcome-dir').fill('/tmp/outcome-e2e');
+  await page.locator('#outcome-save-preset').check();
+  await expect(page.locator('#outcome-preset-name')).toBeVisible();
+  await page.locator('#outcome-preset-name').fill('UI work');
 
   // Layout: fits the screen, touch targets on phones.
   const fit = await page.evaluate(() => {
@@ -80,9 +90,16 @@ test('Describe what you want starts a planned worker from one box, with remember
   await expect.poll(() => creates.length).toBe(1);
   await open();
   await expect(page.locator('#outcome-text')).toHaveValue('Add a dark mode toggle to settings and ship it');
-  // The remembered defaults came back too.
+  // The preset was saved; the fields open on None, and picking the preset fills them.
+  expect(prefs.length).toBe(1);
+  expect(JSON.parse(prefs[0].value)).toEqual([expect.objectContaining({ name: 'UI work', group: 'ui-work', dir: '/tmp/outcome-e2e' })]);
   await page.locator('.outcome-settings > summary').click();
+  await expect(page.locator('#outcome-preset')).toHaveValue('');
+  await expect(page.locator('#outcome-group')).toHaveValue('');
+  await page.locator('#outcome-preset').selectOption('UI work');
   await expect(page.locator('#outcome-group')).toHaveValue('ui-work');
+  await expect(page.locator('#outcome-dir')).toHaveValue('/tmp/outcome-e2e');
+  await expect(page.locator('#outcome-preset-delete')).toBeVisible();
   await page.locator('#outcome-text').press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter');
   await expect.poll(() => creates.length).toBe(2);
 
@@ -99,8 +116,10 @@ test('Describe what you want starts a planned worker from one box, with remember
   expect(body.prompt.startsWith('Add a dark mode toggle to settings and ship it Constraints: Do not spend money')).toBe(true);
   expect(body.prompt).not.toContain('/goal');
   expect(body.prompt).not.toContain('\n');
-  expect(prefs.length).toBeGreaterThanOrEqual(1);
-  expect(JSON.parse(prefs[prefs.length - 1].value).group).toBe('ui-work');
+  // Starting from a preset without ticking "Save as a preset" writes nothing.
+  expect(prefs.length).toBe(1);
+  // Open in worker -> New worker starts with the preset last started with.
+  expect(await page.evaluate(async () => (await (window as any)._outcomeDefaults()).dir)).toBe('/tmp/outcome-e2e');
   // A started worker clears the kept draft.
   await expect.poll(() => page.evaluate(() => localStorage.getItem('amux_outcome_draft'))).toBeNull();
 
@@ -125,11 +144,12 @@ test('Describe what you want starts a planned worker from one box, with remember
   reply = 'ok';
   planReply = { name: 'gtm-crm', dir: '/home/u/amux-GTM/gtm', groups: ['gtm'], desc: 'Tracks outreach toward the pilot goal.',
     attachments: [{ path: '/up/memo.m4a', kind: 'audio', transcript: '/up/memo.m4a.transcript.txt', words: 1544 }] };
-  await page.evaluate(() => localStorage.setItem('amux_outcome_defaults', JSON.stringify({ group: '', dir: '', isolated: true })));
-  await page.route('**/api/prefs**', route => route.request().url().includes('key=outcome_defaults')
-    ? route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":""}' }) : route.fallback());
   await open();
   await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach and progress towards goal');
+  // A preset saved with no name is named for its folder and group; this one is only "isolated".
+  await page.locator('.outcome-settings > summary').click();
+  await page.locator('#outcome-isolated').check();
+  await page.locator('#outcome-save-preset').check();
   await page.locator('#outcome-file').setInputFiles({ name: 'memo.m4a', mimeType: 'audio/mp4', buffer: Buffer.from('not really audio') });
   await expect(page.locator('#outcome-file-list')).toContainText('memo.m4a');
   await expect(page.locator('#outcome-file-list')).not.toContainText('uploading');
@@ -140,7 +160,10 @@ test('Describe what you want starts a planned worker from one box, with remember
   expect(planned.files[0]).toMatch(/memo\.m4a$/);
   const gtm = creates[2];
   expect(gtm.name).toBe('gtm-crm');
-  expect(gtm.isolated).toBe(true);   // remembered as on, so asked for
+  expect(gtm.isolated).toBe(true);   // ticked, so asked for
+  expect(prefs.length).toBe(2);
+  expect(JSON.parse(prefs[1].value).map((p: any) => p.name)).toEqual(['UI work', 'Preset']);
+  expect(JSON.parse(prefs[1].value)[1].isolated).toBe(true);
   expect(gtm.dir).toBe('/home/u/amux-GTM/gtm');
   expect(gtm.tags).toEqual(['gtm']);
   expect(gtm.prompt).toContain('/up/memo.m4a.transcript.txt');
@@ -150,9 +173,25 @@ test('Describe what you want starts a planned worker from one box, with remember
   planReply = null;
   await open();
   await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach');
+  // Not isolated: None is the built-in defaults, whatever was ticked last time.
+  await page.locator('.outcome-settings > summary').click();
+  await expect(page.locator('#outcome-isolated')).not.toBeChecked();
+  // Delete asks on the same button, then removes the preset.
+  await page.locator('#outcome-preset').selectOption('Preset');
+  await page.locator('#outcome-preset-delete').click();
+  await expect(page.locator('#outcome-preset-delete')).toHaveText('Delete "Preset"?');
+  expect(prefs.length).toBe(2);
+  await page.locator('#outcome-preset-delete').click();
+  await expect.poll(() => prefs.length).toBe(3);
+  expect(JSON.parse(prefs[2].value).map((p: any) => p.name)).toEqual(['UI work']);
+  await expect(page.locator('#outcome-preset')).toHaveValue('');
+  await expect(page.locator('#outcome-preset option')).toHaveText(['None', 'UI work']);
   await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
   await expect.poll(() => creates.length).toBe(4);
   expect(creates[3].name).toBe('crm-tracks-outreach');
+  expect(creates[3].isolated).toBeUndefined();
+  // ...and the built-in defaults once a worker was started on None.
+  expect(await page.evaluate(async () => (await (window as any)._outcomeDefaults()).dir)).toBe('');
 
   // Server down: the create is queued for replay, so the draft goes rather
   // than inviting a second press that would start a duplicate worker.
@@ -165,4 +204,43 @@ test('Describe what you want starts a planned worker from one box, with remember
   await expect.poll(() => page.evaluate(() => localStorage.getItem('amux_outcome_draft'))).toBeNull();
   await expect(page.locator('#toast')).toContainText('starts on its own');
   await expect(page.locator('#toast')).toBeVisible();
+});
+
+test('Defaults remembered the old way come back as a preset named "My defaults"', async ({ page }) => {
+  const posts: any[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.removeItem('amux_outcome_presets');
+    localStorage.removeItem('amux_outcome_defaults');
+  });
+  await page.route('**/api/prefs**', async route => {
+    const url = route.request().url();
+    if (route.request().method() === 'POST') {
+      const b = route.request().postDataJSON();
+      if (b.key === 'outcome_presets') { posts.push(b); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
+      return route.fallback();
+    }
+    if (url.includes('key=outcome_presets')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":null}' });
+    if (url.includes('key=outcome_defaults')) return route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ value: JSON.stringify({ group: 'gtm', dir: '/srv/gtm', provider: 'claude', model: '', isolated: false, constraints: 'Be brief.' }) }) });
+    return route.fallback();
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openOutcome === 'function');
+  await page.locator('#add-btn').click();
+  await page.locator('#add-menu .card-menu-item', { hasText: 'Describe what you want' }).click();
+  await page.locator('.outcome-settings > summary').click();
+  await expect(page.locator('#outcome-preset option')).toHaveText(['None', 'My defaults']);
+  await expect(page.locator('#outcome-preset')).toHaveValue('');
+  await expect.poll(() => posts.length).toBe(1);
+  await page.locator('#outcome-preset').selectOption('My defaults');
+  await expect(page.locator('#outcome-dir')).toHaveValue('/srv/gtm');
+  await expect(page.locator('#outcome-constraints')).toHaveValue('Be brief.');
+  // Layout: the preset row fits the screen.
+  const fit = await page.evaluate(() => {
+    const r = document.querySelector('.outcome-preset-row')!.getBoundingClientRect();
+    return { right: r.right, vw: window.innerWidth };
+  });
+  expect(fit.right).toBeLessThanOrEqual(fit.vw);
+  await page.screenshot({ path: test.info().outputPath('outcome-presets.png') });
 });

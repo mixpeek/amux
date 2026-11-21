@@ -4038,8 +4038,32 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomeDefaults": {
+      "kind": "command._outcomeDefaults",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomePlan": {
       "kind": "command._outcomePlan",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresetDelete": {
+      "kind": "command._outcomePresetDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresets": {
+      "kind": "command._outcomePresets",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomeSavePresets": {
+      "kind": "command._outcomeSavePresets",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

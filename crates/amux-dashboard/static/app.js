@@ -12350,7 +12350,11 @@ function closeAddMenu() {
 // ── Describe what you want (Ethan, 2026-10-18) ──
 // One box: describe the outcome, and attach a recording or files if the
 // outcome lives in them. Everything else is a default under a closed
-// "Defaults and constraints" section, remembered in prefs (outcome_defaults).
+// "Defaults and constraints" section. Saved setups are presets (prefs key
+// outcome_presets): a preset holds every field of that section, picked from
+// the Preset selector (None = the built-in defaults) and saved only when
+// "Save as a preset" is ticked (owner, 2026-11-21, replacing "Remember these
+// as my defaults", which rewrote the defaults on every start).
 // The server (POST /api/outcome/plan) names the worker and picks the
 // directory and groups the fleet already uses for this work, reading the
 // text and the attachments (a recording is transcribed and the transcript
@@ -12385,29 +12389,119 @@ function _outcomePrompt(text, constraints, goal) {
     + ' Done when this outcome is achieved and verified.';
   return (goal ? '/goal ' : '') + body.slice(0, 4000);
 }
-async function _outcomeDefaults() {
-  let d = {};
-  try { d = JSON.parse(localStorage.getItem('amux_outcome_defaults') || '{}'); } catch (_) {}
-  try {
-    const r = await fetch(API + '/api/prefs?key=outcome_defaults', { headers: _authHeaders() });
-    if (r.ok) { const v = (await r.json()).value; if (v) d = JSON.parse(v); }
-  } catch (_) { /* offline: the cached copy stands */ }
+// The built-in defaults the "None" preset stands for.
+function _outcomeBaseDefaults() {
   return {
-    group: d.group ?? ((typeof activeTag === 'string' && activeTag) ? activeTag : ''),
-    dir: d.dir || '',
-    provider: d.provider || 'claude',
-    model: d.model || '',
+    group: (typeof activeTag === 'string' && activeTag) ? activeTag : '',
+    dir: '',
+    provider: 'claude',
+    model: '',
     // Decided 2026-11-12 (docs/design/intent-first.md): routed and created
     // workers are not isolated by default; isolation stays an explicit choice.
-    isolated: d.isolated === true,
-    constraints: d.constraints ?? _OUTCOME_DEFAULT_CONSTRAINTS,
+    isolated: false,
+    constraints: _OUTCOME_DEFAULT_CONSTRAINTS,
   };
 }
+// Paths that start a worker without this dialog (Open in worker -> New
+// worker) use the preset the owner last started one with, or the built-in
+// defaults after a start on None.
+async function _outcomeDefaults() {
+  const last = localStorage.getItem('amux_outcome_last_preset') || '';
+  if (!last) return _outcomeBaseDefaults();
+  const p = (await _outcomePresets()).find(x => x.name === last);
+  if (!p) { console.info('[outcome] last-used preset "' + last + '" is gone; using the built-in defaults'); return _outcomeBaseDefaults(); }
+  const { name: _n, ...cfg } = p;
+  return cfg;
+}
+const _OUTCOME_PRESET_FIELDS = ['group', 'dir', 'provider', 'model', 'isolated', 'constraints'];
+function _outcomePresetClean(p) {
+  const base = _outcomeBaseDefaults();
+  const out = { name: String(p.name || '').trim() };
+  for (const k of _OUTCOME_PRESET_FIELDS) out[k] = k === 'isolated' ? p[k] === true : (p[k] == null ? base[k] : String(p[k]));
+  return out;
+}
+async function _prefGet(key) {
+  const r = await fetch(API + '/api/prefs?key=' + encodeURIComponent(key), { headers: _authHeaders() });
+  if (!r.ok) throw new Error('prefs ' + r.status);
+  return (await r.json()).value || '';
+}
+// Presets live in prefs so every device sees them; localStorage is the
+// offline copy. The first load after this change carries the old remembered
+// defaults (outcome_defaults) over as a preset named "My defaults", so a
+// setup saved the old way is still one pick away. The old pref is not deleted.
+async function _outcomePresets() {
+  let list = null;
+  try { list = JSON.parse(localStorage.getItem('amux_outcome_presets') || 'null'); } catch (e) { console.warn('[outcome] cached presets unreadable', e); }
+  try {
+    const v = await _prefGet('outcome_presets');
+    if (v) list = JSON.parse(v);
+    else if (!list) {
+      let legacy = null;
+      try { const lv = await _prefGet('outcome_defaults'); legacy = lv ? JSON.parse(lv) : null; } catch (e) { console.warn('[outcome] old defaults unreadable on the server', e); }
+      if (!legacy) { try { legacy = JSON.parse(localStorage.getItem('amux_outcome_defaults') || 'null'); } catch (e) { console.warn('[outcome] cached old defaults unreadable', e); } }
+      const base = _outcomeBaseDefaults();
+      const differs = legacy && typeof legacy === 'object'
+        && _OUTCOME_PRESET_FIELDS.some(k => legacy[k] != null && legacy[k] !== '' && legacy[k] !== base[k] && !(k === 'isolated' && !legacy[k]));
+      list = differs ? [_outcomePresetClean({ ...legacy, name: 'My defaults' })] : [];
+      if (differs) { console.info('[outcome] carried the remembered defaults over as preset "My defaults"'); await _outcomeSavePresets(list); }
+    }
+  } catch (e) { console.warn('[outcome] presets not read from the server; the cached copy stands', e); }
+  return Array.isArray(list) ? list.filter(p => p && p.name).map(_outcomePresetClean) : [];
+}
+async function _outcomeSavePresets(list) {
+  const val = JSON.stringify(list);
+  localStorage.setItem('amux_outcome_presets', val);
+  try {
+    const r = await fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ key: 'outcome_presets', value: val }) });
+    return r.ok || _isLocallyQueued(r);
+  } catch (_) { return false; }
+}
+// A preset saved without a name is named for what it holds: the folder's
+// last part and the group, made unique so it never replaces another preset.
+function _outcomePresetAutoName(cfg, taken) {
+  const parts = [(cfg.dir || '').replace(/\/+$/, '').split('/').pop(), cfg.group].filter(Boolean);
+  const base = parts.join(' · ') || 'Preset';
+  let name = base, n = 2;
+  while (taken.has(name)) name = base + ' ' + n++;
+  return name;
+}
+let _outcomePresetList = [];
+function _outcomePresetPick(name) {
+  const p = _outcomePresetList.find(x => x.name === name) || _outcomeBaseDefaults();
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('outcome-group', p.group); set('outcome-dir', p.dir); set('outcome-provider', p.provider || 'claude');
+  set('outcome-model', p.model); set('outcome-constraints', p.constraints);
+  const iso = document.getElementById('outcome-isolated'); if (iso) iso.checked = !!p.isolated;
+  set('outcome-preset-name', name || '');
+  const del = document.getElementById('outcome-preset-delete');
+  if (del) { del.hidden = !name; del.textContent = 'Delete'; delete del.dataset.armed; }
+}
+function _outcomePresetSaveToggle() {
+  const on = !!document.getElementById('outcome-save-preset')?.checked;
+  const f = document.getElementById('outcome-preset-name-field');
+  if (f) f.hidden = !on;
+  if (on) document.getElementById('outcome-preset-name')?.focus();
+}
+// Delete asks twice on the same button (a second dialog would close this one).
+async function _outcomePresetDelete(btn) {
+  const sel = document.getElementById('outcome-preset');
+  const name = sel?.value;
+  if (!name) return;
+  if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = 'Delete "' + name + '"?'; return; }
+  _outcomePresetList = _outcomePresetList.filter(p => p.name !== name);
+  const saved = await _outcomeSavePresets(_outcomePresetList);
+  sel.querySelector('option[value="' + CSS.escape(name) + '"]')?.remove();
+  sel.value = '';
+  _outcomePresetPick('');
+  showToast(saved ? 'Preset "' + name + '" deleted' : 'Preset "' + name + '" deleted here; the server did not save it');
+}
 async function openOutcome() {
-  const d = await _outcomeDefaults();
+  const d = _outcomeBaseDefaults();
+  _outcomePresetList = await _outcomePresets();
   const draft = localStorage.getItem('amux_outcome_draft') || '';
   const groups = [...new Set((sessions || []).flatMap(s => s.tags || []))].sort();
-  const chk = (id, on, label) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${label}</label>`;
+  const chk = (id, on, label, extra) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}${extra || ''}> ${label}</label>`;
   const html = `<div class="outcome-form">
     <textarea id="outcome-text" class="input outcome-text" rows="4"
       placeholder="e.g. Add a dark mode toggle to settings and ship it"
@@ -12419,6 +12513,13 @@ async function openOutcome() {
     </div>
     <details class="outcome-settings">
       <summary>Defaults and constraints</summary>
+      <label class="outcome-field">Preset<span class="outcome-preset-row">
+        <select id="outcome-preset" class="input" onchange="_outcomePresetPick(this.value)">
+          <option value="">None</option>
+          ${_outcomePresetList.map(p => '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>').join('')}
+        </select>
+        <button type="button" class="btn" id="outcome-preset-delete" hidden onclick="_outcomePresetDelete(this)">Delete</button>
+      </span></label>
       <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
       <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
       <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="Chosen from your description"></label>
@@ -12428,7 +12529,8 @@ async function openOutcome() {
       <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
       <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
       ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
-      ${chk('outcome-remember', true, 'Remember these as my defaults')}
+      ${chk('outcome-save-preset', false, 'Save as a preset', ' onchange="_outcomePresetSaveToggle()"')}
+      <label class="outcome-field" id="outcome-preset-name-field" hidden>Preset name (optional)<input id="outcome-preset-name" class="input" placeholder="Named from the folder and group"></label>
     </details>
   </div>`;
   _outcomeFiles = [];
@@ -12439,18 +12541,24 @@ async function openOutcome() {
   const on = (id) => !!document.getElementById(id)?.checked;
   const text = v('outcome-text');
   if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
-  if (!ok || !text) return;
   const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
     model: v('outcome-model'), isolated: on('outcome-isolated'),
     constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  // Saving a preset does not need a description: Start with an empty box
+  // saves the preset and starts nothing.
+  if (ok && on('outcome-save-preset')) {
+    const typed = v('outcome-preset-name');
+    const name = typed || _outcomePresetAutoName(cfg, new Set(_outcomePresetList.map(p => p.name)));
+    const replaced = _outcomePresetList.some(p => p.name === name);
+    _outcomePresetList = _outcomePresetList.filter(p => p.name !== name).concat([_outcomePresetClean({ ...cfg, name })]);
+    const saved = await _outcomeSavePresets(_outcomePresetList);
+    showToast((saved ? '' : 'Saved on this device only: ') + 'Preset "' + name + '" ' + (replaced ? 'updated' : 'saved'));
+  }
+  if (!ok || !text) return;
+  const picked = v('outcome-preset');
+  if (picked) localStorage.setItem('amux_outcome_last_preset', picked); else localStorage.removeItem('amux_outcome_last_preset');
   const files = await _outcomeFilesReady();
   if (files === null) { showToast('Not started: an attachment did not upload. Your description is kept.'); return; }
-  if (on('outcome-remember')) {
-    const val = JSON.stringify(cfg);
-    localStorage.setItem('amux_outcome_defaults', val);
-    fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({ key: 'outcome_defaults', value: val }) }).catch(() => {});
-  }
   await _outcomeStart(text, cfg, files);
 }
 // Attachments upload as soon as they are picked (the same upload API voice
