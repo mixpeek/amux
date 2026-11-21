@@ -169,6 +169,7 @@ pub mod self_update;
 pub(crate) mod repeat_ask;
 pub(crate) mod send_probe;
 pub mod session_verbs;
+pub(crate) mod session_pidfd;
 pub mod sessions_git;
 pub mod sessions_legacy;
 pub mod settings;
