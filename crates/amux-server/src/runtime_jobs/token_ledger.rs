@@ -826,7 +826,9 @@ fn scan_pending(
 const MAX_CLAIM_WINDOW_S: i64 = 24 * 3600;
 
 // Bound each transaction by ledger rows rather than by claim windows.
-const ATTRIBUTION_BATCH_SIZE: i64 = 500;
+/// Only rows that can still gain an owner (task='' and a lane) are batched; the
+/// first pass over a large history is a handful of batches, not one per 500 ids.
+const ATTRIBUTION_BATCH_SIZE: i64 = 100_000;
 
 /// Fill `token_ledger.task` for turns that fall inside a card's claim window on
 /// the SAME lane. Only touches unattributed rows.
@@ -909,6 +911,9 @@ type AttributionRow = (i64, i64, String, String);
 struct AttributionBatch {
     watermark: i64,
     generation: i64,
+    /// Where the watermark moves once this batch is applied: the last candidate
+    /// id when the batch is full, else the newest ledger id seen in the snapshot.
+    next: i64,
     rows: Vec<AttributionRow>,
     tasks: Vec<Option<String>>,
 }
@@ -920,16 +925,29 @@ fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<O
     let (watermark, generation): (i64, i64) = conn.query_row(
         "SELECT ledger_id, generation FROM token_attribution_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let rows: Vec<(i64, i64, String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, ts, session, task FROM token_ledger WHERE id>?1 ORDER BY id LIMIT ?2"
-        )?;
-        let rows = stmt.query_map(rusqlite::params![watermark, ATTRIBUTION_BATCH_SIZE], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    if rows.is_empty() { return Ok(None); }
+    let newest: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM token_ledger", [], |r| r.get(0))?;
+    if newest <= watermark { return Ok(None); }
+    let rows = candidate_rows(conn, watermark, newest)?;
+    let next = if rows.len() as i64 >= ATTRIBUTION_BATCH_SIZE { rows.last().unwrap().0 } else { newest };
+    let tasks = attribute_rows(conn, now, &rows)?;
+    Ok(Some(AttributionBatch { watermark, generation, next, rows, tasks }))
+}
+
+// Ownerless rows with a lane in (watermark, upto]. Rows with a task or no lane
+// can never change, so they only advance the watermark.
+fn candidate_rows(conn: &rusqlite::Connection, watermark: i64, upto: i64) -> rusqlite::Result<Vec<AttributionRow>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, ts, session, task FROM token_ledger WHERE id>?1 AND id<=?2 AND task='' AND session<>'' ORDER BY id LIMIT ?3"
+    )?;
+    let rows = stmt.query_map(rusqlite::params![watermark, upto, ATTRIBUTION_BATCH_SIZE], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })?;
+    rows.collect()
+}
+
+// Resolve the owning card for each row (None = no window matched / already owned).
+fn attribute_rows(conn: &rusqlite::Connection, now: i64, rows: &[AttributionRow]) -> rusqlite::Result<Vec<Option<String>>> {
+    if rows.is_empty() { return Ok(Vec::new()); }
     let lo = rows.iter().map(|r| r.1).min().unwrap();
     let hi = rows.iter().map(|r| r.1).max().unwrap();
     let mut attempts = Vec::new();
@@ -959,13 +977,19 @@ fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<O
         found.collect::<rusqlite::Result<Vec<_>>>()?
     };
     let wins = claim_windows(attempts, claims, now);
-    let tasks = rows.iter().map(|(_, ts, session, task)| {
+    // Per-lane lists keep the global oldest-first order, so the first covering
+    // window in a lane is the one the old full scan returned. No window can
+    // start more than MAX_CLAIM_WINDOW_S before a turn it covers.
+    let mut by_lane: std::collections::HashMap<&str, Vec<&(String, String, i64, i64)>> = std::collections::HashMap::new();
+    for w in &wins {
+        if !w.0.trim().is_empty() && !w.1.trim().is_empty() && w.3 >= w.2 { by_lane.entry(w.1.as_str()).or_default().push(w); }
+    }
+    Ok(rows.iter().map(|(_, ts, session, task)| {
         if !task.is_empty() || session.trim().is_empty() { return None; }
-        wins.iter().find(|(card, lane, from, to)| {
-            !card.trim().is_empty() && !lane.trim().is_empty() && lane == session && to >= from && ts >= from && ts <= to
-        }).map(|(card, _, _, _)| card.clone())
-    }).collect();
-    Ok(Some(AttributionBatch { watermark, generation, rows, tasks }))
+        let lane = by_lane.get(session.as_str())?;
+        let start = lane.partition_point(|w| w.2 < ts.saturating_sub(MAX_CLAIM_WINDOW_S));
+        lane[start..].iter().take_while(|w| w.2 <= *ts).find(|w| *ts <= w.3).map(|w| w.0.clone())
+    }).collect())
 }
 
 // The writer rechecks the snapshot before applying it. Session repair can
@@ -973,17 +997,13 @@ fn plan_attribution(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<O
 fn apply_attribution(conn: &rusqlite::Connection, batch: AttributionBatch) -> rusqlite::Result<bool> {
     let (watermark, generation): (i64, i64) = conn.query_row("SELECT ledger_id, generation FROM token_attribution_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
     if watermark != batch.watermark || generation != batch.generation { return Ok(false); }
-    let current: Vec<AttributionRow> = {
-        let mut stmt = conn.prepare("SELECT id, ts, session, task FROM token_ledger WHERE id>?1 ORDER BY id LIMIT ?2")?;
-        let rows = stmt.query_map(rusqlite::params![watermark, ATTRIBUTION_BATCH_SIZE], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
+    let current = candidate_rows(conn, watermark, batch.next)?;
     if current != batch.rows { return Ok(false); }
     let mut update = conn.prepare_cached("UPDATE token_ledger SET task=?1 WHERE id=?2 AND task=''")?;
     for ((id, _, _, _), task) in batch.rows.iter().zip(batch.tasks.iter()) {
         if let Some(task) = task { update.execute(rusqlite::params![task, id])?; }
     }
-    conn.execute("UPDATE token_attribution_state SET ledger_id=?1 WHERE id=1", [batch.rows.last().unwrap().0])?;
+    conn.execute("UPDATE token_attribution_state SET ledger_id=?1 WHERE id=1", [batch.next])?;
     Ok(true)
 }
 
@@ -1571,6 +1591,40 @@ mod tests {
             assert!(!apply_attribution(c, batch)?);
             Ok(WriteOutcome { applied: false, events: vec![] })
         }).unwrap();
+    }
+
+    #[tokio::test]
+    async fn first_pass_lane_index_matches_window_semantics() {
+        let st = store();
+        let t = chrono::Utc::now().timestamp() - 3 * MAX_CLAIM_WINDOW_S;
+        st.write(move |c| {
+            crate::db::attempts::ensure_table(c)?;
+            // Earliest covering window wins: attempt X (t) beats claim Y (t+10) on the same lane.
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('X',1,'lane',1,?1)", [t])?;
+            c.execute("INSERT INTO session_events(ts,session,type,data) VALUES (?1,'lane','task.claimed','{\"issue\":\"Y\"}')", [t + 10])?;
+            // Another lane's window must not capture 'lane' turns.
+            c.execute("INSERT INTO task_attempts (card, attempt, worker, generation, started_at) VALUES ('Z',1,'other',1,?1)", [t - 5])?;
+            let mut ins = c.prepare("INSERT INTO token_ledger(ts,session,task,conversation) VALUES (?1,?2,?3,?4)")?;
+            ins.execute(rusqlite::params![t + 20, "lane", "", "overlap"])?;
+            ins.execute(rusqlite::params![t + MAX_CLAIM_WINDOW_S, "lane", "", "edge-in"])?;
+            ins.execute(rusqlite::params![t + MAX_CLAIM_WINDOW_S + 1, "lane", "", "edge-out"])?;
+            ins.execute(rusqlite::params![t + 20, "", "", "no-lane"])?;
+            ins.execute(rusqlite::params![t + 20, "lane", "KEEP", "owned"])?;
+            ins.execute(rusqlite::params![t - 1, "lane", "", "before"])?;
+            Ok(WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        attribute_tasks(&st).await.unwrap();
+        let c = st.read().unwrap();
+        let task = |conv: &str| c.query_row("SELECT task FROM token_ledger WHERE conversation=?1", [conv], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(task("overlap"), "X");
+        assert_eq!(task("edge-in"), "X");
+        // Y (claimed at t+10) still covers t+86401 only until t+10+24h.
+        assert_eq!(task("edge-out"), "Y");
+        assert_eq!(task("no-lane"), "");
+        assert_eq!(task("owned"), "KEEP");
+        assert_eq!(task("before"), "");
+        // Watermark reaches the newest id even though trailing rows were not candidates.
+        assert_eq!(c.query_row("SELECT ledger_id FROM token_attribution_state", [], |r| r.get::<_, i64>(0)).unwrap(), 6);
     }
 
     #[tokio::test]
