@@ -29822,15 +29822,22 @@ async fn post_dispatch(
             if let Some(refusal) = intent_helper_archive_refusal(name, body) {
                 return jresp(StatusCode::CONFLICT, refusal);
             }
-            let (ok, msg) = archive_session(state, name).await;
-            if ok {
-                sync_lifecycle_to_rust_worker(
-                    state,
-                    name,
-                    amux_core::worker::WorkerLifecycle::Archived,
-                )
-                .await;
-            }
+            // Archive stops the worker, then records the lifecycle; a dropped
+            // request must not end between the two (run_to_completion).
+            let (st2, n) = (state.clone(), name.to_string());
+            let (ok, msg) = crate::db::interactions::run_to_completion("archive", name, async move {
+                let (ok, msg) = archive_session(&st2, &n).await;
+                if ok {
+                    sync_lifecycle_to_rust_worker(
+                        &st2,
+                        &n,
+                        amux_core::worker::WorkerLifecycle::Archived,
+                    )
+                    .await;
+                }
+                (ok, msg)
+            })
+            .await;
             verb_resp(ok, msg)
         }
         "wake" => wake_verb(state, name).await,
@@ -31929,7 +31936,12 @@ fn transient_send_refusal(message: &str) -> bool {
 /// route and the legacy `/api/sessions/{name}/reset` spelling run ONE
 /// implementation instead of a route alias and a re-implementation (AF-288).
 pub(crate) async fn reset_verb(state: &AppState, name: &str) -> Response {
-    let (ok, msg) = reset_session(state, name).await;
+    // Reset stops the worker first; a dropped request must not end mid-stop.
+    let (state, name_owned) = (state.clone(), name.to_string());
+    let (ok, msg) = crate::db::interactions::run_to_completion("reset", name, async move {
+        reset_session(&state, &name_owned).await
+    })
+    .await;
     verb_resp(ok, msg)
 }
 
@@ -33892,7 +33904,19 @@ fn find_latest_session_id(work_dir: &str) -> String {
     String::new()
 }
 
+/// Delete stops the worker (typing `/exit`, then waiting for the shell) before
+/// it unregisters it, so a dropped request must not end between the two
+/// (`run_to_completion`). Both spellings, POST .../delete and DELETE on the
+/// resource, come through here.
 async fn delete_post(state: &AppState, name: &str, headers: &HeaderMap) -> Response {
+    let (state, name_owned, headers) = (state.clone(), name.to_string(), headers.clone());
+    crate::db::interactions::run_to_completion("delete", name, async move {
+        delete_post_inner(&state, &name_owned, &headers).await
+    })
+    .await
+}
+
+async fn delete_post_inner(state: &AppState, name: &str, headers: &HeaderMap) -> Response {
     if !session_destructive_allowed(state, headers) {
         return jresp(
             StatusCode::FORBIDDEN,
@@ -36578,7 +36602,17 @@ pub(crate) async fn config_patch(state: &AppState, name: &str, body: &Value) -> 
     out
 }
 
+/// A provider, worker-type or model change can stop and restart the worker,
+/// and a rename moves its files; none may end halfway because the client left.
 async fn config_patch_inner(state: &AppState, name: &str, body: &Value) -> Response {
+    let (state, name_owned, body) = (state.clone(), name.to_string(), body.clone());
+    crate::db::interactions::run_to_completion("config", name, async move {
+        config_patch_live(&state, &name_owned, &body).await
+    })
+    .await
+}
+
+async fn config_patch_live(state: &AppState, name: &str, body: &Value) -> Response {
     let changes_runtime = [
         "provider",
         "worker_type",
@@ -48715,6 +48749,108 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
         );
     }
 
+    /// 2026-11-21, queue-launch: the dashboard reloaded six seconds into a
+    /// confirmed Delete. Hyper dropped the handler while stop waited for the
+    /// shell after `/exit`, so the worker was stopped but never unregistered
+    /// (env, meta and log left behind, interaction stuck at `sending`). The
+    /// stand-in acts on `/exit` slowly, like Claude running its exit hooks; the
+    /// caller is dropped once `/exit` has been typed, and the delete must still
+    /// finish.
+    #[tokio::test]
+    async fn delete_finishes_when_the_client_disconnects_mid_stop() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let name = format!("delete-drop-{}-{}", std::process::id(), ulid::Ulid::new());
+        std::fs::create_dir_all(home.path().join("sessions")).unwrap();
+        std::fs::write(env_path(&name), "CC_PROVIDER=claude\n").unwrap();
+        std::fs::write(meta_path(&name), "{}").unwrap();
+        struct Pane(String);
+        impl Drop for Pane {
+            fn drop(&mut self) {
+                let st = session_target(&self.0);
+                let _ = std::process::Command::new("tmux")
+                    .args(["kill-session", "-t", &st])
+                    .output();
+            }
+        }
+        let keys = home.path().join("keys.bin");
+        let pane = Pane(tmux_name(&name));
+        let agent = r#"import os,select,sys,time,tty
+tty.setraw(sys.stdin.fileno())
+sys.stdout.write('❯ '); sys.stdout.flush()
+buf=b''; end=time.monotonic()+60
+with open(sys.argv[1],'ab',buffering=0) as log:
+    while time.monotonic()<end:
+        if not select.select([sys.stdin],[],[],0.2)[0]: continue
+        key=os.read(sys.stdin.fileno(),1); log.write(key)
+        if key==b'\x15': buf=b''
+        elif key in (b'\r',b'\n'):
+            if buf.strip()==b'/exit': time.sleep(1.5); sys.exit(0)
+            buf=b''
+        else: buf+=key
+"#;
+        let created = tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            &pane.0,
+            "-x",
+            "200",
+            "-y",
+            "24",
+            "sh",
+            "-c",
+            r#"python3 -c "$1" "$2"; PS1='$ ' exec sh -i"#,
+            "sh",
+            agent,
+            keys.to_str().unwrap(),
+        ])
+        .await
+        .expect("tmux required for the delete-drop proof");
+        assert!(
+            created.status.success(),
+            "{}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let ready = std::time::Instant::now() + Duration::from_secs(10);
+        while !is_running(&name).await {
+            assert!(std::time::Instant::now() < ready, "stand-in agent never ran");
+            sleep_ms(50).await;
+        }
+        let state = AppState {
+            store: Arc::new(crate::db::Store::open(&home.path().join("delete.db")).unwrap()),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-amux-ui-token", ui_token(&state).parse().unwrap());
+        let (st2, n2) = (state.clone(), name.clone());
+        let client = tokio::spawn(async move { delete_post(&st2, &n2, &headers).await });
+
+        // The client goes away once stop has typed /exit, while it waits for the shell.
+        let typed = std::time::Instant::now() + Duration::from_secs(15);
+        while !String::from_utf8_lossy(&std::fs::read(&keys).unwrap_or_default()).contains("/exit") {
+            assert!(std::time::Instant::now() < typed, "delete never typed /exit");
+            sleep_ms(20).await;
+        }
+        client.abort();
+        assert!(client.await.unwrap_err().is_cancelled(), "the client was dropped mid-stop");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(25);
+        while env_path(&name).exists() || meta_path(&name).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a delete whose client disconnected mid-stop left the worker registered \
+                 (env exists: {}, meta exists: {})",
+                env_path(&name).exists(),
+                meta_path(&name).exists()
+            );
+            sleep_ms(100).await;
+        }
+    }
+
     #[tokio::test]
     async fn stop_route_interrupts_busy_tools_without_waiting_for_composer_commands() {
         let home = tempfile::tempdir().unwrap();
@@ -58253,7 +58389,7 @@ mod amux4770_worktree_isolation_tests {
     fn reaping_a_worker_releases_its_board_leases() {
         let src = include_str!("session_verbs.rs");
         let body = src
-            .split_once("async fn delete_post(")
+            .split_once("async fn delete_post_inner(")
             .expect("the delete handler exists")
             .1;
         let body = body.split_once("\n    j200(").expect("its end marker").0;
@@ -58275,7 +58411,7 @@ mod amux4770_worktree_isolation_tests {
     fn reaping_a_worker_reclaims_its_worktree_and_says_so_when_it_cannot() {
         let src = include_str!("session_verbs.rs");
         let body = src
-            .split_once("async fn delete_post(")
+            .split_once("async fn delete_post_inner(")
             .expect("the delete handler exists")
             .1;
         let body = body.split_once("\n    j200(").expect("its end marker").0;
@@ -58326,7 +58462,7 @@ mod amux4770_worktree_isolation_tests {
     #[test]
     fn deleting_a_dashboard_worktree_worker_reclaims_the_conventional_path() {
         let src = include_str!("session_verbs.rs");
-        let body = src.split_once("async fn delete_post(").unwrap().1;
+        let body = src.split_once("async fn delete_post_inner(").unwrap().1;
         let body = body.split_once("\n    j200(").unwrap().0;
         let code: String = body
             .lines()
