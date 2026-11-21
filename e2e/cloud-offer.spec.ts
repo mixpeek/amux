@@ -64,7 +64,8 @@ async function expectOfferShown(page: Page) {
     throw new Error(`#cloud-offer never showed; the server's cloud_offer pref is ${await r.text()}; `
       + `the page holds ${JSON.stringify(app)}. `
       + 'A trigger this page did not record means another context on this server spent it '
-      + '(every context must start with the fixtures.ts dismissed seed).\n' + String(e));
+      + '(every context must start dismissed: the config storageState seed, and fixtures.ts for newContext). '
+      + 'verdict.skipped names the gate that held this page\'s own try.\n' + String(e));
   }
 }
 

@@ -2442,18 +2442,24 @@ function _cloudOfferCheckLongJob() {
 }
 
 async function _cloudOfferTry(trigger, worker) {
+  // Each refusal is recorded on the verdict by name, so a missing offer says
+  // which gate held it rather than reading the same as "never tried".
+  const skip = why => { if (window._cloudOfferVerdict) window._cloudOfferVerdict.skipped = trigger + ':' + why; };
   if (!_cloudOfferOwner || document.getElementById('cloud-offer')) return;
   const st = await _cloudOfferLoad();
-  if (!st || st.dismissed || st[trigger] || document.getElementById('cloud-offer')) return;
+  if (!st) return skip('pref_unreadable');
+  if (st.dismissed || st[trigger]) return skip(st.dismissed ? 'dismissed' : 'already_offered');
+  if (document.getElementById('cloud-offer')) return;
   const setup = document.getElementById('apikey-setup-modal');
-  if (setup && setup.style.display === 'flex') return;   // first run comes first
+  if (setup && setup.style.display === 'flex') return skip('setup_open');   // first run comes first
   // Not over an open file or worker: it covered the markdown editor's text on a phone
   // (2026-10-31). Left unmarked, so it is offered again on the next trigger.
-  if (document.querySelector('#file-overlay.active, #peek-overlay.active')) return;
+  if (document.querySelector('#file-overlay.active, #peek-overlay.active')) return skip('overlay_open');
   // Not over Home either: it is a pitch about running workers on servers, made
   // to someone who came to say what they want (docs/design/intent-first.md).
   // Unmarked, so the fleet view can still offer it later.
-  if (document.body.classList.contains('intent-simple') || !window._homeChoiceSettled || _HOME_VIEWS[activeView]) return;
+  if (document.body.classList.contains('intent-simple') || !window._homeChoiceSettled || _HOME_VIEWS[activeView]) return skip('home');
+  if (window._cloudOfferVerdict) delete window._cloudOfferVerdict.skipped;
   _cloudOfferMark(trigger);
   _cloudOfferShow(trigger, worker);
 }

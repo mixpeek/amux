@@ -35,8 +35,8 @@
 //    older than 18s, checked every 5s → _forceSseReconnect → fresh initial
 //    push + refetch), so the phase-2 budget reflects its cadence, not
 //    network latency.
-// fixtures, not @playwright/test: WebKit ignores the config's storageState
-// localStorage, so only the fixture's seed keeps these phone-width pages from
+// fixtures, not @playwright/test: the fixture seeds the contexts this spec
+// makes with browser.newContext, which keeps these phone-width pages from
 // spending the server-wide Cloud offer under cloud-offer.spec.ts (run 39968514404).
 import { test, expect, Page } from './fixtures';
 import type { APIRequestContext } from '@playwright/test';

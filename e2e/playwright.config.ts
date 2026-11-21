@@ -206,6 +206,19 @@ console.log(
     'If a browser launch times out, this line is the first thing to check.',
 );
 
+// Every project's pages start with the walkthrough and the Cloud offer off,
+// including specs that import test from @playwright/test rather than
+// ./fixtures. A project whose storageState lost either key fails here, at
+// config load, rather than as a phone-width test that finds the server-wide
+// offer already spent (AF-1327).
+function checkSeeded<P extends { name: string; use?: { storageState?: unknown } }>(p: P): P {
+  const st = p.use?.storageState as { origins?: { localStorage?: { name: string }[] }[] } | undefined;
+  const keys = new Set((st?.origins || []).flatMap(o => (o.localStorage || []).map(e => e.name)));
+  const missing = ['amux_walkthrough_done', 'amux_cloud_offer'].filter(k => !keys.has(k));
+  if (missing.length) throw new Error(`e2e project ${p.name} has no storageState seed for ${missing.join(', ')}`);
+  return p;
+}
+
 export default defineConfig({
   testDir: '.',
   reporter: process.env.AMUX_E2E_EVIDENCE_DIR
@@ -269,6 +282,12 @@ export default defineConfig({
     use: {
       ...t.use,
       baseURL: `https://localhost:${t.port}`,
+      // Full trace for ios-safari only. `retain-on-failure` records every test
+      // and discards the passes, so it is the one setting here with a real
+      // per-test cost, scoped to where the failures actually are (4 of the 5
+      // specs AMUX-4967 catalogued were ios-safari). Widening it to the others
+      // is a one-line change if a desktop failure ever needs it.
+      ...(t.name === 'ios-safari' ? { trace: 'retain-on-failure' as const } : {}),
       // WALKTHROUGH OFF BY DEFAULT — opt-OUT, like serviceWorkers above and for
       // the same reason (AMUX-4986/4987). `_wtMaybeStart` opens it 1500ms after
       // load when `sessions.length === 0`, which is the NORMAL state of every CI
@@ -281,10 +300,12 @@ export default defineConfig({
         origins: [{
           origin: `https://localhost:${t.port}`,
           // amux_cloud_offer: the self-hosted Cloud offer stays off too (fixtures.ts).
-          // WebKit (ios-safari) ignores this localStorage (measured 2026-10-23: a raw
-          // @playwright/test page there started empty and wrote the cloud_offer
-          // pref). The fixtures.ts init script is what covers WebKit, so a spec
-          // that renders at phone width imports test from ./fixtures.
+          // ios-safari once started empty here (measured 2026-10-23, read then as
+          // "WebKit ignores this localStorage"). The cause was its project override
+          // below replacing this whole `use`; WebKit applies the seed (AF-1327,
+          // run 44894280415: a raw @playwright/test page on ios-safari spent the
+          // phone trigger under cloud-offer.spec.ts). checkSeeded() below fails
+          // the config if a project loses it again.
           localStorage: [{ name: 'amux_walkthrough_done', value: '1' }, { name: 'amux_cloud_offer', value: '{"dismissed":1}' }],
         }],
       },
@@ -314,19 +335,10 @@ export default defineConfig({
     // the next step is instrumenting the launch itself — the config already
     // prints host load every run for exactly that reason (AMUX-3605/3646,
     // load averages in the thirties on 28 cores).
-    ...(t.name === 'ios-safari'
-      ? {
-          timeout: 90_000,
-          // Full trace for this project only. `retain-on-failure` records
-          // every test and discards the passes, so it is the one setting here
-          // with a real per-test cost — scoped to where the failures actually
-          // are (4 of the 5 specs AMUX-4967 catalogued were ios-safari).
-          // Widening it to the others is a one-line change if a desktop
-          // failure ever needs it.
-          use: { ...t.use, baseURL: `https://localhost:${t.port}`, trace: 'retain-on-failure' as const },
-        }
-      : {}),
-  })),
+    // Only the timeout here: a `use` key in this spread replaces the one
+    // above, seed included.
+    ...(t.name === 'ios-safari' ? { timeout: 90_000 } : {}),
+  })).map(checkSeeded),
   webServer: TARGETS.map((t) => ({
     // Builds from COMMITTED HEAD, not this shared working tree — a peer
     // mid-edit used to fail runs with a Rust error against JS-only changes,
