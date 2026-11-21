@@ -18,6 +18,9 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   to the page through `amuxDictation`. `amux://test/globe?down=1|0` presses and lets go of 🌐
   (`?tap=N` taps it), and `AMUX_DESKTOP_DICTATION_FILE=<audio>` makes a file the microphone in a
   test copy, so `dictation-e2e.py` hears a known take without recording the room.
+  A microphone plugged in or unplugged shows a toast saying whether dictation uses it
+  (`MicWatch`, `window._dictMicsChanged`); `amux://test/mics?add=|remove=|default=` fakes one
+  (`mic-change-e2e.py`).
 - An agent's build is **Amux Dev** (`com.amux.desktop.dev`, no `amux://` handler, never a
   login item), a separate app from the owner's Amux. A test copy (`AMUX_DESKTOP_TEST=1`) is
   quiet: no Dock icon or menu bar, it never comes to the front or posts a notification, and

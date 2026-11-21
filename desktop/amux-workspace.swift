@@ -1075,6 +1075,19 @@ extension AppDelegate {
         case "/recorder": recorderTestHook(q)
         // 🌐 pressed (?down=1) or let go (?down=0), as the keyboard does it;
         // ?tap=N taps it N times at once (two hook calls are too far apart).
+        // Pretend microphones come and go: ?add=Name, ?remove=Name, ?default=Name.
+        case "/mics":
+            let w = MicWatch.shared
+            for it in q {
+                guard let v = it.value else { continue }
+                switch it.name {
+                case "add": if !w.testExtra.contains(v) { w.testExtra.append(v) }
+                case "remove": w.testExtra.removeAll { $0 == v }
+                case "default": w.testDefault = v
+                default: break
+                }
+            }
+            w.changed()
         case "/globe":
             if let n = Int(q.first { $0.name == "tap" }?.value ?? "") {
                 for _ in 0..<n { globeChanged(down: true); globeChanged(down: false) }

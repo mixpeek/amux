@@ -30222,6 +30222,27 @@ window._dictNativeEvent = function (ev) {
   _dictBeacon('dict_native_error', { error: String(ev.why || '').slice(0, 160) });
   _dictPillSays(ev.why || 'Dictation failed');
 };
+// A microphone was plugged in or unplugged (the Mac app tells the page you are in:
+// MicWatch in desktop/amux-dictation.swift). The toast says whether dictation uses it:
+// the one chosen in Dictation settings when it is connected, else the system default.
+window._dictMicsChanged = function (ev) {
+  if (!ev) return;
+  const chosen = _dictMic(), inputs = ev.inputs || [], def = ev.default || 'the default microphone';
+  const using = chosen && inputs.includes(chosen) ? chosen : def;
+  const lines = [];
+  for (const m of ev.added || []) {
+    if (m === using) lines.push(m + ' connected. Dictation uses it.');
+    else lines.push(m + ' connected. Dictation keeps using ' + using + '.');
+  }
+  for (const m of ev.removed || []) {
+    if (m === chosen) lines.push(m + ' disconnected. Dictation uses ' + def + ' until it is back.');
+    else if (!chosen && m === ev.was_default) lines.push(m + ' disconnected. Dictation now uses ' + def + '.');
+    else lines.push(m + ' disconnected. Dictation did not use it.');
+  }
+  if (!lines.length) return;
+  _dictBeacon('dict_mic_changed', { added: (ev.added || []).length, removed: (ev.removed || []).length, uses_new: (ev.added || []).includes(using) });
+  showToast(lines.join(' '));
+};
 async function _dictNativeDone(ev, take) {
   _dictRecording = false;
   if (_dictCancelled) return;

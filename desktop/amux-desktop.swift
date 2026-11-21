@@ -1155,6 +1155,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         hotKeyHandler = { [weak self] in self?.toggleVisible() }
         registerHotKey()
         setUpRecorder()
+        MicWatch.shared.start()
         startMenuBarItem()
         setUpNotifications()
         refreshPins()

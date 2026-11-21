@@ -1,6 +1,7 @@
 import Cocoa
 import WebKit
 import AVFoundation
+import CoreAudio
 
 // Dictation in the Mac app: the page asks (app.js _dictNativeStart), the app
 // listens and recognizes on device (amux-dictation-core.swift), and the page
@@ -177,5 +178,72 @@ final class NativeDictation {
         take = nil
         t.cancel()
         dlog("verdict=dictation_native_cancelled")
+    }
+}
+
+/// Microphones coming and going (owner, 2026-11-21: "a little notification when a
+/// microphone is connected or disconnected and the dictation is using it or not").
+/// CoreAudio says when the device list or the default input changes; after the
+/// change settles, the page you are in is told what came and went
+/// (window._dictMicsChanged in app.js), and it says whether dictation uses it, since
+/// the microphone chosen in Dictation settings lives in the page.
+final class MicWatch {
+    static let shared = MicWatch()
+    private var known: [String]?
+    private var lastDefault = ""
+    private var settle: DispatchWorkItem?
+    /// amux://test/mics: inputs a test copy pretends are connected, and its default.
+    var testExtra: [String] = []
+    var testDefault: String?
+
+    func start() {
+        known = inputs()
+        lastDefault = defaultName()
+        dlog("verdict=mic_watch_started inputs=\(known?.count ?? 0)")
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        for sel in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice] {
+            var a = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            let st = AudioObjectAddPropertyListenerBlock(sys, &a, DispatchQueue.main) { [weak self] _, _ in self?.changed() }
+            if st != noErr { dlog("verdict=mic_watch_listen_failed selector=\(sel) status=\(st)") }
+        }
+    }
+
+    /// A plug-in moves the list and then the default; one look once both have.
+    func changed() {
+        settle?.cancel()
+        let w = DispatchWorkItem { [weak self] in self?.report() }
+        settle = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: w)
+    }
+
+    private func inputs() -> [String] {
+        var names = recorderInputDevices().map { $0.name }
+        for n in testExtra where !names.contains(n) { names.append(n) }
+        return names
+    }
+
+    private func defaultName() -> String {
+        if let t = testDefault { return t }
+        var a = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal,
+                                           mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var n = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &n, &id) == noErr else { return "" }
+        return recorderInputDevices().first { $0.id == id }?.name ?? ""
+    }
+
+    private func report() {
+        let now = inputs(), def = defaultName(), wasDefault = lastDefault
+        let before = known ?? now
+        known = now
+        lastDefault = def
+        let added = now.filter { !before.contains($0) }, removed = before.filter { !now.contains($0) }
+        guard !added.isEmpty || !removed.isEmpty else { return }
+        let c = (NSApp.delegate as? AppDelegate)?.keyPage
+        dlog("verdict=mic_changed added=\(added.joined(separator: ",")) removed=\(removed.joined(separator: ",")) default=\(def) told=\(c?.viewHash ?? "none")")
+        guard let c = c, let data = try? JSONSerialization.data(withJSONObject: [
+            "added": added, "removed": removed, "inputs": now, "default": def, "was_default": wasDefault]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        c.webView.evaluateJavaScript("typeof window._dictMicsChanged === 'function' && window._dictMicsChanged(\(json))", completionHandler: nil)
     }
 }
