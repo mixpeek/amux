@@ -69,6 +69,10 @@ function world() {
         return ok({ data: Object.keys(w.appleLinks || {}).filter(c => w.appleLinks[c] === sub).map(id => ({ id })) });
       }
       let cm;
+      if ((cm = p.match(/^\/v1\/customers\/([^/]+)$/)) && m === 'GET') {
+        const s = Object.values(w.subs).find(s => s.customer_id === cm[1]);
+        return s ? ok({ id: cm[1], email: s.email }) : Response.json({ error: { message: 'No such customer' } }, { status: 404 });
+      }
       if ((cm = p.match(/^\/v1\/customers\/([^/]+)$/)) && m === 'POST') {
         (w.appleLinks ||= {})[cm[1]] = f.get('metadata[apple_sub]'); return ok({ id: cm[1] });
       }
@@ -514,6 +518,21 @@ await test('C10/C13 resubscribing within 30 days restores the last server, under
   eq(w.images.length, 0, 'snapshot deleted once the restored server is ready');
   const mail = w.mail.map(x => Buffer.from(x.raw, 'base64').toString()).find(t => /server is ready/.test(t)) || '';
   eq(/restored from your previous server/.test(mail), true, 'ready email says it was restored');
+});
+
+await test('a snapshot from before the Stripe account move is restored through its customer', async () => {
+  const w = world(); const old = paid(w, 'moved1');
+  await webhook(w, old); await ended(w, old); await cron(w);
+  const img = w.images[0];
+  // The new account never had the old subscription: only the customer (same id after the copy) exists.
+  const cust = w.subs[old].customer_id, email = w.subs[old].email;
+  delete w.subs[old];
+  img.labels['amux-cust'] = cust;
+  const again = paid(w, 'moved2'); w.subs[again].email = email; w.subs[again].metadata.email = email;
+  w.subs.cust_only = { id: 'cust_only', status: 'canceled', customer_id: cust, email, metadata: {} };
+  await webhook(w, again);
+  eq(w.servers[0].image, img.id, 'booted from the old snapshot');
+  eq(w.logs.some(l => l.event === 'restore.by_customer' && l.found), true, 'logged');
 });
 
 await test('C10 another email never gets someone else\'s snapshot', async () => {

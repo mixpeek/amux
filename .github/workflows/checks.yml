@@ -135,6 +135,11 @@ jobs:
       # gateway handler against fake workspaces: no cloud, Clerk or Docker.
       - name: Cloud gateway ChatGPT front door (tenant rules)
         run: python3 cloud/tests/test_chatgpt_front.py
+      # The amux Cloud Stripe account move (cloud/start/STRIPE-ACCOUNT-MOVE.md):
+      # the real CLI against fake Stripe and Hetzner. Mixpeek's subscriptions are
+      # never written, and no customer is billed twice.
+      - name: Cloud Stripe account move (dry run, apply, rollback)
+        run: python3 -W ignore cloud/tests/test_stripe_account_move.py
       # The dashboard version is DERIVED (amux-dashboard build.rs hashes
       # static/ and the server stamps it into app.js and sw.js at serve time).
       # This replaced a "both version lines moved" diff guard (AF-148): the

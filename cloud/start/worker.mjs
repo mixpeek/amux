@@ -266,7 +266,14 @@ async function finalSnapshotFor(env, email) {
   for (const i of imgs.images) {
     if (i.status !== 'available' || Number(i.labels['amux-expires'] || 0) * 1000 < Date.now()) continue;
     const old = await stripe(env, 'GET', `/subscriptions/${i.labels['amux-sub']}`, { expand: ['customer'] }).catch(() => null);
-    if ((old?.customer?.email || '').toLowerCase() === email.toLowerCase()) mine.push(i);
+    // A snapshot from before the move to amux Cloud's own Stripe account names a subscription this
+    // account never had; stripe_account_move.py relabel gave it the customer, whose id the copy kept.
+    let owner = old?.customer?.email;
+    if (!owner && i.labels['amux-cust']) {
+      owner = (await stripe(env, 'GET', `/customers/${i.labels['amux-cust']}`).catch(() => null))?.email;
+      log('restore.by_customer', { image: i.id, found: Boolean(owner) });
+    }
+    if ((owner || '').toLowerCase() === email.toLowerCase()) mine.push(i);
   }
   return mine.sort((a, b) => Date.parse(b.created) - Date.parse(a.created))[0] || null;
 }
