@@ -17,9 +17,17 @@ test('a queued message is edited from the Steering tab, on the server and in the
   const name = `steer-edit-${info.project.name}-${Date.now()}`;
   expect((await request.post('/api/sessions', { headers: auth, data: { name, dir: '/tmp', start: false } })).status()).toBe(201);
   try {
+    // Prime the 2s sessions cache with the empty queue: the list read straight
+    // after queueing then proves the POST invalidated it. The dashboard
+    // refetches once on message.queued, so a stale answer there was never
+    // corrected (main, 2026-11-21).
+    const listed = async () => ((await (await request.get('/api/sessions', { headers: auth })).json()) as any[])
+      .find(s => s.name === name)?.steering?.length ?? 0;
+    expect(await listed()).toBe(0);
     const q = await request.post(`/api/sessions/${name}/steer`, { headers: auth, data: { text: 'Ship the report tonight' } });
     expect(q.status()).toBe(200);
     const id = (await q.json()).id as string;
+    expect(await listed(), 'the sessions list shows the queued message at once, not the cached empty queue').toBe(1);
 
     await page.evaluate(() => { (window as any).fetchSessions(); });
     await page.waitForFunction((n) => (globalThis as any).eval('sessions').some((s: any) => s.name === n && (s.steering || []).length), name, { timeout: 90_000, polling: 2000 });

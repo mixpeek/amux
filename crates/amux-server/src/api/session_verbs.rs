@@ -29380,6 +29380,14 @@ pub(crate) async fn steer_mutate(
             }
         };
         send_dedup_accept(state, name, &dedup_id, &msg_id).await;
+        // The sessions list carries each worker's queue and is cached for 2s,
+        // as for the edit in steer_edit_response: the dashboard refetches once
+        // on message.queued, and without this it got the list from before the
+        // message and had no reason to ask again (steering-edit red on main,
+        // runs 44856032789 and 44866191571, 2026-11-21).
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+        tracing::info!(session = name, id = %msg_id, measured = true, n_considered = 1,
+            sessions_cache_invalidated = true, verdict = "steering_queued", "a steering message was queued");
         let deliver_at = steer_deliver_at_from(body, now_f64()).unwrap_or(0.0);
         if deliver_at > 0.0 {
             let id2 = msg_id.clone();
