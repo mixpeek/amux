@@ -32186,7 +32186,9 @@ function _peekCostLoad() {
 // adds. Strip it when INSERTING back into a composer — resending would
 // otherwise stack a second timestamp onto the old one.
 function _msgStripPrefix(text) {
-  return String(text || '').replace(/^\[\d{1,2}:\d{2}\s?[AP]M[^\]]*\]\s*/i, '');
+  // 12- and 24-hour stamps, with or without seconds: the server's
+  // with_send_author keeps whichever form the sender's stamp used.
+  return String(text || '').replace(/^\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?[^\]]*\]\s*/i, '');
 }
 // After inserting, GO TO the input: expand the send bar if collapsed, scroll the
 // composer into view, focus with the caret at the end — ready to edit/send.
@@ -32252,7 +32254,12 @@ function _cmdRecallBuild(session) {
     // sometimes lands in history alongside the same text without it, which made
     // recall show the identical prompt twice in a row. Only that glyph is
     // removed, never a leading '>' a person may have typed as a quote.
-    const t = (e.text || '').replace(/^\u276F\s*/, '').trim();
+    // Then the "[time author] " stamp the send path writes into the stored
+    // text (server with_send_author; the same shape _msgStripPrefix removes on
+    // edit). Without this, recall handed the stamp back to the composer, so a
+    // resend went out with the old timestamp still on it.
+    const t = (e.text || '').replace(/^\u276F\s*/, '')
+      .replace(/^\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]\.?M\.?)?[^\]]*\]\s*/i, '').trim();
     if (!t) continue;
     if (out.length && out[out.length - 1] === t) continue;   // collapse repeats
     out.push(t);
