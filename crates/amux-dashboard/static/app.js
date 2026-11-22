@@ -71336,8 +71336,8 @@ async function _bwImportProfile() {
   html += '<div style="margin-top:var(--space-1);"><label style="font-size:var(--fs-md);font-weight:500;">Destination profile name</label>';
   html += '<input id="bwi-dest" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-1);" placeholder="e.g. chrome-default" value="imported-chrome"></div>';
   // Per site, as Athena imports: only the sign-ins a profile needs, not a whole browser's.
-  html += '<div style="margin-top:var(--space-2-5);"><label for="bwi-sites" style="font-size:var(--fs-md);font-weight:500;">Only these sites <span style="color:var(--dim);font-weight:400;">(optional, comma-separated)</span></label>';
-  html += '<input id="bwi-sites" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-1);" placeholder="e.g. github.com, linear.app" value=""></div>';
+  html += '<div class="bwi-sites-row"><label for="bwi-sites" class="bwi-sites-label">Only these sites <span class="bwi-sites-hint">(optional, comma-separated)</span></label>';
+  html += '<input id="bwi-sites" class="bw-in bwi-sites-input" placeholder="e.g. github.com, linear.app" value=""></div>';
 
   var ok = await showFormModal('Import browser profile', html, 'Import');
   if (!ok) return;
