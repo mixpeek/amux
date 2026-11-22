@@ -3997,6 +3997,7 @@ let _modalResolve = null;
 function _modalBgClick(e) { if (e.target === document.getElementById('modal-backdrop')) _modalClose(false); }
 function _modalClose(val) {
   document.getElementById('modal-backdrop').classList.remove('open');
+  document.querySelector('#modal-backdrop .modal-box')?.classList.remove('modal-form');
   if (_modalResolve) { _modalResolve(val); _modalResolve = null; }
 }
 function showConfirm(msg, confirmLabel = 'Confirm', danger = false) {
@@ -4039,6 +4040,10 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
     document.getElementById('modal-btns').innerHTML =
       `<button class="btn primary" onclick="_modalClose(true)">${esc(confirmLabel)}</button>` +
       `<button class="btn" onclick="_modalClose(false)">Cancel</button>`;
+    // A form scrolls as one page, its buttons after the last field, so a
+    // phone keeps the whole height for the form (owner, 2026-11-22). A
+    // confirm or alert keeps its buttons pinned below a scrolling message.
+    document.querySelector('#modal-backdrop .modal-box').classList.add('modal-form');
     document.getElementById('modal-backdrop').classList.add('open');
   });
 }

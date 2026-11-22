@@ -977,6 +977,11 @@
   .modal-body input[type=date].input, .modal-body input[type=time].input { width: auto; flex: 1; min-width: 0; }
   .modal-footer { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); flex-shrink: 0; }
   .modal-footer .btn.danger { color: var(--red); border-color: var(--red); }
+  @media (max-width: 600px) {
+    .modal-header { padding: var(--space-3) var(--space-3) var(--space-2); }
+    .modal-body { padding: var(--space-3); }
+    .modal-footer { padding: var(--space-2-5) var(--space-3); }
+  }
 
   /* ── Shared modal layout: the action row is ALWAYS reachable ──────────────
      THE BUG CLASS: a dialog taller than the viewport whose action row is the
@@ -3894,8 +3899,17 @@
     -webkit-overflow-scrolling: touch; overflow-wrap: anywhere;
   }
   .modal-box > .modal-btns, #bulk-actions-overlay .modal-box > :first-child { flex-shrink: 0; }
+  /* showFormModal: the box is the one scroller and the buttons follow the
+     last field, instead of a scrolling form above pinned buttons. */
+  .modal-box.modal-form { overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .modal-box.modal-form > .modal-msg { flex: none; min-height: auto; overflow: visible; }
   .modal-box input, .modal-box textarea, .modal-box select { min-width: 0; max-width: 100%; }
   @media (max-width: 600px) {
+    /* A phone gives the dialog the screen: 8px from each edge, less padding. */
+    .modal-backdrop {
+      padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-2), env(safe-area-inset-right)) max(var(--space-2), env(safe-area-inset-bottom)) max(var(--space-2), env(safe-area-inset-left));
+    }
+    .modal-box { padding: var(--space-3-5) var(--space-3); max-width: calc(100vw - 16px); max-height: calc(var(--dialog-viewport-height, 100dvh) - 16px); }
     .modal-box button { min-width: 44px; min-height: 44px; }
     #dictm-pair { flex-wrap: wrap; }
     #dictm-pair input { flex: 1 1 100px; width: 0; }
@@ -3903,6 +3917,7 @@
   .modal-msg { font-size: var(--fs-2xl); color: var(--text); margin-bottom: var(--space-5); line-height: 1.5; }
   .modal-btns { display: flex; gap: var(--space-2-5); justify-content: center; }
   .modal-btns .btn { min-width: 80px; }
+  @media (max-width: 600px) { .modal-msg { margin-bottom: var(--space-3-5); } }
 
   /* Channel drawer — Slack-style DM between two sessions */
   .channel-drawer {

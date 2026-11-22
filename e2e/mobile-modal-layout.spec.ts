@@ -116,3 +116,28 @@ test('video close remains visible when playback controls hide',async({page})=>{
  await expect(close).toBeVisible();const b=(await close.boundingBox())!;expect(b.height).toBeGreaterThanOrEqual(44);
  await close.click();await expect(page.locator('#video-overlay')).not.toBeVisible();
 });
+
+// A form (showFormModal) scrolls as one page with its buttons after the last
+// field; a confirm opened after it keeps the pinned buttons (owner, 2026-11-22).
+test('a form dialog scrolls as one page and a later confirm keeps pinned buttons',async({page},info)=>{
+ const phone=(info.project.use.viewport?.width||1280)<=600;
+ await page.evaluate(()=>{(window as any).showFormModal('Long form','<div id="long-form">'+'<p>Field</p>'.repeat(80)+'</div>','Start');});
+ const box=page.locator('#modal-backdrop .modal-box'),msg=page.locator('#modal-msg');
+ await expect(page.locator('#long-form')).toBeVisible();
+ const m=await box.evaluate(b=>{const s=getComputedStyle(b),msg=b.querySelector('#modal-msg') as HTMLElement;
+  return {boxScrolls:b.scrollHeight>b.clientHeight,msgScrolls:msg.scrollHeight>msg.clientHeight,padX:parseFloat(s.paddingLeft),width:b.getBoundingClientRect().width,vw:innerWidth};});
+ expect(m.boxScrolls).toBe(true);expect(m.msgScrolls).toBe(false);
+ if(phone){expect(m.padX).toBeLessThanOrEqual(12);expect(m.width).toBeGreaterThanOrEqual(m.vw-16-1);}
+ else{expect(m.padX).toBe(20);expect(m.width).toBeLessThanOrEqual(480);}
+ const start=page.locator('#modal-btns button',{hasText:'Start'});
+ const vh=page.viewportSize()!.height;
+ expect((await start.boundingBox())!.y).toBeGreaterThan(vh);
+ await box.evaluate(b=>{b.scrollTop=b.scrollHeight;});
+ await expect(start).toBeInViewport();
+ await page.locator('#modal-btns button',{hasText:'Cancel'}).click();
+ await expect(page.locator('#modal-backdrop')).not.toBeVisible();
+ await page.evaluate(()=>{(window as any).showConfirm('Long confirmation with evidence. '.repeat(200));});
+ await expect(box).not.toHaveClass(/modal-form/);
+ expect(await msg.evaluate(e=>e.scrollHeight>e.clientHeight)).toBe(true);
+ await expect(page.locator('#modal-btns button[onclick="_modalClose(false)"]')).toBeInViewport();
+});
