@@ -121,6 +121,13 @@ json.dump({"connections": [{"name": "e2e", "url": URL}], "lastUrl": URL, "cleanE
            "windows": [{"url": URL + "/#view=sessions", "frame": "{{120, 140}, {820, 560}}", "tabGroup": 1, "selected": True}]},
           open(CFG, "w"))
 aenv = dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST, AMUX_HOME=HOME)
+# ScreenCaptureKit captures no invisible window, so the window-attach check
+# needs the copy's window shown: a small one, in a corner, for this run only
+# (AMUX_AGENT_VIEW_VISIBLE=1). Without it that check is skipped and says so.
+VISIBLE = os.environ.get("AMUX_AGENT_VIEW_VISIBLE") == "1"
+if VISIBLE:
+    aenv["AMUX_DESKTOP_TEST_VISIBLE"] = "1"
+    c = json.load(open(CFG)); c["windows"][0]["frame"] = "{{40, 40}, {420, 300}}"; json.dump(c, open(CFG, "w"))
 ap = subprocess.Popen([BIN], env=aenv, stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
 EP = os.path.join(HOME, "cua", "endpoint.json")
 try:
@@ -184,6 +191,8 @@ try:
                            capture_output=True, text=True).stdout
     if "com.apple.loginwindow" in front:
         SKIPPED.append("window attach: this Mac's screen is locked, and macOS captures no window while it is")
+    elif not VISIBLE:
+        SKIPPED.append("window attach: a quiet copy's window is invisible and macOS captures none; run with AMUX_AGENT_VIEW_VISIBLE=1")
     else:
         check("and the window you were in", "window" in (ls.get("attached") or []), ls)
         img = next((l.split(": ", 1)[1] for l in (ls.get("text") or "").splitlines() if l.startswith("The window I was in: ")), "")

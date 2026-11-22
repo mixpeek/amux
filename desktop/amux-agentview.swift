@@ -341,13 +341,19 @@ final class QuickAsk: NSObject, NSTextFieldDelegate {
     /// The front window of `pid`, as a PNG under <AMUX_HOME>/quick-ask.
     func captureWindow(pid: pid_t, _ done: @escaping (String?) -> Void) {
         guard #available(macOS 14.0, *), pid > 0 else { done(nil); return }
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, _ in
-            let win = content?.windows.first { $0.owningApplication?.processID == pid && $0.windowLayer == 0 && $0.frame.width > 40 }
-            guard let w = win else { DispatchQueue.main.async { done(nil) }; return }
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, listErr in
+            // Its normal window first; a panel or a raised window when that is all it has.
+            let mine = (content?.windows ?? []).filter { $0.owningApplication?.processID == pid && $0.frame.width > 40 && $0.frame.height > 40 }
+            let win = mine.first { $0.windowLayer == 0 } ?? mine.first
+            guard let w = win else {
+                dlog("verdict=quick_ask_window_none pid=\(pid) windows=\(content?.windows.count ?? -1) mine=\(mine.count) error=\(listErr?.localizedDescription ?? "-")")
+                DispatchQueue.main.async { done(nil) }; return
+            }
             let cfg = SCStreamConfiguration()
             cfg.width = Int(w.frame.width * 2)
             cfg.height = Int(w.frame.height * 2)
-            SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg) { img, _ in
+            SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg) { img, capErr in
+                if img == nil { dlog("verdict=quick_ask_window_capture_failed pid=\(pid) layer=\(w.windowLayer) error=\(capErr?.localizedDescription ?? "-")") }
                 var out: String?
                 if let img = img {
                     let dir = MacComputer.shared.home.appendingPathComponent("quick-ask")
