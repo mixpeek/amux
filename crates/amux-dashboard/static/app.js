@@ -16975,6 +16975,12 @@ function setPeekTab(tab) {
   const steering = document.getElementById('peek-steering-panel');
   if (tab === 'steering') { steering.classList.add('active'); _steerHistLoadedFor = null; _steeringRender(); loadPeekInstructions(); }
   else { steering.classList.remove('active'); }
+  document.getElementById('peek-tab-computer')?.classList.toggle('active', tab === 'computer');
+  const cuP = document.getElementById('peek-computer-panel');
+  if (cuP) {
+    if (tab === 'computer') { cuP.classList.add('active'); _peekComputerStart(); }
+    else { cuP.classList.remove('active'); _peekComputerStop(); }
+  }
   document.getElementById('peek-tab-tasks')?.classList.toggle('active', tab === 'tasks');
   const tasksP = document.getElementById('peek-tasks-panel');
   if (tasksP) {
@@ -20876,6 +20882,64 @@ function _peekFileBrowser() {
   if (_splitPaneOpen('#path=' + encodeURIComponent(peekSessionDir || '/'), 'files')) return;
   openExplore(peekSessionDir, peekSession);
 }
+// ── Computer tab: what a worker did in this Mac's apps (Athena sends each
+// step's screenshot into the chat; amux shows them on the worker). The rows
+// come from GET /api/computer/mac/activity, which the server writes on every
+// call, refused or not. Polled every 2s while the tab is shown, never otherwise.
+let _peekComputerTimer = null;
+let _peekComputerSig = null;   // null: nothing rendered yet (an empty feed's signature is '')
+function _peekComputerStart() {
+  _peekComputerStop();
+  _peekComputerSig = null;
+  _peekComputerLoad();
+  _peekComputerTimer = setInterval(() => {
+    if (document.hidden || _peekTab !== 'computer') return;
+    _peekComputerLoad();
+  }, 2000);
+}
+function _peekComputerStop() {
+  if (_peekComputerTimer) { clearInterval(_peekComputerTimer); _peekComputerTimer = null; }
+}
+async function _peekComputerLoad() {
+  const list = document.getElementById('peek-computer-list');
+  const count = document.getElementById('peek-computer-count');
+  const w = peekSession;
+  if (!list || !w) return;
+  let d;
+  try {
+    const r = await fetch(API + '/api/computer/mac/activity?limit=40&session=' + encodeURIComponent(w), { headers: _authHeaders(), signal: AbortSignal.timeout(6000) });
+    d = r.ok ? await r.json() : null;
+  } catch (e) { d = null; }
+  if (w !== peekSession) return;
+  if (!d || !d.measured) {
+    if (!list.children.length) list.innerHTML = '<li class="pcu-empty">Could not read the activity feed.</li>';
+    return;
+  }
+  const rows = d.rows || [];
+  const sig = rows.map(x => x.ts + x.verdict).join('|');
+  if (sig === _peekComputerSig) return;
+  _peekComputerSig = sig;
+  count.textContent = rows.length ? rows.length + (rows.length >= 40 ? '+' : '') + ' steps' : '';
+  const badge = document.getElementById('peek-tab-computer-count');
+  if (badge) badge.textContent = rows.length ? String(rows.length) : '';
+  if (!rows.length) {
+    list.innerHTML = '<li class="pcu-empty">No computer use yet. When this worker reads or acts in an app on this Mac (amux computer mac), each step shows here with what it saw.</li>';
+    return;
+  }
+  list.innerHTML = rows.map(x => {
+    const t = new Date(x.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const ok = x.verdict === 'called';
+    const what = ok ? 'done' : (x.code || x.verdict || 'refused').replace(/_/g, ' ');
+    const shot = x.screenshot
+      ? '<button type="button" class="pcu-shot" data-path="' + esc(x.screenshot) + '" title="Open this screenshot"><img loading="lazy" alt="What the worker saw" src="' + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(x.screenshot))) + '"></button>'
+      : '';
+    return '<li class="pcu-row' + (ok ? '' : ' pcu-refused') + '" data-verdict="' + esc(x.verdict || '') + '">'
+      + '<div class="pcu-line"><span class="pcu-time">' + esc(t) + '</span><code class="pcu-tool">' + esc(x.tool || '') + '</code>'
+      + '<span class="pcu-app">' + esc(x.apps || '') + '</span><span class="pcu-verdict">' + esc(what) + '</span></div>' + shot + '</li>';
+  }).join('');
+  list.querySelectorAll('.pcu-shot').forEach(b => { b.onclick = () => openFilePreview(b.dataset.path); });
+}
+
 function togglePeekSplit() {
   if (_nativeSplit()) { _splitBeacon('split_pane_opened', { what: 'page' }); return; }
   _peekFileBrowser();
@@ -24718,7 +24782,7 @@ const _PEEK_TAB_ITEMS = {
   scope: '.worker-config-row', cost: '.cost-row, .cost-day', tasks: '.board-card, .peek-issue-item',
 };
 const _PEEK_TAB_LABELS = { chat: 'chat', schedules: 'schedules and runs', messages: 'messages', logs: 'logs',
-  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks', intent: 'conversations' };
+  commits: 'commits', shell: 'shell runs', issues: 'board', dictation: 'dictation', scope: 'settings', tasks: 'tasks', intent: 'conversations', computer: 'computer use' };
 let _peekTabIdx = -1, _peekTabObs = null, _peekTabObsRoot = null, _peekTabApplying = false, _peekTabTimer = 0;
 function _peekTabName() { return document.getElementById('peek-overlay')?.dataset.peekTab || 'terminal'; }
 function _peekTabRoot(tab = _peekTabName()) {

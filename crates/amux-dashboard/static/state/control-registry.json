@@ -4278,6 +4278,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_peekComputerLoad": {
+      "kind": "command._peekComputerLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekComputerStart": {
+      "kind": "command._peekComputerStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekDeleteSchedule": {
       "kind": "command._peekDeleteSchedule",
       "feedback_required": true,

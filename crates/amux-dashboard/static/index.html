@@ -3412,6 +3412,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
     <button class="peek-tab" id="peek-tab-messages" onclick="setPeekTab('messages')" title="Every message sent to this worker"><span class="tab-ico">✉</span><span class="tab-lbl">Messages</span><span class="peek-tab-count" id="peek-tab-messages-count"></span></button>
     <button class="peek-tab" id="peek-tab-intent" onclick="setPeekTab('intent')" title="Conversations from Intent routed to this worker" style="display:none;"><span class="tab-ico">&#x25CE;</span><span class="tab-lbl">Intent</span><span class="peek-tab-count" id="peek-tab-intent-count"></span></button>
     <button class="peek-tab" id="peek-tab-tasks" onclick="setPeekTab('tasks')" title="The task names this worker has worked on, newest first, as the model named them"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
+    <button class="peek-tab" id="peek-tab-computer" onclick="setPeekTab('computer')" title="What this worker did in apps on this Mac, step by step, with what it saw"><span class="tab-ico">&#x1F5A5;</span><span class="tab-lbl">Computer</span><span class="peek-tab-count" id="peek-tab-computer-count"></span></button>
     <button class="peek-tab" id="peek-tab-dictation" onclick="setPeekTab('dictation')" title="Voice dictation — speak, get clean text"><span class="tab-ico">🎤</span><span class="tab-lbl">Dictation</span><span class="peek-tab-count" id="peek-tab-dictation-count"></span></button>
     <button class="peek-tab" id="peek-tab-readalouds" onclick="setPeekTab('readalouds')" title="Past read-alouds — replay any; auto-clears after 30 days"><span class="tab-ico">&#x1F50A;</span><span class="tab-lbl">Read alouds</span><span class="peek-tab-count" id="peek-tab-readalouds-count"></span></button>
     <button class="peek-tab" id="peek-tab-issues" onclick="setPeekTab('issues')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span><span class="peek-tab-count" id="peek-tab-issues-count"></span></button>
@@ -3665,6 +3666,14 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
   
   <!-- This worker's tasks, newest first and numbered: the Tasks view's list
        fixed to peekSession (app.js _tasksScopes.peek). -->
+  <div id="peek-computer-panel" class="peek-tasks-panel peek-computer-panel">
+    <div class="pcu-bar">
+      <strong>Computer use on this Mac</strong>
+      <span id="peek-computer-count" class="tasks-count" role="status" aria-live="polite"></span>
+      <span class="pcu-hint">Live while this tab is open. &#x2318;&#x21E7;Esc or the menu bar's Stop Computer Use stops every worker.</span>
+    </div>
+    <ol id="peek-computer-list" class="pcu-list" aria-label="This worker's computer-use steps, newest first"></ol>
+  </div>
   <div id="peek-tasks-panel" class="peek-tasks-panel tasks-scope row-note-host" style="padding:0;gap:0;flex-direction:column;">
     <div class="tasks-bar">
       <input id="peek-tasks-search" class="input tasks-search" type="search" placeholder="Search this worker's tasks, cards and messages" aria-label="Search this worker's tasks" oninput="_tasksSearchInput('peek')">

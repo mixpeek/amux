@@ -1048,6 +1048,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Token usage &amp; cost for this worker, by task | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Translate this worker | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Voice dictation — speak, get clean text | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | What this worker did in apps on this Mac, step b | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | peek-tab-commits | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | peek-tab-git | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | peek-tab-issues | `setPeekTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
