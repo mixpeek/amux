@@ -12418,6 +12418,28 @@ p.communicate(msg.encode())
     fi
     rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""
   }
+  # HAND THE LEASE OVER BETWEEN ATTEMPTS (mixpeek-meta-worker, 2026-11-22). The
+  # lease was taken once and held until the land exited, through every attempt:
+  # studio-plg's land on the Mac held it 31+ min across a red merge-queue batch,
+  # its four-step bisect and a new batch of five, while mixpeek-dev's queue
+  # (mixpeek-cicd at its head) logged land_remote_lease_wait the whole time.
+  # Before a further attempt, a land another machine waits on releases the
+  # lease and takes it again; the take yields to that waiter (the fairness yield
+  # above) and then waits for its land like any other. Nothing is composed or
+  # pushed between the two, and the next attempt refetches the remote tip.
+  _land_rl_handover() { # <remote> <branch> <lock dir>: 0 holding again (or nothing to hand over), 7 not held
+    [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+    [ -n "${_LAND_RL_DIR:-}" ] && [ -s "$_LAND_RL_DIR/rl-sha" ] || return 0
+    local _waiter _traps
+    _waiter="$(_land_rl_other_waiter "$1" "$2")" || return 0
+    _land_rl_say "verdict=land_remote_lease_handover: $_waiter waits for $2; releasing the lease between attempts so it lands first"
+    # The release ignores TERM, INT and HUP for the exit trap's sake; here the
+    # land goes on, so its own handlers come back after.
+    _traps="$(trap -p TERM INT HUP)"
+    _land_rl_release "$1" "$2"
+    trap - TERM INT HUP; eval "$_traps"
+    _land_rl_take "$1" "$2" "$3"
+  }
   _land_holder_alive() {
     local pid="$1" lockdir="$2" want got
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
@@ -13166,6 +13188,9 @@ $f"
       exec bash "$0" land ${orig_args[@]+"${orig_args[@]}"}
     fi
     date +%s > "$lock/since"
+    # Another machine waiting on the remote lease gets its turn between our
+    # attempts, not only after our whole hold (_land_rl_handover).
+    if [ "$i" -gt 1 ]; then _land_rl_handover "$remote" "$branch" "$lock" || return 7; fi
     rm -f "${TMPDIR:-/tmp}/amux-land-regen.$$"
     git fetch -q "$remote" "$branch" || { _land_log "fetch failed (attempt $i)"; sleep 5; continue; }
     # A dirty tree cannot be rebased, and a lane often keeps working while its

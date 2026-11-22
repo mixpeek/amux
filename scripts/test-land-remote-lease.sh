@@ -34,6 +34,9 @@
 #      2026-11-10 12:53:32Z lost a green merge-queue run to this)
 #  15. a refusal for someone else's lease leaves that lease alone and says it
 #      was not released
+#  18. a land that needs another attempt hands the lease to the other machine's
+#      announced waiter first, so one machine's queue cannot keep the other's
+#      out for a whole hold (mixpeek-meta-worker, 2026-11-22: 31+ min)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -59,6 +62,9 @@ echo hook >> "$H/hook-runs"
 git ls-remote "$H/origin.git" $REF | awk '{print \$1}' > "$H/lease-during-gate"
 sleep "\$(cat "$H/gate-s" 2>/dev/null || echo 0)"
 while [ -e "$H/hold" ]; do sleep 0.2; done
+# race-once: someone lands from checkout c during this gate, so this push loses
+# the race and the land makes another attempt (case 18).
+if [ -e "$H/race-once" ]; then rm -f "$H/race-once"; git -C "$H/c" push -q --no-verify origin HEAD:main; fi
 exit 0
 EOF
   chmod +x "$1/.git/hooks/pre-push"
@@ -283,6 +289,29 @@ wait "$p14"; rc=$?
 [ "$rc" = 0 ] && [ "$(main_has f)" = fourteen ] && grep -q 'verdict=land_remote_lease_renewed_under_check' "$H/fourteen.out" \
   && ok "a renewal between the check's reads is our own lease: the land pushes" || bad "14: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/fourteen.out" | tail -3)"
 [ -z "$(lease_now)" ] && ok "and the renewed lease is released after the push" || bad "14: lease left: $(lease_now)"
+
+# 18
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f e1; commit b g e2; echo 0 > "$H/gate-s"
+[ -d "$H/c" ] || mk c
+git -C "$H/c" fetch -q origin; git -C "$H/c" reset -q --hard origin/main
+echo race > "$H/c/h"; git -C "$H/c" add h; git -C "$H/c" commit -qm "h=race"
+: > "$H/hold"
+land a e1 & pa=$!
+for _ in $(seq 1 240); do [ -n "$(lease_now)" ] && break; sleep 0.25; done
+land b e2 & pb=$!
+for _ in $(seq 1 240); do [ -n "$(waiters)" ] && break; sleep 0.25; done
+# e1's gate ends with a push from c landing first: e1 must make a second attempt.
+: > "$H/race-once"; rm -f "$H/hold"
+wait "$pa"; ra=$?; wait "$pb"; rb=$?
+git -C "$H/a" fetch -q origin; order="$(git -C "$H/a" log --format=%s origin/main -3 | tr '\n' ' ')"
+[ "$ra" = 0 ] && [ "$rb" = 0 ] && grep -q 'lost a race to a push outside land (attempt 1)' "$H/e1.out" \
+  && ok "the holder lost its first push and made another attempt" || bad "18: ra=$ra rb=$rb: $(tail -3 "$H/e1.out")"
+grep -q 'verdict=land_remote_lease_handover: .*(e2) waits' "$H/e1.out" \
+  && ok "before it, the holder handed the lease to the other machine's waiter" || bad "18: no handover: $(grep 'lease_' "$H/e1.out" | tail -4)"
+case "$order" in "f=e1 g=e2 h=race "*) ok "the waiter landed between the holder's attempts" ;;
+  *) bad "18: order on main (newest first): $order" ;; esac
+[ -z "$(lease_now)" ] && [ -z "$(waiters)" ] && ok "and the lease and every announcement are gone after" || bad "18: left: lease=$(lease_now) waiters=$(waiters)"
 
 # 7
 commit a f off
