@@ -147,15 +147,21 @@ fn session_of(
 }
 
 fn snapshot(session: &str) -> Value {
-    let all = WATCHES.lock().expect("watch registry poisoned");
+    let all = WATCHES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match all.get(session) {
         None => {
             json!({ "session": session, "watching": false, "steps": [], "measured": true, "n_considered": 0 })
         }
         Some(w) => {
-            let steps = w.steps.lock().expect("watch steps poisoned").clone();
+            let steps = w
+                .steps
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             json!({ "session": session, "watching": !w.stop.load(Ordering::Relaxed), "started_at": w.started_at,
-                    "error": w.error.lock().expect("watch error poisoned").clone(),
+                    "error": w.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
                     "steps": steps, "measured": true, "n_considered": steps.len(),
                     "redacted": steps.iter().filter(|s| s.get("redacted") == Some(&json!(true))).count() })
         }
@@ -176,7 +182,9 @@ fn collect(events: Vec<Value>, steps: &Mutex<Vec<Value>>) {
             .strip_prefix(MARK)
             .and_then(|p| serde_json::from_str::<Value>(p).ok())
         {
-            let mut st = steps.lock().expect("watch steps poisoned");
+            let mut st = steps
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if st.len() < MAX_STEPS {
                 st.push(step);
             }
@@ -223,7 +231,7 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let session = session_of(body.as_ref(), None, &headers);
     if WATCHES
         .lock()
-        .expect("watch registry poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session)
         .is_some_and(|w| !w.stop.load(Ordering::Relaxed))
     {
@@ -255,7 +263,7 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let (steps, stopflag, error) = (w.steps.clone(), w.stop.clone(), w.error.clone());
     WATCHES
         .lock()
-        .expect("watch registry poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(session.clone(), w);
     tracing::info!(
         "[browser-watch] verdict=watch_started session={session} url={}",
@@ -291,7 +299,7 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                     if missing && !state.is_null() {
                         rearmed += 1;
                         let mut ev = Vec::new();
-                        let _ = cdp
+                        let armed = cdp
                             .call_in(
                                 None,
                                 "Runtime.evaluate",
@@ -301,8 +309,10 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                             )
                             .await;
                         collect(ev, &steps);
+                        // A failed re-arm is retried on the next poll.
                         tracing::info!(
-                            "[browser-watch] verdict=watch_rearmed session={s2} times={rearmed}"
+                            "[browser-watch] verdict=watch_rearmed session={s2} times={rearmed} ok={}",
+                            armed.is_ok()
                         );
                     }
                 }
@@ -325,7 +335,9 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                         tracing::warn!("[browser-watch] verdict=watch_reconnect session={s2} ok={back} times={reconnects}: {e}");
                         errors = 0;
                         if !back && reconnects >= 5 {
-                            *error.lock().expect("watch error poisoned") =
+                            *error
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
                                 Some(format!("the tab went away: {e}"));
                             stopflag.store(true, Ordering::Relaxed);
                             break;
@@ -336,20 +348,24 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
         // Leave the page as it was: no recorder in the next document, none listening now.
-        let _ = cdp
+        // A tab that is already gone fails these; say so rather than drop it.
+        let removed = cdp
             .call(
                 "Page.removeScriptToEvaluateOnNewDocument",
                 json!({ "identifier": script_id }),
                 T,
             )
             .await;
-        let _ = cdp
+        let quieted = cdp
             .call(
                 "Runtime.evaluate",
                 json!({ "expression": "window.__amuxWatchOff = true" }),
                 T,
             )
             .await;
+        if let Err(e) = removed.and(quieted) {
+            tracing::info!("[browser-watch] verdict=watch_cleanup_partial session={s2}: {e}");
+        }
     });
     Json(json!({ "ok": true, "watch": snapshot(&session),
                  "next": "do the task in the browser; GET /api/browser/watch for the steps, POST /api/browser/watch/stop when done" }))
@@ -365,7 +381,7 @@ async fn stop(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let session = session_of(body.as_ref(), None, &headers);
     if let Some(w) = WATCHES
         .lock()
-        .expect("watch registry poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session)
     {
         w.stop.store(true, Ordering::Relaxed);
