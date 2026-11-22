@@ -47,6 +47,11 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   permissions, when Settings > Computer use is on; it writes `<AMUX_HOME>/cua/endpoint.json`
   for the server (`integrations/computer_mac.rs` holds the per-app gate). ⌘⇧Esc or the menu
   bar's Stop Computer Use ends it. `computer-mac-e2e.py` proves it with reads only.
+- While a worker uses this Mac the app shows a live preview and an outline over the driven
+  window, and a dot on the menu bar icon (`amux-agentview.swift`, from the server's activity
+  feed); both overlays use `sharingType = .none`. ⌥Space opens Quick Ask (Settings can turn it
+  off; a quiet test copy never registers it). Settings > Permissions shows what macOS granted.
+  `agent-view-e2e.py` proves them; `amux://test/quickask` drives Quick Ask.
 - A test screenshot captures its own window or rectangle, never the whole screen: the owner's
   screen can hold a live call.
 - The page side of a feature lives in `crates/amux-dashboard`; the app side is opt-in behind

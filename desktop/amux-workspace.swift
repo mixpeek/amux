@@ -1255,6 +1255,22 @@ extension AppDelegate {
         // Choose a menu item by title (?title=Copy), as a click on it does.
         // The amux menu bar item: ?title= chooses one of its items; ?needs=N
         // stands in N waiting workers (test-w1…) for the needs-you section.
+        // Quick Ask: ?show=1 opens it; ?text=&worker= fill it; ?selection= stands
+        // in for selected text; ?window_self=1 attaches this copy's own window;
+        // ?attach_window=1 / ?attach_selection=1 tick the boxes; ?send=1 sends.
+        case "/quickask":
+            let qa = QuickAsk.shared
+            let val = { (k: String) in q.first { $0.name == k }?.value }
+            if val("show") == "1" { qa.show() }
+            if val("window_self") == "1" { qa.testWindowPID = getpid() }
+            if let t = val("text") { qa.field.stringValue = t }
+            if let s = val("selection") { qa.testSelection(s) }
+            if let w = val("worker") {
+                if qa.workers.itemTitles.contains(w) { qa.workers.selectItem(withTitle: w) } else { qa.workers.addItem(withTitle: w); qa.workers.selectItem(withTitle: w) }
+            }
+            if val("attach_window") == "1" { qa.attachWindow.state = .on }
+            if val("attach_selection") == "1" { qa.attachSelection.state = .on }
+            if val("send") == "1" { qa.send(nil) }
         case "/status-menu":
             if let n = Int(q.first { $0.name == "needs" }?.value ?? "") {
                 let items = (0..<n).map { ["worker": "test-w\($0 + 1)", "key": "k\($0)", "question": "Approve step \($0 + 1)?"] }
@@ -1369,7 +1385,9 @@ extension AppDelegate {
                                         "view": c.viewHash, "selected": (w.tabGroup?.selectedWindow ?? w) === w, "tooltip": w.tab.toolTip ?? "",
                                         "connection": w.tab.accessoryView?.toolTip ?? "",
                                         "server": c.serverOrigin?.absoluteString ?? "", "saved": c.savedURL() ?? "",
-                                        "subtitle": w.subtitle]
+                                        "subtitle": w.subtitle,
+                                        // The same window as the window server reports it (AgentWatch's outline source).
+                                        "cg_frame": NSStringFromRect(AgentWatch.shared.windowFrame(pid: Int(getpid()), windowID: w.windowNumber) ?? .zero)]
                 if let g = c.grid {
                     d["grid"] = g.readingOrder
                     d["panes"] = g.tree.leaves.compactMap { g.members[$0]?.pageTitle }
@@ -1415,6 +1433,10 @@ extension AppDelegate {
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
                                      "windows": ws,
                                      "status_menu": menuBar?.snapshot() ?? NSNull(),
+                                     "agent_view": AgentWatch.shared.state,
+                                     "quick_ask": QuickAsk.made ? QuickAsk.shared.state : ["visible": false, "workers": [String](), "last_sent": [String: Any]()],
+                                     "permissions": MacPermissions.all(),
+                                     "settings_permission_rows": settingsHTML(self).components(separatedBy: "data-permission=").count - 1,
                                      // Every page, shown or not: its web process and what it costs.
                                      "pages": controllers.map { c -> [String: Any] in
                                          let pid = webPID(c)

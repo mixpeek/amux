@@ -153,6 +153,7 @@ extension AppDelegate {
     }
 
     @objc func stopComputerUse(_ sender: Any?) { MacComputer.shared.stopByOwner() }
+    @objc func showQuickAsk(_ sender: Any?) { QuickAsk.shared.show() }
     @objc func grantAccessibility(_ sender: Any?) { MacComputer.shared.openPrivacyPane("accessibility") }
     @objc func grantScreenRecording(_ sender: Any?) { MacComputer.shared.openPrivacyPane("screen") }
 }

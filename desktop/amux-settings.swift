@@ -577,6 +577,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             case "snapToGrid": cfg.snapToGrid = on
             case "openAtLogin": cfg.openAtLogin = on
             case "computerUse": cfg.computerUse = on
+            case "quickAsk": cfg.quickAsk = on; if !desktopTestQuiet { setQuickAskHotKey(on) }
             default: break
             }
             saveConfig(cfg)
@@ -587,6 +588,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             if name == "computerUse" { MacComputer.shared.apply(on) }
         case "server":
             (app.keyController ?? app.openWindow(url: nil, frame: nil)).showConnectPage()
+        case "permission": MacPermissions.turnOn(name); DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.reload() }; return
         case "update-check": Updater.shared.check(); return
         case "update-install": Updater.shared.install(); return
         default: break
@@ -693,6 +695,19 @@ func settingsHTML(_ app: AppDelegate) -> String {
     <h2>Computer use</h2>
     <div class="card">
       \(toggle("computerUse", c.computerUse ?? false, "Let workers use this Mac's apps", "In the background, with their own cursor: your pointer and keyboard stay yours. Each worker may use only the apps you list for it (AMUX_MAC_APPS in the dashboard's Scope tab); terminals, password managers and System Settings stay off limits. ⌘⇧Esc stops it from any app. Now: \(htmlEscape(MacComputer.shared.stateLine))."))
+    </div>
+    <h2>Permissions</h2>
+    <div class="card" id="permissions">
+      \(MacPermissions.all().map { p in
+        let on = p["state"] == "on"
+        return "<div class=\"row\" data-permission=\"\(p["id"] ?? "")\"><div class=\"info\"><div class=\"name\">\(htmlEscape(p["name"] ?? ""))</div><small>\(htmlEscape(p["for"] ?? ""))</small></div>"
+            + "<span class=\"perm-state\" data-state=\"\(p["state"] ?? "")\">\(on ? "On" : p["state"] == "off" ? "Off" : "Not set up")</span>"
+            + (on ? "" : " <button onclick=\"send('permission','\(p["id"] ?? "")',true)\">Turn On</button>") + "</div>"
+      }.joined(separator: "\n      "))
+    </div>
+    <h2>Quick Ask</h2>
+    <div class="card">
+      \(toggle("quickAsk", c.quickAsk ?? true, "⌥Space asks a worker from any app", "A small panel to send a worker a message, with the window you were in or the text you selected attached if you want."))
     </div>
     <h2>When amux opens</h2>
     <div class="card"><div class="save"><select onchange="send('launch','',this.value)">\(launchOptions)</select></div>

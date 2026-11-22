@@ -115,6 +115,8 @@ struct Config: Codable {
     var menuBar: Bool?
     // Computer use on this Mac (amux-computer.swift), off until the owner turns it on.
     var computerUse: Bool?
+    // ⌥Space opens Quick Ask (amux-agentview.swift); on unless turned off.
+    var quickAsk: Bool?
     var notifications: Bool?
     var dockBadge: Bool?
     var layouts: [Layout]?
@@ -1055,7 +1057,7 @@ func registerHotKey() {
         var hk = EventHotKeyID()
         GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                           MemoryLayout<EventHotKeyID>.size, nil, &hk)
-        DispatchQueue.main.async { if hk.id == 2 { recordHotKeyHandler?() } else if hk.id == 3 { stopComputerUseHotKey() } else { hotKeyHandler?() } }
+        DispatchQueue.main.async { if hk.id == 2 { recordHotKeyHandler?() } else if hk.id == 3 { stopComputerUseHotKey() } else if hk.id == 4 { QuickAsk.shared.toggle() } else { hotKeyHandler?() } }
         return noErr
     }, 1, &spec, nil, nil)
 }
@@ -1165,6 +1167,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         MicWatch.shared.start()
         startMenuBarItem()
         startComputerUse()
+        AgentWatch.shared.start(self)
+        // A quiet test copy must not take ⌥Space from the owner's apps.
+        if !desktopTestQuiet { setQuickAskHotKey(config.quickAsk ?? true) }
+        MacPermissions.refreshNotifications()
         setUpNotifications()
         refreshPins()
         pinsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshPins() }

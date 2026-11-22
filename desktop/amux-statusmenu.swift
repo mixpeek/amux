@@ -64,9 +64,24 @@ final class AppStatusMenu: NSObject, NSMenuDelegate {
     func setNeeds(count: Int, items: [[String: Any]]) {
         needsCount = count
         needs = items
+        applyTitle()
+    }
+
+    /// "<worker> is using <App>" while a worker uses this Mac (AgentWatch), else nil.
+    private(set) var agent: String?
+    func setAgent(_ headline: String?) {
+        guard headline != agent else { return }
+        agent = headline
+        applyTitle()
+    }
+
+    /// The count beside the icon, and a dot while a worker uses this Mac
+    /// (never red: it must not read as recording).
+    private func applyTitle() {
         guard let b = item.button else { return }
-        b.title = count > 0 ? " \(count)" : ""
-        b.toolTip = count > 0 ? "amux: \(count) need\(count == 1 ? "s" : "") you" : "amux"
+        b.title = (needsCount > 0 ? " \(needsCount)" : "") + (agent != nil ? " ●" : "")
+        let needs = needsCount > 0 ? "\(needsCount) need\(needsCount == 1 ? "s" : "") you" : ""
+        b.toolTip = "amux" + ([needs, agent ?? ""].filter { !$0.isEmpty }.map { ": " + $0 }.joined())
     }
 
     /// The computer-use sandboxes (amux computer), polled with needs-you.
@@ -127,7 +142,11 @@ final class AppStatusMenu: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        if let a = agent { header(a) }
         add("Open amux", #selector(openAmux(_:)))
+        let qa = add("Ask a Worker…", #selector(AppDelegate.showQuickAsk(_:)), key: " ")
+        qa.keyEquivalentModifierMask = [.option]
+        qa.target = app
         add("New Window", #selector(AppDelegate.newWindow(_:)), key: "").target = app
         add("New Tab", #selector(AppDelegate.newTabAction(_:))).target = app
         menu.addItem(.separator())
@@ -233,7 +252,7 @@ final class AppStatusMenu: NSObject, NSMenuDelegate {
     /// For amux://test/state: what the menu would show now.
     func snapshot() -> [String: Any] {
         rebuild()
-        return ["visible": item.isVisible, "title": item.button?.title ?? "", "has_icon": item.button?.image != nil,
+        return ["visible": item.isVisible, "title": item.button?.title ?? "", "agent": agent ?? "", "has_icon": item.button?.image != nil,
                 "items": menu.items.map { $0.isSeparatorItem ? "-" : label($0) },
                 "computer": computerNote, "computers": computers.count,
                 "enabled": menu.items.filter { !$0.isSeparatorItem }.map { $0.isEnabled }]
