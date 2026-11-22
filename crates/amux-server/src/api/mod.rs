@@ -58,6 +58,7 @@ pub mod chat_context;
 pub mod chat_worker;
 pub mod commit_mentions;
 pub mod computer;
+pub mod computer_mac;
 pub mod config_iac;
 pub mod move_bundle;
 pub mod connection;

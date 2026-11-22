@@ -113,6 +113,8 @@ struct Config: Codable {
     // Added 2026-10-19; optional so older desktop-config.json files still decode.
     var windows: [SavedWindow]?
     var menuBar: Bool?
+    // Computer use on this Mac (amux-computer.swift), off until the owner turns it on.
+    var computerUse: Bool?
     var notifications: Bool?
     var dockBadge: Bool?
     var layouts: [Layout]?
@@ -1044,12 +1046,16 @@ func registerHotKey() {
     var recRef: EventHotKeyRef?
     RegisterEventHotKey(UInt32(kVK_ANSI_R), UInt32(controlKey | optionKey), EventHotKeyID(signature: OSType(0x616D7578), id: 2),
                         GetApplicationEventTarget(), 0, &recRef)
+    // Command-Shift-Escape stops computer use from any app (amux-computer.swift).
+    var stopRef: EventHotKeyRef?
+    RegisterEventHotKey(UInt32(kVK_Escape), UInt32(cmdKey | shiftKey), EventHotKeyID(signature: OSType(0x616D7578), id: 3),
+                        GetApplicationEventTarget(), 0, &stopRef)
     var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
     InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
         var hk = EventHotKeyID()
         GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
                           MemoryLayout<EventHotKeyID>.size, nil, &hk)
-        DispatchQueue.main.async { if hk.id == 2 { recordHotKeyHandler?() } else { hotKeyHandler?() } }
+        DispatchQueue.main.async { if hk.id == 2 { recordHotKeyHandler?() } else if hk.id == 3 { stopComputerUseHotKey() } else { hotKeyHandler?() } }
         return noErr
     }, 1, &spec, nil, nil)
 }
@@ -1158,6 +1164,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         setUpRecorder()
         MicWatch.shared.start()
         startMenuBarItem()
+        startComputerUse()
         setUpNotifications()
         refreshPins()
         pinsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshPins() }
@@ -1280,6 +1287,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             self.config = c
             saveConfig(c)
             NSLog("amux-desktop: verdict=windows_saved_on_quit n=%d", windows.count)
+            MacComputer.shared.stop(reason: "quit")
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

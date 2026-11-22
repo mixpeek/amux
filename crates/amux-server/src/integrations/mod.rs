@@ -22,6 +22,7 @@ pub mod browser_login_sync;
 pub mod browser_logins;
 pub mod calendar;
 pub mod computer;
+pub mod computer_mac;
 pub mod email;
 pub mod local_mailbox;
 pub(crate) mod at_rest;

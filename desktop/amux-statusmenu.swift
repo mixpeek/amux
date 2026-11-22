@@ -143,6 +143,21 @@ final class AppStatusMenu: NSObject, NSMenuDelegate {
         cu.isEnabled = true
         let cm = NSMenu(title: "Computer Use")
         cm.autoenablesItems = false
+        // This Mac's own apps (amux-computer.swift).
+        let mc = MacComputer.shared
+        add("This Mac: \(mc.stateLine)", nil, to: cm, enabled: false)
+        let sw = add("Let Workers Use This Mac's Apps", #selector(AppDelegate.toggleComputerUse(_:)), to: cm, enabled: mc.binary != nil)
+        sw.target = app
+        sw.state = (app.config.computerUse ?? false) && !mc.stoppedByOwner ? .on : .off
+        if mc.running && !mc.accessibility { add("Grant Accessibility…", #selector(AppDelegate.grantAccessibility(_:)), to: cm).target = app }
+        if mc.running && !mc.screenRecording { add("Grant Screen Recording…", #selector(AppDelegate.grantScreenRecording(_:)), to: cm).target = app }
+        if mc.running {
+            let st = add("Stop Computer Use", #selector(AppDelegate.stopComputerUse(_:)), to: cm, key: "\u{1b}")
+            st.keyEquivalentModifierMask = [.command, .shift]
+            st.target = app
+        }
+        cm.addItem(.separator())
+        add("Linux sandboxes", nil, to: cm, enabled: false)
         if !computerNote.isEmpty { add(computerNote, nil, to: cm, enabled: false) }
         for (i, c) in computers.enumerated() {
             let lane = (c["lane"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (c["name"] as? String) ?? "sandbox"
@@ -224,11 +239,16 @@ final class AppStatusMenu: NSObject, NSMenuDelegate {
                 "enabled": menu.items.filter { !$0.isSeparatorItem }.map { $0.isEnabled }]
     }
 
-    /// For amux://test/status-menu?title=: chooses an item as a click does.
+    /// For amux://test/status-menu?title=: chooses an item, in the menu or a submenu, as a click does.
     func choose(_ title: String) -> Bool {
         rebuild()
-        guard let i = menu.items.firstIndex(where: { label($0) == title && $0.action != nil && $0.isEnabled }) else { return false }
-        menu.performActionForItem(at: i)
-        return true
+        func pick(_ m: NSMenu) -> Bool {
+            if let i = m.items.firstIndex(where: { label($0) == title && $0.action != nil && $0.isEnabled }) {
+                m.performActionForItem(at: i)
+                return true
+            }
+            return m.items.contains { $0.submenu.map(pick) ?? false }
+        }
+        return pick(menu)
     }
 }

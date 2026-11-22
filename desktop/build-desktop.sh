@@ -21,7 +21,7 @@ if [ "$DEV" = 1 ]; then BUNDLE_ID=com.amux.desktop.dev; fi
 # One binary: the app, the pinned-note overlay and the menu bar readout. The
 # last two keep their own standalone builds; -D AMUX_APP drops their entry
 # points here.
-SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-find.swift desktop/amux-dictation-core.swift desktop/amux-dictation.swift desktop/amux-rehome.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift desktop/amux-tabcolors.swift desktop/amux-recorder-core.swift desktop/amux-recorder.swift desktop/amux-statusmenu.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
+SRC="desktop/amux-desktop.swift desktop/amux-settings.swift desktop/amux-update.swift desktop/amux-workspace.swift desktop/amux-find.swift desktop/amux-dictation-core.swift desktop/amux-dictation.swift desktop/amux-rehome.swift desktop/amux-snapzones.swift desktop/amux-panegrid.swift desktop/amux-panes.swift desktop/amux-tabcolors.swift desktop/amux-recorder-core.swift desktop/amux-recorder.swift desktop/amux-statusmenu.swift desktop/amux-computer.swift scripts/pinned-overlay.swift scripts/amux-menubar.swift"
 BIN="$APP/Contents/MacOS/amux"
 ICON_SRC="assets/icon-512.png"
 ICNS="$APP/Contents/Resources/AppIcon.icns"
@@ -149,6 +149,34 @@ if [ -n "$COMMIT" ] && [ -z "${GITHUB_SHA:-}" ] && [ -n "$(git status --porcelai
 fi
 /usr/libexec/PlistBuddy -c "Add :AmuxBuildCommit string ${COMMIT:-}" -c "Add :AmuxBuildDate string $(date -u '+%Y-%m-%d %H:%M UTC')" "$APP/Contents/Info.plist"
 echo "  Built from ${COMMIT:-an unknown commit}"
+
+# Computer use on this Mac (amux-computer.swift): trycua's cua-driver (MIT),
+# pinned to one release and checked against its published SHA-256 before it
+# goes in the bundle. The app runs it embedded, so it uses Amux's own
+# Accessibility and Screen Recording grants. A failed download builds an app
+# without it, and Settings > Computer use then says the driver is missing.
+CUA_VER=0.58.1
+CUA_SHA=99b06af80422ba77be91932ce6c58fed4934a9565cb74bb5cde1fa0396ed1eb2
+CUA_TGZ="cua-driver-rs-$CUA_VER-darwin-universal-binary.tar.gz"
+CUA_CACHE="${AMUX_CACHE_DIR:-$HOME/.amux/cache}/cua-driver-$CUA_VER"
+if [ ! -x "$CUA_CACHE/cua-driver" ]; then
+    CUA_TMP=$(mktemp -d)
+    if curl -fsSL -o "$CUA_TMP/$CUA_TGZ" "https://github.com/trycua/cua/releases/download/cua-driver-rs-v$CUA_VER/$CUA_TGZ" \
+        && echo "$CUA_SHA  $CUA_TMP/$CUA_TGZ" | shasum -a 256 -c - >/dev/null \
+        && mkdir -p "$CUA_TMP/x" && tar -xzf "$CUA_TMP/$CUA_TGZ" -C "$CUA_TMP/x" cua-driver; then
+        mkdir -p "$CUA_CACHE" && mv "$CUA_TMP/x/cua-driver" "$CUA_CACHE/cua-driver"
+    else
+        echo "  !! cua-driver $CUA_VER did not download or failed its checksum: this build has no computer use"
+    fi
+    rm -rf "$CUA_TMP"
+fi
+if [ -x "$CUA_CACHE/cua-driver" ]; then
+    mkdir -p "$APP/Contents/Helpers"
+    cp "$CUA_CACHE/cua-driver" "$APP/Contents/Helpers/cua-driver"
+    { printf 'cua-driver %s, from https://github.com/trycua/cua\n\n' "$CUA_VER"; cat desktop/third-party/cua-driver-LICENSE.txt; } \
+        > "$APP/Contents/Resources/cua-driver-LICENSE.txt"
+    echo "  Bundled cua-driver $CUA_VER (computer use on this Mac)"
+fi
 
 # Ad-hoc sign so macOS keeps the microphone and notification permissions
 # across rebuilds of the same bundle id.

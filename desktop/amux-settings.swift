@@ -576,6 +576,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             case "dockBadge": cfg.dockBadge = on
             case "snapToGrid": cfg.snapToGrid = on
             case "openAtLogin": cfg.openAtLogin = on
+            case "computerUse": cfg.computerUse = on
             default: break
             }
             saveConfig(cfg)
@@ -583,6 +584,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
             app.applyBadge()
             if name == "openAtLogin" { app.applyOpenAtLogin() }
             if name == "menuBar" { app.startMenuBarItem() }
+            if name == "computerUse" { MacComputer.shared.apply(on) }
         case "server":
             (app.keyController ?? app.openWindow(url: nil, frame: nil)).showConnectPage()
         case "update-check": Updater.shared.check(); return
@@ -687,6 +689,10 @@ func settingsHTML(_ app: AppDelegate) -> String {
       \(rows)
       <div class="save"><input type="text" id="lname" placeholder="Name this workspace, e.g. Morning triage"
         onkeydown="if(event.key==='Enter')saveNew()"><button class="primary" onclick="saveNew()">Save current windows</button></div>
+    </div>
+    <h2>Computer use</h2>
+    <div class="card">
+      \(toggle("computerUse", c.computerUse ?? false, "Let workers use this Mac's apps", "In the background, with their own cursor: your pointer and keyboard stay yours. Each worker may use only the apps you list for it (AMUX_MAC_APPS in the dashboard's Scope tab); terminals, password managers and System Settings stay off limits. ⌘⇧Esc stops it from any app. Now: \(htmlEscape(MacComputer.shared.stateLine))."))
     </div>
     <h2>When amux opens</h2>
     <div class="card"><div class="save"><select onchange="send('launch','',this.value)">\(launchOptions)</select></div>

@@ -57,6 +57,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/open", post(open))
         .route("/stop", post(stop))
+        .nest("/mac", super::computer_mac::routes())
         .fallback(catalog)
 }
 
@@ -73,6 +74,9 @@ const CATALOG: &[&str] = &[
     "POST /api/computer/scroll {dx,dy}   (dy > 0 scrolls down)",
     "POST /api/computer/open {url, profile?}",
     "POST /api/computer/stop",
+    "GET  /api/computer/mac/status   (this Mac's own apps, through the amux Mac app)",
+    "GET  /api/computer/mac/tools",
+    "POST /api/computer/mac/call {tool, args}",
 ];
 
 async fn catalog() -> Response {
@@ -439,7 +443,7 @@ async fn screenshot(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     .into_response()
 }
 
-fn prune_shots(dir: &std::path::Path, stem: &str) -> usize {
+pub(crate) fn prune_shots(dir: &std::path::Path, stem: &str) -> usize {
     let prefix = format!("{stem}-");
     let mut shots: Vec<_> = std::fs::read_dir(dir)
         .into_iter()

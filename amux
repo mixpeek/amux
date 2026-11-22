@@ -7216,6 +7216,19 @@ amux computer — a disposable Linux desktop (CUA) for sites rungs 1-2 cannot re
   amux computer context                Ladder, verbs, and which profile has cookies for which site
   amux computer stop                   Remove the sandbox (idle ones stop after 15 min anyway)
 
+This Mac's own apps (the amux Mac app runs trycua's cua-driver; owner turns it on):
+  amux computer mac status             Driver up? permissions? which apps this worker may use
+  amux computer mac tools              The driver's tools, each free / app / refused
+  amux computer mac TOOL ['{json}'|-]  One call ('-' reads the JSON from stdin), e.g.
+      amux computer mac list_apps
+      amux computer mac list_windows '{"pid":844}'
+      amux computer mac get_window_state '{"pid":844,"window_id":10725}'   tree + screenshot (path printed: Read it)
+      amux computer mac click '{"pid":844,"element_token":"s1a2:17"}'
+      amux computer mac type_text '{"pid":844,"element_token":"s1a2:9","text":"hi"}'
+    Background by default (the owner's pointer is untouched). An app must be in
+    AMUX_MAC_APPS for this worker; terminals, password managers, System Settings
+    and amux itself are refused. Every refusal says what to do next.
+
 Ladder: 1) amux browser  2) CDP into Ethan's real Chrome  3) amux computer.
 Loop: screenshot, read coordinates off the image, act, screenshot to confirm.
 EOF
@@ -7279,6 +7292,50 @@ else:
 '
 }
 
+_computer_mac() { # status | tools | TOOL [json]
+  local tool="${1:-status}"; shift || true
+  local resp
+  case "$tool" in
+    status) resp=$(_computer_call GET mac/status '' 30) ;;
+    tools)  resp=$(_computer_call GET mac/tools '' 30) ;;
+    *)
+      local args="${1:-}"
+      [[ "$args" == "-" ]] && args=$(cat)   # '-' reads the JSON from stdin
+      [[ -z "$args" ]] && args='{}'
+      local body
+      body=$(TOOL="$tool" ARGS="$args" python3 -c 'import json,os,sys
+try: a=json.loads(os.environ["ARGS"])
+except ValueError as e: sys.exit("amux computer mac: args are not JSON: %s" % e)
+print(json.dumps({"tool": os.environ["TOOL"], "args": a}))') || return 1
+      resp=$(_computer_call POST mac/call "$body" 60) ;;
+  esac
+  TOOL="$tool" python3 -c '
+import json, os, sys
+raw = sys.stdin.read(); tool = os.environ["TOOL"]
+try: d = json.loads(raw)
+except ValueError: sys.exit("amux computer mac %s: server gave no JSON (%r). Is amux running? (amux url)" % (tool, raw[:200]))
+if d.get("error"):
+    print("amux computer mac %s REFUSED [%s]: %s" % (tool, d.get("code"), d["error"]), file=sys.stderr)
+    if d.get("next"): print("  next: %s" % d["next"], file=sys.stderr)
+    sys.exit(1)
+if tool == "status":
+    if not d.get("up"):
+        print("down: %s" % d.get("why")); sw = d.get("switches") or {}
+        print("this worker: apps=%s any_app=%s foreground=%s" % (",".join(sw.get("apps") or []) or "(none)", sw.get("any_app"), sw.get("foreground"))); sys.exit(1)
+    print(json.dumps(d, indent=2)); sys.exit(0)
+if tool == "tools":
+    for t in d.get("tools", []):
+        c = t["class"]; c = c if isinstance(c, str) else "refused: " + c["refused"]
+        print("%-24s %-8s %s" % (t["name"], c if len(c) < 9 else "refused", t["description"][:90]))
+    sys.exit(0)
+if d.get("screenshot"): print("screenshot: %s" % d["screenshot"])
+r = d.get("result")
+sc = r.get("structuredContent") if isinstance(r, dict) else None
+text = "\n".join(c.get("text", "") for c in (r.get("content") or []) if isinstance(c, dict) and c.get("type") == "text") if isinstance(r, dict) else ""
+print(text or json.dumps(sc if sc is not None else r, indent=2))
+' <<<"$resp"
+}
+
 cmd_computer() {
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local sub="${1:-}"; shift || true
@@ -7319,6 +7376,7 @@ cmd_computer() {
         resp=$(_computer_call POST open "$(_computer_json url "$url")" 90)
       fi ;;
     stop)         resp=$(_computer_call POST stop '{}') ;;
+    mac)          _computer_mac "$@"; return $? ;;
     ""|help|-h|--help)
       _computer_usage
       resp=$(_computer_call GET context '' 15)

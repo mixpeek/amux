@@ -2755,6 +2755,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/computer/stop",
         methods: &["POST"],
     },
+    RouteEntry {
+        path: "/api/computer/mac/status",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/computer/mac/tools",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/computer/mac/call",
+        methods: &["POST"],
+    },
     // -- file viewer / files / fs
     RouteEntry {
         path: "/api/file",

@@ -42,6 +42,11 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   Pins, Workspaces, the server, CPU and memory, Settings, Updates, Quit. A quiet test copy
   keeps it off the menu bar; `amux://test/status-menu?needs=N|title=` drives it and
   `status-menu-e2e.py` proves it.
+- Computer use on this Mac (`amux-computer.swift`): the app bundles trycua's cua-driver
+  (pinned and checksummed in `build-desktop.sh`) and runs it embedded, with Amux's own
+  permissions, when Settings > Computer use is on; it writes `<AMUX_HOME>/cua/endpoint.json`
+  for the server (`integrations/computer_mac.rs` holds the per-app gate). ⌘⇧Esc or the menu
+  bar's Stop Computer Use ends it. `computer-mac-e2e.py` proves it with reads only.
 - A test screenshot captures its own window or rectangle, never the whole screen: the owner's
   screen can hold a live call.
 - The page side of a feature lives in `crates/amux-dashboard`; the app side is opt-in behind
