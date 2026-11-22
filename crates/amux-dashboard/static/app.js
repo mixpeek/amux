@@ -22572,8 +22572,25 @@ function _htmlPreviewUrl(filePath) {
   if (!p.startsWith('/')) return null;
   return '/api/file/raw-path' + p.split('/').map(encodeURIComponent).join('/');
 }
+// THE BLINKING DOT IS STILL A BLOCK (owner, 2026-11-22: "that circle icon
+// that shows at the start of the message flickers in and out as an agent is
+// currently working. It causes the terminal to do a layout shift"). While a
+// tool runs, Claude Code blinks its ⏺ by drawing a coloured space in the same
+// cell, about twice a second. The terminal does not move, but a block head is
+// found by its ⏺, so on the blank frames the running line ("  Updating the
+// README…") read as a continuation of the block above: the running block
+// vanished into the previous one (hidden with it when that one was folded) and
+// came back on the next frame, shifting everything below. A coloured lone
+// space at column 0 followed by text is that blank frame; a real continuation
+// line starts with plain spaces. It is drawn as a steady ⏺.
+const _PTC_BLINK_OFF_HEAD = /^(<span\b[^>]*>) (<\/span> (?! ))/;
+let _ptcBlinkSeen = 0;
 function _wrapToolCalls(html) {
-  const lines = html.split('\n');
+  const lines = html.split('\n').map(l => {
+    if (!_PTC_BLINK_OFF_HEAD.test(l)) return l;
+    if (!_ptcBlinkSeen++) console.info('[amux] ptc_blink_head', { verdict: 'blank_frame_kept_as_block', worker: peekSession || null });
+    return l.replace(_PTC_BLINK_OFF_HEAD, '$1⏺$2');
+  });
   const strip = s => s.replace(/<[^>]*>/g, '');
   const out = [];
   _peekToolSeq = 0;
