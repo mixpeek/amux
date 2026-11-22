@@ -31305,6 +31305,17 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
         crate::db::interactions::spawn_blocking(move || backup_session_jsonl(&n, "pre_compact"));
     }
     let record_history = body.get("record_history").map(py_truthy).unwrap_or(false);
+    // A send amux itself makes for a person's thread (a goal's change check
+    // waking its worker) is recorded as amux's, never as the owner's: stored
+    // as "user" it read sender=owner, kind=human, and `amux requests` listed
+    // 40 goal checks as open owner requests (AF-1346). Only amux's own types
+    // are accepted, so a caller can mark its send as machine-made but can
+    // never make one read as a person's.
+    let history_type = body
+        .get("history_type")
+        .and_then(Value::as_str)
+        .filter(|t| crate::api::history::AMUX_TYPES.contains(t))
+        .unwrap_or("user");
     // The context the sender composed in (AMUX-4693). Serialised back to a
     // string here rather than threaded as a `&Value` so the recorder's
     // validation has exactly one input shape to defend, and so a caller that
@@ -31487,7 +31498,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
             state,
             name,
             &orig_text,
-            "user",
+            history_type,
             actor,
             skip_board,
             DeliveryMeta {
@@ -31669,7 +31680,7 @@ pub(crate) async fn send_post(state: &AppState, name: &str, headers: &HeaderMap,
                 ..meta
             };
             let row_id =
-                cmd_hist_record_with_id(state, name, &orig_text, "user", author, skip_board, meta)
+                cmd_hist_record_with_id(state, name, &orig_text, history_type, author, skip_board, meta)
                     .await;
             if let Some(id) = queue_id.as_deref() {
                 link_queued_message(state, name, row_id, id).await;
@@ -40029,6 +40040,38 @@ mod tests {
         assert!(seen.iter().any(|t| t.contains("Approved (NT-1)")), "the send recorded nothing to check: {seen:?}");
         assert!(seen.iter().all(|t| !t.contains("Approved (NT-1)") || t.contains("- notes-lane@chat: only if it never deletes TubeScience")),
             "an approval was recorded without the owner's note: {seen:?}");
+    }
+
+    /// AF-1346: a goal's change check posted into an outcome thread as the
+    /// owner, and each one was recorded as an owner request (40 open on
+    /// 2026-11-22). amux's own send says so with history_type and is stored as
+    /// amux's; a type that is not amux's falls back to "user", so the field can
+    /// mark a send machine-made but never make one read as a person's.
+    #[tokio::test]
+    async fn a_send_amux_marks_as_its_own_is_not_recorded_as_the_owners() {
+        let (state, dir) = state();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/goal-lane.env"), "CC_PAUSED=1\n").unwrap();
+        for (i, (asked, want)) in [(Some("system"), "system"), (Some("direct"), "user"), (None, "user")].into_iter().enumerate() {
+            let text = format!("Something changed in the owner's email, check {i}");
+            let mut body = json!({"text": text, "record_history": true, "msg_id": format!("goal-{i}")});
+            if let Some(t) = asked {
+                body["history_type"] = json!(t);
+            }
+            let _ = send_post(&state, "goal-lane", &HeaderMap::new(), &body).await;
+            let conn = state.store.read().unwrap();
+            let types: Vec<String> = conn
+                .prepare("SELECT type FROM cmd_history WHERE session='goal-lane' AND text=?1")
+                .unwrap()
+                .query_map([&text], |r| r.get(0))
+                .unwrap()
+                .flatten()
+                .collect();
+            assert_eq!(types, vec![want.to_string()], "history_type {asked:?} must record as {want}");
+            let kind = crate::api::history::msg_kind(&types[0]);
+            assert_eq!(kind == "human", want == "user", "history_type {asked:?} read as kind {kind}");
+        }
     }
 
     /// A send with no worker identity and no record_history (`amux send` from

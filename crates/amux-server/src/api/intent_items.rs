@@ -1374,14 +1374,30 @@ async fn check_goal(State(state): State<AppState>, Path(id): Path<String>) -> Re
             "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response();
     }
     let mut delivered = false;
+    let mut wake_as = "";
     if let Some(oid) = goal_outcome(&state, &id).as_deref() {
-        delivered = super::intent_store::start_outcome(&state,
-            "Something changed in my email or calendar since your last update on this goal. Check what it means for the goal, \
-             prepare what is needed (read and draft only), and give me the new STATUS: line.",
-            Some(oid), None, None, json!([])).await.is_ok();
+        // amux writes this, not the owner (AF-1346). Posted as the owner it
+        // read "owner asked for this ... something changed in my email", and
+        // every check became an open owner request: 40 of them on 2026-11-22.
+        // A live worker gets it as amux's own post; a gone one is re-routed
+        // through start_outcome as before.
+        let live = super::intent_store::outcome_worker(oid)
+            .filter(|w| super::session_verbs::env_path(w).exists());
+        if live.is_some() {
+            wake_as = "amux";
+            delivered = super::conversations::amux_wake_outcome(&state, oid,
+                "Something changed in the owner's email or calendar since your last update on this goal. Check what it means \
+                 for the goal, prepare what is needed (read and draft only), and give the new STATUS: line.").await.is_ok();
+        } else {
+            wake_as = "owner_reroute";
+            delivered = super::intent_store::start_outcome(&state,
+                "Something changed in my email or calendar since your last update on this goal. Check what it means for the goal, \
+                 prepare what is needed (read and draft only), and give me the new STATUS: line.",
+                Some(oid), None, None, json!([])).await.is_ok();
+        }
     }
     tracing::info!(goal = %id, delivered, measured = true, n_considered = scanned, n_relevant = n, n_new = fresh.unwrap_or(0), new_items = ?what,
-        judged, judge_via = %judge_via, n_bearing = bearing, bearing_items = ?bearing_items, verdict = "intent_goal_changed",
+        judged, judge_via = %judge_via, n_bearing = bearing, bearing_items = ?bearing_items, wake_as, verdict = "intent_goal_changed",
         "intent: something new mentions a goal; its worker was asked to update it");
     Json(json!({"ok": true, "changed": true, "delivered": delivered, "n_new": fresh.unwrap_or(0), "measured": true, "n_considered": scanned, "n_relevant": n, "mail_measured": true})).into_response()
 }
