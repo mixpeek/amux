@@ -30,24 +30,65 @@ test('hidden groups drop their workers unless narrowed to another of their group
   assert.equal(vis(['gtm', 'ops'], 'ops', hidden), true);
 });
 
-test('the list view round-trips through localStorage', () => {
-  const store = {};
-  const localStorage = { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+// A Web Storage stand-in with the parts the list view uses (key/length for the
+// open-page scan), and a page harness: each page has its own sessionStorage
+// and window listeners, and every page shares one localStorage.
+const mem = () => {
+  const s = {};
+  return { getItem: k => (k in s ? s[k] : null), setItem: (k, v) => { s[k] = String(v); },
+    removeItem: k => { delete s[k]; }, key: i => Object.keys(s)[i] ?? null, get length() { return Object.keys(s).length; } };
+};
+const listViewBody = () => {
   const i = src.indexOf("const _LIST_VIEW_KEY");
-  const body = src.slice(i, src.indexOf('_restoreListView();', i));
-  const make = () => new Function('localStorage', `
+  return src.slice(i, src.indexOf('_restoreListView();', i));
+};
+const makePage = (localStorage, search = '', sessionStorage = mem()) => {
+  const on = {};
+  const window = { addEventListener: (ev, fn) => { (on[ev] ||= []).push(fn); } };
+  const p = new Function('localStorage', 'sessionStorage', 'location', 'window', 'setInterval', 'amuxTrack', `
     let activeTag = '', hiddenTags = new Set(), filterProviders = new Set(), filterModels = new Set(),
         filterStatuses = new Set(), searchQuery = '', logSearchMode = false;
-    ${body}
+    ${listViewBody()}
     return { _restoreListView, _saveListView,
-      set(v) { activeTag = v.tag; hiddenTags = new Set(v.hidden); filterStatuses = new Set(v.statuses); searchQuery = v.q; },
-      get() { return { activeTag, hidden: [...hiddenTags], statuses: [...filterStatuses], searchQuery }; } };`)(localStorage);
-  const a = make();
+      set(v) { activeTag = v.tag || ''; hiddenTags = new Set(v.hidden || []); filterStatuses = new Set(v.statuses); searchQuery = v.q; },
+      get() { return { activeTag, hidden: [...hiddenTags], statuses: [...filterStatuses], searchQuery }; } };`)(
+    localStorage, sessionStorage, { search }, window, () => 0, () => {});
+  p.close = () => (on.pagehide || []).forEach(fn => fn());
+  p.sessionStorage = sessionStorage;
+  return p;
+};
+
+test('the app reopened with no other page open gets its last list view back', () => {
+  const local = mem();
+  const a = makePage(local);
+  a._restoreListView();
   a.set({ tag: 'ops', hidden: ['gtm'], statuses: ['working'], q: 'mvs' });
   a._saveListView();
-  const b = make();
+  a.close();
+  const b = makePage(local);
   b._restoreListView();
   assert.deepEqual(b.get(), { activeTag: 'ops', hidden: ['gtm'], statuses: ['working'], searchQuery: 'mvs' });
+});
+
+// Owner, 2026-11-21: a new tab (a Mac app tab, a browser tab) opened on the
+// last tab's pills, and a tab reloaded behind a worker came back on another
+// tab's filter. Each page keeps its own; a new one beside an open one is clean.
+test('a new page beside an open one starts clean, and each page keeps its own across a reload', () => {
+  const local = mem();
+  const a = makePage(local);
+  a._restoreListView();
+  a.set({ statuses: ['working'], q: 'alpha' });
+  a._saveListView();
+  const b = makePage(local);
+  b._restoreListView();
+  assert.deepEqual(b.get(), { activeTag: '', hidden: [], statuses: [], searchQuery: '' }, 'the new tab is free and open');
+  b.set({ statuses: ['stopped'], q: 'beta' });
+  b._saveListView();
+  // A reloads (same sessionStorage): its own view, not B's later one.
+  a.close();
+  const aAgain = makePage(local, '', a.sessionStorage);
+  aAgain._restoreListView();
+  assert.deepEqual(aAgain.get(), { activeTag: '', hidden: [], statuses: ['working'], searchQuery: 'alpha' });
 });
 
 test('render() saves the view on every repaint', () => {
@@ -60,34 +101,27 @@ test('render() saves the view on every repaint', () => {
 // tab's search and filter, and a tab's filter came back in the first tab after
 // a reload. A tab (?_tab=<id>) starts clean and keeps its own copy.
 test('a tab of the in-page tab bar keeps its own list view and leaves the page\'s alone', () => {
-  const mem = () => { const s = {}; return { getItem: k => (k in s ? s[k] : null), setItem: (k, v) => { s[k] = String(v); } }; };
-  const localStorage = mem(), sessionStorage = mem();
-  const i = src.indexOf("const _LIST_VIEW_KEY");
-  const body = src.slice(i, src.indexOf('_restoreListView();', i));
-  const make = (search) => new Function('localStorage', 'sessionStorage', 'location', `
-    let activeTag = '', hiddenTags = new Set(), filterProviders = new Set(), filterModels = new Set(),
-        filterStatuses = new Set(), searchQuery = '', logSearchMode = false;
-    ${body}
-    return { _restoreListView, _saveListView,
-      set(v) { filterStatuses = new Set(v.statuses); searchQuery = v.q; },
-      get() { return { statuses: [...filterStatuses], searchQuery }; } };`)(localStorage, sessionStorage, { search });
-  const page = make('');
+  // Every in-page tab is an iframe of one browser tab: one sessionStorage.
+  const local = mem(), session = mem();
+  const page = makePage(local, '', session);
+  page._restoreListView();
   page.set({ statuses: ['working'], q: 'alpha' });
   page._saveListView();
 
-  const tab = make('?_tab=2');
+  const tab = makePage(local, '?_tab=2', session);
   tab._restoreListView();
-  assert.deepEqual(tab.get(), { statuses: [], searchQuery: '' }, 'a new tab starts clean');
+  assert.deepEqual(tab.get().statuses, [], 'a new tab starts clean');
+  assert.equal(tab.get().searchQuery, '');
   tab.set({ statuses: ['stopped'], q: 'beta' });
   tab._saveListView();
 
-  const pageAgain = make('');
+  const pageAgain = makePage(local, '', session);
   pageAgain._restoreListView();
-  assert.deepEqual(pageAgain.get(), { statuses: ['working'], searchQuery: 'alpha' }, 'the page keeps its own view');
-  const tabAgain = make('?_tab=2');
+  assert.deepEqual([pageAgain.get().statuses, pageAgain.get().searchQuery], [['working'], 'alpha'], 'the page keeps its own view');
+  const tabAgain = makePage(local, '?_tab=2', session);
   tabAgain._restoreListView();
-  assert.deepEqual(tabAgain.get(), { statuses: ['stopped'], searchQuery: 'beta' }, 'the tab is rebuilt on its own view');
-  const otherTab = make('?_tab=3');
+  assert.deepEqual([tabAgain.get().statuses, tabAgain.get().searchQuery], [['stopped'], 'beta'], 'the tab is rebuilt on its own view');
+  const otherTab = makePage(local, '?_tab=3', session);
   otherTab._restoreListView();
-  assert.deepEqual(otherTab.get(), { statuses: [], searchQuery: '' }, 'another tab does not see it');
+  assert.deepEqual([otherTab.get().statuses, otherTab.get().searchQuery], [[], ''], 'another tab does not see it');
 });
