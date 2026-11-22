@@ -44898,6 +44898,12 @@ function statusStyle(id) {
 }
 
 // ═══════ CHROME TABS ═══════
+// The hashes that name where to land. Restoring the last screen must not run
+// over any of them (the screen restore and the tab bar read this one list).
+// reconnect joined it on 2026-11-08: a connector alert's link opened
+// Connectors and its prompt, then the restore reopened the last worker over
+// them.
+const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
 // EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
@@ -44985,6 +44991,22 @@ const _chromeLoaded = _chromeLoad();
 let _chromeTabs = _chromeLoaded.tabs;
 let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromeTabs[0]?.id || 1;
 if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromeTabs[0].id;
+// A BROWSER TAB OPENED ON A LINK SHOWS THE LINK (owner, 2026-11-22: a
+// middle-clicked path "did open a new tab but it did not deep link into that
+// JSONL file"). The page is the first tab and the link is its address; the bar
+// a new browser tab starts from had a later tab open, whose iframe covered
+// the page and the file it opened. A reload or a discarded tab coming back
+// keeps the tab that was open: only a fresh navigation is a link.
+(function _chromeBootOnLink() {
+  if (_isInTab || _nativeTabs || _chromeActiveId === _chromeTabs[0].id) return;
+  if (!_DEEPLINK_HASH_RE.test(location.hash) && !/[?&]view=/.test(location.search)) return;
+  let nav = '';
+  try { nav = (performance.getEntriesByType('navigation')[0] || {}).type || ''; } catch (e) { console.warn('[amux] chrome_tab_link_boot: navigation type unreadable, keeping the saved tab', e); }
+  if (nav !== 'navigate' || document.wasDiscarded) return;
+  const from = _chromeActiveId;
+  _chromeActiveId = _chromeTabs[0].id;
+  console.info('[amux] chrome_tab_link_boot', { verdict: 'link_shown_on_first_tab', from, link: location.hash.slice(0, location.hash.indexOf('=') + 1) });
+})();
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -61861,11 +61883,8 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
-// The hashes that name where to land. Restoring the last screen must not run
-// over any of them (both checks below read this one list). reconnect joined it
-// on 2026-11-08: a connector alert's link opened Connectors and its prompt,
-// then the restore reopened the last worker over them.
-const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
+// _DEEPLINK_HASH_RE (the hashes that name where to land) is defined above the
+// in-page tab bar, which reads it at load.
 // Set in sessionStorage by a tab's first boot: a later boot of the same tab
 // (a reload, a discarded tab coming back) restores from its own state.
 const _UI_TAB_SEEN_KEY = 'amux_tab_seen';
