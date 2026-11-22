@@ -84,7 +84,7 @@ test('groups, working directory and model fill from shared lists; x removes an e
   const box = await page.locator('#modal-backdrop .modal-box').boundingBox();
   const vw = page.viewportSize()!.width;
   if (vw > 800) expect(box!.width).toBeGreaterThan(600);
-  else { expect(box!.width).toBeGreaterThanOrEqual(Math.min(320, vw - 24) - 1); expect(box!.x + box!.width).toBeLessThanOrEqual(vw); }
+  else { expect(box!.width).toBeGreaterThanOrEqual(vw - 16 - 1); expect(box!.x + box!.width).toBeLessThanOrEqual(vw); }
 
   // Groups: the fleet's group is offered in the sideways row; tap adds a pill.
   await expect(page.locator('#outcome-group-known .oc-chip-add')).toHaveText(['+ fleetgrp']);
@@ -119,7 +119,7 @@ test('groups, working directory and model fill from shared lists; x removes an e
   // The open list is on screen, inside the dialog, even when the field is
   // near the dialog's bottom edge (a phone).
   const inView = await page.locator('#outcome-dir-list').evaluate(l => {
-    const r = l.getBoundingClientRect(), m = document.querySelector('#modal-msg')!.getBoundingClientRect();
+    const r = l.getBoundingClientRect(), m = document.querySelector('#modal-backdrop .modal-box')!.getBoundingClientRect();
     return r.top >= m.top - 1 && r.bottom <= m.bottom + 1;
   });
   expect(inView).toBe(true);
@@ -243,4 +243,55 @@ test('a preset saved while another device saved one keeps both; a delete keeps t
   await page.locator('#outcome-preset-delete').click();
   await page.locator('#outcome-preset-delete').click();
   await expect.poll(() => JSON.parse(store.outcome_presets).map((p: any) => p.name)).toEqual(['Z']);
+});
+
+// Owner, 2026-11-22: on a phone the pills were 44px tall, the settings sat in
+// a second box, and the folder list was short and hard to reach. Desktop keeps
+// its look.
+test('on a phone the pills are small, the settings lose their box, and an open list fills the space below its field', async ({ page }) => {
+  const store: Record<string, string> = {};
+  await boot(page, store, []);
+  for (const u of ['**/api/outcome/plan', '**/api/autocomplete/dir**', '**/api/ls**']) allowUnusedRoute(page, u);
+  await open(page);
+  await page.locator('#outcome-group').fill('alpha');
+  await page.locator('#outcome-group').press(',');
+  const phone = page.viewportSize()!.width <= 600;
+  const m = await page.evaluate(() => {
+    const h = (sel: string) => document.querySelector(sel)!.getBoundingClientRect().height;
+    // Where a tap 8px outside a chip's x lands: the x itself on a phone.
+    const x = document.querySelector('#outcome-group-known .oc-x')!.getBoundingClientRect();
+    const hit = document.elementFromPoint(x.left + x.width / 2, x.top - 8);
+    return { chip: h('#outcome-group-known .oc-chip'), pill: h('#outcome-groups .oc-pill'),
+      hitX: !!hit?.closest('#outcome-group-known .oc-x'),
+      settingsBorder: getComputedStyle(document.querySelector('.outcome-settings')!).borderLeftWidth };
+  });
+  if (phone) {
+    expect(m.chip).toBeLessThanOrEqual(32); expect(m.pill).toBeLessThanOrEqual(32);
+    expect(m.hitX).toBe(true);
+    expect(m.settingsBorder).toBe('0px');
+  } else {
+    expect(m.chip).toBeLessThanOrEqual(32); expect(m.settingsBorder).toBe('1px');
+  }
+  // Open the folder list: on a phone its field moves to the dialog's top and
+  // the list, in the flow, is taller than the desktop's 360px cap allows on a
+  // 667px screen minus the field; on a desktop it floats, capped at 360px.
+  await page.locator('#outcome-dir').click();
+  await expect(page.locator('#outcome-dir-list')).toBeVisible();
+  await page.waitForTimeout(100);
+  const l = await page.evaluate(() => {
+    const list = document.querySelector('#outcome-dir-list') as HTMLElement, box = document.querySelector('#modal-backdrop .modal-box')!;
+    const f = document.querySelector('#outcome-dir')!.closest('.outcome-field')!.getBoundingClientRect();
+    return { pos: getComputedStyle(list).position, maxH: parseFloat(getComputedStyle(list).maxHeight),
+      fieldFromTop: f.top - box.getBoundingClientRect().top, vh: innerHeight,
+      scrolled: box.scrollTop, atEnd: box.scrollTop >= box.scrollHeight - box.clientHeight - 1 };
+  });
+  if (phone) {
+    expect(l.pos).toBe('static');
+    // Scrolled toward the field: to the top, or as far as the dialog goes.
+    expect(l.scrolled).toBeGreaterThan(0);
+    expect(l.fieldFromTop < 30 || l.atEnd).toBe(true);
+    expect(l.maxH).toBeGreaterThan(l.vh - 200);
+  } else {
+    expect(l.pos).toBe('absolute'); expect(l.maxH).toBe(360);
+  }
 });

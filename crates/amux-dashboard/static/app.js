@@ -12615,13 +12615,18 @@ function _ocComboRender(kind, sections) {
   if (!html && sections.note) html = '<div class="oc-combo-head">' + esc(sections.note) + '</div>';
   st.active = -1;
   list.innerHTML = html;
+  const was = !list.hidden;
   const open = !!html && document.activeElement === inp;
   list.hidden = !open;
   inp.setAttribute('aria-expanded', open ? 'true' : 'false');
   inp.removeAttribute('aria-activedescendant');
-  // A field near the dialog's bottom edge (a phone) would open its list out of
-  // sight: scroll the dialog so the list shows.
-  if (open) list.scrollIntoView({ block: 'nearest' });
+  if (!open) return;
+  // On a phone the list opens in the dialog's flow, as tall as the screen
+  // allows: the field moves to the dialog's top once, when the list opens, so
+  // the list has the room below it (owner, 2026-11-22). Elsewhere, and on
+  // later renders while typing, only make sure the list shows.
+  if (!was && matchMedia('(max-width: 600px)').matches) inp.closest('.outcome-field').scrollIntoView({ block: 'start' });
+  else list.scrollIntoView({ block: 'nearest' });
 }
 function _ocComboShow(kind, keep) {
   const inp = _ocComboInput(kind);
