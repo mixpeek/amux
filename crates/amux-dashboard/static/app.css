@@ -10971,7 +10971,9 @@ body.native-panes #peek-split-toggle .psp-btn-caret { display: none; }
 .cv-rec-dot { width:9px; height:9px; border-radius:var(--radius-round); background:var(--red); animation:cvpulse 1s infinite; }
 @keyframes cvpulse { 50% { opacity:0.3; } }
 .cv-av-img { object-fit:cover; padding:0; }
-.cv-me { border:none; background:none; padding:0; cursor:pointer; display:inline-flex; margin-right:var(--space-1-5); }
+/* The picture's own box before the picture arrives (/api/profiles): an empty
+   button had no size, so the header jumped and the folded rail measured 0. */
+.cv-me { border:none; background:none; padding:0; cursor:pointer; display:inline-flex; margin-right:var(--space-1-5); width:26px; height:26px; flex:0 0 26px; }
 .cv-me .cv-av { width:26px; height:26px; flex-basis:26px; }
 .cv-thread { width:min(420px, 40vw); flex:0 0 auto; display:flex; flex-direction:column; min-height:0; border-left:1px solid var(--border); }
 .cv-thread[hidden] { display:none; }
