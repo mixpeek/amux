@@ -1222,13 +1222,51 @@ const _LIST_VIEW_KEY = 'amux_list_view_v1';
 // the first is an iframe on this origin, so the shared localStorage record is
 // the page's, not the tab's: a tab starts clean and keeps its own copy in
 // sessionStorage under its tab id, beside the bar's per-tab address
-// (_CHROME_TAB_VIEW_KEY). The page itself, and the app reopened, still restore
-// the shared record. The tab id is read here rather than through _isInTab,
+// (_CHROME_TAB_VIEW_KEY). The page itself keeps its own too (below). The tab id is read here rather than through _isInTab,
 // which is declared further down and not yet initialised when this runs.
 const _LIST_VIEW_TAB_KEY = 'amux_list_view_v1:tab:';
 const _listViewTabId = (() => { try { return new URLSearchParams(location.search).get('_tab'); } catch (e) { return null; } })();
-function _listViewStore() { return _listViewTabId !== null ? sessionStorage : localStorage; }
-function _listViewKey() { return _listViewTabId !== null ? _LIST_VIEW_TAB_KEY + _listViewTabId : _LIST_VIEW_KEY; }
+// EVERY PAGE IS A TAB, NOT ONLY THE IN-PAGE BAR'S IFRAMES (owner, 2026-11-21:
+// "a tab should be a representation of a current work stream ... the fact that
+// filters change across tabs can make you very distraught when you pull out").
+// A Mac app tab (Cmd-T), a native pane and a browser tab are each their own
+// page, and all of them read and wrote the one localStorage record: a new tab
+// opened on the last tab's pills, and a tab WebKit reloaded in the background
+// came back, behind the worker it had open, on whatever filter another tab set
+// last, so backing out of that worker showed someone else's list. The DOWNSIDE
+// of a shared record, kept here so nobody restores it as a convenience: a
+// filter is part of one work stream, and sharing it silently rewrites the view
+// of every other stream the next time it loads.
+// So a page keeps its own view in sessionStorage (per browser tab or webview,
+// survives a reload), and the localStorage record is only the last view used,
+// read by a page that has none of its own AND finds no other amux page open:
+// the app reopened, or a phone PWA the OS evicted (Ethan, 2026-09-24: views
+// "saved for that client"). With another page open, a new page starts clean.
+const _LIST_VIEW_PAGE_KEY = 'amux_list_view_v1:page';
+const _LIST_VIEW_ALIVE_PREFIX = 'amux_page_alive:';
+// Hidden pages run timers about once a minute, so a beat this old is still a
+// live page; a closed one removes its beat on pagehide.
+const _LIST_VIEW_ALIVE_MS = 3 * 60 * 1000;
+const _listViewPageId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+function _listViewOtherPageOpen() {
+  const now = Date.now();
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(_LIST_VIEW_ALIVE_PREFIX) || k === _LIST_VIEW_ALIVE_PREFIX + _listViewPageId) continue;
+      const ts = parseInt(localStorage.getItem(k) || '0', 10);
+      if (now - ts < _LIST_VIEW_ALIVE_MS) return true;
+      localStorage.removeItem(k);   // a page that died without pagehide
+      i--;
+    }
+  } catch (e) { console.warn('[list-view] could not read which amux pages are open; this page starts clean', e); return true; }
+  return false;
+}
+function _listViewBeat() {
+  try { localStorage.setItem(_LIST_VIEW_ALIVE_PREFIX + _listViewPageId, String(Date.now())); } catch (e) { console.warn('[list-view] page heartbeat not written', e); }
+}
+function _listViewStore() { return sessionStorage; }
+function _listViewKey() { return _listViewTabId !== null ? _LIST_VIEW_TAB_KEY + _listViewTabId : _LIST_VIEW_PAGE_KEY; }
 let _listViewSaved = '';
 function _listViewSnapshot() {
   return JSON.stringify({ tag: activeTag || '', hidden: [...hiddenTags].sort(),
@@ -1236,9 +1274,25 @@ function _listViewSnapshot() {
     statuses: [...filterStatuses].sort(), q: searchQuery || '', logs: !!logSearchMode });
 }
 function _restoreListView() {
-  let v = null;
+  let v = null, verdict = 'own_view';
   try { v = JSON.parse(_listViewStore().getItem(_listViewKey()) || 'null'); } catch (e) { v = null; }
+  if (!v && _listViewTabId === null) {
+    if (_listViewOtherPageOpen()) verdict = 'new_tab_clean';
+    else {
+      try { v = JSON.parse(localStorage.getItem(_LIST_VIEW_KEY) || 'null'); } catch (e) { console.warn('[list-view] last view unreadable', e); v = null; }
+      verdict = v ? 'reopened_last_view' : 'none_saved';
+    }
+  } else if (!v) verdict = 'new_tab_clean';
   _applyListView(v);
+  // The page's own copy now holds whatever it started on, so a reload keeps it.
+  if (v && _listViewTabId === null) _listViewSaved = '';
+  if (_listViewTabId === null) {
+    _listViewBeat();
+    setInterval(_listViewBeat, 30000);
+    window.addEventListener('pagehide', () => { try { localStorage.removeItem(_LIST_VIEW_ALIVE_PREFIX + _listViewPageId); } catch (e) { console.warn('[list-view] page heartbeat not removed', e); } });
+    window.addEventListener('pageshow', _listViewBeat);
+  }
+  try { amuxTrack('list_view_restored', {verdict, in_tab_bar: _listViewTabId !== null, measured: true, n_considered: 1}); } catch (e) { console.warn('[list-view] restore beacon failed', e); }
 }
 function _applyListView(v) {
   if (!v || typeof v !== 'object') return;
@@ -1257,6 +1311,8 @@ function _saveListView() {
   if (snap === _listViewSaved) return;
   _listViewSaved = snap;
   try { _listViewStore().setItem(_listViewKey(), snap); } catch (e) {}
+  // The last view used, for the app reopened; no open page reads it.
+  if (_listViewTabId === null) { try { localStorage.setItem(_LIST_VIEW_KEY, snap); } catch (e) { console.warn('[list-view] last view not saved for the app reopened', e); } }
 }
 // Closing the first tab of the in-page tab bar moves this page to the next
 // tab's place (_chromeCloseTab): its list view comes too, or the page would
