@@ -30,8 +30,19 @@ for (const zoom of [1, 0.7, 1.3]) {
     const line = () => link.evaluate((el) => { const r = el.getClientRects()[0], b = el.getBoundingClientRect();
       return { x: r.left, y: r.top, height: r.height, dx: r.left - b.left, dy: r.top - b.top }; });
     const first = await line();
+    // Where the link was when the menu opened, read inside the contextmenu event.
+    // A rect read after the click can be a later layout: on CI mobile the output
+    // moved down by exactly its four leading lines (58 CSS px at 100% and 130%)
+    // between the click and the read, so a menu correctly at the click read as
+    // 58 to 76px above it (nightly-deep, AF-1344).
+    await page.evaluate(() => document.addEventListener('contextmenu', (e) => {
+      const el = (e.target as Element).closest('#peek-body .md-link, #peek-body .file-link');
+      const r = el && el.getClientRects()[0];
+      if (r) (window as any).__ctxLinkAt = { x: r.left, y: r.top, height: r.height };
+    }, { capture: true, once: true }));
     await link.click({ button: 'right', position: { x: first.dx + 10, y: first.dy + first.height / 2 } });
-    const box = await line();
+    const box = await page.evaluate(() => (window as any).__ctxLinkAt);
+    expect(box, 'the right-click reached the link').toBeTruthy();
     const px = box.x + 10, py = box.y + box.height / 2;
     const menu = page.locator('#file-ctx-menu');
     await expect(menu).toBeVisible();
