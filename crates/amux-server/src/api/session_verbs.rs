@@ -48798,7 +48798,10 @@ Enter to select \u{00b7} \u{2191}/\u{2193} to navigate \u{00b7} Esc to cancel\n\
     /// (env, meta and log left behind, interaction stuck at `sending`). The
     /// stand-in acts on `/exit` slowly, like Claude running its exit hooks; the
     /// caller is dropped once `/exit` has been typed, and the delete must still
-    /// finish.
+    /// finish. The stand-in clears its screen as it exits, as Claude's own UI
+    /// leaves the pane: with its `❯` still on screen stop never saw the shell,
+    /// took its 15 s hard-kill path every run, and the test finished at about
+    /// 31 s against a 25 s deadline after the abort (failed 1 in 3, AF-1346 land).
     #[tokio::test]
     async fn delete_finishes_when_the_client_disconnects_mid_stop() {
         let home = tempfile::tempdir().unwrap();
@@ -48828,7 +48831,7 @@ with open(sys.argv[1],'ab',buffering=0) as log:
         key=os.read(sys.stdin.fileno(),1); log.write(key)
         if key==b'\x15': buf=b''
         elif key in (b'\r',b'\n'):
-            if buf.strip()==b'/exit': time.sleep(1.5); sys.exit(0)
+            if buf.strip()==b'/exit': time.sleep(1.5); sys.stdout.write('\x1b[2J\x1b[H'); sys.stdout.flush(); sys.exit(0)
             buf=b''
         else: buf+=key
 "#;
