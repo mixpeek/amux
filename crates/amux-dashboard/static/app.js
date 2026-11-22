@@ -21555,13 +21555,68 @@ function _linkWrap(L, htmlText) {
   }
   const cls = /\.md(?::\d+)*$/i.test(L.value) ? 'md-link' : 'file-link';
   const title = typeof _resolveOutputPath === 'function' ? ' title="Open: ' + ea(_resolveOutputPath(L.value.replace(/(?::\d+){1,2}$/, ''))) + '"' : '';
-  return '<span class="' + cls + '" data-path="' + ea(L.value) + '"' + title + ' onclick="_openLinkedPath(this,event)">' + htmlText + '</span>';
+  return _outputFileLink(cls, L.value, title, htmlText);
 }
+// A PATH IN WORKER OUTPUT IS A REAL LINK (owner, 2026-11-21: "if there's a
+// relative path that is being sent back in a response, I can't
+// middle-mouse-button-click it to open a new tab"). It was a <span> with an
+// onclick, so a middle, ⌘ or ctrl click and "Open Link in New Tab" had no
+// address to open. It is an <a> whose href is this dashboard's #path= deep
+// link to the file. A plain click still opens it here (_openLinkedPath); any
+// other way of opening it is the browser's.
+//
+// A relative path names a file only against the worker's cwd, and the blind
+// join is wrong when the worker wrote it from an ancestor (AMUX-3511). So the
+// href starts as the blind join and is replaced with the server's answer
+// (/api/fs/resolve) when the pointer reaches the link, before any click can
+// land. Answers are kept per cwd, so a re-rendered link starts resolved.
+const _outputHrefCache = new Map();
+function _outputFileHref(p) {
+  // Guarded like _linkWrap's title: the render code is also loaded alone,
+  // without the resolver defined further down (e2e/peek-links.test.mjs).
+  if (typeof _resolveOutputPath !== 'function' || typeof _encodeHashPath !== 'function') return '';
+  const raw = String(p || '').replace(/(?::\d+){1,2}$/, '');
+  const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
+  const full = _outputHrefCache.get(cwd + '\n' + raw) || _resolveOutputPath(raw);
+  if (!full.startsWith('/') && !full.startsWith('~/')) return '';
+  return location.origin + location.pathname + '#path=' + _encodeHashPath(full);
+}
+// labelHtml is already-escaped HTML (the visible path, possibly coloured).
+function _outputFileLink(cls, path, attrs, labelHtml) {
+  const ea = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const href = _outputFileHref(path);
+  return '<a class="' + cls + '"' + (href ? ' href="' + ea(href) + '"' : '') + ' data-path="' + ea(path) + '"'
+    + (attrs || '') + ' onclick="_openLinkedPath(this,event)">' + labelHtml + '</a>';
+}
+function _outputLinkResolve(e) {
+  const a = e.target && e.target.closest && e.target.closest('a.file-link[data-path], a.md-link[data-path]');
+  if (!a || a.dataset.resolved) return;
+  const raw = (a.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
+  const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
+  a.dataset.resolved = '1';
+  if (!raw || raw.startsWith('/') || raw.startsWith('~/') || !cwd) return;
+  const key = cwd + '\n' + raw;
+  if (_outputHrefCache.has(key)) { a.setAttribute('href', _outputFileHref(raw)); return; }
+  _resolveLinkedPath(raw).then(full => {
+    if (!full || (!full.startsWith('/') && !full.startsWith('~/'))) return;
+    const blind = _resolveOutputPath(raw);
+    if (_outputHrefCache.size > 2000) _outputHrefCache.clear();
+    _outputHrefCache.set(key, full);
+    a.setAttribute('href', _outputFileHref(raw));
+    if (full !== blind) console.info('[amux] output_link_href_resolved', { from: blind, to: full });
+  });
+}
+if (typeof document !== 'undefined') ['pointerover', 'pointerdown', 'focusin', 'contextmenu'].forEach(ev => document.addEventListener(ev, _outputLinkResolve, true));
 // Open a path from worker output through the one resolver every output link
 // uses (_openPathFromOutput: server-side resolve against the worker's cwd).
+// Only a plain primary click: a modifier click is the browser's new tab, and
+// the click must not reach a header or card toggle behind the link either.
 function _openLinkedPath(el, ev) {
-  if (window.getSelection && String(window.getSelection()) !== '') return;
+  if (ev.button || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) { ev.stopPropagation(); return; }
+  // A plain click never follows the href, even when it only ends a drag or
+  // double-click select (then it opens nothing): the link is an <a> now.
   ev.preventDefault(); ev.stopPropagation();
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const p = (el.dataset.path || '').replace(/(?::\d+){1,2}$/, '');
   if (p) _openPathFromOutput(p);
 }
@@ -22000,9 +22055,8 @@ function _linkifyPaths(safeHtml) {
       const cls = /\.md$/i.test(p) ? 'md-link' : 'file-link';
       const shown = p + (line || '');
       // data-path is what the right-click menu reads (_fileCtxMenu).
-      return pre + at + '<span class="' + cls + '" data-path="' + esc(p) + '" title="Open in the file browser: '
-        + esc(_resolveOutputPath(p)) + '" onclick="event.preventDefault();event.stopPropagation();'
-        + "_openPathFromOutput('" + escJs(p) + "')" + '">' + esc(shown) + '</span>'
+      // A real link (_outputFileLink): a middle or ⌘ click opens a tab.
+      return pre + at + _outputFileLink(cls, p, ' title="Open in the file browser: ' + esc(_resolveOutputPath(p)) + '"', esc(shown))
         + (dot ? '.' : '');
     });
   } catch (e) { return safeHtml; }
@@ -42209,6 +42263,9 @@ document.addEventListener('click', e => {
   // A worker tagged in markdown has its own handler (_bindMdFileLinks): it
   // closes the file it sits in first, so the worker is not opened beneath it.
   if (a.classList.contains('md-worker-link')) return;
+  // A path in worker output opens through its own handler (_openLinkedPath),
+  // which asks the server where a relative path really is.
+  if (a.matches('a.file-link[data-path], a.md-link[data-path]')) return;
   if (_ownLinkHash(a.getAttribute('href'))) {
     e.preventDefault(); e.stopPropagation();
     _openOwnLink(a.href, 'anchor');
@@ -45442,6 +45499,12 @@ function statusStyle(id) {
 }
 
 // ═══════ CHROME TABS ═══════
+// The hashes that name where to land. Restoring the last screen must not run
+// over any of them (the screen restore and the tab bar read this one list).
+// reconnect joined it on 2026-11-08: a connector alert's link opened
+// Connectors and its prompt, then the restore reopened the last worker over
+// them.
+const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
 // EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
@@ -45529,6 +45592,22 @@ const _chromeLoaded = _chromeLoad();
 let _chromeTabs = _chromeLoaded.tabs;
 let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromeTabs[0]?.id || 1;
 if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromeTabs[0].id;
+// A BROWSER TAB OPENED ON A LINK SHOWS THE LINK (owner, 2026-11-22: a
+// middle-clicked path "did open a new tab but it did not deep link into that
+// JSONL file"). The page is the first tab and the link is its address; the bar
+// a new browser tab starts from had a later tab open, whose iframe covered
+// the page and the file it opened. A reload or a discarded tab coming back
+// keeps the tab that was open: only a fresh navigation is a link.
+(function _chromeBootOnLink() {
+  if (_isInTab || _nativeTabs || _chromeActiveId === _chromeTabs[0].id) return;
+  if (!_DEEPLINK_HASH_RE.test(location.hash) && !/[?&]view=/.test(location.search)) return;
+  let nav = '';
+  try { nav = (performance.getEntriesByType('navigation')[0] || {}).type || ''; } catch (e) { console.warn('[amux] chrome_tab_link_boot: navigation type unreadable, keeping the saved tab', e); }
+  if (nav !== 'navigate' || document.wasDiscarded) return;
+  const from = _chromeActiveId;
+  _chromeActiveId = _chromeTabs[0].id;
+  console.info('[amux] chrome_tab_link_boot', { verdict: 'link_shown_on_first_tab', from, link: location.hash.slice(0, location.hash.indexOf('=') + 1) });
+})();
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
 
@@ -62405,11 +62484,8 @@ async function _handleDeeplink(hash) {
 // any open session peek. Bounded to 24h so a days-later open still lands on a
 // sane default rather than a stale heavy tab.
 const _UI_RESTORE_MAX_AGE = 24 * 3600 * 1000;
-// The hashes that name where to land. Restoring the last screen must not run
-// over any of them (both checks below read this one list). reconnect joined it
-// on 2026-11-08: a connector alert's link opened Connectors and its prompt,
-// then the restore reopened the last worker over them.
-const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
+// _DEEPLINK_HASH_RE (the hashes that name where to land) is defined above the
+// in-page tab bar, which reads it at load.
 // Set in sessionStorage by a tab's first boot: a later boot of the same tab
 // (a reload, a discarded tab coming back) restores from its own state.
 const _UI_TAB_SEEN_KEY = 'amux_tab_seen';

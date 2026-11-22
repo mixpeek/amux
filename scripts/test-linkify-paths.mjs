@@ -33,8 +33,11 @@ const grab = n => { const i = src.indexOf('function '+n+'(');
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const escJs = s => String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 let peekSessionDir = '/Users/d/Projects/amux-gtm', peekSession='amux-gtm';
+// A path renders as an <a> through _outputFileLink (and its href helper), so
+// those come along; _encodeHashPath is left out, which leaves href empty.
+const LINK = grab('_outputFileHref') + '\n' + grab('_outputFileLink');
 const fn = new Function('esc','escJs','peekSessionDir','peekSession',
-  grab('_resolveOutputPath') + '\n' + grab('_linkifyPaths') + '\n return {_linkifyPaths,_resolveOutputPath};')
+  grab('_resolveOutputPath') + '\n' + LINK + '\n' + grab('_linkifyPaths') + '\n return {_linkifyPaths,_resolveOutputPath};')
   (esc, escJs, peekSessionDir, peekSession);
 
 let pass=0, fail=0;
@@ -43,8 +46,8 @@ const t=(label,cond,extra='')=>{ if(cond){pass++;} else {fail++; console.log('FA
 // (a) THE REPORTED SPECIMEN — a bare relative path, which the old regex could not match.
 let out = fn._linkifyPaths(esc('  Contacts are in customers/rothco/data/jewishlink-prospects.csv.'));
 t('(a) bare relative path is linked', out.includes('class="file-link"'), out);
-t('(a) full path captured', out.includes('customers/rothco/data/jewishlink-prospects.csv</span>'), out);
-t('(a) trailing sentence period left OUTSIDE the link', out.endsWith('</span>.'), out);
+t('(a) full path captured', out.includes('customers/rothco/data/jewishlink-prospects.csv</a>'), out);
+t('(a) trailing sentence period left OUTSIDE the link', out.endsWith('</a>.'), out);
 t('(a) resolves against the session cwd for the title',
   out.includes('/Users/d/Projects/amux-gtm/customers/rothco/data/jewishlink-prospects.csv'), out);
 
@@ -52,7 +55,7 @@ t('(a) resolves against the session cwd for the title',
 t('(b) absolute', fn._linkifyPaths(esc('see /Users/d/x/y.py now')).includes('file-link'));
 t('(b) dot-slash', fn._linkifyPaths(esc('see ./src/main.rs now')).includes('file-link'));
 t('(b) .md gets md-link', fn._linkifyPaths(esc('see docs/plan.md now')).includes('md-link'));
-t('(b) :linenum kept in the label', fn._linkifyPaths(esc('at src/a/b.rs:42 here')).includes('b.rs:42</span>'));
+t('(b) :linenum kept in the label', fn._linkifyPaths(esc('at src/a/b.rs:42 here')).includes('b.rs:42</a>'));
 
 // (c) THE CONTROLS — must NOT link.
 const url = '<a href="https://h.io/a/b.js" target="_blank">https://h.io/a/b.js</a>';
@@ -75,7 +78,7 @@ t('(d) quoted path fails safe: not linked, no raw quote injected',
   !tricky.includes('file-link'), tricky);
 // And prose apostrophes must not glue onto a neighbouring path.
 const prose = fn._linkifyPaths(esc("it's in data/x.csv ok"));
-t('(d) prose apostrophe does not break a real path', prose.includes('data/x.csv</span>'), prose);
+t('(d) prose apostrophe does not break a real path', prose.includes('data/x.csv</a>'), prose);
 
 // (e) resolution
 t('(e) absolute stays absolute', fn._resolveOutputPath('/a/b.txt') === '/a/b.txt');
@@ -88,7 +91,7 @@ t('(e) linenum stripped for the API', fn._resolveOutputPath('a/b.rs:42') === '/U
 // the failure this file's OSC-8 comment already records. An ABSOLUTE path needs
 // no cwd and must still link.
 const noCwd = new Function('esc','escJs','peekSessionDir','peekSession',
-  grab('_resolveOutputPath') + '\n' + grab('_linkifyPaths') + '\n return {_linkifyPaths};')
+  grab('_resolveOutputPath') + '\n' + LINK + '\n' + grab('_linkifyPaths') + '\n return {_linkifyPaths};')
   (esc, escJs, '', '');
 t('(g) relative path not linked without a session cwd',
   !noCwd._linkifyPaths(esc('see customers/rothco/x.csv now')).includes('file-link'),
