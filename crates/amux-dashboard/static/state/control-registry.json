@@ -3816,6 +3816,60 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_ocComboMouse": {
+      "kind": "command._ocComboMouse",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocForget": {
+      "kind": "command._ocForget",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocGroupsClick": {
+      "kind": "command._ocGroupsClick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocHistEdit": {
+      "kind": "command._ocHistEdit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocHistEditNow": {
+      "kind": "command._ocHistEditNow",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocHistRecord": {
+      "kind": "command._ocHistRecord",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocLoadModels": {
+      "kind": "command._ocLoadModels",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocProviderChanged": {
+      "kind": "command._ocProviderChanged",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_ocProviders": {
+      "kind": "command._ocProviders",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_officeBeacon": {
       "kind": "command._officeBeacon",
       "feedback_required": true,
@@ -4038,8 +4092,44 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomeDefaults": {
+      "kind": "command._outcomeDefaults",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomePlan": {
       "kind": "command._outcomePlan",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresetDelete": {
+      "kind": "command._outcomePresetDelete",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresetPick": {
+      "kind": "command._outcomePresetPick",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresets": {
+      "kind": "command._outcomePresets",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomePresetsEdit": {
+      "kind": "command._outcomePresetsEdit",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_outcomeSavePresets": {
+      "kind": "command._outcomeSavePresets",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
