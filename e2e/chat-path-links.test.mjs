@@ -9,17 +9,23 @@ const fn = name => {
   const i = source.indexOf('function ' + name + '('); let d = 0;
   for (let k = source.indexOf('{', i); k < source.length; k++) { if (source[k] === '{') d++; else if (source[k] === '}' && --d === 0) return source.slice(i, k + 1); }
 };
-const ctx = vm.createContext({});
+const ctx = vm.createContext({ location: { origin: 'https://h', pathname: '/' } });
 vm.runInContext("var peekSessionDir = '/Users/ethan/Dev/amux';"
   + "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}"
   + "function escJs(s){return String(s).replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\");}", ctx);
-for (const n of ['_resolveOutputPath', '_linkifyPaths', '_chatLinkify']) vm.runInContext(fn(n), ctx);
-const opens = h => [...h.matchAll(/_openPathFromOutput\('([^']+)'\)/g)].map(m => m[1]);
+vm.runInContext('var _outputHrefCache = new Map();', ctx);
+for (const n of ['_resolveOutputPath', '_encodeHashPath', '_outputFileHref', '_outputFileLink', '_linkifyPaths', '_chatLinkify']) vm.runInContext(fn(n), ctx);
+// A linked path is an <a> that opens through _openLinkedPath (2026-11-21: a
+// real link, so a middle click opens a tab). The path it opens is data-path.
+const links = h => [...h.matchAll(/<a class="(?:file|md)-link"([^>]*)onclick="_openLinkedPath\(this,event\)">/g)].map(m => m[1]);
+const opens = h => links(h).map(a => (a.match(/data-path="([^"]+)"/) || [])[1]);
+const hrefOf = h => links(h).map(a => (a.match(/href="([^"]+)"/) || [])[1]);
 
 test('a ~/ path in inline code is a link, and is not joined onto the cwd', () => {
   const h = ctx._chatLinkify('found <code>~/.amux/server.env</code> with 51 lines');
   assert.deepEqual(opens(h), ['~/.amux/server.env']);
   assert.equal(ctx._resolveOutputPath('~/.amux/server.env'), '~/.amux/server.env');
+  assert.deepEqual(hrefOf(h), ['https://h/#path=~/.amux/server.env']);
 });
 test('an absolute path in inline code is a link', () => {
   assert.deepEqual(opens(ctx._chatLinkify('<code>/Users/ethan/.amux/server.env</code>')), ['/Users/ethan/.amux/server.env']);
