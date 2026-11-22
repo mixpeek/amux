@@ -1222,6 +1222,9 @@ const OWNER_ONLY_ENV_PREFIXES: &[&str] = &[
     "AMUX_EMAIL_EXTERNAL_ALLOW",
     // Governance PR 11: a capability is a grant, so only the owner sets one.
     "AMUX_CAP_",
+    // Computer use on the owner's Mac: which apps, foreground input, and the
+    // outside-content window are grants, so a worker cannot set its own.
+    "AMUX_MAC_",
     // Governance PR 20: who signs in, how, and with what second factor.
     "AMUX_OIDC_",
     "AMUX_SSO_",

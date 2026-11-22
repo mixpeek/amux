@@ -3,6 +3,7 @@
 //!
 //! - `GET  /status`  is the driver up, which permissions it has, this worker's switches
 //! - `GET  /tools`   the driver's tools, each marked free / app / refused
+//! - `GET  /activity?session=` what workers did, newest first, with screenshots
 //! - `POST /call {tool, args}`  one tool call, gated per app; a screenshot in
 //!   the reply is saved under ~/.amux/computer-screenshots and returned as `screenshot`
 //!
@@ -11,17 +12,20 @@
 
 use super::AppState;
 use crate::integrations::computer_mac as mac;
+use axum::extract::Query;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/status", get(status))
         .route("/tools", get(tools))
         .route("/call", post(call))
+        .route("/activity", get(activity))
 }
 
 fn err(code: StatusCode, body: Value) -> Response {
@@ -145,13 +149,69 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         .map(mac::App::label)
         .collect::<Vec<_>>()
         .join(", ");
-    if let Err(r) = mac::decide(&tool, &args, &apps, &policy) {
+    let window_id = args.get("window_id").and_then(Value::as_i64);
+    let pid = apps.iter().find_map(|a| a.pid);
+    // One row per call, refused or not: the owner's view of what workers do.
+    let note = |verdict: &str, code: Option<&str>, shot: Option<String>, ms: u128| {
+        mac::record_activity(
+            &home,
+            &json!({ "ts": chrono::Utc::now().timestamp_millis(), "worker": w, "tool": tool,
+                     "apps": label, "pid": pid, "window_id": window_id, "verdict": verdict,
+                     "code": code, "screenshot": shot, "ms": ms as u64 }),
+        )
+    };
+    let refuse = |r: mac::Refusal| {
         tracing::warn!(
             "[computer-mac] verdict=refused code={} worker={w} tool={tool} app={label:?}",
             r.code
         );
-        return err(StatusCode::FORBIDDEN, r.json());
+        note("refused", Some(r.code), None, 0);
+        // The owner is asked on the board, once per worker (capabilities.rs).
+        match r.code {
+            "app_not_allowed" => {
+                let id = apps
+                    .iter()
+                    .find(|a| !mac::allowed(&policy, a))
+                    .map(|a| {
+                        if a.bundle_id.is_empty() {
+                            a.name.clone()
+                        } else {
+                            a.bundle_id.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+                super::capabilities::ask(&home, &w, "mac_apps", &label, &id);
+            }
+            "outside_content" => super::capabilities::ask(&home, &w, "mac_outside", &label, ""),
+            _ => {}
+        }
+        err(StatusCode::FORBIDDEN, r.json())
+    };
+    if let Err(r) = mac::decide(&tool, &args, &apps, &policy) {
+        return refuse(r);
     }
+    let acting = mac::acts(&tool) || mac::step_tools(&args).iter().any(|t| mac::acts(t));
+    let targets: Vec<String> = apps
+        .iter()
+        .map(|a| a.bundle_id.clone())
+        .filter(|b| !b.is_empty())
+        .collect();
+    if acting {
+        for b in &targets {
+            match mac::yield_to_person(&home, b).await {
+                Ok(waited) if waited > 0.2 => {
+                    tracing::info!("[computer-mac] verdict=yielded_to_person worker={w} app={b} waited_s={waited:.1}")
+                }
+                Ok(_) => {}
+                Err(r) => return refuse(r),
+            }
+        }
+    }
+    let front_before = if acting {
+        mac::frontmost(&home).await
+    } else {
+        None
+    };
     let dir = crate::integrations::computer::screenshot_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         // The call still runs; only its screenshot has nowhere to go.
@@ -170,7 +230,25 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         .unwrap_or(0);
     let shot = dir.join(format!("{stem}-{ms}.png"));
     let t0 = std::time::Instant::now();
-    match mac::call(&ep, &tool, &args, Some(&shot)).await {
+    let res = mac::call(&ep, &tool, &args, Some(&shot)).await;
+    // An action that pulled its app forward gives the person theirs back
+    // (launch_app and bring_to_front ask for the front, so they keep it).
+    let mut front_given_back = None;
+    if acting && !matches!(tool.as_str(), "launch_app" | "bring_to_front") {
+        if let Some(before) = front_before.filter(|b| !targets.contains(b)) {
+            let after = mac::frontmost(&home).await;
+            if after.as_ref().is_some_and(|a| targets.contains(a))
+                && mac::give_front_back(&home, &before).await
+            {
+                tracing::info!(
+                    "[computer-mac] verdict=front_given_back worker={w} to={before} from={}",
+                    after.unwrap_or_default()
+                );
+                front_given_back = Some(before);
+            }
+        }
+    }
+    match res {
         Ok(mut v) => {
             let has_shot = shot.is_file();
             let pruned = if has_shot {
@@ -178,22 +256,30 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
             } else {
                 0
             };
+            let shot_s = has_shot.then(|| shot.display().to_string());
             tracing::info!(
                 "[computer-mac] verdict=called worker={w} tool={tool} app={label:?} ms={} screenshot={}",
                 t0.elapsed().as_millis(),
-                if has_shot { shot.display().to_string() } else { "-".into() }
+                shot_s.as_deref().unwrap_or("-")
             );
+            note("called", None, shot_s.clone(), t0.elapsed().as_millis());
             if let Some(o) = v.as_object_mut() {
                 // The image itself is on disk; a base64 copy would only bloat the reply.
                 strip_images(o);
             }
             Json(json!({ "ok": true, "worker": w, "tool": tool, "apps": label, "result": v,
-                         "screenshot": has_shot.then(|| shot.display().to_string()), "pruned": pruned }))
+                         "screenshot": shot_s, "pruned": pruned, "front_given_back": front_given_back }))
             .into_response()
         }
         Err(e) => {
             tracing::warn!(
                 "[computer-mac] verdict=driver_error worker={w} tool={tool} app={label:?}: {e}"
+            );
+            note(
+                "driver_error",
+                Some("driver_error"),
+                None,
+                t0.elapsed().as_millis(),
             );
             err(
                 StatusCode::BAD_GATEWAY,
@@ -203,9 +289,96 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     }
 }
 
+/// `GET /activity?session=<worker>&limit=N`: the newest calls first, each
+/// with its screenshot path, for the dashboard and the Mac app's preview.
+async fn activity(Query(q): Query<HashMap<String, String>>) -> Response {
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30usize)
+        .min(500);
+    let (rows, n) = mac::activity(
+        &home(),
+        q.get("session")
+            .map(String::as_str)
+            .filter(|s| !s.is_empty()),
+        limit,
+    );
+    Json(json!({ "measured": true, "n_considered": n, "returned": rows.len(), "rows": rows }))
+        .into_response()
+}
+
+/// Middleware on the email read routes: a worker's successful read is outside
+/// content for the Mac gate. The owner's own reads (no X-Amux-Session) are not.
+pub async fn note_email_read(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    note_email_read_in(home(), req, next).await
+}
+
+pub async fn note_email_read_in(
+    home: std::path::PathBuf,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let reading = req.method() == axum::http::Method::GET;
+    let w = worker(None, req.headers());
+    let resp = next.run(req).await;
+    if let (true, Some(w)) = (reading && resp.status().is_success(), w) {
+        mac::note_outside_content(&home, &w, "email");
+    }
+    resp
+}
+
 /// Drops base64 image blocks (MCP `{"type":"image","data":...}`) from a reply.
 fn strip_images(o: &mut serde_json::Map<String, Value>) {
     if let Some(Value::Array(content)) = o.get_mut("content") {
         content.retain(|c| c.get("type").and_then(Value::as_str) != Some("image"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    async fn read_with(home: &std::path::Path, status: StatusCode, worker: Option<&str>) {
+        let h = home.to_path_buf();
+        let app: Router = Router::new()
+            .route("/inbox", get(move || async move { status }))
+            .route_layer(axum::middleware::from_fn(move |req, next| {
+                note_email_read_in(h.clone(), req, next)
+            }));
+        let mut req = axum::http::Request::builder().uri("/inbox");
+        if let Some(w) = worker {
+            req = req.header("x-amux-session", w);
+        }
+        let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), status);
+    }
+
+    #[tokio::test]
+    async fn email_read_notes_outside_content() {
+        let d = tempfile::tempdir().unwrap();
+        read_with(d.path(), StatusCode::OK, Some("w1")).await;
+        assert!(
+            mac::outside_seen(d.path(), "w1").is_some(),
+            "a worker's successful read is noted"
+        );
+        read_with(d.path(), StatusCode::NOT_IMPLEMENTED, Some("w2")).await;
+        assert!(
+            mac::outside_seen(d.path(), "w2").is_none(),
+            "a failed read carried nothing"
+        );
+        read_with(d.path(), StatusCode::OK, None).await;
+        let noted = std::fs::read_dir(d.path().join("computer/outside-content"))
+            .unwrap()
+            .count();
+        assert_eq!(
+            noted, 1,
+            "only w1 was noted: not the failed read, not the owner's own"
+        );
     }
 }

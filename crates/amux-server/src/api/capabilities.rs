@@ -352,6 +352,14 @@ pub fn grant_hint(capability: &str, lane: &str, detail: &str) -> String {
         "publish" => format!("set {PUBLISH_KEY}=public (or internal) on worker {lane}"),
         "message" => format!("set {MESSAGE_KEY}={detail} on worker {lane}, or put both workers in one group"),
         "connectors" => format!("enable {detail} for worker {lane} in its Connectors scope"),
+        "mac_apps" => format!(
+            "add {detail} to {} for worker {lane} (Scope tab), so it may use that app on this Mac",
+            crate::integrations::computer_mac::APPS_KEY
+        ),
+        "mac_outside" => format!(
+            "let worker {lane} act in Mac apps for 30 minutes although it read outside content (sets {})",
+            crate::integrations::computer_mac::OUTSIDE_UNTIL_KEY
+        ),
         _ => format!("grant {capability} to {lane}"),
     }
 }
@@ -409,6 +417,15 @@ pub fn existing_refusal(home: &Path, lane: &str, capability: &str, resource: &st
     file_card(home, lane, capability, resource, &hint, grant_write(home, lane, capability, detail));
 }
 
+/// A boundary that always refuses, whatever AMUX_CAPABILITIES says (computer
+/// use on the owner's Mac): ask the owner, once per worker and capability.
+pub fn ask(home: &Path, lane: &str, capability: &str, resource: &str, detail: &str) {
+    counters::bump(&format!("{capability}.refused"));
+    let hint = grant_hint(capability, lane, detail);
+    receipt(lane, capability, resource, "deny", &hint);
+    file_card(home, lane, capability, resource, &hint, grant_write(home, lane, capability, detail));
+}
+
 /// The worker crossed nothing this time: a later crossing may ask again once
 /// an earlier card was answered.
 pub fn clear_ask(home: &Path, lane: &str, capability: &str) {
@@ -443,7 +460,13 @@ pub fn caps_written(key: &str, value: &Value) -> Vec<&'static str> {
         _ => vec![],
     };
     let mut out = Vec::new();
-    for (k, cap) in [(FOLDERS_KEY, "folders"), (PUBLISH_KEY, "publish"), (MESSAGE_KEY, "message")] {
+    for (k, cap) in [
+        (FOLDERS_KEY, "folders"),
+        (PUBLISH_KEY, "publish"),
+        (MESSAGE_KEY, "message"),
+        (crate::integrations::computer_mac::APPS_KEY, "mac_apps"),
+        (crate::integrations::computer_mac::OUTSIDE_UNTIL_KEY, "mac_outside"),
+    ] {
         if keys.iter().any(|x| x == k) && !out.contains(&cap) {
             out.push(cap);
         }
@@ -539,6 +562,15 @@ pub fn grant_write(home: &Path, lane: &str, capability: &str, detail: &str) -> O
         "folders" if !detail.trim().is_empty() => Some(json!({ FOLDERS_KEY: merged(FOLDERS_KEY) })),
         "message" if !detail.trim().is_empty() => Some(json!({ MESSAGE_KEY: merged(MESSAGE_KEY) })),
         "publish" => Some(json!({ PUBLISH_KEY: if detail == "internal" { "internal" } else { "public" } })),
+        "mac_apps" if !detail.trim().is_empty() => {
+            Some(json!({ crate::integrations::computer_mac::APPS_KEY: merged(crate::integrations::computer_mac::APPS_KEY) }))
+        }
+        // approval_cards.rs computes this again when the owner approves, so the
+        // 30 minutes start then.
+        "mac_outside" => Some(json!({
+            crate::integrations::computer_mac::OUTSIDE_UNTIL_KEY:
+                (chrono::Utc::now().timestamp() + crate::integrations::computer_mac::OUTSIDE_WINDOW_S).to_string()
+        })),
         _ => None,
     }
 }

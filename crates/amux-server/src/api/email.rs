@@ -59,6 +59,9 @@ pub fn routes_with(ctx: Arc<EmailCtx>) -> Router<AppState> {
         // carries a "/" and for the spelling a worker guesses first.
         .route("/attachment", get(attachment_by_query))
         .route("/search", get(search))
+        // A worker that reads mail now carries outside words: its actions in
+        // the owner's Mac apps wait for an approval (computer_mac.rs).
+        .route_layer(axum::middleware::from_fn(super::computer_mac::note_email_read))
         .route("/log", get(send_log))
         // AMUX-3510: the human approval half of the external-send gate.
         .route("/approve/{id}", post(approve))

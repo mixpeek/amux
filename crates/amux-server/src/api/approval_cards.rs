@@ -748,7 +748,11 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
                 resolved("capability", &id, "rejected", &by, reason).await;
                 return Json(json!({"ok": true, "rejected": link.approval_ref})).into_response();
             }
-            let Some(write) = link.meta.get("grant").filter(|g| g.is_object()).cloned() else {
+            // A time-boxed grant starts when the owner approves, not when it was asked.
+            let fresh = (cap == "mac_outside")
+                .then(|| super::capabilities::grant_write(&crate::integrations::browser::amux_home(), lane, cap, ""))
+                .flatten();
+            let Some(write) = fresh.or_else(|| link.meta.get("grant").filter(|g| g.is_object()).cloned()) else {
                 return (StatusCode::CONFLICT, Json(json!({"ok": false, "code": "grant_by_hand",
                     "error": format!("granting '{cap}' to {lane} is not a single setting"),
                     "next": link.meta.get("hint").cloned().unwrap_or(Value::Null)}))).into_response();

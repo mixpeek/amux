@@ -7227,7 +7227,12 @@ This Mac's own apps (the amux Mac app runs trycua's cua-driver; owner turns it o
       amux computer mac type_text '{"pid":844,"element_token":"s1a2:9","text":"hi"}'
     Background by default (the owner's pointer is untouched). An app must be in
     AMUX_MAC_APPS for this worker; terminals, password managers, System Settings
-    and amux itself are refused. Every refusal says what to do next.
+    and amux itself are refused. Every refusal says what to do next. A refused
+    app files the owner a Needs-you card; Approve grants it. An action waits
+    while the owner types in the app in front (person_active after 5s), gives
+    the owner's app back if it pulled its own forward, and after an email read
+    needs the owner's OK for 30 minutes (outside_content; reads still work).
+  amux computer mac activity           (GET /api/computer/mac/activity) what workers did, newest first
 
 Ladder: 1) amux browser  2) CDP into Ethan's real Chrome  3) amux computer.
 Loop: screenshot, read coordinates off the image, act, screenshot to confirm.

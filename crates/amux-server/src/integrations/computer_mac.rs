@@ -31,6 +31,12 @@ use std::time::Duration;
 pub const APPS_KEY: &str = "AMUX_MAC_APPS";
 pub const ANY_APP_KEY: &str = "AMUX_MAC_ANY_APP";
 pub const FOREGROUND_KEY: &str = "AMUX_MAC_FOREGROUND";
+/// Unix seconds until which this worker may act after reading outside
+/// content. The owner's Approve on the card writes it (capabilities.rs).
+pub const OUTSIDE_UNTIL_KEY: &str = "AMUX_MAC_OUTSIDE_UNTIL";
+/// How long outside content (an email, a web page) counts as in a worker's
+/// context, and how long one approval opens the gate for.
+pub const OUTSIDE_WINDOW_S: i64 = 30 * 60;
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// What the Mac app publishes when the driver is up.
@@ -265,6 +271,11 @@ pub struct Policy {
     pub apps: Vec<String>,
     pub any_app: bool,
     pub foreground: bool,
+    /// When this worker last read outside content through amux (email).
+    pub outside_seen_at: Option<i64>,
+    /// AMUX_MAC_OUTSIDE_UNTIL: an approval to act anyway, until then.
+    pub outside_until: i64,
+    pub now: i64,
 }
 
 fn on(v: Option<String>) -> bool {
@@ -292,8 +303,64 @@ impl Policy {
                 .collect(),
             any_app: on(get(ANY_APP_KEY)),
             foreground: on(get(FOREGROUND_KEY)),
+            outside_seen_at: outside_seen(home, worker),
+            outside_until: get(OUTSIDE_UNTIL_KEY)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0),
+            now: chrono::Utc::now().timestamp(),
         }
     }
+}
+
+// ── Outside content (Athena's prompt-injection gate) ──
+//
+// A worker that just read an email from someone else may be carrying that
+// person's instructions. Until the owner says otherwise, such a worker may
+// still READ Mac apps but not act in them: the first action files one
+// Needs-you card, and Approve opens a 30-minute window.
+
+/// One file per worker, so two workers noting at once never overwrite each
+/// other (a shared file's read-modify-write lost one of them).
+fn outside_file(home: &Path, worker: &str) -> PathBuf {
+    home.join("computer").join("outside-content").join(format!(
+        "{}.json",
+        crate::integrations::browser::safe_file_component(worker)
+    ))
+}
+
+/// Records that `worker` read outside content (`source` names what).
+pub fn note_outside_content(home: &Path, worker: &str, source: &str) {
+    let f = outside_file(home, worker);
+    let body = json!({ "at": chrono::Utc::now().timestamp(), "source": source }).to_string();
+    let res = std::fs::create_dir_all(f.parent().unwrap_or(home)).and_then(|_| {
+        // Written beside and renamed over, so a reader never sees half a file.
+        let tmp = f.with_extension(format!("json.{}", std::process::id()));
+        std::fs::write(&tmp, body).and_then(|_| std::fs::rename(&tmp, &f))
+    });
+    match res {
+        Ok(()) => tracing::info!(
+            "[computer-mac] verdict=outside_content_noted worker={worker} source={source}"
+        ),
+        Err(e) => {
+            tracing::warn!("[computer-mac] verdict=outside_content_unrecorded worker={worker}: {e}")
+        }
+    }
+}
+
+pub fn outside_seen(home: &Path, worker: &str) -> Option<i64> {
+    let t = std::fs::read_to_string(outside_file(home, worker)).ok()?;
+    let v: Value = serde_json::from_str(&t).ok()?;
+    v.get("at")?.as_i64()
+}
+
+/// Tools that change something in an app, as opposed to reading it.
+/// run_steps is judged by its steps (a run of reads only reads).
+pub fn acts(tool: &str) -> bool {
+    classify(tool) == Class::App
+        && !matches!(
+            tool,
+            "get_window_state" | "parse_visual_regions" | "run_steps"
+        )
 }
 
 /// A refusal the model can act on: what happened, that nothing was sent, what to do next.
@@ -473,6 +540,17 @@ pub fn decide(tool: &str, args: &Value, apps: &[App], policy: &Policy) -> Result
             });
         }
     }
+    let acting = acts(tool) || step_tools(args).iter().any(|t| acts(t));
+    let fresh = policy
+        .outside_seen_at
+        .is_some_and(|at| policy.now - at < OUTSIDE_WINDOW_S);
+    if acting && fresh && policy.now >= policy.outside_until {
+        return Err(Refusal {
+            code: "outside_content",
+            error: "this worker read outside content (an email from someone else) in the last 30 minutes, so it may read apps but not act in them until the owner approves. Nothing was sent.".into(),
+            next: "the owner has a Needs-you card for it; reads (get_window_state, list_windows) still work meanwhile".into(),
+        });
+    }
     Ok(())
 }
 
@@ -494,6 +572,168 @@ pub async fn app_for_pid(pid: i64) -> App {
         name: field("name").await.unwrap_or_default(),
         pid: Some(pid),
     }
+}
+
+// ── The person at the Mac (Athena's "yield to the person") ──
+
+/// Before acting in the app that is in front, wait while the person typed or
+/// clicked in the last YIELD_IDLE_S, up to YIELD_WAIT_S, then give up.
+pub const YIELD_IDLE_S: f64 = 1.5;
+pub const YIELD_WAIT_S: f64 = 5.0;
+
+/// A private test server (AMUX_MAC_TEST=1) reads the person from
+/// <home>/computer/test-person.json ({"front": bundle, "idle_s": n}, or
+/// "fronts": a list answered one per call).
+fn test_person(home: &Path) -> Option<Value> {
+    if std::env::var("AMUX_MAC_TEST").ok().as_deref() != Some("1") {
+        return None;
+    }
+    let t = std::fs::read_to_string(home.join("computer").join("test-person.json")).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+/// The bundle id of the app in front.
+pub async fn frontmost(home: &Path) -> Option<String> {
+    if let Some(mut t) = test_person(home) {
+        // "fronts": [a, b, ...] answers one per call, the last one sticking,
+        // so a test can have an action pull its app forward.
+        if let Some(seq) = t.get_mut("fronts").and_then(Value::as_array_mut) {
+            let first = seq.first().and_then(Value::as_str).map(str::to_string);
+            if seq.len() > 1 {
+                seq.remove(0);
+                let f = home.join("computer").join("test-person.json");
+                if let Err(e) = std::fs::write(&f, t.to_string()) {
+                    tracing::warn!("[computer-mac] verdict=test_person_unsaved: {e}");
+                }
+            }
+            return first;
+        }
+        return t.get("front").and_then(Value::as_str).map(str::to_string);
+    }
+    let asn = tokio::process::Command::new("/usr/bin/lsappinfo")
+        .arg("front")
+        .output()
+        .await
+        .ok()?;
+    let asn = String::from_utf8_lossy(&asn.stdout).trim().to_string();
+    let out = tokio::process::Command::new("/usr/bin/lsappinfo")
+        .args(["info", "-only", "bundleid", &asn])
+        .output()
+        .await
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    let v = s.rsplit_once('=')?.1.trim().trim_matches('"').to_string();
+    (!v.is_empty() && v != "[ NULL ]").then_some(v)
+}
+
+/// Seconds since the person last used the keyboard, mouse or trackpad.
+pub async fn idle_s(home: &Path) -> Option<f64> {
+    if let Some(t) = test_person(home) {
+        return t.get("idle_s").and_then(Value::as_f64);
+    }
+    let out = tokio::process::Command::new("/usr/sbin/ioreg")
+        .args(["-c", "IOHIDSystem", "-d", "4"])
+        .output()
+        .await
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let line = s.lines().find(|l| l.contains("\"HIDIdleTime\""))?;
+    let ns: f64 = line.rsplit_once('=')?.1.trim().parse().ok()?;
+    Some(ns / 1e9)
+}
+
+/// Waits for the person to pause when they are working in `bundle`.
+/// Ok(waited seconds), or the refusal to send.
+pub async fn yield_to_person(home: &Path, bundle: &str) -> Result<f64, Refusal> {
+    if bundle.is_empty() || frontmost(home).await.as_deref() != Some(bundle) {
+        return Ok(0.0);
+    }
+    let t0 = std::time::Instant::now();
+    loop {
+        match idle_s(home).await {
+            Some(i) if i < YIELD_IDLE_S => {}
+            _ => return Ok(t0.elapsed().as_secs_f64()),
+        }
+        if t0.elapsed().as_secs_f64() >= YIELD_WAIT_S {
+            return Err(Refusal {
+                code: "person_active",
+                error: format!("the owner is typing or clicking in {bundle} right now, so nothing was sent there."),
+                next: "do something else and come back, or work in an app that is not in front".into(),
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Brings `bundle` back to the front (an action that pulled its target
+/// forward gives the person their app back).
+pub async fn give_front_back(home: &Path, bundle: &str) -> bool {
+    if test_person(home).is_some() {
+        // A test records what it would have done.
+        let f = home.join("computer").join("test-front-given-back");
+        return std::fs::write(f, bundle).is_ok();
+    }
+    tokio::process::Command::new("/usr/bin/open")
+        .args(["-g", "-b", bundle])
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
+// ── Activity: what each worker did, for the owner to watch ──
+
+pub fn activity_file(home: &Path) -> PathBuf {
+    home.join("computer").join("mac-activity.jsonl")
+}
+
+const ACTIVITY_KEEP: usize = 2000;
+
+/// Appends one row; trims the file to the newest ACTIVITY_KEEP rows when it doubles.
+pub fn record_activity(home: &Path, row: &Value) {
+    use std::io::Write;
+    let f = activity_file(home);
+    if let Some(d) = f.parent() {
+        if let Err(e) = std::fs::create_dir_all(d) {
+            tracing::warn!("[computer-mac] verdict=activity_unrecorded: {e}");
+            return;
+        }
+    }
+    let res = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&f)
+        .and_then(|mut h| writeln!(h, "{row}"));
+    if let Err(e) = res {
+        tracing::warn!("[computer-mac] verdict=activity_unrecorded: {e}");
+        return;
+    }
+    if let Ok(t) = std::fs::read_to_string(&f) {
+        let lines: Vec<&str> = t.lines().collect();
+        if lines.len() > ACTIVITY_KEEP * 2 {
+            let keep = lines[lines.len() - ACTIVITY_KEEP..].join("\n") + "\n";
+            if let Err(e) = std::fs::write(&f, keep) {
+                tracing::warn!("[computer-mac] verdict=activity_trim_failed: {e}");
+            }
+        }
+    }
+}
+
+/// The newest rows first, for one worker or all, and how many rows were
+/// looked at (the whole feed: the population the answer was drawn from).
+pub fn activity(home: &Path, worker: Option<&str>, limit: usize) -> (Vec<Value>, usize) {
+    let t = std::fs::read_to_string(activity_file(home)).unwrap_or_default();
+    let all: Vec<Value> = t
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    let n = all.len();
+    let rows = all
+        .into_iter()
+        .rev()
+        .filter(|v| worker.is_none_or(|w| v.get("worker").and_then(Value::as_str) == Some(w)))
+        .take(limit)
+        .collect();
+    (rows, n)
 }
 
 /// Runs one tool on the driver. `shot` receives the first image, if any.
@@ -589,6 +829,71 @@ mod tests {
             let r = decide(t, &json!({}), &[], &pol(&["*"])).unwrap_err();
             assert_eq!(r.code, "tool_refused", "{t}");
             assert!(!r.next.is_empty());
+        }
+    }
+
+    #[test]
+    fn outside_content_stops_actions_until_approved_and_lets_reads_through() {
+        let s = [app("com.spotify.client", "Spotify")];
+        let mut p = pol(&["*"]);
+        p.now = 10_000;
+        p.outside_seen_at = Some(10_000 - 60);
+        let click = json!({"pid": 1});
+        assert_eq!(
+            decide("click", &click, &s, &p).unwrap_err().code,
+            "outside_content"
+        );
+        let steps = json!({"steps": [{"tool": "type_text", "args": {"pid": 1, "text": "x"}}]});
+        assert_eq!(
+            decide("run_steps", &steps, &s, &p).unwrap_err().code,
+            "outside_content"
+        );
+        assert!(
+            decide("get_window_state", &click, &s, &p).is_ok(),
+            "reads still work"
+        );
+        p.outside_until = 10_000 + 600;
+        assert!(
+            decide("click", &click, &s, &p).is_ok(),
+            "an approval opens it"
+        );
+        p.outside_until = 0;
+        p.outside_seen_at = Some(10_000 - OUTSIDE_WINDOW_S - 1);
+        assert!(
+            decide("click", &click, &s, &p).is_ok(),
+            "old outside content no longer counts"
+        );
+    }
+
+    #[test]
+    fn a_run_of_reads_is_not_an_action() {
+        // Review F2: run_steps counted as acting whatever its steps were.
+        let s = [app("com.spotify.client", "Spotify")];
+        let mut p = pol(&["*"]);
+        p.now = 10_000;
+        p.outside_seen_at = Some(10_000 - 60);
+        let reads =
+            json!({"steps": [{"tool": "get_window_state", "args": {"pid": 1, "window_id": 2}}]});
+        assert!(decide("run_steps", &reads, &s, &p).is_ok());
+        assert!(!acts("run_steps"));
+    }
+
+    #[test]
+    fn two_workers_noting_outside_content_both_land() {
+        // Review F3: a shared file's read-modify-write dropped one of two.
+        let d = tempfile::tempdir().unwrap();
+        let hs: Vec<_> = (0..16)
+            .map(|i| {
+                let h = d.path().to_path_buf();
+                std::thread::spawn(move || note_outside_content(&h, &format!("w{i}"), "email"))
+            })
+            .collect();
+        hs.into_iter().for_each(|h| h.join().unwrap());
+        for i in 0..16 {
+            assert!(
+                outside_seen(d.path(), &format!("w{i}")).is_some(),
+                "w{i} lost"
+            );
         }
     }
 
