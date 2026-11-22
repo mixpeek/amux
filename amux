@@ -6879,6 +6879,32 @@ cmd_browser() {
   local AMUX_API="${AMUX_API:-$(cmd_url)}"
   local sub="${1:-}"; shift || true
   case "$sub" in
+    # Learn a task by watching the owner do it once in the amux browser: the
+    # steps (page, click, fill, key, submit), secret fields redacted in the page.
+    watch)
+      local wsub="${1:-show}"; shift || true
+      local wses="${AMUX_SESSION:-${AMUX_WORKER:-amux}}" resp
+      case "$wsub" in
+        start) resp=$(_curl -sk -m 30 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $wses" -d '{}' "$AMUX_API/api/browser/watch/start") ;;
+        stop)  resp=$(_curl -sk -m 30 -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: $wses" -d '{}' "$AMUX_API/api/browser/watch/stop") ;;
+        show|"") resp=$(_curl -sk -m 30 -H "X-Amux-Session: $wses" "$AMUX_API/api/browser/watch") ;;
+        *) die "usage: amux browser watch start|show|stop" ;;
+      esac
+      printf '%s' "$resp" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if d.get("error"): sys.exit("amux browser watch: %s" % d["error"])
+w = d.get("watch", d)
+print("%s, %d step(s)%s" % ("watching" if w.get("watching") else "not watching", len(w.get("steps") or []),
+      (", %d redacted" % w["redacted"]) if w.get("redacted") else ""))
+for s in w.get("steps") or []:
+    t = s.get("target") or {}
+    what = s.get("kind")
+    if what == "page": print("  page   %s  %s" % (s.get("url"), s.get("title") or ""))
+    else: print("  %-6s %s %s%s" % (what, t.get("name") or t.get("selector") or t.get("tag") or "",
+          ("= %s" % s["value"]) if "value" in s else "", ("  [%s]" % s["key"]) if s.get("key") else ""))
+'
+      return $? ;;
     for|profile-for)
       # The one profile to use for a site, for THIS worker, and whether it is
       # signed in there (2026-10-07). Prints the name alone on stdout's first

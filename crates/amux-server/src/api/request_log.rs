@@ -2708,6 +2708,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/browser/watch",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/browser/watch/start",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/browser/watch/stop",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/computer/start",
         methods: &["POST"],
     },

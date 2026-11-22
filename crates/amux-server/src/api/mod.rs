@@ -46,6 +46,7 @@ pub mod branding;
 pub mod brex;
 pub mod browser;
 pub mod browser_import;
+pub mod browser_watch;
 pub mod audit;
 pub mod browser_routing;
 pub mod cdp_proxy;
