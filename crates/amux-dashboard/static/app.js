@@ -22214,8 +22214,21 @@ const _peekToolCollapsed = {};
 // does, and a single click toggles after a beat so a second click can cancel
 // it instead of collapsing the block under the selection.
 let _ptcClickTimer = 0;
+// A LINK IN THE HEADER IS A LINK, NOT A TOGGLE (owner, 2026-11-21: "if I
+// click a response that has a link in it, it collapses the response text").
+// A reply's first line is its header, so a URL, file path or card id on that
+// line bubbled its click here and folded the reply 250 ms after the link
+// opened. A click on a link or control inside the header does its own job.
+const _PTC_HEAD_OWN_CLICK = 'a[href], button, input, select, textarea, [role="link"], [onclick]';
 function _peekToggleTool(id, ev) {
-  const onCaret = !!(ev && ev.target && ev.target.closest && ev.target.closest('.ptc-caret'));
+  const t = ev && ev.target && ev.target.closest ? ev.target : null;
+  const own = t && t.closest(_PTC_HEAD_OWN_CLICK);
+  if (own && !own.classList.contains('ptc-head') && own.closest('.ptc-head')) {
+    clearTimeout(_ptcClickTimer);
+    console.info('[amux] ptc_toggle_skipped', { id, on: own.tagName.toLowerCase() });
+    return;
+  }
+  const onCaret = !!(t && t.closest('.ptc-caret'));
   if (ev && !onCaret) {
     clearTimeout(_ptcClickTimer);
     if (ev.detail > 1) return;
