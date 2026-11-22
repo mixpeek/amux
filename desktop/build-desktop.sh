@@ -185,8 +185,17 @@ fi
 # hoc signature's default one is the binary's hash: every rebuild silently
 # lost both grants and asked again (2026-10-28). The id stays the same build
 # to build, so a grant given once carries over.
-codesign --force --deep --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null 2>&1 \
+# Helpers are signed first, each under its own identifier. `--deep` on the
+# app gave the bundled cua-driver the APP's requirement (identifier
+# $BUNDLE_ID), which the driver's own identifier cannot meet, so
+# `codesign --verify --deep` failed with "nested code is modified or invalid"
+# (desktop CI red from 694a5708c, 2026-11-22).
+for h in "$APP"/Contents/Helpers/*; do
+    [ -f "$h" ] && { codesign --force --sign - "$h" >/dev/null 2>&1 || echo "  !! codesign failed on $h"; }
+done
+codesign --force --sign - -r="designated => identifier \"$BUNDLE_ID\"" "$APP" >/dev/null 2>&1 \
   && echo "  Signed (ad hoc, requirement: identifier $BUNDLE_ID)" || echo "  !! codesign failed; permissions may be asked again"
+codesign --verify --deep --strict "$APP" 2>/dev/null || echo "  !! codesign --verify --deep failed on $APP: $(codesign --verify --deep --strict "$APP" 2>&1 | tail -1)"
 
 # Install to /Applications if requested or by default on build
 # AMUX_DESKTOP_NO_INSTALL=1 leaves the bundle in the repo root (CI zips it).
