@@ -58,8 +58,13 @@ pub(crate) fn idle_helpers(created_by_amux: &[String], outcomes: &[OutcomeRow], 
 /// Phase 5, self-configuration: stop helpers amux created for outcomes once
 /// they have been idle a while (a stopped chat helper holds nothing and
 /// starts again on the next request; archiving stays a person's call). Run
-/// daily by a shell schedule.
+/// daily by a shell schedule. Each stop types `/exit` and waits, so the sweep
+/// runs to completion even if the scheduled caller times out (`run_to_completion`).
 async fn tidy(State(state): State<AppState>, axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>) -> Response {
+    crate::db::interactions::run_to_completion("intent-tidy", "idle-helpers", tidy_inner(state, q)).await
+}
+
+async fn tidy_inner(state: AppState, q: HashMap<String, String>) -> Response {
     let idle_days: i64 = q.get("idle_days").and_then(|v| v.parse().ok()).unwrap_or(7).max(1);
     let home = crate::config::amux_home();
     let mine: Vec<String> = super::orchestrate::roster_entries(&home).into_iter()

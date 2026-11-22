@@ -1281,7 +1281,14 @@ fn record_owner_lifecycle(
 
 /// POST /api/workers/{id}/stop — worker -> Stopped; the live session row (if
 /// any) is ended as Killed. Stopping a stopped worker is an honest no-op.
+/// Stop types `/exit` and waits for the shell before it records the stop, so a
+/// dropped request must not end between the two (`run_to_completion`).
 pub async fn stop_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    let target = key.clone();
+    crate::db::interactions::run_to_completion("stop", &target, stop_worker_inner(state, key)).await
+}
+
+async fn stop_worker_inner(state: AppState, key: String) -> Response {
     let slot: Arc<Mutex<Option<StepOutcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let key_w = key.clone();
@@ -1499,8 +1506,11 @@ pub(crate) fn lifecycle_lock(name: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
+// Pause stops the process tree and resume starts it; neither may end halfway
+// because the client left (`run_to_completion`).
 pub async fn pause_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
-    change_pause(state, key, true, None).await
+    let target = key.clone();
+    crate::db::interactions::run_to_completion("pause", &target, change_pause(state, key, true, None)).await
 }
 
 pub async fn resume_worker(
@@ -1508,7 +1518,8 @@ pub async fn resume_worker(
     admission: Option<Extension<AdmissionOverride>>,
     Path(key): Path<String>,
 ) -> Response {
-    change_pause(state, key, false, admission).await
+    let target = key.clone();
+    crate::db::interactions::run_to_completion("resume", &target, change_pause(state, key, false, admission)).await
 }
 
 /// `admission` only matters on Resume, which starts the worker through
