@@ -155,6 +155,20 @@ if [ "$(uname)" = Darwin ]; then
   check "and the escalation names the memory and the restart" "yes" "$(grep -q 'holding 30G with no file churn.*sudo killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
   check "and does not ask anyone to stop churn or reboot" "no" "$(grep -q 'stop the file churn' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
 
+  echo "3b2. the tick restarts a spinning fseventsd itself instead of escalating it (RCA 20261121-183438)"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  out=$(AMUX_CLEANUP_FSEVENTSD_RESTART_CMD="touch $FIX/restarted" AMUX_CLEANUP_FSEVENTSD_RESTART_SETTLE_S=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 0.18 100")
+  check "the restart runs"                               "yes" "$([ -e "$FIX/restarted" ] && echo yes || echo no)"
+  check "and says so with the verdict"                   "yes" "$(has "$out" 'fseventsd was spinning at 100% CPU with no file churn at 0.18G: restarted it.*verdict=fseventsd_restarted')"
+  check "and nothing is escalated"                       "no"  "$([ -s "$FIX/sent.msg" ] && echo yes || echo no)"
+  check "and it is not a constraint"                     "no"  "$(has "$out" 'constraint fseventsd')"
+  rm -f "$FIX/restarted"
+  rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
+  printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' > "$FIX/nosudo"; chmod +x "$FIX/nosudo"
+  out=$(AMUX_CLEANUP_FSEVENTSD_RESTART_CMD="$FIX/nosudo" AMUX_CLEANUP_CHURN_SAMPLE_CMD="$QUIET" tick "echo 0.18 100")
+  check "sudo refused: it escalates"                     "yes" "$(has "$out" 'constraint fseventsd')"
+  check "and the escalation carries the sudoers line"    "yes" "$(grep -q 'The tick restarts it itself once the owner adds: .*NOPASSWD: /usr/bin/killall fseventsd' "$FIX/sent.msg" 2>/dev/null && echo yes || echo no)"
+
   echo "3e. a census the tick had no time for is reported as unmeasured (RCA fseventsd 20261026-130357)"
   rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log" "$FIX/sent.msg"
   out=$(AMUX_CLEANUP_TICK_BUDGET_S=1 AMUX_CLEANUP_TICK_RESERVE_S=0 AMUX_CLEANUP_CHURN_SAMPLE_CMD="$SAMP" tick "echo 0.02 133")
@@ -213,10 +227,10 @@ fi
 
 echo "6. a bloated fseventsd is restarted by the tick itself, once per cooldown, and a sudo refusal names the line that fixes it"
 RS="$FIX/restart"; mkdir -p "$RS"
-restart_try() { # <gb> <cmd> [dry]
-  ( STATE_DIR="$RS"; FSEVENTSD_RESTART_GB=12; FSEVENTSD_RESTART_COOLDOWN_H=6; FSEVENTSD_RESTART_CMD="$2"
+restart_try() { # <gb> <cmd> [dry] [why]
+  ( STATE_DIR="$RS"; FSEVENTSD_RESTART_GB=${RGB:-12}; FSEVENTSD_RESTART_COOLDOWN_H=6; FSEVENTSD_RESTART_CMD="$2"
     FSEVENTSD_CMD="echo 2.0 5"; AMUX_CLEANUP_FSEVENTSD_RESTART_SETTLE_S=0
-    if fseventsd_try_restart "$1" "${3:-0}"; then echo "RC=0"; else echo "RC=1"; fi; echo "SUDOERS=$FSE_RESTART_NEEDS_SUDOERS" )
+    if fseventsd_try_restart "$1" "${3:-0}" "${4:-}"; then echo "RC=0"; else echo "RC=1"; fi; echo "SUDOERS=$FSE_RESTART_NEEDS_SUDOERS" )
 }
 out=$(restart_try 8.0 "touch $RS/ran-under")
 check "under the threshold: nothing runs"               "no"  "$([ -e "$RS/ran-under" ] && echo yes || echo no)"
@@ -236,6 +250,16 @@ out=$(restart_try 30.0 "$RS/nosudo")
 check "a sudo refusal is not a restart"                 "yes" "$(has "$out" 'RC=1')"
 check "it prints the sudoers line"                      "yes" "$(has "$out" 'NOPASSWD: /usr/bin/killall fseventsd (verdict=fseventsd_restart_needs_sudoers)')"
 check "and flags it for the escalation"                 "yes" "$(has "$out" 'SUDOERS=1')"
+echo "6b. a small stuck fseventsd is restarted too (Mac fseventsd RCA 20261121-183438: 0.18G, 100% CPU, 0 of 20 delivered)"
+rm -f "$RS/state" "$RS/ran"; out=$(restart_try 0.18 "touch $RS/ran" 0 "spinning at 100% CPU with no file churn")
+check "under the memory threshold, a stuck one is restarted" "yes" "$([ -e "$RS/ran" ] && echo yes || echo no)"
+check "it says why, with the verdict"                   "yes" "$(has "$out" 'was spinning at 100% CPU with no file churn at 0.18G: restarted it.*verdict=fseventsd_restarted')"
+rm -f "$RS/ran"; out=$(restart_try 0.18 "touch $RS/ran" 0 "spinning")
+check "and the cooldown holds for it too"               "no"  "$([ -e "$RS/ran" ] && echo yes || echo no)"
+rm -f "$RS/state"; out=$(RGB=0 restart_try 0.18 "touch $RS/ran" 0 "spinning")
+check "the off switch turns it off too"                 "no"  "$([ -e "$RS/ran" ] && echo yes || echo no)"
+out=$(restart_try 0.18 "$RS/nosudo" 0 "not delivering file events")
+check "a refusal names the sudoers line"                "yes" "$(has "$out" 'was not delivering file events at 0.18G but the tick may not restart it.*verdict=fseventsd_restart_needs_sudoers')"
 out=$( STATE_DIR="$RS"; FSEVENTSD_RESTART_GB=12; FSEVENTSD_RESTART_COOLDOWN_H=6; FSEVENTSD_RESTART_CMD="sudo -n /usr/bin/killall fseventsd"; HEALTH_PROBES=off
   rm -f "$RS/state"; fseventsd_try_restart 30.0 0; echo "RC=$?" )
 check "with live probes off the real restart never runs" "yes" "$(has "$out" 'verdict=fseventsd_restart_probes_off')"
