@@ -7330,11 +7330,11 @@ _computer_mac() { # status | tools | TOOL [json]
     status) resp=$(_computer_call GET mac/status '' 30) ;;
     tools)  resp=$(_computer_call GET mac/tools '' 30) ;;
     *)
-      local args="${1:-}"
-      [[ "$args" == "-" ]] && args=$(cat)   # '-' reads the JSON from stdin
-      [[ -z "$args" ]] && args='{}'
+      local tool_args="${1:-}"
+      [[ "$tool_args" == "-" ]] && tool_args=$(cat)   # '-' reads the JSON from stdin
+      [[ -z "$tool_args" ]] && tool_args='{}'
       local body
-      body=$(TOOL="$tool" ARGS="$args" python3 -c 'import json,os,sys
+      body=$(TOOL="$tool" ARGS="$tool_args" python3 -c 'import json,os,sys
 try: a=json.loads(os.environ["ARGS"])
 except ValueError as e: sys.exit("amux computer mac: args are not JSON: %s" % e)
 print(json.dumps({"tool": os.environ["TOOL"], "args": a}))') || return 1

@@ -103,7 +103,8 @@ test('Computer is one of the Split options, and an empty worker says what will a
     await page.locator('#peek-tab-computer').click();
     await expect(page.locator('#peek-computer-list')).toContainText('No computer use yet');
   } finally {
-    await request.post(`/api/sessions/${encodeURIComponent(other)}/delete`, { headers: { ...auth, 'X-Amux-UI-Token': fixture!.ui }, data: {} });
+    await cleanup('delete second worker', () => request.post(`/api/sessions/${encodeURIComponent(other)}/delete`,
+      { headers: { ...auth, 'X-Amux-UI-Token': fixture!.ui }, data: {} }));
   }
 });
 
