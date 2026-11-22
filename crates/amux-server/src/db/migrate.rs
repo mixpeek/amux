@@ -909,6 +909,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0169_token_attribution_state",
         sql: include_str!("../../migrations/0169_token_attribution_state.sql"),
     },
+    Migration {
+        version: 170,
+        name: "0170_token_attribution_state_upgrade",
+        sql: include_str!("../../migrations/0170_token_attribution_state_upgrade.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -1710,6 +1715,52 @@ mod tests {
             .query_row("SELECT rev FROM _amux_rev WHERE id = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rev, 0);
+    }
+
+    #[test]
+    fn token_attribution_upgrade_repairs_databases_that_already_applied_0169() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE token_attribution_state (
+                 id INTEGER PRIMARY KEY CHECK (id = 1), ledger_id INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO token_attribution_state (id, ledger_id) VALUES (1, 42);
+             CREATE TABLE session_events (ts INTEGER, session TEXT, type TEXT, data TEXT);
+             CREATE TRIGGER token_attribution_revisit_claim
+             AFTER INSERT ON session_events WHEN NEW.type = 'task.claimed'
+             BEGIN
+                 UPDATE token_attribution_state SET ledger_id = 0 WHERE id = 1;
+             END;",
+        )
+        .unwrap();
+
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 170)
+            .expect("the attribution upgrade migration is registered");
+        apply_one(&conn, migration.sql).unwrap();
+
+        let generation: i64 = conn
+            .query_row(
+                "SELECT generation FROM token_attribution_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(generation, 0);
+        conn.execute(
+            "INSERT INTO session_events (ts, session, type, data) VALUES (1, 'lane', 'task.claimed', '{}')",
+            [],
+        )
+        .unwrap();
+        let (ledger_id, generation): (i64, i64) = conn
+            .query_row(
+                "SELECT ledger_id, generation FROM token_attribution_state WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((ledger_id, generation), (0, 1));
     }
 
     /// The 2026-08-30 incident, reproduced directly: a version number this
