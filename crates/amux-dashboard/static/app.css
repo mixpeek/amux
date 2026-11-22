@@ -10394,10 +10394,64 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .outcome-preset-row .input { flex: 1; min-width: 0; }
 .outcome-preset-row .btn { flex: none; }
 .outcome-field[hidden], .outcome-preset-row .btn[hidden] { display: none; }
+/* Describe what you want: wider on a desktop, the full width of a phone
+   down to a fixed minimum (owner, 2026-11-21). */
+.modal-box:has(.outcome-form) { max-width: min(720px, calc(100vw - 24px)); min-width: min(320px, calc(100vw - 24px)); }
+.outcome-field > label { color: var(--dim); }
+.oc-summary-preset { color: var(--text); margin-left: var(--space-1); }
+.outcome-row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-2); }
+/* Combobox (working directory, model): type, or pick from the list below. */
+.oc-combo { position: relative; }
+.oc-combo-row { display: flex; gap: var(--space-2); align-items: center; }
+.oc-combo-row .input { flex: 1; min-width: 0; }
+.oc-combo-row .btn { flex: none; }
+.oc-combo-list { position: absolute; left: 0; right: 0; top: calc(100% + var(--space-1)); z-index: 2;
+  max-height: 240px; overflow-y: auto; overscroll-behavior: contain; background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  padding: var(--space-1) 0; text-align: left; }
+.oc-combo-list[hidden] { display: none; }
+.oc-combo-head { padding: var(--space-1) var(--space-2-5); font-size: var(--fs-xs); font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.oc-opt { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1-5) var(--space-2-5); cursor: pointer; color: var(--text); font-size: var(--fs-md); min-height: 32px; }
+.oc-opt:hover, .oc-opt.active { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.oc-opt-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-opt-note { color: var(--dim); font-size: var(--fs-xs); flex: none; }
+.oc-x { flex: none; border: none; background: none; color: var(--dim); cursor: pointer; font-size: var(--fs-lg); line-height: 1;
+  width: 24px; height: 24px; border-radius: var(--radius-pill); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.oc-x:hover, .oc-x:focus-visible { color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
+/* Groups: chosen groups as pills around the input; known groups in one row
+   that scrolls sideways. */
+.oc-pills { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; padding: var(--space-1);
+  border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--bg); cursor: text; min-height: var(--control-height); box-sizing: border-box; }
+.oc-pills:focus-within { border-color: var(--accent); }
+.oc-pill { display: inline-flex; align-items: center; gap: var(--space-0-5); padding: var(--space-0-5) var(--space-0-5) var(--space-0-5) var(--space-2);
+  border-radius: var(--radius-pill); background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); font-size: var(--fs-md); }
+.oc-pills .oc-pill-input, .modal-box .oc-pills .oc-pill-input { flex: 1; min-width: 120px; min-height: 0; border: none; box-shadow: none; outline: none; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-md); padding: var(--space-1); }
+.oc-chip-row { display: flex; flex-wrap: nowrap; gap: var(--space-1-5); overflow-x: auto; overscroll-behavior-x: contain; padding: var(--space-1) 0; scrollbar-width: thin; }
+.oc-chip-row[hidden] { display: none; }
+.oc-chip { display: inline-flex; align-items: center; flex: none; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--card); }
+.oc-chip-add { border: none; background: none; color: var(--text); cursor: pointer; font: inherit; font-size: var(--fs-md); padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2-5); white-space: nowrap; }
+.oc-chip .oc-x { margin-right: var(--space-0-5); }
+/* Browse: the Files view's rows, folders only, without their size, date and
+   menu columns. */
+.oc-browse { margin-top: var(--space-1-5); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; text-align: left; }
+.oc-browse[hidden] { display: none; }
+.oc-browse-crumbs { padding: var(--space-1-5) var(--space-2-5); font-size: var(--fs-md); overflow-x: auto; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.oc-browse-rows { max-height: 220px; overflow-y: auto; overscroll-behavior: contain; }
+.oc-browse .fe-row, .oc-browse .fe-back-row { grid-template-columns: minmax(0, 1fr); }
+.oc-browse .fe-cell-size, .oc-browse .fe-cell-date, .oc-browse .fe-cell-actions, .oc-browse .fe-expand, .oc-browse .fe-expand-spacer, .oc-browse .fe-check,
+.oc-browse .fe-back-row > div:not(.fe-cell-name) { display: none; }
+.oc-browse-btns { display: flex; gap: var(--space-2); justify-content: flex-end; padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); }
 .outcome-check { display: flex; align-items: center; gap: var(--space-2); min-height: 36px; font-size: var(--fs-md); margin-top: var(--space-1); }
 @media (max-width: 600px) {
   .outcome-settings > summary { min-height: 44px; display: flex; align-items: center; }
   .outcome-check { min-height: 44px; }
+  .outcome-row2 { grid-template-columns: minmax(0, 1fr); }
+  .oc-x { width: 44px; height: 44px; }
+  /* A 44px target that does not make the pill 44px tall. */
+  .oc-pill .oc-x { width: 44px; height: 44px; margin: calc(-1 * var(--space-2-5)) calc(-1 * var(--space-2)) calc(-1 * var(--space-2-5)) calc(-1 * var(--space-1-5)); }
+  .oc-pill { min-height: 32px; }
+  .oc-opt { min-height: 44px; }
+  .oc-chip-add { min-height: 44px; }
 }
 
 /* Command palette (Cmd/Ctrl-K): the shared .modal-overlay > .modal, held near

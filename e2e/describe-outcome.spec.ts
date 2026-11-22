@@ -35,15 +35,22 @@ test('Describe what you want starts a planned worker from one box, with saved pr
     if (!planReply) return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"no helper"}' });
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ measured: true, n_considered: 3, ...planReply }) });
   });
+  // The server's prefs, for the keys this dialog keeps: presets and the
+  // shared history (outcome_history), so what one open writes the next reads.
+  const store: Record<string, string> = {};
   await page.route('**/api/prefs**', async route => {
     if (route.request().method() === 'POST') {
       const b = route.request().postDataJSON();
-      if (b.key === 'outcome_presets') { prefs.push(b); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
-      return route.fallback();
+      if (!/^outcome_/.test(b.key)) return route.fallback();
+      store[b.key] = b.value;
+      if (b.key === 'outcome_presets') prefs.push(b);
+      return route.fulfill({ status: 200, body: '{"ok":true}' });
     }
-    if (/key=outcome_(defaults|presets)/.test(route.request().url())) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":""}' });
+    const m = /key=(outcome_[a-z]+)/.exec(route.request().url());
+    if (m) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ value: store[m[1]] ?? null }) });
     return route.fallback();
   });
+  const hist = () => JSON.parse(store.outcome_history || '{}');
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openOutcome === 'function');
 
@@ -90,16 +97,23 @@ test('Describe what you want starts a planned worker from one box, with saved pr
   await expect.poll(() => creates.length).toBe(1);
   await open();
   await expect(page.locator('#outcome-text')).toHaveValue('Add a dark mode toggle to settings and ship it');
-  // The preset was saved; the fields open on None, and picking the preset fills them.
+  // The preset was saved, and the dialog opens on it: the preset last
+  // started with (owner, 2026-11-21), named on the closed summary too.
   expect(prefs.length).toBe(1);
   expect(JSON.parse(prefs[0].value)).toEqual([expect.objectContaining({ name: 'UI work', group: 'ui-work', dir: '/tmp/outcome-e2e' })]);
+  expect(hist().last_preset).toBe('UI work');
+  await expect(page.locator('.outcome-settings > summary')).toContainText('UI work');
   await page.locator('.outcome-settings > summary').click();
-  await expect(page.locator('#outcome-preset')).toHaveValue('');
-  await expect(page.locator('#outcome-group')).toHaveValue('');
-  await page.locator('#outcome-preset').selectOption('UI work');
-  await expect(page.locator('#outcome-group')).toHaveValue('ui-work');
+  await expect(page.locator('#outcome-preset')).toHaveValue('UI work');
+  await expect(page.locator('#outcome-groups .oc-pill > span')).toHaveText(['ui-work']);
   await expect(page.locator('#outcome-dir')).toHaveValue('/tmp/outcome-e2e');
   await expect(page.locator('#outcome-preset-delete')).toBeVisible();
+  // None is the built-in defaults; picking the preset again fills it back.
+  await page.locator('#outcome-preset').selectOption('');
+  await expect(page.locator('#outcome-groups .oc-pill > span')).toHaveCount(0);
+  await expect(page.locator('#outcome-dir')).toHaveValue('');
+  await page.locator('#outcome-preset').selectOption('UI work');
+  await expect(page.locator('#outcome-groups .oc-pill > span')).toHaveText(['ui-work']);
   await page.locator('#outcome-text').press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter');
   await expect.poll(() => creates.length).toBe(2);
 
@@ -148,6 +162,8 @@ test('Describe what you want starts a planned worker from one box, with saved pr
   await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach and progress towards goal');
   // A preset saved with no name is named for its folder and group; this one is only "isolated".
   await page.locator('.outcome-settings > summary').click();
+  await expect(page.locator('#outcome-preset')).toHaveValue('UI work');
+  await page.locator('#outcome-preset').selectOption('');
   await page.locator('#outcome-isolated').check();
   await page.locator('#outcome-save-preset').check();
   await page.locator('#outcome-file').setInputFiles({ name: 'memo.m4a', mimeType: 'audio/mp4', buffer: Buffer.from('not really audio') });
@@ -173,8 +189,11 @@ test('Describe what you want starts a planned worker from one box, with saved pr
   planReply = null;
   await open();
   await page.locator('#outcome-text').fill('I need a worker to behave like a CRM that tracks my outreach');
-  // Not isolated: None is the built-in defaults, whatever was ticked last time.
+  // It opens on the preset just saved; None is the built-in defaults.
   await page.locator('.outcome-settings > summary').click();
+  await expect(page.locator('#outcome-preset')).toHaveValue('Preset');
+  await expect(page.locator('#outcome-isolated')).toBeChecked();
+  await page.locator('#outcome-preset').selectOption('');
   await expect(page.locator('#outcome-isolated')).not.toBeChecked();
   // Delete asks on the same button, then removes the preset.
   await page.locator('#outcome-preset').selectOption('Preset');
@@ -208,8 +227,10 @@ test('Describe what you want starts a planned worker from one box, with saved pr
 
 test('Defaults remembered the old way come back as a preset named "My defaults"', async ({ page }) => {
   const posts: any[] = [];
+  let history: string | null = null;
   await page.addInitScript(() => {
     localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.removeItem('amux_outcome_history');
     localStorage.removeItem('amux_outcome_presets');
     localStorage.removeItem('amux_outcome_defaults');
   });
@@ -218,9 +239,11 @@ test('Defaults remembered the old way come back as a preset named "My defaults"'
     if (route.request().method() === 'POST') {
       const b = route.request().postDataJSON();
       if (b.key === 'outcome_presets') { posts.push(b); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
+      if (b.key === 'outcome_history') { history = b.value; return route.fulfill({ status: 200, body: '{"ok":true}' }); }
       return route.fallback();
     }
     if (url.includes('key=outcome_presets')) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"value":null}' });
+    if (url.includes('key=outcome_history')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ value: history }) });
     if (url.includes('key=outcome_defaults')) return route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ value: JSON.stringify({ group: 'gtm', dir: '/srv/gtm', provider: 'claude', model: '', isolated: false, constraints: 'Be brief.' }) }) });
     return route.fallback();
@@ -231,9 +254,12 @@ test('Defaults remembered the old way come back as a preset named "My defaults"'
   await page.locator('#add-menu .card-menu-item', { hasText: 'Describe what you want' }).click();
   await page.locator('.outcome-settings > summary').click();
   await expect(page.locator('#outcome-preset option')).toHaveText(['None', 'My defaults']);
-  await expect(page.locator('#outcome-preset')).toHaveValue('');
+  // They were what every start used, so the dialog opens on them, and so does
+  // Open in worker -> New worker.
+  await expect(page.locator('#outcome-preset')).toHaveValue('My defaults');
   await expect.poll(() => posts.length).toBe(1);
-  await page.locator('#outcome-preset').selectOption('My defaults');
+  expect(JSON.parse(history!).last_preset).toBe('My defaults');
+  expect(await page.evaluate(async () => (await (window as any)._outcomeDefaults()).dir)).toBe('/srv/gtm');
   await expect(page.locator('#outcome-dir')).toHaveValue('/srv/gtm');
   await expect(page.locator('#outcome-constraints')).toHaveValue('Be brief.');
   // Layout: the preset row fits the screen.

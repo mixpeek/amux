@@ -12403,10 +12403,10 @@ function _outcomeBaseDefaults() {
   };
 }
 // Paths that start a worker without this dialog (Open in worker -> New
-// worker) use the preset the owner last started one with, or the built-in
-// defaults after a start on None.
+// worker) use the preset the dialog opens on: the one last started with
+// (outcome_history.last_preset), or the built-in defaults.
 async function _outcomeDefaults() {
-  const last = localStorage.getItem('amux_outcome_last_preset') || '';
+  const last = (await _ocHistLoad()).last_preset;
   if (!last) return _outcomeBaseDefaults();
   const p = (await _outcomePresets()).find(x => x.name === last);
   if (!p) { console.info('[outcome] last-used preset "' + last + '" is gone; using the built-in defaults'); return _outcomeBaseDefaults(); }
@@ -12443,10 +12443,26 @@ async function _outcomePresets() {
       const differs = legacy && typeof legacy === 'object'
         && _OUTCOME_PRESET_FIELDS.some(k => legacy[k] != null && legacy[k] !== '' && legacy[k] !== base[k] && !(k === 'isolated' && !legacy[k]));
       list = differs ? [_outcomePresetClean({ ...legacy, name: 'My defaults' })] : [];
-      if (differs) { console.info('[outcome] carried the remembered defaults over as preset "My defaults"'); await _outcomeSavePresets(list); }
+      if (differs) {
+        console.info('[outcome] carried the remembered defaults over as preset "My defaults"');
+        await _outcomeSavePresets(list);
+        // They were what every start used, so the dialog opens on them.
+        await _ocHistEdit(h => { if (!h.last_preset) h.last_preset = 'My defaults'; });
+      }
     }
   } catch (e) { console.warn('[outcome] presets not read from the server; the cached copy stands', e); }
   return Array.isArray(list) ? list.filter(p => p && p.name).map(_outcomePresetClean) : [];
+}
+// A save or delete is applied to the server's current list, so a preset another
+// device saved while this dialog was open is kept (and one it deleted stays gone).
+async function _outcomePresetsEdit(fn) {
+  let base = _outcomePresetList;
+  try {
+    const v = await _prefGet('outcome_presets');
+    if (v) base = JSON.parse(v).filter(p => p && p.name).map(_outcomePresetClean);
+  } catch (e) { console.warn('[outcome] presets not re-read before an edit; editing the cached copy', e); }
+  _outcomePresetList = fn(base);
+  return _outcomeSavePresets(_outcomePresetList);
 }
 async function _outcomeSavePresets(list) {
   const val = JSON.stringify(list);
@@ -12467,11 +12483,384 @@ function _outcomePresetAutoName(cfg, taken) {
   return name;
 }
 let _outcomePresetList = [];
+
+// ── Describe what you want: shared history (owner, 2026-11-21) ──
+// The working directories, groups and models used here, kept in prefs
+// (outcome_history) so every device sees one list, and x on an entry removes
+// it everywhere. The fleet's own directories and groups are offered too; x on
+// one of those hides it until it is used again. last_preset is the preset the
+// dialog opens on.
+const _OC_HIST_CAP = 25;
+function _ocHistEmpty() { return { dirs: [], groups: [], models: {}, hidden: { dirs: [], groups: [] }, last_preset: '' }; }
+function _ocHistClean(h) {
+  const out = _ocHistEmpty();
+  h = (h && typeof h === 'object') ? h : {};
+  const list = (a, cap) => Array.isArray(a)
+    ? [...new Set(a.filter(x => typeof x === 'string').map(x => x.trim()).filter(Boolean))].slice(0, cap) : [];
+  out.dirs = list(h.dirs, _OC_HIST_CAP);
+  out.groups = list(h.groups, _OC_HIST_CAP);
+  if (h.models && typeof h.models === 'object') {
+    for (const [p, l] of Object.entries(h.models)) { const v = list(l, _OC_HIST_CAP); if (v.length) out.models[p] = v; }
+  }
+  out.hidden.dirs = list(h.hidden && h.hidden.dirs, _OC_HIDDEN_CAP);
+  out.hidden.groups = list(h.hidden && h.hidden.groups, _OC_HIDDEN_CAP);
+  out.last_preset = typeof h.last_preset === 'string' ? h.last_preset : '';
+  return out;
+}
+let _ocHist = _ocHistEmpty();
+async function _ocHistRead() {
+  const v = await _prefGet('outcome_history');
+  return v ? _ocHistClean(JSON.parse(v)) : null;
+}
+async function _ocHistLoad() {
+  let h = null;
+  try { h = JSON.parse(localStorage.getItem('amux_outcome_history') || 'null'); } catch (e) { console.warn('[outcome] cached history unreadable', e); }
+  try { const s = await _ocHistRead(); if (s) h = s; } catch (e) { console.warn('[outcome] history not read from the server; the cached copy stands', e); }
+  _ocHist = _ocHistClean(h);
+  return _ocHist;
+}
+// One edit at a time (queued here), each applied to the server's current copy,
+// so neither two quick edits nor two devices undo each other's entries.
+let _ocHistQueue = Promise.resolve();
+function _ocHistEdit(fn) {
+  const run = _ocHistQueue.then(() => _ocHistEditNow(fn));
+  _ocHistQueue = run.catch(() => false);
+  return run;
+}
+async function _ocHistEditNow(fn) {
+  let base = _ocHistClean(_ocHist);
+  try { const s = await _ocHistRead(); if (s) base = s; } catch (e) { console.warn('[outcome] history not re-read before an edit; editing the cached copy', e); }
+  fn(base);
+  _ocHist = _ocHistClean(base);
+  const val = JSON.stringify(_ocHist);
+  localStorage.setItem('amux_outcome_history', val);
+  try {
+    const r = await fetch(API + '/api/prefs', { method: 'POST', headers: _authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({ key: 'outcome_history', value: val }) });
+    return r.ok || _isLocallyQueued(r);
+  } catch (e) { console.warn('[outcome] history not saved on the server', e); return false; }
+}
+const _ocFront = (list, v, cap) => [v, ...list.filter(x => x !== v)].slice(0, cap || _OC_HIST_CAP);
+const _OC_HIDDEN_CAP = 500;
+// What a start teaches the lists: its directory, groups and model go to the
+// top (and are unhidden), and its preset is the one the dialog opens on next.
+function _ocHistRecord(cfg, preset) {
+  return _ocHistEdit(h => {
+    if (cfg.dir) { h.dirs = _ocFront(h.dirs, cfg.dir); h.hidden.dirs = h.hidden.dirs.filter(x => x !== cfg.dir); }
+    for (const g of _createGroupsFrom(cfg.group || '').reverse()) {
+      h.groups = _ocFront(h.groups, g); h.hidden.groups = h.hidden.groups.filter(x => x !== g);
+    }
+    if (cfg.model) h.models[cfg.provider || 'claude'] = _ocFront(h.models[cfg.provider || 'claude'] || [], cfg.model);
+    h.last_preset = preset || '';
+  });
+}
+function _ocFleet(field) {
+  const out = [];
+  for (const s of (sessions || [])) {
+    if (field === 'dirs' && s.dir) out.push(s.dir);
+    if (field === 'groups') out.push(...(s.tags || []));
+  }
+  return [...new Set(out)].sort();
+}
+// History first (most recent first), then the fleet's, minus what was removed.
+function _ocKnown(field) {
+  const hidden = new Set(_ocHist.hidden[field] || []);
+  const hist = _ocHist[field] || [];
+  return [...hist, ..._ocFleet(field).filter(x => !hist.includes(x) && !hidden.has(x))];
+}
+async function _ocForget(kind, value) {
+  const field = kind === 'dir' ? 'dirs' : kind === 'group' ? 'groups' : 'models';
+  const prov = document.getElementById('outcome-provider')?.value || 'claude';
+  const saved = await _ocHistEdit(h => {
+    if (field === 'models') { h.models[prov] = (h.models[prov] || []).filter(x => x !== value); return; }
+    h[field] = h[field].filter(x => x !== value);
+    if (_ocFleet(field).includes(value)) h.hidden[field] = _ocFront(h.hidden[field], value, _OC_HIDDEN_CAP);
+  });
+  if (kind === 'group') _ocGroupsRender(); else _ocComboShow(kind, true);
+  if (!saved) showToast('Removed here; the server did not save it');
+}
+
+// ── One combobox for the working directory and the model ──
+// Type freely, or pick from the list under the field: Recent (x removes it on
+// every device), then suggestions for what is typed (folders on the amux
+// host, or the provider's models from /api/models).
+const _ocCombo = { dir: { items: [], active: -1, seq: 0, timer: null }, model: { items: [], active: -1, seq: 0, timer: null } };
+let _ocModels = { provider: '', list: [], error: '' };
+function _ocComboHtml(kind, id, value, placeholder, extra) {
+  return `<div class="oc-combo" data-kind="${kind}"><div class="oc-combo-row">`
+    + `<input id="${id}" class="input" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false"`
+    + ` role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${id}-list"`
+    + ` onfocus="_ocComboShow('${kind}')" oninput="_ocComboShow('${kind}')" onkeydown="_ocComboKey(event,'${kind}')" onblur="_ocComboBlur('${kind}')">`
+    + (extra || '') + `</div><div class="oc-combo-list" id="${id}-list" role="listbox" hidden></div></div>`;
+}
+const _ocComboInput = kind => document.getElementById(kind === 'dir' ? 'outcome-dir' : 'outcome-model');
+function _ocComboRender(kind, sections) {
+  const inp = _ocComboInput(kind);
+  const list = document.getElementById(inp.id + '-list');
+  const st = _ocCombo[kind];
+  st.items = [];
+  let html = '';
+  for (const sec of sections) {
+    if (!sec.items.length) continue;
+    html += '<div class="oc-combo-head">' + esc(sec.title) + '</div>';
+    for (const it of sec.items) {
+      const i = st.items.push(it.value) - 1;
+      html += '<div class="oc-opt" role="option" id="' + inp.id + '-opt-' + i + '" data-i="' + i + '">'
+        + '<span class="oc-opt-label">' + esc(it.label || it.value) + '</span>'
+        + (it.note ? '<span class="oc-opt-note">' + esc(it.note) + '</span>' : '')
+        + (sec.removable ? '<button type="button" class="oc-x" data-forget="' + i + '" tabindex="-1" aria-label="Remove ' + esc(it.value) + ' from the list">&times;</button>' : '')
+        + '</div>';
+    }
+  }
+  if (!html && sections.note) html = '<div class="oc-combo-head">' + esc(sections.note) + '</div>';
+  st.active = -1;
+  list.innerHTML = html;
+  const open = !!html && document.activeElement === inp;
+  list.hidden = !open;
+  inp.setAttribute('aria-expanded', open ? 'true' : 'false');
+  inp.removeAttribute('aria-activedescendant');
+  // A field near the dialog's bottom edge (a phone) would open its list out of
+  // sight: scroll the dialog so the list shows.
+  if (open) list.scrollIntoView({ block: 'nearest' });
+}
+function _ocComboShow(kind, keep) {
+  const inp = _ocComboInput(kind);
+  if (!inp) return;
+  if (keep && document.activeElement !== inp) return;
+  const q = inp.value.trim(), ql = q.toLowerCase();
+  const match = v => !ql || v.toLowerCase().includes(ql);
+  const st = _ocCombo[kind];
+  if (kind === 'dir') {
+    const recent = _ocKnown('dirs').filter(v => v !== q && match(v)).slice(0, 12).map(value => ({ value }));
+    _ocComboRender(kind, [{ title: 'Recent', items: recent, removable: true }]);
+    clearTimeout(st.timer);
+    if (q.length < 2 || !/^[~/]/.test(q)) return;
+    const seq = ++st.seq;
+    st.timer = setTimeout(async () => {
+      let found = [];
+      try {
+        const r = await fetch(API + '/api/autocomplete/dir?q=' + encodeURIComponent(q), { headers: _authHeaders() });
+        if (r.ok) found = await r.json();
+      } catch (e) { console.warn('[outcome] folder suggestions unavailable', e); }
+      if (seq !== st.seq || !inp.isConnected || inp.value.trim() !== q) return;
+      const seen = new Set(recent.map(x => x.value));
+      const folders = (Array.isArray(found) ? found : []).map(f => String(f).replace(/\/+$/, '') || '/')
+        .filter(f => !seen.has(f) && f !== q).slice(0, 12).map(value => ({ value }));
+      _ocComboRender(kind, [{ title: 'Recent', items: recent, removable: true }, { title: 'Folders', items: folders }]);
+    }, 150);
+    return;
+  }
+  const prov = document.getElementById('outcome-provider')?.value || 'claude';
+  const recentIds = (_ocHist.models[prov] || []).filter(v => v !== q && match(v));
+  const seen = new Set(recentIds);
+  const catalog = _ocModels.provider === prov ? _ocModels.list : [];
+  const models = catalog.filter(m => !seen.has(m.id) && m.id !== q && (match(m.id) || match(m.model_type || '')))
+    .map(m => ({ value: m.id, note: _modelTypeLabel(m.model_type) }));
+  const secs = [{ title: 'Recent', items: recentIds.map(value => ({ value })), removable: true },
+    { title: 'Models', items: models }];
+  secs.note = _ocModels.provider !== prov ? 'Loading models…' : (_ocModels.error ? 'Model list unavailable: type a model id' : '');
+  _ocComboRender(kind, secs);
+}
+function _ocComboPick(kind, value) {
+  const inp = _ocComboInput(kind);
+  inp.value = value;
+  const list = document.getElementById(inp.id + '-list');
+  list.hidden = true;
+  inp.setAttribute('aria-expanded', 'false');
+  if (kind === 'dir') _ocBrowseClose();
+}
+function _ocComboKey(e, kind) {
+  const inp = _ocComboInput(kind), st = _ocCombo[kind];
+  const list = document.getElementById(inp.id + '-list');
+  if (list.hidden || !st.items.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    st.active = (st.active + (e.key === 'ArrowDown' ? 1 : -1) + st.items.length) % st.items.length;
+    list.querySelectorAll('.oc-opt').forEach((o, i) => o.classList.toggle('active', i === st.active));
+    const id = inp.id + '-opt-' + st.active;
+    inp.setAttribute('aria-activedescendant', id);
+    document.getElementById(id)?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter' && st.active >= 0 && !(e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    _ocComboPick(kind, st.items[st.active]);
+  } else if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation();
+    list.hidden = true; inp.setAttribute('aria-expanded', 'false');
+  }
+}
+function _ocComboBlur(kind) {
+  setTimeout(() => {
+    const inp = _ocComboInput(kind);
+    if (!inp || document.activeElement === inp) return;
+    const list = document.getElementById(inp.id + '-list');
+    if (list) list.hidden = true;
+    inp.setAttribute('aria-expanded', 'false');
+  }, 150);
+}
+// mousedown, not click: picking must land before the input's blur hides the list.
+function _ocComboMouse(e) {
+  const list = e.target.closest('.oc-combo-list');
+  if (!list) return;
+  e.preventDefault();
+  const kind = list.closest('.oc-combo').dataset.kind;
+  const st = _ocCombo[kind];
+  const x = e.target.closest('[data-forget]');
+  if (x) { _ocForget(kind, st.items[+x.dataset.forget]); return; }
+  const opt = e.target.closest('.oc-opt');
+  if (opt) _ocComboPick(kind, st.items[+opt.dataset.i]);
+}
+async function _ocLoadModels(prov) {
+  _ocModels = { provider: '', list: [], error: '' };
+  try {
+    const list = await _workerModelsFor(prov);
+    if ((document.getElementById('outcome-provider')?.value || 'claude') !== prov) return;
+    _ocModels = { provider: prov, list, error: '' };
+  } catch (e) {
+    console.warn('[outcome] model list unavailable for ' + prov, e);
+    if ((document.getElementById('outcome-provider')?.value || 'claude') !== prov) return;
+    _ocModels = { provider: prov, list: [], error: String(e) };
+  }
+  _ocComboShow('model', true);
+}
+function _ocProviderChanged() {
+  const prov = document.getElementById('outcome-provider').value;
+  const m = document.getElementById('outcome-model');
+  // A model id belongs to one provider: it does not carry over.
+  if (m) { m.value = ''; m.placeholder = prov === 'claude' ? (window._AMUX_DEFAULT_MODEL || 'Default') : 'Provider default'; }
+  _ocLoadModels(prov);
+}
+// Providers a worker can run on, from the catalog; the three CLIs amux
+// launches are always offered, so a catalog outage cannot hide them.
+async function _ocProviders() {
+  const base = ['claude', 'codex', 'gemini'];
+  try {
+    const all = await _loadModelCatalog();
+    const extra = [...new Set(all.filter(m => m.worker_selectable && m.provider !== 'muse').map(m => m.provider))].filter(p => !base.includes(p));
+    return base.concat(extra);
+  } catch (e) { console.warn('[outcome] provider list from the built-in three; the catalog is unavailable', e); return base; }
+}
+
+// ── Groups: pills, with the known groups in one row to tap ──
+let _ocGroupsSel = [];
+function _ocGroupsSet(str) { _ocGroupsSel = _createGroupsFrom(str || ''); _ocGroupsRender(); }
+// Text still in the box when the dialog closes counts, as if committed.
+function _ocGroupsValue() { _ocGroupsCommit(); return _ocGroupsSel.join(','); }
+function _ocGroupsRender() {
+  const box = document.getElementById('outcome-groups');
+  const row = document.getElementById('outcome-group-known');
+  if (!box || !row) return;
+  box.querySelectorAll('.oc-pill').forEach(p => p.remove());
+  const input = document.getElementById('outcome-group');
+  for (const g of _ocGroupsSel) {
+    const pill = document.createElement('span');
+    pill.className = 'oc-pill';
+    pill.dataset.group = g;
+    pill.innerHTML = '<span>' + esc(g) + '</span><button type="button" class="oc-x" data-unpick="' + esc(g) + '" aria-label="Remove group ' + esc(g) + '">&times;</button>';
+    box.insertBefore(pill, input);
+  }
+  if (input) input.placeholder = _ocGroupsSel.length ? 'Add more' : 'Add groups, comma-separated';
+  const known = _ocKnown('groups').filter(g => !_ocGroupsSel.includes(g));
+  row.innerHTML = known.map(g => '<span class="oc-chip" data-group="' + esc(g) + '">'
+    + '<button type="button" class="oc-chip-add" data-pick="' + esc(g) + '">+ ' + esc(g) + '</button>'
+    + '<button type="button" class="oc-x" data-forget-group="' + esc(g) + '" aria-label="Remove ' + esc(g) + ' from the list">&times;</button></span>').join('');
+  row.hidden = !known.length;
+}
+function _ocGroupsCommit() {
+  const input = document.getElementById('outcome-group');
+  if (!input || !input.value.trim()) return;
+  const add = _createGroupsFrom(input.value);
+  input.value = '';
+  _ocGroupsSel = [...new Set([..._ocGroupsSel, ...add])];
+  _ocGroupsRender();
+}
+function _ocGroupKey(e) {
+  if (e.key === ',' || (e.key === 'Enter' && !(e.metaKey || e.ctrlKey))) {
+    if (!e.target.value.trim()) { if (e.key === ',') e.preventDefault(); return; }
+    e.preventDefault(); _ocGroupsCommit();
+  } else if (e.key === 'Backspace' && !e.target.value && _ocGroupsSel.length) {
+    _ocGroupsSel.pop(); _ocGroupsRender();
+  }
+}
+// Pressing a pill's or chip's button must not blur the group box first: the
+// blur commits typed text and redraws the row, removing the button before its
+// click lands.
+function _ocGroupsPress(e) { if (e.target.closest('button')) e.preventDefault(); }
+function _ocGroupsClick(e) {
+  const t = e.target.closest('[data-unpick],[data-pick],[data-forget-group]');
+  if (!t) { if (e.currentTarget.id === 'outcome-groups') document.getElementById('outcome-group')?.focus(); return; }
+  if (t.dataset.unpick != null) { _ocGroupsSel = _ocGroupsSel.filter(g => g !== t.dataset.unpick); _ocGroupsRender(); }
+  else if (t.dataset.pick != null) { _ocGroupsSel = [...new Set([..._ocGroupsSel, t.dataset.pick])]; _ocGroupsRender(); }
+  else _ocForget('group', t.dataset.forgetGroup);
+}
+
+// ── Browse: the amux host's folders, on any device ──
+// The worker runs on the amux host, so its folders are what to pick from,
+// whether this page is on that Mac or on a phone. The rows are the Files
+// view's (_feBuildRow); only folders are listed.
+let _ocBrowsePath = '', _ocBrowseSeq = 0;
+async function _ocBrowseOpen(path) {
+  const box = document.getElementById('outcome-browse');
+  if (!box) return;
+  const seq = ++_ocBrowseSeq;   // a slower earlier listing must not replace a later one
+  box.hidden = false;
+  document.getElementById('outcome-browse-btn')?.setAttribute('aria-expanded', 'true');
+  const want = path || document.getElementById('outcome-dir')?.value.trim() || '~';
+  const crumbs = box.querySelector('.oc-browse-crumbs'), rows = box.querySelector('.oc-browse-rows');
+  rows.innerHTML = '';
+  rows.appendChild(_feEmptyRow('Loading…'));
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/ls?path=' + encodeURIComponent(want), { headers: _authHeaders() });
+    d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+  } catch (e) {
+    if (seq !== _ocBrowseSeq) return;
+    console.warn('[outcome] cannot list ' + want, e);
+    rows.innerHTML = '';
+    rows.appendChild(_feEmptyRow('Cannot open ' + want + ': ' + (e.message || e)));
+    if (want !== '~' && !path) return _ocBrowseOpen('~');
+    return;
+  }
+  if (seq !== _ocBrowseSeq) return;
+  _ocBrowsePath = d.path;
+  crumbs.innerHTML = _feCrumbsHtml(d.path, '_ocBrowseOpen');
+  rows.innerHTML = '';
+  if (d.parent && d.parent !== d.path) rows.appendChild(_feParentRow(() => _ocBrowseOpen(d.parent)));
+  const dirs = (d.entries || []).filter(e => e.type === 'dir' && !e.name.startsWith('.'));
+  for (const e of dirs) rows.appendChild(_feBuildRow(e, d.path, 0, '', { openDir: _ocBrowseOpen, openFile: () => {} }));
+  if (!dirs.length) rows.appendChild(_feEmptyRow('No folders here'));
+  box.querySelector('.oc-browse-use').textContent = 'Use ' + (d.path.split('/').pop() || d.path);
+}
+function _ocBrowseToggle() {
+  const box = document.getElementById('outcome-browse');
+  if (box && !box.hidden) { _ocBrowseClose(); return; }
+  _ocBrowseOpen();
+}
+function _ocBrowseClose() {
+  const box = document.getElementById('outcome-browse');
+  if (box) box.hidden = true;
+  document.getElementById('outcome-browse-btn')?.setAttribute('aria-expanded', 'false');
+}
+function _ocBrowseUse() {
+  if (!_ocBrowsePath) return;
+  document.getElementById('outcome-dir').value = _ocBrowsePath;
+  _ocBrowseClose();
+}
+
 function _outcomePresetPick(name) {
   const p = _outcomePresetList.find(x => x.name === name) || _outcomeBaseDefaults();
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-  set('outcome-group', p.group); set('outcome-dir', p.dir); set('outcome-provider', p.provider || 'claude');
-  set('outcome-model', p.model); set('outcome-constraints', p.constraints);
+  const provSel = document.getElementById('outcome-provider');
+  const prov = p.provider || 'claude';
+  if (provSel && ![...provSel.options].some(o => o.value === prov)) provSel.add(new Option(prov, prov));
+  const provChanged = provSel && provSel.value !== prov;
+  set('outcome-provider', prov);
+  if (provChanged || _ocModels.provider !== prov) _ocLoadModels(prov);
+  set('outcome-dir', p.dir); set('outcome-model', p.model); set('outcome-constraints', p.constraints);
+  const m = document.getElementById('outcome-model');
+  if (m) m.placeholder = prov === 'claude' ? (window._AMUX_DEFAULT_MODEL || 'Default') : 'Provider default';
+  set('outcome-group', '');
+  _ocGroupsSet(p.group);
   const iso = document.getElementById('outcome-isolated'); if (iso) iso.checked = !!p.isolated;
   set('outcome-preset-name', name || '');
   const del = document.getElementById('outcome-preset-delete');
@@ -12489,18 +12878,22 @@ async function _outcomePresetDelete(btn) {
   const name = sel?.value;
   if (!name) return;
   if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = 'Delete "' + name + '"?'; return; }
-  _outcomePresetList = _outcomePresetList.filter(p => p.name !== name);
-  const saved = await _outcomeSavePresets(_outcomePresetList);
+  const saved = await _outcomePresetsEdit(list => list.filter(p => p.name !== name));
   sel.querySelector('option[value="' + CSS.escape(name) + '"]')?.remove();
   sel.value = '';
   _outcomePresetPick('');
   showToast(saved ? 'Preset "' + name + '" deleted' : 'Preset "' + name + '" deleted here; the server did not save it');
 }
 async function openOutcome() {
-  const d = _outcomeBaseDefaults();
+  // Presets first: carrying old defaults over also sets the preset to open on.
+  const providersLoad = _ocProviders();
   _outcomePresetList = await _outcomePresets();
+  const [, providers] = await Promise.all([_ocHistLoad(), providersLoad]);
+  // Opens on the preset last started with (shared across devices); None when
+  // that was None or the preset is gone.
+  const last = _outcomePresetList.some(p => p.name === _ocHist.last_preset) ? _ocHist.last_preset : '';
+  const d = _outcomeBaseDefaults();
   const draft = localStorage.getItem('amux_outcome_draft') || '';
-  const groups = [...new Set((sessions || []).flatMap(s => s.tags || []))].sort();
   const chk = (id, on, label, extra) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}${extra || ''}> ${label}</label>`;
   const html = `<div class="outcome-form">
     <textarea id="outcome-text" class="input outcome-text" rows="4"
@@ -12512,7 +12905,7 @@ async function openOutcome() {
       <div id="outcome-file-list" class="ui-help" aria-live="polite"></div>
     </div>
     <details class="outcome-settings">
-      <summary>Defaults and constraints</summary>
+      <summary>Defaults and constraints${last ? '<span class="oc-summary-preset">· ' + esc(last) + '</span>' : ''}</summary>
       <label class="outcome-field">Preset<span class="outcome-preset-row">
         <select id="outcome-preset" class="input" onchange="_outcomePresetPick(this.value)">
           <option value="">None</option>
@@ -12520,13 +12913,30 @@ async function openOutcome() {
         </select>
         <button type="button" class="btn" id="outcome-preset-delete" hidden onclick="_outcomePresetDelete(this)">Delete</button>
       </span></label>
-      <label class="outcome-field">Group<input id="outcome-group" class="input" list="outcome-group-list" value="${esc(d.group)}" placeholder="none"></label>
-      <datalist id="outcome-group-list">${groups.map(g => '<option value="' + esc(g) + '"></option>').join('')}</datalist>
-      <label class="outcome-field">Working directory<input id="outcome-dir" class="input" value="${esc(d.dir)}" placeholder="Chosen from your description"></label>
-      <label class="outcome-field">Provider<select id="outcome-provider" class="input">
-        ${['claude', 'codex', 'gemini'].map(p => `<option value="${p}"${p === d.provider ? ' selected' : ''}>${p}</option>`).join('')}
-      </select></label>
-      <label class="outcome-field">Model<input id="outcome-model" class="input" value="${esc(d.model)}" placeholder="${esc(window._AMUX_DEFAULT_MODEL || 'default')}"></label>
+      <div class="outcome-field"><label for="outcome-group">Groups</label>
+        <div class="oc-pills" id="outcome-groups" onclick="_ocGroupsClick(event)" onmousedown="_ocGroupsPress(event)">
+          <input id="outcome-group" class="oc-pill-input" autocomplete="off" placeholder="Add groups, comma-separated" onkeydown="_ocGroupKey(event)" onblur="_ocGroupsCommit()">
+        </div>
+        <div class="oc-chip-row" id="outcome-group-known" aria-label="Known groups" onclick="_ocGroupsClick(event)" onmousedown="_ocGroupsPress(event)" hidden></div>
+      </div>
+      <div class="outcome-field"><label for="outcome-dir">Working directory</label>
+        ${_ocComboHtml('dir', 'outcome-dir', d.dir, 'Chosen from your description',
+          '<button type="button" class="btn" id="outcome-browse-btn" aria-expanded="false" aria-controls="outcome-browse" onclick="_ocBrowseToggle()">Browse</button>')}
+        <div class="oc-browse" id="outcome-browse" hidden>
+          <div class="oc-browse-crumbs"></div>
+          <div class="oc-browse-rows"></div>
+          <div class="oc-browse-btns"><button type="button" class="btn primary oc-browse-use" onclick="_ocBrowseUse()">Use this folder</button>
+            <button type="button" class="btn" onclick="_ocBrowseClose()">Close</button></div>
+        </div>
+      </div>
+      <div class="outcome-row2">
+        <label class="outcome-field">Provider<select id="outcome-provider" class="input" onchange="_ocProviderChanged()">
+          ${providers.map(p => `<option value="${esc(p)}"${p === d.provider ? ' selected' : ''}>${esc(p)}</option>`).join('')}
+        </select></label>
+        <div class="outcome-field"><label for="outcome-model">Model</label>
+          ${_ocComboHtml('model', 'outcome-model', d.model, window._AMUX_DEFAULT_MODEL || 'Default')}
+        </div>
+      </div>
       <label class="outcome-field">Constraints<textarea id="outcome-constraints" class="input" rows="3">${esc(d.constraints)}</textarea></label>
       ${chk('outcome-isolated', d.isolated, 'Isolated (no board or harness prompts)')}
       ${chk('outcome-save-preset', false, 'Save as a preset', ' onchange="_outcomePresetSaveToggle()"')}
@@ -12535,30 +12945,34 @@ async function openOutcome() {
   </div>`;
   _outcomeFiles = [];
   const shown = showFormModal('Describe what you want', html, 'Start');
+  document.querySelectorAll('#modal-msg .oc-combo-list').forEach(l => l.addEventListener('mousedown', _ocComboMouse));
+  document.getElementById('outcome-preset').value = last;
+  _outcomePresetPick(last);
   setTimeout(() => document.getElementById('outcome-text')?.focus(), 30);
   const ok = await shown;
   const v = (id) => (document.getElementById(id)?.value || '').trim();
   const on = (id) => !!document.getElementById(id)?.checked;
   const text = v('outcome-text');
   if (text) localStorage.setItem('amux_outcome_draft', text);   // kept until a worker exists
-  const cfg = { group: v('outcome-group'), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
+  const cfg = { group: _ocGroupsValue(), dir: v('outcome-dir'), provider: v('outcome-provider') || 'claude',
     model: v('outcome-model'), isolated: on('outcome-isolated'),
     constraints: document.getElementById('outcome-constraints')?.value ?? d.constraints };
+  let picked = v('outcome-preset');
   // Saving a preset does not need a description: Start with an empty box
   // saves the preset and starts nothing.
   if (ok && on('outcome-save-preset')) {
     const typed = v('outcome-preset-name');
-    const name = typed || _outcomePresetAutoName(cfg, new Set(_outcomePresetList.map(p => p.name)));
+    const name = typed || _outcomePresetAutoName({ ...cfg, group: _createGroupsFrom(cfg.group).join(', ') }, new Set(_outcomePresetList.map(p => p.name)));
     const replaced = _outcomePresetList.some(p => p.name === name);
-    _outcomePresetList = _outcomePresetList.filter(p => p.name !== name).concat([_outcomePresetClean({ ...cfg, name })]);
-    const saved = await _outcomeSavePresets(_outcomePresetList);
+    const saved = await _outcomePresetsEdit(list => list.filter(p => p.name !== name).concat([_outcomePresetClean({ ...cfg, name })]));
     showToast((saved ? '' : 'Saved on this device only: ') + 'Preset "' + name + '" ' + (replaced ? 'updated' : 'saved'));
+    picked = name;
   }
-  if (!ok || !text) return;
-  const picked = v('outcome-preset');
-  if (picked) localStorage.setItem('amux_outcome_last_preset', picked); else localStorage.removeItem('amux_outcome_last_preset');
+  if (!ok) return;
+  if (!text) { if (on('outcome-save-preset')) _ocHistRecord(cfg, picked); return; }
   const files = await _outcomeFilesReady();
   if (files === null) { showToast('Not started: an attachment did not upload. Your description is kept.'); return; }
+  _ocHistRecord(cfg, picked);
   await _outcomeStart(text, cfg, files);
 }
 // Attachments upload as soon as they are picked (the same upload API voice
