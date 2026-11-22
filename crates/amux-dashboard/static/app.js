@@ -24436,11 +24436,15 @@ function _peekHasBoardRef(text) {
 }
 // Both navigation and Find select message blocks with the same predicate.
 // Content filters inspect actual references, never guesses about task intent.
+// A web link that is not a file link. A file link's href is this page's own
+// https URL (`_outputFileHref`: origin + '#path='), so an https selector alone
+// counted every file path as a link once paths became real links (27807a7ef).
+const _PEEK_WEB_LINK = ['https://', 'http://'].map(p => `a[href^="${p}"]:not(.file-link):not(.md-link):not(.md-file-link)`).join(', ');
 function _peekPromptMatchesFilters(el) {
   if (!el || (_peekMsgNavKind !== 'all' && el.dataset.msgKind !== _peekMsgNavKind)) return false;
   if (_peekMsgNavContent === 'board') return _peekHasBoardRef(el.textContent);
   if (_peekMsgNavContent === 'files') return !!el.querySelector('.file-link, .md-link');
-  if (_peekMsgNavContent === 'links') return !!el.querySelector('a[href^="https://"], a[href^="http://"]');
+  if (_peekMsgNavContent === 'links') return !!el.querySelector(_PEEK_WEB_LINK);
   return true;
 }
 function _peekFilterSync() {
@@ -24820,7 +24824,7 @@ function _peekTabItemKeeps(el, q) {
   if (_peekMsgNavKind !== 'all' && el.dataset.msgKind && el.dataset.msgKind !== _peekMsgNavKind) return false;
   if (_peekMsgNavContent === 'board') return _peekHasBoardRef(el.textContent);
   if (_peekMsgNavContent === 'files') return !!el.querySelector('.file-link, .md-link, .md-file-link');
-  if (_peekMsgNavContent === 'links') return !!el.querySelector('a[href^="https://"], a[href^="http://"]');
+  if (_peekMsgNavContent === 'links') return !!el.querySelector(_PEEK_WEB_LINK);
   return true;
 }
 function _peekTabHighlight(root, q) {
