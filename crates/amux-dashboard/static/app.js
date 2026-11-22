@@ -71335,6 +71335,9 @@ async function _bwImportProfile() {
   html += '</div>';
   html += '<div style="margin-top:var(--space-1);"><label style="font-size:var(--fs-md);font-weight:500;">Destination profile name</label>';
   html += '<input id="bwi-dest" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-1);" placeholder="e.g. chrome-default" value="imported-chrome"></div>';
+  // Per site, as Athena imports: only the sign-ins a profile needs, not a whole browser's.
+  html += '<div style="margin-top:var(--space-2-5);"><label for="bwi-sites" style="font-size:var(--fs-md);font-weight:500;">Only these sites <span style="color:var(--dim);font-weight:400;">(optional, comma-separated)</span></label>';
+  html += '<input id="bwi-sites" class="bw-in" style="width:100%;box-sizing:border-box;margin-top:var(--space-1);" placeholder="e.g. github.com, linear.app" value=""></div>';
 
   var ok = await showFormModal('Import browser profile', html, 'Import');
   if (!ok) return;
@@ -71346,6 +71349,7 @@ async function _bwImportProfile() {
   var profileName = parts[1];
   var dest = (document.getElementById('bwi-dest') || {}).value || '';
   dest = dest.trim();
+  var sites = ((document.getElementById('bwi-sites') || {}).value || '').split(/[\s,]+/).map(function (x) { return x.trim(); }).filter(Boolean);
   if (!dest) { showToast('Destination name is required'); return; }
 
   _bwStatus('Importing cookies...');
@@ -71353,7 +71357,7 @@ async function _bwImportProfile() {
     var r = await fetch('/api/browser/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ browser_id: browserId, profile_name: profileName, destination: dest })
+      body: JSON.stringify({ browser_id: browserId, profile_name: profileName, destination: dest, sites: sites })
     });
     var d = await r.json();
     if (d.error) {
@@ -71361,8 +71365,8 @@ async function _bwImportProfile() {
       _bwStatus('Import failed');
       return;
     }
-    var msg = 'Imported ' + d.imported_cookies + ' cookies into profile "' + esc(d.profile) + '"';
-    if (d.skipped_cookies) msg += ' (' + d.skipped_cookies + ' skipped)';
+    var msg = 'Imported ' + d.imported_cookies + ' cookies' + (sites.length ? ' for ' + sites.join(', ') : '') + ' into profile "' + esc(d.profile) + '"';
+    if (d.skipped_cookies) msg += ' (' + d.skipped_cookies + (sites.length ? ' for other sites left out)' : ' skipped)');
     showToast(msg);
     _bwStatus(msg);
     await _bwLoadProfiles();

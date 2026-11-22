@@ -270,6 +270,31 @@ struct ImportRequest {
     browser_id: String,
     profile_name: String,
     destination: String,
+    /// Only these sites' cookies (Athena imports per chosen site): a cookie
+    /// is kept when its domain is the site, a subdomain of it, or a parent
+    /// domain that the site's pages also receive. Empty: every cookie.
+    #[serde(default)]
+    sites: Vec<String>,
+}
+
+/// Does a cookie set for `domain` reach pages of `site`?
+pub(crate) fn cookie_for_site(domain: &str, site: &str) -> bool {
+    let d = domain.trim().trim_start_matches('.').to_ascii_lowercase();
+    let s = site
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    if d.is_empty() || s.is_empty() {
+        return false;
+    }
+    // The site itself or a subdomain of it, or a parent domain whose cookie
+    // the site's pages also receive (but never a bare public suffix like "com").
+    d == s || d.ends_with(&format!(".{s}")) || (s.ends_with(&format!(".{d}")) && d.contains('.'))
 }
 
 #[derive(Serialize)]
@@ -311,8 +336,9 @@ async fn import(
             .into_response();
     }
 
+    let sites: Vec<String> = body.sites.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     let result = tokio::task::spawn_blocking(move || {
-        do_import(&browser_id, &profile_name, &destination, session.as_deref())
+        do_import(&browser_id, &profile_name, &destination, &sites, session.as_deref())
     })
     .await;
 
@@ -335,6 +361,7 @@ fn do_import(
     browser_id: &str,
     profile_name: &str,
     destination: &str,
+    sites: &[String],
     _session: Option<&str>,
 ) -> Result<ImportResult, String> {
     let desc = BROWSERS
@@ -381,6 +408,15 @@ fn do_import(
         read_firefox_cookies(&profile_dir)?
     };
 
+    let found = cookies.len();
+    let cookies: Vec<ImportedCookie> = if sites.is_empty() {
+        cookies
+    } else {
+        cookies
+            .into_iter()
+            .filter(|c| sites.iter().any(|s| cookie_for_site(&c.domain, s)))
+            .collect()
+    };
     let imported_count = cookies.len();
     let mut warnings = Vec::new();
 
@@ -416,7 +452,7 @@ fn do_import(
         })
         .collect();
 
-    let skipped = 0usize;
+    let skipped = found - imported_count;
 
     std::fs::write(
         &cookies_file,
@@ -446,7 +482,11 @@ fn do_import(
     crate::integrations::browser::registry_register(&home,destination,"",&format!("Imported from {} / {}; pending first-launch validation",desc.name,profile_name)).map_err(|e|format!("registering imported profile: {e}"))?;
     warnings.push("Cookies are installed and verified on first launch. This import does not include localStorage or IndexedDB; use a full Chrome profile snapshot for those logins.".into());
     if imported_count == 0 {
-        warnings.push("no cookies found in the source profile".to_string());
+        warnings.push(if sites.is_empty() {
+            "no cookies found in the source profile".to_string()
+        } else {
+            format!("no cookies for {} in the source profile", sites.join(", "))
+        });
     }
 
     tracing::info!(
@@ -454,6 +494,9 @@ fn do_import(
         profile = profile_name,
         destination,
         imported_count,
+        skipped = found - imported_count,
+        sites = %sites.join(","),
+        verdict = "browser_import_done",
         "browser profile import complete"
     );
 
@@ -834,4 +877,20 @@ fn read_firefox_cookies(profile_dir: &Path) -> Result<Vec<ImportedCookie>, Strin
     }
 
     Ok(cookies)
+}
+
+#[cfg(test)]
+mod site_filter_tests {
+    use super::cookie_for_site;
+
+    #[test]
+    fn a_site_takes_its_own_its_subdomains_and_its_parents_cookies() {
+        assert!(cookie_for_site(".google.com", "accounts.google.com"), "a parent's cookie reaches the site");
+        assert!(cookie_for_site("accounts.google.com", "google.com"), "a subdomain's cookie is the site's");
+        assert!(cookie_for_site("github.com", "https://github.com/login"), "a URL works as a site");
+        assert!(!cookie_for_site("github.com", "google.com"));
+        assert!(!cookie_for_site("evilgoogle.com", "google.com"), "a suffix match is not a subdomain");
+        assert!(!cookie_for_site("com", "google.com"), "never a bare public suffix");
+        assert!(!cookie_for_site("", "google.com"));
+    }
 }
