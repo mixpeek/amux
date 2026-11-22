@@ -37,6 +37,11 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   `test-copy-quiet-e2e.py` proves it. Tests that add a virtual display (`workspace-e2e`,
   `grid-workspace-e2e`, `perf-bench`, `tab-growth`, `memory-guard-e2e`) or record audio still
   reach the owner's screen or devices: ask first.
+- The menu bar item is the app icon with the needs-you count (`amux-statusmenu.swift`): who
+  needs you, Open amux, New Window/Tab, recording, Computer Use (watch a running sandbox),
+  Pins, Workspaces, the server, CPU and memory, Settings, Updates, Quit. A quiet test copy
+  keeps it off the menu bar; `amux://test/status-menu?needs=N|title=` drives it and
+  `status-menu-e2e.py` proves it.
 - A test screenshot captures its own window or rectangle, never the whole screen: the owner's
   screen can hold a live call.
 - The page side of a feature lives in `crates/amux-dashboard`; the app side is opt-in behind

@@ -695,7 +695,7 @@ func settingsHTML(_ app: AppDelegate) -> String {
     </div>
     <h2>General</h2>
     <div class="card">
-      \(toggle("menuBar", c.menuBar ?? true, "Show in menu bar", "CPU and memory readout, with your pinned notes one click away."))
+      \(toggle("menuBar", c.menuBar ?? true, "Show in menu bar", "The amux icon, with who needs you, new windows, recording, computer use, pins and workspaces."))
       \(toggle("notifications", c.notifications ?? true, "Notifications", "Each new item waiting on you, and Messages addressed to you. The dashboard's Settings > Alerts has the same switch."))
       \(toggle("dockBadge", c.dockBadge ?? true, "Show count on Dock icon", "The number of items waiting on you."))
       <div class="row"><div class="info"><div class="name">Split opens the new pane</div>

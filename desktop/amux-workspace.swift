@@ -1253,6 +1253,17 @@ extension AppDelegate {
                 c.webView.evaluateJavaScript(code) { _, err in if let err = err { dlog("verdict=test_js_failed error=\(err.localizedDescription)") } }
             }
         // Choose a menu item by title (?title=Copy), as a click on it does.
+        // The amux menu bar item: ?title= chooses one of its items; ?needs=N
+        // stands in N waiting workers (test-w1…) for the needs-you section.
+        case "/status-menu":
+            if let n = Int(q.first { $0.name == "needs" }?.value ?? "") {
+                let items = (0..<n).map { ["worker": "test-w\($0 + 1)", "key": "k\($0)", "question": "Approve step \($0 + 1)?"] }
+                lastNeedsCount = n; lastNeedsItems = items
+                menuBar?.setNeeds(count: n, items: items)
+            }
+            if let t = q.first(where: { $0.name == "title" })?.value {
+                dlog("verdict=test_status_menu_chosen title=\(t) found=\(menuBar?.choose(t) == true ? 1 : 0)")
+            }
         case "/menu":
             let title = q.first { $0.name == "title" }?.value ?? ""
             func pick(_ m: NSMenu) -> Bool {
@@ -1403,6 +1414,7 @@ extension AppDelegate {
                                      "visible_frame": NSStringFromRect(arrangeTarget?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero),
                                      "screen_frame": NSStringFromRect(arrangeTarget?.screen?.frame ?? NSScreen.main?.frame ?? .zero),
                                      "windows": ws,
+                                     "status_menu": menuBar?.snapshot() ?? NSNull(),
                                      // Every page, shown or not: its web process and what it costs.
                                      "pages": controllers.map { c -> [String: Any] in
                                          let pid = webPID(c)
