@@ -9934,6 +9934,18 @@ document.addEventListener('scroll', (e) => {
 
 // One worker's card, as the worker list draws it. Top level so a hover
 // preview of an @worker mention draws the same card (owner, 2026-11-09).
+// A NEW WORKER OPENS FROM ITS CARD AT ONCE (owner, 2026-11-22: "it doesn't
+// open unless you click the terminal block, and the terminal block doesn't
+// always get started immediately when the worker is created"). Only the
+// preview block opened a worker; it appears once the pane has printed, the
+// server's preview cache has refreshed and the list has been fetched again,
+// and until then a click anywhere folded the card. The name is now a link to
+// the worker (a plain click opens it through the own-link handler, which
+// stops the click before the card folds; a middle click opens a new tab),
+// and a running worker with no output yet shows the block, saying so.
+function _workerCardHref(name) {
+  return '/#peek=' + encodeURIComponent(String(name || ''));
+}
 function _renderSessionCard(s) {
   const isExp = expanded.has(s.name);
   const flags = s.flags || '';
@@ -9976,7 +9988,7 @@ function _renderSessionCard(s) {
     <div class="card-header" onclick="headerTap('${s.name}', event)" onmousedown="tileMouseDown(event,'${s.name}')">
       <div class="card-header-top">
         <div class="card-drag-handle" title="Drag to reorder"><svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="3" cy="8" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="3" cy="13" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg></div>
-        <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config or behavioral hooks. Passive lifecycle hooks report status only. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}${esc(s.name)}${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
+        <div class="card-name">${s.pinned ? '<span class="pin-icon">&#x1F4CC;</span> ' : ''}${s.isolated ? '<span class="card-isolated" title="ISOLATED (raw agent): tmux plus the CLI, no amux harness — no AMUX_SESSION/AMUX_URL, no MCP config or behavioral hooks. Passive lifecycle hooks report status only. Undiscoverable to peers: hidden from their fleet list and roster, and peer sends are refused. You can still peek and send from here. Applies at the next spawn.">ISOLATED</span> ' : ''}<a class="card-name-link" href="${esc(_workerCardHref(s.name))}" title="Open ${esc(s.name)}">${esc(s.name)}</a>${offCached ? ' <span class="card-offline-dot" title="Scrollback saved on this device — readable offline">&#x2B07;</span>' : ''}</div>
         <button class="card-menu-btn" onclick="event.stopPropagation();toggleMenu('${s.name}')" title="Options">&#x22EF;</button>
         <div class="card-menu" id="menu-${s.name}">
         ${_renderWorkerActionMenu(s, 'card')}
@@ -10096,7 +10108,8 @@ function _renderSessionCard(s) {
         ${s.task_time ? `<div class="timing-item"><span class="timing-label">Task</span><span class="timing-value accent">${esc(s.task_time)}</span></div>` : ''}
         ${s.last_activity ? `<div class="timing-item"><span class="timing-label">Last interaction</span><span class="timing-value">${timeAgo(s.last_activity)}</span></div>` : ''}
       </div>` : ''}
-      ${s.preview_lines && s.preview_lines.length ? `<div class="card-preview-lines" onclick="event.stopPropagation();openPeek('${s.name}')" style="cursor:pointer;">${rewriteLocalhostUrls(s.preview_lines.map(l => esc(l)).join('\n'))}</div>` : ''}
+      ${s.preview_lines && s.preview_lines.length ? `<div class="card-preview-lines" onclick="event.stopPropagation();openPeek('${s.name}')" style="cursor:pointer;">${rewriteLocalhostUrls(s.preview_lines.map(l => esc(l)).join('\n'))}</div>`
+        : s.running ? `<div class="card-preview-lines card-preview-pending" onclick="event.stopPropagation();openPeek('${s.name}')" title="Open ${esc(s.name)}">No output yet · open</div>` : ''}
       <div class="card-stats" id="stats-${s.name}"></div>
       ${s.running ? `
       <div class="chips" id="card-chips-${s.name}"></div>
