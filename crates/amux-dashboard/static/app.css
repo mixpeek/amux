@@ -3457,14 +3457,14 @@
   .pcu-bar > * { white-space: nowrap; flex-shrink: 0; }
   .pcu-hint { color: var(--dim); font-size: var(--fs-sm); white-space: nowrap; }
   .pcu-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--space-2); }
-  .pcu-row { border: 1px solid var(--border); border-radius: var(--radius-md, 8px); padding: var(--space-2) var(--space-2-5); display: flex; flex-direction: column; gap: var(--space-1-5); }
-  .pcu-row.pcu-refused { border-color: color-mix(in srgb, var(--warn, #d9822b) 55%, var(--border)); }
+  .pcu-row { border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-2) var(--space-2-5); display: flex; flex-direction: column; gap: var(--space-1-5); }
+  .pcu-row.pcu-refused { border-color: color-mix(in srgb, var(--orange) 55%, var(--border)); }
   .pcu-line { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: baseline; min-width: 0; }
   .pcu-time { color: var(--dim); font-variant-numeric: tabular-nums; }
   .pcu-app { overflow-wrap: anywhere; min-width: 0; }
   .pcu-verdict { margin-left: auto; color: var(--dim); }
-  .pcu-refused .pcu-verdict { color: var(--warn, #d9822b); }
-  .pcu-shot { padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm, 6px); background: none; cursor: zoom-in; align-self: flex-start; max-width: 100%; min-height: 44px; }
+  .pcu-refused .pcu-verdict { color: var(--orange); }
+  .pcu-shot { padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: none; cursor: zoom-in; align-self: flex-start; max-width: 100%; min-height: 44px; }
   .pcu-shot img { display: block; max-width: min(100%, 560px); max-height: 320px; object-fit: contain; }
   .pcu-empty { color: var(--dim); padding: var(--space-3) 0; }
   #peek-notes-panel.active { display: flex; padding: 0; gap: 0; }
