@@ -3306,6 +3306,48 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdTaskEl": {
+      "kind": "command._mdTaskEl",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdTaskOpen": {
+      "kind": "command._mdTaskOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdTaskOpenWorker": {
+      "kind": "command._mdTaskOpenWorker",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdTaskPaint": {
+      "kind": "command._mdTaskPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdTaskReadReply": {
+      "kind": "command._mdTaskReadReply",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdTaskSend": {
+      "kind": "command._mdTaskSend",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdWorkerDotsPaint": {
+      "kind": "command._mdWorkerDotsPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdaiCancel": {
       "kind": "command._mdaiCancel",
       "feedback_required": true,

@@ -14,6 +14,8 @@ const FILE = join(DIR, 'plan.md');
 writeFileSync(FILE, '# Plan\n\nAsk @' + W + ' about the launch.\n\nMail ethan@example.com, not @nobody-here.\n\nIn code: `@' + W + '` stays.\n');
 
 const TASK = 'S3 EventBridge notifications';
+const TODO = join(DIR, 'To-Do.md');
+writeFileSync(TODO, '# To-Do\n\n- @' + W + ': launch the beta\n- buy milk\n');
 
 async function boot(page: Page) {
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [{ name: W, running: true, status: 'active', dir: DIR,
@@ -40,7 +42,8 @@ test('a worker tagged in a markdown file is a link in Preview, and opens the wor
   await expect(page.locator('#file-body')).toContainText('ethan@example.com');
   await expect(page.locator('#file-body')).toContainText('@nobody-here');
   await expect(page.locator('#file-body code')).toHaveText('@' + W);
-  await links.first().click();
+  // A plain click opens the task card (next test); ⌘/Ctrl-click opens the worker.
+  await links.first().click({ modifiers: ['ControlOrMeta'] });
   await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', W);
   // The worker shows: the file closed rather than covering it (owner,
   // 2026-10-29: "when i @ a worker and click it it should open that worker").
@@ -156,8 +159,96 @@ test('hovering a tagged worker shows its worker-list card', async ({ page }) => 
   // The mouse leaves: it goes away.
   await page.mouse.move(2, vp.height - 2);
   await expect(pop).toBeHidden();
-  // A click still opens the worker, with no card left over.
-  await link.click();
+  // ⌘/Ctrl-click still opens the worker, with no card left over.
+  await link.click({ modifiers: ['ControlOrMeta'] });
   await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', W);
   await expect(pop).toBeHidden();
+});
+
+// Owner, 2026-11-22: "a simple way to check the status of a task from within
+// md". Each @worker carries a dot in its status colour; a click opens a card
+// with its status, what it is on, its latest reply, and an ask pre-filled with
+// the line's task, whose reply shows in the card.
+test('a task line\'s @worker shows its status, and its card asks about the task and shows the reply', async ({ page }) => {
+  const sent: any[] = [];
+  let reply = 'Earlier: the plan is drafted.';
+  await page.route(/\/api\/sessions\/md-tag-w\/last-message$/, r => r.fulfill({ json: { name: W, text: reply, empty: false } }));
+  await page.route(/\/api\/sessions\/md-tag-w\/send$/, async r => {
+    sent.push(JSON.parse(r.request().postData() || '{}'));
+    // The first ask is answered at once; the second only after the test says so.
+    if (sent.length === 1) reply = '**Beta** ships Friday.';
+    await r.fulfill({ json: { ok: true, message: 'sent' } });
+  });
+  await boot(page);
+  await page.evaluate(p => (window as any).openFilePreview(p), TODO);
+  const link = page.locator('#file-body li .md-worker-link');
+  await expect(link).toHaveCount(1);
+  await expect(link.locator('.md-worker-dot')).toHaveAttribute('data-status', 'working');
+
+  await link.click();
+  const card = page.locator('#md-task-card');
+  await expect(card).toBeVisible();
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/);   // the file stays open
+  await expect(card.locator('.mtc-name')).toHaveText('@' + W);
+  await expect(card.locator('.mtc-status')).toHaveText('Working');
+  await expect(card.locator('.mtc-doing')).toHaveText(TASK);
+  await expect(card.locator('.mtc-reply')).toContainText('the plan is drafted');
+  await expect(card.locator('.mtc-ask')).toHaveValue('Where are you on: launch the beta?');
+  await page.screenshot({ path: test.info().outputPath('md-task-card.png') });
+
+  await card.locator('.mtc-send').click();
+  await expect(card.locator('.mtc-note')).toContainText('Sent');
+  expect(sent).toEqual([{ text: 'Where are you on: launch the beta?' }]);
+  // The reply arrives in the card as markdown, read from the worker's latest message.
+  await expect(card.locator('.mtc-reply strong')).toHaveText('Beta', { timeout: 15000 });
+  await expect(card.locator('.mtc-reply-label')).toHaveText('Reply');
+
+  // A second ask from the same card waits for a newer reply, rather than
+  // showing the first one again as its answer.
+  await card.locator('.mtc-ask').fill('And the docs?');
+  await card.locator('.mtc-send').click();
+  await expect(card.locator('.mtc-note')).toContainText('Sent');
+  await page.waitForTimeout(6500);   // past one 5 s read of the latest reply
+  await expect(card.locator('.mtc-note')).toContainText('Sent');
+  await expect(card.locator('.mtc-reply strong')).toHaveText('Beta');
+  reply = 'Docs are *done*.';
+  await expect(card.locator('.mtc-reply em')).toHaveText('done', { timeout: 15000 });
+  expect(sent.map(x => x.text)).toEqual(['Where are you on: launch the beta?', 'And the docs?']);
+
+  // The dot and the card follow the worker's status.
+  await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: [{ name: W, running: true, status: 'idle', dir: DIR,
+    desc: 'The md tag test worker', task_name: TASK, task_source: 'board' }] }));
+  await page.evaluate(() => (globalThis as any).eval('fetchSessions')());
+  await expect(link.locator('.md-worker-dot')).toHaveAttribute('data-status', 'idle');
+  await expect(card.locator('.mtc-status')).toHaveText('Idle');
+
+  // Terminal opens the worker on that view, the file closing as a plain click used to.
+  await card.locator('.mtc-term').click();
+  await expect(card).toBeHidden();
+  await expect(page.locator('#peek-overlay')).toHaveAttribute('data-session', W);
+  await expect(page.locator('#peek-overlay')).toHaveAttribute('data-peek-tab', 'terminal');
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+});
+
+test('on a phone the task card is a bottom sheet with one row of controls', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.route(/\/api\/sessions\/md-tag-w\/last-message$/, r => r.fulfill({ json: { name: W, text: 'Working on it.', empty: false } }));
+  await boot(page);
+  await page.evaluate(p => (window as any).openFilePreview(p), TODO);
+  await page.locator('#file-body li .md-worker-link').click();
+  const card = page.locator('#md-task-card');
+  await expect(card.locator('.mtc-reply')).toContainText('Working on it.');
+  const g = await card.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    const row = el.querySelector('.mtc-row')!.getBoundingClientRect();
+    const btns = [...el.querySelectorAll('.mtc-row .btn')].map(b => b.getBoundingClientRect());
+    return { left: r.left, right: r.right, bottom: r.bottom, vw: innerWidth, vh: innerHeight, rowH: row.height,
+      oneRow: btns.every(b => b.top >= row.top - 1 && b.bottom <= row.bottom + 1), tall: btns.every(b => b.height >= 44) };
+  });
+  expect(g.left).toBe(0);
+  expect(g.right).toBe(g.vw);
+  expect(Math.abs(g.bottom - g.vh)).toBeLessThanOrEqual(1);
+  expect(g.oneRow, 'Ask, Chat and Terminal share one row').toBe(true);
+  expect(g.tall, '44px touch targets').toBe(true);
+  await page.screenshot({ path: test.info().outputPath('md-task-card-phone.png') });
 });

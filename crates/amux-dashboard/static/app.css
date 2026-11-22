@@ -11201,6 +11201,37 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
 
+/* An @worker's status dot and its task card in markdown (app.js _mdTaskOpen). */
+.md-worker-dot { display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-round); margin: 0 var(--space-1) 0 var(--space-0-5);
+  vertical-align: 0.1em; background: var(--dim); opacity: 0.6; }
+.md-worker-dot[data-status="working"] { background: var(--green); opacity: 1; box-shadow: 0 0 4px var(--green); }
+.md-worker-dot[data-status="waiting"], .md-worker-dot[data-status="starting"] { background: var(--yellow); opacity: 1; }
+.md-worker-dot[data-status="needs_input"] { background: var(--yellow); opacity: 1; box-shadow: 0 0 0 2px color-mix(in srgb, var(--yellow) 35%, transparent); }
+.md-worker-dot[data-status="error"], .md-worker-dot[data-status="blocked"], .md-worker-dot[data-status="rate_limited"],
+.md-worker-dot[data-status="api_error"] { background: var(--red); opacity: 1; }
+.md-worker-dot[data-status="stopped"], .md-worker-dot[data-status="none"] { background: transparent; border: 1px solid var(--dim); }
+.md-task-card { position: fixed; z-index: 10060; width: min(460px, calc(100vw - 16px)); max-height: min(70vh, 560px);
+  display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 10px 32px color-mix(in srgb, var(--shade) 35%, transparent); }
+.md-task-card[hidden] { display: none; }
+.md-task-card .mtc-head { display: flex; align-items: center; gap: var(--space-1-5); min-width: 0; }
+.md-task-card .mtc-name { font-size: var(--fs-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-task-card .mtc-status { color: var(--dim); font-size: var(--fs-md); flex: 1; white-space: nowrap; }
+.md-task-card .mtc-close { padding: 0 var(--space-2); min-height: 28px; }
+.md-task-card .mtc-doing { color: var(--dim); font-size: var(--fs-md); }
+.md-task-card .mtc-doing:empty, .md-task-card .mtc-note:empty { display: none; }
+.md-task-card .mtc-reply-label { font-size: var(--fs-xs); color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.md-task-card .mtc-reply { flex: 1 1 auto; min-height: 2em; max-height: 240px; overflow: auto; font-size: var(--fs-md);
+  padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); }
+.md-task-card .mtc-ask { width: 100%; resize: vertical; font: inherit; box-sizing: border-box; }
+.md-task-card .mtc-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; overflow-x: auto; }
+.md-task-card .mtc-note { color: var(--dim); font-size: var(--fs-sm); flex: 1; min-width: 0; }
+.md-task-card .mtc-open { display: flex; align-items: center; gap: var(--space-1-5); margin-left: auto; color: var(--dim); font-size: var(--fs-sm); white-space: nowrap; }
+@media (max-width: 600px) {
+  .md-task-card { left: 0; right: 0; bottom: 0; top: auto; width: auto; max-height: 75vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom)); }
+  .md-task-card .btn { min-height: 44px; }
+}
 /* Hover preview of an @worker mention (app.js _wkHoverShow): the worker list's card, read-only. */
 .worker-hovercard { position: fixed; z-index: 10050; width: min(440px, calc(100vw - 16px)); max-height: min(60vh, 520px);
   overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg);

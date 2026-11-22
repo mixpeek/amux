@@ -9629,6 +9629,202 @@ document.addEventListener('mouseout', (e) => {
 });
 ['scroll', 'mousedown', 'keydown'].forEach(t => document.addEventListener(t, () => { if (_wkHoverLink) _wkHoverHide(); }, true));
 
+// A TASK LINE'S WORKER, FROM INSIDE MARKDOWN (owner, 2026-11-22: "In markdown I
+// want a way to highlight text/worker and be able to send a command to chat /
+// terminal selectively. Basically a simple way to check the status of a task
+// from within md"). Each @worker carries a dot in its status colour, repainted
+// on every render. A click opens a small card: status, what it is on, its
+// latest reply, and a box pre-filled with the line's task to ask about it. The
+// reply to that ask shows in the card. Chat and Terminal open the worker on
+// that view; ⌘/Ctrl-click opens it straight away, as the link used to.
+function _mdWorkerDotStatus(name) {
+  const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.name === name);
+  if (!s) return 'none';
+  const st = _workerStatus(s);
+  return st.key === 'needs_input' ? 'needs_input' : st.group;
+}
+function _mdWorkerStatusText(name) {
+  const k = _mdWorkerDotStatus(name);
+  if (k === 'none') return 'Not running here';
+  if (k === 'needs_input') return 'Waiting on you';
+  return _STATUS_LABELS[k] || k;
+}
+function _mdWorkerDotsPaint() {
+  const dots = document.querySelectorAll('.md-worker-dot');
+  for (const d of dots) {
+    const a = d.closest('[data-worker]');
+    if (!a) continue;
+    const st = _mdWorkerDotStatus(a.dataset.worker);
+    if (d.dataset.status !== st) d.dataset.status = st;
+  }
+  if (_mdTask.name) _mdTaskPaint();
+}
+// The task a mention sits in: its list item or paragraph, without the mention.
+function _mdTaskLine(a) {
+  const block = a.closest('li, p, td, th, h1, h2, h3, h4, h5, h6, blockquote') || a.parentElement;
+  if (!block) return '';
+  const c = block.cloneNode(true);
+  c.querySelectorAll('ul, ol').forEach(n => n.remove());   // a nested list is other lines
+  c.querySelectorAll('.md-worker-link').forEach(n => n.remove());
+  return c.textContent.replace(/\s+/g, ' ').replace(/^[\s:—–-]+/, '').trim().slice(0, 300);
+}
+const _mdTask = { name: '', task: '', last: '', waiting: false, sentAt: 0, pollAt: 0, anchor: null, timer: 0 };
+// While an ask waits, the card reads the reply on its own clock: a worker's reply
+// sends no session event, so render alone may not come round.
+function _mdTaskWait(on) {
+  clearInterval(_mdTask.timer);
+  _mdTask.timer = on ? setInterval(_mdTaskPaint, 5000) : 0;
+}
+function _mdTaskEl() {
+  let el = document.getElementById('md-task-card');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'md-task-card';
+    el.className = 'md-task-card';
+    el.setAttribute('role', 'dialog');
+    el.hidden = true;
+    el.innerHTML = '<div class="mtc-head"><span class="md-worker-dot"></span><b class="mtc-name"></b>'
+      + '<span class="mtc-status"></span><button class="btn mtc-close" type="button" aria-label="Close">×</button></div>'
+      + '<div class="mtc-doing"></div>'
+      + '<div class="mtc-reply-label"></div><div class="mtc-reply md-body"></div>'
+      + '<textarea class="input mtc-ask" rows="2" aria-label="Ask the worker"></textarea>'
+      + '<div class="mtc-row"><button class="btn primary mtc-send" type="button">Ask</button>'
+      + '<span class="mtc-note"></span><span class="mtc-open">Open'
+      + '<button class="btn mtc-chat" type="button">Chat</button><button class="btn mtc-term" type="button">Terminal</button></span></div>';
+    document.body.appendChild(el);
+    el.querySelector('.mtc-close').onclick = () => _mdTaskClose();
+    el.querySelector('.mtc-send').onclick = () => _mdTaskSend();
+    el.querySelector('.mtc-chat').onclick = () => _mdTaskOpenWorker('chat');
+    el.querySelector('.mtc-term').onclick = () => _mdTaskOpenWorker('terminal');
+    el.querySelector('.mtc-ask').addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _mdTaskSend(); }
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _mdTaskClose(); }
+    });
+    document.addEventListener('mousedown', e => {
+      if (!el.hidden && !el.contains(e.target) && !(e.target.closest && e.target.closest('.md-worker-link'))) _mdTaskClose();
+    }, true);
+  }
+  return el;
+}
+function _mdTaskPlace(el, a) {
+  if (window.matchMedia('(max-width: 600px)').matches) { el.style.top = el.style.left = ''; return; }   // a bottom sheet on a phone (CSS)
+  const r = a.getBoundingClientRect(), pr = el.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight, gap = 6;
+  let top = r.bottom + gap;
+  if (top + pr.height > vh - 8 && r.top - gap - pr.height >= 8) top = r.top - gap - pr.height;
+  el.style.top = Math.max(8, Math.min(top, vh - pr.height - 8)) + 'px';
+  el.style.left = Math.max(8, Math.min(r.left, vw - pr.width - 8)) + 'px';
+}
+function _mdTaskOpen(a) {
+  _wkHoverHide();
+  const name = a.dataset.worker;
+  const task = _mdTaskLine(a);
+  _mdTaskWait(false);
+  Object.assign(_mdTask, { name, task, last: '', waiting: false, sentAt: 0, pollAt: 0, anchor: a });
+  const el = _mdTaskEl();
+  el.setAttribute('aria-label', name + ': status and ask');
+  el.querySelector('.mtc-name').textContent = '@' + name;
+  el.querySelector('.mtc-ask').value = task ? 'Where are you on: ' + task + '?' : 'What is your status?';
+  el.querySelector('.mtc-note').textContent = '';
+  el.querySelector('.mtc-reply-label').textContent = 'Latest reply';
+  el.querySelector('.mtc-reply').textContent = 'Reading…';
+  el.hidden = false;
+  _mdTaskPaint();
+  _mdTaskPlace(el, a);
+  _mdBeacon('md_task_card_opened', { known: _mdWorkerKnown(name) ? 1 : 0, task_chars: task.length });
+  _mdTaskReadReply(name, false);
+}
+function _mdTaskClose() {
+  const el = document.getElementById('md-task-card');
+  if (el) el.hidden = true;
+  _mdTask.name = ''; _mdTask.waiting = false; _mdTask.anchor = null;
+  _mdTaskWait(false);
+}
+function _mdTaskPaint() {
+  const el = document.getElementById('md-task-card');
+  if (!el || el.hidden || !_mdTask.name) return;
+  const name = _mdTask.name;
+  const s = sessions.find(x => x.name === name);
+  el.querySelector('.mtc-head .md-worker-dot').dataset.status = _mdWorkerDotStatus(name);
+  el.querySelector('.mtc-status').textContent = _mdWorkerStatusText(name);
+  el.querySelector('.mtc-doing').textContent = s ? (s.task_name || s.desc || '') : '';
+  el.querySelector('.mtc-send').disabled = !s;
+  // An ask in flight: read the latest reply every 5 s until it changes (10 min at most).
+  if (_mdTask.waiting) {
+    const now = Date.now();
+    if (now - _mdTask.sentAt > 600000) { _mdTask.waiting = false; _mdTaskWait(false); el.querySelector('.mtc-note').textContent = 'No reply yet; open the worker to see it.'; }
+    else if (now - _mdTask.pollAt > 4500) { _mdTask.pollAt = now; _mdTaskReadReply(name, true); }
+  }
+}
+async function _mdTaskReadReply(name, afterAsk) {
+  let text = '';
+  try {
+    const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/last-message', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
+    text = String(((await r.json()) || {}).text || '').trim();
+  } catch (e) { console.warn('md task card: latest reply not read', e); }
+  if (_mdTask.name !== name) return;
+  const el = _mdTaskEl();
+  if (afterAsk) {
+    if (!text || text === _mdTask.last) return;   // still the reply from before the ask
+    _mdTask.waiting = false;
+    _mdTaskWait(false);
+    _mdTask.last = text;   // a second ask waits for a reply newer than this one
+    el.querySelector('.mtc-note').textContent = '';
+    el.querySelector('.mtc-reply-label').textContent = 'Reply';
+    _mdBeacon('md_task_reply_shown', { wait_ms: Date.now() - _mdTask.sentAt, chars: text.length });
+  } else {
+    _mdTask.last = text;
+  }
+  const box = el.querySelector('.mtc-reply');
+  if (text) box.innerHTML = renderMarkdown(text, '', { workers: true });
+  else box.textContent = 'No reply from ' + name + ' yet.';
+  _bindMdFileLinks(box);
+  if (_mdTask.anchor && _mdTask.anchor.isConnected) _mdTaskPlace(el, _mdTask.anchor);
+}
+async function _mdTaskSend() {
+  const name = _mdTask.name;
+  const el = _mdTaskEl();
+  const text = el.querySelector('.mtc-ask').value.trim();
+  if (!name || !text) return;
+  const btn = el.querySelector('.mtc-send'), note = el.querySelector('.mtc-note');
+  btn.disabled = true;
+  note.textContent = 'Sending…';
+  try {
+    // The composer's own send: a busy worker gets it queued for its next pause.
+    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(name) + '/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(30000) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || d.message || ('HTTP ' + r.status));
+    const queued = String(d.message || '').startsWith('queued');
+    if (_mdTask.name !== name) return;
+    Object.assign(_mdTask, { waiting: true, sentAt: Date.now(), pollAt: Date.now() });
+    _mdTaskWait(true);
+    note.textContent = queued ? 'Queued for its next pause. The reply shows here.' : 'Sent. The reply shows here.';
+    _mdBeacon('md_task_asked', { queued: queued ? 1 : 0, chars: text.length });
+  } catch (e) {
+    note.textContent = 'Not sent: ' + ((e && e.message) || e);
+    _mdBeacon('md_task_ask_failed', { error: String((e && e.message) || e).slice(0, 120) });
+  } finally {
+    btn.disabled = !sessions.find(x => x.name === name);
+  }
+}
+function _mdTaskOpenWorker(tab) {
+  const name = _mdTask.name;
+  const a = _mdTask.anchor;
+  _mdTaskClose();
+  if (!name) return;
+  _mdBeacon('md_task_open_worker', { tab });
+  const fo = document.getElementById('file-overlay');
+  if (fo && fo.classList.contains('active') && a && a.closest('#file-overlay')) {
+    if (typeof _navNote === 'function') { clearTimeout(_nav.timer); _navNote(); }
+    closeFilePreview();
+    if (fo.classList.contains('active')) return;   // unsaved edits keep the file open
+  }
+  if (typeof openPeek === 'function') openPeek(name);
+  if (typeof setPeekTab === 'function') setPeekTab(tab);
+  if (typeof _navSoon === 'function') _navSoon();
+}
+
 // HOVER PREVIEW OF A LINKED FILE (owner, 2026-11-18: "file path is clickable
 // and on mouseover shows a preview"). Any .md-file-link to a file: the head of
 // the file, rendered as markdown for .md and as text otherwise, in the same
@@ -9901,6 +10097,8 @@ function _renderSessionCard(s) {
 function render() {
   // The Send/Queue label reads the target's status, so it follows each render.
   try { _syncComposerPending(); } catch (_) {}
+  // @worker dots and an open task card in markdown follow the same data.
+  try { _mdWorkerDotsPaint(); } catch (e) { console.warn('md worker dots: repaint failed', e); }
   // THE PEEK HEADER UPDATES FIRST, ahead of the card-clobbering guard below.
   //
   // It used to sit AFTER that guard, so an open card menu / edit overlay froze
@@ -50939,6 +51137,12 @@ function _bindMdFileLinks(container) {
       return;
     }
     const w = e.target.closest && e.target.closest('.md-worker-link');
+    if (w && container.contains(w) && w.dataset.worker && !(e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      e.stopPropagation();
+      _mdTaskOpen(w);
+      return;
+    }
     if (w && container.contains(w) && w.dataset.worker) {
       e.preventDefault();
       e.stopPropagation();
@@ -51077,7 +51281,8 @@ function _mdUseWikiLinks() {   // and math (the same marked.use call)
       return { type: 'workerMention', raw: m[0], name: m[1] };
     },
     renderer(t) {
-      return '<a href="#peek=' + encodeURIComponent(t.name) + '" class="md-worker-link" data-worker="' + esc(t.name) + '" title="Open ' + esc(t.name) + '">@' + esc(t.name) + '</a>';
+      return '<a href="#peek=' + encodeURIComponent(t.name) + '" class="md-worker-link" data-worker="' + esc(t.name) + '" title="Status and ask ' + esc(t.name) + ' (⌘-click opens it)">'
+        + '<span class="md-worker-dot" data-status="' + esc(_mdWorkerDotStatus(t.name)) + '" aria-hidden="true"></span>@' + esc(t.name) + '</a>';
     },
   }, {
     // A file path written as plain text in a file's preview is a link to that
