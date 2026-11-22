@@ -11,6 +11,7 @@
 //! | deny write: another worker's folder | `capabilities::worker_folders`, minus folders that contain this worker's own and `AMUX_CAP_FOLDERS` grants |
 //! | deny read + write: amux's own secrets | the owner token, `server.env`, connector grants, Gmail tokens, the vault, minted tokens, other workers' and other groups' env files |
 //! | deny read: other workers' folders | only when the owner sets `AMUX_CAP_READ_FOLDERS=own` |
+//! | write only the worker's own folder (no home) | only when the owner sets `AMUX_CAP_WRITE_FOLDERS=own` |
 //! | network | unrestricted (`*`) unless the owner sets `AMUX_CAP_NETWORK=<domains>` |
 //!
 //! The settings ride `claude --settings <file>`, a layer of its own: the
@@ -47,6 +48,8 @@ use std::path::{Path, PathBuf};
 pub const MODE_ENV: &str = "AMUX_CLI_SANDBOX";
 pub const NETWORK_KEY: &str = "AMUX_CAP_NETWORK";
 pub const READ_KEY: &str = "AMUX_CAP_READ_FOLDERS";
+/// `own`: the worker's shell writes only its folder, temp and granted folders.
+pub const WRITE_KEY: &str = "AMUX_CAP_WRITE_FOLDERS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -208,9 +211,19 @@ pub fn plan_in(home: &Path, lane: &str, work_dir: &Path, hd: &Path) -> Plan {
         entries.push(Entry { rule, path: p.to_string_lossy().into_owned(), source });
     };
 
-    // Writes: broad by default.
+    // Writes: broad by default. AMUX_CAP_WRITE_FOLDERS=own narrows them to the
+    // worker's folder, temp and its grants (Athena's "Work in Folders": writes
+    // only inside the folder), for an owner who wants that for a worker.
     push(&mut entries, "allowWrite", &own, "the worker's own folder".into());
-    push(&mut entries, "allowWrite", hd, "the user's home: broad by default (A2)".into());
+    // The sandbox refuses every write it was not told to allow, so leaving the
+    // home out is the whole rule (a denyWrite on it would also cover the
+    // worker's own folder inside it).
+    let own_only = super::capabilities::layers(home, lane, WRITE_KEY)
+        .first()
+        .is_some_and(|l| l.value.trim().eq_ignore_ascii_case("own"));
+    if !own_only {
+        push(&mut entries, "allowWrite", hd, "the user's home: broad by default (A2)".into());
+    }
     for t in ["/tmp", "/var/tmp"] {
         push(&mut entries, "allowWrite", Path::new(t), "temporary files".into());
     }
@@ -558,6 +571,26 @@ mod tests {
         std::fs::write(home.join("sessions/wtso.env"), format!("CC_DIR={}\n", hd.join("customers/wtso").display())).unwrap();
         let p = plan_in(&home, "wexus", &hd.join("customers/wexus"), &hd);
         assert!(has(&p, "denyRead", "customers/wtso"), "{p:?}");
+    }
+
+    #[test]
+    fn write_folders_own_keeps_writes_to_the_workers_folder_temp_and_grants() {
+        let (_t, home, hd) = setup();
+        let p = plan_in(&home, "wexus", &hd.join("customers/wexus"), &hd);
+        assert!(p.entries.iter().any(|e| e.rule == "allowWrite" && Path::new(&e.path) == hd), "broad by default: {p:?}");
+        std::fs::write(home.join("sessions/wexus.env"),
+            format!("CC_DIR={}\nCC_TAGS=customers\nAMUX_CAP_WRITE_FOLDERS=own\nAMUX_CAP_FOLDERS={}\n",
+                hd.join("customers/wexus").display(), hd.join("shared").display())).unwrap();
+        let p = plan_in(&home, "wexus", &hd.join("customers/wexus"), &hd);
+        assert!(!p.entries.iter().any(|e| e.rule == "allowWrite" && Path::new(&e.path) == hd), "home left out: {p:?}");
+        assert!(has(&p, "allowWrite", "customers/wexus"), "{p:?}");
+        assert!(has(&p, "allowWrite", "/tmp"), "{p:?}");
+        assert!(has(&p, "allowWrite", "shared"), "a grant still writes: {p:?}");
+        let rt = Runtime { available: true, missing: vec![], platform: "macos" };
+        let settings = claude_settings(&p, true);
+        let allow = settings.pointer("/sandbox/filesystem/allowWrite").or_else(|| settings.pointer("/sandbox/allowWrite")).cloned();
+        let _ = rt;
+        assert!(!settings.to_string().contains(&format!("\"{}\"", hd.display())), "the home is not in the CLI's settings: {settings} {allow:?}");
     }
 
     #[test]
