@@ -9,8 +9,9 @@ computer use into amux).
 A quiet test copy of the app (its own config and AMUX_HOME) talks to a private
 server on its own port. The test only READS from the owner's Mac (list_apps,
 and get_window_state on Finder): it never clicks, types or launches in a real
-app. Checks the driver starts and publishes its endpoint, the tool list is
-classified, a worker with no apps listed is refused with a next step, a
+app. Checks the driver starts as the app's stdio child with no socket (a stale
+socket and daemon from an older build are cleared), the server reaches it
+only through the app's owner-bearer poll, the tool list is classified, a worker with no apps listed is refused with a next step, a
 listed app reaches the driver, a blocked app stays refused even under *, the
 CLI verb works, and Stop Computer Use ends the driver.
 """
@@ -91,6 +92,13 @@ json.dump({"connections": [{"name": "e2e", "url": URL}], "lastUrl": URL, "cleanE
            "computerUse": True, "menuBar": True,
            "windows": [{"url": URL + "/#view=sessions", "frame": "{{80, 80}, {900, 640}}", "tabGroup": 1, "selected": True}]},
           open(CFG, "w"))
+# What an older build leaves behind: its daemon's socket and pid file. The
+# pid here is a plain sleep, which must be left alone (it is not a cua-driver).
+os.makedirs(os.path.join(HOME, "cua"))
+OLD_SOCK, OLD_PID = os.path.join(HOME, "cua", "driver.sock"), os.path.join(HOME, "cua", "driver.pid")
+bystander = subprocess.Popen(["sleep", "300"])
+open(OLD_SOCK, "w").close()
+open(OLD_PID, "w").write(str(bystander.pid))
 aenv = dict(os.environ, AMUX_DESKTOP_CONFIG=CFG, AMUX_DESKTOP_TEST="1", AMUX_DESKTOP_TEST_STATE=ST, AMUX_HOME=HOME)
 ap = subprocess.Popen([BIN], env=aenv, stdout=open(LOG, "a"), stderr=subprocess.STDOUT)
 EP = os.path.join(HOME, "cua", "endpoint.json")
@@ -106,11 +114,19 @@ try:
     check("the private server is up", sp.poll() is None, read(os.path.join(TMP, "server.log"))[-500:])
     check("the app starts the driver", wait(lambda: "verdict=computer_use_started" in read(LOG), 20), read(LOG)[-800:])
     ep = json.loads(read(EP) or "{}")
-    check("and publishes its endpoint", ep.get("socket") and ep.get("pid"), ep)
+    check("and publishes its endpoint, with no socket", ep.get("pid") and ep.get("transport") == "broker" and "socket" not in ep, ep)
+    check("the old build's socket and pid file are removed", not os.path.exists(OLD_SOCK) and not os.path.exists(OLD_PID))
+    check("and a pid that is not a cua-driver is left running", bystander.poll() is None)
+    socks = subprocess.run(["lsof", "-a", "-U", "-p", str(ep.get("pid", 0))], capture_output=True, text=True).stdout
+    check("the driver listens on no unix socket", "driver.sock" not in socks and "LISTEN" not in socks, socks[-400:])
+    code, r = api("GET", "/api/computer/mac/broker/next?wait=0")
+    check("a worker cannot take the driver's calls", code == 403, (code, r))
+    code, r = api("POST", "/api/computer/mac/broker/result", {"id": "x", "result": {}})
+    check("or answer one", code == 403, (code, r))
     print("    app log:", [l.split("amux-desktop: ")[-1] for l in read(LOG).splitlines() if "computer_use" in l])
 
     code, st = wait(lambda: (lambda r: r if r[1].get("up") else None)(api("GET", "/api/computer/mac/status")), 20) or api("GET", "/api/computer/mac/status")
-    check("the server finds the driver", code == 200 and st.get("up") is True, st)
+    check("the server finds the driver through the app's poll", code == 200 and st.get("up") is True and st.get("app_polling") is True, st)
     perms = st.get("permissions") or {}
     print("    permissions:", json.dumps(perms.get("structuredContent", perms))[:300])
 
@@ -123,32 +139,36 @@ try:
     txt = json.dumps(la)
     check("a free tool reaches the driver", code == 200 and la.get("ok") and "Finder" in txt, (code, txt[:400]))
     finder = int(subprocess.run(["pgrep", "-x", "Finder"], capture_output=True, text=True).stdout.split()[0])
+    # The Dock is always running and is not on the block list (Finder is: it opens anything as the owner).
+    dock = int(subprocess.run(["pgrep", "-x", "Dock"], capture_output=True, text=True).stdout.split()[0])
 
-    code, r = mac("get_window_state", {"pid": finder, "include_screenshot": False})
+    code, r = mac("get_window_state", {"pid": dock, "include_screenshot": False})
     check("an app the worker was not given is refused", code == 403 and r.get("code") == "app_not_allowed" and r.get("sent") is False, (code, r))
-    check("with what to do next", "com.apple.finder" in r.get("next", "") and "AMUX_MAC_APPS" in r.get("next", ""), r.get("next"))
+    check("with what to do next", "com.apple.dock" in r.get("next", "") and "AMUX_MAC_APPS" in r.get("next", ""), r.get("next"))
 
     code, r = mac("kill_app", {"pid": finder})
     check("a refused tool is refused", code == 403 and r.get("code") == "tool_refused", (code, r))
 
-    # The owner lists Finder for this worker (its Scope file), and * for everything else.
-    open(os.path.join(HOME, "sessions", WORKER + ".env"), "w").write("AMUX_MAC_APPS=com.apple.finder,*\n")
-    code, lw = mac("list_windows", {"pid": finder})
-    wins = (lw.get("result") or {}).get("structuredContent", {}).get("windows") or []
+    # The owner lists the Dock for this worker (its Scope file), and * for everything else.
+    open(os.path.join(HOME, "sessions", WORKER + ".env"), "w").write("AMUX_MAC_APPS=com.apple.dock,*\n")
+    code, r = mac("get_window_state", {"pid": finder, "include_screenshot": False})
+    check("Finder stays refused, even under *", code == 403 and r.get("code") == "app_blocked", (code, r))
+    code, lw = mac("list_windows", {"pid": dock})
+    wins = (lw.get("result") or {}).get("windows") or []
     wid = next((w.get("window_id") for w in wins if w.get("window_id")), None)
     check("a listed app reaches the driver", code == 200 and lw.get("ok"), (code, json.dumps(lw)[:500]))
     if wid:
         # A 64-pixel thumbnail: proves the screenshot path without keeping a readable copy of the owner's window.
-        code, r = mac("get_window_state", {"pid": finder, "window_id": wid, "max_elements": 10, "max_dimension": 64})
+        code, r = mac("get_window_state", {"pid": dock, "window_id": wid, "max_elements": 10, "max_dimension": 64})
         shot = r.get("screenshot")
-        print(f"    get_window_state on Finder window {wid}: http {code}", json.dumps(r.get("result") or r.get("error"))[:200])
+        print(f"    get_window_state on Dock window {wid}: http {code}", json.dumps(r.get("result") or r.get("error"))[:200])
         if r.get("ok") and shot:
             check("its screenshot is saved for the worker to read", os.path.isfile(shot) and "mac-" + WORKER in shot, shot)
             os.remove(shot)
         else:
             check("the read reaches the driver (it may lack a permission)", code in (200, 502) and r.get("code") in (None, "driver_error"), (code, r))
     else:
-        print("    Finder has no window open: skipped the window read")
+        check("the Dock reports a window to read", False, json.dumps(lw)[:400])
 
     code, r = mac("launch_app", {"name": "Terminal"})
     check("a blocked app stays refused, even under *", code == 403 and r.get("code") == "app_blocked", (code, r))
@@ -182,6 +202,7 @@ finally:
         ap.kill()
     sp.terminate()
     slog.close()
+    bystander.kill()
     try:
         pid = json.loads(read(EP) or "{}").get("pid")
         if pid:

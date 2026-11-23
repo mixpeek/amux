@@ -134,11 +134,13 @@ try:
     wait(healthy, 90)
     check("the private server and the driver are up", sp.poll() is None and wait(lambda: os.path.exists(EP), 20), read(LOG)[-400:])
     wait(lambda: api("GET", "/api/computer/mac/status")[1].get("up"), 20)
-    finder = int(subprocess.run(["pgrep", "-x", "Finder"], capture_output=True, text=True).stdout.split()[0])
+    # The Dock: always running, with windows, and not on the block list (Finder is,
+    # since it opens anything as the owner). The person at the Mac is scripted.
+    finder = int(subprocess.run(["pgrep", "-x", "Dock"], capture_output=True, text=True).stdout.split()[0])
     person(front="com.apple.dock", idle_s=30)
     code, lw = mac("list_windows", {"pid": finder})
     wid = next((x["window_id"] for x in (lw.get("result") or {}).get("windows", []) if x.get("window_id")), None)
-    check("Finder has a window to read (list_windows needs no grant)", code == 200 and wid, (code, str(lw)[:300]))
+    check("the Dock has a window to read (list_windows needs no grant)", code == 200 and wid, (code, str(lw)[:300]))
     READ = {"pid": finder, "window_id": wid, "include_screenshot": False, "max_elements": 5}
 
     # 1. A worker cannot grant itself an app.
@@ -152,30 +154,30 @@ try:
     check("and the owner gets a Needs-you card for it", c is not None, raw)
     print("    card:", (c or {}).get("title"))
     code, r = approve("mac_apps")
-    check("the owner's Approve grants the app", code == 200 and "com.apple.finder" in worker_env(), (code, r, worker_env()))
+    check("the owner's Approve grants the app", code == 200 and "com.apple.dock" in worker_env(), (code, r, worker_env()))
     code, r = mac("get_window_state", READ)
     check("and the next call goes through", code == 200 and r.get("ok"), (code, r))
 
     # 3. Yield to the person typing in the app in front.
-    person(front="com.apple.finder", idle_s=0.2)
+    person(front="com.apple.dock", idle_s=0.2)
     t0 = time.time()
     code, r = mac("move_cursor", {"pid": finder, "x": 20, "y": 20})
     took = time.time() - t0
     check("while the owner types in the app in front, an action waits and is refused", code == 403 and r.get("code") == "person_active", (code, r))
     check("after waiting about 5 seconds", 4.5 <= took <= 12, took)
-    person(front="com.apple.finder", idle_s=30)
+    person(front="com.apple.dock", idle_s=30)
     code, r = mac("move_cursor", {"pid": finder, "x": 20, "y": 20})
     check("once the owner pauses, it goes ahead", code in (200, 502) and r.get("code") not in ("person_active",), (code, r))
     code, r = mac("get_window_state", READ)
-    person(front="com.apple.finder", idle_s=0.1)
+    person(front="com.apple.dock", idle_s=0.1)
     code, r = mac("get_window_state", READ)
     check("reads never wait for the owner", code == 200, (code, r))
 
     # 4. An action that pulls its app forward gives the owner's app back.
     gb = os.path.join(HOME, "computer", "test-front-given-back")
-    person(fronts=["com.apple.TextEdit", "com.apple.TextEdit", "com.apple.finder"], idle_s=30)
+    person(fronts=["com.apple.TextEdit", "com.apple.TextEdit", "com.apple.dock"], idle_s=30)
     code, r = mac("move_cursor", {"pid": finder, "x": 30, "y": 30})
-    check("an action that pulled Finder forward gives TextEdit back", r.get("front_given_back") == "com.apple.TextEdit"
+    check("an action that pulled the Dock forward gives TextEdit back", r.get("front_given_back") == "com.apple.TextEdit"
           or read(gb) == "com.apple.TextEdit", (code, r))
     if os.path.exists(gb):
         os.remove(gb)
@@ -212,7 +214,7 @@ try:
     check("every call is in the activity feed", a.get("measured") and len(rows) >= 8
           and {"app_not_allowed", "person_active", "outside_content"} <= codes and any(x.get("verdict") == "called" for x in rows), (len(rows), codes))
     check("newest first, each with its worker, tool and app", rows == sorted(rows, key=lambda x: -x["ts"])
-          and all(x.get("worker") == W and x.get("tool") for x in rows) and any("Finder" in (x.get("apps") or "") for x in rows), rows[:2])
+          and all(x.get("worker") == W and x.get("tool") for x in rows) and any("Dock" in (x.get("apps") or "") for x in rows), rows[:2])
     sl = read(os.path.join(TMP, "server.log"))
     check("the server logs each verdict", all(v in sl for v in ("code=person_active", "verdict=front_given_back", "verdict=called")), sl[-500:])
 finally:

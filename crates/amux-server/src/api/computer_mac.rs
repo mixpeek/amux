@@ -26,6 +26,61 @@ pub fn routes() -> Router<AppState> {
         .route("/tools", get(tools))
         .route("/call", post(call))
         .route("/activity", get(activity))
+        .route("/broker/next", get(broker_next))
+        .route("/broker/result", post(broker_result))
+}
+
+/// `GET /broker/next?wait=S`: the Mac app's long poll for the next call
+/// that passed the gate in `/call`. Owner only: the app sends the owner
+/// bearer, and nothing else may take a call meant for the driver.
+async fn broker_next(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "computer_mac_broker_refused", "take computer-use calls for the Mac app's driver") {
+        return *r;
+    }
+    let wait = q
+        .get("wait")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(mac::POLL_WAIT)
+        .min(mac::POLL_WAIT);
+    match mac::broker().next(wait).await {
+        Some(job) => Json(json!({ "job": job })).into_response(),
+        None => Json(json!({ "job": null })).into_response(),
+    }
+}
+
+/// `POST /broker/result {id, result} | {id, error}`: the app's answer to a
+/// job. Owner only. The answer goes to the `/call` handler waiting on that id
+/// in this process; no route reads it back.
+async fn broker_result(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "computer_mac_broker_refused", "answer computer-use calls for the Mac app's driver") {
+        return *r;
+    }
+    let Some(id) = body.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": "send {id, result} or {id, error}", "code": "bad_request" }));
+    };
+    let r = match (body.get("result"), body.get("error")) {
+        (_, Some(e)) if !e.is_null() => Err(e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string())),
+        (Some(v), _) => Ok(v.clone()),
+        _ => return err(StatusCode::BAD_REQUEST, json!({ "error": "send {id, result} or {id, error}", "code": "bad_request" })),
+    };
+    if mac::broker().reply(id, r) {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        tracing::info!(measured = true, n_considered = 1, verdict = "computer_mac_result_unclaimed",
+            "[computer-mac] a result arrived for a call nobody waits on (timed out, or never issued)");
+        err(StatusCode::NOT_FOUND, json!({ "error": "no call waits on that id", "code": "unknown_id" }))
+    }
 }
 
 fn err(code: StatusCode, body: Value) -> Response {
@@ -63,9 +118,10 @@ async fn status(headers: HeaderMap) -> Response {
         )
         .into_response(),
         Ok(ep) => {
-            let perms = mac::call(&ep, "check_permissions", &json!({}), None).await;
+            let connected = mac::broker().connected();
+            let perms = mac::call("check_permissions", &json!({}), None).await;
             Json(json!({
-                "up": true, "measured": true, "app": ep.app, "driver_pid": ep.pid,
+                "up": connected, "measured": true, "app": ep.app, "driver_pid": ep.pid, "app_polling": connected,
                 "permissions": perms.as_ref().ok(), "permissions_error": perms.err(),
                 "worker": w, "switches": switches,
                 "keys": { "apps": mac::APPS_KEY, "any_app": mac::ANY_APP_KEY, "foreground": mac::FOREGROUND_KEY },
@@ -143,17 +199,23 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         );
     }
     let home = home();
-    let ep = match mac::endpoint(&home) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!("[computer-mac] verdict=driver_down worker={w} tool={tool}: {e}");
-            return err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                json!({ "error": e, "code": "driver_down", "sent": false,
-                "next": "the owner turns on Settings > Computer use in the amux Mac app" }),
-            );
-        }
-    };
+    if let Err(e) = mac::endpoint(&home) {
+        tracing::warn!("[computer-mac] verdict=driver_down worker={w} tool={tool}: {e}");
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": e, "code": "driver_down", "sent": false,
+            "next": "the owner turns on Settings > Computer use in the amux Mac app" }),
+        );
+    }
+    // Fail closed: the only path to the driver is the app's poll.
+    if !mac::broker().connected() {
+        tracing::warn!("[computer-mac] verdict=computer_mac_app_not_polling worker={w} tool={tool}");
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({ "error": "the amux Mac app is not connected for computer use; nothing was sent", "code": "app_not_polling", "sent": false,
+            "next": "the owner opens the amux Mac app on this Mac with Computer use on (an app from before 2026-11-23 needs Check for Updates)" }),
+        );
+    }
     let policy = mac::Policy::for_worker(&home, &w);
     let (pids, mut apps) = mac::targets(&tool, &args);
     for p in pids {
@@ -245,7 +307,7 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         .unwrap_or(0);
     let shot = dir.join(format!("{stem}-{ms}.png"));
     let t0 = std::time::Instant::now();
-    let res = mac::call(&ep, &tool, &args, Some(&shot)).await;
+    let res = mac::call(&tool, &args, Some(&shot)).await;
     // An action that pulled its app forward gives the person theirs back
     // (launch_app and bring_to_front ask for the front, so they keep it).
     let mut front_given_back = None;
@@ -431,6 +493,49 @@ mod tests {
             noted, 1,
             "only w1 was noted: not the failed read, not the owner's own"
         );
+    }
+
+    /// The broker's two routes are the owner's: a worker, or a caller with no
+    /// bearer, can neither take a call meant for the driver nor answer one.
+    #[tokio::test]
+    async fn only_the_owner_polls_for_or_answers_driver_calls() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = routes().with_state(state);
+        let ans = serde_json::json!({ "id": "x", "result": {} });
+        for (h, why) in [
+            (vec![("x-amux-session", "w1")], "a worker"),
+            (vec![("x-amux-session", "w1"), ("authorization", "Bearer owner-secret")], "a worker with the bearer"),
+            (vec![], "no identity and no bearer"),
+        ] {
+            let (st, _) = call(&app, "GET", "/broker/next?wait=0", &h, None).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{why} polling");
+            let (st, _) = call(&app, "POST", "/broker/result", &h, Some(ans.clone())).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{why} answering");
+        }
+        assert!(!mac::broker().connected(), "a refused poll does not connect the app");
+        let owner = [("authorization", "Bearer owner-secret")];
+        let (st, v) = call(&app, "GET", "/broker/next?wait=0", &owner, None).await;
+        assert_eq!((st, v["job"].is_null()), (StatusCode::OK, true));
+        assert!(mac::broker().connected());
+        let (st, v) = call(&app, "POST", "/broker/result", &owner, Some(ans)).await;
+        assert_eq!((st, v["code"].as_str()), (StatusCode::NOT_FOUND, Some("unknown_id")));
+    }
+
+    /// With the driver published but no app polling, /call sends nothing.
+    #[tokio::test]
+    async fn a_call_with_no_app_polling_fails_closed() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        std::fs::create_dir_all(d.path().join("cua")).unwrap();
+        std::fs::write(mac::endpoint_path(d.path()),
+            format!(r#"{{"binary":"/bin/sh","pid":{},"app":"com.amux.desktop"}}"#, std::process::id())).unwrap();
+        let app = routes().with_state(test_state());
+        let (st, v) = call(&app, "POST", "/call", &[("x-amux-session", "w1")],
+            Some(serde_json::json!({ "tool": "list_apps", "args": {} }))).await;
+        assert_eq!((st, v["code"].as_str(), v["sent"].as_bool()), (StatusCode::SERVICE_UNAVAILABLE, Some("app_not_polling"), Some(false)), "{v}");
     }
 
     /// A worker reads its own Mac activity; every worker's is the owner's.

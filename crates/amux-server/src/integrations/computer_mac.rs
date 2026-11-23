@@ -3,10 +3,12 @@
 //! `research/athena-mac-app-teardown.md`).
 //!
 //! The Mac app (desktop/amux-computer.swift) runs the driver embedded, so it
-//! uses Amux's own Accessibility and Screen Recording grants, and writes
-//! `<AMUX_HOME>/cua/endpoint.json` naming the binary and its socket. The
-//! server forwards a worker's tool call to it with `cua-driver call`, after a
-//! gate this file owns:
+//! uses Amux's own Accessibility and Screen Recording grants. The driver is
+//! the app's child over stdin and stdout (`cua-driver mcp --direct
+//! --embedded`): it has no socket, so nothing but the app can reach it. The
+//! app writes `<AMUX_HOME>/cua/endpoint.json` naming the driver's pid, and
+//! long-polls this server for work over the owner-bearer API ([`Broker`]).
+//! A worker's tool call is queued for it only after a gate this file owns:
 //!
 //! - every tool is classified: free (no app: list_apps, list_windows, ...),
 //!   app (acts on or reads one app), or refused (kill_app, run_script, the
@@ -43,7 +45,6 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(45);
 #[derive(Debug, Clone)]
 pub struct Endpoint {
     pub binary: PathBuf,
-    pub socket: PathBuf,
     pub pid: i32,
     pub app: String,
 }
@@ -65,10 +66,19 @@ pub fn endpoint(home: &Path) -> Result<Endpoint, String> {
     let pid = v.get("pid").and_then(Value::as_i64).unwrap_or(0) as i32;
     let ep = Endpoint {
         binary: PathBuf::from(s("binary")),
-        socket: PathBuf::from(s("socket")),
         pid,
         app: s("app"),
     };
+    // An app from before the broker publishes a socket and runs a daemon that
+    // answers anyone on it (amux-security, 2026-11-23). Refuse it rather than
+    // talk to it; the app's update ends that daemon and removes the socket.
+    if !s("socket").is_empty() || home.join("cua").join("driver.sock").exists() {
+        tracing::warn!(measured = true, n_considered = 1, verdict = "computer_mac_socket_driver_refused",
+            "[computer-mac] the Mac app runs the old socket driver; nothing is sent to it");
+        return Err("the amux Mac app runs an old computer-use driver that listens on a socket; \
+                    update the amux Mac app (Check for Updates) and nothing is sent until then"
+            .to_string());
+    }
     if pid <= 0 || !alive(pid) {
         return Err(format!(
             "the computer-use driver the Mac app started (pid {pid}) is not running; reopen the amux Mac app"
@@ -830,58 +840,258 @@ pub fn activity(home: &Path, worker: Option<&str>, limit: usize) -> (Vec<Value>,
     (rows, n)
 }
 
-/// Runs one tool on the driver. `shot` receives the first image, if any.
-pub async fn call(
-    ep: &Endpoint,
-    tool: &str,
-    args: &Value,
-    shot: Option<&Path>,
-) -> Result<Value, String> {
-    let mut cmd = tokio::process::Command::new(&ep.binary);
-    cmd.arg("call").arg("--socket").arg(&ep.socket);
-    if let Some(p) = shot {
-        cmd.arg("--screenshot-out-file").arg(p);
+// ── The broker: the only way a call reaches the driver ──
+
+/// The app is connected while it polled within this long. Its long poll
+/// waits [`POLL_WAIT`] and comes straight back, so a gap past this is an app
+/// that stopped polling.
+pub const POLL_FRESH: Duration = Duration::from_secs(40);
+/// Longest a poll waits for work before answering "none".
+pub const POLL_WAIT: Duration = Duration::from_secs(25);
+
+/// One call for the app's driver: the MCP tool and its arguments, already
+/// through the gate.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct Job {
+    pub id: String,
+    pub tool: String,
+    pub args: Value,
+}
+
+type Reply = tokio::sync::oneshot::Sender<Result<Value, String>>;
+
+/// Calls waiting for the Mac app, and the replies they wait on. A reply goes
+/// back to the waiting handler in this process, keyed by the job's random id;
+/// nothing serves it over the API.
+#[derive(Default)]
+pub struct Broker {
+    queue: std::sync::Mutex<std::collections::VecDeque<Job>>,
+    waiting: std::sync::Mutex<std::collections::HashMap<String, Reply>>,
+    work: tokio::sync::Notify,
+    last_poll: std::sync::atomic::AtomicI64,
+}
+
+#[cfg(not(test))]
+pub fn broker() -> &'static Broker {
+    static B: std::sync::OnceLock<Broker> = std::sync::OnceLock::new();
+    B.get_or_init(Broker::default)
+}
+
+/// Per test thread, so one test's poll cannot make another's app "connected".
+#[cfg(test)]
+pub fn broker() -> &'static Broker {
+    thread_local! {
+        static B: &'static Broker = Box::leak(Box::default());
     }
-    cmd.arg(tool)
-        .arg(args.to_string())
-        .env("CUA_DRIVER_TELEMETRY", "0")
-        .kill_on_drop(true);
-    let out = tokio::time::timeout(CALL_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "the driver did not answer {tool} within {}s",
-                CALL_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("starting {}: {e}", ep.binary.display()))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let body = stdout.trim();
-    let parsed: Option<Value> = body
-        .find('{')
-        .and_then(|i| serde_json::from_str(&body[i..]).ok());
-    match (out.status.success(), parsed) {
-        (true, Some(v)) => Ok(v),
-        (true, None) => Ok(json!({ "text": body })),
-        (false, Some(v)) => Err(v
-            .get("error")
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| v.to_string())),
-        (false, None) => Err(format!(
-            "{} {}",
-            body.chars().take(400).collect::<String>(),
-            stderr
-                .lines()
-                .filter(|l| !l.contains("telemetry"))
-                .collect::<Vec<_>>()
-                .join(" ")
-                .chars()
-                .take(400)
-                .collect::<String>()
-        )
-        .trim()
-        .to_string()),
+    B.with(|b| *b)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn job_id() -> Result<String, String> {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).map_err(|e| format!("no random source for the call id: {e}"))?;
+    Ok(hex::encode(b))
+}
+
+impl Broker {
+    /// Did the app poll recently enough to count as connected?
+    pub fn connected(&self) -> bool {
+        let last = self.last_poll.load(std::sync::atomic::Ordering::Relaxed);
+        last > 0 && now_ms() - last <= POLL_FRESH.as_millis() as i64
+    }
+
+    /// The app's poll: the next job, waiting up to `wait` for one.
+    pub async fn next(&self, wait: Duration) -> Option<Job> {
+        self.last_poll.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let notified = self.work.notified();
+            if let Some(j) = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop_front() {
+                return Some(j);
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                self.last_poll.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                return None;
+            }
+        }
+    }
+
+    /// The app's answer to job `id`. False when nobody waits on that id (it
+    /// timed out, or the id was never issued).
+    pub fn reply(&self, id: &str, r: Result<Value, String>) -> bool {
+        let tx = self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id);
+        match tx {
+            Some(tx) => tx.send(r).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queues one call and waits for the app's answer. Fails closed: with no
+    /// app polling nothing is queued.
+    pub async fn run(&self, tool: &str, args: &Value, timeout: Duration) -> Result<Value, String> {
+        if !self.connected() {
+            tracing::warn!(tool, measured = true, n_considered = 1, verdict = "computer_mac_app_not_polling",
+                "[computer-mac] no Mac app is polling for calls; nothing was sent");
+            return Err("the amux Mac app is not connected for computer use (it has not polled in the last \
+                        40s); nothing was sent. Open the amux Mac app on this Mac with Computer use on"
+                .to_string());
+        }
+        let id = job_id()?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(), tx);
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(Job { id: id.clone(), tool: tool.to_string(), args: args.clone() });
+        self.work.notify_one();
+        let out = tokio::time::timeout(timeout, rx).await;
+        // Whatever happened, this id is finished: a late reply finds no one.
+        self.waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+        self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|j| j.id != id);
+        match out {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err("the call was dropped before the Mac app answered".into()),
+            Err(_) => {
+                tracing::warn!(tool, measured = true, n_considered = 1, verdict = "computer_mac_call_timeout",
+                    "[computer-mac] the Mac app did not answer within {}s", timeout.as_secs());
+                Err(format!("the Mac app's driver did not answer {tool} within {}s", timeout.as_secs()))
+            }
+        }
+    }
+}
+
+/// An MCP `tools/call` result as the app posts it, as the caller sees it:
+/// the first image written to `shot`, an error result an error.
+pub fn take_result(result: Value, shot: Option<&Path>) -> Result<Value, String> {
+    use base64::Engine as _;
+    if let (Some(p), Some(blocks)) = (shot, result.get("content").and_then(Value::as_array)) {
+        if let Some(data) = blocks
+            .iter()
+            .find(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+            .and_then(|b| b.get("data").and_then(Value::as_str))
+        {
+            match base64::engine::general_purpose::STANDARD.decode(data) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(p, bytes) {
+                        tracing::warn!("[computer-mac] verdict=screenshot_write_failed path={}: {e}", p.display());
+                    }
+                }
+                Err(e) => tracing::warn!("[computer-mac] verdict=screenshot_undecodable: {e}"),
+            }
+        }
+    }
+    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+        let text: Vec<&str> = result
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect();
+        return Err(if text.is_empty() { result.to_string() } else { text.join(" ") });
+    }
+    // The shape `cua-driver call` printed, which callers already read: the
+    // structured content when the tool has one, else its text.
+    if let Some(sc) = result.get("structuredContent").filter(|v| v.is_object()) {
+        return Ok(sc.clone());
+    }
+    let text: Vec<&str> = result
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .collect();
+    let text = text.join("\n");
+    Ok(serde_json::from_str::<Value>(text.trim())
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "text": text })))
+}
+
+/// Runs one tool on the app's driver through the [`Broker`]. `shot`
+/// receives the first image, if any. There is no other path to the driver.
+pub async fn call(tool: &str, args: &Value, shot: Option<&Path>) -> Result<Value, String> {
+    let r = broker().run(tool, args, CALL_TIMEOUT).await?;
+    take_result(r, shot)
+}
+
+#[cfg(test)]
+mod broker_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn with_no_app_polling_nothing_is_queued() {
+        let b = Broker::default();
+        let e = b.run("click", &json!({"pid": 1}), Duration::from_secs(1)).await.unwrap_err();
+        assert!(e.contains("not connected"), "{e}");
+        assert!(b.queue.lock().unwrap().is_empty() && b.waiting.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_goes_to_the_poller_and_its_answer_comes_back_in_process() {
+        let b: &'static Broker = Box::leak(Box::default());
+        assert!(b.next(Duration::ZERO).await.is_none(), "an empty poll answers none");
+        assert!(b.connected(), "a poll connects the app");
+        let app = tokio::spawn(async move {
+            let job = b.next(Duration::from_secs(5)).await.expect("a job");
+            assert_eq!((job.tool.as_str(), &job.args), ("click", &json!({"pid": 7})));
+            assert_eq!(job.id.len(), 32, "a random id");
+            assert!(!b.reply("not-the-id", Ok(json!({}))), "a wrong id reaches no one");
+            assert!(b.reply(&job.id, Ok(json!({"content": [{"type": "text", "text": "done"}]}))));
+            job.id
+        });
+        let r = b.run("click", &json!({"pid": 7}), Duration::from_secs(5)).await.unwrap();
+        assert_eq!(r["content"][0]["text"], "done");
+        let id = app.await.unwrap();
+        assert!(!b.reply(&id, Ok(json!({}))), "an answered id is finished");
+    }
+
+    #[tokio::test]
+    async fn a_call_the_app_never_answers_times_out_and_is_forgotten() {
+        let b = Broker::default();
+        b.next(Duration::ZERO).await;
+        let e = b.run("click", &json!({}), Duration::from_millis(50)).await.unwrap_err();
+        assert!(e.contains("did not answer"), "{e}");
+        assert!(b.queue.lock().unwrap().is_empty() && b.waiting.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_result_writes_its_image_and_an_error_result_is_an_error() {
+        use base64::Engine as _;
+        let d = tempfile::tempdir().unwrap();
+        let shot = d.path().join("s.png");
+        let png = base64::engine::general_purpose::STANDARD.encode(b"PNGBYTES");
+        let r = take_result(json!({"content": [{"type": "image", "data": png, "mimeType": "image/png"}, {"type": "text", "text": "ok"}],
+                                   "structuredContent": {"windows": [{"window_id": 7}]}, "isError": false}), Some(&shot)).unwrap();
+        assert_eq!(std::fs::read(&shot).unwrap(), b"PNGBYTES");
+        assert_eq!(r, json!({"windows": [{"window_id": 7}]}), "the structured content, as `cua-driver call` printed it");
+        let r = take_result(json!({"content": [{"type": "text", "text": "Found 1 window"}]}), None).unwrap();
+        assert_eq!(r, json!({"text": "Found 1 window"}));
+        let e = take_result(json!({"content": [{"type": "text", "text": "no such window"}], "isError": true}), None).unwrap_err();
+        assert_eq!(e, "no such window");
+    }
+
+    #[test]
+    fn an_endpoint_that_names_a_socket_or_leaves_one_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let cua = d.path().join("cua");
+        std::fs::create_dir_all(&cua).unwrap();
+        let me = std::process::id();
+        let ep = |extra: &str| format!(r#"{{"binary":"/bin/sh","pid":{me},"app":"com.amux.desktop"{extra}}}"#);
+        std::fs::write(endpoint_path(d.path()), ep("")).unwrap();
+        assert!(endpoint(d.path()).is_ok());
+        std::fs::write(endpoint_path(d.path()), ep(r#","socket":"/x/driver.sock""#)).unwrap();
+        assert!(endpoint(d.path()).unwrap_err().contains("old computer-use driver"));
+        std::fs::write(endpoint_path(d.path()), ep("")).unwrap();
+        std::fs::write(cua.join("driver.sock"), "").unwrap();
+        assert!(endpoint(d.path()).unwrap_err().contains("old computer-use driver"), "a stale driver.sock is refused");
     }
 }
 
