@@ -46369,7 +46369,7 @@ function _linkViewerReturn() {
       verdict = tabs.length === 1 ? 'new_window' : 'new_tab';
     }
     tabs.slice(1).forEach(t => {
-      try { if (t.hash) sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); else sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + t.id); } catch (e) {}
+      try { if (t.hash) sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); else sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + t.id); } catch (e) { console.warn('[amux] link_viewer: tab ' + t.id + ' address not saved, it opens bare', e); }
     });
     firstHash = tabs[0].hash;
     _chromeTabs = tabs.map(t => ({ id: t.id, name: t.name }));
@@ -46380,7 +46380,7 @@ function _linkViewerReturn() {
   }
   console.info('[amux] link_viewer_return', { verdict, from_tab: lv.tab, has_worker: !!lv.session });
   amuxTrack('link_viewer_return', { verdict, measured: true, n_considered: 1 });
-  try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) {}
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) { console.warn('[amux] link_viewer: viewer query not cleared from the address', e); }
   _chromePageGoTo(firstHash);
   _chromeRender();
   _chromeSave();
