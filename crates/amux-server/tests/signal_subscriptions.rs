@@ -648,3 +648,56 @@ async fn a_worker_event_fires_only_that_workers_own_subscriptions() {
         .map(|f| f["subscription"].as_str().unwrap_or("").to_string()).collect();
     assert!(fired.contains(&"owner-mail".to_string()), "{fired:?}");
 }
+
+/// POST to an app that has an owner bearer configured, with or without it.
+async fn post_bearer(app: &axum::Router, uri: &str, body: Value, bearer: Option<&str>) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(b) = bearer {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {b}"));
+    }
+    let mut req = req.body(Body::from(body.to_string())).unwrap();
+    // A local process, the way a worker on this machine reaches the server.
+    req.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 40000))));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+// amux-security, 2026-11-23: leaving out the worker header does not make a
+// caller the owner. Without the owner bearer it may not name a source or
+// session, and its event fires nobody's subscription.
+#[tokio::test]
+async fn a_caller_without_identity_or_owner_bearer_cannot_emit_as_someone_else() {
+    let _ = fleet_home();
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(Store::open(&dir.path().join("amux-test.db")).unwrap());
+    let app = router(AppState {
+        store,
+        started: std::time::Instant::now(),
+        build_hash: "test".into(),
+        auth_token: Some("owner-bearer".into()),
+        reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    });
+    let owner = Some("owner-bearer");
+    let (st, v) = post_bearer(&app, "/api/subscriptions",
+        json!({"name": "owner-sub", "pattern": "custom.ping", "action": "shell", "action_target": "true"}), owner).await;
+    assert!(st.is_success(), "the owner makes a subscription: {v}");
+    for body in [json!({"type": "custom.ping", "source": "inbox"}), json!({"type": "deploy.wake", "session": "amux"})] {
+        let (st, v) = post_bearer(&app, "/api/subscriptions/emit", body, None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
+        assert_eq!(v["code"], "emit_as_self", "{v}");
+    }
+    let (st, v) = post_bearer(&app, "/api/subscriptions/emit", json!({"type": "custom.ping"}), None).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["subscriptions_fired"].as_array().map(Vec::len), Some(0), "an unattributed event fires nothing: {v}");
+    let (st, v) = post_bearer(&app, "/api/subscriptions/emit",
+        json!({"type": "custom.ping", "source": "inbox", "session": "x"}), owner).await;
+    assert_eq!(st, StatusCode::OK, "the owner bearer still names any source: {v}");
+    let fired: Vec<String> = v["subscriptions_fired"].as_array().unwrap().iter()
+        .map(|f| f["subscription"].as_str().unwrap_or("").to_string()).collect();
+    assert!(fired.contains(&"owner-sub".to_string()), "{fired:?}");
+}

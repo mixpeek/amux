@@ -225,6 +225,9 @@ fn wake_enabled(lane: &str) -> bool {
     wake_enabled_in(&crate::api::session_verbs::home(), lane, process.as_deref())
 }
 
+/// The emitter of an event whose caller showed no identity and no owner bearer.
+const UNATTRIBUTED_EMITTER: &str = "unattributed";
+
 fn actor_of(headers: &HeaderMap) -> String {
     super::org::local_member_actor(headers)
         .map(str::to_string)
@@ -1074,6 +1077,7 @@ struct EmitBody {
 /// its next tick.
 async fn emit_custom_signal(
     State(state): State<AppState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     headers: HeaderMap,
     Json(body): Json<EmitBody>,
 ) -> Response {
@@ -1081,6 +1085,18 @@ async fn emit_custom_signal(
         return reply(StatusCode::BAD_REQUEST, json!({"error": "type is required"}));
     }
     let emitter = actor_of(&headers);
+    // Dropping the worker header does not make a caller the owner
+    // (amux-security, 2026-11-23): with no worker or member identity and no
+    // owner bearer it emits as UNATTRIBUTED_EMITTER, so the rules below keep it
+    // from naming a source or session and from firing anyone's subscriptions.
+    let emitter = if emitter.is_empty()
+        && state.auth_token.is_some()
+        && !super::auth::has_owner_token(&state, &headers, &uri)
+    {
+        UNATTRIBUTED_EMITTER.to_string()
+    } else {
+        emitter
+    };
     // A worker or member emits as itself (amux-security, 2026-11-19): it may
     // not name another source or session, so it cannot pass its text off as
     // email.received, deploy.wake or another lane's event. The owner, with no
