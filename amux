@@ -11504,10 +11504,54 @@ Plain markdown with headings, short paragraphs, no filler. Say plainly when some
 # shares. Uncapped, two at once with a lane's own builds held load at 78 on 28
 # cores (Mac cpu RCA 20261101-184920) and one build reached 15.4 G. Slower lands
 # are the cost; AMUX_LAND_BUILD_JOBS and AMUX_LAND_TEST_THREADS raise the caps.
+# At most AMUX_LAND_GATE_SLOTS land gates run their builds and tests at once on
+# this machine, across every lane (default 2; 0 is no limit). Mac CPU RCAs
+# 20261117-152949 and 20261123-103607: gates from several lanes ran their whole
+# workspace test runs and e2e servers together, two rustc at 6.5 GB each beside
+# a lane's subagent burst, and load15 reached 196% of the cores. A waiting gate
+# says who holds the slots (verdict=land_gate_slot_wait); a slot whose holder
+# died is taken back (verdict=land_gate_slot_reclaimed).
+land_gate_slot_take() { # <slots> <dir> <holder pid> -> prints the slot dir taken
+  local slots=$1 dir=$2 me=$3 i s pid waited=0 said=0
+  mkdir -p "$dir"
+  while :; do
+    for i in $(seq 1 "$slots"); do
+      s="$dir/slot-$i"
+      if mkdir "$s" 2>/dev/null; then
+        printf '%s %s %s\n' "$me" "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$(date +%s)" > "$s/owner"
+        [ "$said" = 0 ] || echo "amux land: a gate slot freed after ${waited}s; this gate runs now (verdict=land_gate_slot_taken)" >&2
+        printf '%s\n' "$s"; return 0
+      fi
+      pid=$(awk 'NR==1{print $1}' "$s/owner" 2>/dev/null)
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        echo "amux land: gate slot $i was held by pid $pid, which is gone; taking it back (verdict=land_gate_slot_reclaimed)" >&2
+        rm -rf "$s"
+      elif [ -z "$pid" ] && [ -d "$s" ] && [ $(( $(date +%s) - $(stat -f %m "$s" 2>/dev/null || stat -c %Y "$s" 2>/dev/null || date +%s) )) -gt 60 ]; then
+        rm -rf "$s"   # a slot whose owner line was never written (killed between mkdir and write)
+      fi
+    done
+    if [ "$said" = 0 ] || [ $(( waited % 300 )) -lt "${AMUX_LAND_GATE_SLOT_POLL_S:-10}" ]; then
+      echo "amux land: all $slots land gate slots on this machine are busy ($(cat "$dir"/slot-*/owner 2>/dev/null | awk '{printf "%s%s (pid %s)", sep, $2, $1; sep=", "}')); waiting ${waited}s so far (verdict=land_gate_slot_wait)" >&2
+      said=1
+    fi
+    sleep "${AMUX_LAND_GATE_SLOT_POLL_S:-10}"; waited=$(( waited + ${AMUX_LAND_GATE_SLOT_POLL_S:-10} ))
+  done
+}
 land_gate_run() {
-  local jobs=${AMUX_LAND_BUILD_JOBS:-12} threads=${AMUX_LAND_TEST_THREADS:-8}
-  echo "amux land: the gate runs at nice 10 with $jobs build jobs and $threads test threads (verdict=land_gate_capped)" >&2
-  CARGO_BUILD_JOBS=$jobs NEXTEST_TEST_THREADS=$threads nice -n 10 "$@"
+  local jobs=${AMUX_LAND_BUILD_JOBS:-12} threads=${AMUX_LAND_TEST_THREADS:-8} slots=${AMUX_LAND_GATE_SLOTS:-2}
+  (
+    slot="" me=""
+    if [ "$slots" -gt 0 ] 2>/dev/null; then
+      # The holder is this subshell, which lives as long as the gate does. bash
+      # 3.2 (macOS's /bin/bash) has no BASHPID; an exec'd sh's parent is us.
+      me=${BASHPID:-$(exec sh -c 'echo $PPID')}
+      slot=$(land_gate_slot_take "$slots" "$HOME/.amux/locks/land-gate" "$me") || exit 1
+      trap 'rm -rf "$slot"' EXIT
+      trap 'rm -rf "$slot"; exit 143' TERM INT HUP
+    fi
+    echo "amux land: the gate runs at nice 10 with $jobs build jobs and $threads test threads${slot:+, in ${slot##*/} of $slots on this machine} (verdict=land_gate_capped)" >&2
+    CARGO_BUILD_JOBS=$jobs NEXTEST_TEST_THREADS=$threads nice -n 10 "$@"
+  )
 }
 
 # MERGE QUEUE (MC-92; Z2 of Mixpeek's 2026-11-01 no-baggage plan). The CI half
