@@ -458,6 +458,26 @@ pub async fn dictate(
         let (t, e) = gemini_generate(&key, parts, 90).await;
         if !e.is_empty() {
             tracing::warn!("[dictation] {src} key failed: {e}");
+            // THE AUDIO ITSELF WAS REFUSED (AF-1361). Gemini's 400 "Unable to
+            // process input audio" answers the same way for the same bytes, so
+            // a 502 made the page retry it: the owner's Mac app sent 6.6 KB
+            // clips stamped 24.8 h long 24 times in 4 h (2026-11-23), each
+            // refused. 422 with a code tells the page to stop and say so.
+            if audio_rejected(&e) {
+                tracing::warn!(
+                    session = %session,
+                    dur_ms,
+                    b64_len = b64.len(),
+                    measured = true,
+                    n_considered = 1,
+                    verdict = "dictation_audio_unreadable",
+                    "dictation: the engine refused this audio as empty or corrupt; a retry sends the same bytes"
+                );
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    json!({ "error": e, "code": "audio_unreadable" }),
+                );
+            }
             return err(StatusCode::BAD_GATEWAY, json!({ "error": e }));
         }
         text = t;
@@ -571,6 +591,12 @@ fn remove_audio(id: i64) {
 /// One recording to text through the configured engines (local first, then
 /// Gemini), for callers other than the dictation box: no history row, and
 /// the same rule that silence is an empty answer, not a reason to escalate.
+/// Gemini refused the audio itself (a 400 about the input audio), as opposed
+/// to a key, quota or network failure that a later retry can get past.
+fn audio_rejected(e: &str) -> bool {
+    e.starts_with("gemini 400:") && e.contains("input audio")
+}
+
 pub(crate) async fn transcribe_clip(state: &AppState, raw: &[u8], mime: &str) -> Result<(String, &'static str), String> {
     let pref = {
         let store = state.store.clone();
@@ -3478,6 +3504,26 @@ pub(crate) mod tests {
         let (st, e) = send(&app, "POST", "/api/dictate", Some(json!({ "audio": b64 }))).await;
         assert_eq!(st, StatusCode::BAD_GATEWAY);
         assert_eq!(e["error"], json!("gemini 429: quota exceeded"));
+        assert!(e.get("code").is_none(), "a quota error can pass on retry: {e}");
+        set_overrides(None, None, None);
+    }
+
+    // AF-1361: audio the engine refuses is a 422 the page does not retry.
+    #[tokio::test]
+    async fn dictate_refused_audio_is_a_422_the_page_does_not_retry() {
+        let _guard = ENGINE_LOCK.lock().await;
+        let (base, _log) = fake_upstream(
+            StatusCode::BAD_REQUEST,
+            r#"{"error": {"message": "Unable to process input audio: audio data is empty or corrupted."}}"#,
+        )
+        .await;
+        set_overrides(Some(false), Some("srv-key"), Some(base));
+        let (app, _dir) = app();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let (st, e) = send(&app, "POST", "/api/dictate", Some(json!({ "audio": b64 }))).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(e["code"], json!("audio_unreadable"));
+        assert!(e["error"].as_str().unwrap().starts_with("gemini 400: Unable to process input audio"));
         set_overrides(None, None, None);
     }
 

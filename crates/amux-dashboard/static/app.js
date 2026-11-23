@@ -2310,7 +2310,7 @@ function showConnHistory() {
         + '</div>'
         + '<span class="conn-clip-age">' + (age < 1 ? 'just now' : age + 'm ago') + '</span>'
         // An unreadable clip has nothing to send again; it can only be deleted.
-        + (c.state === 'unreadable' ? '' : ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>')
+        + (_dictNoResend(c) ? '' : ' <button type="button" class="btn conn-op-retry" onclick="_dictRetry(\'' + escJs(c.id) + '\');document.getElementById(\'conn-hist-modal\')?.remove();" title="Send this recording again">Send again</button>')
         + '</div>';
     }).join('');
     pendingHtml = '<div style="margin-top:var(--space-2-5);padding-top:var(--space-2);border-top:1px solid var(--border);">'
@@ -31059,7 +31059,8 @@ async function _dictStartRec() {
   // 2026-11-03). Storage runs its writes in order, so this clear still lands
   // before the first second is saved.
   _dictLiveClear();
-  _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { _dictChunks.push(e.data); _dictLiveSave(e.data); } };
+  const take = ++_dictTake;
+  _dictRecorder.ondataavailable = e => { if (e.data && e.data.size) { const first = !_dictChunks.length; _dictChunks.push(e.data); _dictLiveSave(e.data, take, first); } };
   _dictRecorder.onstop = () => { _dictStopMeter(); if (_dictCancelled) { _dictChunks = []; _dictLiveClear(); _dictStatus('Cancelled'); } else _dictUpload(); };
   // 1 s slices: each second reaches IndexedDB as it is spoken (see _dictLiveSave).
   _dictRecorder.start(1000);
@@ -31325,11 +31326,23 @@ function _dictStoreHung(why) {
   _dictBeacon('dict_storage_hung', { why });
 }
 const _dictStoreDown = () => Date.now() < _dictStoreDownUntil;
-async function _dictLiveSave(chunk) {
+// The live copy belongs to ONE take. A chunk that finds no record of its take
+// starts one only if it is the take's first chunk: a later chunk alone has no
+// header, so a record made from it can never be decoded. And `last` dates the
+// final chunk, so a take recovered a day later says how long it really was
+// (AF-1361: 6.6 KB clips recovered as 24.8 h long, each refused as corrupt).
+let _dictTake = 0;
+async function _dictLiveSave(chunk, take, first) {
   if (_dictStoreDown()) return;
   try {
-    const live = (await _idb.get('dict_live')) || {started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
+    const stored = await _idb.get('dict_live');
+    let live = stored && stored.take === take ? stored : null;
+    if (!live) {
+      if (!first || take !== _dictTake) { _dictBeacon('dict_live_orphan_chunk_dropped', { bytes: chunk.size || 0 }); return; }
+      live = {take, started: _dictStartedAt, mime: chunk.type || 'audio/webm', session: peekSession || '', chunks: []};
+    }
     live.chunks.push(chunk);
+    live.last = Date.now();
     await _idb.set('dict_live', live);
   } catch(e) {}
 }
@@ -31351,8 +31364,35 @@ async function _dictRecoverLive() {
   const blob = new Blob(live.chunks, {type: live.mime || 'audio/webm'});
   await _dictLiveClear();
   if (blob.size < 1200) return;
-  const id = await _dictOutboxAdd(blob, (live.mime || 'audio/webm').split(';')[0], Date.now() - (live.started || Date.now()));
-  await _dictOutboxPatch(id, {recovered: true, session: live.session || ''});
+  // RECOVERED ONCE, NOT ONCE PER WINDOW OR PER LOAD (AF-1361). Every window of
+  // the Mac app ran this on load, and a clear that timed out left the take to
+  // be recovered again on the next one: one take became clips in ten workers,
+  // each stamped with the time since it began (24.8 h). The take's start is
+  // its key, checked in this device's shared storage and in the outbox's own
+  // transaction; the length is the take's, from its last chunk.
+  const started = live.started || 0;
+  const key = 'amux_dict_recovered';
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) { seen = []; }
+  if (started && seen.includes(started)) { _dictBeacon('dict_live_recovered_again', { age_ms: Date.now() - started, where: 'device' }); return; }
+  try { localStorage.setItem(key, JSON.stringify(seen.concat([started]).slice(-20))); } catch (e) { console.warn('dictation: could not note the recovered take', e); }
+  const ms = Math.max(0, (live.last || (started + live.chunks.length * 1000)) - started);
+  const id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  let dup = false;
+  try {
+    const bytes = await blob.arrayBuffer();
+    await _dictUpdate(q => {
+      dup = !!started && q.some(x => x.live_started === started);
+      return dup ? q : q.concat([{ id, bytes, mime: (live.mime || 'audio/webm').split(';')[0], ms, ts: Date.now(),
+        session: live.session || '', live_started: started, recovered: true,
+        state: 'pending', attempts: 0, last: 0, error: '', text: '' }]);
+    });
+  } catch (e) {
+    if (e && e.message === 'dict_write_timeout') _dictStoreHung('dict_write_timeout');
+    _dictBeacon('dict_live_recover_failed', { error: String((e && e.message) || e).slice(0, 120), bytes: blob.size });
+    return;
+  }
+  if (dup) { _dictBeacon('dict_live_recovered_again', { age_ms: Date.now() - started, where: 'outbox' }); return; }
   showToast('A dictation interrupted by a reload was saved; it will be transcribed');
   setTimeout(_dictFlushOffline, 1500);
 }
@@ -31446,6 +31486,11 @@ async function _dictSendDirect(blob, mime, ms) {
     const r = await fetch(url, { method: 'POST', headers: _authHeaders({ 'Content-Type': mime || 'audio/webm' }),
       body: blob, signal: AbortSignal.timeout(120000) });
     const d = await r.json();
+    if (d.code === 'audio_unreadable') {
+      _dictStatus('The transcriber found no audio it could read in this recording.');
+      _dictBeacon('dict_clip_refused', { bytes: blob.size || 0, ms: ms || 0, unsaved: true });
+      return null;
+    }
     if (d.error) throw new Error(d.error);
     _dictStatus('Added to the composer — review, then send');
     _dictInsert(d.text);
@@ -31503,7 +31548,26 @@ async function _dictTrySendOnce(id, interactive) {
     if (_peekTab === 'dictation') _dictRender();
     return null;
   } finally { clearTimeout(readTimer); }
-  await _dictOutboxPatch(id, { state: 'sending', sending_at: Date.now() });
+  // One window sends a clip. Each window of the Mac app runs its own send
+  // pass, and both sent the same clip in the same second (AF-1361: every
+  // refused clip on 2026-11-23 reached the server twice). The claim is made in
+  // the outbox's own transaction; a window that finds a fresh claim leaves it.
+  // A store that cannot record the claim sends anyway, as before.
+  let claimed = true;
+  try {
+    await _dictUpdate(q => { claimed = true; return q.map(x => {
+      if (x.id !== id) return x;
+      if (x.state === 'sending' && !_dictSendingStale(x)) { claimed = false; return x; }
+      return Object.assign({}, x, { state: 'sending', sending_at: Date.now() });
+    }); });
+  } catch (e) {
+    if (e && e.message === 'dict_write_timeout') _dictStoreHung('dict_write_timeout');
+  }
+  if (!claimed) {
+    _dictBeacon('dict_send_claimed_elsewhere', { id });
+    if (interactive) _dictStatus('Another window is sending this recording');
+    return null;
+  }
   if (interactive) _dictStatus('Transcribing… (' + _dictKB(it.blob.size) + ')');
   if (_peekTab === 'dictation') _dictRender();
   const url = API + '/api/dictate?session=' + encodeURIComponent(it.session || peekSession || '')
@@ -31515,6 +31579,17 @@ async function _dictTrySendOnce(id, interactive) {
                                  body, signal: ctl.signal });
     clearTimeout(timer);
     const d = await r.json();
+    // The transcriber refused the audio itself; a retry sends the same bytes
+    // and is refused again (AF-1361: 24 refusals in 4 h from two clips). The
+    // clip is kept to play or delete, and nothing sends it again on its own.
+    if (d.code === 'audio_unreadable') {
+      await _dictOutboxPatch(id, { state: 'refused', last: Date.now(),
+        error: 'The transcriber found no audio it could read in this recording' });
+      _dictBeacon('dict_clip_refused', { id, bytes: it.blob.size || 0, ms: it.ms || 0, recovered: !!it.recovered });
+      if (interactive) _dictStatus('The transcriber found no audio it could read in this recording. Play it, or delete it.');
+      if (_peekTab === 'dictation') _dictRender();
+      return null;
+    }
     if (d.error) throw new Error(d.error);
     await _dictOutboxPatch(id, { state: 'done', text: d.text || '', error: '', last: Date.now() });
     await _dictPruneDone();
@@ -31598,7 +31673,7 @@ async function _dictRetry(id) {
 // Try every clip that can still be sent, now, ignoring its backoff.
 async function _dictRetryAll() {
   await _dictPendingBadge();
-  const ids = new Set(_dictPendingRows.filter(x => x.state !== 'unreadable').map(x => x.id));
+  const ids = new Set(_dictPendingRows.filter(x => !_dictNoResend(x)).map(x => x.id));
   if (!ids.size) return;
   try { await _dictUpdate(q => q.map(x => ids.has(x.id) ? Object.assign({}, x, { attempts: 0, last: 0 }) : x)); }
   catch (e) { showToast('This device could not update the recordings yet; try again'); return; }
@@ -31637,6 +31712,9 @@ async function _dictPlay(id) {
 // synchronously by the connection pill and its modal. `var`, because the pill
 // can render before this part of the file has run.
 var _dictPendingN = 0, _dictAttentionN = 0, _dictSyncPending = false, _dictPendingRows = [];
+// A clip nothing can send again: its stored copy is unreadable, or the
+// transcriber refused the audio itself, which a retry would send unchanged.
+const _dictNoResend = c => c.state === 'unreadable' || c.state === 'refused';
 function _dictClipLabel(c) {
   const secs = Math.round((c.ms || 0) / 1000);
   return 'Transcribe recording (' + secs + 's' + (c.session ? ', ' + c.session : '') + ')';
@@ -31646,7 +31724,7 @@ function _dictClipLabel(c) {
 async function _dictSyncClips(forced) {
   const out = [];
   for (const it of (await _dictOutbox())) {
-    if (it.state === 'done' || it.state === 'unreadable' || !it.blob) continue;
+    if (it.state === 'done' || _dictNoResend(it) || !it.blob) continue;
     if (it.state === 'sending' && !_dictSendingStale(it)) continue;
     if (!forced && !_dictReady(it)) continue;
     if (it.state === 'sending') {
@@ -31699,14 +31777,14 @@ function _dictOutboxHTML(q) {
   if (!live.length) return '';
   // Every clip at once (owner, 2026-11-19: "I should have a way to clear, try
   // again or whatever these"), on the heading's own row so a phone gets no new row.
-  const resend = live.filter(x => x.state !== 'unreadable').length;
+  const resend = live.filter(x => !_dictNoResend(x)).length;
   let h = '<div class="dict-day dict-pending-head"><span>PENDING</span><span class="dict-pending-acts">'
     + (resend ? '<button class="btn small" onclick="_dictRetryAll()">Try all again</button>' : '')
     + '<button class="btn small" onclick="_dictClearAll()">Clear all</button></span></div>';
   for (const it of live.slice().reverse()) {
     const secs = Math.round((it.ms || 0) / 1000);
     const label = { sending: 'Sending…', offline: 'Waiting for connection', failed: 'Failed', pending: 'Queued',
-      unreadable: 'Can no longer be read' }[it.state] || it.state;
+      unreadable: 'Can no longer be read', refused: 'No audio the transcriber can read' }[it.state] || it.state;
     const gone = it.state === 'unreadable';   // nothing to play or re-send; only Delete helps
     const err = it.error ? '<div class="dict-err">' + esc(it.error) + '</div>' : '';
     const attempts = (it.attempts || 0) > 1 ? ' · ' + it.attempts + ' tries' : '';
@@ -31716,7 +31794,7 @@ function _dictOutboxHTML(q) {
       +  err
       +  '<div class="dict-actions">'
       +    (gone ? '' : '<button class="btn small" onclick="_dictPlay(\'' + it.id + '\')">▶ Play</button>'
-      +      '<button class="btn small primary" onclick="_dictRetry(\'' + it.id + '\')">Retry</button>')
+      +      (_dictNoResend(it) ? '' : '<button class="btn small primary" onclick="_dictRetry(\'' + it.id + '\')">Retry</button>'))
       +    '<button class="btn small" onclick="_dictOutboxDel(\'' + it.id + '\')">Delete</button>'
       +  '</div></div>';
   }
