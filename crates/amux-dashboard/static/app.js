@@ -14645,6 +14645,15 @@ async function deleteSession(session) {
   done();
   if (r) showToast('Worker "' + session + '" deleted');
   expanded.delete(session);
+  // The open peek is on a worker that no longer exists. Leave it for the
+  // workers overview; the list filters live in localStorage, so they stay.
+  if (r && peekSession === session) {
+    closePeek();
+    if (!peekSession) {
+      switchView('sessions');
+      amuxTrack('worker_deleted_from_peek', { verdict: 'returned_to_overview', measured: true, n_considered: 1 });
+    }
+  }
   await fetchSessions();
 }
 
