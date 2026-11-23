@@ -230,6 +230,30 @@ test('a task line\'s @worker shows its status, and its card asks about the task 
   await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
 });
 
+// Owner, 2026-11-23: a card opened before mxp-decomp's newest reply kept
+// showing the one before it, with nothing to say it was 40 minutes old.
+test('an open task card picks up a reply the worker writes later, and says when each was written', async ({ page }) => {
+  const old = new Date(Date.now() - 40 * 60000).toISOString();
+  let msg = { name: W, text: 'The only flag this run was DROUGHT.', at: old, empty: false };
+  let reads = 0;
+  await page.route(/\/api\/sessions\/md-tag-w\/last-message$/, r => { reads++; return r.fulfill({ json: msg }); });
+  await boot(page);
+  await page.evaluate(p => (window as any).openFilePreview(p), TODO);
+  await page.locator('#file-body li .md-worker-link').click();
+  const card = page.locator('#md-task-card');
+  await expect(card.locator('.mtc-reply')).toContainText('only flag this run was DROUGHT');
+  await expect(card.locator('.mtc-reply-label')).toHaveText(/^Latest reply · .+, 40m ago$/);
+  // The worker replies again while the card stays open; nobody asks.
+  msg = { name: W, text: 'This run had **five** flags.', at: new Date().toISOString(), empty: false };
+  await expect(card.locator('.mtc-reply strong')).toHaveText('five', { timeout: 15000 });
+  await expect(card.locator('.mtc-reply-label')).toHaveText(/^Latest reply · .+, just now$/);
+  // Closing the card stops its reads.
+  await card.locator('.mtc-close').click();
+  const after = reads;
+  await page.waitForTimeout(11000);
+  expect(reads).toBe(after);
+});
+
 test('on a phone the task card is a bottom sheet with one row of controls', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 740 });
   await page.route(/\/api\/sessions\/md-tag-w\/last-message$/, r => r.fulfill({ json: { name: W, text: 'Working on it.', empty: false } }));

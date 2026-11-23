@@ -5757,18 +5757,26 @@ fn last_codex_assistant_text(events: Vec<crate::opencode::events::TranscriptEven
 }
 
 pub(crate) fn last_assistant_message(name: &str, max_chars: usize) -> String {
+    last_assistant_message_at(name, max_chars).0
+}
+
+/// [`last_assistant_message`] and when it was written (the transcript row's
+/// RFC 3339 `timestamp`), so a reader can tell a current reply from an old
+/// one. `None` when the transcript does not say (a Codex rollout).
+pub(crate) fn last_assistant_message_at(name: &str, max_chars: usize) -> (String, Option<String>) {
     if matches!(provider_of(&parse_env(name)).as_str(), "codex" | "ollama") {
         let text = last_codex_assistant_text(codex_transcript_events(name, 400).unwrap_or_default(), max_chars);
         if text.is_empty() {
             tracing::debug!(session = name, measured = true, n_considered = 1,
                 verdict = "codex_last_message_empty", "no assistant text in the resolved Codex rollout");
         }
-        return text;
+        return (text, None);
     }
     let Some(path) = session_jsonl_path(name) else {
-        return String::new();
+        return (String::new(), None);
     };
     let mut last = String::new();
+    let mut at = None;
     for o in iter_jsonl_tail(&path, 5_000_000) {
         if o["type"].as_str() != Some("assistant") {
             continue;
@@ -5796,9 +5804,10 @@ pub(crate) fn last_assistant_message(name: &str, max_chars: usize) -> String {
         // (no text block) is skipped rather than blanking the result.
         if !parts.is_empty() {
             last = parts.join("\n\n");
+            at = o["timestamp"].as_str().map(str::to_string);
         }
     }
-    last.chars().take(max_chars).collect()
+    (last.chars().take(max_chars).collect(), at)
 }
 
 fn render_session_transcript(name: &str, max_chars: usize) -> String {
@@ -28075,10 +28084,11 @@ async fn get_dispatch(
         // "read latest message" ellipsis action speaks (AMUX-3021).
         "last-message" => {
             let mx: usize = qs_first(qs, "max", "8000").parse().unwrap_or(8000);
-            let txt = last_assistant_message(name, mx);
+            let (txt, at) = last_assistant_message_at(name, mx);
             j200(json!({
                 "name": name,
                 "text": txt,
+                "at": at,
                 "chars": txt.chars().count(),
                 "empty": txt.is_empty(),
             }))

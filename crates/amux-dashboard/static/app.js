@@ -9668,12 +9668,21 @@ function _mdTaskLine(a) {
   c.querySelectorAll('.md-worker-link').forEach(n => n.remove());
   return c.textContent.replace(/\s+/g, ' ').replace(/^[\s:—–-]+/, '').trim().slice(0, 300);
 }
-const _mdTask = { name: '', task: '', last: '', waiting: false, sentAt: 0, pollAt: 0, anchor: null, timer: 0 };
-// While an ask waits, the card reads the reply on its own clock: a worker's reply
-// sends no session event, so render alone may not come round.
+const _mdTask = { name: '', task: '', last: '', lastAt: '', waiting: false, sentAt: 0, pollAt: 0, anchor: null, timer: 0 };
+// While the card is open it reads the reply on its own clock: a worker's reply
+// sends no session event, so render alone may not come round. Every 5 s while
+// an ask waits, every 10 s otherwise (owner, 2026-11-23: a card opened before
+// the worker's newest reply kept showing the one before it).
 function _mdTaskWait(on) {
   clearInterval(_mdTask.timer);
   _mdTask.timer = on ? setInterval(_mdTaskPaint, 5000) : 0;
+}
+// "Latest reply · 1:08 PM, 3m ago": when the reply was written, so an old one reads as old.
+function _mdReplyLabel(base, at) {
+  const t = at ? Date.parse(at) : NaN;
+  if (!isFinite(t)) return base;
+  const clock = new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return base + ' · ' + clock + ', ' + timeAgo(Math.floor(t / 1000));
 }
 function _mdTaskEl() {
   let el = document.getElementById('md-task-card');
@@ -9720,7 +9729,7 @@ function _mdTaskOpen(a) {
   const name = a.dataset.worker;
   const task = _mdTaskLine(a);
   _mdTaskWait(false);
-  Object.assign(_mdTask, { name, task, last: '', waiting: false, sentAt: 0, pollAt: 0, anchor: a });
+  Object.assign(_mdTask, { name, task, last: '', lastAt: '', waiting: false, sentAt: 0, pollAt: Date.now(), anchor: a });
   const el = _mdTaskEl();
   el.setAttribute('aria-label', name + ': status and ask');
   el.querySelector('.mtc-name').textContent = '@' + name;
@@ -9732,6 +9741,7 @@ function _mdTaskOpen(a) {
   _mdTaskPaint();
   _mdTaskPlace(el, a);
   _mdBeacon('md_task_card_opened', { known: _mdWorkerKnown(name) ? 1 : 0, task_chars: task.length });
+  _mdTaskWait(true);
   _mdTaskReadReply(name, false);
 }
 function _mdTaskClose() {
@@ -9750,30 +9760,42 @@ function _mdTaskPaint() {
   el.querySelector('.mtc-doing').textContent = s ? (s.task_name || s.desc || '') : '';
   el.querySelector('.mtc-send').disabled = !s;
   // An ask in flight: read the latest reply every 5 s until it changes (10 min at most).
+  // Otherwise every 10 s, so a reply the worker writes while the card is open shows.
+  const now = Date.now();
   if (_mdTask.waiting) {
-    const now = Date.now();
-    if (now - _mdTask.sentAt > 600000) { _mdTask.waiting = false; _mdTaskWait(false); el.querySelector('.mtc-note').textContent = 'No reply yet; open the worker to see it.'; }
+    if (now - _mdTask.sentAt > 600000) { _mdTask.waiting = false; el.querySelector('.mtc-note').textContent = 'No reply yet; open the worker to see it.'; }
     else if (now - _mdTask.pollAt > 4500) { _mdTask.pollAt = now; _mdTaskReadReply(name, true); }
-  }
+  } else if (now - _mdTask.pollAt > 9500) { _mdTask.pollAt = now; _mdTaskReadReply(name, false); }
 }
 async function _mdTaskReadReply(name, afterAsk) {
-  let text = '';
+  let text = '', at = '', read = false;
   try {
     const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/last-message', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
-    text = String(((await r.json()) || {}).text || '').trim();
+    const d = (await r.json()) || {};
+    text = String(d.text || '').trim();
+    at = String(d.at || '');
+    read = r.ok;
   } catch (e) { console.warn('md task card: latest reply not read', e); }
   if (_mdTask.name !== name) return;
   const el = _mdTaskEl();
+  const label = el.querySelector('.mtc-reply-label');
   if (afterAsk) {
     if (!text || text === _mdTask.last) return;   // still the reply from before the ask
     _mdTask.waiting = false;
-    _mdTaskWait(false);
-    _mdTask.last = text;   // a second ask waits for a reply newer than this one
+    Object.assign(_mdTask, { last: text, lastAt: at });   // a second ask waits for a reply newer than this one
     el.querySelector('.mtc-note').textContent = '';
-    el.querySelector('.mtc-reply-label').textContent = 'Reply';
+    label.textContent = _mdReplyLabel('Reply', at);
     _mdBeacon('md_task_reply_shown', { wait_ms: Date.now() - _mdTask.sentAt, chars: text.length });
   } else {
-    _mdTask.last = text;
+    // An unchanged reply keeps its place (and the reader's scroll); only its age moves on.
+    const same = text === _mdTask.last && at === _mdTask.lastAt && el.querySelector('.mtc-reply').textContent !== 'Reading…';
+    if (same || (!read && _mdTask.last)) {
+      if (!label.textContent.startsWith('Reply')) label.textContent = _mdReplyLabel('Latest reply', _mdTask.lastAt);
+      return;
+    }
+    if (_mdTask.last && text !== _mdTask.last) _mdBeacon('md_task_reply_refreshed', { chars: text.length });
+    Object.assign(_mdTask, { last: text, lastAt: at });
+    label.textContent = _mdReplyLabel('Latest reply', at);
   }
   const box = el.querySelector('.mtc-reply');
   if (text) box.innerHTML = renderMarkdown(text, '', { workers: true });
