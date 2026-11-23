@@ -81,6 +81,7 @@ pub mod task_titles;
 pub mod desc_refresh;
 pub mod email_events;
 pub mod linkedin_events;
+pub mod crm_watch;
 pub mod event_dispatch;
 pub mod host_guard;
 pub mod host_metrics;

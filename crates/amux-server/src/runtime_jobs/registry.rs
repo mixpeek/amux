@@ -101,6 +101,7 @@ pub mod ids {
     pub const EVENT_DISPATCH: &str = "event-dispatch";
     pub const EMAIL_EVENTS: &str = "email-events";
     pub const LINKEDIN_EVENTS: &str = "linkedin-events";
+    pub const CRM_WATCH: &str = "crm-watch";
     pub const ORCH_RUNTIME: &str = "orchestrator-runtime";
     pub const EVENT_PROCESSORS: &str = "event-processors";
     pub const SCAN: &str = "terminal-scan";
@@ -218,6 +219,7 @@ pub const ALL_IDS: &[&str] = &[
     ids::EVENT_DISPATCH,
     ids::EMAIL_EVENTS,
     ids::LINKEDIN_EVENTS,
+    ids::CRM_WATCH,
     ids::STATUS_HISTORY,
     ids::BROWSER_LOGIN_SYNC,
     ids::CONNECTOR_MAINTENANCE,
@@ -919,6 +921,14 @@ pub const CATALOG: &[Doc] = &[
         env: &[EnvControl { var: "AMUX_LINKEDIN_EVENTS_SECS", effect: "seconds between LinkedIn reads, default 2700; 0 stops LinkedIn events", off: Some("0") }],
         pref: None,
         detail: Some("/api/subscriptions/catalog"),
+    },
+    Doc {
+        id: ids::CRM_WATCH,
+        name: "CRM watch and capture",
+        purpose: "Every 2 minutes, fetches each watched public page in the CRM that is due (a company's website or careers page, on its own check interval) and emits crm.channel.changed when it shows lines it did not before; then attaches new email.received and linkedin.message_received events, and delivered sends in the sent-mail log, to the people they are from or to, emitting crm.contact.replied for inbound. Social profiles are checked by workers, which report through /api/crm/channels/<id>/observed.",
+        env: &[EnvControl { var: "AMUX_CRM_WATCH_SECS", effect: "seconds between passes, default 120; 0 stops CRM watching and capture", off: Some("0") }],
+        pref: None,
+        detail: Some("/api/crm/channels?watch=1"),
     },
     Doc {
         id: ids::DESC_REFRESH,

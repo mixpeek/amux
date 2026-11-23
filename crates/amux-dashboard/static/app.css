@@ -11374,6 +11374,11 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .crm-grade[data-g="C"] { color: var(--yellow); border-color: var(--yellow); }
 .crm-grade[data-g="D"] { color: var(--red); border-color: var(--red); }
 .crm-stage-h { font-weight: 700; font-size: var(--fs-sm); color: var(--dim); text-transform: uppercase; margin: var(--space-3) 0 var(--space-1); }
+.crm-ch { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: var(--space-1-5) 0; border-bottom: 1px solid var(--border); }
+.crm-ch-where { flex: 1 1 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crm-ch-watch { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--fs-sm); color: var(--dim); min-height: 44px; }
+.crm-ch-meta { flex-basis: 100%; }
+.crm-touch .crm-actions { margin: var(--space-1) 0 0; }
 .crm-more { align-self: center; margin: var(--space-2) 0; min-height: 44px; }
 .crm-empty { color: var(--dim); font-size: var(--fs-md); padding: var(--space-6) 0; text-align: center; }
 .crm-due { color: var(--red); }

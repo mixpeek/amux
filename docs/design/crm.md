@@ -121,6 +121,36 @@ page and from Cmd-K (contacts, accounts and deals are palette results).
   lookalikes (with "add as lead").
 - **Bulk:** select rows to tag, grade, merge duplicates, enroll, or export CSV.
 
+## 4b. The agent side (owner, 2026-11-23, 4:33 PM)
+
+"A very agentic-oriented CRM ... fields that allow the agent to take action
+on ... multi-touch ... LinkedIn, Twitter ... real time ... subscribe to a user
+... websites ... career posting ... the event subscription."
+
+- **Channels** (`/api/crm/channels`): where a person or company is reached or
+  watched: LinkedIn, X, Instagram, website, careers page, email, phone, and so
+  on, each with a handle or URL and a watch switch with its own interval.
+- **Watching:** the `crm-watch` runtime job fetches watched public pages
+  (websites, careers) itself. A worker checks LinkedIn, X and Instagram through
+  a signed-in browser route (`amux crm due`, then `amux crm observed`), because
+  those sites need a login and limit automation. The first check records; a
+  later one with new items emits `crm.channel.changed` and adds a `signal` to
+  the person's timeline.
+- **Touches** (`/api/crm/touches`): one planned action on one channel (dm,
+  comment, connect, email, follow, like, call, note), with text, a due date and
+  the worker that does it. A worker plans and drafts; the owner approves
+  anything a person outside the company reads (the "To approve" view, one tap);
+  approval emits `crm.touch.approved` to the assignee; the worker does it and
+  records it done (`crm.touch.done`), which lands in the timeline. An outward
+  touch cannot be marked done before it is approved.
+- **Automatic capture:** `crm-watch` attaches new `email.received` and
+  `linkedin.message_received` events, and delivered sends in the sent-mail log,
+  to the people they are from or to, and emits `crm.contact.replied` with how
+  many touches are still open, so a sequence stops when someone answers.
+- **Real time** is amux's event subscriptions: the four `crm.*` events are in
+  the catalog, emitted as source `crm`, so `amux subscribe "a new job at a
+  company I watch"` or "when the owner approves my touch" wakes a worker.
+
 ## 5. Phases
 
 1. **Foundation (now).** Schema: accounts, source, status, ICP grade,

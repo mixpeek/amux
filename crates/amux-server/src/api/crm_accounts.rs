@@ -499,11 +499,16 @@ async fn summary(State(state): State<AppState>) -> Response {
             stages.insert((*s).into(), json!(conn.query_row("SELECT COUNT(*) FROM crm_deals WHERE deleted IS NULL AND stage=?1", [s], |r| r.get::<_, i64>(0))?));
         }
         let people = n("SELECT COUNT(*) FROM crm_contacts WHERE deleted IS NULL")?;
+        // The owner's queue: drafted touches waiting for an approve.
+        let to_approve = n("SELECT COUNT(*) FROM crm_touches WHERE deleted IS NULL AND status='drafted'").unwrap_or(0);
+        let watched = n("SELECT COUNT(*) FROM crm_channels WHERE deleted IS NULL AND watch=1").unwrap_or(0);
         Ok(json!({
             "people": people,
             "companies": n("SELECT COUNT(*) FROM crm_accounts WHERE deleted IS NULL")?,
             "deals": n("SELECT COUNT(*) FROM crm_deals WHERE deleted IS NULL")?,
             "followups_due": due,
+            "to_approve": to_approve,
+            "watched": watched,
             "stages": stages,
             "measured": true, "n_considered": people,
         }))

@@ -156,6 +156,53 @@ test('a refresh from elsewhere does not rebuild a field being typed in', async (
   await expect(notes).toBeFocused();
 });
 
+// Owner, 2026-11-23: "a very agentic-oriented CRM": channels an agent reaches
+// and watches, touches it plans and does, and the owner approves what goes out.
+test('a worker plans a touch, the owner approves it, the worker records it done, and a watched channel reports into the timeline', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  await openCrm(page);
+  const made = await api(page, 'POST', '/contacts', { name: 'Agent Target ' + R, email: `target.${R}@example.com` });
+  const id = made.body.id;
+  // A worker: plans a LinkedIn DM with a draft (its own session header).
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': 'gtm-engine' }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b] as const);
+  const t = await asWorker('POST', '/touches', { contact_id: id, channel: 'linkedin', action: 'dm', body: 'Hi, saw your post on video search ' + R });
+  expect(t.status).toBe(201);
+  expect((await asWorker('POST', '/touches/' + t.body.id + '/done', { result: 'sent' })).body.code).toBe('not_approved');
+  // The owner's queue shows it; Approve hands it to the worker.
+  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
+  const card = page.locator('#crm-list .crm-touch', { hasText: 'video search ' + R });
+  await expect(card).toBeVisible();
+  await card.locator('button', { hasText: 'Approve' }).click();
+  await expect(card).toHaveCount(0);
+  const ev = await page.evaluate(async () => (await fetch('/api/subscriptions/events?type=crm.touch.approved', { headers: (window as any)._authHeaders() })).json().catch(() => ({})));
+  void ev;
+  expect((await asWorker('POST', '/touches/' + t.body.id + '/done', { result: 'sent', result_url: 'https://www.linkedin.com/messaging/' })).status).toBe(200);
+  // A watched careers page: the first check records, the second reports what is new.
+  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await page.locator('#crm-q').fill('Agent Target ' + R);
+  await page.locator('#crm-list .crm-row', { hasText: 'Agent Target ' + R }).click();
+  const drawer = page.locator('#crm-drawer .cx-drawer');
+  await drawer.locator('#crm-ch-kind').selectOption('careers');
+  await drawer.locator('#crm-ch-where').fill('https://example.com/careers-' + R);
+  await drawer.locator('#crm-ch-w').check();
+  await drawer.locator('.crm-form button', { hasText: 'Add' }).first().click();
+  await expect(drawer.locator('.crm-ch', { hasText: 'careers' })).toContainText('watched');
+  const chans = await api(page, 'GET', '/channels?owner_kind=contact&owner_id=' + id);
+  const ch = chans.body[0].id;
+  await asWorker('POST', '/channels/' + ch + '/observed', { items: [{ title: 'Video Engineer' }] });
+  const second = await asWorker('POST', '/channels/' + ch + '/observed', { items: [{ title: 'Video Engineer' }, { title: 'Head of Search ' + R }] });
+  expect(second.body.changed).toBe(true);
+  // The timeline has the done DM and the new posting, without a reload.
+  await expect(drawer.locator('.crm-ix', { hasText: 'Head of Search ' + R })).toBeVisible({ timeout: 10_000 });
+  await expect(drawer.locator('.crm-touch', { hasText: 'video search ' + R })).toContainText('done');
+  await expect(drawer.locator('.crm-ix', { hasText: 'linkedin dm' })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('crm-agent.png') });
+});
+
 // Phone: one row of controls above the list, and the list gets the screen.
 test('on a phone the CRM has one row of controls and the list fills the screen', async ({ page }, info) => {
   test.skip(info.project.name !== 'mobile', 'the 375 px layout');

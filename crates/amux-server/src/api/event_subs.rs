@@ -207,6 +207,10 @@ const MEANINGS: &[(&str, &str)] = &[
     ("browser.navigated", "a browser went to a url"),
     ("email.received", "a new email arrived in a connected Gmail inbox: fields account (the inbox), from (\"Name <addr>\"), from_address, from_domain, to, cc, subject, snippet (the first lines), thread_id, message_id, labels, unread, bulk (true for a mailing list or newsletter). Match a sender with eq on from_address or from_domain, an inbox with eq on account, drop newsletters with bulk eq false; judge when the request is about what the mail means"),
     ("linkedin.message_received", "a new unread LinkedIn message to the owner (read from the ethan browser profile about every 45 minutes, without opening it): fields account, from_name, snippet (the list preview), time_label (LinkedIn's own label, such as 3:45 PM or Nov 14), is_inmail, sponsored, conversation_url (the inbox; the list has no per-thread link), key. Match a sender with eq on from_name, drop InMail with is_inmail eq false; judge when the request is about what the message means"),
+    ("crm.channel.changed", "a watched CRM channel shows something new (a company's careers page lists a new job, a person's profile a new post): fields channel_id, kind (careers, website, linkedin, x, instagram, ...), owner_kind (contact or account), owner_id, owner_name, url, added (the new items, each with title and maybe url), n_added, summary, checked_by. Match a company or person with eq on owner_name or owner_id, a kind with eq on kind; judge when the request is about what the change means"),
+    ("crm.touch.approved", "the owner approved a planned outreach touch in the CRM, so its assignee does it now: fields id, contact_id, contact_name, account_name, channel (linkedin, x, email, ...), action (dm, comment, connect, email, ...), body (the approved text), target_url, assignee. A worker matches its own with eq on assignee"),
+    ("crm.touch.done", "a CRM touch was done or failed: fields id, contact_id, contact_name, channel, action, status (done or failed), result, result_url, done_by"),
+    ("crm.contact.replied", "a person in the CRM wrote back: an email from their address or a LinkedIn message from their exact name, attached to their activity: fields contact_id, name, channel (email or linkedin), subject, snippet, open_touches (planned, drafted or approved touches still open for them). Stop a sequence when open_touches is over 0"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),
@@ -320,6 +324,10 @@ pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
         "linkedin.message_received",
         &["account", "from_name", "snippet", "time_label", "is_inmail", "sponsored", "conversation_url", "key"],
     ),
+    ("crm.channel.changed", &["channel_id", "kind", "owner_kind", "owner_id", "owner_name", "url", "added", "n_added", "summary", "checked_by"]),
+    ("crm.touch.approved", &["id", "contact_id", "contact_name", "account_id", "account_name", "channel", "action", "body", "target_url", "assignee", "due_date", "sequence", "step"]),
+    ("crm.touch.done", &["id", "contact_id", "contact_name", "channel", "action", "status", "result", "result_url", "done_by"]),
+    ("crm.contact.replied", &["contact_id", "name", "channel", "subject", "snippet", "open_touches"]),
 ];
 
 fn entry(t: &str, n: i64, last: i64, mut fields: std::collections::BTreeSet<String>, example: Value) -> Value {

@@ -6852,6 +6852,75 @@ if not cs: print("No contacts"); sys.exit(0)
 for c in cs:
     print("%-8s %-28s %s" % (c.get("id", ""), (c.get("name") or "")[:28], c.get("company", "")))'
       ;;
+    # The agent verbs (docs/design/crm.md): channels to reach and watch, and
+    # touches, one planned action each. Every reply is one JSON line, so a
+    # worker reads it without parsing tables.
+    channel)
+      # amux crm channel PPL-1|ACCT-1 <kind> <url-or-handle> [watch] [every=MIN]
+      local own="${1:-}" kind="${2:-}" where="${3:-}"; [ -n "$own" ] && [ -n "$kind" ] && [ -n "$where" ] \
+        || die "Usage: amux crm channel PPL-1|ACCT-1 <linkedin|x|instagram|website|careers|...> <url or @handle> [watch] [every=MIN]"
+      shift 3
+      local json; json=$(python3 -c '
+import json, sys
+own, kind, where = sys.argv[1:4]
+d = {"owner_kind": "account" if own.startswith("ACCT-") else "contact", "owner_id": own, "kind": kind}
+d["url" if "/" in where or "." in where.split("@")[-1] else "handle"] = where
+for a in sys.argv[4:]:
+    if a == "watch": d["watch"] = True
+    elif a.startswith("every="): d["check_every_min"] = int(a[6:])
+print(json.dumps(d))' "$own" "$kind" "$where" "$@")
+      _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/channels"; echo
+      ;;
+    due)
+      # Watched social channels due a check by a worker (a signed-in browser route).
+      _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/channels/due?how=browser"; echo
+      ;;
+    observed)
+      # amux crm observed CH-1 --stdin  <<< '{"items":[{"title":"...","url":"..."}]}'
+      local ch="${1:-}"; [ -n "$ch" ] && [ "${2:-}" = --stdin ] || die "Usage: amux crm observed CH-1 --stdin (JSON {items:[{title,url}]} on stdin)"
+      _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" --data-binary @- "$AMUX_API/api/crm/channels/$ch/observed"; echo
+      ;;
+    touch)
+      # amux crm touch PPL-1 <channel> <action> [due=YYYY-MM-DD] [assignee=w] [--stdin for the drafted text]
+      local cid="${1:-}" chan="${2:-}" act="${3:-}"; [ -n "$cid" ] && [ -n "$chan" ] && [ -n "$act" ] \
+        || die "Usage: amux crm touch PPL-1|ACCT-1 <linkedin|x|email|...> <dm|comment|connect|email|follow|like|call|note> [due=DATE] [assignee=W] [--stdin]"
+      shift 3
+      local text=""; for a in "$@"; do [ "$a" = --stdin ] && text=$(cat); done
+      local json; json=$(TEXT="$text" python3 -c '
+import json, os, sys
+cid, chan, act = sys.argv[1:4]
+d = {("account_id" if cid.startswith("ACCT-") else "contact_id"): cid, "channel": chan, "action": act}
+if os.environ.get("TEXT"): d["body"] = os.environ["TEXT"]
+for a in sys.argv[4:]:
+    if "=" in a: k, v = a.split("=", 1); d["due_date" if k == "due" else k] = v
+print(json.dumps(d))' "$cid" "$chan" "$act" "$@")
+      _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches"; echo
+      ;;
+    touches)
+      # amux crm touches [--mine] [status=approved]
+      local qs="open=1"; for a in "$@"; do case "$a" in --mine) qs="$qs&assignee=${AMUX_SESSION:-}" ;; *=*) qs="$qs&$a" ;; esac; done
+      _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/touches?$qs"; echo
+      ;;
+    done)
+      # amux crm done TCH-1 [url=...] [failed] [--stdin for the result text]
+      local tid="${1:-}"; [ -n "$tid" ] || die "Usage: amux crm done TCH-1 [url=RESULT_URL] [failed] [--stdin]"
+      shift
+      local text=""; for a in "$@"; do [ "$a" = --stdin ] && text=$(cat); done
+      local json; json=$(TEXT="$text" python3 -c '
+import json, os, sys
+d = {"result": os.environ.get("TEXT", "")}
+for a in sys.argv[1:]:
+    if a == "failed": d["failed"] = True
+    elif a.startswith("url="): d["result_url"] = a[4:]
+print(json.dumps(d))' "$@")
+      _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches/$tid/done"; echo
+      ;;
+    draft)
+      # amux crm draft TCH-1 --stdin: the text the owner approves
+      local tid="${1:-}"; [ -n "$tid" ] && [ "${2:-}" = --stdin ] || die "Usage: amux crm draft TCH-1 --stdin"
+      local json; json=$(python3 -c 'import json, sys; print(json.dumps({"body": sys.stdin.read()}))')
+      _curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches/$tid"; echo
+      ;;
     help|--help|-h)
       cat <<'EOH'
 amux crm — contacts, notes and follow-ups (HTTP: /api/crm/*)
@@ -6862,6 +6931,18 @@ amux crm — contacts, notes and follow-ups (HTTP: /api/crm/*)
   amux crm update PPL-1 role=CTO            Update whitelisted fields
   amux crm log PPL-1 "spoke re pricing" [follow_up_date=2026-09-01]
   amux crm followups                        Pending follow-ups, soonest first
+
+Agents (docs/design/crm.md):
+  amux crm channel PPL-1 linkedin URL [watch] [every=MIN]   Add a channel; watch it for changes
+  amux crm due                              Watched social channels due a check (you open them)
+  amux crm observed CH-1 --stdin            Report what a check saw: {"items":[{"title","url"}]}
+  amux crm touch PPL-1 linkedin dm [due=D] --stdin   Plan a touch; text on stdin makes it a draft
+  amux crm draft TCH-1 --stdin              Write or rewrite a touch's text (it goes back for approval)
+  amux crm touches [--mine] [status=approved]        Open touches
+  amux crm done TCH-1 [url=U] [failed] --stdin       Record a touch done (outward ones need approval first)
+Events (amux subscribe): crm.channel.changed, crm.touch.approved (eq assignee
+<you>), crm.touch.done, crm.contact.replied. Only the owner approves a touch
+anyone outside the company reads.
 
 Writes carry X-Amux-Session, so the audit trail names who made them.
 EOH
