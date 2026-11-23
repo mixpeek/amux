@@ -13501,6 +13501,22 @@ $f"
                 # Re-composing them with it would run the passing prefix again, and a
                 # flaky red would hold all of it once more.
                 git fetch -q "$remote" "$branch" 2>/dev/null || true
+                # Main moved under the bisect (a push that is not a land, or a
+                # peer's): carry the green prefix onto it when nothing it changed
+                # overlaps, as a green batch is carried, rather than re-run
+                # everything (Mixpeek 2026-11-23: a green 4-of-8 prefix was
+                # re-composed because three docs commits reached main meanwhile,
+                # and its waiters, queued 60 to 85 min, waited 25 min more).
+                if [ -n "${_mq_bg:-}" ] && [ "$_mq_bg" != - ] && ! git merge-base --is-ancestor "$remote/$branch" "$_mq_bg"; then
+                  if _land_mq_moved_ok "$_mq_base" "$remote/$branch" "$_mq_bg" \
+                    && _mq_new="$(_land_mq_replay "$_mq_base" "$remote/$branch" "$_mq_bg")"; then
+                    _land_mq_ledger phase=carried batch="$_mq_id" base="$_mq_base" onto="$(git rev-parse "$remote/$branch")" candidate="$_mq_bg" sha="$_mq_new"
+                    _land_log "merge queue: $branch moved under the green prefix ($_mq_bg), with nothing that overlaps it; replayed onto the new tip (verdict=mq_prefix_carried)"
+                    _mq_bg="$_mq_new"
+                  else
+                    _land_log "merge queue: $branch moved under the green prefix ($_mq_bg) on a file it also changes; it is tested again with the rest (verdict=mq_prefix_overlap)"
+                  fi
+                fi
                 if [ -n "${_mq_bg:-}" ] && [ "$_mq_bg" != - ] && git merge-base --is-ancestor "$remote/$branch" "$_mq_bg"; then
                   stack_in="$(printf '%s\n' "$stack_in" | grep . | head -n $(( _mq_bi - 1 )))"; stack_in="${stack_in:+$stack_in
 }"

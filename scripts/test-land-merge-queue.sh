@@ -9,6 +9,9 @@
 #   enforce   red alone: rc 6, main unchanged
 #   enforce   red batch: bisected, the culprit waiter ejected, the prefix that
 #             already passed lands, the waiters after the culprit keep tickets
+#   enforce   red batch while main moves: the passing prefix is carried onto
+#             the new main and lands when nothing overlaps; re-tested when a
+#             file is shared
 #   enforce   red on the holder's own commit in a batch: rc 6, waiters keep
 #             their tickets
 #   enforce   lost runner: dispatched once more, lands
@@ -160,6 +163,34 @@ ls "$q" | grep -q . && ok "enforce red batch: the waiter after the culprit keeps
 grep -q "refused the batch on your commit" "$H/.amux/locks/land-$key.r/"* 2>/dev/null && ok "enforce red batch: the culprit's waiter is told it was refused" || bad "no refusal written for w2"
 grep -q "bisected to w2's commit" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log names the culprit lane" || bad "culprit not logged"
 [ "$(mq_refs)" = 0 ] && ok "enforce red batch: no candidate ref left" || bad "mq refs left: $(mq_refs)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- enforce, red batch while main moves (Mixpeek 2026-11-23: three commits
+# reached main during the bisect and the green prefix was re-composed instead).
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 bad; plant w3 w3
+echo other.txt > "$H/move-main"
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && main_has w1 && main_has other.txt && ! main_has bad && ! main_has w3; } \
+  && ok "red batch, main moved, no shared file: the passing prefix is carried onto the new main and lands" || bad "carried prefix rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6)"
+[ "$(dispatches)" = 3 ] && ok "red batch, main moved: no run after the bisect" || bad "dispatches=$(dispatches)"
+grep -q "verdict=mq_prefix_carried" "$H/.amux/logs/land.log" && grep -q "verdict=mq_prefix_landed" "$H/.amux/logs/land.log" \
+  && ok "red batch, main moved: land.log says the prefix was carried and landed" || bad "no carried line: $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -4)"
+ls "$q" | grep -q . && ok "red batch, main moved: the waiter after the culprit keeps its ticket" || bad "w3's ticket is gone"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 bad; plant w3 w3
+echo w1 > "$H/move-main"
+land; rc=$?
+{ grep -q "verdict=mq_prefix_overlap" "$H/.amux/logs/land.log" && ! grep -q "verdict=mq_prefix_carried" "$H/.amux/logs/land.log"; } \
+  && ok "red batch, main moved on a file the prefix changes: not carried, tested again" || bad "overlap prefix rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6)"
 kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 
