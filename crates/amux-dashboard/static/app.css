@@ -11368,7 +11368,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .crm-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .crm-name { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crm-meta { color: var(--dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.crm-grade { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-sm); font-weight: 700; border: 1px solid var(--border); color: var(--dim); }
+.crm-grade { flex: 0 0 auto; width: 26px; height: 26px; border-radius: var(--radius-round); display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-sm); font-weight: 700; border: 1px solid var(--border); color: var(--dim); }
 .crm-grade[data-g="A"] { color: var(--green); border-color: var(--green); }
 .crm-grade[data-g="B"] { color: var(--accent); border-color: var(--accent); }
 .crm-grade[data-g="C"] { color: var(--yellow); border-color: var(--yellow); }
