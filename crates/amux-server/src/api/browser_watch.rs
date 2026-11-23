@@ -44,7 +44,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -56,7 +56,8 @@ const MARK: &str = "__amuxwatch:";
 const MAX_STEPS: usize = 1000;
 const T: Duration = Duration::from_secs(8);
 
-/// Finished watches kept for reading back before they are evicted.
+/// Finished watches kept for reading back, counted from when they stopped,
+/// before they are evicted.
 const KEEP_FINISHED_S: i64 = 3600;
 /// Stands for the watch's nonce in [`RECORDER`]; see [`recorder`].
 const NONCE: &str = "__AMUX_WATCH_NONCE__";
@@ -152,6 +153,8 @@ struct Watch {
     steps: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     started_at: i64,
+    /// When the watch stopped (unix seconds); 0 while it runs.
+    stopped_at: Arc<AtomicI64>,
     error: Arc<Mutex<Option<String>>>,
 }
 
@@ -203,10 +206,13 @@ fn session_of(
     Ok(named.unwrap_or_else(|| "amux".into()))
 }
 
-/// Drops watches that finished more than [`KEEP_FINISHED_S`] ago.
+/// Drops watches that stopped more than [`KEEP_FINISHED_S`] ago.
 fn evict_finished(all: &mut HashMap<String, Watch>, now: i64) {
     let before = all.len();
-    all.retain(|_, w| !w.stop.load(Ordering::Relaxed) || now - w.started_at < KEEP_FINISHED_S);
+    all.retain(|_, w| {
+        let stopped = w.stopped_at.load(Ordering::Relaxed);
+        !w.stop.load(Ordering::Relaxed) || stopped == 0 || now - stopped < KEEP_FINISHED_S
+    });
     if all.len() < before {
         tracing::info!(evicted = before - all.len(), measured = true, n_considered = before,
             verdict = "browser_watch_evicted", "[browser-watch] finished watches evicted");
@@ -339,10 +345,11 @@ async fn start(State(state): State<AppState>, OriginalUri(uri): OriginalUri, hea
         steps: Arc::new(Mutex::new(Vec::new())),
         stop: Arc::new(AtomicBool::new(false)),
         started_at: chrono::Utc::now().timestamp(),
+        stopped_at: Arc::new(AtomicI64::new(0)),
         error: Arc::new(Mutex::new(None)),
     };
     collect(first, &w.steps, &nonce);
-    let (steps, stopflag, error) = (w.steps.clone(), w.stop.clone(), w.error.clone());
+    let (steps, stopflag, stopped_at, error) = (w.steps.clone(), w.stop.clone(), w.stopped_at.clone(), w.error.clone());
     WATCHES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -421,6 +428,7 @@ async fn start(State(state): State<AppState>, OriginalUri(uri): OriginalUri, hea
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                                 Some(format!("the tab went away: {e}"));
+                            stopped_at.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
                             stopflag.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -472,7 +480,9 @@ async fn stop(State(state): State<AppState>, OriginalUri(uri): OriginalUri, head
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&session)
     {
-        w.stop.store(true, Ordering::Relaxed);
+        if !w.stop.swap(true, Ordering::Relaxed) {
+            w.stopped_at.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        }
     }
     // One more collection pass happened or is about to; let it land.
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -515,21 +525,26 @@ mod tests {
     #[test]
     fn finished_watches_are_evicted_and_live_ones_kept() {
         use std::sync::atomic::AtomicBool;
-        let w = |stopped: bool, started_at: i64| super::Watch {
+        use std::sync::atomic::AtomicI64;
+        let w = |stopped_at: Option<i64>, started_at: i64| super::Watch {
             steps: Default::default(),
-            stop: std::sync::Arc::new(AtomicBool::new(stopped)),
+            stop: std::sync::Arc::new(AtomicBool::new(stopped_at.is_some())),
             started_at,
+            stopped_at: std::sync::Arc::new(AtomicI64::new(stopped_at.unwrap_or(0))),
             error: Default::default(),
         };
         let now = 100_000;
+        let long_ago = now - super::KEEP_FINISHED_S - 1;
         let mut all = std::collections::HashMap::new();
-        all.insert("old-done".to_string(), w(true, now - super::KEEP_FINISHED_S - 1));
-        all.insert("old-live".to_string(), w(false, now - super::KEEP_FINISHED_S - 1));
-        all.insert("new-done".to_string(), w(true, now - 10));
+        all.insert("stopped-long-ago".to_string(), w(Some(long_ago), long_ago - 60));
+        all.insert("old-live".to_string(), w(None, long_ago));
+        // Review F1: a watch that ran longer than the keep window and just
+        // stopped keeps its steps.
+        all.insert("long-run-just-stopped".to_string(), w(Some(now - 10), now - 5400));
         super::evict_finished(&mut all, now);
         let mut keys: Vec<_> = all.keys().cloned().collect();
         keys.sort();
-        assert_eq!(keys, vec!["new-done", "old-live"]);
+        assert_eq!(keys, vec!["long-run-just-stopped", "old-live"]);
     }
 
     /// Who may watch which tab (amux-security, 2026-11-23). Every refusal
