@@ -894,6 +894,18 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_chromeReorder": {
+      "kind": "command._chromeReorder",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_chromeTabDragSetup": {
+      "kind": "command._chromeTabDragSetup",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_clearBlockedOps": {
       "kind": "command._clearBlockedOps",
       "feedback_required": true,

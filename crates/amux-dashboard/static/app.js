@@ -11299,6 +11299,49 @@ function _renderTabCustomizerMenu() {
   });
 }
 
+// ONE LIVE SORTABLE DRAG OWNS THE PAGE. Sortable keeps the drag in progress in
+// module globals shared by every instance, and destroy() on ANY instance runs
+// its drop with no event: the globals are cleared and the drag in progress
+// hangs with its floating copy under the pointer, and the drop never lands.
+// Measured 2026-11-23: renderBoard, reached from _ensureArchivedCount with the
+// Board not even shown, destroyed the board's Sortables while a tab of the
+// in-page strip was held, and that drag never ended. So a render that destroys
+// Sortables waits while any drag is live (Sortable.dragged is set from the
+// press to the drop) and runs once, after the pointer is let go. Each wait is
+// beaconed as kind=sortable-drag-deferred with what waited.
+function _sortableDragLive() { return !!(window.Sortable && window.Sortable.dragged); }
+const _afterSortableDrag = new Map();
+// A drag Sortable never closed (its globals left set) must not hold renders
+// for ever: past this, a render runs anyway and says so (sortable-drag-stuck).
+const _SORTABLE_HOLD_MAX_MS = 30000;
+let _sortableHoldSince = 0;
+function _deferForSortableDrag(fn, what) {
+  if (!_sortableDragLive()) { _sortableHoldSince = 0; return false; }
+  if (!_sortableHoldSince) _sortableHoldSince = Date.now();
+  if (Date.now() - _sortableHoldSince > _SORTABLE_HOLD_MAX_MS) {
+    console.warn('[sortable] a drag has been live for over 30s; rendering anyway', what);
+    try { window._clientDebug && window._clientDebug('sortable-drag-stuck', { what, held_ms: Date.now() - _sortableHoldSince, measured: true, n_considered: 1 }); } catch (e) { console.warn('[sortable] stuck-drag beacon not sent', e); }
+    return false;
+  }
+  if (!_afterSortableDrag.has(fn)) {
+    _afterSortableDrag.set(fn, what);
+    try { window._clientDebug && window._clientDebug('sortable-drag-deferred', { what, measured: true, n_considered: 1 }); } catch (e) { console.warn('[sortable] deferred-render beacon not sent', e); }
+  }
+  return true;
+}
+function _runAfterSortableDrag() {
+  if (!_afterSortableDrag.size) return;
+  // Sortable's own drop runs after this listener in the same event, so wait a turn.
+  setTimeout(function flush() {
+    if (_sortableDragLive()) { setTimeout(flush, 200); return; }
+    _sortableHoldSince = 0;
+    const waiting = [..._afterSortableDrag.keys()];
+    _afterSortableDrag.clear();
+    waiting.forEach(fn => { try { fn(); } catch (e) { console.warn('[sortable] a render held for a drag failed', e); } });
+  }, 0);
+}
+['pointerup', 'mouseup', 'touchend', 'pointercancel'].forEach(t => document.addEventListener(t, () => setTimeout(_runAfterSortableDrag, 0), true));
+
 // ONE DRAG FOR BOTH TAB MENUS, driven by the pointer (Ethan, 2026-10-25, the
 // Mac app's worker-view menu: "drag & tab not working or draggable"). Sortable's
 // default is the browser's native drag and drop, and in the Mac app that is an
@@ -11341,7 +11384,7 @@ function _tabMenuSortableCreate(menu, which, draggable, onReorder) {
   }
   return Sortable.create(menu, {
     draggable, animation: 120,
-    filter: 'input, .tab-cust-search-wrap', preventOnFilter: false,
+    filter: 'input, .tab-cust-search-wrap, .chrome-tab-close', preventOnFilter: false,
     forceFallback: true, fallbackTolerance: 4,
     delay: 160, delayOnTouchOnly: true, touchStartThreshold: 6,
     scroll: true, scrollSensitivity: 56, scrollSpeed: 14, bubbleScroll: true,
@@ -18199,6 +18242,7 @@ async function togglePeekBoardPolicy(field, on) {
 function _renderPeekIssuesBody() {
   // Don't rebuild mid-drag — a board SSE refresh would destroy the active Sortable.
   if (document.body.classList.contains('board-dragging')) return;
+  if (_deferForSortableDrag(_renderPeekIssuesBody, 'peek-board')) return;
   // NOT LOADED IS NOT EMPTY (Ethan, 2026-08-06 — screenshot of the amux worker's
   // Board tab reading "No issues for this worker yet." while that worker owned 29
   // cards). This panel renders from the global boardItems and never fetched: open
@@ -45126,6 +45170,7 @@ function toggleSortMode() {   // legacy entry point; cycles through the options
 
 function initSortable() {
   if (typeof Sortable === 'undefined') return;
+  if (_deferForSortableDrag(initSortable, 'worker-cards')) return;
   if (sortMode !== 'natural') { destroySortable(); return; }
   destroySortable();
   const cards = document.querySelector('.cards');
@@ -46055,6 +46100,61 @@ function _chromeRender() {
   bar.innerHTML = h;
   _chromeShowActive();
   _chromeUpdateOffsets();
+}
+
+// DRAG A TAB TO REORDER THE STRIP (owner, 2026-11-23: "Dragging to order tabs
+// in Amux on the web is not working"). The strip never had a drag; only the ⊞
+// menus did. It uses the menus' pointer-driven Sortable (_tabMenuSortableCreate),
+// so the click a drop would send is swallowed and ✕ and the rename box stay
+// clicks. It is bound once to the bar, which every render keeps (only its
+// children are replaced). Sortable loads after this script, so setup waits for
+// the page's load event. Drags are beaconed as kind=tabcust-drag which=chrome and
+// each reorder as chrome_tab_reordered.
+function _chromeTabDragSetup(bar) {
+  if (_isInTab || _nativeTabs || bar._chromeSortable) return;
+  if (!window.Sortable && document.readyState !== 'complete') {
+    if (!bar._chromeSortableWait) {
+      bar._chromeSortableWait = true;
+      window.addEventListener('load', () => _chromeTabDragSetup(bar), { once: true });
+    }
+    return;
+  }
+  bar._chromeSortable = _tabMenuSortableCreate(bar, 'chrome', '.chrome-tab', () => {
+    const ids = [...bar.querySelectorAll('.chrome-tab[data-tab-id]')].map(el => parseInt(el.dataset.tabId, 10));
+    _chromeReorder(ids);
+  });
+}
+
+// The first tab is this page; every later tab is an iframe. A drop that puts
+// another tab first moves this page to that tab's address and list view (as
+// closing the first tab does), and the tab that was first keeps its own: its
+// address and list view are written under its id, and its iframe is built from
+// them when it is opened.
+function _chromeReorder(ids) {
+  const byId = new Map(_chromeTabs.map(t => [t.id, t]));
+  const next = ids.map(id => byId.get(id)).filter(Boolean);
+  if (next.length !== _chromeTabs.length) {
+    // A strip that does not match the list (a render mid-drag) is put back, not saved.
+    amuxTrack('chrome_tab_reordered', {verdict: 'strip_mismatch', strip: ids.length, tabs: _chromeTabs.length, measured: true, n_considered: ids.length});
+    _chromeRender();
+    return;
+  }
+  const oldFirst = _chromeTabs[0].id, newFirst = next[0].id;
+  if (oldFirst !== newFirst) {
+    const fc = document.getElementById('chrome-tab-frames');
+    try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + oldFirst, location.hash || ''); } catch (e) { console.warn('[tabs] the first tab\'s address was not kept for its new place', e); }
+    try { sessionStorage.setItem(_LIST_VIEW_TAB_KEY + oldFirst, _listViewSnapshot()); } catch (e) { console.warn('[tabs] the first tab\'s list view was not kept for its new place', e); }
+    const moveTo = _chromeTabLiveHash(newFirst);
+    if (fc) { const nf = fc.querySelector('iframe[data-tab-id="' + newFirst + '"]'); if (nf) nf.remove(); }
+    try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + newFirst); } catch (e) { console.warn('[tabs] the new first tab\'s saved address was not cleared', e); }
+    try { _takeTabListView(newFirst); } catch (e) { console.warn('[tabs] could not carry the new first tab\'s list view', e); }
+    try { sessionStorage.removeItem(_LIST_VIEW_TAB_KEY + newFirst); } catch (e) { console.warn('[tabs] the new first tab\'s saved list view was not cleared', e); }
+    _chromePageGoTo(moveTo);
+  }
+  amuxTrack('chrome_tab_reordered', {verdict: oldFirst !== newFirst ? 'first_tab_changed_page_moved' : 'reordered', measured: true, n_considered: next.length});
+  _chromeTabs = next;
+  _chromeRender();
+  _chromeSave();
 }
 
 function _chromeShowActive() {
@@ -54617,6 +54717,7 @@ function renderBoard() {
   _boardEnsureFull();
   // Skip re-render while a drag is in progress — queue it for when drag ends
   if (document.body.classList.contains('board-dragging')) { _boardRenderPending = true; return; }
+  if (_deferForSortableDrag(renderBoard, 'board')) return;
   renderBoardFilters();
   const container = document.getElementById('board-columns');
   // Global columns scroll horizontally. Keep activity above them, outside the
@@ -59473,6 +59574,7 @@ loadBranding();
 
 // Initialize chrome tabs
 _chromeRender();
+{ const _ctb = document.getElementById('chrome-tabs-bar'); if (_ctb) _chromeTabDragSetup(_ctb); }
 // This browser tab owns its bar from its first load, so its reload reads its own.
 _chromeSave();
 _chromeUpdateOffsets();
