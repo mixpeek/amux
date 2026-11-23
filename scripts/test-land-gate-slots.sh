@@ -2,7 +2,7 @@
 # test-land-gate-slots.sh [amux]: at most AMUX_LAND_GATE_SLOTS land gates run at
 # once on a machine (Mac CPU RCAs 20261117-152949 and 20261123-103607). Runs the
 # CLI's own land_gate_run against stand-in gates that record when they ran.
-set -uo pipefail
+set -euo pipefail
 AM="${1:-$(cd "$(dirname "$0")/.." && pwd)/amux}"
 fail=0
 ok() { echo "ok   $*"; }
@@ -37,13 +37,15 @@ c_end=$(awk '$1=="end" && $2=="c"{print $3}' "$H/runs"); d_start=$(awk '$1=="sta
 
 # 3. A slot held by a dead process is taken back.
 mkdir -p "$H/.amux/locks/land-gate/slot-1"; echo "999999 ghost 1" > "$H/.amux/locks/land-gate/slot-1/owner"
-AMUX_LAND_GATE_SLOTS=1 timeout 20 bash -c 'source "$0"; land_gate_run true' "$H/fns.sh" 2> "$H/g.err"; rc=$?
+rc=0; AMUX_LAND_GATE_SLOTS=1 timeout 20 bash -c 'source "$0"; land_gate_run true' "$H/fns.sh" 2> "$H/g.err" || rc=$?
 { [ "$rc" = 0 ] && grep -q 'verdict=land_gate_slot_reclaimed' "$H/g.err"; } && ok "a dead holder's slot is reclaimed" || bad "dead slot rc=$rc: $(cat "$H/g.err")"
-! grep -q 'verdict=land_gate_slot_wait' "$H/g.err" && ok "and taken at once, with no false wait" || bad "a reclaimed slot waited: $(cat "$H/g.err")"
+if ! grep -q 'verdict=land_gate_slot_wait' "$H/g.err"; then ok "and taken at once, with no false wait"; else bad "a reclaimed slot waited: $(cat "$H/g.err")"; fi
 
 # 4. The gate's exit status comes through, and 0 slots means no limit.
-AMUX_LAND_GATE_SLOTS=1 land_gate_run bash -c 'exit 7' 2>/dev/null; [ $? = 7 ] && ok "the gate's exit status comes through" || bad "exit status lost"
-AMUX_LAND_GATE_SLOTS=0 land_gate_run true 2> "$H/z.err"; ! grep -q 'slot' "$H/z.err" && ok "0 slots: no limit, no slot" || bad "0 slots took one: $(cat "$H/z.err")"
+rc=0; AMUX_LAND_GATE_SLOTS=1 land_gate_run bash -c 'exit 7' 2>/dev/null || rc=$?
+[ "$rc" = 7 ] && ok "the gate's exit status comes through" || bad "exit status lost"
+AMUX_LAND_GATE_SLOTS=0 land_gate_run true 2> "$H/z.err"
+if ! grep -q 'slot' "$H/z.err"; then ok "0 slots: no limit, no slot"; else bad "0 slots took one: $(cat "$H/z.err")"; fi
 
 [ "$fail" = 0 ] && echo "PASS: land gate slots" || echo "FAIL: land gate slots"
 exit $fail
