@@ -38,7 +38,7 @@ test('LC-FILES-UPLOAD: upload, preview, rename, download exact bytes, and delete
     else await row(filename).dblclick();
     await expect(page.locator('#file-body')).toContainText('apples');
     await checkpoint(page, info, 'uploaded-csv-preview');
-    await page.locator('[onclick="closeFilePreview()"]').click();
+    await page.locator('[onclick="dismissFilePreview()"]').click();
     await row(filename).getByTitle('Options', { exact: true }).click();
     page.once('dialog', dialog => dialog.accept(renamed));
     await page.locator('.explore-menu-popup').getByRole('button', { name: 'Rename', exact: true }).click();

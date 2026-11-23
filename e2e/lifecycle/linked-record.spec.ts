@@ -75,10 +75,10 @@ test('LC-LINKED-RECORD: epic, children, criteria, evidence and real file/URL/com
     await files.getByRole('button', { name: 'result.md', exact: true }).click();
     await expect(page.locator('#file-body')).toContainText('Verified invoice total: 42');
     await checkpoint(page, info, 'linked-file-preview');
-    await page.locator('[onclick="closeFilePreview()"]').click();
+    await page.locator('[onclick="dismissFilePreview()"]').click();
     await files.getByRole('button', { name: 'file://' + path.join(dir, 'result.md'), exact: true }).click();
     await expect(page.locator('#file-body')).toContainText('Verified invoice total: 42');
-    await page.locator('[onclick="closeFilePreview()"]').click();
+    await page.locator('[onclick="dismissFilePreview()"]').click();
     const popupPromise = page.waitForEvent('popup');
     await files.getByRole('link', { name: origin + '/health', exact: true }).click();
     const popup = await popupPromise; await popup.waitForLoadState();

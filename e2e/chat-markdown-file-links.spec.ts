@@ -38,7 +38,7 @@ test('Markdown file anchors open complete real files in finished, interrupted an
     const r=node.getBoundingClientRect(),b=el.getBoundingClientRect();return r.top>=b.top-1&&r.bottom<=Math.min(b.bottom,innerHeight)+1&&el.contains(document.elementFromPoint(r.left+10,r.bottom-2));
    },end)).toBe(true);
    await page.screenshot({path:info.outputPath(kind+'-'+replies.indexOf(replies.find(x=>x[1]===text)!)+'-file-bottom.png')});
-   await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+   await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
   }
   await expect.poll(()=>beacons.length).toBe(4);expect(beacons.every(x=>x.measured===true&&x.n===1)).toBe(true);
   await render('finished','[external](https://example.com/docs/proof.md) [heading](#evidence) [bad](javascript:alert(1))');

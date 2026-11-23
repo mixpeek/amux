@@ -37183,6 +37183,15 @@ function _fileEditBeacon(verdict) {
         is_new: !!(_fileData && _fileData._isNew), measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
   } catch (e) {}
 }
+// THE PERSON CLOSING THE FILE (✕, Escape, swipe). closeFilePreview is also
+// called on the way somewhere else (Show in folder, rename and move reopening
+// the file, a worker link, Back); only a dismissal runs what follows a close:
+// the link viewer's return and clearing the address a #path= link opened.
+let _fileDismissPath = null;
+function dismissFilePreview() {
+  _fileDismissPath = (_fileData && _fileData.path) || '';
+  closeFilePreview();
+}
 function closeFilePreview() {
   if (_fileEditDirty()) {
     if (_fileIsScratchpad(_fileData.path)) {
@@ -37190,13 +37199,13 @@ function closeFilePreview() {
       // stays open with the text, so nothing is lost.
       _fileEditBeacon('scratchpad_saved_on_close');
       _fileSave().then(() => {
-        if (_fileEditDirty()) { _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
+        if (_fileEditDirty()) { _fileDismissPath = null; _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
         closeFilePreview();
       });
       return;
     }
     showConfirm('This file has unsaved edits. Close without saving?', 'Discard changes', true).then(ok => {
-      if (!ok || !_fileData) return;
+      if (!ok || !_fileData) { _fileDismissPath = null; return; }
       _fileEditBeacon('discarded_after_confirm');
       _fileData.content = document.getElementById('file-edit-ta').value;
       closeFilePreview();
@@ -37205,7 +37214,7 @@ function closeFilePreview() {
   }
   if (_xlsxEd && _xlsxEd.dirty) {
     showConfirm('This spreadsheet has unsaved changes. Close without saving?', 'Discard changes', true)
-      .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } });
+      .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } else _fileDismissPath = null; });
     return;
   }
   _xlsxEditorTeardown();
@@ -37231,6 +37240,7 @@ function closeFilePreview() {
   if (searchTab) searchTab.style.display = 'none';
   document.getElementById('file-edit-wrap').style.display = 'none';
   document.getElementById('file-body').style.display = '';
+  const closingPath = (_fileData && _fileData.path) || null;
   _fileData = null;
   _fileViewMode = 'preview';
   // A load still in flight belongs to a viewer that is gone: without this its
@@ -37239,7 +37249,29 @@ function closeFilePreview() {
   _filePreviewGen++;
   // A link viewer has nothing behind the file: closing it goes back to where
   // the link was clicked.
-  if (_linkViewer) _linkViewerReturn();
+  const dismissed = _fileDismissPath !== null && _fileDismissPath === (closingPath || '');
+  _fileDismissPath = null;
+  const boot = _fileBootLinkPath;
+  if (boot && boot === closingPath) _fileBootLinkPath = null;   // closed by any means, the link is spent
+  if (!dismissed) return;
+  if (_linkViewer) { _linkViewerReturn(); return; }
+  if (boot && boot === closingPath) _fileBootLinkClose();
+}
+// THE FILE A PAGE WAS OPENED ON LEAVES NO ADDRESS WHEN CLOSED (owner,
+// 2026-11-23: "if I close the file, the path param ... remains in my browser
+// URL"). A #path= link opens the Files view on the file's folder and the file
+// over it; the close rewrote the address to #path=<folder>, so the link's path
+// stayed in the bar. Dismissing that file now clears the address and lands
+// where an empty address does. Only that file, only a dismissal, and only
+// while the address is still a #path=: a file opened later, an internal close
+// (Show in folder), or a page moved elsewhere keeps the usual close.
+let _fileBootLinkPath = null;
+function _fileBootLinkClose() {
+  if (location.hash && !location.hash.startsWith('#path=')) return;
+  try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { console.warn('[amux] file_link_close: address not cleared', e); return; }
+  console.info('[amux] file_link_close', { verdict: 'address_cleared' });
+  amuxTrack('file_link_close', { verdict: 'address_cleared', measured: true, n_considered: 1 });
+  switchView('sessions');
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -43006,7 +43038,7 @@ function _exploreSearchFilter(q) {
     const dyEnd = Math.abs(e.changedTouches[0].clientY - sy);
     if (dx > _SWIPE_CLOSE && dx > dyEnd * _SWIPE_RATIO) {
       el.style.transform = 'translateX(100%)';
-      setTimeout(() => { closeFilePreview(); el.style.transform = ''; el.style.transition = ''; }, 260);
+      setTimeout(() => { dismissFilePreview(); el.style.transform = ''; el.style.transition = ''; }, 260);
     } else {
       el.style.transform = '';
       setTimeout(() => { el.style.transition = ''; }, 260);
@@ -44566,7 +44598,7 @@ document.addEventListener('keydown', (e) => {
       // cancels a cell edit or closes a panel, and never closes the workbook
       // (closing on Escape threw away a half-typed cell, 2026-10-26). The ✕ closes.
       if (_xlsxEd) return;
-      closeFilePreview();
+      dismissFilePreview();
     }
     return;
   }
@@ -63367,6 +63399,7 @@ async function _handleDeeplink(hash) {
       _filesPath = parent;
       switchView('files');
       await openFilePreview(dpath);
+      _fileBootLinkPath = (_fileData && _fileData.path) || null;
       if (edit) {
         const ok = !!(_fileData && _fileData.path && _fileEditable(_fileData));
         if (ok) setFileViewMode('edit');

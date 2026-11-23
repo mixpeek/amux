@@ -57,12 +57,13 @@ test('closing the viewer lands on the tab the link came from', async ({ page }, 
   await page.goto(viewerUrl('alpha', 3));
   await ready(page);
   await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
-  await page.locator('#file-overlay .file-overlay-header button[onclick="closeFilePreview()"]').click();
+  await page.locator('#file-overlay .file-overlay-header button[onclick="dismissFilePreview()"]').click();
   await expect(page.locator('body')).not.toHaveClass(/\blink-viewer\b/);
   await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
   expect(await page.evaluate('_chromeTabs.map(t => t.id)'), 'the origin bar, rebuilt here').toEqual([1, 3, 5]);
   expect(await page.evaluate('_chromeActiveId'), 'on the tab the link was clicked in').toBe(3);
   expect(new URL(page.url()).search, 'the viewer query is gone from the address').toBe('');
+  expect(new URL(page.url()).hash, 'the link\'s #path= is gone from the address').toBe('');
   await expect(page.locator('#chrome-tab-frames iframe[data-tab-id="3"]')).toHaveAttribute('src', '/?_tab=3#peek=alpha');
   if (testInfo.project.name === 'desktop') {
     await expect(page.locator('#chrome-tabs-bar .chrome-tab.active')).toHaveAttribute('data-tab-id', '3');
@@ -77,9 +78,10 @@ test('when the origin tab is gone, closing opens a new tab on that worker', asyn
   await page.goto(viewerUrl('alpha', 3));
   await ready(page);
   await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
-  await page.evaluate('closeFilePreview()');
+  await page.evaluate('dismissFilePreview()');
   expect(await page.evaluate('_chromeTabs.map(t => t.id)')).toEqual([1, 5, 6]);
   expect(await page.evaluate('_chromeActiveId')).toBe(6);
+  expect(new URL(page.url()).hash).toBe('');
   await expect(page.locator('#chrome-tab-frames iframe[data-tab-id="6"]')).toHaveAttribute('src', '/?_tab=6#peek=alpha');
 });
 
@@ -88,7 +90,7 @@ test('an origin tab that moved to another worker is not returned to; one showing
   await page.goto(viewerUrl('alpha', 3));
   await ready(page);
   await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
-  await page.evaluate('closeFilePreview()');
+  await page.evaluate('dismissFilePreview()');
   expect(await page.evaluate('_chromeActiveId')).toBe(4);
   expect(await page.evaluate('_chromeTabs.length')).toBe(3);
 });
@@ -98,7 +100,7 @@ test('the first tab as origin: the page itself goes to the worker', async ({ pag
   await page.goto(viewerUrl('alpha', 1));
   await ready(page);
   await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
-  await page.evaluate('closeFilePreview()');
+  await page.evaluate('dismissFilePreview()');
   expect(await page.evaluate('_chromeActiveId')).toBe(1);
   await expect(page.locator('#chrome-tab-frames')).not.toHaveClass(/\bactive\b/);
   await expect.poll(() => page.evaluate(() => location.hash)).toBe('#peek=alpha');
@@ -133,4 +135,54 @@ test('a link in a worker reply names that worker and the tab it sits in', async 
   expect(u.searchParams.get('_from')).toBe('alpha');
   expect(u.searchParams.get('_from_tab')).toBe('1');
   expect(u.hash).toBe('#path=/private/tmp/amux-e2e-lv/notes/plan.md');
+});
+
+test('an internal close (Show in folder) is not a dismissal: the viewer stays, with Back', async ({ page }) => {
+  await originBar(page, [{ id: 1, name: '', hash: '' }, { id: 3, name: '', hash: '#peek=alpha' }], 1);
+  await page.goto(viewerUrl('alpha', 3));
+  await ready(page);
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
+  await page.evaluate('_fileShowInFolder()');
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+  await expect(page.locator('body'), 'still a viewer').toHaveClass(/\blink-viewer\b/);
+  await expect(page.locator('#link-viewer-back')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#path=' + dir);
+});
+
+// Owner, 2026-11-23: "if I close the file, the path param ... remains in my
+// browser URL". A plain #path= link (a copied link, Open in new window) opens
+// the Files view under the file; dismissing the file left #path=<folder>.
+test('dismissing the file a #path= link opened clears the address', async ({ page }) => {
+  await originBar(page, [{ id: 1, name: '', hash: '' }], 1);
+  await page.goto('/#path=' + file);
+  await ready(page);
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#file-overlay')).not.toHaveClass(/active/);
+  await expect.poll(() => page.evaluate(() => location.hash), { message: 'no #path= left behind' }).toBe('');
+  await page.waitForTimeout(1200);   // a late address sync must not put it back
+  expect(await page.evaluate(() => location.hash)).toBe('');
+  expect(await page.evaluate('activeView')).toBe('sessions');
+});
+
+test('Show in folder from a #path= link keeps the folder address', async ({ page }) => {
+  await originBar(page, [{ id: 1, name: '', hash: '' }], 1);
+  await page.goto('/#path=' + file);
+  await ready(page);
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
+  await page.evaluate('_fileShowInFolder()');
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#path=' + dir);
+  expect(await page.evaluate('activeView')).toBe('files');
+});
+
+test('a page whose address moved off the file keeps that address when the file is dismissed', async ({ page }) => {
+  await originBar(page, [{ id: 1, name: '', hash: '' }], 1);
+  await page.goto('/#path=' + file);
+  await ready(page);
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
+  // A card link moved the address while the file stayed open.
+  await page.evaluate(() => history.replaceState(null, '', location.pathname + '#task=T-1'));
+  await page.evaluate('dismissFilePreview()');
+  expect(await page.evaluate(() => location.hash)).toBe('#task=T-1');
+  expect(await page.evaluate('activeView'), 'the view is not swept away').toBe('files');
 });
