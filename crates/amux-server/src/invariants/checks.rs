@@ -1214,6 +1214,9 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("_amux_invariant_incident", "resolved_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
+    // api/palette_history.rs writes Date-style epoch milliseconds (now_ms).
+    ("nav_visits", "last_at", true),
+    ("nav_picks", "last_at", true),
     // 0158: api/calls.rs writes now_f64() epoch seconds.
     ("calls", "requested_at", false),
     ("calls", "approved_at", false),

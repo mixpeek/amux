@@ -79594,8 +79594,12 @@ function _navLoad(force) {
           .catch(e => console.warn('[amux] palette history import failed', e));
         Object.assign(u, old);
       }
-      // A visit made while this read was in flight is kept.
+      // A visit or a pick made while this read was in flight is kept.
       for (const [k, e] of Object.entries(_NAV.usage || {})) if (!u[k] || u[k][1] < e[1]) u[k] = e;
+      for (const [q, hits] of Object.entries(_NAV.picks || {})) for (const [k, e] of Object.entries(hits)) {
+        const pq = (p[q] = p[q] || {});
+        if (!pq[k] || pq[k][1] < e[1]) pq[k] = e;
+      }
       _NAV.usage = u; _NAV.picks = p; _NAV.loadedAt = Date.now();
     })
     .catch(e => { console.warn('[amux] palette history unavailable; using this browser\'s', e); if (!_NAV.usage) _NAV.usage = _navLocalUsage(); })
