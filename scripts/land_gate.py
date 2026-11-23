@@ -422,10 +422,14 @@ def rust_filter(files, pkgs, tree=None):
 NEXTEST_FAIL = re.compile(r"^\s+(?:FAIL|SIGSEGV|SIGABRT|TIMEOUT) \[[^\]]*\] (?:\([^)]*\) )?(\S+) (\S+)\s*$", re.M)
 
 
+SAFE_CARGO = os.path.join(HERE, "safe-cargo.sh")
+
+
 def nextest(tree, expr, extra=(), timeout=RUST_TIMEOUT_S):
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.expanduser(
         os.environ.get("AMUX_LAND_GATE_TARGET", "~/.amux/rust-build-target")))
-    cmd = ["cargo", "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass", "-E", expr, *extra]
+    cargo = [SAFE_CARGO] if os.path.isfile(SAFE_CARGO) else ["cargo"]
+    cmd = [*cargo, "nextest", "run", "--workspace", "--no-fail-fast", "--no-tests=pass", "-E", expr, *extra]
     t0 = time.time()
     try:
         r = sh(cmd, cwd=tree, env=env, timeout=timeout)
