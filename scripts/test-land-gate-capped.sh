@@ -4,7 +4,11 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 FIX=$(mktemp -d); trap 'rm -rf -- "${FIX:?}"' EXIT
-sed -n '/^land_gate_run() {$/,/^}$/p' "$HERE/amux" > "$FIX/fn.sh"
+# land_gate_run takes a machine-wide gate slot first (land_gate_slot_take,
+# Mac cpu RCA 20261123-103607), so both are read, and HOME is this test's own
+# so the slots it takes are not the machine's.
+sed -n '/^land_gate_slot_take() {/,/^}$/p;/^land_gate_run() {$/,/^}$/p' "$HERE/amux" > "$FIX/fn.sh"
+export HOME="$FIX"
 grep -q 'land_gate_run python3 "$_lg_dir/land_gate.py"' "$HERE/amux"
 # shellcheck disable=SC1091
 . "$FIX/fn.sh"
