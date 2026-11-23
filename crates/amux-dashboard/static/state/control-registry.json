@@ -1194,6 +1194,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_crmAsk": {
+      "kind": "command._crmAsk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvAttach": {
       "kind": "command._cvAttach",
       "feedback_required": true,

@@ -756,6 +756,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
   <button id="tab-everything" title="Everything else: the full workspace" onclick="_homeShowEverything()"><span class="tab-ico">&#x22EF;</span><span class="tab-lbl">Everything else</span></button>
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
+  <button id="tab-crm" title="CRM: people, companies, deals and follow-ups, for Mixpeek, amux and personal" onclick="switchView('crm')"><span class="tab-ico">&#x1F465;</span><span class="tab-lbl">CRM</span></button>
   <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
   <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
@@ -1506,6 +1507,17 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
 </div>
 <!-- Photos: a media library on the owner's own Mixpeek (photos.js, loaded on first open). -->
 <div id="photos-view" class="ph-host" style="display:none;"></div>
+<!-- CRM (docs/design/crm.md): people, companies, deals, follow-ups. One row of
+     controls on a phone: search, then the views and filters, scrolling sideways. -->
+<div id="crm-view" class="crm-view">
+  <div id="crm-bar" class="crm-bar" role="toolbar" aria-label="CRM views and filters">
+    <input id="crm-q" class="input crm-q" type="search" placeholder="Search" aria-label="Search the CRM" oninput="_crmSearch(this.value)">
+    <div id="crm-chips" class="crm-chips"></div>
+    <button class="btn primary crm-new" onclick="_crmNew()" aria-label="Add to the CRM">+ New</button>
+  </div>
+  <div id="crm-note" class="crm-note"></div>
+  <div id="crm-list" class="crm-list"></div>
+</div>
 <div id="calls-view" class="calls-view">
   <div id="calls-bar" class="calls-bar" role="toolbar" aria-label="Filter calls">
     <div id="calls-filters" class="calls-filters"></div>

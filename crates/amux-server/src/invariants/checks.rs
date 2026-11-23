@@ -1212,6 +1212,12 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // off the migrations. 44 numeric timestamp columns; 5 are milliseconds and
     // they are the whole trap.
     ("_amux_invariant_incident", "resolved_at", false),
+    // 0169: the CRM (api/crm.rs, api/crm_accounts.rs) writes epoch seconds.
+    ("crm_contacts", "icp_scored_at", false),
+    ("crm_contacts", "unsubscribed_at", false),
+    ("crm_contacts", "bounced_at", false),
+    ("crm_accounts", "icp_scored_at", false),
+    ("crm_lookalikes", "found_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
     // api/palette_history.rs writes Date-style epoch milliseconds (now_ms).

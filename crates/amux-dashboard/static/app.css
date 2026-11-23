@@ -11346,6 +11346,61 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 /* Calls tab (api/calls.rs). One control row above the list; on a phone it
    scrolls sideways instead of wrapping (css-mobile rule). Chips, status pills
    and the drawer reuse the Connectors classes (.cx-filter, .cx-pill, .cx-drawer). */
+/* CRM tab (docs/design/crm.md). Built on the connectors' shared chips, pills
+   and drawer (cx-filter, cx-pill, cx-drawer), sized like Calls. */
+.crm-view { display: none; flex-direction: column; flex: 1; min-height: 0; height: calc(100dvh - var(--crm-top, 110px) - env(safe-area-inset-bottom, 0px)); max-width: 1080px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.crm-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }
+.crm-bar::-webkit-scrollbar { display: none; }
+.crm-q { flex: 0 0 200px; min-width: 120px; }
+.crm-chips { display: flex; flex-wrap: nowrap; gap: var(--space-1-5); flex: 1 0 auto; }
+.crm-chips .cx-filter { white-space: nowrap; flex: 0 0 auto; }
+.crm-chip-n { color: var(--dim); font-weight: 400; margin-left: var(--space-1); }
+.crm-dname { flex: 1; min-width: 0; }
+.crm-status { flex: 0 0 auto; width: auto; }
+.crm-sep { flex: 0 0 1px; align-self: stretch; background: var(--border); margin: 0 var(--space-1); }
+.crm-new { flex: 0 0 auto; white-space: nowrap; }
+.crm-note { margin: 0 var(--space-4) var(--space-2); color: var(--yellow); font-size: var(--fs-sm); }
+.crm-note:empty { display: none; }
+.crm-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--space-4) var(--space-10); display: flex; flex-direction: column; gap: var(--space-2); }
+.crm-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--card); cursor: pointer; min-height: 44px; box-sizing: border-box; }
+.crm-row:hover, .crm-row:focus-visible { border-color: var(--accent); }
+.crm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-0-5); }
+.crm-line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.crm-name { font-weight: 600; font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crm-meta { color: var(--dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crm-grade { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-sm); font-weight: 700; border: 1px solid var(--border); color: var(--dim); }
+.crm-grade[data-g="A"] { color: var(--green); border-color: var(--green); }
+.crm-grade[data-g="B"] { color: var(--accent); border-color: var(--accent); }
+.crm-grade[data-g="C"] { color: var(--yellow); border-color: var(--yellow); }
+.crm-grade[data-g="D"] { color: var(--red); border-color: var(--red); }
+.crm-stage-h { font-weight: 700; font-size: var(--fs-sm); color: var(--dim); text-transform: uppercase; margin: var(--space-3) 0 var(--space-1); }
+.crm-more { align-self: center; margin: var(--space-2) 0; min-height: 44px; }
+.crm-empty { color: var(--dim); font-size: var(--fs-md); padding: var(--space-6) 0; text-align: center; }
+.crm-due { color: var(--red); }
+.crm-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1-5) var(--space-3); font-size: var(--fs-md); align-items: center; }
+.crm-kv dt { color: var(--dim); }
+.crm-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.crm-kv .input { width: 100%; box-sizing: border-box; }
+.crm-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; }
+.crm-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.crm-grades { display: flex; gap: var(--space-1-5); }
+.crm-grades .cx-filter { min-width: 40px; justify-content: center; }
+.crm-ta { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; }
+.crm-ix { display: flex; flex-direction: column; gap: var(--space-0-5); padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: var(--card); border: 1px solid var(--border); }
+.crm-ix-head { font-size: var(--fs-xs); color: var(--dim); font-weight: 600; text-transform: uppercase; }
+.crm-ix-text { font-size: var(--fs-md); line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+.crm-stack { display: flex; flex-direction: column; gap: var(--space-2); }
+.crm-form { display: flex; flex-direction: column; gap: var(--space-2); }
+.crm-form .crm-form-row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.crm-form .crm-form-row > * { flex: 1 1 140px; min-width: 0; }
+.crm-link { color: var(--accent); cursor: pointer; background: none; border: none; padding: 0; font: inherit; text-align: left; }
+@media (max-width: 600px) {
+  .crm-bar { padding: var(--space-2) var(--space-3); }
+  .crm-q { flex-basis: 140px; }
+  .crm-chips .cx-filter, .crm-new, .crm-grades .cx-filter, .crm-status { min-height: 44px; }
+  .crm-list { padding: 0 var(--space-3) var(--space-10); }
+  .crm-actions .btn { min-height: 44px; }
+}
 .calls-view { display: none; flex-direction: column; flex: 1; min-height: 0; height: calc(100dvh - var(--calls-top, 110px) - env(safe-area-inset-bottom, 0px)); max-width: 980px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 .calls-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }
 .calls-bar::-webkit-scrollbar { display: none; }

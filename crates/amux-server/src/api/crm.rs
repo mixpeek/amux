@@ -54,7 +54,7 @@ use crate::db::board_store::next_issue_id;
 use crate::db::{PendingEvent, WriteOutcome};
 use amux_core::revision::{EntityType, MutationKind};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -103,10 +103,17 @@ fn ev(id: &str, kind: MutationKind) -> PendingEvent {
 /// row nor resurrect a soft-deleted one by accident.
 const CONTACT_FIELDS: &[&str] = &[
     "name", "company", "role", "email", "linkedin", "twitter", "phone", "notes",
+    // CRM phase 1 (docs/design/crm.md): the company link, status, ICP reasons,
+    // location and other systems' ids. icp_grade and the stop timestamps go
+    // through their own checks in patch_contact.
+    "account_id", "status", "icp_reasons", "location", "external",
 ];
 
+/// Statuses a person can have; empty is "not set".
+const STATUSES: &[&str] = &["lead", "active", "customer", "partner", "personal", "do_not_contact"];
+
 /// Same, for an interaction.
-const INTERACTION_FIELDS: &[&str] = &["date", "type", "notes", "follow_up_date", "follow_up_note"];
+const INTERACTION_FIELDS: &[&str] = &["date", "type", "notes", "follow_up_date", "follow_up_note", "direction", "subject", "deal_id"];
 
 fn str_field(body: &Value, key: &str) -> String {
     body.get(key)
@@ -147,30 +154,56 @@ fn replace_tags(conn: &rusqlite::Connection, id: &str, tags: &[Value]) -> rusqli
 /// contacts you HAVE spoken to first, oldest first — i.e. "who is overdue" —
 /// and never-contacted rows last. It reads like a bug and is the intended
 /// order, so it is transcribed rather than tidied.
+/// " LIMIT n OFFSET m" from `limit` and `offset`, or nothing (the whole list,
+/// as callers before paging expect).
+pub(crate) fn page_of(q: &HashMap<String, String>) -> String {
+    match q.get("limit").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0) {
+        Some(n) => format!(" LIMIT {} OFFSET {}", n.min(5000), q.get("offset").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)),
+        None => String::new(),
+    }
+}
+
 pub async fn list_contacts(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     let needle = q.get("q").map(|s| s.trim().to_string()).unwrap_or_default();
+    // Filters the CRM tab sends: each an exact match on its column.
+    let filters: Vec<(&'static str, String)> = [("status", "c.status"), ("grade", "c.icp_grade"), ("account_id", "c.account_id"), ("source", "c.source")]
+        .into_iter()
+        .filter_map(|(k, col)| q.get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).map(|v| (col, v)))
+        .collect();
+    let tag = q.get("tag").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let store = state.store.clone();
     let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
         let conn = store.read()?;
         let base = "SELECT c.id,c.name,c.company,c.role,c.email,c.linkedin,c.twitter,c.phone,\
+             c.account_id,c.status,c.icp_grade,c.location,c.source,c.unsubscribed_at,c.bounced_at,\
+             (SELECT name FROM crm_accounts a WHERE a.id=c.account_id AND a.deleted IS NULL) AS account_name,\
              (SELECT date FROM crm_interactions WHERE contact_id=c.id ORDER BY date DESC LIMIT 1) AS last_date,\
              (SELECT follow_up_date FROM crm_interactions WHERE contact_id=c.id AND follow_up_date IS NOT NULL ORDER BY follow_up_date ASC LIMIT 1) AS next_followup,\
              (SELECT follow_up_note FROM crm_interactions WHERE contact_id=c.id AND follow_up_date IS NOT NULL ORDER BY follow_up_date ASC LIMIT 1) AS next_followup_note \
              FROM crm_contacts c WHERE c.deleted IS NULL";
         let order = " ORDER BY CASE WHEN last_date IS NULL THEN 0 ELSE 1 END DESC, last_date ASC";
-        let mut rows = if needle.is_empty() {
-            query_rows_json(&conn, &format!("{base}{order}"), &[])?
-        } else {
-            let like = format!("%{needle}%");
-            query_rows_json(
-                &conn,
-                &format!("{base} AND (c.name LIKE ?1 OR c.company LIKE ?1 OR c.role LIKE ?1){order}"),
-                &[&like as &dyn rusqlite::ToSql],
-            )?
-        };
+        let mut args: Vec<String> = Vec::new();
+        let mut cond = String::new();
+        if !needle.is_empty() {
+            args.push(format!("%{needle}%"));
+            cond.push_str(" AND (c.name LIKE ?1 OR c.company LIKE ?1 OR c.role LIKE ?1 OR c.email LIKE ?1)");
+        }
+        for (col, v) in &filters {
+            args.push(v.clone());
+            cond.push_str(&format!(" AND {col}=?{}", args.len()));
+        }
+        if let Some(t) = &tag {
+            args.push(t.clone());
+            cond.push_str(&format!(" AND EXISTS (SELECT 1 FROM crm_tags t WHERE t.contact_id=c.id AND t.tag=?{})", args.len()));
+        }
+        // A page, when asked for: the CRM tab reads 200 at a time (gtm-engine
+        // imported 4,292 LinkedIn connections on 2026-11-23, 1.4 MB as one list).
+        let page = page_of(&q);
+        let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let mut rows = query_rows_json(&conn, &format!("{base}{cond}{order}{page}"), &refs)?;
         for r in rows.iter_mut() {
             let id = r.get("id").and_then(Value::as_str).unwrap_or("").to_string();
             if let Some(o) = r.as_object_mut() {
@@ -189,47 +222,86 @@ pub async fn list_contacts(
 
 // ---- POST /api/crm/contacts ------------------------------------------------
 
-pub async fn create_contact(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+pub async fn create_contact(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let name = str_field(&body, "name").trim().to_string();
     if name.is_empty() {
         return err(StatusCode::BAD_REQUEST, json!({ "error": "name required" }));
     }
-    let slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let grade = match super::crm_accounts::grade_of(body.get("icp_grade").unwrap_or(&Value::Null)) {
+        Ok(g) => g,
+        Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+    };
+    let status = str_field(&body, "status").trim().to_string();
+    if !status.is_empty() && !STATUSES.contains(&status.as_str()) {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": format!("status must be one of {}", STATUSES.join(", ")) }));
+    }
+    let source = super::crm_accounts::source_of(&body, &headers);
+    let email = str_field(&body, "email").trim().to_string();
+    let allow_dup = body.get("allow_duplicate").and_then(Value::as_bool) == Some(true);
+    // Ok(new id) or Err(the live contact that already has this email).
+    let slot: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
     let write = state
         .store
         .write_async(move |conn| {
+            // One person per email: the audit found the same people entered
+            // two and three times by different workers.
+            if !email.is_empty() && !allow_dup {
+                let dup: Option<String> = conn
+                    .query_row("SELECT id FROM crm_contacts WHERE lower(email)=lower(?1) AND deleted IS NULL", [&email], |r| r.get(0))
+                    .ok();
+                if let Some(d) = dup {
+                    *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(d));
+                    return Ok(WriteOutcome { applied: false, events: vec![] });
+                }
+            }
             let now = now_secs();
             let cid = next_issue_id(conn, "PPL")?;
             conn.execute(
-                "INSERT INTO crm_contacts (id,name,company,role,email,linkedin,twitter,phone,notes,created,updated) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
+                "INSERT INTO crm_contacts (id,name,company,role,email,linkedin,twitter,phone,notes,created,updated,\
+                 account_id,status,icp_grade,icp_reasons,icp_scored_at,location,source,external) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                 rusqlite::params![
                     &cid,
                     &name,
                     &str_field(&body, "company"),
                     &str_field(&body, "role"),
-                    &str_field(&body, "email"),
+                    &email,
                     &str_field(&body, "linkedin"),
                     &str_field(&body, "twitter"),
                     &str_field(&body, "phone"),
                     &str_field(&body, "notes"),
                     now,
+                    &str_field(&body, "account_id"),
+                    &status,
+                    &grade,
+                    &str_field(&body, "icp_reasons"),
+                    if grade.is_empty() { None } else { Some(now) },
+                    &str_field(&body, "location"),
+                    &source,
+                    body.get("external").filter(|e| e.is_object()).map(Value::to_string).unwrap_or_else(|| "{}".into()),
                 ],
             )?;
             if let Some(tags) = body.get("tags").and_then(Value::as_array) {
                 replace_tags(conn, &cid, tags)?;
             }
-            *slot_w.lock().expect("slot") = Some(cid.clone());
+            *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(cid.clone()));
             Ok(WriteOutcome { applied: true, events: vec![ev(&cid, MutationKind::Created)] })
         })
         .await;
-    match write {
-        Ok(_) => {
-            let id = slot.lock().expect("slot").take().unwrap_or_default();
-            (StatusCode::CREATED, Json(json!({ "id": id, "ok": true }))).into_response()
+    if let Err(e) = write {
+        return internal(e);
+    }
+    let taken = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    match taken {
+        Some(Ok(id)) => (StatusCode::CREATED, Json(json!({ "id": id, "ok": true }))).into_response(),
+        Some(Err(dup)) => {
+            tracing::info!(target: "amux::crm", existing = %dup, measured = true, n_considered = 1, verdict = "crm_contact_duplicate_email",
+                "a contact with this email already exists; nothing was created");
+            err(StatusCode::CONFLICT, json!({ "error": "a contact with this email already exists", "code": "duplicate", "id": dup,
+                "next": "PATCH /api/crm/contacts/<id> to update it, or send allow_duplicate: true" }))
         }
-        Err(e) => internal(e),
+        None => internal(anyhow::anyhow!("create_contact wrote nothing")),
     }
 }
 
@@ -253,9 +325,23 @@ pub async fn get_contact(State(state): State<AppState>, Path(id): Path<String>) 
             "SELECT * FROM crm_interactions WHERE contact_id=?1 ORDER BY date DESC, created DESC",
             &[&id as &dyn rusqlite::ToSql],
         )?;
+        let account_id = c.get("account_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let account = if account_id.is_empty() {
+            Value::Null
+        } else {
+            query_rows_json(&conn, "SELECT id,name,domain,industry,size,location,website,icp_grade,icp_reasons FROM crm_accounts WHERE id=?1 AND deleted IS NULL",
+                &[&account_id as &dyn rusqlite::ToSql])?.into_iter().next().unwrap_or(Value::Null)
+        };
+        let deals = query_rows_json(&conn,
+            "SELECT id,title,stage,amount,currency,close_date,next_step FROM crm_deals WHERE deleted IS NULL AND (contact_ids LIKE ?1 OR (account_id<>'' AND account_id=?2)) ORDER BY updated DESC",
+            &[&format!("%\"{id}\"%") as &dyn rusqlite::ToSql, &account_id])?;
+        let looks = if account_id.is_empty() { vec![] } else { super::crm_accounts::lookalikes_of(&conn, "account", &account_id)? };
         if let Some(o) = c.as_object_mut() {
             o.insert("tags".into(), Value::Array(tags_for(&conn, &id)?));
             o.insert("interactions".into(), Value::Array(interactions));
+            o.insert("account".into(), account);
+            o.insert("deals".into(), Value::Array(deals));
+            o.insert("lookalikes".into(), Value::Array(looks));
         }
         Ok(Some(c))
     })
@@ -275,12 +361,38 @@ pub async fn patch_contact(
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Response {
+    // Checked fields: the grade (A to D, and when it was set), the status, and
+    // the outbound stops, set to now by `true` and cleared by `false`.
+    let mut checked: Vec<(&'static str, SqlValue)> = Vec::new();
+    if let Some(g) = body.get("icp_grade") {
+        match super::crm_accounts::grade_of(g) {
+            Ok(g) => {
+                checked.push(("icp_scored_at", if g.is_empty() { SqlValue::Null } else { SqlValue::Integer(now_secs()) }));
+                checked.push(("icp_grade", SqlValue::Text(g)));
+            }
+            Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        }
+    }
+    if let Some(s) = body.get("status").and_then(Value::as_str) {
+        if !s.is_empty() && !STATUSES.contains(&s) {
+            return err(StatusCode::BAD_REQUEST, json!({ "error": format!("status must be one of {}", STATUSES.join(", ")) }));
+        }
+    }
+    for f in ["unsubscribed", "bounced"] {
+        if let Some(b) = body.get(f).and_then(Value::as_bool) {
+            checked.push((if f == "unsubscribed" { "unsubscribed_at" } else { "bounced_at" }, if b { SqlValue::Integer(now_secs()) } else { SqlValue::Null }));
+        }
+    }
     let write = state
         .store
         .write_async(move |conn| {
             let now = now_secs();
             let mut sets: Vec<String> = Vec::new();
             let mut params: Vec<SqlValue> = Vec::new();
+            for (f, v) in &checked {
+                params.push(v.clone());
+                sets.push(format!("{f}=?{}", params.len()));
+            }
             for f in CONTACT_FIELDS {
                 if let Some(v) = body.get(*f) {
                     // Python assigns the raw value; a non-string lands in a TEXT
@@ -393,9 +505,9 @@ pub async fn add_interaction(
                 .filter(|s| !s.is_empty())
                 .map(|s| SqlValue::Text(s.to_string()))
                 .unwrap_or(SqlValue::Null);
-            conn.execute(
-                "INSERT INTO crm_interactions (id,contact_id,date,type,notes,follow_up_date,follow_up_note,created,updated) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,follow_up_date,follow_up_note,created,updated,direction,subject,message_id,deal_id) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,?11,?12)",
                 rusqlite::params![
                     &ix_id,
                     &id,
@@ -405,20 +517,42 @@ pub async fn add_interaction(
                     fud,
                     &str_field(&body, "follow_up_note"),
                     now,
+                    &str_field(&body, "direction"),
+                    &str_field(&body, "subject"),
+                    &str_field(&body, "message_id"),
+                    &str_field(&body, "deal_id"),
                 ],
             )?;
+            // The same message logged twice for a person is one interaction
+            // (the index on contact and message id): say which one, never a
+            // made-up id for a row that was not written.
+            if inserted == 0 {
+                let existing: Option<String> = conn
+                    .query_row("SELECT id FROM crm_interactions WHERE contact_id=?1 AND message_id=?2",
+                        rusqlite::params![&id, &str_field(&body, "message_id")], |r| r.get(0))
+                    .ok();
+                *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(format!("dup:{}", existing.unwrap_or_default()));
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
             conn.execute(
                 "UPDATE crm_contacts SET updated=?1 WHERE id=?2",
                 rusqlite::params![now, &id],
             )?;
-            *slot_w.lock().expect("slot") = Some(ix_id);
+            *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ix_id);
             Ok(WriteOutcome { applied: true, events: vec![ev(&id, MutationKind::Updated)] })
         })
         .await;
     match write {
         Ok(_) => {
-            let ix = slot.lock().expect("slot").take().unwrap_or_default();
-            (StatusCode::CREATED, Json(json!({ "id": ix, "ok": true }))).into_response()
+            let ix = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or_default();
+            match ix.strip_prefix("dup:") {
+                Some(existing) => {
+                    tracing::info!(target: "amux::crm", existing, measured = true, n_considered = 1, verdict = "crm_interaction_duplicate_message",
+                        "this message is already logged for this person; nothing was added");
+                    (StatusCode::OK, Json(json!({ "id": existing, "ok": true, "duplicate": true }))).into_response()
+                }
+                None => (StatusCode::CREATED, Json(json!({ "id": ix, "ok": true }))).into_response(),
+            }
         }
         Err(e) => internal(e),
     }

@@ -726,15 +726,9 @@ fn inject_bootstrap(
     // restart just like the python server") — a banner on backend-only
     // build changes was noise Python never showed, and the reload it
     // offered is now automatic when it matters (client code changed).
-    // CRM is removed from the Rust build (Ethan, 2026-08-09): hide its tab
-    // and view via the serve-time layer — the extracted SPA stays
-    // byte-identical, the decision lives HERE where it is one greppable
-    // line to reverse.
-    let crm_hide = r#"<style>/* AMUX-FEATURE-FLAGS (injected) */
-[onclick="switchView('crm')"], #crm-view { display: none !important; }
-</style>
-"#;
-    with_bootstrap.replacen("</body>", &format!("{crm_hide}</body>"), 1)
+    // The CRM tab was hidden here from 2026-08-09 (AMUX-2590) to 2026-11-23,
+    // when the owner asked for it back ("build the CRM tab", docs/design/crm.md).
+    with_bootstrap
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -1009,8 +1003,9 @@ mod tests {
         let out = inject_bootstrap(html, &s, None, true);
         assert!(!out.contains("AMUX-UPDATE-WATCH"));
         assert!(!out.contains("amux-update-bar"));
-        // The CRM feature-flag layer still injects.
-        assert!(out.contains("AMUX-FEATURE-FLAGS"));
+        // The CRM tab is shown again (2026-11-23): nothing hides it.
+        assert!(!out.contains("switchView('crm')\"], #crm-view { display: none"));
+        assert!(!out.contains("AMUX-FEATURE-FLAGS"));
     }
 
     /// The migration signal must be ON only for documents actually served by

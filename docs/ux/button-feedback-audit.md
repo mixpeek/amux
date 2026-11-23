@@ -168,6 +168,21 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Refresh health | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | Refresh | `_connectorsTabLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | ? | `_costOpenSession` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Add lookalike | `_crmAddLookalike` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Send | `_crmAsk` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Add | `_crmCreate` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Show … more + (total && !_crm.q && !_crm.grade & | `_crmLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Log it | `_crmLog` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| index.html | Add to the CRM | `_crmNew` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open company | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | … | `_crmSave` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | + esc(label) + (n != null ? | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Cancel | `_cvCancelEdit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_cvChArchive` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Back to channels | `_cvChBack` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1077,6 +1092,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | openPeek(\…\),150)&gt;… | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | workers | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Apps: apps with a backend, and files shared outs | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | CRM: people, companies, deals and follow-ups, fo | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Calls: phone calls workers placed, held calls to | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Dictation: the dictionary and settings every wor | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1290,6 +1306,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy id  | `_copyTextWithToast` | onclick |
+| app.js | Close | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
 | app.js | ${_csvEsc(h) \|\| | `_csvSortBy` | onclick |
 | index.html | Back to conversations | `_cvBack` | onclick |
 | index.html | Close the thread | `_cvCloseThread` | onclick |
