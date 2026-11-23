@@ -35,6 +35,15 @@ wait
 c_end=$(awk '$1=="end" && $2=="c"{print $3}' "$H/runs"); d_start=$(awk '$1=="start" && $2=="d"{print $3}' "$H/runs")
 [ "$d_start" -lt "$c_end" ] && ok "two slots: two gates run at once" || bad "two slots serialized: $(cat "$H/runs")"
 
+# 2b. A slot made by another gate whose owner line is not written yet (the
+# race between its mkdir and its write) is waited out, not a crash of this
+# gate (checks red 2026-11-23 on Linux, where `stat -f` is the file system's).
+mkdir -p "$H/.amux/locks/land-gate/slot-1"
+( sleep 2; rm -rf "$H/.amux/locks/land-gate/slot-1" ) &
+rc=0; AMUX_LAND_GATE_SLOTS=1 timeout 20 bash -c 'source "$0"; land_gate_run true' "$H/fns.sh" 2> "$H/r.err" || rc=$?
+wait
+[ "$rc" = 0 ] && ok "a slot with no owner yet is waited out, and the gate runs" || bad "unwritten owner rc=$rc: $(cat "$H/r.err")"
+
 # 3. A slot held by a dead process is taken back.
 mkdir -p "$H/.amux/locks/land-gate/slot-1"; echo "999999 ghost 1" > "$H/.amux/locks/land-gate/slot-1/owner"
 rc=0; AMUX_LAND_GATE_SLOTS=1 timeout 20 bash -c 'source "$0"; land_gate_run true' "$H/fns.sh" 2> "$H/g.err" || rc=$?

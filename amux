@@ -11512,7 +11512,7 @@ Plain markdown with headings, short paragraphs, no filler. Say plainly when some
 # says who holds the slots (verdict=land_gate_slot_wait); a slot whose holder
 # died is taken back (verdict=land_gate_slot_reclaimed).
 land_gate_slot_take() { # <slots> <dir> <holder pid> -> prints the slot dir taken
-  local slots=$1 dir=$2 me=$3 i s pid waited=0 said=0
+  local slots=$1 dir=$2 me=$3 i s pid waited=0 said=0 m
   mkdir -p "$dir"
   while :; do
     for i in $(seq 1 "$slots"); do
@@ -11531,8 +11531,14 @@ land_gate_slot_take() { # <slots> <dir> <holder pid> -> prints the slot dir take
           printf '%s %s %s\n' "$me" "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$(date +%s)" > "$s/owner"
           printf '%s\n' "$s"; return 0
         fi
-      elif [ -z "$pid" ] && [ -d "$s" ] && [ $(( $(date +%s) - $(stat -f %m "$s" 2>/dev/null || stat -c %Y "$s" 2>/dev/null || date +%s) )) -gt 60 ]; then
-        rm -rf "$s"   # a slot whose owner line was never written (killed between mkdir and write)
+      elif [ -z "$pid" ] && [ -d "$s" ]; then
+        # A slot whose owner line was never written (killed between mkdir and
+        # write) goes after 60s. GNU stat first: on Linux `stat -f` is the FILE
+        # SYSTEM's status and prints no mtime, which broke this arithmetic and
+        # ended a gate that raced another's mkdir (checks red, 2026-11-23).
+        m=$(stat -c %Y "$s" 2>/dev/null || stat -f %m "$s" 2>/dev/null || true)
+        case "$m" in ''|*[!0-9]*) m=$(date +%s) ;; esac
+        [ $(( $(date +%s) - m )) -le 60 ] || rm -rf "$s"
       fi
     done
     if [ "$said" = 0 ] || [ $(( waited % 300 )) -lt "${AMUX_LAND_GATE_SLOT_POLL_S:-10}" ]; then
