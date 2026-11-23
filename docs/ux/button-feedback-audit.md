@@ -1779,6 +1779,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | + Add | `toggleAddServer` | onclick |
 | index.html | Cancel | `toggleAddServer` | onclick |
 | app.js | … | `toggleGridPane` | onclick |
+| index.html | Save as default | `toggleListDefault` | onclick |
 | index.html | Send command | `togglePeekCmd` | onclick |
 | index.html | Filter messages | `togglePeekFilters` | onclick |
 | index.html | Expand editor | `toggleSchedCmdFullscreen` | onclick |

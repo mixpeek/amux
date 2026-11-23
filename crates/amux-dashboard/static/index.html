@@ -4135,6 +4135,11 @@ setTimeout(function(){document.documentElement.classList.remove('boot-home-pendi
         <div class="filter-section-title">Model type</div>
         <div id="filter-models" class="filter-chip-row"></div>
       </div>
+      <div class="filter-section">
+        <div class="filter-section-title">Default for new tabs</div>
+        <button class="btn" id="filter-default-btn" style="width:100%;" onclick="toggleListDefault()">Save as default</button>
+        <div class="filter-hint" id="filter-default-hint"></div>
+      </div>
     </div>
     <div class="filter-modal-actions">
       <button class="btn" onclick="clearAllFilters()">Clear all</button>

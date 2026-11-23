@@ -1225,6 +1225,11 @@ const _LIST_VIEW_KEY = 'amux_list_view_v1';
 // (_CHROME_TAB_VIEW_KEY). The page itself keeps its own too (below). The tab id is read here rather than through _isInTab,
 // which is declared further down and not yet initialised when this runs.
 const _LIST_VIEW_TAB_KEY = 'amux_list_view_v1:tab:';
+// The default a new tab starts from (Save as default, in the filters panel), and
+// the storage key of the tab you were in before the one you are opening: a new
+// tab with no default copies it. Both hold filters only, never search text.
+const _LIST_DEFAULT_KEY = 'amux_list_default_v1';
+const _LIST_LAST_TAB_KEY = 'amux_list_last_tab_key';
 const _listViewTabId = (() => { try { return new URLSearchParams(location.search).get('_tab'); } catch (e) { return null; } })();
 // EVERY PAGE IS A TAB, NOT ONLY THE IN-PAGE BAR'S IFRAMES (owner, 2026-11-21:
 // "a tab should be a representation of a current work stream ... the fact that
@@ -1273,17 +1278,47 @@ function _listViewSnapshot() {
     providers: [...filterProviders].sort(), models: [...filterModels].sort(),
     statuses: [...filterStatuses].sort(), q: searchQuery || '', logs: !!logSearchMode });
 }
+// The filters a new tab inherits: tag, hidden tags, providers, models, statuses.
+// Search text and logs mode stay with the tab that set them.
+function _listFiltersOf(v) {
+  const arr = x => Array.isArray(x) ? x.filter(y => typeof y === 'string') : [];
+  return { tag: typeof v.tag === 'string' ? v.tag : '', hidden: arr(v.hidden), providers: arr(v.providers),
+    models: arr(v.models), statuses: arr(v.statuses) };
+}
+function _listDefaultRead() {
+  try { const v = JSON.parse(localStorage.getItem(_LIST_DEFAULT_KEY) || 'null'); return v && typeof v === 'object' ? v : null; }
+  catch (e) { console.warn('[list-view] saved default unreadable; new tabs start from the tab you came from', e); return null; }
+}
+// A new tab's starting filters: the saved default, else the tab you were in
+// before it (this browser tab's record), else nothing.
+function _listSeed() {
+  const d = _listDefaultRead();
+  if (d) return { from: 'default', v: d };
+  let last = null;
+  try { last = sessionStorage.getItem(_LIST_LAST_TAB_KEY); } catch (e) { last = null; }
+  if (!last) return null;
+  try { const v = JSON.parse(sessionStorage.getItem(last) || 'null'); if (v && typeof v === 'object') return { from: 'last_tab', v }; }
+  catch (e) { console.warn('[list-view] last tab\'s view unreadable; new tab starts clean', e); }
+  return null;
+}
+// The record a tab's view lives under: the page's own, or the tab's iframe copy.
+function _listKeyOfTab(id) {
+  return _chromeTabs[0] && id === _chromeTabs[0].id ? _LIST_VIEW_PAGE_KEY : _LIST_VIEW_TAB_KEY + id;
+}
 function _restoreListView() {
   let v = null, verdict = 'own_view';
   try { v = JSON.parse(_listViewStore().getItem(_listViewKey()) || 'null'); } catch (e) { v = null; }
-  if (!v && _listViewTabId === null) {
-    if (_listViewOtherPageOpen()) verdict = 'new_tab_clean';
-    else {
-      try { v = JSON.parse(localStorage.getItem(_LIST_VIEW_KEY) || 'null'); } catch (e) { console.warn('[list-view] last view unreadable', e); v = null; }
-      verdict = v ? 'reopened_last_view' : 'none_saved';
-    }
-  } else if (!v) verdict = 'new_tab_clean';
+  if (!v && _listViewTabId === null && !_listViewOtherPageOpen()) {
+    try { v = JSON.parse(localStorage.getItem(_LIST_VIEW_KEY) || 'null'); } catch (e) { console.warn('[list-view] last view unreadable', e); v = null; }
+    verdict = v ? 'reopened_last_view' : 'none_saved';
+  } else if (!v) {
+    const seed = _listSeed();
+    if (seed) { v = _listFiltersOf(seed.v); verdict = 'seeded_' + seed.from; }
+    else verdict = 'new_tab_clean';
+  }
   _applyListView(v);
+  // A seeded tab writes its copy now, so a reload keeps the filters it started with.
+  if (verdict.startsWith('seeded_')) { try { _listViewStore().setItem(_listViewKey(), _listViewSnapshot()); } catch (e) { console.warn('[list-view] seeded filters not kept; a reload starts from the default again', e); } }
   // The page's own copy now holds whatever it started on, so a reload keeps it.
   if (v && _listViewTabId === null) _listViewSaved = '';
   if (_listViewTabId === null) {
@@ -32550,6 +32585,7 @@ function renderFilterOptions() {
     const n = live.filter(s => _modelClass(sessionConfiguredModel(s)) === m).length;
     return `<button class="filter-chip${on?' on':''}" onclick="toggleModelFilter('${escJs(m)}')">${esc(_mLabel(m))}<span class="filter-chip-n">${n}</span></button>`;
   }).join('') : '<span class="filter-hint">No workers.</span>';
+  renderListDefault();
 }
 function toggleProviderFilter(p) {
   if (filterProviders.has(p)) filterProviders.delete(p); else filterProviders.add(p);
@@ -32562,6 +32598,32 @@ function toggleStatusFilter(k) {
 function toggleModelFilter(m) {
   if (filterModels.has(m)) filterModels.delete(m); else filterModels.add(m);
   renderFilterOptions(); render(); renderActiveFilters();
+}
+// Save as default: this tab's filters become what new tabs start with. Pressed
+// again while they match the saved default, it clears the default. Clear all
+// empties this tab only, and never changes the default.
+function _listDefaultMatchesNow() {
+  const d = _listDefaultRead();
+  if (!d) return false;
+  return JSON.stringify(_listFiltersOf(d)) === JSON.stringify(_listFiltersOf(JSON.parse(_listViewSnapshot())));
+}
+function toggleListDefault() {
+  if (_listDefaultMatchesNow()) localStorage.removeItem(_LIST_DEFAULT_KEY);
+  else localStorage.setItem(_LIST_DEFAULT_KEY, JSON.stringify(_listFiltersOf(JSON.parse(_listViewSnapshot()))));
+  renderListDefault();
+}
+function renderListDefault() {
+  const btn = document.getElementById('filter-default-btn');
+  const hint = document.getElementById('filter-default-hint');
+  const has = !!_listDefaultRead();
+  const same = has && _listDefaultMatchesNow();
+  if (btn) {
+    btn.textContent = same ? 'Default ✓ (tap to clear)' : 'Save as default';
+    btn.classList.toggle('primary', !same);
+  }
+  if (hint) hint.textContent = same ? 'New tabs start with these filters.'
+    : has ? 'Another default is saved. Save as default replaces it.'
+    : 'No default. New tabs start with the filters of the tab you came from.';
 }
 function clearAllFilters() {
   filterProviders.clear(); filterModels.clear(); filterStatuses.clear();
@@ -46191,8 +46253,13 @@ function _chromeUpdateOffsets() {
   });
 }
 
+// The tab you are leaving is the one a new tab copies when no default is saved.
+function _chromeNoteLastTab() {
+  try { sessionStorage.setItem(_LIST_LAST_TAB_KEY, _listKeyOfTab(_chromeActiveId)); } catch (e) { console.warn('[tabs] last tab not noted; a new tab starts clean', e); }
+}
 function _chromeSwitchTab(id) {
   if (_chromeActiveId === id) return;
+  _chromeNoteLastTab();
   _chromeActiveId = id;
   _chromeRender();
   _chromeSave();
@@ -46200,6 +46267,7 @@ function _chromeSwitchTab(id) {
 
 function _chromeAddTab() {
   const tab = {id: _chromeNextId++, name: ''};
+  _chromeNoteLastTab();
   _chromeTabs.push(tab);
   _chromeActiveId = tab.id;
   _chromeRender();
@@ -46250,6 +46318,7 @@ function _chromeCloseTab(id) {
   // A closed tab's list view goes with it: ids are reused (max + 1), so a later
   // tab would otherwise open on the closed one's search and filters.
   try { sessionStorage.removeItem(_LIST_VIEW_TAB_KEY + id); } catch (e) {}
+  try { if (sessionStorage.getItem(_LIST_LAST_TAB_KEY) === _LIST_VIEW_TAB_KEY + id) sessionStorage.removeItem(_LIST_LAST_TAB_KEY); } catch (e) { console.warn('[tabs] last-tab pointer not cleared for a closed tab', e); }
   amuxTrack('chrome_tab_closed', {verdict: idx === 0 ? 'first_tab_page_moved_to_next' : 'later_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
   if (moveTo !== null) _chromePageGoTo(moveTo);
   _chromeTabs.splice(idx, 1);
