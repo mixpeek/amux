@@ -752,7 +752,12 @@ pub(crate) fn capture_sent(conn: &rusqlite::Connection, path: &std::path::Path) 
     let mut buf = String::new();
     if let Ok(mut f) = std::fs::File::open(path) {
         if f.seek(SeekFrom::Start(off)).is_ok() {
-            let _ = f.take(4_000_000).read_to_string(&mut buf);
+            if let Err(e) = f.take(4_000_000).read_to_string(&mut buf) {
+                // Not UTF-8 or cut mid-character: nothing is consumed, and the
+                // next pass tries again from the same offset.
+                tracing::warn!(target: "amux::crm", error = %e, measured = false, n_considered = 0, verdict = "crm_capture_sent_unreadable", "the sent-mail log could not be read");
+                return Ok(0);
+            }
         }
     }
     // Only whole lines: a line still being written is read next time.
