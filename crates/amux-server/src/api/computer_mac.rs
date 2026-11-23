@@ -32,10 +32,16 @@ fn err(code: StatusCode, body: Value) -> Response {
     (code, Json(body)).into_response()
 }
 
-fn worker(body: Option<&Value>, headers: &HeaderMap) -> Option<String> {
-    body.and_then(|b| b.get("session"))
-        .and_then(Value::as_str)
-        .or_else(|| headers.get("x-amux-session").and_then(|v| v.to_str().ok()))
+/// The worker is the one the request's X-Amux-Session header names, which the
+/// identity middleware checks against that worker's token. A body `session`
+/// is never an identity (amux-security, 2026-11-23): it used to win over the
+/// header, so a worker could act under another worker's app list and switches,
+/// dodge its own outside-content stamp, and file cards and activity in that
+/// worker's name. `call` refuses a body that names anyone else.
+fn worker(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-amux-session")
+        .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -47,7 +53,7 @@ fn home() -> std::path::PathBuf {
 
 async fn status(headers: HeaderMap) -> Response {
     let home = home();
-    let w = worker(None, &headers);
+    let w = worker(&headers);
     let policy = w.as_deref().map(|w| mac::Policy::for_worker(&home, w));
     let switches =
         policy.map(|p| json!({ "apps": p.apps, "any_app": p.any_app, "foreground": p.foreground }));
@@ -107,7 +113,16 @@ async fn tools() -> Response {
 
 async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let body = body.map(|Json(v)| v).unwrap_or(json!({}));
-    let Some(w) = worker(Some(&body), &headers) else {
+    let named = body.get("session").and_then(Value::as_str).map(str::trim).unwrap_or("");
+    if !named.is_empty() && worker(&headers).as_deref() != Some(named) {
+        tracing::warn!(named, caller = worker(&headers).as_deref().unwrap_or(""), measured = true, n_considered = 1,
+            verdict = "computer_mac_act_as_self", "[computer-mac] refused: the body named another worker");
+        return err(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "a worker acts as itself: drop `session` or name the worker in X-Amux-Session", "code": "act_as_self" }),
+        );
+    }
+    let Some(w) = worker(&headers) else {
         tracing::warn!("[computer-mac] verdict=refused reason=unattributed");
         return err(
             StatusCode::BAD_REQUEST,
@@ -323,7 +338,7 @@ pub async fn note_email_read_in(
     next: axum::middleware::Next,
 ) -> Response {
     let reading = req.method() == axum::http::Method::GET;
-    let w = worker(None, req.headers());
+    let w = worker(req.headers());
     let resp = next.run(req).await;
     if let (true, Some(w)) = (reading && resp.status().is_success(), w) {
         mac::note_outside_content(&home, &w, "email");
@@ -357,6 +372,18 @@ mod tests {
         }
         let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(resp.status(), status);
+    }
+
+    #[tokio::test]
+    async fn a_body_session_never_picks_the_worker() {
+        let mut h = HeaderMap::new();
+        h.insert("x-amux-session", "w1".parse().unwrap());
+        let r = call(h, Some(Json(json!({"session": "w2", "tool": "list_apps", "args": {}})))).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "a worker cannot act as another");
+        let r = call(HeaderMap::new(), Some(Json(json!({"session": "w2", "tool": "list_apps", "args": {}})))).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "no header and a named worker is not that worker");
+        let r = call(HeaderMap::new(), Some(Json(json!({"tool": "list_apps", "args": {}})))).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "no header is unattributed");
     }
 
     #[tokio::test]
