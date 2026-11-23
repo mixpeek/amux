@@ -18,14 +18,27 @@
 //! collects events every 300 ms.
 //!
 //! Redaction happens IN THE PAGE, before anything leaves it: a password
-//! field, or a field whose name, id, autocomplete or label reads like a
-//! secret (password, token, one-time code, card number, CVC, SSN, PIN), is
-//! recorded as "[redacted]". Keys are recorded only for Enter, Escape and Tab.
+//! field (or one that was a password field at any point while focused), or a
+//! field whose name, id, autocomplete or label reads like a secret (password,
+//! token, code, MFA, API key, credential, card number, CVC, SSN, PIN), is
+//! recorded as "[redacted]". A value or click text that looks like a token or
+//! a card number is redacted too. Page and link URLs keep their path, drop a
+//! fragment that carries data, and redact query values whose key reads like
+//! a secret or whose value looks like a token (callback codes, magic links).
+//! Keys are recorded only for Enter, Escape and Tab.
+//!
+//! Who: a worker watches its own tab, the one its X-Amux-Session header names
+//! (the identity middleware checks that header against the worker's token).
+//! A body or query `session` naming another worker is refused. Without a
+//! worker header only the owner may watch, and may name any session (the
+//! default, "amux", is the owner's own tab). amux-security, 2026-11-23: the
+//! body used to win over the header and the default was the owner's tab, so
+//! any worker could start, read or stop a watch on any tab.
 
 use super::AppState;
 use crate::integrations::browser as chrome;
-use axum::extract::Query;
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{OriginalUri, Query, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -35,20 +48,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Steps travel as console.debug messages with this prefix, which every page
-/// has natively. A CDP binding (Runtime.addBinding) was tried first: after a
+/// Steps travel as console.debug messages with this prefix plus a per-watch
+/// nonce, which every page has natively. A CDP binding (Runtime.addBinding) was tried first: after a
 /// click took the tab to another origin's renderer, the tab stopped answering
 /// for about 40 seconds while a watch held it.
 const MARK: &str = "__amuxwatch:";
 const MAX_STEPS: usize = 1000;
 const T: Duration = Duration::from_secs(8);
 
-/// The recorder, run in every document of the watched tab.
+/// Finished watches kept for reading back before they are evicted.
+const KEEP_FINISHED_S: i64 = 3600;
+/// Stands for the watch's nonce in [`RECORDER`]; see [`recorder`].
+const NONCE: &str = "__AMUX_WATCH_NONCE__";
+
+/// The recorder, run in every document of the watched tab. `console.debug` is
+/// captured when the recorder installs, which on a new document is before any
+/// page script runs, so a page cannot read the nonce by wrapping it later.
 pub const RECORDER: &str = r#"(() => {
   if (window.__amuxWatchOn) return; window.__amuxWatchOn = true;
-  const SECRET = /pass|secret|token|otp|one.?time|cvc|cvv|card.?num|cc-?(num|csc)|ssn|\bpin\b|auth.?code|security.?code/i;
+  const SECRET = /pass|pwd|secret|token|otp|one.?time|(^|[^a-z])(code|pin|mfa|2fa|totp)([^a-z]|$)|api.?key|access.?key|private.?key|credential|auth(?!or)|verif|cvc|cvv|card.?num|cc-?(num|csc|exp)|ssn|security.?code/i;
+  const QKEY = /code|token|key|secret|pass|pwd|auth|sig|ticket|session|sid|jwt|nonce|state|otp|magic|login|reset|invite|credential/i;
+  const TOKENISH = (v) => /^[A-Za-z0-9_\-.~+\/=%]{20,}$/.test(v) && /[0-9]/.test(v) && /[A-Za-z]/.test(v);
+  const CARDISH = (v) => /^[0-9][0-9 -]{11,22}$/.test(v) && v.replace(/\D/g, '').length >= 12;
+  const scrub = (v) => { const s = String(v || ''); return (TOKENISH(s.trim()) || CARDISH(s.trim())) ? '[redacted]' : s; };
+  const cleanUrl = (u) => { try { const x = new URL(u, location.href); let hit = false;
+      for (const [k, v] of [...x.searchParams]) if (QKEY.test(k) || TOKENISH(v)) { x.searchParams.set(k, '[redacted]'); hit = true; }
+      if (x.hash && (/[=&]/.test(x.hash) || x.hash.length > 40)) { x.hash = '#[redacted]'; hit = true; }
+      return hit ? x.href.replace(/%5Bredacted%5D/g, '[redacted]') : x.href; } catch (e) { return '[unparsed url]'; } };
+  const dbg = console.debug.bind(console);
   const send = (o) => { if (window.__amuxWatchOff) return;
-    try { console.debug('__amuxwatch:' + JSON.stringify(Object.assign({ t: Date.now(), url: location.href, title: document.title }, o))); } catch (e) {} };
+    try { dbg('__amuxwatch:__AMUX_WATCH_NONCE__:' + JSON.stringify(Object.assign({ t: Date.now(), url: cleanUrl(location.href), title: document.title }, o))); } catch (e) {} };
   const sel = (el) => {
     if (el.id) return '#' + CSS.escape(el.id);
     const parts = []; let e = el;
@@ -71,14 +100,14 @@ pub const RECORDER: &str = r#"(() => {
     const role = el.getAttribute('role'); if (role) r.role = role;
     const isField = /^(input|textarea|select)$/i.test(el.tagName);
     const text = isField ? '' : (el.innerText || '').trim().replace(/\s+/g, ' ');
-    r.name = (label(el) || text).slice(0, 80);
+    r.name = scrub((label(el) || text).slice(0, 80));
     if (el.id) r.id = el.id;
     if (el.getAttribute('name')) r.field = el.getAttribute('name');
     if (el.type) r.type = el.type;
-    if (el.href) r.href = el.href;
+    if (el.href) r.href = cleanUrl(el.href);
     return r;
   };
-  const secret = (el) => !!el && (el.type === 'password'
+  const secret = (el) => !!el && (el.type === 'password' || el.__amuxWasSecret === true
     || SECRET.test([el.name, el.id, el.autocomplete, el.getAttribute && el.getAttribute('aria-label'), label(el)].join(' ')));
   addEventListener('click', (e) => {
     const el = (e.target.closest && e.target.closest('a,button,input,select,textarea,summary,label,[role]')) || e.target;
@@ -90,10 +119,15 @@ pub const RECORDER: &str = r#"(() => {
   const fill = (el) => {
     const box = el.type === 'checkbox' || el.type === 'radio';
     const hide = !box && secret(el);
-    send({ kind: 'fill', target: desc(el), value: box ? String(el.checked) : hide ? '[redacted]' : String(el.value || '').slice(0, 200), redacted: hide });
+    const value = box ? String(el.checked) : hide ? '[redacted]' : scrub(String(el.value || '').slice(0, 200));
+    send({ kind: 'fill', target: desc(el), value, redacted: hide || value === '[redacted]' });
   };
   const typed = (el) => el && /^(input|textarea)$/i.test(el.tagName) && !/^(checkbox|radio|submit|button|file)$/i.test(el.type || '');
-  addEventListener('focusin', (e) => { if (typed(e.target)) e.target.__amuxStart = e.target.value; }, true);
+  // A field that is a password field at any point while it is being filled
+  // stays secret, so a "show password" toggle before leaving it reveals nothing.
+  const mark = (el) => { if (el && el.type === 'password') el.__amuxWasSecret = true; };
+  addEventListener('focusin', (e) => { mark(e.target); if (typed(e.target)) e.target.__amuxStart = e.target.value; }, true);
+  addEventListener('input', (e) => mark(e.target), true);
   addEventListener('focusout', (e) => {
     const el = e.target;
     if (typed(el) && el.value !== (el.__amuxStart === undefined ? '' : el.__amuxStart)) { el.__amuxStart = el.value; fill(el); }
@@ -108,6 +142,11 @@ pub const RECORDER: &str = r#"(() => {
   }, true);
   send({ kind: 'page' });
 })();"#;
+
+/// The recorder with this watch's nonce in place.
+pub fn recorder(nonce: &str) -> String {
+    RECORDER.replace(NONCE, nonce)
+}
 
 struct Watch {
     steps: Arc<Mutex<Vec<Value>>>,
@@ -126,24 +165,52 @@ pub fn routes() -> Router<AppState> {
         .route("/stop", post(stop))
 }
 
+/// The session a request may watch: the worker its header names, or for the
+/// owner any named session ("amux" when none is named). Anyone else is refused.
 fn session_of(
+    state: &AppState,
+    uri: &Uri,
     body: Option<&Value>,
     q: Option<&HashMap<String, String>>,
     headers: &HeaderMap,
-) -> String {
-    body.and_then(|b| b.get("session"))
+) -> Result<String, Box<Response>> {
+    let named = body
+        .and_then(|b| b.get("session"))
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| q.and_then(|q| q.get("session").cloned()))
-        .or_else(|| {
-            headers
-                .get("x-amux-session")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        })
         .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let worker = headers
+        .get("x-amux-session")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "amux".into())
+        .map(str::to_string);
+    if let Some(w) = worker {
+        if let Some(n) = named.filter(|n| *n != w) {
+            tracing::warn!(named = %n, caller = %w, measured = true, n_considered = 1,
+                verdict = "browser_watch_as_self", "[browser-watch] refused: the request named another worker's tab");
+            return Err(Box::new((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "a worker watches its own tab: drop `session` or name yourself in X-Amux-Session", "code": "watch_as_self" })),
+            )
+                .into_response()));
+        }
+        return Ok(w);
+    }
+    super::land_approvals::owner_only(state, headers, uri, "browser_watch_refused", "watch a tab without a worker identity")?;
+    Ok(named.unwrap_or_else(|| "amux".into()))
+}
+
+/// Drops watches that finished more than [`KEEP_FINISHED_S`] ago.
+fn evict_finished(all: &mut HashMap<String, Watch>, now: i64) {
+    let before = all.len();
+    all.retain(|_, w| !w.stop.load(Ordering::Relaxed) || now - w.started_at < KEEP_FINISHED_S);
+    if all.len() < before {
+        tracing::info!(evicted = before - all.len(), measured = true, n_considered = before,
+            verdict = "browser_watch_evicted", "[browser-watch] finished watches evicted");
+    }
 }
 
 fn snapshot(session: &str) -> Value {
@@ -168,8 +235,9 @@ fn snapshot(session: &str) -> Value {
     }
 }
 
-/// The recorder's steps among CDP events, appended in arrival order.
-fn collect(events: Vec<Value>, steps: &Mutex<Vec<Value>>) {
+/// The recorder's steps among CDP events, appended in arrival order. Only a
+/// message carrying this watch's nonce is a step.
+fn collect(events: Vec<Value>, steps: &Mutex<Vec<Value>>, nonce: &str) {
     for e in events {
         if e.get("method").and_then(Value::as_str) != Some("Runtime.consoleAPICalled") {
             continue;
@@ -180,6 +248,8 @@ fn collect(events: Vec<Value>, steps: &Mutex<Vec<Value>>) {
             .unwrap_or("");
         if let Some(step) = text
             .strip_prefix(MARK)
+            .and_then(|p| p.strip_prefix(nonce))
+            .and_then(|p| p.strip_prefix(':'))
             .and_then(|p| serde_json::from_str::<Value>(p).ok())
         {
             let mut st = steps
@@ -194,12 +264,13 @@ fn collect(events: Vec<Value>, steps: &Mutex<Vec<Value>>) {
 
 /// Installs the binding, the new-document script and the recorder on one
 /// connection. Returns the script id and any steps that arrived meanwhile.
-async fn arm(cdp: &mut chrome::CdpClient) -> anyhow::Result<(String, Vec<Value>)> {
+async fn arm(cdp: &mut chrome::CdpClient, nonce: &str) -> anyhow::Result<(String, Vec<Value>)> {
+    let source = recorder(nonce);
     cdp.call("Runtime.enable", json!({}), T).await?;
     let added = cdp
         .call(
             "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": RECORDER }),
+            json!({ "source": source }),
             T,
         )
         .await?;
@@ -208,7 +279,7 @@ async fn arm(cdp: &mut chrome::CdpClient) -> anyhow::Result<(String, Vec<Value>)
     cdp.call_in(
         None,
         "Runtime.evaluate",
-        json!({ "expression": RECORDER }),
+        json!({ "expression": source }),
         T,
         Some(&mut first),
     )
@@ -226,23 +297,34 @@ async fn arm(cdp: &mut chrome::CdpClient) -> anyhow::Result<(String, Vec<Value>)
 /// What each poll asks the page: is the recorder here, and can it reach us?
 const PROBE: &str = "JSON.stringify({ on: !!window.__amuxWatchOn })";
 
-async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+async fn start(State(state): State<AppState>, OriginalUri(uri): OriginalUri, headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let body = body.map(|Json(v)| v);
-    let session = session_of(body.as_ref(), None, &headers);
-    if WATCHES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&session)
-        .is_some_and(|w| !w.stop.load(Ordering::Relaxed))
+    let session = match session_of(&state, &uri, body.as_ref(), None, &headers) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
     {
-        return Json(json!({ "ok": true, "already": true, "watch": snapshot(&session) }))
-            .into_response();
+        let mut all = WATCHES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        evict_finished(&mut all, chrono::Utc::now().timestamp());
+        if all.get(&session).is_some_and(|w| !w.stop.load(Ordering::Relaxed)) {
+            drop(all);
+            return Json(json!({ "ok": true, "already": true, "watch": snapshot(&session) }))
+                .into_response();
+        }
     }
+    let nonce = {
+        let mut b = [0u8; 16];
+        if let Err(e) = getrandom::fill(&mut b) {
+            tracing::warn!("[browser-watch] verdict=watch_start_failed session={session}: no random source: {e}");
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "no random source for the watch" }))).into_response();
+        }
+        hex::encode(b)
+    };
     let (page, mut cdp) = match super::browser::connect_session(&session, None).await {
         Ok(x) => x,
         Err(r) => return r,
     };
-    let (mut script_id, first) = match arm(&mut cdp).await {
+    let (mut script_id, first) = match arm(&mut cdp, &nonce).await {
         Ok(x) => x,
         Err(e) => {
             tracing::warn!("[browser-watch] verdict=watch_start_failed session={session}: {e}");
@@ -259,7 +341,7 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         started_at: chrono::Utc::now().timestamp(),
         error: Arc::new(Mutex::new(None)),
     };
-    collect(first, &w.steps);
+    collect(first, &w.steps, &nonce);
     let (steps, stopflag, error) = (w.steps.clone(), w.stop.clone(), w.error.clone());
     WATCHES
         .lock()
@@ -286,7 +368,7 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                     Some(&mut events),
                 )
                 .await;
-            collect(events, &steps);
+            collect(events, &steps, &nonce);
             match r {
                 Ok(v) => {
                     errors = 0;
@@ -303,12 +385,12 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                             .call_in(
                                 None,
                                 "Runtime.evaluate",
-                                json!({ "expression": RECORDER }),
+                                json!({ "expression": recorder(&nonce) }),
                                 T,
                                 Some(&mut ev),
                             )
                             .await;
-                        collect(ev, &steps);
+                        collect(ev, &steps, &nonce);
                         // A failed re-arm is retried on the next poll.
                         tracing::info!(
                             "[browser-watch] verdict=watch_rearmed session={s2} times={rearmed} ok={}",
@@ -321,9 +403,9 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
                     if errors >= 3 {
                         reconnects += 1;
                         let back = match super::browser::connect_session(&s2, None).await {
-                            Ok((_, mut c)) => match arm(&mut c).await {
+                            Ok((_, mut c)) => match arm(&mut c, &nonce).await {
                                 Ok((id, ev)) => {
-                                    collect(ev, &steps);
+                                    collect(ev, &steps, &nonce);
                                     script_id = id;
                                     cdp = c;
                                     true
@@ -372,13 +454,19 @@ async fn start(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
         .into_response()
 }
 
-async fn show(headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    Json(snapshot(&session_of(None, Some(&q), &headers))).into_response()
+async fn show(State(state): State<AppState>, OriginalUri(uri): OriginalUri, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    match session_of(&state, &uri, None, Some(&q), &headers) {
+        Ok(s) => Json(snapshot(&s)).into_response(),
+        Err(r) => *r,
+    }
 }
 
-async fn stop(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+async fn stop(State(state): State<AppState>, OriginalUri(uri): OriginalUri, headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     let body = body.map(|Json(v)| v);
-    let session = session_of(body.as_ref(), None, &headers);
+    let session = match session_of(&state, &uri, body.as_ref(), None, &headers) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
     if let Some(w) = WATCHES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -401,9 +489,81 @@ async fn stop(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
 mod tests {
     #[test]
     fn the_recorder_redacts_in_the_page_and_records_only_named_keys() {
-        let r = super::RECORDER;
+        let r = super::recorder("n0nce");
         assert!(r.contains("type === 'password'") && r.contains("'[redacted]'"));
         assert!(r.contains("e.key === 'Enter' || e.key === 'Escape' || e.key === 'Tab'"));
-        assert!(r.contains(super::MARK));
+        assert!(r.contains(&format!("{}n0nce:", super::MARK)) && !r.contains(super::NONCE));
+    }
+
+    #[test]
+    fn only_a_message_with_the_watch_nonce_is_a_step() {
+        let ev = |text: &str| serde_json::json!({ "method": "Runtime.consoleAPICalled", "params": { "args": [{ "value": text }] } });
+        let steps = std::sync::Mutex::new(Vec::new());
+        super::collect(
+            vec![
+                ev(r#"__amuxwatch:{"kind":"click","forged":"bare prefix"}"#),
+                ev(r#"__amuxwatch:other:{"kind":"click","forged":"wrong nonce"}"#),
+                ev(r#"__amuxwatch:n0nce:{"kind":"click"}"#),
+            ],
+            &steps,
+            "n0nce",
+        );
+        let got = steps.into_inner().unwrap();
+        assert_eq!(got, vec![serde_json::json!({ "kind": "click" })]);
+    }
+
+    #[test]
+    fn finished_watches_are_evicted_and_live_ones_kept() {
+        use std::sync::atomic::AtomicBool;
+        let w = |stopped: bool, started_at: i64| super::Watch {
+            steps: Default::default(),
+            stop: std::sync::Arc::new(AtomicBool::new(stopped)),
+            started_at,
+            error: Default::default(),
+        };
+        let now = 100_000;
+        let mut all = std::collections::HashMap::new();
+        all.insert("old-done".to_string(), w(true, now - super::KEEP_FINISHED_S - 1));
+        all.insert("old-live".to_string(), w(false, now - super::KEEP_FINISHED_S - 1));
+        all.insert("new-done".to_string(), w(true, now - 10));
+        super::evict_finished(&mut all, now);
+        let mut keys: Vec<_> = all.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["new-done", "old-live"]);
+    }
+
+    /// Who may watch which tab (amux-security, 2026-11-23). Every refusal
+    /// happens before the browser is touched, so no Chrome is needed.
+    #[tokio::test]
+    async fn a_worker_watches_only_its_own_tab_and_no_identity_needs_the_owner() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        use axum::http::StatusCode;
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = super::routes().with_state(state);
+        let other = serde_json::json!({ "session": "amux" });
+        let (st, v) = call(&app, "POST", "/start", &[("x-amux-session", "lane-t")], Some(other.clone())).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "a worker starting a watch on another tab: {v}");
+        assert_eq!(v["code"], "watch_as_self");
+        let (st, _) = call(&app, "POST", "/stop", &[("x-amux-session", "lane-t")], Some(other.clone())).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "a worker stopping another tab's watch");
+        let (st, _) = call(&app, "GET", "/?session=amux", &[("x-amux-session", "lane-t")], None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "a worker reading another tab's steps");
+        for path in ["/", "/?session=lane-t"] {
+            let (st, _) = call(&app, "GET", path, &[], None).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "no identity and no bearer reading {path}");
+        }
+        let (st, _) = call(&app, "POST", "/start", &[], Some(serde_json::json!({}))).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "no identity and no bearer starting the owner's tab");
+        // A worker reading its own tab, naming itself or not, is let through.
+        for path in ["/", "/?session=lane-t"] {
+            let (st, v) = call(&app, "GET", path, &[("x-amux-session", "lane-t")], None).await;
+            assert_eq!((st, v["session"].as_str()), (StatusCode::OK, Some("lane-t")), "{path}");
+        }
+        // The owner reads any tab, the owner's own by default.
+        let (st, v) = call(&app, "GET", "/", &[("authorization", "Bearer owner-secret")], None).await;
+        assert_eq!((st, v["session"].as_str()), (StatusCode::OK, Some("amux")));
+        let (st, v) = call(&app, "GET", "/?session=lane-t", &[("authorization", "Bearer owner-secret")], None).await;
+        assert_eq!((st, v["session"].as_str()), (StatusCode::OK, Some("lane-t")));
     }
 }
