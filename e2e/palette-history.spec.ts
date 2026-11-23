@@ -5,6 +5,7 @@
 // way. command-palette-ranking.spec.ts fakes this endpoint to test ranking
 // rules; this spec is the endpoint and the sharing.
 import { test, expect, Page } from './fixtures';
+import { cleanup } from './teardown';
 
 const R = Math.random().toString(36).slice(2, 7);
 const A = 'zz-hist-alpha-' + R, B = 'zz-hist-beta-' + R;
@@ -51,6 +52,6 @@ test('a pick and a visit made in one browser rank the same in another', async ({
     await expect(phone.locator('#cmdk-list .cmdk-row', { hasText: B }).first()).toBeVisible();
     await expect(phone.locator('#cmdk-list .cmdk-section').first()).toHaveText('Recent');
   } finally {
-    await ctx.close();
+    await cleanup('close the second browser context', () => ctx.close());
   }
 });
