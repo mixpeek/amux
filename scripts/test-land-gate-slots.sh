@@ -39,6 +39,7 @@ c_end=$(awk '$1=="end" && $2=="c"{print $3}' "$H/runs"); d_start=$(awk '$1=="sta
 mkdir -p "$H/.amux/locks/land-gate/slot-1"; echo "999999 ghost 1" > "$H/.amux/locks/land-gate/slot-1/owner"
 AMUX_LAND_GATE_SLOTS=1 timeout 20 bash -c 'source "$0"; land_gate_run true' "$H/fns.sh" 2> "$H/g.err"; rc=$?
 { [ "$rc" = 0 ] && grep -q 'verdict=land_gate_slot_reclaimed' "$H/g.err"; } && ok "a dead holder's slot is reclaimed" || bad "dead slot rc=$rc: $(cat "$H/g.err")"
+! grep -q 'verdict=land_gate_slot_wait' "$H/g.err" && ok "and taken at once, with no false wait" || bad "a reclaimed slot waited: $(cat "$H/g.err")"
 
 # 4. The gate's exit status comes through, and 0 slots means no limit.
 AMUX_LAND_GATE_SLOTS=1 land_gate_run bash -c 'exit 7' 2>/dev/null; [ $? = 7 ] && ok "the gate's exit status comes through" || bad "exit status lost"

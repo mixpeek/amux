@@ -11526,6 +11526,11 @@ land_gate_slot_take() { # <slots> <dir> <holder pid> -> prints the slot dir take
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
         echo "amux land: gate slot $i was held by pid $pid, which is gone; taking it back (verdict=land_gate_slot_reclaimed)" >&2
         rm -rf "$s"
+        # Take it now, rather than saying every slot is busy and waiting a poll.
+        if mkdir "$s" 2>/dev/null; then
+          printf '%s %s %s\n' "$me" "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$(date +%s)" > "$s/owner"
+          printf '%s\n' "$s"; return 0
+        fi
       elif [ -z "$pid" ] && [ -d "$s" ] && [ $(( $(date +%s) - $(stat -f %m "$s" 2>/dev/null || stat -c %Y "$s" 2>/dev/null || date +%s) )) -gt 60 ]; then
         rm -rf "$s"   # a slot whose owner line was never written (killed between mkdir and write)
       fi
