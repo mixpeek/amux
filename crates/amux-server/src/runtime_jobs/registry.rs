@@ -940,6 +940,7 @@ pub const CATALOG: &[Doc] = &[
             EnvControl { var: "AMUX_HOST_GUARD_SECS", effect: "0 disables the guard (no level, nothing deferred, nothing reniced)", off: Some("0") },
             EnvControl { var: "AMUX_HOST_LOAD_STRAINED", effect: "load per core (5-min avg) that is strained, default 1.5", off: None },
             EnvControl { var: "AMUX_HOST_LOAD_CRITICAL", effect: "load per core (5-min avg) that is critical, default 2.5", off: None },
+            EnvControl { var: "AMUX_HOST_DEFER_FLOOR_MIN", effect: "minutes a schedule held through a critical host waits before it fires anyway, one per tick, default 30", off: Some("0") },
             EnvControl { var: "AMUX_HOST_DISK_STRAINED_GB", effect: "free GiB on the amux home volume that is strained, default 40", off: None },
             EnvControl { var: "AMUX_HOST_DISK_CRITICAL_GB", effect: "free GiB that is critical, default 10", off: None },
             EnvControl { var: "AMUX_RUNAWAY_MIN_SECS", effect: "age before a worker tool process can be a runaway, default 900", off: None },

@@ -919,6 +919,18 @@ fn held_for_second_occurrence(first: i64, second: i64, last_run: i64, now: i64) 
 
 /// Format an instant the way Python stores `next_run`/`run_at`: local
 /// wall-clock, minute resolution.
+/// Minutes a schedule held through a critical host may wait before one fires.
+fn host_defer_floor_min() -> i64 {
+    std::env::var("AMUX_HOST_DEFER_FLOOR_MIN").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(30).max(0)
+}
+
+/// How long ago `due_at` (a `fmt_minute` string) was, in whole minutes; None
+/// when it does not parse.
+fn minutes_overdue(due_at: &str, now: DateTime<Local>) -> Option<i64> {
+    let t = chrono::NaiveDateTime::parse_from_str(due_at, "%Y-%m-%dT%H:%M").ok()?;
+    Some((now.naive_local() - t).num_minutes())
+}
+
 pub fn fmt_minute(t: DateTime<Local>) -> String {
     t.format("%Y-%m-%dT%H:%M").to_string()
 }
@@ -2935,6 +2947,8 @@ async fn scheduler_tick_inner(
         due: due.len(),
         ..Default::default()
     };
+    // One starved schedule per tick fires through a critical host (below).
+    let mut floor_used = false;
 
     for sched in due {
         let id = sched.id().to_string();
@@ -2985,7 +2999,21 @@ async fn scheduler_tick_inner(
         // later would record a refused run instead of deferring one. Here the
         // row simply stays due. A deferral long enough to cross another
         // occurrence is reported by the existing missed-run note, honestly.
-        if !crate::runtime_jobs::host_guard::admit_automation("schedules") {
+        //
+        // A STARVATION FLOOR: on a host that stays critical (mixpeek-dev, a CI
+        // box at about 13 load per core, 2026-11-23: 2,951 deferrals and 33 due
+        // fired 0 in 3.5 hours, the lane keeper and account rotation included)
+        // nothing would ever run again, and the busier the box the less it keeps
+        // itself running. A schedule held past AMUX_HOST_DEFER_FLOOR_MIN (default
+        // 30; 0 turns the floor off) fires anyway, ONE per tick, oldest first (the
+        // due list is in next_run order), so load still sheds the rest.
+        let floor = host_defer_floor_min();
+        let held_min = minutes_overdue(&due_at, now);
+        if !floor_used && floor > 0 && held_min.is_some_and(|m| m >= floor) && crate::runtime_jobs::host_guard::critical_now().is_some() {
+            floor_used = true;
+            tracing::warn!(schedule = %id, held_min = held_min.unwrap_or(0), floor_min = floor, measured = true, n_considered = 1,
+                verdict = "host_pressure_floor_fire", "host is critical, but this schedule has waited past the floor; it fires (one per tick)");
+        } else if !crate::runtime_jobs::host_guard::admit_automation("schedules") {
             report.deferred += 1;
             continue;
         }
@@ -6138,9 +6166,12 @@ mod tests {
     #[tokio::test]
     async fn a_critical_host_defers_a_fire_without_recording_or_advancing_it() {
         let (store, _dir) = store();
+        // Just due: under the starvation floor, so it is held.
+        let due = fmt_minute(Local::now() - chrono::Duration::minutes(1));
+        let due_w = due.clone();
         store
-            .write_async(|conn| {
-                insert_schedule(conn, &make_row("SCHED-1", "alpha", Some("every 10m"), "2020-01-01T00:00"))?;
+            .write_async(move |conn| {
+                insert_schedule(conn, &make_row("SCHED-1", "alpha", Some("every 10m"), &due_w))?;
                 Ok(WriteOutcome { applied: true, events: vec![] })
             })
             .await
@@ -6154,12 +6185,37 @@ mod tests {
             let runs: i64 = conn.query_row("SELECT COUNT(*) FROM schedule_runs", [], |r| r.get(0)).unwrap();
             let next: String = conn.query_row("SELECT next_run FROM schedules WHERE id='SCHED-1'", [], |r| r.get(0)).unwrap();
             assert_eq!(runs, 0, "a deferral must not be recorded as a run");
-            assert_eq!(next, "2020-01-01T00:00", "a deferral must leave the schedule due");
+            assert_eq!(next, due, "a deferral must leave the schedule due");
         }
         // Strained is not critical: it fires.
         crate::runtime_jobs::host_guard::set_level_for_test(Some(crate::runtime_jobs::host_guard::Level::Strained));
         let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &StubDeliverer::confirmed()).await.unwrap();
         assert_eq!((r.fired, r.deferred), (1, 0));
+        crate::runtime_jobs::host_guard::set_level_for_test(None);
+    }
+
+    /// mixpeek-dev, 2026-11-23: a host critical for hours starved every
+    /// schedule. Past the floor, ONE fires per tick, oldest first; the rest wait.
+    #[tokio::test]
+    async fn a_host_critical_for_long_still_fires_one_starved_schedule_per_tick() {
+        let (store, _dir) = store();
+        store
+            .write_async(|conn| {
+                insert_schedule(conn, &make_row("SCHED-1", "alpha", Some("every 10m"), "2020-01-01T00:00"))?;
+                insert_schedule(conn, &make_row("SCHED-2", "beta", Some("every 10m"), "2020-01-01T00:05"))?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let mut seen = HashMap::new();
+        crate::runtime_jobs::host_guard::set_level_for_test(Some(crate::runtime_jobs::host_guard::Level::Critical));
+        let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &StubDeliverer::confirmed()).await.unwrap();
+        assert_eq!((r.due, r.fired, r.deferred), (2, 1, 1), "one starved schedule fires, the other waits");
+        let ran: String = store.read().unwrap()
+            .query_row("SELECT schedule_id FROM schedule_runs", [], |r| r.get(0)).unwrap();
+        assert_eq!(ran, "SCHED-1", "the oldest due fires first");
+        let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &StubDeliverer::confirmed()).await.unwrap();
+        assert_eq!((r.fired, r.deferred), (1, 0), "the next tick gives the other its turn");
         crate::runtime_jobs::host_guard::set_level_for_test(None);
     }
 
