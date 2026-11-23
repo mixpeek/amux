@@ -421,6 +421,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Media | `_jrnlSwitchSub` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Library | `_libOpen` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | + | `_libOpenBook` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Back | `_linkViewerReturn` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Show | `_locApplyRange` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | index.html | CSV | `_locExport` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | GPX | `_locExport` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
