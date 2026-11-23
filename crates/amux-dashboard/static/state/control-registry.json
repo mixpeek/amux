@@ -984,6 +984,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_cmdkRecord": {
+      "kind": "command._cmdkRecord",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cmdkRender": {
       "kind": "command._cmdkRender",
       "feedback_required": true,
@@ -3738,8 +3744,20 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_navLoad": {
+      "kind": "command._navLoad",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_navRestore": {
       "kind": "command._navRestore",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_navVisit": {
+      "kind": "command._navVisit",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

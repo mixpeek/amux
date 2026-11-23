@@ -13,8 +13,16 @@ const W = [
 const card = (id: string, title: string, status: string, tier: number, boost: number, extra: object = {}) =>
   ({ kind: 'card', id, title, status, session: 'zz-quiet', archived: false, updated: 0, tier, boost, score: tier * 10000 + boost, match: tier === 4 ? 'word' : 'title', snippet: null, ...extra });
 
-async function boot(page: Page, hits: any[] = [], opts: { delayMs?: number, hidden?: number, emptyOnly?: boolean } = {}) {
+type Hist = { visits?: any[], picks?: any[] };
+// The palette's history (api/palette_history.rs) is faked per test, so one
+// test's opens cannot reorder another's; `posted` collects what the page
+// records. palette-history.spec.ts covers the real endpoint.
+async function boot(page: Page, hits: any[] = [], opts: { delayMs?: number, hidden?: number, emptyOnly?: boolean, history?: Hist, posted?: any[] } = {}) {
   const asked: string[] = [];
+  await page.route(/\/api\/palette\/history$/, r => r.fulfill({ json: { visits: opts.history?.visits || [], picks: opts.history?.picks || [], measured: true, n_considered: 0 } }));
+  await page.route(/\/api\/palette\/visit$/, r => { opts.posted?.push(JSON.parse(r.request().postData() || '{}')); return r.fulfill({ json: { ok: true } }); });
+  allowUnusedRoute(page, /\/api\/palette\/history$/);
+  allowUnusedRoute(page, /\/api\/palette\/visit$/);
   await page.route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: W }));
   await page.route(/\/api\/groups(?:\?.*)?$/, r => r.fulfill({ json: { groups: [{ name: 'research', goal: 'Find things out' }, { name: 'zzlab' }] } }));
   await page.route(/\/api\/palette\?.*/, async r => {
@@ -94,15 +102,15 @@ test('8 results first, then a row that opens the rest', async ({ page }) => {
 });
 
 test('an empty box shows recent places, then workers waiting, then actions', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('amux-cmdk-usage', JSON.stringify({
-    'worker:zz-quiet': [3, Date.now() - 60_000, 'zz-quiet'],
-    'card:R-1': [1, Date.now() - 120_000, 'Market research plan'],
-    'worker:gone-worker': [9, Date.now(), 'gone-worker'],
-  })));
-  await boot(page, [], { emptyOnly: true });
+  const now = Date.now();
+  await boot(page, [], { emptyOnly: true, history: { visits: [
+    { kind: 'worker', id: 'gone-worker', title: 'gone-worker', visits: 9, last_at: now },
+    { kind: 'worker', id: 'zz-quiet', title: 'zz-quiet', visits: 3, last_at: now - 60_000 },
+    { kind: 'card', id: 'R-1', title: 'Market research plan', visits: 1, last_at: now - 120_000 },
+  ] } });
   await page.evaluate(() => (window as any).openCmdk());
+  await expect(page.locator('#cmdk-list .cmdk-section').first()).toHaveText('Recent');
   const sections = await page.locator('#cmdk-list .cmdk-section').allTextContents();
-  expect(sections[0]).toBe('Recent');
   expect(sections).toContain('Actions');
   const rows = await rowsText(page);
   expect(rows.slice(0, 2)).toEqual(['Worker:zz-quiet', 'Card:Market research plan']);
@@ -111,18 +119,65 @@ test('an empty box shows recent places, then workers waiting, then actions', asy
 });
 
 test('the highlighted row stays put when slower results arrive', async ({ page }) => {
-  await boot(page, [card('Z-1', 'zz research exact', 'doing', 5, 200)], { delayMs: 900 });
+  const posted: any[] = [];
+  await boot(page, [card('Z-1', 'zz research exact', 'doing', 5, 200)], { delayMs: 900, posted });
   const input = await search(page, 'zz');
   await expect(page.locator('#cmdk-list .cmdk-row').nth(1)).toBeVisible();
   await input.press('ArrowDown');
   const chosen = await page.locator('#cmdk-list .cmdk-row.sel .cmdk-title').textContent();
   await expect(page.locator('#cmdk-list .cmdk-row', { hasText: 'zz research exact' })).toBeVisible({ timeout: 5000 });
   await expect(page.locator('#cmdk-list .cmdk-row.sel .cmdk-title'), 'same thing still highlighted').toHaveText(chosen || '');
-  // Enter opens what is highlighted, and is recorded as a recent place.
+  // Enter opens what is highlighted, and is recorded with what was typed.
   await page.route(/\/api\/sessions\/zz-quiet\/peek\?.*/, r => r.fulfill({ json: { output: 'idle\n', history: '' } }));
   await input.press('Enter');
-  const usage = await page.evaluate(() => JSON.parse(localStorage.getItem('amux-cmdk-usage') || '{}'));
-  expect(Object.values(usage).some((e: any) => e[2] === chosen)).toBe(true);
+  await expect.poll(() => posted.find(v => v.title === chosen)).toMatchObject({ query: 'zz' });
+});
+
+// Owner, 2026-11-23: rank by where you actually go. What you chose for a query
+// comes first the next time you type it, or the start of it.
+test('what you chose for a query ranks first when you type it again', async ({ page }) => {
+  const asked = await boot(page, [], { history: { picks: [
+    { query: 'zz-q', kind: 'worker', id: 'zz-quiet', picks: 2, last_at: Date.now() - 3_600_000 },
+  ] } });
+  allowUnusedRoute(page, /\/api\/palette\?.*/);
+  await search(page, 'zz-r');
+  await expect(page.locator('#cmdk-list .cmdk-row').first()).toContainText('zz-research-lane');   // nothing learned for this
+  await page.locator('#cmdk-input').fill('zz');
+  await expect(page.locator('#cmdk-list .cmdk-row').first()).toContainText('zz-quiet');   // the start of "zz-q"
+  await page.locator('#cmdk-input').fill('z');
+  await expect(page.locator('#cmdk-list .cmdk-row').first()).not.toContainText('zz-quiet');   // one letter learns nothing
+  void asked;
+});
+
+// Opens from anywhere count, not only from Cmd-K; the page restoring its last
+// tab on load does not.
+test('opening a tab, a group, a worker, a file or a card anywhere is recorded', async ({ page }) => {
+  const posted: any[] = [];
+  await boot(page, [], { emptyOnly: true, posted });
+  allowUnusedRoute(page, /\/api\/palette\?.*/);
+  await page.waitForTimeout(3200);   // past the load's own restore
+  expect(posted, 'loading the page records nothing').toEqual([]);
+  await page.locator('#tab-board').click();
+  await expect.poll(() => posted.map(v => v.kind + ':' + v.id)).toContain('view:board');
+  await page.evaluate(() => (window as any).switchView('sessions'));
+  await page.evaluate(() => (window as any).toggleTagFilter('zzlab'));
+  await page.route(/\/api\/sessions\/zz-quiet\/peek\?.*/, r => r.fulfill({ json: { output: 'idle\n', history: '' } }));
+  allowUnusedRoute(page, /\/api\/sessions\/zz-quiet\/peek\?.*/);
+  await page.evaluate(() => (window as any).openPeek('zz-quiet'));
+  await page.evaluate(() => (window as any).closePeek && (window as any).closePeek());
+  await page.route(/\/api\/file\?.*/, r => r.fulfill({ json: { path: '/tmp/zz-notes.md', content: '# hi', size: 4, mtime: 0 } }));
+  allowUnusedRoute(page, /\/api\/file\?.*/);
+  await page.evaluate(() => (window as any).openFilePreview('/tmp/zz-notes.md'));
+  await page.route(/\/api\/board\/ZZ-7(?:\?.*)?$/, r => r.fulfill({ json: { id: 'ZZ-7', title: 'Ship the thing', status: 'todo', session: 'zz-quiet' } }));
+  allowUnusedRoute(page, /\/api\/board\/ZZ-7(?:\?.*)?$/);
+  await page.evaluate(() => (window as any).openBoardDetail('ZZ-7'));
+  await expect.poll(() => posted.map(v => v.kind + ':' + v.id).sort()).toEqual(
+    ['card:ZZ-7', 'file:/tmp/zz-notes.md', 'group:zzlab', 'view:board', 'view:sessions', 'worker:zz-quiet']);
+  expect(posted.find(v => v.kind === 'card').title).toBe('Ship the thing');
+  expect(posted.every(v => !v.query), 'none was chosen from Cmd-K').toBe(true);
+  // The Recent rows read what was just recorded, before the server answers again.
+  await page.evaluate(() => (window as any).openCmdk());
+  await expect(page.locator('#cmdk-list .cmdk-row').first()).toContainText('Ship the thing');
 });
 
 test('a fuzzy guess finds a worker when nothing else matches', async ({ page }) => {

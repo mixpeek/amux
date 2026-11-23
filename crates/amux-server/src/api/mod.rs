@@ -146,6 +146,7 @@ pub(crate) mod pane_prompts;
 pub mod pages;
 pub mod photos;
 pub mod palette;
+pub mod palette_history;
 pub mod pinned;
 pub mod planning;
 pub mod policy;
@@ -367,6 +368,7 @@ pub fn router_with_connector_transport(
         // The Photos tab's BYO Mixpeek connection (api/photos.rs).
         .merge(photos::routes())
         .merge(palette::routes())
+        .merge(palette_history::routes())
         .merge(session_verbs::routes())
         .merge(typing::routes())
         .merge(boundaries::routes())

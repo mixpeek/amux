@@ -20177,6 +20177,7 @@ function openPeek(name, opts) {
     if (peekSession) _peekFilesStash(peekSession);
     _peekFilesRestore(name);
   }
+  _navVisit('worker', name, name);
   peekSession = name;
   _applyPeekTabVisibility();
   _syncComposerPending();
@@ -32443,6 +32444,7 @@ function resetGroupView() {
 function toggleTagFilter(tag) {
   const next = _nextTagState(tag, activeTag, hiddenTags);
   activeTag = next.active; hiddenTags = next.hidden;
+  if (activeTag === tag) _navVisit('group', tag, tag);
   render();
 }
 
@@ -36924,6 +36926,7 @@ function _fileHashSync(path) {
 async function openFilePreview(path, options = {}) {
   if (options.readOnly && !/\.(md|json|txt|png|webm)$/i.test(path)) return;
   if (!/\.mdai$/i.test(path || '') || options.raw) _feRecordOpen(path);
+  if (!options.readOnly) _navVisit('file', path, String(path || '').split('/').pop());
   // .mdai files open in the dedicated MDAI viewer (Ethan, AMUX-3317): it shows
   // the node's metadata (model / date / cached), lets you scroll the run
   // versions, and RUNS THE CHAIN on open — none of which the generic file body
@@ -46283,6 +46286,8 @@ function switchView(view) {
   // The Projects tab is removed; a saved #view=projects lands on the Board,
   // where new work starts, instead of a blank screen.
   if (view === 'projects') view = 'board';
+  _navVisit('view', view, ((document.querySelector('[id^="tab-"][onclick*="switchView(\'' + view + '\')"]') || {}).textContent || view)
+    .replace(/[^\p{L}\p{N} &'-]/gu, ' ').replace(/\s+/g, ' ').trim());
   // Explicit navigation supersedes a pending restore of an older worker.
   if (typeof _peekOpenGeneration !== 'undefined' && !peekSession) _peekOpenGeneration++;
   if (document.getElementById('grid-view').classList.contains('active')) exitGridMode();
@@ -55517,6 +55522,7 @@ async function openBoardDetail(id) {
   }
   if (!detailIdentityCurrent()) return;
   boardDetailId = id;
+  _navVisit('card', id, item.title || id);
   // Render instantly from cache, then correct it from the server. Blocking the
   // modal on a fetch would make every card open feel slow for a field most
   // opens never edit.
@@ -79561,17 +79567,83 @@ function _cmdkLocal() {
     ...(l.pin || []), ...(l.connector || []), ...(l.skill || []), ...(l.secret || []), ...(l.payment || [])];
 }
 
-// What you opened from here, and how often: { "kind:id": [count, lastMs, title] }.
-function _cmdkUsage() {
+// ── Where you went (owner, 2026-11-23) ──
+// Every worker, tab, file, group and card you open, from anywhere (not only
+// from here), kept on the server so the phone and the Mac share it
+// (api/palette_history.rs), plus which result you chose for what you typed.
+// { "kind:id": [count, lastMs, title] } and { query: { "kind:id": [picks, lastMs] } }.
+const _NAV = { usage: null, picks: {}, loadedAt: 0, loading: null, bootAt: Date.now(), last: {} };
+const _NAV_BOOT_MS = 3000;   // the page restoring its last view and worker is not a visit
+function _navLocalUsage() {
   try { return JSON.parse(localStorage.getItem(_CMDK_USAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function _navLoad(force) {
+  if (_NAV.loading) return _NAV.loading;
+  if (!force && _NAV.usage && Date.now() - _NAV.loadedAt < 60_000) return Promise.resolve();
+  _NAV.loading = fetch(API + '/api/palette/history', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) })
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('palette history ' + r.status)))
+    .then(d => {
+      const u = {}, p = {};
+      for (const v of d.visits || []) u[v.kind + ':' + v.id] = [v.visits, v.last_at, v.title];
+      for (const v of d.picks || []) (p[v.query] = p[v.query] || {})[v.kind + ':' + v.id] = [v.picks, v.last_at];
+      // A browser's history from before the server kept it goes up once.
+      const old = _navLocalUsage();
+      if (!Object.keys(u).length && Object.keys(old).length) {
+        const visits = Object.entries(old).map(([k, e]) => { const kind = k.split(':')[0]; return { kind, id: k.slice(kind.length + 1), title: e[2] || '', visits: e[0], last_at: e[1] }; });
+        fetch(API + '/api/palette/history/import', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ visits }) })
+          .catch(e => console.warn('[amux] palette history import failed', e));
+        Object.assign(u, old);
+      }
+      // A visit made while this read was in flight is kept.
+      for (const [k, e] of Object.entries(_NAV.usage || {})) if (!u[k] || u[k][1] < e[1]) u[k] = e;
+      _NAV.usage = u; _NAV.picks = p; _NAV.loadedAt = Date.now();
+    })
+    .catch(e => { console.warn('[amux] palette history unavailable; using this browser\'s', e); if (!_NAV.usage) _NAV.usage = _navLocalUsage(); })
+    .finally(() => { _NAV.loading = null; });
+  return _NAV.loading;
+}
+// Read once the page has settled, so Cmd-K's first frame already has Recent.
+setTimeout(() => { _navLoad(); }, _NAV_BOOT_MS);
+// One open of kind:id, from anywhere. `query` is what was typed in Cmd-K, when
+// it was chosen there. The same thing again within 30 s is the same visit.
+function _navVisit(kind, id, title, query) {
+  if (!kind || !id) return;
+  const now = Date.now(), k = kind + ':' + id;
+  if (!query && now - _NAV.bootAt < _NAV_BOOT_MS) return;
+  if (!query && now - (_NAV.last[k] || 0) < 30_000) return;
+  _NAV.last[k] = now;
+  const u = _NAV.usage || (_NAV.usage = _navLocalUsage()), prev = u[k] || [0, 0, ''];
+  u[k] = [prev[0] + 1, now, title || prev[2]];
+  const q = String(query || '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 40);
+  if (q) { const pq = (_NAV.picks[q] = _NAV.picks[q] || {}), pp = pq[k] || [0, 0]; pq[k] = [pp[0] + 1, now]; }
+  fetch(API + '/api/palette/visit', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ kind, id: String(id), title: String(title || ''), query: q }), keepalive: true })
+    .then(r => { if (!r.ok) console.warn('[amux] palette visit not recorded', r.status); })
+    .catch(e => console.warn('[amux] palette visit not recorded', e));
+}
+// What you opened, and how often: { "kind:id": [count, lastMs, title] }.
+function _cmdkUsage() {
+  return _NAV.usage || _navLocalUsage();
+}
+// What you chose before for this query, or for a longer one it starts (typing
+// "de" on the way to "dec"): up to +900 over every match tier, a month halving it.
+function _cmdkPickBoost(q, it) {
+  if (!q || q.length < 2) return 0;
+  const k = it.kind + ':' + it.id;
+  let best = 0;
+  for (const [pq, hits] of Object.entries(_NAV.picks || {})) {
+    if (pq !== q && !pq.startsWith(q)) continue;
+    const e = hits[k];
+    if (!e) continue;
+    const days = Math.max(0, Date.now() - e[1]) / 86_400_000;
+    best = Math.max(best, Math.round(Math.min(900, 300 * Math.log2(1 + e[0])) * Math.pow(0.5, days / 30)) * (pq === q ? 1 : 0.8));
+  }
+  return best;
 }
 
 function _cmdkRecord(r) {
   if (!r.id || r.kind === 'more' || r.kind === 'hidden') return;
-  const u = _cmdkUsage(), k = r.kind + ':' + r.id, prev = u[k] || [0, 0, ''];
-  u[k] = [prev[0] + 1, Date.now(), r.title];
-  const keep = Object.entries(u).sort((a, b) => b[1][1] - a[1][1]).slice(0, 60);
-  try { localStorage.setItem(_CMDK_USAGE_KEY, JSON.stringify(Object.fromEntries(keep))); } catch (e) {}
+  _navVisit(r.kind, r.id, r.title, _cmdk.q);
 }
 
 // Up to +200 for something opened often and lately; a week halves it.
@@ -79704,8 +79776,9 @@ function _cmdkCompute() {
       const m = _cmdkMatch(it, q, toks);
       if (!m) continue;
       if (it.archived && !_cmdk.hidden) { _cmdk.hiddenLocal++; continue; }
-      scored.push([{ ...it, tier: m.tier, match: m.match,
-        snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, m.tier * 10000 + _cmdkBoost(it, m, u)]);
+      const pick = _cmdkPickBoost(q, it);
+      scored.push([{ ...it, tier: m.tier, match: pick ? 'learned' : m.match,
+        snippet: m.match === 'body' ? _cmdkSnippet(String(it.body), toks) : '' }, (pick ? 60000 + pick : m.tier * 10000) + _cmdkBoost(it, m, u)]);
     }
     // A file you pinned shows once, as the pin.
     const pinned = new Set(scored.filter(([it]) => it.kind === 'pin' && it.body).map(([it]) => it.body));
@@ -79719,7 +79792,9 @@ function _cmdkCompute() {
       const it = { kind: h.kind, id: h.id, title: h.title, status: h.kind === 'file' ? '' : h.status, session: h.session, archived: h.archived,
         sub,
         tier, match: h.match || '', snippet: h.snippet || '' };
-      scored.push([it, tier * 10000 + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
+      const pick = _cmdkPickBoost(q, it);
+      if (pick) it.match = 'learned';
+      scored.push([it, (pick ? 60000 + pick : tier * 10000) + (h.boost || 0) + _cmdkContext(it) + _cmdkFrecency(u, it)]);
     }
     all = scored.sort((a, b) => b[1] - a[1]).slice(0, 40).map(([it]) => it);
   }
@@ -79882,6 +79957,7 @@ function openCmdk() {
   _cmdkRender();
   inp.focus();
   _cmdkLoadLists().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
+  _navLoad().then(() => { if (ov.classList.contains('active')) _cmdkRender(); });
 }
 
 function closeCmdk() {
