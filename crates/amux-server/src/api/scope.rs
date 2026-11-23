@@ -937,6 +937,23 @@ async fn put_scope(state: AppState, req: Request) -> Response {
     // 2026-10-07). Their grant decides, not the session rule.
     let member = super::org::local_member_scope(req.headers())
         .filter(|_| super::org::local_member_actor(req.headers()).is_some());
+    // No session header used to mean the dashboard, so a worker that left its
+    // header off wrote the global and group layers as the owner and could grant
+    // itself anything they confer (amux-security, 2026-11-23). With an owner
+    // token configured, a write with no worker or member identity must carry
+    // the owner bearer, which the dashboard and the owner's CLI send.
+    if actor.is_empty()
+        && member.is_none()
+        && state.auth_token.is_some()
+        && !super::auth::has_owner_token(&state, &headers, req.uri())
+    {
+        tracing::warn!(target: "amux::scope", measured = true, n_considered = 1,
+            verdict = "scope_write_unproven_refused", "a scope write with no worker identity and no owner bearer was refused");
+        return j(403, json!({
+            "error": "a scope write with no X-Amux-Session must carry the owner bearer",
+            "code": "owner_proof_required",
+        }));
+    }
     let bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
         Ok(b) => b,
         Err(e) => return j(400, json!({"error": e.to_string()})),
@@ -1603,6 +1620,30 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    // amux-security, 2026-11-23: leaving the session header off is not the
+    // owner. Without the owner bearer the write is refused before it is read.
+    #[tokio::test]
+    async fn a_scope_write_without_identity_needs_the_owner_bearer() {
+        let mut st = state();
+        st.auth_token = Some("owner-secret".into());
+        let app = app(&st);
+        let put = |bearer: Option<&str>| {
+            let mut b = axum::http::Request::builder().method("PUT").uri("/api/scope")
+                .header("content-type", "application/json");
+            if let Some(t) = bearer {
+                b = b.header("authorization", format!("Bearer {t}"));
+            }
+            b.body(Body::from(serde_json::to_vec(&json!({"level": "bogus"})).unwrap())).unwrap()
+        };
+        let res = app.clone().oneshot(put(None)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "no identity and no bearer is not the owner");
+        let res = app.clone().oneshot(put(Some("wrong"))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "a wrong bearer is not the owner");
+        // The owner bearer passes the check and reaches validation.
+        let res = app.clone().oneshot(put(Some("owner-secret"))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     /// AF-518 — an unknown query param must be REFUSED, not dropped.
