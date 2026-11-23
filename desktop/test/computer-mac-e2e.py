@@ -61,6 +61,79 @@ def wait(pred, secs=15):
     return pred()
 
 
+def front_app():
+    asn = subprocess.run(["/usr/bin/lsappinfo", "front"], capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["/usr/bin/lsappinfo", "info", "-only", "bundleid", asn], capture_output=True, text=True).stdout.strip()
+
+
+skips = 0
+
+
+def act_in_textedit(perms):
+    """A real keystroke in a real app, in the background: a NEW TextEdit
+    instance on a scratch note, typed into and read back. Needs Accessibility
+    granted to the test copy ("Amux Dev"), which only the owner can give; without
+    it this is a SKIP, never a pass."""
+    global skips
+    if not isinstance(perms, dict) or perms.get("accessibility") is not True:
+        skips += 1
+        print("  SKIP a real keystroke in TextEdit: grant Accessibility to Amux Dev (System Settings > Privacy & Security > Accessibility)")
+        return
+    note = os.path.join(TMP, "note.txt")
+    open(note, "w").write("amux computer-use e2e\n")
+    phrase = f"typed by an amux worker in the background {os.getpid()}"
+    open(os.path.join(HOME, "sessions", WORKER + ".env"), "w").write("AMUX_MAC_APPS=com.apple.dock,com.apple.TextEdit,*\n")
+
+    def patient(tool, args):
+        for _ in range(12):  # the owner typing defers a call (person_active); wait it out
+            code, r = mac(tool, args)
+            if r.get("code") != "person_active":
+                return code, r
+            time.sleep(5)
+        return code, r
+
+    def text_areas():
+        code, ws = patient("get_window_state", {"pid": pid, "tree_format": "elements", "max_elements": 80, "max_dimension": 64})
+        els = (ws.get("result") or {}).get("elements") or []
+        if ws.get("screenshot"):
+            os.remove(ws["screenshot"])
+        return code, ws, [e for e in els if e.get("role") in ("AXTextArea", "AXTextView")]
+
+    owner_front = front_app()
+    _, c0 = mac("get_cursor_position", {})
+    pid = None
+    try:
+        code, r = patient("launch_app", {"bundle_id": "com.apple.TextEdit", "urls": [note], "creates_new_application_instance": True})
+        pid = (r.get("result") or {}).get("pid")
+        check("a worker given TextEdit launches its own instance in the background", code == 200 and bool(pid), (code, json.dumps(r)[:500]))
+        if not pid:
+            return
+        time.sleep(2.0)
+        check("the app the owner was in stays in front", front_app() == owner_front, (owner_front, front_app()))
+        code, ws, areas = text_areas()
+        check("it reads the document's text area", code == 200 and areas, (code, json.dumps(ws)[:500]))
+        if not areas:
+            return
+        code, t = patient("type_text", {"pid": pid, "element_token": areas[0]["element_token"], "text": " " + phrase})
+        check("it types into it", code == 200 and t.get("ok"), (code, json.dumps(t)[:500]))
+        time.sleep(1.0)
+        _, _, areas = text_areas()
+        val = " ".join(str(a.get("value") or "") for a in areas)
+        check("and the document now holds what it typed", phrase in val, val[:300])
+        check("the owner's app is still in front after typing", front_app() == owner_front, (owner_front, front_app()))
+        _, c1 = mac("get_cursor_position", {})
+        check("and the owner's pointer did not move", (c0.get("result") or c0) == (c1.get("result") or c1), (c0.get("result"), c1.get("result")))
+        code, act = api("GET", "/api/computer/mac/activity?limit=20")
+        tools = [x.get("tool") for x in (act.get("rows") or act.get("activity") or [])]
+        check("the worker's Computer feed has the launch and the typing", "launch_app" in tools and "type_text" in tools, tools)
+    finally:
+        if pid:
+            try:
+                os.kill(int(pid), signal.SIGKILL)  # only the instance this test launched
+            except (OSError, ValueError):
+                pass
+
+
 port = free_port()
 URL = f"https://localhost:{port}"
 
@@ -117,7 +190,7 @@ try:
     check("and publishes its endpoint, with no socket", ep.get("pid") and ep.get("transport") == "broker" and "socket" not in ep, ep)
     check("the old build's socket and pid file are removed", not os.path.exists(OLD_SOCK) and not os.path.exists(OLD_PID))
     check("and a pid that is not a cua-driver is left running", bystander.poll() is None)
-    socks = subprocess.run(["lsof", "-a", "-U", "-p", str(ep.get("pid", 0))], capture_output=True, text=True).stdout
+    socks = subprocess.run(["/usr/sbin/lsof", "-a", "-U", "-p", str(ep.get("pid", 0))], capture_output=True, text=True).stdout
     check("the driver listens on no unix socket", "driver.sock" not in socks and "LISTEN" not in socks, socks[-400:])
     code, r = api("GET", "/api/computer/mac/broker/next?wait=0")
     check("a worker cannot take the driver's calls", code == 403, (code, r))
@@ -175,6 +248,8 @@ try:
     code, r = mac("click", {"pid": finder, "x": 5, "y": 5, "delivery_mode": "foreground"})
     check("foreground delivery needs its own switch", code == 403 and r.get("code") == "foreground_not_allowed", (code, r))
 
+    act_in_textedit(perms.get("structuredContent", perms))
+
     cli = subprocess.run([os.path.join(ROOT, "amux"), "computer", "mac", "list_apps"], capture_output=True, text=True, timeout=90,
                          env=dict(os.environ, AMUX_API=URL, CC_HOME=HOME, AMUX_SESSION=WORKER))
     check("the CLI verb works", cli.returncode == 0 and "Finder" in cli.stdout, (cli.returncode, cli.stdout[-300:], cli.stderr[-300:]))
@@ -209,5 +284,5 @@ finally:
             os.kill(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
-print(f"{'PASS' if fails == 0 else 'FAIL'}: {fails} failing check(s) (logs {TMP})")
+print(f"{'PASS' if fails == 0 else 'FAIL'}: {fails} failing check(s), {skips} skipped (logs {TMP})")
 sys.exit(1 if fails else 0)
