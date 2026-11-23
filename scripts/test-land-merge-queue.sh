@@ -166,6 +166,34 @@ grep -q "bisected to w2's commit" "$H/.amux/logs/land.log" && ok "enforce red ba
 kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 
+# --- a deep queue takes a bigger batch (Mixpeek 2026-11-23: 36 deep at 7 a batch).
+setup; queue_on; commit_file h x
+git config amux.landMergeQueueBatchMax 3; git config amux.landMergeQueueDeepQueue 2; git config amux.landMergeQueueBatchMaxDeep 6
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 w2; plant w3 w3; plant w4 w4
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && main_has w1 && main_has w4 && [ "$(dispatches)" = 1 ]; } \
+  && ok "deep queue: 4 waiters past a depth of 2 land in one candidate, not 2 at a time" || bad "deep rc=$rc dispatches=$(dispatches); $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -4)"
+grep -q "verdict=mq_batch_deep" "$H/.amux/logs/land.log" && ok "deep queue: land.log says the batch grew" || bad "no mq_batch_deep line"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- a red batch's bisect lets the other machine's waiter land between steps
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 bad; plant w3 w3
+wc="$(printf 'amux land wait\n\nholder=othermac:4242\nlane=other-machine\nexpires_at=%s\n' $(( $(date +%s) + 900 )) | git commit-tree "$(git mktree </dev/null)")"
+git push -q origin "$wc:refs/amux/land-wait/main/othermac-4242" 2>/dev/null
+AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && main_has w1 && ! main_has bad; } \
+  && ok "bisect with a waiter on the other machine: the prefix still lands" || bad "bisect handover rc=$rc; $(grep -a 'merge queue\|lease' "$H/.amux/logs/land.log" | tail -6)"
+[ "$(grep -c 'verdict=land_remote_lease_handover' "$H/out" "$H/.amux/logs/land.log" 2>/dev/null | awk -F: '{s+=$2} END{print s}')" -ge 1 ] \
+  && ok "bisect: the lease is handed over between steps" || bad "no handover during the bisect: $(grep -a 'lease' "$H/out" | tail -4)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
 # --- enforce, red batch while main moves (Mixpeek 2026-11-23: three commits
 # reached main during the bisect and the green prefix was re-composed instead).
 setup; queue_on; commit_file h x

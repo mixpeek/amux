@@ -11579,6 +11579,8 @@ land_gate_run() {
 # stack was composed on), landMergeQueueRepo (owner/name when the remote URL
 # does not say it), landMergeQueueBudgetMin (wait for one run, default 75),
 # landMergeQueueBatchMax (landings per candidate with the holder, default 8),
+# landMergeQueueDeepQueue and landMergeQueueBatchMaxDeep (past that many
+# waiters, the cap becomes the deep one; defaults 12 and 13),
 # landMergeQueueLostJob (an ERE: a red run with a failed job of that name is
 # dispatched once more instead of bisected; a lost runner is not a culprit).
 _land_mq_cfg() { # <key suffix> [default]
@@ -11773,6 +11775,14 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
       red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
       *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
     esac
+    # Between steps, a land waiting on the other machine goes first, so one
+    # machine's bisect cannot hold the lease through every step (Mixpeek
+    # 2026-11-23: each VM turn was a red 7-batch bisecting under the lease
+    # while the Mac queue grew to 36 and its oldest waiter passed 333 min).
+    # If main moves meanwhile, the green prefix is carried onto it.
+    if [ $(( hi - lo )) -gt 1 ] && ! _land_rl_handover "$remote" "$branch" "$lock"; then
+      echo "unmeasured lease_lost_between_bisect_steps"; return 0
+    fi
   done
   [ "$lo" = $(( hi - 1 )) ] || gtip="-"
   echo "$hi $url $gtip"
@@ -13090,8 +13100,22 @@ p.communicate(msg.encode())
     # An enforced merge queue caps a candidate at landMergeQueueBatchMax landings
     # with the holder (default 8): a red batch then costs at most 3 bisect runs.
     if [ "${_mq:-off}" = enforce ]; then
-      local _mqm; _mqm="$(_land_mq_cfg BatchMax 8)"
+      local _mqm _deep _depth _mqd; _mqm="$(_land_mq_cfg BatchMax 8)"
       case "$_mqm" in ''|*[!0-9]*|0) _mqm=8 ;; esac
+      # A deep queue takes bigger batches: past landMergeQueueDeepQueue
+      # waiters (default 12) a candidate carries up to landMergeQueueBatchMaxDeep
+      # landings (default 13). A red one costs one more bisect step; a green
+      # one clears twice the queue (Mixpeek 2026-11-23: 36 deep at 7 a batch
+      # was most of a night, and most waiters touch paths CI passes quickly).
+      _deep="$(_land_mq_cfg DeepQueue 12)"; case "$_deep" in ''|*[!0-9]*) _deep=12 ;; esac
+      _depth="$(ls "$q" 2>/dev/null | grep -c . || true)"
+      if [ "${_depth:-0}" -gt "$_deep" ]; then
+        _mqd="$(_land_mq_cfg BatchMaxDeep 13)"; case "$_mqd" in ''|*[!0-9]*|0) _mqd=13 ;; esac
+        if [ "$_mqd" -gt "$_mqm" ]; then
+          _land_log "merge queue: $_depth waiting, past $_deep; this batch takes up to $(( _mqd - 1 )) of them, not $(( _mqm - 1 )) (verdict=mq_batch_deep)"
+          _mqm=$_mqd
+        fi
+      fi
       [ "$max" -le $(( _mqm - 1 )) ] || max=$(( _mqm - 1 ))
     fi
     local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made
