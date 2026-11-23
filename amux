@@ -13117,7 +13117,7 @@ p.communicate(msg.encode())
     # An enforced merge queue caps a candidate at landMergeQueueBatchMax landings
     # with the holder (default 8): a red batch then costs at most 3 bisect runs.
     if [ "${_mq:-off}" = enforce ]; then
-      local _mqm _deep _depth _mqd; _mqm="$(_land_mq_cfg BatchMax 8)"
+      local _mqm _deep _depth _mqd _t; _mqm="$(_land_mq_cfg BatchMax 8)"
       case "$_mqm" in ''|*[!0-9]*|0) _mqm=8 ;; esac
       # A deep queue takes bigger batches: past landMergeQueueDeepQueue
       # waiters (default 12) a candidate carries up to landMergeQueueBatchMaxDeep
@@ -13125,7 +13125,7 @@ p.communicate(msg.encode())
       # one clears twice the queue (Mixpeek 2026-11-23: 36 deep at 7 a batch
       # was most of a night, and most waiters touch paths CI passes quickly).
       _deep="$(_land_mq_cfg DeepQueue 12)"; case "$_deep" in ''|*[!0-9]*) _deep=12 ;; esac
-      _depth="$(ls "$q" 2>/dev/null | grep -c . || true)"
+      _depth=0; for _t in "$q"/*; do [ -e "$_t" ] && _depth=$((_depth + 1)); done
       if [ "${_depth:-0}" -gt "$_deep" ]; then
         _mqd="$(_land_mq_cfg BatchMaxDeep 13)"; case "$_mqd" in ''|*[!0-9]*|0) _mqd=13 ;; esac
         if [ "$_mqd" -gt "$_mqm" ]; then
