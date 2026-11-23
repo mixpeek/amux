@@ -9916,6 +9916,52 @@ _land_pid_owner() {
 # this session's). Without, every detached land of this session started from
 # THIS checkout (gs12-restore, 2026-10-01: keyed by session alone, --cancel in
 # one worktree stopped another worktree's land and missed its own).
+# amux land --lease-check <remote>, from a repository's pre-push hook with the
+# hook's stdin: refuse a push to a branch whose remote land lease
+# (refs/amux/land-lock/<branch>) another land holds. The lease kept only
+# `amux land` out: on 2026-11-23 at 03:36:37Z mixpeek's ci/tip/land.sh, a bare
+# `git push origin HEAD:main`, landed d0dff040f6 under mixpeek-dev's lease, and
+# that machine's green merge-queue candidate lost its push 16 minutes later
+# ("cannot lock ref"). land's own push passes (AMUX_LAND_HOLDER_PID names the
+# holder), so does an expired lease, and the lease pushes skip the hook. An
+# unreadable remote lets the push go and says the check did not run.
+_land_lease_check() {
+  local remote="${1:-origin}" line _l _ls _r _rsha _sha _b _ref _exp _hold _lane _me _skew _now _body rc=0
+  [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
+  _skew="${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120}"
+  _me="$(hostname -s 2>/dev/null || hostname):${AMUX_LAND_HOLDER_PID:-none}"
+  while read -r _l _ls _r _rsha line; do
+    case "$_r" in refs/heads/*) _b="${_r#refs/heads/}" ;; *) continue ;; esac
+    _ref="refs/amux/land-lock/$_b"
+    if ! _sha="$(git ls-remote "$remote" "$_ref" 2>/dev/null)"; then
+      echo "amux land --lease-check: WARN verdict=land_lease_check_unmeasured: could not read $_ref on $remote; the push goes on unchecked" >&2
+      continue
+    fi
+    _sha="$(printf '%s\n' "$_sha" | awk 'NR==1{print $1}')"
+    [ -n "$_sha" ] || continue
+    if ! git fetch -q --no-tags "$remote" "+$_ref:refs/amux/land-lock-seen/$_b" 2>/dev/null; then
+      echo "amux land --lease-check: WARN verdict=land_lease_check_unmeasured: could not fetch $_ref on $remote; the push goes on unchecked" >&2
+      continue
+    fi
+    # Read what the fetch brought, not the sha ls-remote named: a renewal
+    # between the two leaves that sha absent here (gate review, AF-1356).
+    _body="$(git log -1 --format=%B "refs/amux/land-lock-seen/$_b" 2>/dev/null)"
+    _hold="$(printf '%s\n' "$_body" | sed -n 's/^holder=//p' | head -1)"
+    _lane="$(printf '%s\n' "$_body" | sed -n 's/^lane=//p' | head -1)"
+    _exp="$(printf '%s\n' "$_body" | sed -n 's/^expires_at=//p' | head -1)"
+    case "$_exp" in ''|*[!0-9]*)
+      echo "amux land --lease-check: WARN verdict=land_lease_check_unmeasured: $_ref on $remote has no readable expires_at; the push goes on unchecked" >&2
+      continue ;;
+    esac
+    _now="$(date +%s)"
+    [ "$_now" -le $(( _exp + _skew )) ] || continue
+    [ "$_hold" = "$_me" ] && continue
+    echo "amux land --lease-check: ERROR verdict=land_lease_push_refused: $_b is being landed by $_hold ($_lane), lease expires $(( _exp - _now ))s from now; a push here would land under it. Land with amux land, which waits for the lease" >&2
+    rc=1
+  done
+  return "$rc"
+}
+
 _land_cancel() {
   local want="${1:-}" me="${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" d="$HOME/.amux/locks/detached" f pid who where here n=0 all=0
   # --all: every detached land of this session, whatever checkout it came from
@@ -11808,6 +11854,12 @@ cmd_land() {
   # frozen path, or a commit reusing a landed commit's message over other
   # files). Exit 5: the regenerate step failed too many lands in a row.
   #
+  # `amux land --lease-check <remote>`, given a pre-push hook's stdin, refuses a
+  # push to a branch whose remote land lease another land holds, so a push
+  # outside land (a script's bare `git push`) cannot land under a holder's gate.
+  # Call it from the repository's pre-push hook:
+  #   printf '%s\n' "$lines" | amux land --lease-check "$1" || exit 1
+  #
   # Every wait, takeover, batch and outcome is a line in ~/.amux/logs/land.log;
   # a refused push keeps its full output under ~/.amux/logs/land/.
   # --json anywhere in the arguments: run the land and print its outcome as one
@@ -11841,6 +11893,7 @@ cmd_land() {
       --cancel-for) shift; _land_cancel_for "$@"; return $? ;;
       --to-head) shift; _land_to_head "$@"; return $? ;;
       --status) _land_status; return $? ;;
+      --lease-check) shift; _land_lease_check "${1:-origin}"; return $? ;;
       # For the server queue: render declared paths on a composed tree and
       # print the commit to push, with this file's own _land_regenerate.
       --regenerate-on)
@@ -11852,7 +11905,7 @@ cmd_land() {
         # see that.
         local _rr=0; _land_regenerate "${2:?}" || _rr=$?; return "$_rr" ;;
       -h|--help) sed -n '/^cmd_land()/,/^  local remote/p' "$0" | grep '^  #' | sed 's/^  # \{0,1\}//'; return 0 ;;
-      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all]" ;;
+      *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all] | --lease-check <remote> (pre-push stdin)" ;;
     esac
   done
   # LAND GUARDS before anything queues, on either path (the server queue below
@@ -13572,6 +13625,15 @@ $f"
     fi
     if printf '%s' "$out" | _grep_all -qE 'non-fast-forward|fetch first|\[rejected\]|cannot lock ref'; then
       _land_log "lost a race to a push outside land (attempt $i); refetching"
+      # Under a held lease, name the push that moved the branch: it came from
+      # outside land, and the repository's pre-push can refuse it with
+      # `amux land --lease-check` (2026-11-23: a green candidate lost this way).
+      if [ -n "${_LAND_RL_DIR:-}" ] && [ -s "$_LAND_RL_DIR/rl-sha" ] && [ ! -e "$_LAND_RL_DIR/rl-lost" ]; then
+        local _mv
+        if git fetch -q "$remote" "$branch" 2>/dev/null && _mv="$(git log -1 --format='%h by %an, %cI: %s' "$remote/$branch" 2>/dev/null)"; then
+          _land_log "WARN verdict=land_branch_moved_under_lease: $branch moved to $_mv while this land held $(_land_rl_ref "$branch"); that push did not wait for the lease (amux land --lease-check in the pre-push hook refuses it)"
+        fi
+      fi
       continue
     fi
     # FAIL, not only FAILED: primitives-audit writes "FAIL <sha> <subject>"

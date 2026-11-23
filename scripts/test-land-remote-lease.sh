@@ -37,6 +37,10 @@
 #  18. a land that needs another attempt hands the lease to the other machine's
 #      announced waiter first, so one machine's queue cannot keep the other's
 #      out for a whole hold (mixpeek-meta-worker, 2026-11-22: 31+ min)
+#  19. `amux land --lease-check` in a pre-push hook refuses a bare push under
+#      another land's lease, not an expired one or land's own push; and a lost
+#      push names the commit that moved the branch under the lease
+#      (mxp-decomp, 2026-11-23: ci/tip/land.sh landed d0dff040f6 that way)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -312,6 +316,34 @@ grep -q 'verdict=land_remote_lease_handover: .*(e2) waits' "$H/e1.out" \
 case "$order" in "f=e1 g=e2 h=race "*) ok "the waiter landed between the holder's attempts" ;;
   *) bad "18: order on main (newest first): $order" ;; esac
 [ -z "$(lease_now)" ] && [ -z "$(waiters)" ] && ok "and the lease and every announcement are gone after" || bad "18: left: lease=$(lease_now) waiters=$(waiters)"
+grep -q 'verdict=land_branch_moved_under_lease: main moved to [0-9a-f]* by .*h=race' "$H/e1.out" \
+  && ok "the lost push names the commit that moved main under the lease" || bad "18: no moved-under-lease line: $(grep 'lost a race' -A1 "$H/e1.out" | tail -2)"
+
+# 19: amux land --lease-check in a pre-push hook keeps a push outside land
+# (mixpeek's ci/tip/land.sh, 2026-11-23 03:36:37Z) from landing under a lease
+# another land holds, and lets land's own push through.
+mkchk() { # <dir>: a checkout whose pre-push runs only the lease check
+  git clone -q origin.git "$H/$1" 2>/dev/null
+  git -C "$H/$1" config user.email t@t; git -C "$H/$1" config user.name t
+  printf '#!/bin/sh\nbash "%s" land --lease-check "$1"\n' "$AM" > "$H/$1/.git/hooks/pre-push"; chmod +x "$H/$1/.git/hooks/pre-push"
+}
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+[ -d "$H/k" ] || mkchk k
+git -C "$H/k" fetch -q origin; git -C "$H/k" reset -q --hard origin/main
+echo bare > "$H/k/i"; git -C "$H/k" add i; git -C "$H/k" commit -qm "i=bare"
+theirs="$(other_lease vm-host:4242 $(( $(date +%s) + 600 )))"
+git -C "$H/k" push origin HEAD:main >"$H/k19.out" 2>&1; rc=$?
+[ "$rc" != 0 ] && [ -z "$(main_has i)" ] && grep -q 'verdict=land_lease_push_refused: main is being landed by vm-host:4242 (vm-lane)' "$H/k19.out" \
+  && ok "a bare push under another land's lease is refused by --lease-check, naming the holder" || bad "19: rc=$rc i=$(main_has i): $(tail -2 "$H/k19.out")"
+other_lease vm-host:4242 $(( $(date +%s) - 600 )) >/dev/null
+git -C "$H/k" push origin HEAD:main >"$H/k19b.out" 2>&1; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has i)" = bare ] && ok "past its expiry and the skew, the lease no longer refuses" || bad "19: expired lease: rc=$rc: $(tail -2 "$H/k19b.out")"
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+git -C "$H/k" fetch -q origin; git -C "$H/k" reset -q --hard origin/main
+echo own > "$H/k/i"; git -C "$H/k" add i; git -C "$H/k" commit -qm "i=own"
+land k nineteen; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has i)" = own ] && [ -z "$(lease_now)" ] && ! grep -q land_lease_push_refused "$H/nineteen.out" \
+  && ok "land's own push passes the check under its own lease" || bad "19: own land: rc=$rc i=$(main_has i): $(tail -3 "$H/nineteen.out")"
 
 # 7
 commit a f off
