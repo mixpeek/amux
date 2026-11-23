@@ -12,7 +12,7 @@
 
 use super::AppState;
 use crate::integrations::computer_mac as mac;
-use axum::extract::Query;
+use axum::extract::{OriginalUri, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -306,19 +306,43 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
 
 /// `GET /activity?session=<worker>&limit=N`: the newest calls first, each
 /// with its screenshot path, for the dashboard and the Mac app's preview.
-async fn activity(Query(q): Query<HashMap<String, String>>) -> Response {
+/// A worker reads only its own rows; every worker's rows are the owner's
+/// (amux-security, 2026-11-23: any caller could read every worker's calls).
+async fn activity(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     let limit = q
         .get("limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(30usize)
         .min(500);
-    let (rows, n) = mac::activity(
-        &home(),
-        q.get("session")
-            .map(String::as_str)
-            .filter(|s| !s.is_empty()),
-        limit,
-    );
+    let named = q.get("session").map(|s| s.trim()).filter(|s| !s.is_empty());
+    let caller = headers
+        .get("x-amux-session")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let who = match caller {
+        Some(w) if named.is_some_and(|n| n != w) => {
+            tracing::warn!(named = named.unwrap_or(""), caller = w, measured = true, n_considered = 1,
+                verdict = "computer_mac_activity_as_self", "[computer-mac] refused: a worker asked for another worker's activity");
+            return err(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "a worker reads its own activity: drop `session` or name yourself", "code": "activity_as_self" }),
+            );
+        }
+        Some(w) => Some(w),
+        None => {
+            if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "computer_mac_activity_refused", "read every worker's Mac activity") {
+                return *r;
+            }
+            named
+        }
+    };
+    let (rows, n) = mac::activity(&home(), who, limit);
     Json(json!({ "measured": true, "n_considered": n, "returned": rows.len(), "rows": rows }))
         .into_response()
 }
@@ -407,5 +431,32 @@ mod tests {
             noted, 1,
             "only w1 was noted: not the failed read, not the owner's own"
         );
+    }
+
+    /// A worker reads its own Mac activity; every worker's is the owner's.
+    #[tokio::test]
+    async fn a_worker_reads_only_its_own_activity() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        let d = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(d.path());
+        let f = mac::activity_file(d.path());
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "{\"worker\":\"w1\",\"tool\":\"click\"}\n{\"worker\":\"w2\",\"tool\":\"click\"}\n").unwrap();
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = routes().with_state(state);
+        let workers = |v: &Value| -> Vec<String> {
+            v["rows"].as_array().unwrap().iter().map(|r| r["worker"].as_str().unwrap().to_string()).collect()
+        };
+        let (st, v) = call(&app, "GET", "/activity", &[("x-amux-session", "w1")], None).await;
+        assert_eq!((st, workers(&v)), (StatusCode::OK, vec!["w1".to_string()]), "a worker with no session named sees its own");
+        let (st, v) = call(&app, "GET", "/activity?session=w2", &[("x-amux-session", "w1")], None).await;
+        assert_eq!((st, v["code"].as_str()), (StatusCode::FORBIDDEN, Some("activity_as_self")));
+        let (st, _) = call(&app, "GET", "/activity", &[], None).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "no identity and no bearer");
+        let (st, v) = call(&app, "GET", "/activity", &[("authorization", "Bearer owner-secret")], None).await;
+        assert_eq!((st, workers(&v)), (StatusCode::OK, vec!["w2".to_string(), "w1".to_string()]), "the owner sees every worker");
+        let (st, v) = call(&app, "GET", "/activity?session=w2", &[("authorization", "Bearer owner-secret")], None).await;
+        assert_eq!((st, workers(&v)), (StatusCode::OK, vec!["w2".to_string()]));
     }
 }

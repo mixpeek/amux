@@ -232,6 +232,91 @@ pub const BLOCKED: &[(&str, &str, &str)] = &[
         "a macOS security prompt is the owner's to answer",
     ),
     (
+        "com.apple.MobileSMS",
+        "Messages",
+        "it sends messages as the owner; use amux's messaging (the imessage skill)",
+    ),
+    (
+        "com.apple.mail",
+        "Mail",
+        "it sends email as the owner; email goes through the amux email API",
+    ),
+    (
+        "com.apple.Safari",
+        "Safari",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "com.google.Chrome",
+        "Google Chrome",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "com.google.Chrome.canary",
+        "Google Chrome Canary",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "com.brave.Browser",
+        "Brave Browser",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "company.thebrowser.Browser",
+        "Arc",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "com.microsoft.edgemac",
+        "Microsoft Edge",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "org.mozilla.firefox",
+        "Firefox",
+        "web pages go through amux browser (amux browser route), which has the owner's profiles and audit",
+    ),
+    (
+        "com.apple.finder",
+        "Finder",
+        "it opens any file or app as the owner, terminals and scripts included",
+    ),
+    (
+        "com.apple.ActivityMonitor",
+        "Activity Monitor",
+        "it quits and kills any process as the owner",
+    ),
+    (
+        "com.microsoft.VSCode",
+        "Code",
+        "its built-in terminal runs any command as the owner",
+    ),
+    (
+        "com.todesktop.230313mzl4w4u92",
+        "Cursor",
+        "its built-in terminal runs any command as the owner",
+    ),
+    (
+        "dev.zed.Zed",
+        "Zed",
+        "its built-in terminal runs any command as the owner",
+    ),
+    (
+        "com.apple.dt.Xcode",
+        "Xcode",
+        "it builds and runs code and scripts as the owner",
+    ),
+    (
+        "com.anthropic.claudefordesktop",
+        "Claude",
+        "an agent with the owner's tools and sign-ins",
+    ),
+    (
+        "com.openai.chat",
+        "ChatGPT",
+        "an agent with the owner's sign-ins",
+    ),
+    (
         "com.amux.desktop",
         "Amux",
         "a worker steering amux itself could approve its own requests",
@@ -387,12 +472,21 @@ pub fn blocked(app: &App) -> Option<&'static str> {
         .map(|(_, _, why)| *why)
 }
 
+/// An app the system resolved from a pid passes when its bundle id or its
+/// name is listed. An app the CALLER named (launch_app, `app`) has no pid and
+/// passes only when every field it gave is listed: launch_app opens by bundle
+/// id when it has one, so an allowed name beside another app's bundle id used
+/// to let that other app in (amux-security, 2026-11-23).
 pub fn allowed(policy: &Policy, app: &App) -> bool {
-    policy.apps.iter().any(|a| {
-        a == "*"
-            || (!app.bundle_id.is_empty() && a.eq_ignore_ascii_case(&app.bundle_id))
-            || (!app.name.is_empty() && a.eq_ignore_ascii_case(&app.name))
-    })
+    let listed = |v: &str| policy.apps.iter().any(|a| a == "*" || a.eq_ignore_ascii_case(v));
+    let fields = [app.bundle_id.as_str(), app.name.as_str()];
+    let mut given = fields.iter().filter(|v| !v.is_empty());
+    if app.pid.is_some() {
+        given.any(|v| listed(v))
+    } else {
+        let given: Vec<_> = given.collect();
+        !given.is_empty() && given.iter().all(|v| listed(v))
+    }
 }
 
 /// pids, and apps named for launch, anywhere in a call's arguments,
@@ -990,6 +1084,38 @@ mod tests {
             &p
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_launch_needs_every_field_it_names_listed() {
+        let launch = |b: &str, n: &str| App { bundle_id: b.into(), name: n.into(), pid: None };
+        let p = pol(&["Notes"]);
+        let r = decide("launch_app", &json!({}), &[launch("com.example.Other", "Notes")], &p).unwrap_err();
+        assert_eq!(r.code, "app_not_allowed", "an allowed name beside another app's bundle id");
+        assert!(decide("launch_app", &json!({}), &[launch("", "Notes")], &p).is_ok());
+        let p = pol(&["Notes", "com.apple.Notes"]);
+        assert!(decide("launch_app", &json!({}), &[launch("com.apple.Notes", "Notes")], &p).is_ok());
+        // A pid the system resolved still passes on either listed field.
+        assert!(decide("click", &json!({"pid": 1}), &[app("com.apple.Notes", "Notes")], &pol(&["Notes"])).is_ok());
+    }
+
+    #[test]
+    fn apps_that_send_browse_open_or_kill_as_the_owner_are_blocked() {
+        for (b, n) in [
+            ("com.apple.MobileSMS", "Messages"),
+            ("com.apple.mail", "Mail"),
+            ("com.apple.Safari", "Safari"),
+            ("com.google.Chrome", "Google Chrome"),
+            ("com.apple.finder", "Finder"),
+            ("com.apple.ActivityMonitor", "Activity Monitor"),
+            ("com.microsoft.VSCode", "Code"),
+            ("com.anthropic.claudefordesktop", "Claude"),
+        ] {
+            let r = decide("click", &json!({"pid": 1}), &[app(b, n)], &pol(&["*"])).unwrap_err();
+            assert_eq!(r.code, "app_blocked", "{n}");
+            let named = App { bundle_id: String::new(), name: n.into(), pid: None };
+            assert_eq!(decide("launch_app", &json!({}), &[named], &pol(&["*"])).unwrap_err().code, "app_blocked", "{n} by name");
+        }
     }
 
     #[test]
