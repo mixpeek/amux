@@ -10070,7 +10070,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-10.59"
+LAND_BEHAVIOR_VERSION="2026-11-23.60"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -12641,7 +12641,7 @@ p.communicate(msg.encode())
   # "$lock.q"; only the oldest live ticket may take the lock. A ticket whose pid
   # is gone is removed by whoever sees it. A holder that takes a waiter into its
   # batch writes the outcome to "$lock.r/<ticket>".
-  local q="$lock.q" rdir="$lock.r" tname waited=0 announced=0 head pos t res batchable="$batch" anon_refused=0 _vchk="" _newv="" _cur_head=""
+  local q="$lock.q" rdir="$lock.r" tname waited=0 announced=0 head pos t res batchable="$batch" anon_refused=0 _vchk="" _newv="" _cur_head="" _last_hkey="" _last_pos="" _last_report=0
   mkdir -p "$q" "$rdir"
   # A ticket's NAME is its place: waiters, including ones started before
   # --priority existed, find the head by sorting names. Ordinary tickets are a
@@ -13013,14 +13013,25 @@ p.communicate(msg.encode())
       fi
       rm -rf -- "${lock:?}"; continue
     fi
-    if [ "$announced" = 0 ]; then
+    # Said once, a wait reads as a hang: studio-plg's log held one "waiting"
+    # line for 5h13m on 2026-11-23 naming a holder that had exited hours
+    # before, while two batches and a priority grant went ahead of it. So say
+    # it again whenever the holder changes, and every
+    # AMUX_LAND_WAIT_REPORT_S (default 900) with the place it has now.
+    local _hkey="${hwho:-}:${hpid:-}"
+    if [ "$announced" = 0 ] || [ "$_hkey" != "${_last_hkey:-}" ] \
+       || [ $(( $(date +%s) - ${_last_report:-0} )) -ge "${AMUX_LAND_WAIT_REPORT_S:-900}" ]; then
       pos="$(ls "$q" | sort | grep -n -x -F "$tname" | cut -d: -f1)"
-      if [ -n "$hwho" ]; then
-        _land_log "waiting: $branch is being landed by $hwho (pid ${hpid:-?}); queue position ${pos:-?}"
+      if [ "$announced" = 0 ]; then
+        if [ -n "$hwho" ]; then
+          _land_log "waiting: $branch is being landed by $hwho (pid ${hpid:-?}); queue position ${pos:-?}"
+        else
+          _land_log "waiting: queue position ${pos:-?} on $branch, behind $(head -1 "$q/$head" 2>/dev/null || echo ?)"
+        fi
       else
-        _land_log "waiting: queue position ${pos:-?} on $branch, behind $(head -1 "$q/$head" 2>/dev/null || echo ?)"
+        _land_log "still waiting after ${waited}s: queue position ${pos:-?} (was ${_last_pos:-?}) of $(set -- "$q"/*; [ -e "$1" ] && echo $# || echo 0), holder ${hwho:-none} (pid ${hpid:-?}$([ "$_hkey" != "${_last_hkey:-}" ] && echo ', new holder')), head $(head -1 "$q/$head" 2>/dev/null || echo ?) verdict=land_waiting"
       fi
-      announced=1
+      announced=1; _last_hkey="$_hkey"; _last_pos="${pos:-?}"; _last_report=$(date +%s)
     fi
     # Only the first two waiters need a 5 s poll (the head takes the lock, the
     # next one is ready behind it). Every poll forks the whole interpreter a few
@@ -13118,7 +13129,7 @@ p.communicate(msg.encode())
       fi
       [ "$max" -le $(( _mqm - 1 )) ] || max=$(( _mqm - 1 ))
     fi
-    local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made
+    local n=0 tk who wsha wcommon wbatch base c tree msg new t0 ok seen=" " made _left=""
     stack_tip="$1"; stack_in=""; stack_map=""
     # Every skip names itself (mixpeek-override, 2026-10-02 16:09Z: 7 of 22
     # batchable waiters were left out with no log line, and no check rerun
@@ -13127,7 +13138,14 @@ p.communicate(msg.encode())
     _sk() { _land_log "batch skipped $(head -1 "$q/$1" 2>/dev/null || echo ?) ticket $1: $2"; }
     [ "$batch" = 1 ] && [ "$max" -gt 0 ] || return 0
     for tk in $(ls "$q" 2>/dev/null | sort); do
-      [ "$n" -lt "$max" ] || break
+      # A full batch leaves the rest for the next holder. That was the one
+      # unlogged way past a waiter: studio-plg sat 3rd for hours behind
+      # 7-waiter batches with nothing saying the cap was why (2026-11-23).
+      if [ "$n" -ge "$max" ]; then
+        case "$tk" in 000*) [ -n "$(sed -n 6p "$q/$tk" 2>/dev/null || true)" ] && continue ;; esac
+        kill -0 "${tk##*-}" 2>/dev/null && _left="$_left $(head -1 "$q/$tk" 2>/dev/null || echo ?)"
+        continue
+      fi
       # A --priority ticket lands alone in both roles (gs12-gates, 2026-10-01:
       # gs12-cicd batched its priority ticket at 16:57Z).
       # A GRANTED priority ticket (its reason on line 6) lands alone; an AGED one
@@ -13183,6 +13201,10 @@ p.communicate(msg.encode())
     done
     if [ -n "$stack_in" ]; then
       _land_log "stack built in $(( $(date +%s) - _st0 ))s ($(printf '%s' "$stack_in" | grep -c .) waiter(s))"
+    fi
+    if [ -n "$_left" ]; then
+      local _la; read -r -a _la <<< "$_left"
+      _land_log "batch full at $max waiter(s); ${#_la[@]} more keep their places for the next holder:$(printf ' %s' "${_la[@]:0:8}")$([ ${#_la[@]} -gt 8 ] && echo " and $(( ${#_la[@]} - 8 )) more") verdict=land_batch_full max=$max left=${#_la[@]}"
     fi
     return 0
   }
