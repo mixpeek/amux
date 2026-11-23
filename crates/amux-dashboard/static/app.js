@@ -19360,7 +19360,8 @@ function _workerRenderer(name) {
 // re-parsed (settled markdown blocks are frozen DOM). The finished message is
 // rendered from its full text, so it is what a full re-render produces.
 const _chat = { name: null, es: null, messages: [], streaming: null, loadedAt: 0, busy: false, queued: 0, gen: 0,
-  cursor: '', stick: true, unseen: false, raf: 0, onScroll: null, live: null, offlineNote: '' };
+  cursor: '', stick: true, unseen: false, raf: 0, onScroll: null, live: null, offlineNote: '',
+  holdUntil: 0, holdCap: 0, held: 0, onRelease: null };
 
 // OFFLINE PARITY WITH CODING WORKERS (Ethan 2026-09-26: "make sure amux chat
 // has all the same offline capabilities as coding too"). A coding worker's
@@ -19408,6 +19409,8 @@ function _chatUnmount() {
   clearInterval(_chatWatchdog); _chatWatchdog = 0;
   const body = document.getElementById('peek-body');
   if (body && _chat.onScroll) body.removeEventListener('scroll', _chat.onScroll);
+  if (body && _chat.onRelease) for (const ev of ['touchstart', 'keydown', 'pointerdown']) body.removeEventListener(ev, _chat.onRelease);
+  _chat.onRelease = null; _chat.holdUntil = 0;
   _chat.es = null; _chat.name = null; _chat.messages = []; _chat.streaming = null; _chat.gen++;
   _chat.cursor = ''; _chat.stick = true; _chat.unseen = false; _chat.raf = 0; _chat.onScroll = null; _chat.live = null;
   _chat.loadedAt = 0; _chat.offlineNote = ''; _chat.pendingShown = 0;
@@ -19589,10 +19592,26 @@ function _chatMount(name) {
     // to read earlier output pins the view until they come back down.
     _chat.onScroll = () => {
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+      // A JUMP HOLDS THE BOTTOM BRIEFLY (owner, 2026-11-23: "when I click jump
+      // to bottom it still doesnt do it"). A reply streaming in grows the page
+      // between the jump and the scroll events it causes, and a trackpad's
+      // momentum keeps scrolling after the click, so the first scroll event
+      // read "not at the bottom" and turned following off: the view fell
+      // further behind each second. While scroll events keep coming (a
+      // momentum tail of any length, up to 3 s after the jump) it stays at the
+      // bottom, until the reader touches, presses a key or grabs the scrollbar.
+      if (!atBottom && Date.now() < _chat.holdUntil) {
+        body.scrollTop = body.scrollHeight;
+        _chat.held++;
+        _chat.holdUntil = Math.min(_chat.holdCap, Date.now() + 400);
+        return;
+      }
       _chat.stick = atBottom;
       if (atBottom && _chat.unseen) { _chat.unseen = false; _chatJumpPill(); }
     };
     body.addEventListener('scroll', _chat.onScroll, { passive: true });
+    _chat.onRelease = () => { _chat.holdUntil = 0; };
+    for (const ev of ['touchstart', 'keydown', 'pointerdown']) body.addEventListener(ev, _chat.onRelease, { passive: true });
   }
   // Same as a coding worker's open-time cache paint: show the saved
   // conversation at once; the live snapshot replaces it when it arrives.
@@ -19936,12 +19955,26 @@ async function _chatInterrupt(target) {
   }
 }
 
+// Every jump to the bottom of a chat comes here: the chat's own Latest pill and
+// the peek's Jump to bottom. It used to scroll smoothly, and during a streaming
+// reply each frame of that animation read "not at the bottom", so following
+// switched off and the view never arrived (2,400 px behind after 2 s, measured).
+// Now it lands at once and holds there while the scrolling settles (see _chat.onScroll).
 function _chatJumpToLatest() {
   const body = document.getElementById('peek-body');
   if (!body) return;
+  const gap = Math.round(body.scrollHeight - body.scrollTop - body.clientHeight);
   _chat.stick = true; _chat.unseen = false;
-  body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
+  _chat.holdUntil = Date.now() + 1000; _chat.holdCap = Date.now() + 3000; _chat.held = 0;
+  body.scrollTop = body.scrollHeight;
   _chatJumpPill();
+  setTimeout(() => {
+    if (!document.contains(body)) return;
+    const left = Math.round(body.scrollHeight - body.scrollTop - body.clientHeight);
+    if (typeof _peekPollBeacon === 'function') _peekPollBeacon('chat-jump-to-latest', _chat.name || peekSession, {
+      gap_px: gap, left_px: left, held: _chat.held, streaming: !!_chat.live,
+      verdict: left < 80 ? 'chat_jump_landed' : 'chat_jump_fell_short', measured: true, n_considered: 1 });
+  }, 1100);
 }
 function _chatJumpPill() {
   const b = document.querySelector('#peek-body .chat-jump');
@@ -23365,6 +23398,13 @@ function _peekScrollAffordance() {
   if (!overlay || !overlay.classList.contains('active')) return;
   if (_isScrolledToBottom(body)) { _hideScrollLockBadge(body); return; }
   _showScrollLockBadge(body, () => {
+    // A chat owns this body: its own follow state decides what happens next,
+    // so the jump has to go through it (a terminal-only jump left the chat
+    // not following, and the next streamed line left the view behind).
+    if (body.classList.contains('peek-chat') && typeof _chatJumpToLatest === 'function') {
+      _peekFollowBottom = true; _peekBufferedOutput = false; _peekScrollLocked = false;
+      _chatJumpToLatest(); _hideScrollLockBadge(body); return;
+    }
     _peekScrollLocked = false;
     _peekFollowBottom = true;
     _peekBufferedOutput = false;
