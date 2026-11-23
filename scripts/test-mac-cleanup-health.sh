@@ -210,6 +210,24 @@ for i in $(seq 1 12); do mkrep "$CRASH_DIR/bash-$(stamp $((i * 60 + 30))).ips" $
 HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash-self.out"
 check "a handler re-raising a real fault (_sigtramp) still counts" yes "$(has "$HEALTH_VERDICTS" '^crashes bash crashed 12 times in 24h')"
 
+# Mac crashes RCA 20261123-103607: Playwright's WebKit recorded ten os_fault
+# reports (ExcUserFault_..., EXC_GUARD GUARD_TYPE_USER) while an e2e drove it.
+# The process was not killed: a fault report is not a crash. Another exception
+# under the same file-name prefix still counts.
+CRASH_DIR="$FIX/crash-fault"; mkdir -p "$CRASH_DIR"
+mkfault() { # <file> <exception type> <subtype>
+  python3 -c 'import json,sys
+print(json.dumps({"bug_type":"385"}))
+print(json.dumps({"pid":7,"responsibleProc":"Playwright","coalitionName":"com.amux.server-rs","exception":{"type":sys.argv[1],"subtype":sys.argv[2]},"termination":{"namespace":"WEBKIT","code":0}}))' "$2" "$3" > "$1"
+}
+for i in $(seq 1 12); do mkfault "$CRASH_DIR/ExcUserFault_com.apple.WebKit.Networking.Development-$(stamp $((i * 60))).ips" EXC_GUARD GUARD_TYPE_USER; done
+HEALTH_VERDICTS=""; check_crash_reports 1 > "$FIX/crash-fault.out"; out=$(cat "$FIX/crash-fault.out")
+check "12 recorded faults are not a crash constraint"   no  "$(has "$HEALTH_VERDICTS" '^crashes ')"
+check "the line counts them, names who drove them, with a verdict" yes "$(has "$out" '12 in 48h are faults a process recorded with os_fault.*com.apple.WebKit.Networking.Development (responsible Playwright) x12.*verdict=crash_reports_user_fault')"
+for i in $(seq 1 12); do mkfault "$CRASH_DIR/ExcUserFault_Other-$(stamp $((i * 60 + 20))).ips" EXC_BAD_ACCESS KERN_INVALID_ADDRESS; done
+HEALTH_VERDICTS=""; check_crash_reports 1 >/dev/null
+check "an ExcUserFault name with a real fault still counts" yes "$(has "$HEALTH_VERDICTS" '^crashes ExcUserFault_Other crashed 12 times in 24h')"
+
 echo "4b. a loop that stopped crashing 6h+ ago is reported, not escalated (RCA crashes 20261017-022150)"
 CRASH_DIR="$FIX/crash-ended"; mkdir -p "$CRASH_DIR"
 for i in $(seq 10 21); do : > "$CRASH_DIR/git-$(stamp $((8 * 3600 + i * 60))).ips"; done

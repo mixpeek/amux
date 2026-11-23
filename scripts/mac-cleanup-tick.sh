@@ -1491,6 +1491,32 @@ for n in os.listdir(d):
 PY
 }
 
+# Reports of a fault the process RECORDED and was not killed for: macOS names
+# them ExcUserFault_<app>-..., with an EXC_GUARD of GUARD_TYPE_USER raised by
+# os_fault_with_payload (a framework's own "this should not happen" check).
+# Prints "<file> <responsible app>" per report in the last 48h. Mac crashes RCA
+# 20261123-103607: Playwright's bundled WebKit wrote ten of these in 13 minutes
+# (WebKit::NetworkConnectionToWebProcess::didReceiveInvalidMessage) while an
+# e2e run drove it, and the tick read them as WebKit "crashing 10 times".
+crash_user_faults() { # <dir>
+  python3 - "$1" <<'PY' 2>/dev/null
+import json, os, sys, time
+d = sys.argv[1]
+cut = time.time() - 2 * 86400
+for n in os.listdir(d):
+    p = os.path.join(d, n)
+    if not n.startswith("ExcUserFault_") or not n.endswith(".ips") or not os.path.isfile(p) or os.stat(p).st_mtime < cut:
+        continue
+    try:
+        b = json.loads(open(p, errors="replace").read().split("\n", 1)[1])
+    except Exception:
+        continue
+    e = b.get("exception") or {}
+    if e.get("type") == "EXC_GUARD" and e.get("subtype") == "GUARD_TYPE_USER":
+        print(n, (b.get("responsibleProc") or "unknown").replace(" ", "_"))
+PY
+}
+
 # Crash counts per app over the last <minutes>, as "<count> <app>" lines, most
 # first. A report's crash time is the EARLIER of the stamp macOS puts in its
 # name (-YYYY-MM-DD-HHMMSS, local) and its mtime: macOS rewrites a report long
@@ -1683,7 +1709,7 @@ PY
 check_respawn_loops() {
   local rows cnt name resp rpid key esc_key esc_at n=0
   RESPAWN_LOOPS=""; RESPAWN_ESC_KEY=""
-  export CRASH_SKIP; CRASH_SKIP=$( [ -d "$CRASH_DIR" ] && crash_simulated "$CRASH_DIR" )
+  export CRASH_SKIP; CRASH_SKIP=$( [ -d "$CRASH_DIR" ] && { crash_simulated "$CRASH_DIR"; crash_user_faults "$CRASH_DIR" | awk '{print $1}'; } )
   rows=$($RESPAWN_CMD 2>/dev/null || true)
   while read -r cnt name; do
     [ -n "${name:-}" ] && [ "${cnt:-0}" -ge "$RESPAWN_N" ] 2>/dev/null || continue
@@ -1719,9 +1745,16 @@ check_crash_reports() { # <dry:0|1>
   # A process that sends itself SIGSEGV with kill() did not crash (see
   # crash_simulated): every count below leaves those reports out, and this
   # line says how many and whose, so a test fixture never reads as a crash loop.
-  export CRASH_SKIP; CRASH_SKIP=$(crash_simulated "$CRASH_DIR")
-  if [ -n "$CRASH_SKIP" ]; then
-    echo "mac-cleanup: crash reports: $(printf '%s\n' "$CRASH_SKIP" | grep -c .) in 48h are a fault signal the process sent itself with kill(), not a crash, and are not counted ($(printf '%s\n' "$CRASH_SKIP" | sed -E 's/[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*//' | sort | uniq -c | sort -rn | awk '{printf "%s%s x%s", (NR>1 ? ", " : ""), $2, $1}')) (verdict=crash_reports_self_signaled)"
+  local selfsig faults
+  selfsig=$(crash_simulated "$CRASH_DIR"); faults=$(crash_user_faults "$CRASH_DIR")
+  export CRASH_SKIP; CRASH_SKIP=$(printf '%s\n%s\n' "$selfsig" "$(printf '%s\n' "$faults" | awk 'NF{print $1}')" | grep . || true)
+  if [ -n "$selfsig" ]; then
+    echo "mac-cleanup: crash reports: $(printf '%s\n' "$selfsig" | grep -c .) in 48h are a fault signal the process sent itself with kill(), not a crash, and are not counted ($(printf '%s\n' "$selfsig" | sed -E 's/[-_][0-9]{4}-[0-9]{2}-[0-9]{2}.*//' | sort | uniq -c | sort -rn | awk '{printf "%s%s x%s", (NR>1 ? ", " : ""), $2, $1}')) (verdict=crash_reports_self_signaled)"
+  fi
+  # Faults a process recorded and lived through: named with who drove them, so
+  # a flood of them is still seen, and never counted as a crash.
+  if [ -n "$faults" ]; then
+    echo "mac-cleanup: crash reports: $(printf '%s\n' "$faults" | grep -c .) in 48h are faults a process recorded with os_fault and was not killed for (ExcUserFault), not crashes, and are not counted ($(printf '%s\n' "$faults" | sed -E 's/^ExcUserFault_//; s/[-_][0-9]{4}-[0-9]{2}-[0-9]{2}[^ ]* / (responsible /; s/$/)/' | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s%s x%s", (NR>1 ? ", " : ""), $0, c}')) (verdict=crash_reports_user_fault)"
   fi
   # The app name is the file name up to the "-YYYY-MM-DD" stamp macOS appends.
   top=$(crash_counts "$CRASH_DIR" 1440 | head -3)
