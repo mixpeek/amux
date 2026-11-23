@@ -46757,7 +46757,8 @@ function _crmTouchCard(t, withWho) {
     + (open && t.status !== 'approved'
       ? '<textarea class="input crm-ta" aria-label="Touch text" data-id="' + esc(t.id) + '" onchange="_crmTouchText(this.dataset.id,this.value)">' + esc(t.body || '') + '</textarea>'
       : (t.body ? '<span class="crm-ix-text">' + esc(t.body) + '</span>' : ''))
-    + (t.result || t.result_url ? '<span class="crm-meta">' + esc(t.result || '') + (t.result_url ? ' · <a class="crm-link" target="_blank" rel="noopener" href="' + esc(t.result_url) + '">link</a>' : '') + '</span>' : '')
+    // A worker writes result_url: only an http(s) link becomes a link (never javascript:).
+    + (t.result || t.result_url ? '<span class="crm-meta">' + esc(t.result || '') + (/^https?:\/\//i.test(t.result_url || '') ? ' · <a class="crm-link" target="_blank" rel="noopener" href="' + esc(t.result_url) + '">link</a>' : '') + '</span>' : '')
     + (open ? '<div class="crm-actions">'
       + (t.status === 'drafted' ? '<button class="btn primary" data-id="' + esc(t.id) + '" onclick="_crmTouchApprove(this.dataset.id)">Approve</button>' : '')
       + '<button class="btn" data-id="' + esc(t.id) + '" onclick="_crmTouchSkip(this.dataset.id)">Skip</button></div>' : '')

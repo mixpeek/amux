@@ -148,6 +148,7 @@ async fn create_channel(State(state): State<AppState>, Json(body): Json<Value>) 
         _ => return err(StatusCode::BAD_REQUEST, json!({ "error": "how is fetch or browser" })),
     };
     let every = body.get("check_every_min").and_then(Value::as_i64).unwrap_or(360).clamp(15, 10_080);
+    let how_stored = how.clone();
     let out: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
     let res = state
@@ -165,7 +166,7 @@ async fn create_channel(State(state): State<AppState>, Json(body): Json<Value>) 
         })
         .await;
     match res {
-        Ok(_) => (StatusCode::CREATED, Json(json!({ "id": slot(&out).take(), "ok": true, "how": default_how(&s("kind").to_lowercase()) }))).into_response(),
+        Ok(_) => (StatusCode::CREATED, Json(json!({ "id": slot(&out).take(), "ok": true, "how": how_stored }))).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -504,10 +505,10 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
     let res = state
         .store
         .write_async(move |conn| {
-            let cur: Option<(String, String, String, String, String)> = conn.query_row(
-                "SELECT status, action, channel, contact_id, body FROM crm_touches WHERE id=?1 AND deleted IS NULL", [&id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).ok();
-            let Some((status, action, channel, contact, text)) = cur else { *slot(&w) = Some(Err("not_found")); return Ok(WriteOutcome { applied: false, events: vec![] }) };
+            let cur: Option<(String, String, String, String, String, String)> = conn.query_row(
+                "SELECT status, action, channel, contact_id, body, account_id FROM crm_touches WHERE id=?1 AND deleted IS NULL", [&id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).ok();
+            let Some((status, action, channel, contact, text, account)) = cur else { *slot(&w) = Some(Err("not_found")); return Ok(WriteOutcome { applied: false, events: vec![] }) };
             // Reaching someone outside needs the owner's approval first; a note
             // or a follow is the worker's own business.
             let outward = !matches!(action.as_str(), "note" | "follow" | "like");
@@ -529,7 +530,9 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
                 )?;
             }
             *slot(&w) = Some(Ok(touch_row(conn, &id)?.unwrap_or(json!({ "id": id }))));
-            Ok(WriteOutcome { applied: true, events: vec![ev("crm_touch", &id, MutationKind::Updated), ev("crm_contact", &contact, MutationKind::Updated)] })
+            // The touch's owner refreshes: the person, or the company for a company touch.
+            let owner = if contact.is_empty() { ev("crm_account", &account, MutationKind::Updated) } else { ev("crm_contact", &contact, MutationKind::Updated) };
+            Ok(WriteOutcome { applied: true, events: vec![ev("crm_touch", &id, MutationKind::Updated), owner] })
         })
         .await;
     if let Err(e) = res {
@@ -556,7 +559,10 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
 /// The visible text of an HTML page, one meaningful line per item.
 pub(crate) fn page_items(html: &str) -> Vec<Value> {
     let mut s = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
+    // ASCII lowering keeps every byte offset, so `lower[i..]` and `html[i..]`
+    // stay aligned on any text (Unicode lowering changes lengths: 'İ' is 2
+    // bytes, its lowercase 3).
+    let lower = html.to_ascii_lowercase();
     let mut i = 0;
     let bytes = html.as_bytes();
     while i < bytes.len() {
@@ -792,6 +798,13 @@ mod tests {
     use crate::api::standing_approvals::tests::{call, test_state};
 
     #[test]
+    fn a_page_with_text_whose_case_changes_length_reads_without_a_panic() {
+        let items = page_items("<p>İstanbul ofisi</p><SCRIPT>x</SCRIPT><p>Ωmega Straße</p>");
+        let t: Vec<&str> = items.iter().map(|v| v["title"].as_str().unwrap()).collect();
+        assert_eq!(t, vec!["İstanbul ofisi", "Ωmega Straße"]);
+    }
+
+    #[test]
     fn a_page_reads_as_its_visible_lines() {
         let items = page_items("<html><script>var x=1</script><h1>Careers</h1><ul><li>Senior Video Engineer</li><li>ML Researcher &amp; Lead</li></ul><style>.a{}</style></html>");
         let t: Vec<&str> = items.iter().map(|v| v["title"].as_str().unwrap()).collect();
@@ -806,6 +819,8 @@ mod tests {
         let acme = a["id"].as_str().unwrap().to_string();
         let (st, c) = call(&app, "POST", "/channels", &[], Some(json!({"owner_kind": "account", "owner_id": acme, "kind": "careers", "url": "https://acme.io/careers", "watch": true}))).await;
         assert_eq!((st, c["how"].as_str()), (StatusCode::CREATED, Some("fetch")), "a careers page is fetched by the server");
+        let (_, b) = call(&app, "POST", "/channels", &[], Some(json!({"owner_kind": "account", "owner_id": acme, "kind": "careers", "url": "https://acme.io/jobs", "how": "browser"}))).await;
+        assert_eq!(b["how"].as_str(), Some("browser"), "the reply says the checker actually stored");
         let ch = c["id"].as_str().unwrap().to_string();
         let (_, r) = call(&app, "POST", &format!("/channels/{ch}/observed"), &[("x-amux-session", "gtm-engine")], Some(json!({"items": [{"title": "Video Engineer"}]}))).await;
         assert_eq!(r["changed"], false, "the first check only records");
