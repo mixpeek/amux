@@ -306,10 +306,19 @@ struct ImportResult {
 }
 
 async fn import(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     headers: HeaderMap,
     Json(body): Json<ImportRequest>,
 ) -> Response {
+    // The import decrypts the owner's browser cookies with the server's
+    // keychain access and writes them to a profile the caller names, so only
+    // the owner starts one (amux-security, 2026-11-23). The dashboard's import
+    // dialog sends the owner bearer; a worker, a member, or a caller with
+    // neither is refused and logged as browser_import_refused.
+    if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "browser_import_refused", "import browser sign-ins") {
+        return *r;
+    }
     let session = headers
         .get("x-amux-session")
         .and_then(|v| v.to_str().ok())
@@ -892,5 +901,31 @@ mod site_filter_tests {
         assert!(!cookie_for_site("evilgoogle.com", "google.com"), "a suffix match is not a subdomain");
         assert!(!cookie_for_site("com", "google.com"), "never a bare public suffix");
         assert!(!cookie_for_site("", "google.com"));
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    #[tokio::test]
+    async fn only_the_owner_imports_browser_sign_ins() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        use axum::http::StatusCode;
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = super::routes().with_state(state);
+        let body = serde_json::json!({"browser_id": "chrome", "profile_name": "Default", "destination": "", "sites": []});
+        for (h, why) in [
+            (vec![("x-amux-session", "lane-t"), ("authorization", "Bearer owner-secret")], "a worker with the bearer"),
+            (vec![("x-amux-worker", "lane-t")], "a worker"),
+            (vec![], "a caller with no identity and no bearer"),
+        ] {
+            let (st, _) = call(&app, "POST", "/", &h, Some(body.clone())).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{why} must not import sign-ins");
+        }
+        // The owner passes the check and reaches validation (no destination).
+        let (st, v) = call(&app, "POST", "/", &[("authorization", "Bearer owner-secret")], Some(body)).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     }
 }
