@@ -32,7 +32,8 @@ pub fn routes() -> Router<AppState> {
 
 /// `GET /broker/next?wait=S`: the Mac app's long poll for the next call
 /// that passed the gate in `/call`. Owner only: the app sends the owner
-/// bearer, and nothing else may take a call meant for the driver.
+/// bearer, and nothing else may take a call meant for the driver. It waits
+/// only when asked (the app asks for 25s), so a bare GET answers at once.
 async fn broker_next(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
@@ -46,7 +47,7 @@ async fn broker_next(
         .get("wait")
         .and_then(|v| v.parse::<u64>().ok())
         .map(std::time::Duration::from_secs)
-        .unwrap_or(mac::POLL_WAIT)
+        .unwrap_or(std::time::Duration::ZERO)
         .min(mac::POLL_WAIT);
     match mac::broker().next(wait).await {
         Some(job) => Json(json!({ "job": job })).into_response(),

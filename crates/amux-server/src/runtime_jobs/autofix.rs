@@ -186,6 +186,10 @@ const LONG_BY_DESIGN: &[(&str, f64)] = &[
     // on a loaded host. The control-mode client that removes the spawn
     // (backend/tmux_ctl.rs) has been off since it crashed the fleet (AF-1056).
     ("/api/sessions/{name}/peek", 15_000.0),
+    // GET /api/computer/mac/broker/next (2026-11-23): the Mac app's long poll
+    // for computer-use calls. It waits up to POLL_WAIT (25s) for a call by
+    // design and answers "none" at the end, so 30s is past its own bound.
+    ("/api/computer/mac/broker/next", 30_000.0),
     // POST /api/browser/navigate (AMUX-3835). The duration is a REMOTE PAGE
     // LOAD plus a settle, so the wait belongs to the site, not to amux. The
     // budget is this endpoint's OWN bound, added up rather than guessed:

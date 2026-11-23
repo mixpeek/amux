@@ -2783,6 +2783,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/computer/mac/activity",
         methods: &["GET"],
     },
+    RouteEntry {
+        path: "/api/computer/mac/broker/next",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/computer/mac/broker/result",
+        methods: &["POST"],
+    },
     // -- file viewer / files / fs
     RouteEntry {
         path: "/api/file",
