@@ -129,6 +129,16 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
           # Launchers: `env X=1 git ...` and friends hold the socket the same way.
           "env", "xargs", "nohup", "timeout", "sudo"}
 
+# git, and the utilities a git or gh script runs while its socket is open (a
+# child of `git fetch` that execs `date` or `grep` inherits the connection and
+# lsof names the child). Accepting these by name would hide them reaching any
+# host, and alerting on GitHub alone was every alert they raised (11-22 to
+# 11-24: grep, date and git, each to 140.82.112.0/20). So they are judged per
+# destination like a shell: GitHub is quiet, anything else alerts.
+GIT_AND_INHERITORS = {"git", "git-remote-https", "git-remot", "date", "grep", "sed",
+                      "awk", "cat", "head", "tail", "sort", "cut", "tr", "wc", "sleep"}
+PER_DESTINATION = SHELLS | GIT_AND_INHERITORS
+
 
 def is_github(addr: str) -> bool:
     # 140.82.112.0/20, GitHub's git and API front ends (api.github.com/meta).
@@ -302,7 +312,7 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         out.append({"key": f"firewall:{snap['firewall']}", "kind": "FIREWALL", "state": snap["firewall"]})
     known_egress = set(base.get("egress", []))
     for cmd in sorted(snap["egress"]):
-        if cmd in SHELLS:
+        if cmd in PER_DESTINATION:
             for addr in sorted(snap["egress"][cmd]):
                 if not is_github(addr):
                     out.append({"key": f"egress:{cmd}:{addr}", "kind": "NEW-EGRESS",

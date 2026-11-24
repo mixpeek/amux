@@ -130,6 +130,11 @@ check("a shell alerts once per non-GitHub destination even when accepted by name
 check("a launcher is judged per destination like a shell",
       not any(r["kind"] == "NEW-EGRESS" for r in nw.evaluate(
           {**snap, "egress": {"env": {"140.82.114.4"}}}, base, reqs)))
+git_rows = [r["key"] for r in nw.evaluate(
+    {**snap, "egress": {"git": {"140.82.114.3", "203.0.113.7"}, "date": {"140.82.112.4"}}},
+    {**base, "egress": ["claude", "git", "date"]}, reqs) if r["kind"] == "NEW-EGRESS"]
+check("git and a child that inherits its socket are quiet to GitHub and alert elsewhere, even accepted by name",
+      git_rows == ["egress:git:203.0.113.7"], str(git_rows))
 now = 1_000_000.0
 kept = nw.remember({"listener:node:3931": now - 3600, "old": now - 25 * 3600}, ["new"], now)
 check("a key gone for an hour stays quiet, one gone a day alerts again",
