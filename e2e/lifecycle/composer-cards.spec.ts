@@ -25,7 +25,8 @@ for (const mode of ['send', 'steer'] as const) {
     try {
       await page.goto('/');
       const card = page.locator(`#cards .card[data-session="${name}"]`).locator('visible=true').first();
-      await card.locator('.card-name').click();
+      // The name opens the worker (#491); the header beside it unfolds the card.
+      await card.locator('.card-header-top').click({ position: { x: 2, y: 2 }, force: true });
       const input = card.locator('textarea.send-input');
       const send = card.locator('.send-split-main');
       await expect(input).toBeVisible();
