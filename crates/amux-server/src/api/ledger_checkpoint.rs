@@ -345,13 +345,39 @@ pub fn latest(conn: &Connection) -> rusqlite::Result<Option<Checkpoint>> {
 type CheckpointSlot = std::sync::Arc<std::sync::Mutex<Option<Result<Option<Checkpoint>, String>>>>;
 
 pub fn create(conn: &Connection, home: &Path, now_ms: i64, force: bool) -> Result<Option<Checkpoint>, String> {
-    super::ledger::seal(conn).map_err(|e| e.to_string())?;
-    let head: Option<(i64, String)> = conn
-        .query_row("SELECT seq, hash FROM _amux_ledger WHERE hash IS NOT NULL ORDER BY seq DESC LIMIT 1", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+    create_counted(conn, home, now_ms, force, None)
+}
+
+/// The sealed head: its seq and hash.
+fn head_of(conn: &Connection) -> Result<Option<(i64, String)>, String> {
+    conn.query_row("SELECT seq, hash FROM _amux_ledger WHERE hash IS NOT NULL ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+/// `create`, with the head and its row count measured beforehand outside the
+/// writer (`counted` = (seq, hash, n_rows)). The count is a full scan of the
+/// ledger: 40 s cold on a 15.8 GB database, and 165 s at 16:36Z 2026-11-24
+/// under memory pressure, during which every write on the server waited (a
+/// schedule PATCH timed out three times). With `counted`, the writer signs that
+/// head, provided its row still carries that hash (the ledger is append-only,
+/// so it does), and does no scan.
+pub fn create_counted(conn: &Connection, home: &Path, now_ms: i64, force: bool, counted: Option<(i64, String, i64)>) -> Result<Option<Checkpoint>, String> {
+    if let Some((seq, hash, _)) = &counted {
+        let still: Option<String> = conn
+            .query_row("SELECT hash FROM _amux_ledger WHERE seq=?1", [seq], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if still.as_deref() != Some(hash.as_str()) {
+            return create_counted(conn, home, now_ms, force, None);
+        }
+    } else {
+        super::ledger::seal(conn).map_err(|e| e.to_string())?;
+    }
+    let head: Option<(i64, String)> = match &counted {
+        Some((seq, hash, _)) => Some((*seq, hash.clone())),
+        None => head_of(conn)?,
+    };
     let (seq, head_hash) = match head {
         Some(h) => h,
         None => {
@@ -367,9 +393,10 @@ pub fn create(conn: &Connection, home: &Path, now_ms: i64, force: bool) -> Resul
         counters::bump(&counters::SKIPPED_NO_NEW_ROWS);
         return Ok(None);
     }
-    let n_rows: i64 = conn
-        .query_row("SELECT COUNT(*) FROM _amux_ledger WHERE seq <= ?1", [seq], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+    let n_rows: i64 = match &counted {
+        Some((s, _, n)) if *s == seq => *n,
+        _ => count_upto(conn, seq)?,
+    };
     let seed = seed(home, true)?.ok_or("no signing key")?;
     let kp = keypair(&seed)?;
     let mut cp = Checkpoint {
@@ -399,6 +426,10 @@ pub fn create(conn: &Connection, home: &Path, now_ms: i64, force: bool) -> Resul
     tracing::info!(verdict = "ledger_checkpoint_created", seq = cp.seq, checkpoint = %cp.checkpoint_hash,
         measured = true, n_considered = 1, "ledger head signed");
     Ok(Some(cp))
+}
+
+fn count_upto(conn: &Connection, seq: i64) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM _amux_ledger WHERE seq <= ?1", [seq], |r| r.get(0)).map_err(|e| e.to_string())
 }
 
 // ── Verify ─────────────────────────────────────────────────────────────────
@@ -924,14 +955,38 @@ pub async fn tick(state: &AppState, force: bool) -> Value {
     let home = crate::config::amux_home();
     let now = chrono::Utc::now().timestamp_millis();
     let due_after_ms = (interval_s() as i64) * 1000;
+    // Seal in its own short write, then count in a read snapshot, so the
+    // writer is held only to sign and insert (see create_counted).
+    let due = match state.store.read_async(move |conn| Ok(force || latest(conn)?.map(|l| now - l.ts >= due_after_ms).unwrap_or(true))).await {
+        Ok(d) => d,
+        Err(e) => return json!({"ok": false, "error": e.to_string()}),
+    };
+    if !due {
+        return json!({"ok": true, "created": null, "exports": export(state, &home).await});
+    }
+    if let Err(e) = state.store.write_async(|conn| { let n = super::ledger::seal(conn)?; Ok(WriteOutcome { applied: n > 0, events: vec![] }) }).await {
+        tracing::warn!(verdict = "ledger_checkpoint_seal_failed", error = %e, measured = true, n_considered = 1, "sealing before the checkpoint failed; the checkpoint seals in its own write");
+    }
+    let t0 = std::time::Instant::now();
+    let counted = state
+        .store
+        .read_async(|conn| -> anyhow::Result<Option<(i64, String, i64)>> {
+            Ok(match head_of(conn).map_err(anyhow::Error::msg)? {
+                Some((seq, hash)) => Some((seq, hash, count_upto(conn, seq).map_err(anyhow::Error::msg)?)),
+                None => None,
+            })
+        })
+        .await
+        .ok()
+        .flatten();
+    tracing::info!(verdict = "ledger_checkpoint_counted", elapsed_ms = t0.elapsed().as_millis() as u64, measured = counted.is_some(),
+        n_considered = counted.as_ref().map(|c| c.2).unwrap_or(0), "the ledger was counted outside the writer");
     let slot: CheckpointSlot = Default::default();
     let (s2, h2) = (slot.clone(), home.clone());
     let res = state
         .store
         .write_async(move |conn| {
-            let due = force
-                || latest(conn)?.map(|l| now - l.ts >= due_after_ms).unwrap_or(true);
-            let r = if due { create(conn, &h2, now, force) } else { Ok(None) };
+            let r = create_counted(conn, &h2, now, force, counted);
             let applied = matches!(r, Ok(Some(_)));
             *s2.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
             Ok(WriteOutcome { applied, events: vec![] })
@@ -1111,6 +1166,27 @@ mod tests {
 
     fn verify(conn: &Connection, home: &Path) -> Value {
         verify_all(conn, home)
+    }
+
+    #[test]
+    fn a_head_counted_outside_the_writer_is_signed_as_counted_and_a_moved_one_is_recounted() {
+        file_keystore();
+        let home = tempfile::tempdir().unwrap();
+        let c = db();
+        ledger::append(&c, &ev("a", 1));
+        ledger::append(&c, &ev("b", 2));
+        ledger::seal(&c).unwrap();
+        let (seq, hash) = head_of(&c).unwrap().unwrap();
+        ledger::append(&c, &ev("c", 3));
+        // Signs the head it counted, with that count, though a row came after.
+        let cp = create_counted(&c, home.path(), 10, false, Some((seq, hash, 2))).unwrap().expect("signed");
+        assert_eq!((cp.seq, cp.n_rows), (seq, 2));
+        export_jsonl(home.path(), &all(&c).unwrap()).unwrap();
+        let v = verify(&c, home.path());
+        assert_eq!(v["ok"], json!(true), "{v}");
+        // A hash that is not that row's is not trusted: it seals and counts itself.
+        let cp2 = create_counted(&c, home.path(), 20, false, Some((seq, "not-the-hash".into(), 99))).unwrap().expect("signed");
+        assert_eq!(cp2.n_rows, 3, "counted in the writer, not the stale 99");
     }
 
     #[test]
