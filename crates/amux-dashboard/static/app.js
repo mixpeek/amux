@@ -45455,10 +45455,10 @@ let _frozen = localStorage.getItem('amux_frozen') === '1';
 let _sortable = null;
 let _tileJustDragged = false; // keep for toggle() guard
 
-// Natural sort: pinned first, then most recently active
-// Sort that matches the server's list_sessions() order:
-// pinned > running > status priority (active/waiting=0, idle/none=1) > last_activity desc
-const _STATUS_PRI = {active: 0, waiting: 0, idle: 1, '': 1};
+// "Recent activity": pinned > running > last_activity desc. No status tier:
+// ranking working/waiting above idle first meant a worker you had just started
+// and that went idle sat below every busy lane, under a label that promises
+// recency (ha-bed-lights, 2026-11-24). Status order is the 'status' sort's job.
 // Status sorting and grouping share the same keys as the displayed filters.
 // Pins cannot move an idle worker into the working group (AMUX-4237).
 const _WORKER_STATUS_GROUPS = [
@@ -45477,10 +45477,9 @@ const _WORKER_STATUS_PRI = Object.fromEntries(_WORKER_STATUS_GROUPS.map((g, i) =
 let _workerStatusOrderVerdict = '';
 function _naturalSortSessions(a, b) {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  if (a.running !== b.running) return a.running ? -1 : 1;
-  const ap = _STATUS_PRI[a.status] ?? 1, bp = _STATUS_PRI[b.status] ?? 1;
-  if (ap !== bp) return ap - bp;
-  return (b.last_activity || 0) - (a.last_activity || 0);
+  if (!!a.running !== !!b.running) return a.running ? -1 : 1;
+  return (b.last_activity || 0) - (a.last_activity || 0)
+    || (a.name || '').localeCompare(b.name || '');
 }
 
 // Alphabetical sort: pinned first, then by name — stable across activity changes
