@@ -6214,7 +6214,12 @@ const _origFetch = window.fetch.bind(window);
 // four days, none in the request log, each press held 30 s at "accepted"
 // (press_busy_released_unsettled), and the workers stayed. A delete now goes
 // to the server or says it did not.
-const _OUTBOX_SKIP = /\/api\/(sessions\/[^/?#]+\/delete(?:[?#]|$)|email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
+// `palette/visit` and `palette/history/import` joined 2026-11-24: a Cmd-K
+// visit is a ranking hint that is also counted locally (_NAV.usage), so offline
+// it is dropped, not queued. Queued, three visits sat in the outbox beside a
+// person's real edits and sends, and LC-OFFLINE-ROUNDTRIP counted 8 held
+// operations where it made 5 (AF-1392, red on every scheduled run since 278d16114).
+const _OUTBOX_SKIP = /\/api\/(palette\/(?:visit|history\/import)(?:[?#]|$)|sessions\/[^/?#]+\/delete(?:[?#]|$)|email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
