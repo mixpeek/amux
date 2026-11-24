@@ -1223,6 +1223,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("crm_channels", "last_changed_at", false),
     ("crm_touches", "approved_at", false),
     ("crm_touches", "done_at", false),
+    ("crm_touches", "due_announced_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
     // api/palette_history.rs writes Date-style epoch milliseconds (now_ms).

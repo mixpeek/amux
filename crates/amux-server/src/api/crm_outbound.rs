@@ -21,7 +21,7 @@
 //! {name}, {company}, {role} and {signal} (the newest thing a watched channel showed),
 //! and the brief carries the rest.
 //! Verdicts: crm_touch_suppressed, crm_touch_duplicate, crm_touch_cooldown,
-//! crm_sequence_enrolled, crm_sequence_advanced, crm_sequence_stopped_on_reply,
+//! crm_sequence_enrolled, crm_sequence_advanced, crm_sequence_stopped_on_reply, crm_sequence_stopped_by_guard,
 //! crm_contact_unsubscribed_by_reply, crm_touch_due_emitted.
 
 use super::calendar::query_rows_json;
@@ -187,7 +187,19 @@ pub(crate) fn advance(conn: &rusqlite::Connection, touch: &str) -> rusqlite::Res
     if !active {
         return Ok(None);
     }
-    let next = plan_step(conn, &seq, &contact, step as usize + 1, &assignee, &format!("sequence:{seq}"))?;
+    // The next step passes the same checks as any touch: the person may have
+    // opted out since, or another lane may have a touch open on that channel.
+    let n = step as usize + 1;
+    if let Some(next) = steps_of(conn, &seq).and_then(|(s, _)| s.get(n - 1).cloned()) {
+        let (ch, ac) = (next["channel"].as_str().unwrap_or(""), next["action"].as_str().unwrap_or(""));
+        if let Some((verdict, why, existing)) = guard(conn, &contact, ch, ac, &seq, false) {
+            conn.execute("UPDATE crm_enrollments SET status='stopped', updated=?3 WHERE sequence_id=?1 AND contact_id=?2", rusqlite::params![&seq, &contact, now_secs()])?;
+            tracing::info!(target: "amux::crm", sequence = %seq, contact = %contact, step = n, refused_by = verdict, existing = %existing, measured = true, n_considered = 1,
+                verdict = "crm_sequence_stopped_by_guard", "the next step was not planned and the sequence stopped for this person: {why}");
+            return Ok(None);
+        }
+    }
+    let next = plan_step(conn, &seq, &contact, n, &assignee, &format!("sequence:{seq}"))?;
     match &next {
         Some(id) => tracing::info!(target: "amux::crm", sequence = %seq, contact = %contact, touch = %id, step = step + 1, measured = true, n_considered = 1,
             verdict = "crm_sequence_advanced", "the next step of a sequence is planned"),
@@ -660,6 +672,28 @@ mod tests {
         assert_eq!((st, r["code"].as_str()), (StatusCode::CONFLICT, Some("crm_touch_cooldown")));
         let (st, _) = call(&app, "POST", "/touches", &w, Some(json!({"contact_id": ids[1], "channel": "linkedin", "action": "dm", "body": "owner says go", "force": true}))).await;
         assert_eq!(st, StatusCode::CREATED, "force passes the cooldown");
+    }
+
+    #[tokio::test]
+    async fn the_next_step_is_not_planned_for_someone_who_opted_out_and_approval_says_why() {
+        let (app, _state, ids) = app_with_people().await;
+        let owner = [("authorization", "Bearer owner-secret")];
+        let w = [("x-amux-session", "amux-gtm")];
+        let (_, s) = call(&app, "POST", "/sequences", &w, Some(json!({"name": "two", "steps": [
+            {"channel": "email", "action": "email", "template": "hi"}, {"day": 1, "channel": "linkedin", "action": "dm", "template": "again"}]}))).await;
+        let seq = s["id"].as_str().unwrap().to_string();
+        let (_, e) = call(&app, "POST", &format!("/sequences/{seq}/enroll"), &w, Some(json!({"contact_ids": [ids[0].clone(), ids[1].clone()]}))).await;
+        let t0 = e["enrolled"][0]["touch_id"].as_str().unwrap().to_string();
+        let t1 = e["enrolled"][1]["touch_id"].as_str().unwrap().to_string();
+        call(&app, "POST", &format!("/touches/{t0}/approve"), &owner, None).await;
+        call(&app, "PATCH", &format!("/contacts/{}", ids[0]), &owner, Some(json!({"status": "do_not_contact"}))).await;
+        let (_, d) = call(&app, "POST", &format!("/touches/{t0}/done"), &w, Some(json!({"result": "sent"}))).await;
+        assert!(d["touch"]["next_touch"].is_null(), "no step 2 for someone marked do_not_contact");
+        let (_, v) = call(&app, "GET", &format!("/sequences/{seq}"), &w, None).await;
+        assert_eq!(v["enrollments"][0]["status"], "stopped");
+        call(&app, "PATCH", &format!("/contacts/{}", ids[1]), &owner, Some(json!({"status": "do_not_contact"}))).await;
+        let (st, r) = call(&app, "POST", &format!("/touches/{t1}/approve"), &owner, None).await;
+        assert_eq!((st, r["code"].as_str()), (StatusCode::CONFLICT, Some("crm_touch_suppressed")), "the refusal names the reason");
     }
 
     #[tokio::test]

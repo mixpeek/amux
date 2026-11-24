@@ -493,6 +493,8 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
     }
     let out: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
+    let refused: Arc<Mutex<Option<super::crm_outbound::Refusal>>> = Arc::new(Mutex::new(None));
+    let wr = refused.clone();
     let res = state
         .store
         .write_async(move |conn| {
@@ -501,7 +503,8 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
                 .query_row("SELECT contact_id, channel, action FROM crm_touches WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .ok();
             if let Some((c, ch, ac)) = who {
-                if super::crm_outbound::guard(conn, &c, &ch, &ac, "", true).is_some() {
+                if let Some(g) = super::crm_outbound::guard(conn, &c, &ch, &ac, "", true) {
+                    *slot(&wr) = Some(g);
                     return Ok(WriteOutcome { applied: false, events: vec![] });
                 }
             }
@@ -515,6 +518,10 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
         .await;
     if let Err(e) = res {
         return internal(e);
+    }
+    if let Some((verdict, why, _)) = slot(&refused).take() {
+        tracing::info!(target: "amux::crm", measured = true, n_considered = 1, verdict, "an approval was refused: {why}");
+        return err(StatusCode::CONFLICT, json!({ "error": why, "code": verdict }));
     }
     let row = slot(&out).take();
     match row {
