@@ -4309,6 +4309,9 @@
     margin: 0;
     gap: 1px;
     overflow: visible;
+    /* The line under the strip, across the whole window; the active tab
+       covers it where it opens into the page (owner, 2026-11-23). */
+    box-shadow: inset 0 -1px 0 var(--border);
   }
   .chrome-tab {
     display: flex; align-items: center; gap: var(--space-1);
@@ -4329,8 +4332,11 @@
     background: var(--bg); color: var(--text);
     border-color: var(--border);
     margin-bottom: -1px; padding-bottom: var(--space-2);
+    z-index: 1;
   }
-  .chrome-tab-label { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; pointer-events: none; }
+  /* As tall as the ✕, so a lone tab (no ✕) is as tall as the rest and the
+     chevron beside the strip stays centred on them. */
+  .chrome-tab-label { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; pointer-events: none; line-height: 18px; }
   .chrome-tab-close {
     flex-shrink: 0; width: 18px; height: 18px;
     border-radius: var(--radius-round); display: flex; align-items: center; justify-content: center;
@@ -4363,21 +4369,37 @@
     color: var(--text); white-space: nowrap;
   }
   .chrome-tab-menu-item:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+  /* THE CHEVRON (owner, 2026-11-23: not centred beside the tabs, and "very
+     very small and hard to press" once the strip is hidden). Beside the tabs
+     it is a round button like +, centred on the tab row. Hidden, the strip
+     leaves a pull tab hanging from the top edge, centred where the page
+     header has no controls of its own. */
   .chrome-tab-collapse {
-    flex-shrink: 0; margin-left: auto; padding: var(--space-1) var(--space-2-5);
+    flex-shrink: 0; margin-left: auto; align-self: center;
+    width: 28px; height: 28px; padding: 0;
+    border-radius: var(--radius-round); display: flex; align-items: center; justify-content: center;
     background: none; border: none; color: var(--dim); cursor: pointer;
-    font-size: var(--fs-xs); line-height: 1; display: flex; align-items: center;
-    transition: color 0.12s; min-width: 44px; min-height: 20px; justify-content: center;
+    transition: color 0.12s, background 0.12s, opacity 0.12s;
   }
-  .chrome-tab-collapse:hover { color: var(--text); }
+  .chrome-tab-collapse svg { display: block; transition: transform 0.12s; }
+  .chrome-tab-collapse:hover { color: var(--text); background: color-mix(in srgb, var(--on-solid) 10%, transparent); }
+  body.light .chrome-tab-collapse:hover { background: color-mix(in srgb, var(--shade) 7%, transparent); }
   .chrome-tabs-bar.collapsed .chrome-tab,
   .chrome-tabs-bar.collapsed .chrome-tab-add { display: none; }
-  .chrome-tabs-bar.collapsed { padding: 0; height: 0; min-height: 0; overflow: visible; background: none; }
+  .chrome-tabs-bar.collapsed { padding: 0; height: 0; min-height: 0; overflow: visible; background: none; box-shadow: none; }
   .chrome-tabs-bar.collapsed .chrome-tab-collapse {
-    position: absolute; top: env(safe-area-inset-top, 4px); right: 4px;
-    opacity: 0.3; z-index: 1001; padding: var(--space-1-5) var(--space-2-5);
+    position: absolute; top: env(safe-area-inset-top, 0px); left: 50%; transform: translateX(-50%);
+    width: 64px; height: 18px; margin: 0;
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    background: color-mix(in srgb, var(--bg), var(--shade) 12%);
+    border: 1px solid var(--border); border-top: none;
+    opacity: 0.8; z-index: 1001;
   }
-  .chrome-tabs-bar.collapsed .chrome-tab-collapse:hover { opacity: 1; }
+  body.light .chrome-tabs-bar.collapsed .chrome-tab-collapse { background: color-mix(in srgb, var(--bg), var(--shade) 6%); }
+  /* A taller hit area than the tab shows, so it is easy to catch. */
+  .chrome-tabs-bar.collapsed .chrome-tab-collapse::after { content: ''; position: absolute; inset: 0 -8px -10px; }
+  .chrome-tabs-bar.collapsed .chrome-tab-collapse svg { transform: rotate(180deg); }
+  .chrome-tabs-bar.collapsed .chrome-tab-collapse:hover { opacity: 1; height: 22px; color: var(--text); }
   .chrome-tab-frames { position: fixed; top: var(--chrome-tab-h, 36px); left: 0; right: 0; bottom: 0; z-index: 999; display: none; }
   .chrome-tab-frames.active { display: block; }
   .chrome-tab-frames iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: none; background: var(--bg); }
