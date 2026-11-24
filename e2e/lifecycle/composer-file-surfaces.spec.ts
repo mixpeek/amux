@@ -18,7 +18,8 @@ for(const surface of ['card','details'] as const) for(const mode of ['Send','Que
     // This helper deliberately returns to Workers. A bare root URL restores
     // the saved peek after boot, racing the card-menu click on iOS.
     await page.goto('/#view=sessions');await expect(page.locator('#peek-overlay')).not.toHaveClass(/active/);const card=page.locator(`#cards .card[data-session="${name}"]`).locator('visible=true').first();
-    if(surface==='card'){await card.locator('.card-name').click();return card;}
+    // The name opens the worker (#491); the header beside it unfolds the card.
+    if(surface==='card'){await card.locator('.card-header-top').click({position:{x:2,y:2},force:true});return card;}
     await card.locator('.card-menu-btn').click();await page.locator('.card-menu.open [data-worker-action="peek-terminal"]').click();return page.locator('#peek-overlay');
   };
   const queue=()=>page.evaluate(name=>JSON.parse(localStorage.getItem('amux_offline_queue')||'[]').filter((q:any)=>q.url.includes('/'+name+'/')),name);
