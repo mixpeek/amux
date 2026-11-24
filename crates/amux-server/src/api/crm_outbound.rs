@@ -9,7 +9,7 @@
 //!   PATCH /api/crm/sequences/{id}, DELETE (soft)
 //!   POST /api/crm/sequences/{id}/enroll  {contact_ids} or {filter: {grade, tag, status, source, limit}}
 //!   POST /api/crm/sequences/{id}/stop    {contact_id}
-//!   GET  /api/crm/contacts/{id}/brief    everything a drafter needs to make a touch personal
+//!   GET  /api/crm/contacts/{id}/brief    everything a drafter needs to make a touch personal, and the voice to write it in
 //!
 //! Timely: enrolling plans step 1; a step done plans the next, due its days later;
 //! crm-watch emits crm.touch.due once for each open touch whose day has come, so its
@@ -205,10 +205,11 @@ fn plan_step(conn: &rusqlite::Connection, seq: &str, contact: &str, n: usize, fa
     let id = next_issue_id(conn, "TCH")?;
     let now = now_secs();
     conn.execute(
-        "INSERT INTO crm_touches (id,contact_id,channel,action,body,due_date,assignee,status,sequence,step,source,created,updated) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12)",
+        "INSERT INTO crm_touches (id,contact_id,channel,action,body,due_date,assignee,status,sequence,step,source,created,updated,voice_check) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,?13)",
         rusqlite::params![&id, contact, s("channel"), s("action"), &body, day_plus(step.get("day").and_then(Value::as_i64).unwrap_or(0)),
-            &assignee, if body.is_empty() { "planned" } else { "drafted" }, seq, n as i64, source, now],
+            &assignee, if body.is_empty() { "planned" } else { "drafted" }, seq, n as i64, source, now,
+            super::crm_voice::plan_check(conn, &s("channel"), &s("action"), n as i64, &body)],
     )?;
     conn.execute("UPDATE crm_enrollments SET step=?3, updated=?4 WHERE sequence_id=?1 AND contact_id=?2", rusqlite::params![seq, contact, n as i64, now])?;
     Ok(Some(id))
@@ -337,10 +338,11 @@ pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<O
         "SELECT e.sequence_id, s.name, e.status, e.step FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1", &p[..1])?;
     let lookalikes = if account.is_empty() { vec![] } else { super::crm_accounts::lookalikes_of(conn, "account", &account)? };
     let replied = activity.iter().find(|a| a["direction"] == "in").cloned().unwrap_or(Value::Null);
+    let voice = super::crm_voice::brief_voice(conn, &channels, &person)?;
     let can_reach = guard(conn, id, "email", "email", "", true).map(|(v, m, _)| json!({ "ok": false, "verdict": v, "why": m })).unwrap_or(json!({ "ok": true }));
     Ok(Some(json!({
         "person": person, "company": company, "channels": channels, "signals": signals, "activity": activity, "last_inbound": replied,
-        "touches": touches, "deals": deals, "sequences": sequences, "lookalikes": lookalikes, "can_reach": can_reach,
+        "touches": touches, "deals": deals, "sequences": sequences, "lookalikes": lookalikes, "can_reach": can_reach, "voice": voice,
         "measured": true, "n_considered": activity.len() + touches.len() + signals.len(),
     })))
 }

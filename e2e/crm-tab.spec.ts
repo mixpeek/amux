@@ -218,6 +218,34 @@ test('a worker plans a touch, the owner approves it, the worker records it done,
   await page.screenshot({ path: test.info().outputPath('crm-agent.png') });
 });
 
+// The voice (owner 2026-11-24: "a voice that we're able to capture and adhere
+// to throughout each of these engagements and touchpoints"): a worker's draft
+// that breaks it is refused with what broke; sent anyway with a reason, the
+// owner's card says what broke and why, before Approve.
+test('a draft that breaks the voice is refused, and one sent anyway shows why on the card', async ({ page }, info) => {
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  await openCrm(page);
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': 'gtm-engine' }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b] as const);
+  const v = await api(page, 'POST', '/voices', { sender: 'e2e-' + R, name: 'e2e', rules: { channels: { 'slack/dm': { max_chars: 30 } } } });
+  expect(v.status).toBe(201);
+  const made = await api(page, 'POST', '/contacts', { name: 'Voice Target ' + R, email: `voice.${R}@example.com` });
+  const text = 'A slack answer that runs well past thirty characters ' + R;
+  const draft = { contact_id: made.body.id, channel: 'slack', action: 'dm', voice: v.body.id, body: text };
+  const refused = await asWorker('POST', '/touches', draft);
+  expect(refused.status).toBe(422);
+  expect(refused.body.code).toBe('crm_touch_voice');
+  expect(refused.body.error).toContain('slack/dm is at most 30');
+  const kept = await asWorker('POST', '/touches', { ...draft, voice_override: 'their thread asked for detail' });
+  expect(kept.status).toBe(201);
+  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
+  const line = page.locator('#crm-list .crm-touch', { hasText: R }).locator('.crm-voice');
+  await expect(line).toContainText('slack/dm is at most 30');
+  await expect(line).toContainText('sent as written because: their thread asked for detail');
+});
+
 // Outbound (owner 2026-11-24: "use every crm feature for amux outbound ...
 // effective personal timely", "multiple touch points too offline and online").
 test('a sequence mixes online and offline steps: step 1 drafted from a template, approved, the next planned, a letter recorded done', async ({ page }, info) => {

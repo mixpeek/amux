@@ -47186,6 +47186,20 @@ function _crmSteps(steps) {
   return (list || []).map((x, i) => (i ? 'day ' + (x.day || 0) + ' ' : '') + x.channel + ' ' + x.action).join(' · ');
 }
 
+// The voice check of the text (api/crm_voice.rs; Ethan, 2026-11-24: "a voice
+// that we're able to capture and adhere to"): what broke, a worker's reason
+// for sending it anyway, and what the link check found.
+function _crmVoiceLine(t) {
+  let v = t.voice_check;
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch (_) { v = null; } }
+  if (!v || !t.body) return '';
+  const links = v.links || {};
+  const linkText = links.measured === true ? 'links: ' + (links.summary || links.checked + ' checked') : 'links not checked yet';
+  const head = v.ok ? 'Voice: fits' + (v.rule ? ' ' + v.rule : '') : 'Voice: ' + (v.problems || []).join('; ');
+  return '<span class="crm-meta crm-voice' + (v.ok ? '' : ' crm-voice-bad') + '">' + esc(head)
+    + (v.override ? ' · sent as written because: ' + esc(v.override) : '') + ' · ' + esc(linkText) + '</span>';
+}
+
 function _crmTouchCard(t, withWho) {
   const open = ['planned', 'drafted', 'approved'].includes(t.status);
   const who = withWho ? '<button class="crm-link" data-id="' + esc(t.contact_id || t.account_id) + '" data-kind="' + (t.contact_id ? 'person' : 'company') + '" onclick="_crmOpen(this.dataset.kind,this.dataset.id)">' + esc(t.contact_name || t.account_name) + '</button> · ' : '';
@@ -47194,6 +47208,7 @@ function _crmTouchCard(t, withWho) {
     + (open && t.status !== 'approved'
       ? '<textarea class="input crm-ta" aria-label="Touch text" data-id="' + esc(t.id) + '" onchange="_crmTouchText(this.dataset.id,this.value)">' + esc(t.body || '') + '</textarea>'
       : (t.body ? '<span class="crm-ix-text">' + esc(t.body) + '</span>' : ''))
+    + _crmVoiceLine(t)
     // A worker writes result_url: only an http(s) link becomes a link (never javascript:).
     + (t.result || t.result_url ? '<span class="crm-meta">' + esc(t.result || '') + (/^https?:\/\//i.test(t.result_url || '') ? ' · <a class="crm-link" target="_blank" rel="noopener" href="' + esc(t.result_url) + '">link</a>' : '') + '</span>' : '')
     + (open ? '<div class="crm-actions">'

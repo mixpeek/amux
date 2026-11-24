@@ -401,6 +401,14 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
     let step = body.get("step").and_then(Value::as_i64).unwrap_or(0);
     let status = if text.is_empty() { "planned" } else { "drafted" };
     let force = body.get("force").and_then(Value::as_bool) == Some(true);
+    // The voice (api/crm_voice.rs): a text is checked when it is written.
+    let voice_check = if text.is_empty() { None } else {
+        let mut c = super::crm_voice::check_touch(&state, &s("voice"), &channel, &action, step.max(1), &text).await;
+        if let Some(r) = super::crm_voice::refusal(&mut c, super::standing_approvals::is_owner_request(&headers), &s("voice_override"), "new") {
+            return r;
+        }
+        Some(c.to_string())
+    };
     let out: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
     let refused: Arc<Mutex<Option<super::crm_outbound::Refusal>>> = Arc::new(Mutex::new(None));
@@ -417,10 +425,10 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
             let id = next_issue_id(conn, "TCH")?;
             let now = now_secs();
             conn.execute(
-                "INSERT INTO crm_touches (id,contact_id,account_id,channel,action,body,target_url,due_date,assignee,status,sequence,step,source,created,updated) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",
+                "INSERT INTO crm_touches (id,contact_id,account_id,channel,action,body,target_url,due_date,assignee,status,sequence,step,source,created,updated,voice_check) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15)",
                 rusqlite::params![&id, &contact, &account, &channel, &action, &text, &target, &due, &assignee, status,
-                    &sequence, step, &source, now],
+                    &sequence, step, &source, now, &voice_check],
             )?;
             *slot(&w) = Some(id.clone());
             let owner = if contact.is_empty() { ("crm_account", account.clone()) } else { ("crm_contact", contact.clone()) };
@@ -445,8 +453,33 @@ fn touch_row(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<V
         &[&id as &dyn rusqlite::ToSql])?.into_iter().next())
 }
 
-async fn patch_touch(State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
+async fn patch_touch(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
     let mut sets: Vec<(&'static str, SqlValue)> = Vec::new();
+    let owner = super::standing_approvals::is_owner_request(&headers);
+    // A new text is checked against the voice before it is stored; the
+    // owner's edit of a draft is kept as an example of the voice.
+    let new_text = body.get("body").and_then(Value::as_str).filter(|b| !b.trim().is_empty()).map(str::to_string);
+    let mut voice_id = String::new();
+    if let Some(text) = &new_text {
+        let store = state.store.clone();
+        let tid = id.clone();
+        let cur = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(String, String, i64, String)>> {
+            Ok(store.read()?.query_row(
+                "SELECT channel, action, step, COALESCE(json_extract(voice_check,'$.voice'),'') FROM crm_touches WHERE id=?1 AND deleted IS NULL",
+                [&tid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok())
+        }).await;
+        if let Ok(Ok(Some((ch, ac, step, vid)))) = cur {
+            let hint = body.get("voice").and_then(Value::as_str).unwrap_or(&vid).to_string();
+            let mut c = super::crm_voice::check_touch(&state, &hint, &ch, &ac, step.max(1), text).await;
+            let why = body.get("voice_override").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if let Some(r) = super::crm_voice::refusal(&mut c, owner, &why, &id) {
+                return r;
+            }
+            voice_id = c["voice"].as_str().unwrap_or("").to_string();
+            c["by"] = json!(if owner { "owner" } else { "worker" });
+            sets.push(("voice_check", SqlValue::Text(c.to_string())));
+        }
+    }
     for f in ["body", "due_date", "assignee", "target_url", "sequence"] {
         if let Some(v) = body.get(f).and_then(Value::as_str) {
             sets.push((f, SqlValue::Text(v.to_string())));
@@ -469,6 +502,15 @@ async fn patch_touch(State(state): State<AppState>, Path(id): Path<String>, Json
     let res = state
         .store
         .write_async(move |conn| {
+            if let (true, Some(after)) = (owner, &new_text) {
+                let prev: Option<(String, String, String, i64)> = conn
+                    .query_row("SELECT body, status, channel, action, step FROM crm_touches WHERE id=?1 AND deleted IS NULL", [&id],
+                        |r| Ok((r.get(0)?, r.get(1)?, format!("{}/{}", r.get::<_, String>(2)?, r.get::<_, String>(3)?), r.get(4)?))).ok();
+                if let Some((before, _, key, step)) = prev.filter(|p| matches!(p.1.as_str(), "drafted" | "approved") && !p.0.trim().is_empty()) {
+                    let (ch, ac) = key.split_once('/').unwrap_or((&key, ""));
+                    super::crm_voice::keep_example(conn, &voice_id, &super::crm_voice::key_of(ch, ac, step.max(1)), "owner_edit", &before, after, &id)?;
+                }
+            }
             let mut params: Vec<SqlValue> = sets.iter().map(|(_, v)| v.clone()).collect();
             let set_sql: Vec<String> = sets.iter().enumerate().map(|(i, (f, _))| format!("{f}=?{}", i + 1)).collect();
             params.push(SqlValue::Integer(now_secs()));
@@ -513,6 +555,15 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
                 rusqlite::params![now_secs(), &id],
             )?;
             *slot(&w) = if n > 0 { touch_row(conn, &id)? } else { None };
+            // What the owner approves is the voice too.
+            if let Some(t) = slot(&w).as_ref() {
+                let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+                let vid = serde_json::from_str::<Value>(&s("voice_check")).ok()
+                    .and_then(|v| v["voice"].as_str().map(String::from))
+                    .or_else(|| super::crm_voice::voice_for(conn, "").map(|v| v.0)).unwrap_or_default();
+                let key = super::crm_voice::key_of(&s("channel"), &s("action"), t["step"].as_i64().unwrap_or(1).max(1));
+                super::crm_voice::keep_example(conn, &vid, &key, "approved", "", &s("body"), &id)?;
+            }
             Ok(WriteOutcome { applied: n > 0, events: if n > 0 { vec![ev("crm_touch", &id, MutationKind::Updated)] } else { vec![] } })
         })
         .await;
@@ -684,6 +735,7 @@ pub(crate) async fn tick(state: &AppState) {
     }
     capture(state).await;
     super::crm_outbound::announce_due(state).await;
+    super::crm_voice::recheck_planned(state).await;
     super::crm_signups::pull(state).await;
 }
 

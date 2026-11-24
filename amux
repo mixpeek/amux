@@ -6916,9 +6916,14 @@ print(json.dumps(d))' "$@")
       _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches/$tid/done"; echo
       ;;
     draft)
-      # amux crm draft TCH-1 --stdin: the text the owner approves
-      local tid="${1:-}"; [ -n "$tid" ] && [ "${2:-}" = --stdin ] || die "Usage: amux crm draft TCH-1 --stdin"
-      local json; json=$(python3 -c 'import json, sys; print(json.dumps({"body": sys.stdin.read()}))')
+      # amux crm draft TCH-1 --stdin [--override "why"]: the text the owner approves.
+      # The CRM checks it against the voice and refuses a draft that breaks it
+      # (the problems are printed); --override sends it anyway with that reason.
+      local tid="${1:-}"; [ -n "$tid" ] && [ "${2:-}" = --stdin ] || die "Usage: amux crm draft TCH-1 --stdin [--override \"why\"]"
+      local why=""; [ "${3:-}" = --override ] && why="${4:-}"
+      local json; json=$(python3 -c 'import json, sys; d={"body": sys.stdin.read()}
+if sys.argv[1]: d["voice_override"] = sys.argv[1]
+print(json.dumps(d))' "$why")
       _curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches/$tid"; echo
       ;;
     sequence)
@@ -6950,6 +6955,22 @@ if f: d["filter"] = f
 print(json.dumps(d))' "$@")
       _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/sequences/$seq/enroll"; echo
       ;;
+    voice)
+      # amux crm voice                       the voices, newest first
+      # amux crm voice add --stdin           JSON {sender, name, rules}
+      # amux crm voice VOX-1                 one voice and the owner's edits kept as examples
+      # amux crm voice check VOX-1 CHANNEL ACTION [STEP] < draft.txt   the rules a draft breaks
+      case "${1:-}" in
+        '') _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/voices"; echo ;;
+        add) [ "${2:-}" = --stdin ] || die "Usage: amux crm voice add --stdin (JSON {sender, name, rules})"
+             _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" --data-binary @- "$AMUX_API/api/crm/voices"; echo ;;
+        check) [ $# -ge 4 ] || die "Usage: amux crm voice check VOX-1 CHANNEL ACTION [STEP] < draft.txt"
+             local json; json=$(python3 -c 'import json, sys; print(json.dumps({"channel": sys.argv[1], "action": sys.argv[2], "step": int(sys.argv[3]), "body": sys.stdin.read()}))' "$3" "$4" "${5:-1}")
+             _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/voices/$2/check"; echo ;;
+        VOX-*) _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/voices/$1"; echo ;;
+        *) die "Usage: amux crm voice [add --stdin | VOX-1 | check VOX-1 CHANNEL ACTION [STEP]]" ;;
+      esac
+      ;;
     brief)
       # amux crm brief PPL-1: everything known about a person, to make a touch personal
       [ -n "${1:-}" ] || die "Usage: amux crm brief PPL-1"
@@ -6975,6 +6996,8 @@ Agents (docs/design/crm.md):
   amux crm touches [--mine] [status=approved]        Open touches
   amux crm done TCH-1 [url=U] [failed] --stdin       Record a touch done (outward ones need approval first)
   amux crm brief PPL-1                      Everything known about a person, to make a touch personal
+  amux crm voice [VOX-1|add --stdin]        The voice touches are written in; examples from the owner's edits
+  amux crm voice check VOX-1 CH ACTION [STEP] < draft   The voice rules a draft breaks, and its dead links
 
 Outbound sequences (online and offline steps: email, linkedin, x, sms, whatsapp,
 slack, phone call, post letter or gift, event meet, in_person visit, ...):

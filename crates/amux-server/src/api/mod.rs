@@ -70,6 +70,7 @@ pub mod crm;
 pub mod crm_accounts;
 pub mod crm_agent;
 pub mod crm_outbound;
+pub mod crm_voice;
 pub mod crm_signups;
 pub mod deleted_substrate;
 pub mod dependency_audit;
@@ -449,7 +450,7 @@ pub fn router_with_connector_transport(
         // CRM: a PORT of the python contract, not a new feature — the schema and
         // 308 live contacts survived the cutover with no routes to reach them
         // (AMUX-2929).
-        .nest("/api/crm", crm::routes().merge(crm_accounts::routes()).merge(crm_agent::routes()).merge(crm_outbound::routes()))
+        .nest("/api/crm", crm::routes().merge(crm_accounts::routes()).merge(crm_agent::routes()).merge(crm_outbound::routes()).merge(crm_voice::routes()))
         .nest("/api/speedtest", speedtest::routes())
         .nest("/api/layout-presets", layout_presets::routes())
         // Social posting and results (AA-42): YouTube first, the rest report their gate.
