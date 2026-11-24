@@ -13671,13 +13671,57 @@ async fn queue_boot_prompt(
     }
 }
 
-pub(crate) async fn queue_boot_prompt_pub(
+/// Who a person's request names as the author of the message it carries: the
+/// verified member, else the owner's email header, else "" (the owner).
+pub(crate) fn owner_message_author(headers: &HeaderMap) -> String {
+    super::org::local_member_actor(headers)
+        .or_else(|| headers.get("x-amux-user-email").and_then(|v| v.to_str().ok()))
+        .unwrap_or("")
+        .to_string()
+}
+
+/// The owner's FIRST instruction to a worker, from the create modal, the
+/// outcome planner or `/start`: queued for boot delivery AND recorded in the
+/// Messages ledger as the owner's message.
+///
+/// One function for every entry because two entries drifted. `/start` learned
+/// to record its prompt; `POST /api/sessions` (the "describe an outcome"
+/// create) only queued it, so the worker had no `cmd_history` row,
+/// `last_human_ts` stayed 0, and the dashboard's "Last message from me" sort
+/// put the worker you had just started below every lane you had ever messaged
+/// (ha-bed-lights, 2026-11-24). The steering claimant stays the sole deliverer;
+/// this row is the record, written only once the queue accepted the prompt.
+pub(crate) async fn queue_owner_start_prompt(
     state: &AppState,
     name: &str,
-    text: &str,
-    origin: SendOrigin,
+    prompt: &str,
+    author: &str,
+    via: &'static str,
 ) -> (bool, String) {
-    queue_boot_prompt(state, name, text, origin).await
+    let queued = queue_boot_prompt(state, name, prompt, SendOrigin::Owner).await;
+    if !queued.0 || prompt.trim().is_empty() {
+        return queued;
+    }
+    cmd_hist_record_full(
+        state,
+        name,
+        prompt,
+        "user",
+        author,
+        true,
+        DeliveryMeta::queued(now_i64() * 1000),
+    )
+    .await;
+    tracing::info!(
+        session = %name,
+        via,
+        chars = prompt.chars().count(),
+        measured = true,
+        n_considered = 1,
+        verdict = "start_prompt_queued_and_attributed",
+        "create-time prompt entered the durable Messages ledger before worker boot"
+    );
+    queued
 }
 
 async fn queue_start_prompt(state: AppState, name: String, text: String, origin: SendOrigin) {
@@ -29720,40 +29764,16 @@ async fn post_dispatch(
             let prompt = body_str(body, "prompt");
             update_meta(name, &[("boot_start_scheduled", json!(true))]);
             if !prompt.is_empty() {
-                let queued = queue_boot_prompt(state, name, &prompt, SendOrigin::Owner).await;
+                // The create modal's prompt enters through /start rather than
+                // /send; it is queued AND recorded (queue_owner_start_prompt),
+                // so it is a Messages row and counts as the owner's last message.
+                let author = owner_message_author(headers);
+                let queued =
+                    queue_owner_start_prompt(state, name, &prompt, &author, "start").await;
                 if !queued.0 {
                     update_meta(name, &[("boot_start_scheduled", json!(false))]);
                     return jresp(StatusCode::CONFLICT, json!({"ok":false,"error":queued.1}));
                 }
-                // The create modal's prompt enters through /start rather than
-                // /send. Until now it bypassed cmd_history entirely, so the
-                // same human message rendered as "Unclassified" after a
-                // refresh and could disappear without a durable audit row if
-                // first-run boot timed out. Record the accepted work before
-                // spawning boot; the durable steering claimant is the sole deliverer.
-                let email = headers
-                    .get("x-amux-user-email")
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or("");
-                let author = super::org::local_member_actor(headers).unwrap_or(email);
-                cmd_hist_record_full(
-                    state,
-                    name,
-                    &prompt,
-                    "user",
-                    author,
-                    true,
-                    DeliveryMeta::queued(now_i64() * 1000),
-                )
-                .await;
-                tracing::info!(
-                    session = %name,
-                    chars = prompt.chars().count(),
-                    measured = true,
-                    n_considered = 1,
-                    verdict = "start_prompt_queued_and_attributed",
-                    "create-time prompt entered the durable Messages ledger before worker boot"
-                );
             }
             let st2 = state.clone();
             let n = name.to_string();
@@ -50825,6 +50845,68 @@ mod steer_boundary_tests {
                 .unwrap(),
             0
         );
+    }
+
+    /// The prompt a worker is created or started with is the owner's message:
+    /// it must give the worker a `last_human_ts`, or "Last message from me"
+    /// ranks the worker you just started below every lane you ever messaged.
+    /// Read through the list's own query (USER_MESSAGES_SQL), not a paraphrase.
+    #[tokio::test]
+    async fn a_start_prompt_counts_as_the_owners_last_message() {
+        let (state, tmp) = tstate();
+        let _home = crate::api::settings::test_env::set_home(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("sessions")).unwrap();
+        let name = "start-prompt-ledger-test";
+        std::fs::write(tmp.path().join(format!("sessions/{name}.env")), "CC_DIR=/tmp\n").unwrap();
+        let before = (crate::config::now_f64() * 1000.0) as i64 - 1000;
+        let queued = queue_owner_start_prompt(
+            &state,
+            name,
+            "Turn the bed lights off at 11pm",
+            "",
+            "create",
+        )
+        .await;
+        assert!(queued.0, "the prompt was queued: {queued:?}");
+        let conn = state.store.read().unwrap();
+        let rows = conn
+            .prepare(crate::api::sessions_legacy::USER_MESSAGES_SQL)
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let last = crate::api::sessions_legacy::last_human_ts_from_user_messages(&rows);
+        let ts = last.get(name).copied().unwrap_or(0);
+        assert!(
+            ts >= before,
+            "a create-time prompt must set last_human_ts (got {ts}); rows: {rows:?}"
+        );
+        // Still exactly one delivery: the record is not a second send.
+        let queued_rows: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM steering_queue WHERE session=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_rows, 1);
+    }
+
+    /// Every entry that hands a worker its first prompt goes through the
+    /// recording helper. `POST /api/sessions` called the bare queue and left
+    /// the prompt out of Messages while `/start` recorded it.
+    #[test]
+    fn every_start_prompt_entry_records_the_message() {
+        let legacy = include_str!("sessions_legacy.rs");
+        let create = &legacy[legacy.find("pub async fn create_session_legacy(").unwrap()..];
+        let create = &create[..create.find("\n}\n").unwrap()];
+        assert_eq!(create.matches("queue_owner_start_prompt(").count(), 2,
+            "both create branches (autostart and held for start) record the prompt");
+        assert!(!create.contains("queue_boot_prompt"), "no bare queue in create");
+        let verbs = include_str!("session_verbs.rs");
+        let start = &verbs[verbs.find("let prompt = body_str(body, \"prompt\");").unwrap()..];
+        assert!(start[..600].contains("queue_owner_start_prompt("), "/start records the prompt");
     }
 
     async fn set_report(state: &AppState, name: &str, st: &str) {
