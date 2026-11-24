@@ -11242,7 +11242,9 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   font-size: var(--fs-md); cursor: pointer; min-height: 44px;
 }
 #email-approvals-banner .appr-sched-cancel { min-height: 44px; }
-#email-approvals-banner .appr-sched-failed {
+#email-approvals-banner .appr-links { font-size: var(--fs-sm); margin: 0 0 var(--space-1-5); opacity: 0.75; word-break: break-word; }
+#email-approvals-banner .appr-links.appr-links-warn { opacity: 1; color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); }
+.appr-sched-failed {
   font-size: var(--fs-sm); color: color-mix(in srgb, var(--yellow) 47%, var(--on-solid)); margin: 0 0 var(--space-1-5);
 }
 

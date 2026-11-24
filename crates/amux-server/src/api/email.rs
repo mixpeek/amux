@@ -726,12 +726,17 @@ pub async fn send(
             // so Chat shows a held draft in that conversation and no other
             // (a goal check's draft appeared in an unrelated one, walkthrough v3).
             let conv = body_str(&body, "conv");
+            let links = crate::api::email_links::check(&message).await;
+            if let Some(refused) = dead_links_refusal(&ctx, &lane, "send", &to, &subject, &links) {
+                return refused;
+            }
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
                 "body": message.chars().take(2000).collect::<String>(),
                 "external_recipients": externals,
                 "conv": (conv.starts_with("o:") && conv.len() < 64).then_some(conv),
+                "links": links,
             });
             let attachments = match frozen_attachments(&body) {
                 Ok(a) => a,
@@ -767,8 +772,8 @@ pub async fn send(
                         verdict = if req.reused { "email_approval_reused" } else { "email_approval_parked" },
                         "[email] EXTERNAL send from a worker held for human approval (AMUX-3510)"
                     );
-                    crate::api::approval_cards::file(crate::api::approval_cards::email_ask(
-                        &id, &lane, "send", &to, &subject, &externals)).await;
+                    crate::api::approval_cards::file(with_links(crate::api::approval_cards::email_ask(
+                        &id, &lane, "send", &to, &subject, &externals), &preview["links"])).await;
                     approval_required_response(&req, preview)
                 }
                 Err(e) => err(
@@ -1047,12 +1052,17 @@ pub async fn reply_with(
                     }
                 }
                 if !externals.is_empty() && remembered.is_none() {
+                    let links = crate::api::email_links::check(&reply_body).await;
+                    if let Some(refused) = dead_links_refusal(&ctx, &lane, "reply", &r_to, &r_subject, &links) {
+                        return refused;
+                    }
                     let preview = json!({
                         "endpoint": "reply", "from": gmail_from,
                         "in_reply_to": message_id, "reply_all": reply_all,
                         "to": r_to, "cc": r_cc, "subject": r_subject,
                         "body": reply_body.chars().take(2000).collect::<String>(),
                         "external_recipients": externals,
+                        "links": links,
                     });
                     let frozen = match frozen_attachments(&body) {
                         Ok(a) => a,
@@ -1090,8 +1100,8 @@ pub async fn reply_with(
                                 verdict = if req.reused { "email_approval_reused" } else { "email_approval_parked" },
                                 "[email] EXTERNAL reply from a worker held for human approval (AMUX-3510)"
                             );
-                            crate::api::approval_cards::file(crate::api::approval_cards::email_ask(
-                                &id, &lane, "reply", &r_to, &r_subject, &externals)).await;
+                            crate::api::approval_cards::file(with_links(crate::api::approval_cards::email_ask(
+                                &id, &lane, "reply", &r_to, &r_subject, &externals), &preview["links"])).await;
                             approval_required_response(&req, preview)
                         }
                         Err(e) => err(
@@ -1164,6 +1174,32 @@ pub async fn reply_with(
 /// BACK with an approval id instead of going out. The worker's next honest
 /// move is spelled out in the body, because the AMUX-2325 lesson is that a
 /// refusal whose escape is unstated gets walked around off-trail.
+/// A held send whose body links to a page that does not load is refused
+/// before it is parked (email_links.rs), logged to the send ledger and as
+/// `verdict=email_dead_links`.
+fn dead_links_refusal(ctx: &EmailCtx, lane: &str, endpoint: &str, to: &str, subject: &str, links: &Value) -> Option<Response> {
+    let refused = crate::api::email_links::refusal(links)?;
+    email_log(
+        ctx.client.home(),
+        json!({"endpoint": endpoint, "blocked": "email_dead_links", "to": to, "subject": subject,
+               "session": lane, "dead": refused["dead"]}),
+    );
+    tracing::warn!(session = %lane, endpoint, dead = %refused["dead"], verdict = "email_dead_links",
+        "[email] held send refused: a link in the body does not load");
+    Some(err(StatusCode::UNPROCESSABLE_ENTITY, refused))
+}
+
+/// The link check's line on the approval card, so the owner reads it before Approve.
+fn with_links(mut ask: crate::api::approval_cards::Ask, links: &Value) -> crate::api::approval_cards::Ask {
+    let line = if links["measured"] == json!(true) {
+        links["summary"].as_str().unwrap_or("").to_string()
+    } else {
+        format!("not checked ({})", links["why_unmeasured"].as_str().unwrap_or("?"))
+    };
+    ask.desc.push_str(&format!("\nLinks: {line}"));
+    ask
+}
+
 fn approval_required_response(
     req: &crate::api::email_approval::Requested,
     preview: Value,
@@ -3440,6 +3476,51 @@ mod tests {
             .expect("the hold must be a ledger row");
         assert_eq!(held["approval_id"], json!(apr));
         assert_eq!(held["session"], json!("autodesk"));
+    }
+
+    // Owner 2026-11-24: "make sure links are always checked". A worker's held
+    // send that links to a page which does not load is refused before it is
+    // parked; one whose links load is parked with the check on its preview.
+    #[tokio::test]
+    async fn a_held_send_with_a_dead_link_is_refused_and_a_live_one_carries_the_check() {
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/messages?q=", 200, json!({ "messages": [] })),
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+        ]);
+        let (app, _d, _r) = app_with(http.clone(), home.path());
+        let live = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let a = l.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(l, Router::new().fallback(|| async { "ok" })).await.ok() });
+            format!("http://{a}/demo")
+        };
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let p = l.local_addr().unwrap().port();
+            drop(l);
+            format!("http://127.0.0.1:{p}/book")
+        };
+        let (st, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update",
+                         "body": format!("Book a time: {dead}"), "from": ACCT })),
+            &[("x-amux-session", "autodesk")]).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{res}");
+        assert_eq!(res["code"], json!("email_dead_links"));
+        assert_eq!(res["dead"][0]["url"], json!(dead));
+        let (_, lst) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+        assert_eq!(lst["pending"].as_array().map(|a| a.len()), Some(0), "nothing parked: {lst}");
+        let log = crate::integrations::email::read_email_log(home.path(), 1, 50, "");
+        assert!(log["log"].as_array().unwrap().iter().any(|x| x.get("blocked") == Some(&json!("email_dead_links"))),
+            "the refusal is a ledger row");
+
+        let (st, res) = send_req(&app, "POST", "/api/email/send",
+            Some(json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update",
+                         "body": format!("Book a time: {live}."), "from": ACCT })),
+            &[("x-amux-session", "autodesk")]).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
+        assert_eq!(res["code"], json!("approval_required"));
+        assert_eq!(res["preview"]["links"]["summary"], json!("1 checked, all live"));
     }
 
     #[tokio::test]

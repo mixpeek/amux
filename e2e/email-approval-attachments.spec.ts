@@ -11,7 +11,9 @@ function approval() {
   return {
     id: ID, session: 'gtm-engine', age_s: 60, expires: false, expires_in_s: null, requests: 1,
     preview: { endpoint: 'reply', from: 'info@example.com', to: 'buyer@example.org', subject: 'Re: Quote',
-      reply_all: false, body: 'Quote attached.', external_recipients: ['buyer@example.org'] },
+      reply_all: false, body: 'Quote attached.', external_recipients: ['buyer@example.org'],
+      links: { measured: true, checked: 2, dead: [], warn: [{ url: 'https://zenodo.org/x', why: 'HTTP 403' }],
+        summary: '2 checked, 1 to look at (https://zenodo.org/x HTTP 403)' } },
     review: { body: 'Quote attached.', body_complete: true, includes_signature: true, complete: false, attachment_count: 2,
       attachments: [
         { index: 0, filename: 'terms.txt', content_type: 'text/plain', size: 2048, ok: true },
@@ -68,4 +70,12 @@ test('on a phone the chips fit the card and meet the touch floor', async ({ page
   const box = await chip.boundingBox();
   expect(box!.height).toBeGreaterThanOrEqual(44);
   expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+});
+
+// The link check the server ran when it held the draft is on the card
+// (Ethan, 2026-11-24: "make sure links are always checked").
+test('the card says what the link check found before Approve', async ({ page }) => {
+  await open(page, false);
+  const line = page.locator('#email-approvals-banner .appr-links');
+  await expect(line).toHaveText('Links: 2 checked, 1 to look at (https://zenodo.org/x HTTP 403)');
 });

@@ -27733,6 +27733,7 @@ async function _approvalsRefresh() {
         + 'border-radius:var(--radius-md);padding:var(--space-2) var(--space-2-5);margin:var(--space-1-5) 0;font-size:var(--fs-md);max-height:320px;overflow:auto;">'
         + esc(_bodyText) + '</div>'
         + _apprAttachHtml(p)
+        + _apprLinksHtml(pv)
         + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
         + (p.schedule_failed ? '<div class="appr-sched-failed">'
           + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
@@ -27746,6 +27747,18 @@ async function _approvalsRefresh() {
     el.innerHTML = html;
     el.style.display = 'block';
   } catch (e) {}
+}
+// THE LINKS WERE CHECKED (Ethan, 2026-11-24: "make sure links are always
+// checked"). The server fetched every URL in the draft when it was held
+// (api/email_links.rs) and refused it on a dead one; this line says what it
+// found, so a bot-walled or slow link is seen before Approve.
+function _apprLinksHtml(pv) {
+  const l = pv.links;
+  if (!l) return '';
+  const warn = l.measured === true && (l.warn || []).length;
+  const text = l.measured === true ? 'Links: ' + (l.summary || (l.checked + ' checked'))
+    : 'Links not checked (' + (l.why_unmeasured || 'unknown') + ')';
+  return '<div class="appr-links' + (warn || l.measured !== true ? ' appr-links-warn' : '') + '">' + esc(text) + '</div>';
 }
 // THE FILES GO OUT TOO (Ethan, 2026-11-09: "make sure amux supports
 // attachments too in the approval flow"). Each held attachment is a chip with

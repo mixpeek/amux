@@ -76,6 +76,7 @@ pub mod dependency_audit;
 pub mod dictation;
 pub mod email;
 pub mod email_approval;
+pub mod email_links;
 pub mod email_intel;
 pub mod env_config;
 pub mod file_viewer;
