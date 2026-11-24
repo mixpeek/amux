@@ -6921,6 +6921,40 @@ print(json.dumps(d))' "$@")
       local json; json=$(python3 -c 'import json, sys; print(json.dumps({"body": sys.stdin.read()}))')
       _curl -sk -X PATCH -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/touches/$tid"; echo
       ;;
+    sequence)
+      # amux crm sequence add --stdin  (JSON {name, goal?, steps:[{day,channel,action,template?}], assignee?})
+      # amux crm sequence SEQ-1        the sequence, who is in it and how each step went
+      case "${1:-}" in
+        add) [ "${2:-}" = --stdin ] || die "Usage: amux crm sequence add --stdin (JSON {name, steps:[{day, channel, action, template?}]})"
+             _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" --data-binary @- "$AMUX_API/api/crm/sequences"; echo ;;
+        SEQ-*) _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/sequences/$1"; echo ;;
+        *) die "Usage: amux crm sequence add --stdin | amux crm sequence SEQ-1" ;;
+      esac
+      ;;
+    sequences)
+      _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/sequences"; echo
+      ;;
+    enroll)
+      # amux crm enroll SEQ-1 PPL-1 PPL-2 ...   or   amux crm enroll SEQ-1 grade=AB [tag=T] [status=S] [source=S] [limit=N]
+      local seq="${1:-}"; [ -n "$seq" ] && [ $# -ge 2 ] || die "Usage: amux crm enroll SEQ-1 PPL-1 [PPL-2 ...] | grade=AB [tag=T] [limit=N]"
+      shift
+      local json; json=$(python3 -c '
+import json, sys
+ids, f = [], {}
+for a in sys.argv[1:]:
+    if "=" in a:
+        k, v = a.split("=", 1); f[k] = int(v) if k == "limit" else v
+    else: ids.append(a)
+d = {"contact_ids": ids}
+if f: d["filter"] = f
+print(json.dumps(d))' "$@")
+      _curl -sk -X POST -H 'Content-Type: application/json' -H "X-Amux-Session: ${AMUX_SESSION:-}" -d "$json" "$AMUX_API/api/crm/sequences/$seq/enroll"; echo
+      ;;
+    brief)
+      # amux crm brief PPL-1: everything known about a person, to make a touch personal
+      [ -n "${1:-}" ] || die "Usage: amux crm brief PPL-1"
+      _curl -sk -H "X-Amux-Session: ${AMUX_SESSION:-}" "$AMUX_API/api/crm/contacts/$1/brief"; echo
+      ;;
     help|--help|-h)
       cat <<'EOH'
 amux crm — contacts, notes and follow-ups (HTTP: /api/crm/*)
@@ -6940,9 +6974,24 @@ Agents (docs/design/crm.md):
   amux crm draft TCH-1 --stdin              Write or rewrite a touch's text (it goes back for approval)
   amux crm touches [--mine] [status=approved]        Open touches
   amux crm done TCH-1 [url=U] [failed] --stdin       Record a touch done (outward ones need approval first)
+  amux crm brief PPL-1                      Everything known about a person, to make a touch personal
+
+Outbound sequences (online and offline steps: email, linkedin, x, sms, whatsapp,
+slack, phone call, post letter or gift, event meet, in_person visit, ...):
+  amux crm sequence add --stdin             {name, goal, steps:[{day, channel, action, template}]};
+                                            a template fills {first_name} {name} {company} {role} {signal}
+  amux crm sequences                        Sequences with enrolled, active and replied counts
+  amux crm sequence SEQ-1                   Who is in it, per-step results and the reply rate
+  amux crm enroll SEQ-1 PPL-1 PPL-2 | grade=AB [tag=T] [limit=N]   Enroll; step 1 is planned now
+A step done plans the next one, due its days later; a reply stops the sequence,
+and a reply asking to stop unsubscribes the person. Nobody unsubscribed, bounced
+or do_not_contact gets an outward touch, nor a second open one on a channel, nor
+one within 2 days of another (force: true in the touch JSON overrides the last two).
+
 Events (amux subscribe): crm.channel.changed, crm.touch.approved (eq assignee
-<you>), crm.touch.done, crm.contact.replied. Only the owner approves a touch
-anyone outside the company reads.
+<you>), crm.touch.due (eq assignee <you>: its day has come), crm.touch.done,
+crm.contact.replied, crm.signup. Only the owner approves a touch anyone outside
+the company reads.
 
 Writes carry X-Amux-Session, so the audit trail names who made them.
 EOH

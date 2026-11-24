@@ -3463,6 +3463,26 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/crm/touches/{id}/done",
         methods: &["POST"],
     },
+    RouteEntry {
+        path: "/api/crm/sequences",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/crm/sequences/{id}",
+        methods: &["GET", "PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/crm/sequences/{id}/enroll",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/crm/sequences/{id}/stop",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/crm/contacts/{id}/brief",
+        methods: &["GET"],
+    },
     // Speedtest (AMUX-2890): the Metrics tab's Run-speed-test button, unrouted
     // since the python retirement — clicks errored against the SPA catch-all.
     RouteEntry {

@@ -46798,6 +46798,7 @@ async function _crmLoad() {
     deals: () => _crmApi('/deals' + qs({ stage: _crm.stage })),
     followups: () => _crmApi('/followups'),
     approvals: () => _crmApi('/touches?status=drafted'),
+    sequences: () => _crmApi('/sequences'),
   };
   try {
     const [summary, rows] = await Promise.all([_crmApi('/summary'), want[_crm.view]()]);
@@ -46854,7 +46855,8 @@ function _crmRender() {
     + chip('view', 'companies', 'Companies', _crm.view === 'companies', s.companies)
     + chip('view', 'deals', 'Deals', _crm.view === 'deals', s.deals)
     + chip('view', 'followups', 'Follow-ups', _crm.view === 'followups', s.followups_due || null)
-    + chip('view', 'approvals', 'To approve', _crm.view === 'approvals', s.to_approve || null);
+    + chip('view', 'approvals', 'To approve', _crm.view === 'approvals', s.to_approve || null)
+    + chip('view', 'sequences', 'Sequences', _crm.view === 'sequences', null);
   if (_crm.view === 'people' || _crm.view === 'companies') {
     h += '<span class="crm-sep" aria-hidden="true"></span>' + ['A', 'B', 'C', 'D'].map(g => chip('grade', g, 'ICP ' + g, _crm.grade === g)).join('');
   }
@@ -46894,6 +46896,14 @@ function _crmRender() {
   } else if (_crm.view === 'approvals') {
     // The owner's queue: drafts a worker wrote for someone outside the company.
     list.innerHTML = rows.map(t => _crmTouchCard(t, true)).join('');
+  } else if (_crm.view === 'sequences') {
+    // Outbound sequences (api/crm_outbound.rs): who is in each and how it is going.
+    list.innerHTML = rows.map(q => '<div class="crm-row" data-id="' + esc(q.id) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(q.name) + '</span>'
+      + (q.active ? '<span class="cx-pill cx-warn">' + esc(q.active) + ' active</span>' : '')
+      + (q.replied ? '<span class="cx-pill cx-ok">' + esc(q.replied) + ' replied</span>' : '') + '</div>'
+      + '<div class="crm-meta">' + esc([q.goal, q.enrolled + ' enrolled', q.assignee ? 'by ' + q.assignee : ''].filter(Boolean).join(' · ')) + '</div>'
+      + '<div class="crm-meta">' + esc(_crmSteps(q.steps)) + '</div></div></div>').join('')
+      || '<div class="crm-empty">No sequences yet. A worker makes one with amux crm sequence.</div>';
   } else {
     const today = _crmToday();
     list.innerHTML = rows.map(f => row('person', f.id, '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(f.name) + '</span>'
@@ -46911,8 +46921,8 @@ function _crmMore(n) {
 }
 
 // ── Channels and touches (the agent side: api/crm_agent.rs) ──
-const _CRM_KINDS = ['linkedin', 'x', 'instagram', 'website', 'careers', 'email', 'phone', 'youtube', 'tiktok', 'github', 'other'];
-const _CRM_ACTIONS = ['dm', 'comment', 'connect', 'email', 'follow', 'like', 'call', 'note'];
+const _CRM_KINDS = ['linkedin', 'x', 'instagram', 'website', 'careers', 'email', 'phone', 'youtube', 'tiktok', 'github', 'sms', 'whatsapp', 'slack', 'discord', 'community', 'post', 'event', 'in_person', 'other'];
+const _CRM_ACTIONS = ['dm', 'comment', 'connect', 'email', 'follow', 'like', 'call', 'note', 'text', 'voicemail', 'letter', 'gift', 'meet', 'invite', 'intro', 'visit'];
 const _CRM_TOUCH_PILL = { planned: 'cx-idle', drafted: 'cx-warn', approved: 'cx-ok', done: 'cx-ok', skipped: 'cx-idle', failed: 'cx-bad' };
 
 function _crmChannels(list, ownerKind, ownerId) {
@@ -46951,10 +46961,17 @@ async function _crmWatch(id, on) {
 }
 
 // A touch: its channel and action, the text, who does it, and the owner's buttons.
+// "1 email · day 3 linkedin dm · day 7 post letter": a sequence's steps on one line.
+function _crmSteps(steps) {
+  let list = steps;
+  if (typeof list === 'string') { try { list = JSON.parse(list); } catch (_) { list = []; } }
+  return (list || []).map((x, i) => (i ? 'day ' + (x.day || 0) + ' ' : '') + x.channel + ' ' + x.action).join(' · ');
+}
+
 function _crmTouchCard(t, withWho) {
   const open = ['planned', 'drafted', 'approved'].includes(t.status);
   const who = withWho ? '<button class="crm-link" data-id="' + esc(t.contact_id || t.account_id) + '" data-kind="' + (t.contact_id ? 'person' : 'company') + '" onclick="_crmOpen(this.dataset.kind,this.dataset.id)">' + esc(t.contact_name || t.account_name) + '</button> · ' : '';
-  return '<div class="crm-ix crm-touch" data-id="' + esc(t.id) + '"><span class="crm-ix-head">' + who + esc([t.channel, t.action, t.due_date ? 'due ' + t.due_date : '', t.assignee ? 'by ' + t.assignee : ''].filter(Boolean).join(' · '))
+  return '<div class="crm-ix crm-touch" data-id="' + esc(t.id) + '"><span class="crm-ix-head">' + who + esc([t.channel, t.action, t.sequence ? t.sequence + ' step ' + t.step : '', t.due_date ? 'due ' + t.due_date : '', t.assignee ? 'by ' + t.assignee : ''].filter(Boolean).join(' · '))
     + ' <span class="cx-pill ' + (_CRM_TOUCH_PILL[t.status] || 'cx-idle') + '">' + esc(t.status) + '</span></span>'
     + (open && t.status !== 'approved'
       ? '<textarea class="input crm-ta" aria-label="Touch text" data-id="' + esc(t.id) + '" onchange="_crmTouchText(this.dataset.id,this.value)">' + esc(t.body || '') + '</textarea>'
@@ -46963,6 +46980,8 @@ function _crmTouchCard(t, withWho) {
     + (t.result || t.result_url ? '<span class="crm-meta">' + esc(t.result || '') + (/^https?:\/\//i.test(t.result_url || '') ? ' · <a class="crm-link" target="_blank" rel="noopener" href="' + esc(t.result_url) + '">link</a>' : '') + '</span>' : '')
     + (open ? '<div class="crm-actions">'
       + (t.status === 'drafted' ? '<button class="btn primary" data-id="' + esc(t.id) + '" onclick="_crmTouchApprove(this.dataset.id)">Approve</button>' : '')
+      // An approved touch that happens off a screen (a call, a letter, a meeting) is recorded here.
+      + (t.status === 'approved' ? '<button class="btn" data-id="' + esc(t.id) + '" onclick="_crmTouchDone(this.dataset.id)">Done</button>' : '')
       + '<button class="btn" data-id="' + esc(t.id) + '" onclick="_crmTouchSkip(this.dataset.id)">Skip</button></div>' : '')
     + '</div>';
 }
@@ -47000,6 +47019,13 @@ async function _crmTouchApprove(id) {
     showToast('Approved' + (d.touch && d.touch.assignee ? ': ' + d.touch.assignee + ' does it now' : ''));
     _crmLoad(); if (_crm.open) _crmDrawerRender();
   } catch (e) { showToast('Not approved: ' + e.message, true); }
+}
+
+async function _crmTouchDone(id) {
+  try { await _crmApi('/touches/' + encodeURIComponent(id) + '/done', { method: 'POST', body: JSON.stringify({ result: 'done (recorded in the CRM tab)' }) }); }
+  catch (e) { showToast('Could not record it: ' + e.message, true); return; }
+  showToast('Recorded');
+  _crmLoad(); if (_crm.open) _crmDrawerRender();
 }
 
 async function _crmTouchSkip(id) {

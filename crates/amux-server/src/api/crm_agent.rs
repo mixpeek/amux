@@ -23,6 +23,7 @@
 //!   crm.touch.approved    the owner approved a touch; its assignee does it
 //!   crm.touch.done        a touch was done (or failed)
 //!   crm.contact.replied   mail or a LinkedIn message from a person in the CRM
+//!   crm.touch.due         an open touch's day has come (api/crm_outbound.rs)
 //!   crm.signup            an amux Cloud order arrived or changed status (api/crm_signups.rs)
 //!
 //! Websites and careers pages are fetched by the server (runtime job crm-watch);
@@ -63,8 +64,15 @@ pub fn routes() -> Router<AppState> {
         .route("/touches/{id}/done", post(done_touch))
 }
 
-pub const KINDS: &[&str] = &["linkedin", "x", "instagram", "website", "careers", "email", "phone", "youtube", "tiktok", "github", "other"];
-pub const ACTIONS: &[&str] = &["dm", "comment", "connect", "email", "follow", "like", "call", "note"];
+// Online and offline touch points (owner 2026-11-24: "it should support multiple
+// touch points too offline and online"): a sequence can mix an email, a LinkedIn
+// DM, a call, a letter by post and a meeting at an event.
+pub const KINDS: &[&str] = &["linkedin", "x", "instagram", "website", "careers", "email", "phone", "youtube", "tiktok", "github",
+    "sms", "whatsapp", "slack", "discord", "community", "post", "event", "in_person", "other"];
+pub const ACTIONS: &[&str] = &["dm", "comment", "connect", "email", "follow", "like", "call", "note",
+    "text", "voicemail", "letter", "gift", "meet", "invite", "intro", "visit"];
+/// Touch points that happen off a screen: the owner or a worker records them done.
+pub const OFFLINE: &[&str] = &["post", "event", "in_person"];
 const STATUSES: &[&str] = &["planned", "drafted", "approved", "done", "skipped", "failed"];
 /// Items kept from a check, to tell the next one what is new.
 const KEEP_ITEMS: usize = 400;
@@ -392,11 +400,20 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
     let (text, target, due, sequence) = (s("body"), s("target_url"), s("due_date"), s("sequence"));
     let step = body.get("step").and_then(Value::as_i64).unwrap_or(0);
     let status = if text.is_empty() { "planned" } else { "drafted" };
+    let force = body.get("force").and_then(Value::as_bool) == Some(true);
     let out: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
+    let refused: Arc<Mutex<Option<super::crm_outbound::Refusal>>> = Arc::new(Mutex::new(None));
+    let wr = refused.clone();
     let res = state
         .store
         .write_async(move |conn| {
+            // Effective and safe outbound (api/crm_outbound.rs): nobody who
+            // opted out, no second open touch on a channel, no pile-up.
+            if let Some(g) = super::crm_outbound::guard(conn, &contact, &channel, &action, &sequence, force) {
+                *slot(&wr) = Some(g);
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
             let id = next_issue_id(conn, "TCH")?;
             let now = now_secs();
             conn.execute(
@@ -410,10 +427,14 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
             Ok(WriteOutcome { applied: true, events: vec![ev("crm_touch", &id, MutationKind::Created), ev(owner.0, &owner.1, MutationKind::Updated)] })
         })
         .await;
-    match res {
-        Ok(_) => (StatusCode::CREATED, Json(json!({ "id": slot(&out).take(), "ok": true, "status": status }))).into_response(),
-        Err(e) => internal(e),
+    if let Err(e) = res {
+        return internal(e);
     }
+    if let Some((verdict, why, existing)) = slot(&refused).take() {
+        tracing::info!(target: "amux::crm", existing = %existing, measured = true, n_considered = 1, verdict, "an outward touch was refused: {why}");
+        return err(StatusCode::CONFLICT, json!({ "error": why, "code": verdict, "existing": existing }));
+    }
+    (StatusCode::CREATED, Json(json!({ "id": slot(&out).take(), "ok": true, "status": status }))).into_response()
 }
 
 /// The touch as a JSON row with the person's and company's names.
@@ -475,6 +496,15 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
     let res = state
         .store
         .write_async(move |conn| {
+            // The person may have opted out since the draft was written.
+            let who: Option<(String, String, String)> = conn
+                .query_row("SELECT contact_id, channel, action FROM crm_touches WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .ok();
+            if let Some((c, ch, ac)) = who {
+                if super::crm_outbound::guard(conn, &c, &ch, &ac, "", true).is_some() {
+                    return Ok(WriteOutcome { applied: false, events: vec![] });
+                }
+            }
             let n = conn.execute(
                 "UPDATE crm_touches SET status='approved', approved_by='owner', approved_at=?1, updated=?1 WHERE id=?2 AND deleted IS NULL AND status IN ('planned','drafted')",
                 rusqlite::params![now_secs(), &id],
@@ -530,7 +560,11 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
                         now, format!("{channel} {action}"), format!("touch:{id}")],
                 )?;
             }
-            *slot(&w) = Some(Ok(touch_row(conn, &id)?.unwrap_or(json!({ "id": id }))));
+            // Its sequence's next step is planned now, due its days later.
+            let next = if failed { None } else { super::crm_outbound::advance(conn, &id)? };
+            let mut row = touch_row(conn, &id)?.unwrap_or(json!({ "id": id }));
+            row["next_touch"] = json!(next);
+            *slot(&w) = Some(Ok(row));
             // The touch's owner refreshes: the person, or the company for a company touch.
             let owner = if contact.is_empty() { ev("crm_account", &account, MutationKind::Updated) } else { ev("crm_contact", &contact, MutationKind::Updated) };
             Ok(WriteOutcome { applied: true, events: vec![ev("crm_touch", &id, MutationKind::Updated), owner] })
@@ -642,6 +676,7 @@ pub(crate) async fn tick(state: &AppState) {
         }
     }
     capture(state).await;
+    super::crm_outbound::announce_due(state).await;
     super::crm_signups::pull(state).await;
 }
 
@@ -736,8 +771,10 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
         )?;
         if added > 0 {
             n += 1;
+            // A reply stops the sequences that stop on one, and a request to stop is honoured.
+            let stopped = super::crm_outbound::on_reply(conn, &contact, &format!("{subject}\n{snippet}"))?;
             let open: i64 = conn.query_row("SELECT COUNT(*) FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status IN ('planned','drafted','approved')", [&contact], |r| r.get(0))?;
-            replied.push(json!({ "contact_id": contact, "name": name, "channel": channel, "subject": subject, "snippet": snippet, "open_touches": open }));
+            replied.push(json!({ "contact_id": contact, "name": name, "channel": channel, "subject": subject, "snippet": snippet, "open_touches": open, "stopped_touches": stopped }));
         }
     }
     state_set(conn, "events_id", &last.to_string())?;

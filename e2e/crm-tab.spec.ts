@@ -218,6 +218,59 @@ test('a worker plans a touch, the owner approves it, the worker records it done,
   await page.screenshot({ path: test.info().outputPath('crm-agent.png') });
 });
 
+// Outbound (owner 2026-11-24: "use every crm feature for amux outbound ...
+// effective personal timely", "multiple touch points too offline and online").
+test('a sequence mixes online and offline steps: step 1 drafted from a template, approved, the next planned, a letter recorded done', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  await openCrm(page);
+  const made = await api(page, 'POST', '/contacts', { name: 'Seq Target ' + R, email: `seq.${R}@example.com`, company: 'Acme ' + R, role: 'CTO' });
+  const id = made.body.id;
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': 'amux-gtm' }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b] as const);
+  const seq = await asWorker('POST', '/sequences', { name: 'Outbound ' + R, goal: 'book a demo', steps: [
+    { day: 0, channel: 'email', action: 'email', template: 'Hi {first_name}, a note for the {role} of {company} ' + R },
+    { day: 0, channel: 'post', action: 'letter' }] });
+  expect(seq.status).toBe(201);
+  const en = await asWorker('POST', '/sequences/' + seq.body.id + '/enroll', { contact_ids: [id] });
+  expect(en.body.enrolled.length).toBe(1);
+  // A second open email to the same person is refused, with the open one named.
+  const dup = await asWorker('POST', '/touches', { contact_id: id, channel: 'email', action: 'email', body: 'again' });
+  expect([dup.status, dup.body.code]).toEqual([409, 'crm_touch_duplicate']);
+  // The owner sees the filled draft, with its sequence and step, and approves it.
+  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
+  const card = page.locator('#crm-list .crm-touch', { hasText: 'Seq Target ' + R });
+  await expect(card).toContainText(seq.body.id + ' step 1');
+  await expect(card.locator('textarea')).toHaveValue('Hi Seq, a note for the CTO of Acme ' + R + ' ' + R);
+  await card.locator('button', { hasText: 'Approve' }).click();
+  await expect(card).toHaveCount(0);
+  expect((await asWorker('POST', '/touches/' + en.body.enrolled[0].touch_id + '/done', { result: 'sent' })).body.touch.next_touch).toBeTruthy();
+  // Step 2, a letter by post, is planned; drafted, approved, then recorded done from the tab.
+  const touches = await api(page, 'GET', '/touches?contact_id=' + id);
+  const letter = touches.body.find((t: any) => t.step === 2);
+  expect([letter.channel, letter.action, letter.status]).toEqual(['post', 'letter', 'planned']);
+  await asWorker('PATCH', '/touches/' + letter.id, { body: 'Handwritten card with the amux sticker ' + R });
+  await api(page, 'POST', '/touches/' + letter.id + '/approve');
+  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await page.locator('#crm-q').fill('Seq Target ' + R);
+  await page.locator('#crm-list .crm-row', { hasText: 'Seq Target ' + R }).click();
+  const drawer = page.locator('#crm-drawer .cx-drawer');
+  const lc = drawer.locator('.crm-touch', { hasText: 'amux sticker ' + R });
+  await lc.locator('button', { hasText: 'Done' }).click();
+  await expect(lc).toContainText('done', { timeout: 10_000 });
+  // The Sequences view shows it with its steps.
+  await page.locator('#crm-drawer .cx-drawer-close, #crm-drawer [aria-label="Close"]').first().click().catch(() => {});
+  await page.locator('#crm-chips .cx-filter', { hasText: 'Sequences' }).click();
+  const row = page.locator('#crm-list .crm-row', { hasText: 'Outbound ' + R });
+  await expect(row).toContainText('email email · day 0 post letter');
+  // The brief: one read with the person, activity and touches.
+  const brief = await api(page, 'GET', '/contacts/' + id + '/brief');
+  expect([brief.status, brief.body.can_reach.ok, brief.body.touches.length]).toEqual([200, true, 2]);
+  await page.screenshot({ path: test.info().outputPath('crm-sequence.png') });
+});
+
 // Phone: one row of controls above the list, and the list gets the screen.
 test('on a phone the CRM has one row of controls and the list fills the screen', async ({ page }, info) => {
   test.skip(info.project.name !== 'mobile', 'the 375 px layout');

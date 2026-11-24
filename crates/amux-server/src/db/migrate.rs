@@ -914,6 +914,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0170_crm_channels_touches",
         sql: include_str!("../../migrations/0170_crm_channels_touches.sql"),
     },
+    Migration {
+        version: 171,
+        name: "0171_crm_sequences",
+        sql: include_str!("../../migrations/0171_crm_sequences.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
