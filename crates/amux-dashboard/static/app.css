@@ -11457,6 +11457,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
    the bottom of the view; in simple mode (a new person) only these tabs and
    "Everything else" show, and the header with them. */
 html.boot-home-pending #session-view, html.boot-home-pending .tab-bar-outer, html.boot-home-pending .header-row { visibility: hidden; }
+html.boot-peek-pending #session-view, html.boot-peek-pending .tab-bar-outer, html.boot-peek-pending .header-row { visibility: hidden; }
 /* The approvals banner names the helper; in simple mode a held draft shows in
    its conversation instead (_homeHeldDraftHtml). */
 body.intent-simple .header-row, body.intent-simple #no-apikey-banner, body.intent-simple #chrome-tabs-bar,

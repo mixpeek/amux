@@ -186,3 +186,63 @@ test('a page whose address moved off the file keeps that address when the file i
   expect(await page.evaluate(() => location.hash)).toBe('#task=T-1');
   expect(await page.evaluate('activeView'), 'the view is not swept away').toBe('files');
 });
+
+// Owner, 2026-11-23: closing the viewer "goes to the worker board and then
+// enters the worker". The tab returned to is rebuilt on #peek=<worker>, and it
+// showed the Workers list until the worker list loaded. It now opens straight
+// on the worker: the fleet stays hidden until the worker opens.
+const SLOW_FLEET = [{ name: 'alpha', running: true, status: 'idle', dir: '/tmp' }, { name: 'beta', running: true, status: 'idle', dir: '/tmp' }];
+async function slowFleet(page: import('@playwright/test').Page, fleet = SLOW_FLEET) {
+  await page.context().route(/\/api\/sessions(?:\?.*)?$/, async r => {
+    await new Promise(res => setTimeout(res, 1500));
+    await r.fulfill({ json: fleet }).catch(() => {});
+  });
+}
+const fleetShown = () => {
+  const v = document.getElementById('session-view');
+  const peek = document.getElementById('peek-overlay')?.classList.contains('active');
+  return { listShown: !!v && getComputedStyle(v).visibility !== 'hidden' && !!document.querySelector('#session-view .card'), peek: !!peek };
+};
+
+test('the tab returned to opens straight on the worker, never the Workers list first', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'the in-page tab bar, whose tab is rebuilt, is desktop only');
+  await slowFleet(page);
+  await originBar(page, [{ id: 1, name: '', hash: '' }, { id: 3, name: '', hash: '#peek=alpha' }], 1);
+  await page.goto(viewerUrl('alpha', 3));
+  await ready(page);
+  await expect(page.locator('#file-overlay')).toHaveClass(/active/, { timeout: 30_000 });
+  await page.evaluate('dismissFilePreview()');
+  const h = await page.waitForSelector('#chrome-tab-frames iframe[data-tab-id="3"]', { state: 'attached' });
+  const f = (await h.contentFrame())!;
+  const seen: { listShown: boolean; peek: boolean }[] = [];
+  const t0 = Date.now();
+  while (Date.now() - t0 < 15_000) {
+    const s = await f.evaluate(fleetShown).catch(() => null);
+    if (s) { seen.push(s); if (s.peek) break; }
+    await page.waitForTimeout(40);
+  }
+  expect(seen.some(s => s.peek), 'the worker opened in the tab').toBe(true);
+  expect(seen.filter(s => s.listShown && !s.peek), 'the Workers list never showed before the worker').toEqual([]);
+  expect(await f.evaluate(() => document.documentElement.classList.contains('boot-peek-pending'))).toBe(false);
+});
+
+test('a #peek= address for a worker that is gone shows the Workers list, not a blank page', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.context().route(/\/api\/sessions(?:\?.*)?$/, r => r.fulfill({ json: SLOW_FLEET }));
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  const gaveUp = page.waitForEvent('console', { predicate: m => m.text().includes('peek_boot_reveal: worker_not_found'), timeout: 20_000 });
+  await page.goto('/#peek=gone-worker');
+  await ready(page);
+  expect(await page.evaluate(() => document.documentElement.classList.contains('boot-peek-pending')), 'hidden while it looks').toBe(true);
+  await gaveUp;   // revealed when the look gives up, and says why; not only by the 12s backstop
+  expect(await page.evaluate(() => document.documentElement.classList.contains('boot-peek-pending'))).toBe(false);
+  await expect(page.locator('#session-view')).toBeVisible();
+  expect(await page.evaluate('peekSession')).toBeFalsy();
+});
+
+test('a page opened without a worker address is not held hidden', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
+  await page.goto('/#view=board');
+  await ready(page);
+  expect(await page.evaluate(() => document.documentElement.classList.contains('boot-peek-pending'))).toBe(false);
+});

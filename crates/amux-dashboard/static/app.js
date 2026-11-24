@@ -20152,7 +20152,18 @@ function _frozenWorker(next) {
   return true;
 }
 
+// A page opened on a #peek= address keeps the fleet hidden until the worker
+// opens (index.html adds boot-peek-pending): a tab returned to from a link
+// showed the Workers list first, then entered the worker (owner, 2026-11-23).
+function _peekBootReveal(verdict, name) {
+  const h = document.documentElement;
+  if (!h.classList.contains('boot-peek-pending')) return;
+  h.classList.remove('boot-peek-pending');
+  amuxTrack('peek_boot_reveal', { verdict, session: name || '', ms: Math.round(performance.now()), measured: true, n_considered: 1 });
+  if (verdict !== 'worker_opened') console.warn('[amux] peek_boot_reveal: ' + verdict + ', the Workers list shows instead of ' + (name || 'the worker'));
+}
 function openPeek(name, opts) {
+  _peekBootReveal('worker_opened', name);
   if (_frozenWorker(name)) return;
   _peekAgentsReset();
   _vxOnPeekOpen(name);   // switching worker ends another worker's live conversation
@@ -63191,6 +63202,7 @@ async function _handleDeeplink(hash) {
         return;
       }
       if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
+      else _peekBootReveal('worker_not_found', target);
     };
     tryOpen(0);
     return;
