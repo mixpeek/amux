@@ -11722,6 +11722,36 @@ _land_mq_replay() { # <base> <new main> <candidate>
   done
   printf '%s\n' "$tip"
 }
+# A carried replay lands a tree no candidate built: sharing no file with what moved
+# main does not mean a deploying member's tree is unchanged (Mixpeek 2026-11-24
+# 08:32Z: a carried prefix landed tree 578b831fa5 where the candidate's was
+# 5864a5b536, so engine and platform had no built image and took 5.22 and 4.52 min
+# to serve against 2). amux.landMergeQueueCarryCheck, if set, is a shell command
+# run in the checkout with AMUX_LAND_BASE, AMUX_LAND_ONTO (the moved main),
+# AMUX_LAND_CANDIDATE (the green sha) and AMUX_LAND_REPLAY (the carried sha). It
+# prints one name per line for each member whose tree the replay changes, and
+# exits 0. Nothing printed carries; a name, a non-zero exit or a timeout
+# (AMUX_LAND_MQ_CARRY_CHECK_TIMEOUT_S, default 120) re-tests it as a new candidate.
+_land_mq_carry_ok() { # <base> <new main> <candidate> <replay>
+  local chk out rc=0 err names
+  chk="$(_land_cfg --get amux.landMergeQueueCarryCheck 2>/dev/null || true)"
+  [ -n "$chk" ] || return 0
+  err="$(mktemp "${TMPDIR:-/tmp}/lmq-carry.XXXXXX")"
+  out="$(AMUX_LAND_BASE="$(git rev-parse "$1")" AMUX_LAND_ONTO="$(git rev-parse "$2")" \
+         AMUX_LAND_CANDIDATE="$(git rev-parse "$3")" AMUX_LAND_REPLAY="$(git rev-parse "$4")" \
+         perl -e "$_LAND_PC_TIMEOUT_PL" "${AMUX_LAND_MQ_CARRY_CHECK_TIMEOUT_S:-120}" bash -c "$chk" 2>"$err")" || rc=$?
+  if [ "$rc" != 0 ]; then
+    _land_mq_ledger phase=carry_unmeasured candidate="$3" sha="$4" rc="$rc"
+    _land_log "merge queue: the carry check (amux.landMergeQueueCarryCheck) exited $rc, so the carried tree is unjudged; testing it as a new candidate (verdict=mq_carry_unmeasured): $(tail -2 "$err" | tr '\n' ' ' | cut -c1-300)"
+    rm -f -- "$err"; return 1
+  fi
+  rm -f -- "$err"
+  names="$(printf '%s\n' "$out" | awk 'NF {printf "%s%s", sep, $1; sep=","}')"
+  [ -z "$names" ] && return 0
+  _land_mq_ledger phase=carry_refused candidate="$3" sha="$4" members="$names"
+  _land_log "merge queue: carrying $(git rev-parse --short "$3") would land a tree no candidate built for $names; testing it as a new candidate (verdict=mq_carry_changes_members members=$names)"
+  return 1
+}
 _land_mq_mode() { # prints off, shadow or enforce
   local m="${AMUX_LAND_MERGE_QUEUE:-}"
   [ -n "$m" ] || m="$(_land_cfg --get amux.landMergeQueue 2>/dev/null || true)"
@@ -13645,7 +13675,8 @@ $f"
             git fetch -q "$remote" "$branch" 2>/dev/null || true
             if ! git merge-base --is-ancestor "$remote/$branch" "$stack_tip" \
               && _land_mq_moved_ok "$_mq_base" "$remote/$branch" "$stack_tip" \
-              && _mq_new="$(_land_mq_replay "$_mq_base" "$remote/$branch" "$stack_tip")"; then
+              && _mq_new="$(_land_mq_replay "$_mq_base" "$remote/$branch" "$stack_tip")" \
+              && _land_mq_carry_ok "$_mq_base" "$remote/$branch" "$stack_tip" "$_mq_new"; then
               _land_mq_ledger phase=carried batch="$_mq_id" base="$_mq_base" onto="$(git rev-parse "$remote/$branch")" candidate="$stack_tip" sha="$_mq_new"
               _land_log "merge queue: $branch moved under the green candidate ($_mq_url), with nothing that overlaps it; replayed onto the new tip"
               stack_tip="$_mq_new"
@@ -13692,9 +13723,11 @@ $f"
                 if [ -n "${_mq_bg:-}" ] && [ "$_mq_bg" != - ] && ! git merge-base --is-ancestor "$remote/$branch" "$_mq_bg"; then
                   if _land_mq_moved_ok "$_mq_base" "$remote/$branch" "$_mq_bg" \
                     && _mq_new="$(_land_mq_replay "$_mq_base" "$remote/$branch" "$_mq_bg")"; then
-                    _land_mq_ledger phase=carried batch="$_mq_id" base="$_mq_base" onto="$(git rev-parse "$remote/$branch")" candidate="$_mq_bg" sha="$_mq_new"
-                    _land_log "merge queue: $branch moved under the green prefix ($_mq_bg), with nothing that overlaps it; replayed onto the new tip (verdict=mq_prefix_carried)"
-                    _mq_bg="$_mq_new"
+                    if _land_mq_carry_ok "$_mq_base" "$remote/$branch" "$_mq_bg" "$_mq_new"; then
+                      _land_mq_ledger phase=carried batch="$_mq_id" base="$_mq_base" onto="$(git rev-parse "$remote/$branch")" candidate="$_mq_bg" sha="$_mq_new"
+                      _land_log "merge queue: $branch moved under the green prefix ($_mq_bg), with nothing that overlaps it; replayed onto the new tip (verdict=mq_prefix_carried)"
+                      _mq_bg="$_mq_new"
+                    fi
                   else
                     _land_log "merge queue: $branch moved under the green prefix ($_mq_bg) on a file it also changes; it is tested again with the rest (verdict=mq_prefix_overlap)"
                   fi

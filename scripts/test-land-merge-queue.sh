@@ -21,6 +21,8 @@
 #             beside it gets one; its check can still refuse
 #   enforce   main moves under a green candidate: carried when nothing overlaps or
 #             the new commit is no-code, re-composed when a file is shared
+#   enforce   carry check (amux.landMergeQueueCarryCheck): carried when it names
+#             no member, re-tested when it names one or fails, on both carry paths
 #   shadow    candidate dispatched, main pushed directly even when it is red
 #   misconfigured (no workflow): lands directly with a WARN
 set -uo pipefail
@@ -322,6 +324,45 @@ setup; queue_on; commit_file g1 x; echo g1 > "$H/move-main"
 land; rc=$?
 { grep -q "re-composing on the new tip" "$H/.amux/logs/land.log" && ! grep -q "replayed onto the new tip" "$H/.amux/logs/land.log"; } \
   && ok "moved main on the same file: not carried" || bad "overlap rc=$rc dispatches=$(dispatches)"
+done_case
+
+# --- the carry check (Mixpeek 2026-11-24: a carried prefix landed a tree no
+# candidate built). It prints the members whose tree the replay changes.
+setup; queue_on; commit_file g1 x; echo other.txt > "$H/move-main"
+git config amux.landMergeQueueCarryCheck 'env | grep ^AMUX_LAND_ | sort > "$FAKE_GH_HOME/carry-env"'
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has g1 && [ "$(dispatches)" = 1 ]; } && ok "carry check prints nothing: carried with no second run" || bad "empty carry check rc=$rc dispatches=$(dispatches)"
+{ grep -q "^AMUX_LAND_REPLAY=$(git --git-dir="$H/origin.git" rev-parse main)$" "$H/carry-env" \
+  && grep -q '^AMUX_LAND_CANDIDATE=[0-9a-f]\{40\}$' "$H/carry-env" && grep -q '^AMUX_LAND_ONTO=[0-9a-f]\{40\}$' "$H/carry-env" && grep -q '^AMUX_LAND_BASE=[0-9a-f]\{40\}$' "$H/carry-env"; } \
+  && ok "carry check: given the base, the moved main, the candidate and the landed replay as full shas" || bad "carry env: $(cat "$H/carry-env" 2>/dev/null)"
+done_case
+
+setup; queue_on; commit_file g1 x; echo other.txt > "$H/move-main"
+git config amux.landMergeQueueCarryCheck 'echo engine; echo platform'
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has g1 && [ "$(dispatches)" = 2 ] && grep -q "verdict=mq_carry_changes_members members=engine,platform" "$H/.amux/logs/land.log" \
+  && ! grep -q "replayed onto the new tip" "$H/.amux/logs/land.log"; } \
+  && ok "carry check names members: not carried, tested as a new candidate, then lands" || bad "member carry rc=$rc dispatches=$(dispatches); $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -4)"
+done_case
+
+setup; queue_on; commit_file g1 x; echo other.txt > "$H/move-main"
+git config amux.landMergeQueueCarryCheck 'echo boom >&2; exit 3'
+land; rc=$?
+{ [ "$rc" = 0 ] && [ "$(dispatches)" = 2 ] && grep -q "verdict=mq_carry_unmeasured" "$H/.amux/logs/land.log"; } \
+  && ok "carry check fails: unjudged, so tested as a new candidate" || bad "failing carry check rc=$rc dispatches=$(dispatches); $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -4)"
+done_case
+
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 bad; plant w3 w3
+echo other.txt > "$H/move-main"
+git config amux.landMergeQueueCarryCheck 'echo engine'
+land; rc=$?
+{ grep -q "verdict=mq_carry_changes_members members=engine" "$H/.amux/logs/land.log" && ! grep -q "verdict=mq_prefix_carried" "$H/.amux/logs/land.log" \
+  && ! grep -q "verdict=mq_prefix_overlap" "$H/.amux/logs/land.log"; } \
+  && ok "red batch, main moved, carry check names a member: the prefix is not carried, tested again" || bad "member prefix rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 
 setup; queue_on; nocode; commit_file g1 x; echo research/notes.md > "$H/move-main"
