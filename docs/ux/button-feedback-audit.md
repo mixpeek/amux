@@ -1287,7 +1287,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy reply | `_chatCopy` | onclick |
 | app.js | + | `_chromeAddTab` | onclick |
 | app.js | div | `_chromeSwitchTab` | onclick |
-| app.js | … | `_chromeToggleCollapse` | onclick |
+| app.js | button | `_chromeToggleCollapse` | onclick |
 | index.html | Remove template | `_clearTemplate` | onclick |
 | index.html | Done | `_closePeekFilters` | onclick |
 | app.js | + | `_closePeekMore` | onclick |

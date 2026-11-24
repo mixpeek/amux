@@ -11312,6 +11312,49 @@ function _renderTabCustomizerMenu() {
   });
 }
 
+// ONE LIVE SORTABLE DRAG OWNS THE PAGE. Sortable keeps the drag in progress in
+// module globals shared by every instance, and destroy() on ANY instance runs
+// its drop with no event: the globals are cleared and the drag in progress
+// hangs with its floating copy under the pointer, and the drop never lands.
+// Measured 2026-11-23: renderBoard, reached from _ensureArchivedCount with the
+// Board not even shown, destroyed the board's Sortables while a tab of the
+// in-page strip was held, and that drag never ended. So a render that destroys
+// Sortables waits while any drag is live (Sortable.dragged is set from the
+// press to the drop) and runs once, after the pointer is let go. Each wait is
+// beaconed as kind=sortable-drag-deferred with what waited.
+function _sortableDragLive() { return !!(window.Sortable && window.Sortable.dragged); }
+const _afterSortableDrag = new Map();
+// A drag Sortable never closed (its globals left set) must not hold renders
+// for ever: past this, a render runs anyway and says so (sortable-drag-stuck).
+const _SORTABLE_HOLD_MAX_MS = 30000;
+let _sortableHoldSince = 0;
+function _deferForSortableDrag(fn, what) {
+  if (!_sortableDragLive()) { _sortableHoldSince = 0; return false; }
+  if (!_sortableHoldSince) _sortableHoldSince = Date.now();
+  if (Date.now() - _sortableHoldSince > _SORTABLE_HOLD_MAX_MS) {
+    console.warn('[sortable] a drag has been live for over 30s; rendering anyway', what);
+    try { window._clientDebug && window._clientDebug('sortable-drag-stuck', { what, held_ms: Date.now() - _sortableHoldSince, measured: true, n_considered: 1 }); } catch (e) { console.warn('[sortable] stuck-drag beacon not sent', e); }
+    return false;
+  }
+  if (!_afterSortableDrag.has(fn)) {
+    _afterSortableDrag.set(fn, what);
+    try { window._clientDebug && window._clientDebug('sortable-drag-deferred', { what, measured: true, n_considered: 1 }); } catch (e) { console.warn('[sortable] deferred-render beacon not sent', e); }
+  }
+  return true;
+}
+function _runAfterSortableDrag() {
+  if (!_afterSortableDrag.size) return;
+  // Sortable's own drop runs after this listener in the same event, so wait a turn.
+  setTimeout(function flush() {
+    if (_sortableDragLive()) { setTimeout(flush, 200); return; }
+    _sortableHoldSince = 0;
+    const waiting = [..._afterSortableDrag.keys()];
+    _afterSortableDrag.clear();
+    waiting.forEach(fn => { try { fn(); } catch (e) { console.warn('[sortable] a render held for a drag failed', e); } });
+  }, 0);
+}
+['pointerup', 'mouseup', 'touchend', 'pointercancel'].forEach(t => document.addEventListener(t, () => setTimeout(_runAfterSortableDrag, 0), true));
+
 // ONE DRAG FOR BOTH TAB MENUS, driven by the pointer (Ethan, 2026-10-25, the
 // Mac app's worker-view menu: "drag & tab not working or draggable"). Sortable's
 // default is the browser's native drag and drop, and in the Mac app that is an
@@ -11354,7 +11397,7 @@ function _tabMenuSortableCreate(menu, which, draggable, onReorder) {
   }
   return Sortable.create(menu, {
     draggable, animation: 120,
-    filter: 'input, .tab-cust-search-wrap', preventOnFilter: false,
+    filter: 'input, .tab-cust-search-wrap, .chrome-tab-close', preventOnFilter: false,
     forceFallback: true, fallbackTolerance: 4,
     delay: 160, delayOnTouchOnly: true, touchStartThreshold: 6,
     scroll: true, scrollSensitivity: 56, scrollSpeed: 14, bubbleScroll: true,
@@ -18212,6 +18255,7 @@ async function togglePeekBoardPolicy(field, on) {
 function _renderPeekIssuesBody() {
   // Don't rebuild mid-drag — a board SSE refresh would destroy the active Sortable.
   if (document.body.classList.contains('board-dragging')) return;
+  if (_deferForSortableDrag(_renderPeekIssuesBody, 'peek-board')) return;
   // NOT LOADED IS NOT EMPTY (Ethan, 2026-08-06 — screenshot of the amux worker's
   // Board tab reading "No issues for this worker yet." while that worker owned 29
   // cards). This panel renders from the global boardItems and never fetched: open
@@ -45139,6 +45183,7 @@ function toggleSortMode() {   // legacy entry point; cycles through the options
 
 function initSortable() {
   if (typeof Sortable === 'undefined') return;
+  if (_deferForSortableDrag(initSortable, 'worker-cards')) return;
   if (sortMode !== 'natural') { destroySortable(); return; }
   destroySortable();
   const cards = document.querySelector('.cards');
@@ -46011,41 +46056,53 @@ if (_nativePaneBridge()) {
 // tabs last used. A tab's iframe reads nothing and seeds nothing here.
 const _CHROME_STATE_KEY = 'amux_chrome_state';
 function _chromeLoad() {
-  const one = { tabs: [{id: 1, name: 'Tab 1'}], active: 1 };
+  const one = { tabs: [{id: 1, name: 'Tab 1'}], active: 1, page: 1 };
   if (_isInTab) return one;
   try {
     const s = JSON.parse(sessionStorage.getItem(_CHROME_STATE_KEY) || 'null');
-    if (s && Array.isArray(s.tabs) && s.tabs.length) return { tabs: s.tabs, active: s.active };
+    if (s && Array.isArray(s.tabs) && s.tabs.length) return { tabs: s.tabs, active: s.active, page: s.page };
   } catch (e) {}
   let snap = null;
   try { snap = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null'); } catch (e) {}
   if (!Array.isArray(snap) || !snap.length) return one;
-  snap.slice(1).forEach(t => {
-    if (t && typeof t.hash === 'string' && t.hash.charAt(0) === '#') {
+  // A snapshot from before the page tab was named had the page first.
+  const pageTab = snap.find(t => t && t.page) || snap[0];
+  snap.forEach(t => {
+    if (t && t !== pageTab && typeof t.hash === 'string' && t.hash.charAt(0) === '#') {
       try { sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); } catch (e) {}
     }
   });
-  return { tabs: snap.map(t => ({ id: t.id, name: t.name || '' })), active: parseInt(localStorage.getItem('amux_chrome_active2')) };
+  return { tabs: snap.map(t => ({ id: t.id, name: t.name || '' })), active: parseInt(localStorage.getItem('amux_chrome_active2')), page: pageTab && pageTab.id };
 }
 const _chromeLoaded = _chromeLoad();
 let _chromeTabs = _chromeLoaded.tabs;
-let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromeTabs[0]?.id || 1;
-if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromeTabs[0].id;
+// THE PAGE IS ONE TAB, WHEREVER IT SITS (owner, 2026-11-23: after a drag,
+// going back to a tab "loads like the worker screen and then quickly loads
+// your session ... is there any way to have it persist"). One tab is this page
+// itself and every other is an iframe. That tab was always the first, so a
+// drag that put another tab first moved the page to it and rebuilt the old
+// first as a new iframe, which loaded the list and then its worker. The page
+// tab is now named by id and keeps its place in the order, so a drag only
+// moves labels: every tab keeps its live page.
+let _chromePageId = parseInt(_chromeLoaded.page);
+if (!_chromeTabs.some(t => t.id === _chromePageId)) _chromePageId = _chromeTabs[0].id;
+let _chromeActiveId = (_nativeTabs ? null : parseInt(_chromeLoaded.active)) || _chromePageId;
+if (!_chromeTabs.some(t => t.id === _chromeActiveId)) _chromeActiveId = _chromePageId;
 // A BROWSER TAB OPENED ON A LINK SHOWS THE LINK (owner, 2026-11-22: a
 // middle-clicked path "did open a new tab but it did not deep link into that
-// JSONL file"). The page is the first tab and the link is its address; the bar
+// JSONL file"). The page is its own tab and the link is its address; the bar
 // a new browser tab starts from had a later tab open, whose iframe covered
 // the page and the file it opened. A reload or a discarded tab coming back
 // keeps the tab that was open: only a fresh navigation is a link.
 (function _chromeBootOnLink() {
-  if (_isInTab || _nativeTabs || _chromeActiveId === _chromeTabs[0].id) return;
+  if (_isInTab || _nativeTabs || _chromeActiveId === _chromePageId) return;
   if (!_DEEPLINK_HASH_RE.test(location.hash) && !/[?&]view=/.test(location.search)) return;
   let nav = '';
   try { nav = (performance.getEntriesByType('navigation')[0] || {}).type || ''; } catch (e) { console.warn('[amux] chrome_tab_link_boot: navigation type unreadable, keeping the saved tab', e); }
   if (nav !== 'navigate' || document.wasDiscarded) return;
   const from = _chromeActiveId;
-  _chromeActiveId = _chromeTabs[0].id;
-  console.info('[amux] chrome_tab_link_boot', { verdict: 'link_shown_on_first_tab', from, link: location.hash.slice(0, location.hash.indexOf('=') + 1) });
+  _chromeActiveId = _chromePageId;
+  console.info('[amux] chrome_tab_link_boot', { verdict: 'link_shown_on_page_tab', from, link: location.hash.slice(0, location.hash.indexOf('=') + 1) });
 })();
 let _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
 let _chromeCollapsed = localStorage.getItem('amux_chrome_collapsed') === '1';
@@ -46064,10 +46121,52 @@ function _chromeRender() {
     h += '<div class="chrome-tab'+cls+'" onclick="_chromeSwitchTab('+t.id+')" onmousedown="if(event.button===1){event.preventDefault();_chromeCloseTab('+t.id+')}" ondblclick="event.stopPropagation();_chromeRenameTab('+t.id+')" data-tab-id="'+t.id+'"><span class="chrome-tab-label">'+label+'</span>'+close+'</div>';
   }
   h += '<button class="chrome-tab-add" onclick="_chromeAddTab()" title="New tab" style="margin:0 var(--space-1) var(--space-1) var(--space-1);">+</button>';
-  h += '<button class="chrome-tab-collapse" onclick="_chromeToggleCollapse()" title="'+(_chromeCollapsed?'Show tabs':'Hide tabs')+'">'+(_chromeCollapsed?'&#x25BC;':'&#x25B2;')+'</button>';
+  // One chevron, turned by CSS: up hides the strip, down (on the pull tab
+  // left at the top edge) shows it again.
+  h += '<button class="chrome-tab-collapse" onclick="_chromeToggleCollapse()" title="'+(_chromeCollapsed?'Show tabs':'Hide tabs')+'" aria-label="'+(_chromeCollapsed?'Show tabs':'Hide tabs')+'"><svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 7.5 6 4l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>';
   bar.innerHTML = h;
   _chromeShowActive();
   _chromeUpdateOffsets();
+}
+
+// DRAG A TAB TO REORDER THE STRIP (owner, 2026-11-23: "Dragging to order tabs
+// in Amux on the web is not working"). The strip never had a drag; only the ⊞
+// menus did. It uses the menus' pointer-driven Sortable (_tabMenuSortableCreate),
+// so the click a drop would send is swallowed and ✕ and the rename box stay
+// clicks. It is bound once to the bar, which every render keeps (only its
+// children are replaced). Sortable loads after this script, so setup waits for
+// the page's load event. Drags are beaconed as kind=tabcust-drag which=chrome and
+// each reorder as chrome_tab_reordered.
+function _chromeTabDragSetup(bar) {
+  if (_isInTab || _nativeTabs || bar._chromeSortable) return;
+  if (!window.Sortable && document.readyState !== 'complete') {
+    if (!bar._chromeSortableWait) {
+      bar._chromeSortableWait = true;
+      window.addEventListener('load', () => _chromeTabDragSetup(bar), { once: true });
+    }
+    return;
+  }
+  bar._chromeSortable = _tabMenuSortableCreate(bar, 'chrome', '.chrome-tab', () => {
+    const ids = [...bar.querySelectorAll('.chrome-tab[data-tab-id]')].map(el => parseInt(el.dataset.tabId, 10));
+    _chromeReorder(ids);
+  });
+}
+
+// A drop only reorders the strip. The page tab and every iframe stay as they
+// are, so no tab reloads (see _chromePageId).
+function _chromeReorder(ids) {
+  const byId = new Map(_chromeTabs.map(t => [t.id, t]));
+  const next = ids.map(id => byId.get(id)).filter(Boolean);
+  if (next.length !== _chromeTabs.length) {
+    // A strip that does not match the list (a render mid-drag) is put back, not saved.
+    amuxTrack('chrome_tab_reordered', {verdict: 'strip_mismatch', strip: ids.length, tabs: _chromeTabs.length, measured: true, n_considered: ids.length});
+    _chromeRender();
+    return;
+  }
+  amuxTrack('chrome_tab_reordered', {verdict: 'reordered', page_tab_at: next.findIndex(t => t.id === _chromePageId), measured: true, n_considered: next.length});
+  _chromeTabs = next;
+  _chromeRender();
+  _chromeSave();
 }
 
 function _chromeShowActive() {
@@ -46076,8 +46175,7 @@ function _chromeShowActive() {
   if (!fc) return;
   const tab = _chromeTabs.find(t => t.id === _chromeActiveId);
   if (!tab) return;
-  const isFirst = _chromeTabs[0] && _chromeTabs[0].id === _chromeActiveId;
-  if (isFirst) {
+  if (_chromeActiveId === _chromePageId) {
     fc.classList.remove('active');
   } else {
     fc.classList.add('active');
@@ -46221,8 +46319,8 @@ function _chromeTabLiveHash(id) {
   }
   return _chromeTabSavedHash(id);
 }
-// The first tab is this page itself; every later tab is an iframe. Closing
-// the first tab made the next one first, and the bar showed it AS this page,
+// One tab is this page itself; every other is an iframe. Closing the page
+// tab made the next one first, and the bar showed it AS this page,
 // which still held the closed tab's worker (owner, 2026-11-13: "the next tab,
 // which replaces the now-closed tab, becomes the session of the tab I
 // closed"). The page now moves to that tab's own place and its iframe goes.
@@ -46241,9 +46339,12 @@ function _chromeCloseTab(id) {
   if (idx < 0) return;
   const fc = document.getElementById('chrome-tab-frames');
   let moveTo = null;
-  if (idx === 0) {
-    const next = _chromeTabs[1];
+  const closingPage = id === _chromePageId;
+  if (closingPage) {
+    // The page moves to the tab beside it, which stops being an iframe.
+    const next = _chromeTabs[idx + 1] || _chromeTabs[idx - 1];
     moveTo = _chromeTabLiveHash(next.id);
+    _chromePageId = next.id;
     if (fc) { const nf = fc.querySelector('iframe[data-tab-id="' + next.id + '"]'); if (nf) nf.remove(); }
     try { sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + next.id); } catch (e) {}
     try { _takeTabListView(next.id); } catch (e) { console.warn('[tabs] could not carry the next tab\'s list view', e); }
@@ -46254,7 +46355,7 @@ function _chromeCloseTab(id) {
   // A closed tab's list view goes with it: ids are reused (max + 1), so a later
   // tab would otherwise open on the closed one's search and filters.
   try { sessionStorage.removeItem(_LIST_VIEW_TAB_KEY + id); } catch (e) {}
-  amuxTrack('chrome_tab_closed', {verdict: idx === 0 ? 'first_tab_page_moved_to_next' : 'later_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
+  amuxTrack('chrome_tab_closed', {verdict: closingPage ? 'page_tab_page_moved_to_next' : 'iframe_tab_closed', has_address: moveTo ? 1 : 0, measured: true, n_considered: 1});
   if (moveTo !== null) _chromePageGoTo(moveTo);
   _chromeTabs.splice(idx, 1);
   if (_chromeActiveId === id) {
@@ -46268,7 +46369,9 @@ function _chromeCloseTab(id) {
 // The snapshot a browser tab with no bar of its own starts from.
 let _chromeSnapLast = '';
 function _chromeSnapshot() {
-  const snap = JSON.stringify(_chromeTabs.map((t, i) => ({ id: t.id, name: t.name || '', hash: i === 0 ? (location.hash || '') : _chromeTabLiveHash(t.id) })));
+  const snap = JSON.stringify(_chromeTabs.map(t => t.id === _chromePageId
+    ? { id: t.id, name: t.name || '', hash: location.hash || '', page: true }
+    : { id: t.id, name: t.name || '', hash: _chromeTabLiveHash(t.id) }));
   if (snap === _chromeSnapLast) return;
   _chromeSnapLast = snap;
   localStorage.setItem('amux_chrome_tabs2', snap);
@@ -46277,7 +46380,7 @@ function _chromeSnapshot() {
 function _chromeSave() {
   if (_isInTab) return;
   try {
-    sessionStorage.setItem(_CHROME_STATE_KEY, JSON.stringify({ tabs: _chromeTabs, active: _chromeActiveId }));
+    sessionStorage.setItem(_CHROME_STATE_KEY, JSON.stringify({ tabs: _chromeTabs, active: _chromeActiveId, page: _chromePageId }));
     _chromeSnapLast = '';
     _chromeSnapshot();
   } catch(e) {}
@@ -54630,6 +54733,7 @@ function renderBoard() {
   _boardEnsureFull();
   // Skip re-render while a drag is in progress — queue it for when drag ends
   if (document.body.classList.contains('board-dragging')) { _boardRenderPending = true; return; }
+  if (_deferForSortableDrag(renderBoard, 'board')) return;
   renderBoardFilters();
   const container = document.getElementById('board-columns');
   // Global columns scroll horizontally. Keep activity above them, outside the
@@ -59486,6 +59590,7 @@ loadBranding();
 
 // Initialize chrome tabs
 _chromeRender();
+{ const _ctb = document.getElementById('chrome-tabs-bar'); if (_ctb) _chromeTabDragSetup(_ctb); }
 // This browser tab owns its bar from its first load, so its reload reads its own.
 _chromeSave();
 _chromeUpdateOffsets();
