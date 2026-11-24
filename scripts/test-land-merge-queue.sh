@@ -8,7 +8,8 @@
 #             mq ref is gone, and the base reaches the workflow input
 #   enforce   red alone: rc 6, main unchanged
 #   enforce   red batch: bisected, the culprit waiter ejected, the prefix that
-#             already passed lands, the waiters after the culprit keep tickets
+#             already passed lands, the waiters after the culprit keep tickets;
+#             a culprit in first place lands the holder alone
 #   enforce   red batch while main moves: the passing prefix is carried onto
 #             the new main and lands when nothing overlaps; re-tested when a
 #             file is shared
@@ -163,6 +164,20 @@ ls "$q" | grep -q . && ok "enforce red batch: the waiter after the culprit keeps
 grep -q "refused the batch on your commit" "$H/.amux/locks/land-$key.r/"* 2>/dev/null && ok "enforce red batch: the culprit's waiter is told it was refused" || bad "no refusal written for w2"
 grep -q "bisected to w2's commit" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log names the culprit lane" || bad "culprit not logged"
 [ "$(mq_refs)" = 0 ] && ok "enforce red batch: no candidate ref left" || bad "mq refs left: $(mq_refs)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- enforce, red batch whose culprit is the first waiter: the holder lands
+# alone (mxp-presales 2026-11-23: BSD head refused -n 0 and the land exited 1).
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 bad; plant w2 w2
+land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && ! main_has bad && ! main_has w2; } \
+  && ok "red batch, culprit is waiter 1: the holder's prefix of one lands" || bad "culprit-first rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6); $(tail -3 "$H/out")"
+grep -q "this lane and 0 waiter(s), verdict=mq_prefix_landed" "$H/.amux/logs/land.log" && ok "red batch, culprit is waiter 1: land.log says the holder landed alone" || bad "no prefix-of-one line"
+ls "$q" | grep -q . && ok "red batch, culprit is waiter 1: the waiter after it keeps its ticket" || bad "w2's ticket is gone"
 kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 

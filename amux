@@ -10151,7 +10151,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-23.60"
+LAND_BEHAVIOR_VERSION="2026-11-23.61"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -13700,9 +13700,11 @@ $f"
                   fi
                 fi
                 if [ -n "${_mq_bg:-}" ] && [ "$_mq_bg" != - ] && git merge-base --is-ancestor "$remote/$branch" "$_mq_bg"; then
-                  stack_in="$(printf '%s\n' "$stack_in" | grep . | head -n $(( _mq_bi - 1 )))"; stack_in="${stack_in:+$stack_in
+                  # awk, not head: the culprit can be the first waiter, and BSD head
+                  # refuses -n 0 (mxp-presales 2026-11-23: rc 1 after mq_prefix_carried).
+                  stack_in="$(printf '%s\n' "$stack_in" | awk -v n=$(( _mq_bi - 1 )) 'NF && ++k <= n')"; stack_in="${stack_in:+$stack_in
 }"
-                  stack_map="$(printf '%s\n' "$stack_map" | grep . | head -n $(( _mq_bi - 1 )))"; stack_map="${stack_map:+$stack_map
+                  stack_map="$(printf '%s\n' "$stack_map" | awk -v n=$(( _mq_bi - 1 )) 'NF && ++k <= n')"; stack_map="${stack_map:+$stack_map
 }"
                   lanes="$(printf '%s' "$stack_in" | awk 'NF {printf "%s%s", sep, $2; sep=", "}')"
                   stack_tip="$_mq_bg"
