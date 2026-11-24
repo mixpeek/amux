@@ -154,6 +154,21 @@ test('a refresh from elsewhere does not rebuild a field being typed in', async (
   await expect(page.locator('#crm-list .crm-row', { hasText: 'Elsewhere ' + R })).toBeVisible({ timeout: 10_000 });
   await expect(notes).toHaveValue('half typed');
   await expect(notes).toBeFocused();
+
+  // A refresh whose fetch is still in flight when the owner starts typing
+  // must not land over the field either (CI 45299042749, mobile).
+  await notes.blur();
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  await page.route('**/api/crm/contacts/' + made.body.id, async route => { await held; await route.continue(); });
+  await api(page, 'POST', '/contacts', { name: 'Later ' + R, email: `later.${R}@example.com` });
+  await expect(page.locator('#crm-list .crm-row', { hasText: 'Later ' + R })).toBeVisible({ timeout: 10_000 });
+  await notes.click();
+  await notes.fill('typed mid-fetch');
+  release();
+  await page.waitForTimeout(500);
+  await expect(notes).toHaveValue('typed mid-fetch');
+  await page.unroute('**/api/crm/contacts/' + made.body.id);
 });
 
 // Owner, 2026-11-23: "a very agentic-oriented CRM": channels an agent reaches

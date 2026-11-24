@@ -46935,8 +46935,9 @@ async function _crmAsk() {
 async function _crmDrawerRender() {
   const o = _crm.open;
   if (!o) return;
+  const gen = _crm.drawerGen = (_crm.drawerGen || 0) + 1;
   const el = _crmDrawerEl();
-  if (o.kind === 'new') { el.innerHTML = _crmNewHtml(o.id); return; }
+  if (o.kind === 'new') { _crm.shown = 'new'; el.innerHTML = _crmNewHtml(o.id); return; }
   const path = o.kind === 'person' ? '/contacts/' : o.kind === 'company' ? '/accounts/' : '/deals';
   let x, chans = [], touches = [];
   try {
@@ -46948,7 +46949,13 @@ async function _crmDrawerRender() {
         _crmApi('/touches?' + (ok === 'contact' ? 'contact_id' : 'account_id') + '=' + encodeURIComponent(o.id))]);
     }
   } catch (e) { console.warn('[crm] drawer load failed', e); }
-  if (!_crm.open || _crm.open.id !== o.id) return;
+  if (!_crm.open || _crm.open.id !== o.id || gen !== _crm.drawerGen) return;
+  // The owner may have started typing while this fetched (CI 45299042749: a
+  // refresh wiped a lookalike name typed during it). A re-render of the record
+  // already on screen yields to them; opening another record still renders.
+  const key = o.kind + ':' + o.id;
+  if (_crm.shown === key && _crmEditing()) return;
+  _crm.shown = key;
   if (!x) { el.innerHTML = '<div class="cx-drawer" role="dialog"><div class="cx-dhead"><span class="crm-name">Not found</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div></div>'; return; }
   const p = (o.kind === 'deal' ? '/deals/' : path) + encodeURIComponent(o.id);
   let h = '<div class="cx-drawer" role="dialog" aria-label="' + esc(x.name || x.title) + '"><div class="cx-dhead">'
