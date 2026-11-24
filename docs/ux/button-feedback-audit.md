@@ -187,6 +187,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … | `_crmSave` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | + esc(label) + (n != null ? | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Approve | `_crmTouchApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Done | `_crmTouchDone` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Skip | `_crmTouchSkip` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Cancel | `_cvCancelEdit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_cvChArchive` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
