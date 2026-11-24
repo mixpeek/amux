@@ -744,6 +744,25 @@ pub async fn evaluate_all(state: &AppState) -> Vec<InvariantResult> {
             wt.as_deref(),
             runtime,
         ));
+        // The gate that guard's tenant refusal names by path: missing is a fail.
+        const BAKED_TENANT_GATE: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/tenant-gate.sh"
+        ));
+        let gate_path = amux_home.join("hooks/tenant-gate.sh");
+        let executable = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&gate_path).ok().map(|m| m.permissions().mode() & 0o111 != 0)
+        };
+        let head = read_head(checks::TENANT_GATE.committed_path);
+        let wt = read_worktree(checks::TENANT_GATE.committed_path);
+        out.extend(checks::tenant_gate_installed(
+            BAKED_TENANT_GATE,
+            head.as_deref(),
+            wt.as_deref(),
+            std::fs::read_to_string(&gate_path),
+            executable,
+        ));
 
         // -- the repo's pre-push hook, same rule (AF-1129). No repo, or a linked
         // worktree whose .git is a file, reads as unreadable: Unknown, not a pass.

@@ -3129,6 +3129,63 @@ pub const BOUNDARY_GUARD: InstalledScript = InstalledScript {
     noun: "boundary guard",
 };
 
+/// The read-only gate boundaries.toml's tenant-workload-gate names by its
+/// installed path (`gate_command`). mixpeek-dev booted on 2026-11-24 with the
+/// guard and registry updated and no gate (cloud/desktop/update.sh never copied
+/// it), and this Mac had none either, so a worker told to run it found nothing.
+/// Absence is a FAIL here, unlike the other installed scripts, because the
+/// guard's own refusal points at this file.
+pub const TENANT_GATE: InstalledScript = InstalledScript {
+    id: "hooks.tenant_gate_installed",
+    runtime_path: "~/.amux/hooks/tenant-gate.sh",
+    committed_path: "scripts/tenant-gate.sh",
+    noun: "tenant gate",
+};
+
+/// [`installed_script_matches_committed`] for the tenant gate, with a missing
+/// or non-executable file failing loudly instead of reading Unknown.
+/// `executable` is None when the mode could not be read.
+pub fn tenant_gate_installed(
+    baked_src: &str,
+    head_src: Option<&str>,
+    worktree_src: Option<&str>,
+    runtime: Result<String, std::io::Error>,
+    executable: Option<bool>,
+) -> Vec<InvariantResult> {
+    let spec = &TENANT_GATE;
+    let remedy = format!(
+        "install it from a checkout at origin/main: install -m 755 {} {} (./install.sh and \
+         cloud/desktop/update.sh both do this)",
+        spec.committed_path, spec.runtime_path
+    );
+    match runtime {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            vec![InvariantResult::fail(
+                spec.id,
+                format!("{} installed at {}", spec.noun, spec.runtime_path),
+                format!(
+                    "no {} at {}: the tenant-workload-gate refusal tells workers to run it there and \
+                     they find nothing. {remedy}",
+                    spec.noun, spec.runtime_path
+                ),
+            )
+            .evidence(json!({"runtime_path": spec.runtime_path, "committed_path": spec.committed_path, "missing": true}))]
+        }
+        Err(e) => installed_script_matches_committed(spec, baked_src, head_src, worktree_src, Err(e.to_string())),
+        Ok(text) => {
+            if executable == Some(false) {
+                return vec![InvariantResult::fail(
+                    spec.id,
+                    format!("{} at {} is executable", spec.noun, spec.runtime_path),
+                    format!("{} at {} is not executable, so running it by path fails. {remedy}", spec.noun, spec.runtime_path),
+                )
+                .evidence(json!({"runtime_path": spec.runtime_path, "executable": false}))];
+            }
+            installed_script_matches_committed(spec, baked_src, head_src, worktree_src, Ok(text))
+        }
+    }
+}
+
 /// The push gate every land goes through (AF-1129). A landed change to it
 /// reached no real push until a manual install, so the script-tests leg ran only
 /// in fixtures. The builder syncs it now; this says when that stops working.
@@ -8717,6 +8774,31 @@ mod negative_controls {
             "carries the migration-event caution: {}",
             bad[0].observed
         );
+    }
+
+    /// mixpeek-dev 2026-11-24: a missing tenant gate is a Fail naming the remedy,
+    /// never the Unknown a missing guard reads as; a non-executable one fails;
+    /// the committed bytes pass and older bytes drift.
+    #[test]
+    fn a_missing_tenant_gate_fails_loudly() {
+        let src = "#!/usr/bin/env bash\necho gate\n";
+        let missing = tenant_gate_installed(
+            src,
+            Some(src),
+            Some(src),
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            None,
+        );
+        assert_eq!(missing[0].invariant_id, "hooks.tenant_gate_installed");
+        assert_eq!(missing[0].status, Status::Fail, "{:?}", missing[0]);
+        assert!(missing[0].observed.contains("install -m 755 scripts/tenant-gate.sh"), "{}", missing[0].observed);
+        let noexec = tenant_gate_installed(src, Some(src), Some(src), Ok(src.into()), Some(false));
+        assert_eq!(noexec[0].status, Status::Fail);
+        assert!(noexec[0].observed.contains("not executable"));
+        let ok = tenant_gate_installed(src, Some(src), Some(src), Ok(src.into()), Some(true));
+        assert_eq!(ok[0].status, Status::Pass);
+        let old = tenant_gate_installed(src, Some(src), Some(src), Ok("# older\n".into()), Some(true));
+        assert_eq!(old[0].status, Status::Fail);
     }
 
     /// AMUX-3033: an identical runtime guard passes, a hand-edit is DETECTED as a

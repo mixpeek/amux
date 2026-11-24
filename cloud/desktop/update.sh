@@ -126,6 +126,16 @@ if [[ -f "$SRC/scripts/hooks/boundary-guard.py" && -f "$SRC/boundaries.toml" ]];
   as_user install -m 644 "$SRC/boundaries.toml" "$HOME_DIR/.amux/hooks/boundaries.toml.new" \
     && as_user mv "$HOME_DIR/.amux/hooks/boundaries.toml.new" "$HOME_DIR/.amux/hooks/boundaries.toml"
   GUARD_ARGS=(--boundary-guard "$HOME_DIR/.amux/hooks/boundary-guard.py")
+  # The read-only gate the tenant-workload-gate refusal tells a worker to run, by this path.
+  # install.sh copied it and this script did not, so mixpeek-dev booted with the guard
+  # refusing toward a gate that was not there (2026-11-24 01:07Z).
+  GATE="$HOME_DIR/.amux/hooks/tenant-gate.sh"
+  if [[ -f "$SRC/scripts/tenant-gate.sh" ]] \
+      && as_user install -m 755 "$SRC/scripts/tenant-gate.sh" "$GATE.new" && as_user mv "$GATE.new" "$GATE"; then
+    say "verdict=tenant_gate_installed path=$GATE"
+  else
+    say "verdict=tenant_gate_missing path=$GATE source=$SRC/scripts/tenant-gate.sh: the guard names a gate that is not there"
+  fi
 fi
 if [[ -f "$HOOKS" ]]; then
   if as_user python3 "$HOOKS" --provider claude --settings "$HOME_DIR/.claude/settings.json" \
