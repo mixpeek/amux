@@ -23,6 +23,7 @@
 //!   crm.touch.approved    the owner approved a touch; its assignee does it
 //!   crm.touch.done        a touch was done (or failed)
 //!   crm.contact.replied   mail or a LinkedIn message from a person in the CRM
+//!   crm.signup            an amux Cloud order arrived or changed status (api/crm_signups.rs)
 //!
 //! Websites and careers pages are fetched by the server (runtime job crm-watch);
 //! a social profile is checked by a worker through a signed-in browser route,
@@ -641,6 +642,7 @@ pub(crate) async fn tick(state: &AppState) {
         }
     }
     capture(state).await;
+    super::crm_signups::pull(state).await;
 }
 
 static CHANGED: Mutex<Option<Value>> = Mutex::new(None);

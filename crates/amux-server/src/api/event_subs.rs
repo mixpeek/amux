@@ -211,6 +211,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("crm.touch.approved", "the owner approved a planned outreach touch in the CRM, so its assignee does it now: fields id, contact_id, contact_name, account_name, channel (linkedin, x, email, ...), action (dm, comment, connect, email, ...), body (the approved text), target_url, assignee. A worker matches its own with eq on assignee"),
     ("crm.touch.done", "a CRM touch was done or failed: fields id, contact_id, contact_name, channel, action, status (done or failed), result, result_url, done_by"),
     ("crm.contact.replied", "a person in the CRM wrote back: an email from their address or a LinkedIn message from their exact name, attached to their activity: fields contact_id, name, channel (email or linkedin), subject, snippet, open_touches (planned, drafted or approved touches still open for them). Stop a sequence when open_touches is over 0"),
+    ("crm.signup", "an amux Cloud order reached the CRM or changed status: the person, their company and a deal \"amux Cloud <slug>\" are made or updated from it: fields contact_id, name, email, account_id, account_name, deal_id, stage (lead, trial, won, lost), previous_stage, change (new or status), status (the Stripe subscription status), slug, url, plan, amount_usd, mode (live or test), source, ready, activation. Plan the welcome touch with eq on change new; skip test orders with eq on mode live"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
     ("board.card.moved", "a board card changed status (old_status, status)"),
     ("board.card.updated", "a board card was edited without a status change"),
@@ -328,6 +329,7 @@ pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
     ("crm.touch.approved", &["id", "contact_id", "contact_name", "account_id", "account_name", "channel", "action", "body", "target_url", "assignee", "due_date", "sequence", "step"]),
     ("crm.touch.done", &["id", "contact_id", "contact_name", "channel", "action", "status", "result", "result_url", "done_by"]),
     ("crm.contact.replied", &["contact_id", "name", "channel", "subject", "snippet", "open_touches"]),
+    ("crm.signup", &["contact_id", "name", "email", "account_id", "account_name", "deal_id", "stage", "previous_stage", "change", "status", "slug", "url", "plan", "amount_usd", "mode", "source", "ready", "activation"]),
 ];
 
 fn entry(t: &str, n: i64, last: i64, mut fields: std::collections::BTreeSet<String>, example: Value) -> Value {

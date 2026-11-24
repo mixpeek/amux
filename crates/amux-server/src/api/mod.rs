@@ -69,6 +69,7 @@ pub mod criteria;
 pub mod crm;
 pub mod crm_accounts;
 pub mod crm_agent;
+pub mod crm_signups;
 pub mod deleted_substrate;
 pub mod dependency_audit;
 pub mod dictation;

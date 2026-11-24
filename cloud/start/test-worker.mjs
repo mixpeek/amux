@@ -236,6 +236,22 @@ await test('ops audit: a server left behind by a deleted account is erased with 
   eq([w.servers.length, w.dns.length, w.images.length], [0, 0, 0], 'servers, records, snapshots');
 });
 
+await test('signups: every order for the CRM, behind the ops key, and it changes nothing', async () => {
+  const w = world(); w.env.OPS_KEY = 'ops';
+  const sub = paid(w, 'crmone'); await webhook(w, sub);
+  const unfinished = paid(w, 'crmtwo');
+  const before = JSON.stringify([w.servers, w.subs]);
+  const r = await call(w, () => worker.fetch(new Request('https://w.test/api/signups', { headers: { 'x-ops-key': 'ops' } }), w.env));
+  const rep = await r.json();
+  eq([r.status, rep.measured, rep.n_considered], [200, true, 2], 'listed');
+  const one = rep.signups.find(s => s.sub === sub), two = rep.signups.find(s => s.sub === unfinished);
+  eq([one.slug, one.email, one.status, one.finished, one.url], ['crmone', 'hello+crmone@amux.io', 'active', true, 'https://crmone.amux.io'], 'a finished order');
+  eq([two.finished, two.ready], [false, false], 'an order whose server is not built yet');
+  eq(JSON.stringify([w.servers, w.subs]), before, 'read only');
+  const no = await call(w, () => worker.fetch(new Request('https://w.test/api/signups', { headers: { 'x-ops-key': 'wrong' } }), w.env));
+  eq(no.status, 404, 'a wrong key gets nothing');
+});
+
 await test('forged webhook refused', async () => {
   const w = world();
   const r = await call(w, () => worker.fetch(new Request('https://w.test/webhooks/stripe', { method: 'POST', body: '{}',

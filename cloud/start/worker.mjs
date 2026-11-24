@@ -771,6 +771,25 @@ async function audit(env) {
   log('ops.audit', { ...report, activation: undefined, activation_rows: activation.length, funnel: undefined, visitors: report.funnel.visitors_24h, funnel_measured: report.funnel.measured });
   return report;
 }
+// Every order, for the owner's CRM (the amux server's crm-watch job pulls this with the ops key and
+// makes each signup a person, a company and a deal). Read only: unlike /api/ops it fixes nothing,
+// so polling it is safe. Activation is the stage the hourly report last labelled, not a live fetch.
+async function signups(env) {
+  const subs = await allSubs(env);
+  const servers = (await hetzner(env, 'GET', `/servers?label_selector=amux-standalone=1,amux-mode=${env.MODE}`)).servers;
+  const bySub = new Map(servers.map(s => [s.labels['amux-sub'], s]));
+  const rows = subs.map(s => {
+    const srv = bySub.get(s.id), m = s.metadata || {};
+    const item = s.items?.data?.[0];
+    return { sub: s.id, slug: m.slug, email: (m.email || '').toLowerCase(), plan: m.plan || srv?.labels['amux-plan'] || '',
+             status: s.status, created: s.created, canceled_at: s.canceled_at || null, source: m.source || '', ab: m.ab || '',
+             amount_usd: item ? (item.price?.unit_amount || 0) * (item.quantity || 1) / 100 : null,
+             finished: !m.pw_hash, ready: srv?.labels['amux-ready'] === '1', activation: srv?.labels['amux-act'] || '',
+             url: `https://${host(m.slug)}` };
+  });
+  log('signups.listed', { n: rows.length });
+  return { mode: env.MODE, measured: true, n_considered: rows.length, at: new Date().toISOString(), signups: rows };
+}
 async function dailyAudit(env) {
   const r = await audit(env), monday = new Date().getUTCDay() === 1;
   if (!r.problems.length && !r.fixed.length && !r.friction.length && !monday) return r;
@@ -967,6 +986,11 @@ async function route(req, env) {
   if (p === '/api/ops' && req.method === 'GET') {
     if (!env.OPS_KEY || req.headers.get('x-ops-key') !== env.OPS_KEY) return json({ error: 'not found' }, 404);
     return json(await audit(env));
+  }
+
+  if (p === '/api/signups' && req.method === 'GET') {
+    if (!env.OPS_KEY || req.headers.get('x-ops-key') !== env.OPS_KEY) return json({ error: 'not found' }, 404);
+    return json(await signups(env));
   }
 
   if (p === '/api/apple/servers' && req.method === 'POST') {
