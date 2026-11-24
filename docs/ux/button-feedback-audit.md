@@ -471,6 +471,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Collapse sidebar | `_mapToggleSidebar` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Open sidebar | `_mapToggleSidebar` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_mapToggleTagMode` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Ask every @worker | `_mdAskAll` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | btn | `_mdBeacon` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Stop | `_mdaiCancel` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Undo | `_mdaiChatUndo` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | All nodes | `_mdaiCreateCancel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1750,6 +1752,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | draw-dir-pop | `e` | addEventListener |
 | app.js | grid | `e` | addEventListener |
 | app.js | m | `e` | addEventListener |
+| app.js | md-ask-sel | `e` | addEventListener |
 | app.js | mdx-alt | `e` | addEventListener |
 | app.js | mdx-out-host | `e` | addEventListener |
 | app.js | mdx-tools | `e` | addEventListener |

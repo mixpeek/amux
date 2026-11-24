@@ -3324,6 +3324,42 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_mdAskAll": {
+      "kind": "command._mdAskAll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdAskPaint": {
+      "kind": "command._mdAskPaint",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdAskPoll": {
+      "kind": "command._mdAskPoll",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdAskSelBtn": {
+      "kind": "command._mdAskSelBtn",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdAskSelSync": {
+      "kind": "command._mdAskSelSync",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_mdAskStart": {
+      "kind": "command._mdAskStart",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mdBeacon": {
       "kind": "command._mdBeacon",
       "feedback_required": true,

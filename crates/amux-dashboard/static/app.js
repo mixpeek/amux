@@ -9708,7 +9708,7 @@ function _mdTaskLine(a) {
   if (!block) return '';
   const c = block.cloneNode(true);
   c.querySelectorAll('ul, ol').forEach(n => n.remove());   // a nested list is other lines
-  c.querySelectorAll('.md-worker-link').forEach(n => n.remove());
+  c.querySelectorAll('.md-worker-link, .md-ask-reply').forEach(n => n.remove());   // a drawn reply is not the line
   return c.textContent.replace(/\s+/g, ' ').replace(/^[\s:—–-]+/, '').trim().slice(0, 300);
 }
 const _mdTask = { name: '', task: '', last: '', lastAt: '', waiting: false, sentAt: 0, pollAt: 0, anchor: null, timer: 0 };
@@ -9888,6 +9888,207 @@ function _mdTaskOpenWorker(tab) {
   if (typeof openPeek === 'function') openPeek(name);
   if (typeof setPeekTab === 'function') setPeekTab(tab);
   if (typeof _navSoon === 'function') _navSoon();
+}
+
+// ASK SEVERAL WORKERS FROM A FILE (owner, 2026-11-24: "highlight and all
+// highlighted @ workers I can send a mass message ... But then I also want to
+// see all the results at once"). Select lines in a markdown preview and an
+// "Ask N workers" button appears; the file menu's "Ask every @worker…" does
+// the same for the whole file. Each worker gets the question plus its own line
+// from the file, through the same send the single-worker card uses (a busy
+// worker gets it queued, a stopped one is woken). Its reply shows under its
+// line, drawn by the viewer only (the file is never written), and a bar at the
+// top counts replies. The state lives per file, so closing and reopening it
+// keeps the answers; a re-render (Split typing, a reload) redraws them.
+const _mdAsk = { path: '', question: '', sentAt: 0, rows: new Map(), timer: 0 };
+const _MD_ASK_WAIT_MS = 15 * 60 * 1000;
+function _mdAskBody() {
+  const b = document.getElementById('file-body');
+  return b && b.classList.contains('markdown') ? b : null;
+}
+function _mdAskNamesIn(body, range) {
+  const names = [];
+  body.querySelectorAll('.md-worker-link[data-worker]').forEach(a => {
+    if (range && !range.intersectsNode(a)) return;
+    if (!names.includes(a.dataset.worker)) names.push(a.dataset.worker);
+  });
+  return names;
+}
+function _mdAskSelBtn() {
+  let b = document.getElementById('md-ask-sel');
+  if (!b) {
+    b = document.createElement('button');
+    b.id = 'md-ask-sel';
+    b.type = 'button';
+    b.className = 'btn primary md-ask-sel';
+    b.hidden = true;
+    // mousedown, so the click does not first collapse the selection it acts on
+    b.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+    b.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation();
+      const names = (b.dataset.names || '').split('\n').filter(Boolean);
+      b.hidden = true;
+      _mdAskStart(names, 'selection');
+    });
+    document.body.appendChild(b);
+  }
+  return b;
+}
+function _mdAskSelSync() {
+  const btn = _mdAskSelBtn(), body = _mdAskBody();
+  const sel = window.getSelection();
+  if (!body || !sel || sel.isCollapsed || !sel.rangeCount || !body.isConnected
+      || !document.getElementById('file-overlay').classList.contains('active')) { btn.hidden = true; return; }
+  const range = sel.getRangeAt(0);
+  if (!body.contains(range.commonAncestorContainer)) { btn.hidden = true; return; }
+  const names = _mdAskNamesIn(body, range);
+  if (!names.length) { btn.hidden = true; return; }
+  btn.dataset.names = names.join('\n');
+  btn.textContent = 'Ask ' + names.length + (names.length === 1 ? ' worker' : ' workers');
+  btn.hidden = false;
+  const r = range.getBoundingClientRect(), bw = btn.offsetWidth || 120, bh = btn.offsetHeight || 32;
+  let top = r.bottom + 6;
+  if (top + bh > window.innerHeight - 8) top = Math.max(8, r.top - bh - 6);
+  btn.style.top = top + 'px';
+  btn.style.left = Math.max(8, Math.min(r.right - bw, window.innerWidth - bw - 8)) + 'px';
+}
+let _mdAskSelT = 0;
+document.addEventListener('selectionchange', () => { clearTimeout(_mdAskSelT); _mdAskSelT = setTimeout(_mdAskSelSync, 120); });
+function _mdAskAll() {
+  const m = document.getElementById('file-actions'); if (m) m.classList.remove('open');
+  const body = _mdAskBody();
+  _mdAskStart(body ? _mdAskNamesIn(body, null) : [], 'file');
+}
+async function _mdAskReadLast(name) {
+  const r = await fetch(API + '/api/sessions/' + encodeURIComponent(name) + '/last-message', { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const d = (await r.json()) || {};
+  return { text: String(d.text || '').trim(), at: String(d.at || '') };
+}
+async function _mdAskStart(names, from) {
+  const body = _mdAskBody(), path = _fileData && _fileData.path;
+  if (!body || !path) return;
+  names = names.filter(n => _mdWorkerKnown(n));
+  if (!names.length) { showToast('No @workers here to ask'); return; }
+  const off = names.filter(n => { const s = sessions.find(x => x.name === n); return !s || !s.running; }).length;
+  const title = 'Ask ' + names.length + (names.length === 1 ? ' worker' : ' workers')
+    + (off ? ' (' + off + ' off: the message starts ' + (off === 1 ? 'it' : 'them') + ')' : '')
+    + '. Each also gets its line from this file.';
+  const q = ((await showPrompt(title, 'Your question', 'What is your status?')) || '').trim();
+  if (!q) return;
+  const file = path.split('/').pop();
+  clearInterval(_mdAsk.timer);
+  Object.assign(_mdAsk, { path, question: q, sentAt: Date.now(), rows: new Map(), timer: 0 });
+  for (const n of names) _mdAsk.rows.set(n, { state: 'sending', before: null, text: '', at: '', error: '', queued: false });
+  _mdAskPaint();
+  await Promise.all(names.map(async n => {
+    const row = _mdAsk.rows.get(n);
+    const a = body.querySelector('.md-worker-link[data-worker="' + CSS.escape(n) + '"]');
+    const line = a ? _mdTaskLine(a) : '';
+    const text = q + (line ? '\n\n(Your line in ' + file + ': "' + line + '")' : '');
+    try {
+      // null when unread: the poll then never takes the message from before the ask as its answer
+      row.before = await _mdAskReadLast(n).catch(() => null);
+      const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(n) + '/send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }), signal: AbortSignal.timeout(30000) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.ok === false) throw new Error(d.error || d.message || ('HTTP ' + r.status));
+      row.queued = String(d.message || '').startsWith('queued');
+      row.state = 'waiting';
+    } catch (e) {
+      row.state = 'failed';
+      row.error = String((e && e.message) || e).slice(0, 160);
+    }
+    if (_mdAsk.path === path) _mdAskPaint();
+  }));
+  const failed = [..._mdAsk.rows.values()].filter(r => r.state === 'failed').length;
+  _mdBeacon('md_ask_sent', { n_considered: names.length, from, off, failed, chars: q.length });
+  if (failed) _mdBeacon('md_ask_failed', { failed, first_error: [..._mdAsk.rows.values()].find(r => r.error).error });
+  _mdAsk.timer = setInterval(_mdAskPoll, 5000);
+}
+async function _mdAskPoll() {
+  const waiting = [..._mdAsk.rows.entries()].filter(([, r]) => r.state === 'waiting');
+  if (!waiting.length) { clearInterval(_mdAsk.timer); _mdAsk.timer = 0; return; }
+  if (Date.now() - _mdAsk.sentAt > _MD_ASK_WAIT_MS) {
+    waiting.forEach(([, r]) => { r.state = 'silent'; });
+    _mdBeacon('md_ask_unanswered', { n_considered: _mdAsk.rows.size, silent: waiting.length });
+    clearInterval(_mdAsk.timer); _mdAsk.timer = 0;
+    _mdAskPaint();
+    return;
+  }
+  let changed = false;
+  await Promise.all(waiting.map(async ([n, r]) => {
+    let now;
+    try { now = await _mdAskReadLast(n); } catch (e) { return; }
+    if (!now.text) return;
+    if (!r.before) {
+      // The read before the ask failed. A message stamped after the ask is the
+      // answer; anything else becomes the baseline a later reply must differ from.
+      const t = Date.parse(now.at);
+      if (!(isFinite(t) && t >= _mdAsk.sentAt - 2000)) { r.before = now; return; }
+    } else if (now.text === r.before.text && now.at === r.before.at) return;
+    Object.assign(r, { state: 'replied', text: now.text, at: now.at });
+    _mdBeacon('md_ask_replied', { wait_ms: Date.now() - _mdAsk.sentAt, chars: now.text.length });
+    changed = true;
+  }));
+  if (changed) _mdAskPaint();
+}
+function _mdAskClear() {
+  clearInterval(_mdAsk.timer);
+  Object.assign(_mdAsk, { path: '', question: '', sentAt: 0, rows: new Map(), timer: 0 });
+  const body = _mdAskBody();
+  if (body) body.querySelectorAll('.md-ask-reply, .md-ask-bar').forEach(n => n.remove());
+}
+// Draws the answers into the preview showing this file; safe to call after any render.
+function _mdAskPaint() {
+  const body = _mdAskBody();
+  if (!body) return;
+  body.querySelectorAll('.md-ask-reply, .md-ask-bar').forEach(n => n.remove());
+  if (!_mdAsk.rows.size || !_fileData || _fileData.path !== _mdAsk.path) return;
+  const rows = [..._mdAsk.rows.values()];
+  const n = { replied: 0, waiting: 0, failed: 0, silent: 0, sending: 0 };
+  rows.forEach(r => { n[r.state] = (n[r.state] || 0) + 1; });
+  const bar = document.createElement('div');
+  bar.className = 'md-ask-bar';
+  bar.setAttribute('role', 'status');
+  const parts = [n.replied + ' of ' + rows.length + ' replied'];
+  if (n.sending) parts.push(n.sending + ' sending');
+  if (n.waiting) parts.push(n.waiting + ' waiting');
+  if (n.silent) parts.push(n.silent + ' no reply in 15 min');
+  if (n.failed) parts.push(n.failed + ' not sent');
+  bar.innerHTML = '<span class="md-ask-q">Asked: “' + esc(_mdAsk.question.slice(0, 80)) + '”</span>'
+    + '<span class="md-ask-count">' + esc(parts.join(' · ')) + '</span>'
+    + '<button class="btn md-ask-clear" type="button">Clear</button>';
+  bar.querySelector('.md-ask-clear').onclick = () => { _mdBeacon('md_ask_cleared', { n_considered: rows.length }); _mdAskClear(); };
+  body.prepend(bar);
+  for (const [name, r] of _mdAsk.rows) {
+    const a = body.querySelector('.md-worker-link[data-worker="' + CSS.escape(name) + '"]');
+    if (!a) continue;
+    const block = a.closest('li, p, td, th, h1, h2, h3, h4, h5, h6, blockquote') || a.parentElement;
+    const btn = document.createElement('button');   // a control: keyboard and the shared press layer reach it
+    btn.type = 'button';
+    btn.className = 'md-ask-reply';
+    btn.dataset.worker = name;
+    btn.dataset.state = r.state;
+    let txt;
+    if (r.state === 'replied') {   // one line of plain text; the card shows it formatted
+      const t = document.createElement('div');
+      t.innerHTML = renderMarkdown(r.text, '');
+      txt = t.textContent.replace(/\s+/g, ' ').trim();
+    }
+    else if (r.state === 'failed') txt = 'Not sent: ' + r.error;
+    else if (r.state === 'silent') txt = 'No reply in 15 minutes; open the worker to see it.';
+    else if (r.state === 'sending') txt = 'Sending…';
+    else txt = r.queued ? 'Queued for its next pause; waiting…' : 'Waiting…';
+    btn.innerHTML = '<span class="md-ask-arrow" aria-hidden="true">↳</span>'
+      + (r.state === 'replied' && r.at ? '<span class="md-ask-when">' + esc(timeAgo(Math.floor(Date.parse(r.at) / 1000))) + '</span>' : '')
+      + '<span class="md-ask-text"></span>';
+    btn.querySelector('.md-ask-text').textContent = txt;
+    btn.title = r.state === 'replied' ? 'Open @' + name + "'s card to read the whole reply and ask more" : '';
+    btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); _mdBeacon('md_ask_reply_opened', { state: r.state }); _mdTaskOpen(a); });
+    const nested = [...block.children].find(c => c.tagName === 'UL' || c.tagName === 'OL');
+    if (nested) block.insertBefore(btn, nested); else block.appendChild(btn);
+  }
 }
 
 // HOVER PREVIEW OF A LINKED FILE (owner, 2026-11-18: "file path is clickable
@@ -33143,6 +33344,8 @@ function _fileMenuSync() {
   }
   const share = document.getElementById('file-tab-share');
   if (share) share.style.display = navigator.share ? '' : 'none';
+  const ask = document.getElementById('file-tab-askall'), mb = _mdAskBody();
+  if (ask) ask.hidden = !(mb && mb.querySelector('.md-worker-link'));
 }
 async function _fileRenameOpen() {
   const path = _fvNeedPath(); if (!path) return;
@@ -34420,6 +34623,7 @@ function _renderFileBody(data, mode) {
     _bindMdFileLinks(body);
     _fileBindAnchors(body);
     _bindReadPosDiv(body, data.path);
+    _mdAskPaint();
   } else if (data.is_html) {
     body.className = 'file-overlay-body file-html-preview';
     const iframe = document.createElement('iframe');
@@ -34640,6 +34844,7 @@ function _mdxRenderPreview() {
   _bindMdFileLinks(body);
   _fileBindAnchors(body);
   _mdxDecoratePreview(body);
+  _mdAskPaint();
   body.scrollTop = top;
   if (_mdSearchHits && _mdSearchHits.length) { const q = document.getElementById('md-search-input'); if (q && q.value) _mdSearchApply(q.value); }
 }

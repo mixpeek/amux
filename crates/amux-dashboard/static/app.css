@@ -11277,6 +11277,29 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
     padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom)); }
   .md-task-card .btn { min-height: 44px; }
 }
+/* Ask several workers from a file (app.js _mdAskStart): the selection button,
+   the bar counting replies, and each reply drawn under its line. */
+#file-tab-askall[hidden] { display: none; }
+.md-ask-sel { position: fixed; z-index: 10055; white-space: nowrap; box-shadow: 0 4px 16px color-mix(in srgb, var(--shade) 30%, transparent); }
+.md-ask-sel[hidden] { display: none; }
+.md-ask-bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--space-2); flex-wrap: nowrap; overflow-x: auto;
+  margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); font-size: var(--fs-sm); }
+.md-ask-bar .md-ask-q { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.md-ask-bar .md-ask-count { color: var(--dim); white-space: nowrap; flex: 0 0 auto; }
+.md-ask-bar .md-ask-clear { min-height: 28px; padding: 0 var(--space-2); white-space: nowrap; flex: 0 0 auto; }
+.md-ask-reply { display: flex; align-items: baseline; gap: var(--space-1-5); margin: var(--space-1) 0 0 var(--space-4); padding: var(--space-1) var(--space-2);
+  width: calc(100% - var(--space-4)); box-sizing: border-box; text-align: left; font: inherit; background: none; border: 0;
+  border-left: 2px solid var(--border); color: var(--dim); font-size: var(--fs-sm); cursor: pointer; min-width: 0; }
+.md-ask-reply:hover { background: var(--card); }
+.md-ask-reply[data-state="replied"] { color: var(--text); border-left-color: var(--accent); }
+.md-ask-reply[data-state="failed"] { color: var(--red); border-left-color: var(--red); }
+.md-ask-reply .md-ask-when { color: var(--dim); white-space: nowrap; }
+.md-ask-reply .md-ask-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) {
+  .md-ask-sel, .md-ask-bar .md-ask-clear { min-height: 44px; }
+  .md-ask-reply { margin-left: var(--space-2); width: calc(100% - var(--space-2)); padding: var(--space-2); min-height: 44px; align-items: center; }
+}
 /* Hover preview of an @worker mention (app.js _wkHoverShow): the worker list's card, read-only. */
 .worker-hovercard { position: fixed; z-index: 10050; width: min(440px, calc(100vw - 16px)); max-height: min(60vh, 520px);
   overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
