@@ -7477,6 +7477,14 @@ function _refreshOpenPeekOnSessions() {
     if (typeof peekSession !== 'undefined' && peekSession && pov && pov.classList.contains('active')) {
       if (typeof updatePeekStatus === 'function') updatePeekStatus();
       if (!document.hidden) _peekPollNow();
+      // The Board switch renders only once the worker is in `sessions`. A peek
+      // opened on a worker the list did not have yet kept it hidden until the
+      // tab's board fetch came back, however long that took. Every list
+      // refresh re-syncs it now.
+      const pbc = document.getElementById('peek-board-config');
+      const hidden = !!pbc && pbc.style.display === 'none';
+      _peekBoardPolicySync();
+      if (hidden && pbc.style.display !== 'none') console.info('[peek] board switch shown once the worker reached the list', { verdict: 'board_switch_late', session: peekSession });
     }
   } catch (e) {}
 }
