@@ -50,7 +50,7 @@ if [ "$(uname)" = Darwin ]; then
            AMUX_CLEANUP_STATE_DIR="$FIX/tick" AMUX_CLEANUP_TARGET_ROOTS="$FIX/none" AMUX_CLEANUP_PURGE_CMD=true \
            AMUX_CLEANUP_FREE_FLOOR_GB=0 AMUX_CLEANUP_PRESSURE_PURGE=99 AMUX_CLEANUP_SNAPSHOT_FLOOR_GB=0 \
            AMUX_CLEANUP_AGENTS="" AMUX_CLEANUP_REPORT_GB=99999 AMUX_CLEANUP_CPU_SHARE=99 AMUX_CLEANUP_SWAP_FREE_FLOOR_MB=0 \
-           AMUX_CLEANUP_DISK_FLOOR_GB=0 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD=true \
+           AMUX_CLEANUP_DISK_FLOOR_GB=0 AMUX_CLEANUP_HISTORY_CMD=true AMUX_CLEANUP_CARD_CMD="${CARD_STUB:-true}" \
            AMUX_CLEANUP_ESCALATE_TO=mac-ops-test AMUX_CLEANUP_RECLAIM_TRIGGER_CMD="${RECLAIM_TRIGGER_STUB:-echo 204}" AMUX_CLEANUP_DEMOTE_PS_CMD=true AMUX_CLEANUP_ESCALATE_CMD="${TICK_REC:-$REC} TARGET FILE" bash "$TICK" 2>&1; }
   out=$(tick "echo 0.01 3")
   check "control: a quiet fseventsd is under its thresholds" "yes" "$(has "$out" 'fseventsd 0.01G 3% CPU, under')"
@@ -193,8 +193,14 @@ if [ "$(uname)" = Darwin ]; then
   check "and is not a constraint"                        "no" "$(has "$out" 'constraint fseventsd')"
   out=$(spin 51234)
   check "a new pid spinning is escalated"                "2" "$(fse_sent)"
-  out=$(AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
-  check "past the reminder window the same pid escalates" "3" "$(fse_sent)"
+  CARDS="$FIX/cards"; : > "$CARDS"
+  CREC="$FIX/card.sh"; printf '#!/bin/bash\ncat "$1" >> %s; echo >> %s; echo 201\n' "$CARDS" "$CARDS" > "$CREC"; chmod +x "$CREC"
+  out=$(CARD_STUB="$CREC FILE" AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
+  check "past the reminder window the same pid is the owner's card" "yes" "$(has "$out" 'verdict=fseventsd_owner_restart_overdue')"
+  check "and no lane is asked for another RCA"           "2" "$(fse_sent)"
+  check "the card is needsyou with the one command"      "yes" "$(grep -q '"status": "needsyou".*"next_action": "Run: sudo killall fseventsd"' "$CARDS" && echo yes || echo no)"
+  out=$(CARD_STUB="$CREC FILE" AMUX_CLEANUP_FSEVENTSD_SPIN_REMIND_H=0 spin 51234)
+  check "a second reminder within 24h files no second card" "1" "$(grep -c needsyou "$CARDS")"
 
   echo "3c2. memory waits with an fseventsd already with the owner (memory RCAs 20261028-081710, 20261029-003047, 20261029-063250)"
   rm -rf -- "${FIX:?}/tick"; rm -f "$FIX/sent.log"

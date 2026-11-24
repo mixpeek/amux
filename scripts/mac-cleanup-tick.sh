@@ -3011,12 +3011,13 @@ escalation_message() { # <cls> <verdict> <bundle> <card_file> <now_snapshot> <pr
 
 # One board card for a failure nobody would otherwise see. Deduped by key for 24h
 # in the state file, so a broken path files one card, not one per tick.
-file_card() { # <state_file> <key> <title> <desc>
+file_card() { # <state_file> <key> <title> <desc> [status] [next_action] [acceptance]
   local st=$1 key=$2 last now body cmd code
   now=$(date +%s); last=$(state_get "$st" "card_$key")
   if [ -n "$last" ] && [ $(( now - last )) -lt 86400 ]; then echo "already filed within 24h"; return 0; fi
   body=$(mktemp "${TMPDIR:-/tmp}/mac-card.XXXXXX")
-  python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1],"desc":sys.argv[2],"session":"desktop","status":"todo","type":"escalation","next_action":"Read the tick output named in the description and restore the broken path.","acceptance_criteria":"The next scheduled tick runs and its escalation path reports no failure."}))' "$3" "$4" > "$body"
+  python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1],"desc":sys.argv[2],"session":"desktop","status":sys.argv[3],"type":"escalation","next_action":sys.argv[4],"acceptance_criteria":sys.argv[5]}))' "$3" "$4" "${5:-todo}" \
+    "${6:-Read the tick output named in the description and restore the broken path.}" "${7:-The next scheduled tick runs and its escalation path reports no failure.}" > "$body"
   cmd=${CARD_CMD//FILE/$body}
   code=$($cmd 2>/dev/null) || code=failed
   rm -f -- "${body:?}"
@@ -3995,6 +3996,20 @@ if [ -n "$fse_reading" ]; then
     fse_feed_n=${fse_top%% *}; case "$fse_feed_n" in ''|*[!0-9]*) fse_feed_n=0 ;; esac
     if [ "$fse_restarted" = 1 ]; then
       :
+    elif [ -n "$fse_pid" ] && [ "$fse_pid" = "$fse_esc_pid" ] && { [ "${fse_spin:-0}" = 1 ] || [ "${fse_wedged:-0}" = 1 ]; } \
+       && [ $(( $(date +%s) - ${fse_esc_at:-0} )) -ge $(( FSEVENTSD_SPIN_REMIND_H * 3600 )) ]; then
+      # The same stuck pid past the reminder window: the cause is known and only
+      # the owner's sudo clears it, so the reminder is the owner's card, not
+      # another lane RCA (RCA 20261124-134002: the 24h reminder re-asked a lane
+      # to root-cause pid 50645, a spin the 11-23 RCAs had named, which no lane
+      # can restart; it had grown 0.81G to 8.8G waiting).
+      fse_since=$(date -r "${fse_esc_at:-0}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
+      echo "mac-cleanup:   fseventsd pid $fse_pid (${fse_gb}G, ${fse_cpu:-?}% CPU) is still the stuck process escalated at $fse_since; the restart is the owner's, so this is an owner card, not a lane RCA: $(file_card "$STATE_DIR/state" "fseventsd_restart_$fse_pid" \
+        "[ETHAN'S CALL] Restart fseventsd: run sudo killall fseventsd (pid $fse_pid, ${fse_gb}G, ${fse_cpu:-?}% CPU, stuck since $fse_since)" \
+        "fseventsd pid $fse_pid has been $( [ "${fse_wedged:-0}" = 1 ] && echo "not delivering file events" || echo "spinning with no file churn") since the escalation at $fse_since and now holds ${fse_gb}G at ${fse_cpu:-?}% CPU. The cause is a stuck fseventsd thread (macOS); no lane can clear it. Unblock: run sudo killall fseventsd (launchd restarts it, no reboot), or add $FSEVENTSD_SUDOERS_LINE so the tick restarts it itself." \
+        needsyou "Run: sudo killall fseventsd" "The next tick reports fseventsd under its thresholds or a new pid.") (verdict=fseventsd_owner_restart_overdue)"
+      state_put "$STATE_DIR/state" "esc_fseventsd=$(date +%s)"
+      reported=$((reported+1)); fse_owner_pending=1
     elif [ -n "$fse_pid" ] && [ "$fse_pid" = "$fse_esc_pid" ] \
        && [ $(( $(date +%s) - ${fse_esc_at:-0} )) -lt $(( FSEVENTSD_SPIN_REMIND_H * 3600 )) ] \
        && { [ "${fse_spin:-0}" = 1 ] || [ "$fse_feed_n" -lt $(( churn_floor * FSEVENTSD_CHURN_NEW_X )) ]; }; then
