@@ -10371,7 +10371,7 @@ HELP
   [[ ${#workers[@]} -eq 0 && -z "$all" ]] && workers=("${AMUX_SESSION:-}")
   [[ -z "$all" && -z "${workers[0]:-}" ]] && die "amux requests: name a worker (or --all); \$AMUX_SESSION is empty"
   AMUX_API="$AMUX_API" python3 - "$days" "$only_open" "$raw" "$all" "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" ${workers[@]+"${workers[@]}"} <<'PY'
-import json, os, re, subprocess, sys, time, urllib.parse
+import glob, json, os, re, subprocess, sys, time, urllib.parse
 days, only_open, raw, all_, closed_path = sys.argv[1:6]
 days = float(days)
 api = os.environ.get("AMUX_API", "https://localhost:8824")
@@ -10635,8 +10635,57 @@ for r in rows:
     t = tasks_at.get(when.get(r["id"], "")) or {}
     r["task"] = t.get("task") or ""
     r["task_ts"] = t.get("ts")
+# WHAT ITS LAND TESTED (velocity audit 2026-11-24, AF-1384): 6 of the owner's 20
+# asks that day were "make sure it's verified e2e" about work already reported,
+# because nothing here said whether a landed request was ever exercised. Each
+# landed commit is matched by patch id to the land gate's receipt, and the
+# receipt's e2e leg is the answer: the specs it ran and their verdict. A commit
+# no receipt names (landed by hand, or rebased past its patch id) says so,
+# which is a different answer from a gate that ran no spec.
+e2e_by_pid = {}
+for f in glob.glob(os.path.join(os.environ.get("AMUX_HOME") or os.path.expanduser("~/.amux"), "land-gate", "receipts", "*.json")):
+    try:
+        rc = json.load(open(f))
+    except (OSError, ValueError):
+        continue
+    leg = (rc.get("legs") or {}).get("e2e")
+    if not isinstance(leg, dict):
+        continue
+    for pid in rc.get("commit_patch_ids") or []:
+        prev = e2e_by_pid.get(pid)
+        if prev is None or (bool(rc.get("pass")), rc.get("at") or 0) > (prev[0], prev[1]):
+            e2e_by_pid[pid] = (bool(rc.get("pass")), rc.get("at") or 0, leg)
+landed_rows = [r for r in rows if r["status"] in ("on-main", "live", "landed") and r["repo"]]
+# The gate adds its smoke set to every land, so a land that ran only those specs
+# tested the dashboard boots, not the change (MSG-114907 read "passed" on them
+# alone). The set is read from each repository's own gate, not copied here.
+smoke_by_repo = {}
+for repo in sorted(set(r["repo"] for r in landed_rows)):
+    src = subprocess.run(["git", "-C", repo, "show", "origin/main:scripts/land_gate.py"], capture_output=True, text=True).stdout
+    m = re.search(r"^SMOKE_FALLBACK\s*=\s*\[([^\]]*)\]", src, re.M)
+    smoke_by_repo[repo] = set(re.findall(r"[\"']([^\"']+)[\"']", m.group(1))) if m else set()
+pids = {}
+for repo in sorted(set(r["repo"] for r in landed_rows)):
+    pids.update(_patch_ids(repo, sorted(set(lm_sha.get(r["id"], r["evidence"]) for r in landed_rows if r["repo"] == repo))))
+e2e_counts = {"ran": 0, "none": 0, "failed": 0, "no_receipt": 0}
+for r in landed_rows:
+    got = e2e_by_pid.get(pids.get(lm_sha.get(r["id"], r["evidence"]), ""))
+    leg = got[2] if got else None
+    v = (leg or {}).get("verdict") or ""
+    if not got:
+        r["e2e"], k = "no land receipt for this commit", "no_receipt"
+    elif v == "e2e_pass" and not [x for x in leg.get("specs") or [] if x not in smoke_by_repo.get(r["repo"], set())]:
+        r["e2e"], k = "only the smoke set ran (%s); no spec of this change" % ", ".join(leg.get("specs") or []), "none"
+    elif v == "e2e_pass":
+        own = [x for x in leg.get("specs") or [] if x not in smoke_by_repo.get(r["repo"], set())]
+        r["e2e"], k = "passed: %s" % ", ".join(own[:4]) + (" and %d more" % (len(own) - 4) if len(own) > 4 else ""), "ran"
+    elif v == "e2e_fail":
+        r["e2e"], k = "failed in the land gate: %s" % ", ".join((leg.get("failing") or [])[:2]), "failed"
+    else:
+        r["e2e"], k = "no spec ran (%s)" % (v or "no verdict"), "none"
+    e2e_counts[k] += 1
 counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "stranded", "on-main", "live", "landed", "answered", "closed")}
-summary = {"stray_commits": strays, "measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
+summary = {"e2e": e2e_counts, "stray_commits": strays, "measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
 # keeps the last green image while main is red, and said so only in its log.
@@ -10666,9 +10715,14 @@ for r in sorted(rows, key=lambda r: (order[r["status"]], r["worker"], -r["age_h"
         print("%59s %s" % ("", r["evidence"][:120]))
     if r.get("task"):
         print("%59s closed during task: %s" % ("", r["task"][:80]))
+    if r.get("e2e"):
+        print("%59s e2e: %s" % ("", r["e2e"][:110]))
 print("%d requests from the owner over %g days (%d acks not counted): %d open, %d stranded, %d on main not live, %d live, %d landed in a repo this server does not deploy, %d answered, %d closed%s" % (
     summary["n_considered"], days, dropped, counts["open"], counts["stranded"], counts["on-main"], counts["live"], counts["landed"], counts["answered"], counts["closed"],
     ("; UNMEASURED: " + summary["why_unmeasured"]) if unmeasured else ""))
+if landed_rows:
+    print("e2e of the %d landed: %d passed specs of their own in their land, %d ran none of their own, %d failed there, %d have no land receipt" % (
+        len(landed_rows), e2e_counts["ran"], e2e_counts["none"], e2e_counts["failed"], e2e_counts["no_receipt"]))
 if counts["stranded"]:
     print("stranded: %d request(s) committed but not on origin/main, at any age; push or land the commit, or close the request:" % counts["stranded"])
     for r in rows:

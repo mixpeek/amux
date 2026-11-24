@@ -13,7 +13,8 @@ fail() { echo "FAIL: $*"; exit 1; }
 mkrepo() {  # $1 dir, $2 "amux" makes it look like the server's repo
   git init -q --bare "$1.git"
   git clone -q "$1.git" "$1" 2>/dev/null
-  [ "$2" = amux ] && mkdir -p "$1/crates/amux-server" && touch "$1/crates/amux-server/.keep"
+  [ "$2" = amux ] && mkdir -p "$1/crates/amux-server" "$1/scripts" && touch "$1/crates/amux-server/.keep" \
+    && printf 'SMOKE_FALLBACK = ["smoke-a.spec.ts"]\n' > "$1/scripts/land_gate.py"
   echo x > "$1/f"
   git -C "$1" add -A
   git -C "$1" -c user.name=t -c user.email=t@e commit -qm "work" -m "Amux-Request: MSG-$3"
@@ -75,7 +76,13 @@ for _ in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 API="http://127.0.0.1:$(cat "$T/port")"
 # CC_HOME with no endpoint.json: the CLI otherwise "heals" a localhost API on an
 # unknown port to the real server's address, and this stub would never be asked.
-mkdir -p "$T/home"
+mkdir -p "$T/home/land-gate/receipts"
+# AF-1384: what a landed request's land tested, from the gate's receipt, matched
+# by patch id. MSG-202's land ran a spec of its own beside the smoke set (read
+# from the repo's own scripts/land_gate.py); MSG-101's commit has no receipt.
+PID202=$(git -C "$T/srv" show origin/main | git patch-id --stable | cut -d' ' -f1)
+receipt() { printf '{"commit_patch_ids":["%s"],"pass":true,"at":1,"legs":{"e2e":{"specs":%s,"verdict":"e2e_pass"}}}' "$PID202" "$1" > "$T/home/land-gate/receipts/r202.json"; }
+receipt '["card-count.spec.ts","smoke-a.spec.ts"]'
 OUT=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other w-srv 2>&1)
 
 echo "$OUT" | grep -E '^landed +w-other +MSG-101' >/dev/null || fail "a commit in a repo the server does not deploy must read landed: $OUT"
@@ -113,6 +120,16 @@ import re,sys
 line=[l for l in sys.stdin.read().splitlines() if "requests from the owner" in l][0]
 total=int(line.split()[0]); parts=[int(x) for x in re.findall(r"(\d+) (?:open|stranded|on main not live|live|landed|answered|closed)", line.split(":",1)[1])]
 sys.exit(0 if sum(parts)==total else "summary %d != parts %s: %s" % (total, parts, line))' || fail "the summary parts must add up to the total: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -A3 -E '^(on-main|held) +w-srv +MSG-202' | grep -q 'e2e: passed: card-count.spec.ts$' || fail "a landed request names the specs of its own its land passed, without the smoke set: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -A3 -E '^landed +w-other +MSG-101' | grep -q 'e2e: no land receipt for this commit' || fail "a landed commit no receipt names says so: $OUT"
+pass=$((pass+1))
+echo "$OUT" | grep -q '^e2e of the 2 landed: 1 passed specs of their own in their land, 0 ran none of their own, 0 failed there, 1 have no land receipt' || fail "the e2e summary counts them apart: $OUT"
+pass=$((pass+1))
+receipt '["smoke-a.spec.ts"]'
+SMOKE=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-srv 2>&1)
+echo "$SMOKE" | grep -q 'e2e: only the smoke set ran (smoke-a.spec.ts); no spec of this change' || fail "a land that ran only the smoke set is not read as tested: $SMOKE"
 pass=$((pass+1))
 OPEN=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other --open 2>&1)
 echo "$OPEN" | grep -E '^stranded +w-other +MSG-606 ' >/dev/null || fail "--open keeps a stranded request: $OPEN"
