@@ -9125,7 +9125,7 @@ _land_regen_streak() { # <lock> fail|ok -> prints the streak after the update
 # check that times out (AMUX_LAND_PRECHECK_TIMEOUT_S, default 180) or cannot
 # run is logged as unmeasured and the ticket queues: the gate still runs.
 _land_precheck() {
-  local remote="$1" branch="$2" tip="$3" me="$4" log="$5" chk top out rc t0 full budget="${AMUX_LAND_PRECHECK_TIMEOUT_S:-900}"
+  local remote="$1" branch="$2" tip="$3" me="$4" log="$5" phase="${6:-enqueue}" chk top out rc t0 full budget="${AMUX_LAND_PRECHECK_TIMEOUT_S:-900}"
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
   git fetch -q "$remote" "$branch" 2>/dev/null || true
   local _pc_chk _pc_tmp
@@ -9133,7 +9133,7 @@ _land_precheck() {
   chk="$_pc_chk"
   [ -n "$chk" ] || return 0
   git rev-parse -q --verify "$remote/$branch^{commit}" >/dev/null 2>&1 || {
-    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "enqueue precheck unmeasured: no $remote/$branch" >> "$log"; return 0; }
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$phase precheck unmeasured: no $remote/$branch" >> "$log"; return 0; }
   # The base is pinned to a SHA once, here, and that SHA is what the check
   # gets: on 2026-10-04 22:05Z gs12-spend's precheck was handed the ref name,
   # read a base from 2026-09-19 (ef8e6a6c10a) while the ref was briefly wrong,
@@ -9145,7 +9145,7 @@ _land_precheck() {
   _pc_tip="$(git rev-parse "$tip")"
   _pc_n="$(git rev-list --count "$_pc_base..$_pc_tip" 2>/dev/null || echo 0)"
   if [ "${_pc_n:-0}" -gt "${AMUX_LAND_PRECHECK_MAX_RANGE:-300}" ]; then
-    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "WARN enqueue precheck unmeasured: the range $(git rev-parse --short "$_pc_base")..$(git rev-parse --short "$_pc_tip") is $_pc_n commits (over ${AMUX_LAND_PRECHECK_MAX_RANGE:-300}); the base is suspect, so nothing is refused on it and the gate still runs" >> "$log"
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "WARN $phase precheck unmeasured: the range $(git rev-parse --short "$_pc_base")..$(git rev-parse --short "$_pc_tip") is $_pc_n commits (over ${AMUX_LAND_PRECHECK_MAX_RANGE:-300}); the base is suspect, so nothing is refused on it and the gate still runs" >> "$log"
     return 0
   fi
   t0=$(date +%s); rc=0
@@ -9154,18 +9154,22 @@ _land_precheck() {
   full="$HOME/.amux/logs/land/$(date -u +%Y%m%dT%H%M%SZ)-$me-$$-precheck.log"
   mkdir -p "${full%/*}"; printf '%s\n' "$out" > "$full"
   case "$(_land_precheck_verdict "$rc" "$out")" in
-    pass) printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "enqueue precheck passed in $(( $(date +%s) - t0 ))s (rc $rc)" >> "$log"; return 0 ;;
+    pass) printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$phase precheck passed in $(( $(date +%s) - t0 ))s (rc $rc)" >> "$log"; return 0 ;;
     unmeasured)
-      printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "enqueue precheck unmeasured (rc $rc after $(( $(date +%s) - t0 ))s: timed out, killed or could not run, no verdict in its output); queued anyway, the gate still runs every leg. Output: $full" >> "$log"; return 0 ;;
+      printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$phase precheck unmeasured (rc $rc after $(( $(date +%s) - t0 ))s: timed out, killed or could not run, no verdict in its output); queued anyway, the gate still runs every leg. Output: $full" >> "$log"; return 0 ;;
   esac
-  printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "enqueue precheck refused (rc $rc, $(( $(date +%s) - t0 ))s); not queued. Output: $full" >> "$log"
+  printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "$phase precheck refused (rc $rc, $(( $(date +%s) - t0 ))s); not queued. Output: $full" >> "$log"
   printf '%s\n' "$out" | tail -30 >&2
   local _fx; _fx="$(_land_inflight_fixes "$remote" "$branch" "$out" "$me")"
   if [ -n "$_fx" ]; then
     printf '%s\n' "$_fx" | sed 's/^/amux land: already being fixed: /' >&2
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "precheck refusal names a file a queued ticket already changes: $(printf '%s' "$_fx" | tr '\n' ';')" >> "$log"
   fi
-  echo "amux land: refused before queueing: the repository's land precheck failed on this range (full output $full). Fix the commits and run amux land again." >&2
+  if [ "$phase" = enqueue ]; then
+    echo "amux land: refused before queueing: the repository's land precheck failed on this range (full output $full). Fix the commits and run amux land again." >&2
+  else
+    echo "amux land: the land precheck refused HEAD $(git rev-parse --short "$_pc_tip") (full output $full); the queued ticket keeps its last checked commit. Fix the new commits; the next HEAD is checked again." >&2
+  fi
   return 1
 }
 
@@ -10200,7 +10204,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-23.61"
+LAND_BEHAVIOR_VERSION="2026-11-24.62"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -12934,7 +12938,12 @@ p.communicate(msg.encode())
     case "$tname" in 000000000000-*) _arr="$(date +%s)" ;; 000*) _arr=$(( $(date +%s) / 1000000000 * 1000000000 + 10#${tname:3:9} )) ;; *) _arr=$((10#${tname%%-*})) ;; esac
     printf '%s\n%s\n%s\n' "$_arr" "$common" "$(date +%s)" > "$q/.resume-$me" 2>/dev/null || true
   }
-  _land_ticket() { printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$me" "${land_sha:-$(git rev-parse HEAD)}" "$common" "$batchable" "$LAND_BEHAVIOR_VERSION" "$prio_reason" > "${q:?}/${tname:?}"; }
+  # A ticket that follows HEAD names the newest HEAD the land precheck passed
+  # (_tk_ok), never a HEAD nobody checked: mongo-harness's precheck passed at
+  # 19:21Z, it committed 4637b51e34 and 0a318ffbdd while waiting, and another
+  # holder's 20:53Z batch replayed them unchecked into two red CI runs of an
+  # 8-lane batch (mixpeek-dev, 2026-11-24). _land_recheck_head moves _tk_ok.
+  _land_ticket() { printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$me" "${land_sha:-${_tk_ok:-$(git rev-parse HEAD)}}" "$common" "$batchable" "$LAND_BEHAVIOR_VERSION" "$prio_reason" > "${q:?}/${tname:?}"; }
   if [ -n "${AMUX_LAND_ADOPT:-}" ]; then
     # --adopt: take over an old-code waiter's ticket, keeping its NAME (its
     # arrival time, so its place) and only swapping the pid suffix.
@@ -12956,6 +12965,29 @@ p.communicate(msg.encode())
       _land_log "adopted ticket ${_old} (land code $(sed -n 5p "${q:?}/${tname:?}" 2>/dev/null || echo ?)) at its place, now on $LAND_BEHAVIOR_VERSION"
     fi
   fi
+  if [ -z "$land_sha" ]; then
+    # Adopted or self-upgraded: the ticket already names the checked commit.
+    _tk_ok="$( { [ -n "${AMUX_LAND_ADOPT:-}" ] && sed -n 2p "${q:?}/${tname:?}" 2>/dev/null; } || true)"
+    _tk_ok="${_tk_ok:-$(git rev-parse HEAD)}"
+  fi
+  _pc_bad=""
+  # _land_recheck_head <sha>: run the land precheck on a HEAD that moved since
+  # the ticket's commit was checked. rc 0 moves the ticket to it; rc 1 keeps
+  # the ticket on the last checked commit, remembered so the same refused HEAD
+  # is not run again every poll. AMUX_LAND_RECHECK_HEAD=0 follows HEAD unchecked.
+  _land_recheck_head() {
+    local _h="$1" _t0
+    [ "$_h" != "${_tk_ok:-}" ] || return 0
+    if [ "${AMUX_LAND_RECHECK_HEAD:-1}" = 0 ]; then _tk_ok="$_h"; return 0; fi
+    [ "$_h" != "$_pc_bad" ] || return 1
+    _t0=$(date +%s)
+    if _land_precheck "$remote" "$branch" "$_h" "$me" "$log" waiting; then
+      _land_log "HEAD moved to $(git rev-parse --short "$_h") while queued; the land precheck passed it in $(( $(date +%s) - _t0 ))s verdict=land_head_rechecked result=pass"
+      _tk_ok="$_h"; _pc_bad=""; return 0
+    fi
+    _land_log "WARN HEAD moved to $(git rev-parse --short "$_h") while queued and the land precheck refused it; the ticket keeps $(git rev-parse --short "${_tk_ok:-$_h}"), the last checked commit verdict=land_head_rechecked result=refused"
+    _pc_bad="$_h"; return 1
+  }
   _land_ticket
   if [ "$priority" = 1 ]; then
     local _ord=0 _f
@@ -13055,7 +13087,7 @@ p.communicate(msg.encode())
     # queue-time commit had (gs12-planes, 2026-10-01: three exclusions after a
     # clean rebase at 18:25Z).
     if [ -z "$land_sha" ] && [ -f "${q:?}/${tname:?}" ] && [ "$(sed -n 2p "$q/$tname")" != "$(git rev-parse HEAD 2>/dev/null)" ]; then
-      _land_ticket
+      _land_recheck_head "$(git rev-parse HEAD)" && _land_ticket
     fi
     # Already landed? A ticket whose commit is an ancestor of the remote tip
     # has nothing left to push: another holder's batch carried it. Such a
@@ -13115,7 +13147,8 @@ p.communicate(msg.encode())
     # batches it takes commits made after queueing (gs12-mvs, 2026-10-02).
     if [ -z "$land_sha" ]; then
       _cur_head="$(git rev-parse HEAD 2>/dev/null || true)"
-      if [ -n "$_cur_head" ] && [ "$_cur_head" != "$(sed -n 2p "${q:?}/${tname:?}" 2>/dev/null || true)" ]; then
+      if [ -n "$_cur_head" ] && [ "$_cur_head" != "$(sed -n 2p "${q:?}/${tname:?}" 2>/dev/null || true)" ] \
+         && _land_recheck_head "$_cur_head"; then
         _land_ticket
         _land_log "ticket refreshed to HEAD $(git rev-parse --short "$_cur_head")"
       fi
@@ -13581,6 +13614,10 @@ $f"
       # same commits with no checkout at all. AMUX_LAND_REBASE_CHECKOUT=1
       # restores the old clean-tree rebase.
       _replay_head="$(git rev-parse HEAD)"
+    fi
+    if [ -z "$land_sha" ] && [ -n "${_tk_ok:-}" ] && ! _land_recheck_head "$(git rev-parse HEAD)"; then
+      _replay_head="$_tk_ok"
+      _land_log "landing $(git rev-parse --short "$_tk_ok"), the last commit the land precheck passed; HEAD's newer commits wait for the next land"
     fi
     if [ -n "$land_sha$_replay_head" ]; then
       local land_sha_eff="${land_sha:-$_replay_head}"
