@@ -22,7 +22,8 @@
 //! and the brief carries the rest.
 //! Verdicts: crm_touch_suppressed, crm_touch_duplicate, crm_touch_cooldown,
 //! crm_sequence_enrolled, crm_sequence_advanced, crm_sequence_stopped_on_reply, crm_sequence_stopped_by_guard,
-//! crm_contact_unsubscribed_by_reply, crm_touch_due_emitted.
+//! crm_contact_unsubscribed_by_reply, crm_touch_due_emitted, crm_touch_no_channel, crm_deal_from_reply,
+//! crm_account_domain_from_email.
 
 use super::calendar::query_rows_json;
 use super::crm_accounts::{ev, now_secs, source_of};
@@ -138,13 +139,54 @@ pub(crate) fn fill(conn: &rusqlite::Connection, template: &str, contact: &str) -
         )
         .ok();
     let Some((name, company, role, account, id)) = row else { return template.to_string() };
-    let first = name.split_whitespace().next().unwrap_or("").to_string();
+    let first = first_name(&name);
     template
         .replace("{first_name}", &first)
         .replace("{name}", &name)
         .replace("{company}", &company)
         .replace("{role}", &role)
         .replace("{signal}", &signal(conn, &id, &account))
+}
+
+/// The name to greet someone by: the first word of a real name, or "there"
+/// when the name is a handle (one word with a digit, or capitals inside it, or
+/// all lower case): "Hi K3NOX," and "Hi AWKohler," read as a mail merge
+/// (stargazer run, 2026-11-24: 5 of 41 drafts).
+pub(crate) fn first_name(name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let Some(w) = words.first() else { return "there".into() };
+    let handle = words.len() == 1
+        && (w.chars().any(|c| c.is_ascii_digit())
+            || w.chars().skip(1).any(|c| c.is_uppercase())
+            || w.chars().all(|c| !c.is_uppercase())
+            || w.contains(['-', '_', '.']));
+    if handle { "there".into() } else { w.to_string() }
+}
+
+/// Whether a person can be reached on a channel at all: an address on their
+/// record for email, X, LinkedIn and phone channels, or a channel row of that
+/// kind for the rest. Offline channels (post, event, in_person) always can.
+pub(crate) fn reachable(conn: &rusqlite::Connection, contact: &str, channel: &str) -> bool {
+    let col = match channel {
+        "email" => "email",
+        "x" => "twitter",
+        "linkedin" => "linkedin",
+        "phone" | "sms" | "whatsapp" => "phone",
+        "post" | "event" | "in_person" | "other" => return true,
+        _ => "",
+    };
+    if !col.is_empty() {
+        let v: String = conn.query_row(&format!("SELECT {col} FROM crm_contacts WHERE id=?1"), [contact], |r| r.get(0)).unwrap_or_default();
+        if !v.trim().is_empty() {
+            return true;
+        }
+    }
+    conn.query_row(
+        "SELECT 1 FROM crm_channels WHERE deleted IS NULL AND kind=?2 AND ((owner_kind='contact' AND owner_id=?1) OR          (owner_kind='account' AND owner_id=(SELECT account_id FROM crm_contacts WHERE id=?1)))",
+        [contact, channel],
+        |_| Ok(true),
+    )
+    .unwrap_or(false)
 }
 
 fn steps_of(conn: &rusqlite::Connection, seq: &str) -> Option<(Vec<Value>, String)> {
@@ -228,6 +270,35 @@ pub(crate) fn on_reply(conn: &rusqlite::Connection, contact: &str, text: &str) -
          (SELECT e.sequence_id FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1 AND e.status='active' AND s.stop_on_reply=1)",
         rusqlite::params![contact, now],
     )?;
+    // Pipeline: a reply to a sequence is a lead worth a deal. One per person
+    // and sequence, at qualification, unless an open deal already covers them.
+    let replied_to: Vec<(String, String)> = conn
+        .prepare("SELECT e.sequence_id, s.name FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1 AND e.status='active'")?
+        .query_map([contact], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    for (seq, seq_name) in &replied_to {
+        let (name, account, company): (String, String, String) = conn
+            .query_row("SELECT c.name, c.account_id, COALESCE(NULLIF(a.name,''), c.company) FROM crm_contacts c LEFT JOIN crm_accounts a ON a.id=c.account_id WHERE c.id=?1",
+                [contact], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap_or_default();
+        let open: bool = conn
+            .query_row("SELECT 1 FROM crm_deals WHERE deleted IS NULL AND stage NOT IN ('won','lost') AND (contact_ids LIKE '%\"' || ?1 || '\"%' OR (?2<>'' AND account_id=?2)) LIMIT 1",
+                [contact, account.as_str()], |_| Ok(true))
+            .unwrap_or(false);
+        if !open {
+            let id = next_issue_id(conn, "DEAL")?;
+            let title = if company.trim().is_empty() { name.clone() } else { company.clone() };
+            conn.execute(
+                "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,next_step,notes,source,external,created,updated) \
+                 VALUES (?1,?2,?3,?4,'qualification','reply to their answer',?5,?6,?7,?8,?8)",
+                rusqlite::params![&id, title, &account, json!([contact]).to_string(), format!("replied to {seq_name}"), format!("sequence:{seq}"),
+                    json!({ "sequence": seq }).to_string(), now],
+            )?;
+            tracing::info!(target: "amux::crm", contact = %contact, deal = %id, sequence = %seq, measured = true, n_considered = 1,
+                verdict = "crm_deal_from_reply", "a reply to a sequence opened a deal at qualification");
+        }
+    }
     let ended = conn.execute(
         "UPDATE crm_enrollments SET status='replied', updated=?2 WHERE contact_id=?1 AND status='active' \
          AND sequence_id IN (SELECT id FROM crm_sequences WHERE stop_on_reply=1)",
@@ -466,6 +537,10 @@ pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[Strin
             skipped.push(json!({ "contact_id": cid, "verdict": v, "why": why, "existing": existing }));
             continue;
         }
+        if !reachable(conn, cid, ch) {
+            skipped.push(json!({ "contact_id": cid, "verdict": "crm_touch_no_channel", "why": format!("no {ch} address or channel for this person") }));
+            continue;
+        }
         let now = now_secs();
         conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated) VALUES (?1,?2,?3,?4,?4)", rusqlite::params![seq, cid, by, now])?;
         let touch = plan_step(conn, seq, cid, 1, worker, &format!("sequence:{seq}"))?;
@@ -536,6 +611,37 @@ async fn stop(State(state): State<AppState>, Path(id): Path<String>, Json(body):
     }
 }
 
+/// Companies with no domain get the one their people's work email shares, so
+/// their website can be watched and lookalikes found (the first cohort's five
+/// companies had none, 2026-11-24). Only a domain no other company holds.
+pub(crate) fn fill_domains(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT a.id, lower(substr(c.email, instr(c.email,'@')+1)) AS d FROM crm_accounts a JOIN crm_contacts c ON c.account_id=a.id AND c.deleted IS NULL \
+             WHERE a.deleted IS NULL AND a.domain='' AND c.email LIKE '%@%.%' GROUP BY a.id, d ORDER BY a.id, COUNT(*) DESC",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut n = 0;
+    for (acct, d) in rows {
+        if !seen.insert(acct.clone()) || super::crm_signups::is_free_mail(&d) {
+            continue;
+        }
+        let taken: bool = conn.query_row("SELECT 1 FROM crm_accounts WHERE lower(domain)=?1 AND deleted IS NULL", [&d], |_| Ok(true)).unwrap_or(false);
+        if taken {
+            continue;
+        }
+        n += conn.execute("UPDATE crm_accounts SET domain=?2, website=CASE WHEN website='' THEN 'https://' || ?2 ELSE website END, updated=?3 WHERE id=?1 AND domain=''",
+            rusqlite::params![&acct, &d, now_secs()])?;
+    }
+    if n > 0 {
+        tracing::info!(target: "amux::crm", n, measured = true, n_considered = seen.len(), verdict = "crm_account_domain_from_email", "companies got a domain from their people's work email");
+    }
+    Ok(n)
+}
+
 static DUE: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
 /// Open touches whose day has come, each announced once as crm.touch.due.
@@ -569,6 +675,7 @@ pub(crate) async fn announce_due(state: &AppState) {
     let res = state
         .store
         .write_async(move |conn| {
+            fill_domains(conn)?;
             let d = take_due(conn, &today)?;
             let applied = !d.is_empty();
             *slot(&DUE) = d;
@@ -694,6 +801,36 @@ mod tests {
         call(&app, "PATCH", &format!("/contacts/{}", ids[1]), &owner, Some(json!({"status": "do_not_contact"}))).await;
         let (st, r) = call(&app, "POST", &format!("/touches/{t1}/approve"), &owner, None).await;
         assert_eq!((st, r["code"].as_str()), (StatusCode::CONFLICT, Some("crm_touch_suppressed")), "the refusal names the reason");
+    }
+
+    #[test]
+    fn a_handle_is_greeted_as_there_and_a_real_name_by_its_first_word() {
+        for (n, want) in [("Ada Lovelace", "Ada"), ("Ricardo", "Ricardo"), ("K3NOX", "there"), ("AWKohler", "there"), ("twilwa", "there"),
+            ("gabbi-dev", "there"), ("", "there"), ("Deepak · LaxDee", "Deepak")] {
+            assert_eq!(first_name(n), want, "{n}");
+        }
+    }
+
+    #[tokio::test]
+    async fn enrolling_skips_who_cannot_be_reached_and_a_reply_opens_a_deal_and_companies_get_their_domain() {
+        let (app, state, ids) = app_with_people().await;
+        let owner = [("authorization", "Bearer owner-secret")];
+        let w = [("x-amux-session", "amux-gtm")];
+        let (_, p) = call(&app, "POST", "/contacts", &owner, Some(json!({"name": "No Mail", "company": "Nomail"}))).await;
+        let nomail = p["id"].as_str().unwrap().to_string();
+        let (_, s) = call(&app, "POST", "/sequences", &w, Some(json!({"name": "stars", "steps": [{"channel": "email", "action": "email", "template": "hi"}]}))).await;
+        let seq = s["id"].as_str().unwrap().to_string();
+        let (_, e) = call(&app, "POST", &format!("/sequences/{seq}/enroll"), &w, Some(json!({"contact_ids": [ids[0].clone(), nomail.clone()]}))).await;
+        assert_eq!((e["enrolled"].as_array().unwrap().len(), e["skipped"][0]["verdict"].as_str()), (1, Some("crm_touch_no_channel")));
+        let (_, acct) = call(&app, "POST", "/accounts", &owner, Some(json!({"name": "Acme"}))).await;
+        call(&app, "PATCH", &format!("/contacts/{}", ids[0]), &owner, Some(json!({"account_id": acct["id"]}))).await;
+        let ada = ids[0].clone();
+        state.store.write_async(move |c| { on_reply(c, &ada, "sounds interesting")?; fill_domains(c)?; Ok(WriteOutcome { applied: true, events: vec![] }) }).await.unwrap();
+        let (_, d) = call(&app, "GET", "/deals", &owner, None).await;
+        let deal = d.as_array().unwrap().iter().find(|x| x["source"] == format!("sequence:{seq}").as_str()).expect("a deal from the reply");
+        assert_eq!(deal["stage"], "qualification");
+        let (_, a) = call(&app, "GET", "/accounts?q=Acme", &owner, None).await;
+        assert_eq!(a[0]["domain"].as_str(), Some("acme.io"), "the most common work-email domain of its people");
     }
 
     #[tokio::test]

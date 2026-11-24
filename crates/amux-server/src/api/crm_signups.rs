@@ -31,6 +31,10 @@ const FREE_MAIL: &[&str] = &[
     "fastmail.com", "qq.com", "163.com",
 ];
 
+pub(crate) fn is_free_mail(domain: &str) -> bool {
+    FREE_MAIL.contains(&domain)
+}
+
 /// A Stripe subscription status as a deal stage.
 fn stage_of(status: &str) -> &'static str {
     match status {
