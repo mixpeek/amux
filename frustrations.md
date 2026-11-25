@@ -6286,3 +6286,14 @@ SYMPTOM: mixpeek-dev's mixpeek-cicd-lag held refs/amux/land-lock/main from about
 COST: a green candidate thrown away, and about 2 h of no progress for four batched waiters on mixpeek-dev, the oldest at 114 min.
 MECHANISM: the lease is honoured only by `amux land`. d0dff040f6 was pushed at 03:36:37Z (GitHub activity: push a8c98cee1a..d0dff040f6) by the Mac's mixpeek-cicd lane through mixpeek's ci/tip/land.sh, a bare `git push -q origin HEAD:main`, and mixpeek's .githooks/pre-push reads no lease. The holder did hold the lease through its prejudge. The 46 and 20 min waits in the report are the 2026-11-22 handover taking turns as built: each turn is one land attempt, and the Mac's attempt ran a red batch, a bisect and an eject.
 FIX: `amux land --lease-check <remote>` refuses, from a pre-push hook, a push to a branch whose lease another live land holds (land's own push and an expired lease pass), and a held-lease push that loses now logs verdict=land_branch_moved_under_lease naming the commit. It reaches mixpeek once its .githooks/pre-push pipes its lines to that command, or ci/tip/land.sh lands with amux land.
+
+## A land held main 55 min after its batch was refused while 14 lands queued behind it
+AREA: gates
+SEVERITY: blocks
+STATUS: fixed
+DATE: 2026-11-25
+SESSION: mxp-mongo-migration
+CARD: AF-1408
+SYMPTOM: decomp-platform's `amux land` on mixpeek-dev (pid 3822027) held the main lock 19:52Z to 20:47Z. After merge-queue run 45693595861 refused its batch, the process tree was only `sleep 20`, `--status` read "current attempt 0 min" on every read, and 14 lands queued behind it until the owner cancelled it. The holder's log shows the mechanism. Its bisect handed the lease to the Mac after a green step, the Mac landed, the 4-of-7 green prefix could not be carried onto the moved main (mq_carry_changes_members) and was dropped, and the holder handed over again and waited on the Mac's land.
+COST: about 55 min of main for every mixpeek-dev lane, 40 min of candidate runs that landed nothing, and a manual cancel by the owner.
+FIX: c45cdf3e5 (a bisect keeps the lease once a step ran green). The misleading --status is AF-1409.
