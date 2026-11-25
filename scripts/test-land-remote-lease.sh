@@ -47,6 +47,10 @@
 #  21. a heartbeat renewal that lands at the release (rl-sha one behind the
 #      remote) is still released: the lease on the remote is our own
 #      (mxp-gs12, 2026-11-25 13:54Z: release_failed left it for the TTL)
+#  22. a commit whose message is over the exec argument limit (1.3 MB, past
+#      Linux's 128 KiB per argument and macOS's 1 MiB per command line) is
+#      replayed onto a moved main with its message intact (mixpeek-cicd,
+#      2026-11-25 15:52Z: "Argument list too long" on a 189,880-byte message)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -334,6 +338,26 @@ land a twentyone AMUX_LAND_TEST_RENEW_AT_RELEASE=1; rc=$?
   && ! grep -q 'land_remote_lease_release_failed' "$H/twentyone.out" \
   && ok "a renewal that lands at the release is our own lease and is released" \
   || bad "21: rc=$rc f=$(main_has f) lease=$(lease_now): $(grep 'lease_' "$H/twentyone.out" | tail -3)"
+
+# 22: a message too long for one exec argument is replayed intact
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f before22; echo 0 > "$H/gate-s"
+land a before22
+git -C "$H/a" fetch -q origin; git -C "$H/a" reset -q --hard origin/main
+commit b g moved22                             # main moves under a's next commit
+git -C "$H/b" push -q --no-verify origin HEAD:main 2>/dev/null
+echo big22 > "$H/a/f"; git -C "$H/a" add f
+{ echo "f=big22"; echo; awk 'BEGIN { for (i = 0; i < 26000; i++) printf "staged path %06d of a large codegen commit\n", i }'; } > "$H/msg22"
+git -C "$H/a" commit -q -F "$H/msg22"
+want22="$(git -C "$H/a" log -1 --format=%B HEAD | wc -c | tr -d ' ')"
+land a twentytwo; rc=$?
+[ "$rc" = 0 ] || cp "$H/twentytwo.out" "${AMUX_TEST_KEEP_OUT:-/dev/null}" 2>/dev/null
+git -C "$H/a" fetch -q origin
+got22="$(git -C "$H/a" log -1 --format=%B origin/main | wc -c | tr -d ' ')"
+[ "$rc" = 0 ] && [ "$(main_has f)" = big22 ] && [ "$(main_has g)" = moved22 ] && [ "$want22" -gt 1100000 ] && [ "$got22" = "$want22" ] \
+  && ! grep -q 'Argument list too long' "$H/twentytwo.out" \
+  && ok "a ${want22}-byte message is replayed onto a moved main intact" \
+  || bad "22: rc=$rc f=$(main_has f) g=$(main_has g) bytes want=$want22 got=$got22: $(grep -m2 -i 'argument\|error' "$H/twentytwo.out")"
 
 # 19: amux land --lease-check in a pre-push hook keeps a push outside land
 # (mixpeek's ci/tip/land.sh, 2026-11-23 03:36:37Z) from landing under a lease
