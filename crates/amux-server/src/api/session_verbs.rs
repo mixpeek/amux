@@ -18651,6 +18651,13 @@ pub(crate) async fn start_session(
         meta.insert("pending_structured_resume_context".into(), json!(context));
         meta.insert("pending_structured_resume_token".into(), token.clone());
     }
+    // `meta` was loaded before the launch watch. The worker-resources job may
+    // have recorded the new Claude's config folder since; saving this copy
+    // without it sent every transcript reader to ~/.claude (2026-11-24,
+    // feature-orchestrator: "Load earlier output" answered 404).
+    if let Some(folder) = load_meta(name).get(super::claude_config::META_KEY) {
+        meta.insert(super::claude_config::META_KEY.into(), folder.clone());
+    }
     if let Err(error) = save_resume_meta(name, &meta) {
         tracing::warn!(session = name, %error, verdict = "swap_context_persist_failed",
             "started worker retains recovery requirement; metadata commit failed");

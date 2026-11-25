@@ -157,13 +157,18 @@ pub(crate) enum Observed {
 /// folder is stored as empty so a worker that leaves a wrapper reads as
 /// default again.
 pub(crate) fn decide(recorded: &str, observed: &str, default: &Path) -> Option<String> {
+    let norm = normalize(observed, default);
+    (norm != recorded.trim()).then_some(norm)
+}
+
+/// A folder as meta stores it: the default folder is "".
+fn normalize(observed: &str, default: &Path) -> String {
     let observed = observed.trim();
-    let norm = if observed.is_empty() || Path::new(observed) == default {
+    if observed.is_empty() || Path::new(observed) == default {
         String::new()
     } else {
         observed.to_string()
-    };
-    (norm != recorded.trim()).then_some(norm)
+    }
 }
 
 /// The folder a pane's process tree runs under, from the readings of the
@@ -191,28 +196,64 @@ pub(crate) fn tree_config_dir(child: Option<&str>, below: &[Option<String>]) -> 
 /// non-default folder also gets amux's status hooks, the same entries
 /// `~/.claude` carries, so the next Claude started there reports its state.
 pub(crate) fn observe_tree(name: &str, pids: &[u32]) -> Observed {
+    observe_tree_with(name, pids, process_config_dir)
+}
+
+/// [`observe_tree`] with the process reader passed in, so the cache and the
+/// meta check can be tested without live processes.
+///
+/// A tree already read is not read again, but a non-default folder it found
+/// is checked against meta on every pass. Meta is rewritten whole by writers
+/// holding an older copy: `start_session` loads meta, waits seconds for
+/// Claude's UI, then saves that copy, and this job records the folder in
+/// between. Measured 2026-11-24 on feature-orchestrator: recorded at
+/// 18:41:03, gone from meta by the end of the start, and with the tree cached
+/// as seen it was never recorded again, so every history read looked in
+/// `~/.claude`, answered 404 "no saved conversation", and the dashboard hid
+/// "Load earlier output". A folder put back this way logs
+/// `claude_config_dir_rerecorded`.
+fn observe_tree_with(name: &str, pids: &[u32], read: impl Fn(u32) -> Option<String>) -> Observed {
     // Keyed by the whole tree, not the first pid: the `sh` is there before
-    // Claude starts, and a reading taken then must not stand for good.
-    static READ: OnceLock<Mutex<HashMap<Vec<u32>, String>>> = OnceLock::new();
-    {
-        let mut read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
-        if read.get(pids).is_some_and(|w| w == name) {
+    // Claude starts, and a reading taken then must not stand for good. The
+    // value is the worker and the folder its tree runs under ("" = default).
+    type TreeReads = HashMap<Vec<u32>, (String, String)>;
+    static READ: OnceLock<Mutex<TreeReads>> = OnceLock::new();
+    let seen = {
+        let read = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        read.get(pids).filter(|(w, _)| w == name).map(|(_, folder)| folder.clone())
+    };
+    if let Some(folder) = seen {
+        if folder.is_empty() {
             return Observed::Seen;
         }
-        // Bounded: pids are reused and workers come and go.
-        if read.len() > 4096 {
-            read.clear();
+        let recorded = meta_str(&load_meta(name), META_KEY);
+        if recorded == folder {
+            return Observed::Seen;
         }
-        read.insert(pids.to_vec(), name.to_string());
+        update_meta(name, &[(META_KEY, json!(folder))]);
+        tracing::warn!(session = %name, was = %recorded, now = %folder, measured = true, n_considered = 1,
+            verdict = "claude_config_dir_rerecorded",
+            "a meta write dropped the worker's Claude config folder; recorded it again so its transcript and history are found");
+        return Observed::Recorded { was: recorded, now: folder };
     }
     let Some((&pid, below)) = pids.split_first() else {
         return Observed::Unreadable;
     };
-    let below: Vec<Option<String>> = below.iter().map(|&p| process_config_dir(p)).collect();
-    let Some(observed) = tree_config_dir(process_config_dir(pid).as_deref(), &below) else {
+    let below: Vec<Option<String>> = below.iter().map(|&p| read(p)).collect();
+    let observed = tree_config_dir(read(pid).as_deref(), &below);
+    let default = claude_home();
+    {
+        let mut cache = READ.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        // Bounded: pids are reused and workers come and go.
+        if cache.len() > 4096 {
+            cache.clear();
+        }
+        let folder = observed.as_deref().map(|o| normalize(o, &default)).unwrap_or_default();
+        cache.insert(pids.to_vec(), (name.to_string(), folder));
+    }
+    let Some(observed) = observed else {
         return Observed::Unreadable;
     };
-    let default = claude_home();
     let recorded = meta_str(&load_meta(name), META_KEY);
     let Some(now) = decide(&recorded, &observed, &default) else {
         return Observed::Unchanged;
@@ -366,6 +407,54 @@ mod tests {
         assert_eq!(for_session(name), team);
         assert_eq!(session_jsonl_path(name), Some(transcript.clone()));
         assert_eq!(lifecycle_transcript_path(name, conv), Some(transcript));
+    }
+
+    /// The 2026-11-24 feature-orchestrator case: `start_session` saved the
+    /// meta it loaded before Claude started, after this job had recorded the
+    /// folder. The tree was cached as seen, so the folder stayed lost and
+    /// "Load earlier output" read 404 for the rest of the worker's life.
+    #[test]
+    fn a_folder_dropped_by_a_stale_meta_save_is_recorded_again() {
+        use crate::api::session_verbs::{env_path, project_name, save_meta, session_jsonl_path, sessions_dir};
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(dir.path());
+        std::env::set_var("HOME", dir.path());
+        std::fs::create_dir_all(sessions_dir()).unwrap();
+        let wd = dir.path().join("work");
+        std::fs::create_dir_all(&wd).unwrap();
+        std::fs::create_dir_all(claude_home().join("projects")).unwrap();
+        let team = dir.path().join(".claude-team");
+        let project = team.join("projects").join(project_name(&wd.to_string_lossy()));
+        std::fs::create_dir_all(&project).unwrap();
+        let transcript = project.join("0000c0de-1111-4222-8333-000000000b22.jsonl");
+        std::fs::write(&transcript, "{}\n").unwrap();
+        let name = "stale-save-worker";
+        std::fs::write(env_path(name), format!("CC_DIR={}\n", wd.display())).unwrap();
+        update_meta(name, &[("cc_cwd", json!(wd.to_string_lossy()))]);
+        let team_s = team.to_string_lossy().into_owned();
+        // pid 1 = the launch `sh`, pid 2 = the Claude under it.
+        let reader = |pid: u32| Some(if pid == 2 { team_s.clone() } else { String::new() });
+        let pids = [910_001, 910_002];
+        let reader = |pid: u32| reader(pid - 910_000);
+
+        // start_session's copy, loaded before Claude ran.
+        let snapshot = load_meta(name);
+        assert_eq!(
+            observe_tree_with(name, &pids, reader),
+            Observed::Recorded { was: String::new(), now: team_s.clone() }
+        );
+        assert_eq!(session_jsonl_path(name), Some(transcript.clone()));
+        // start_session finishes and saves its stale copy.
+        save_meta(name, &snapshot);
+        assert_eq!(session_jsonl_path(name), None, "the stale save lost the folder");
+
+        // The next pass over the same (cached) tree puts it back.
+        assert_eq!(
+            observe_tree_with(name, &pids, reader),
+            Observed::Recorded { was: String::new(), now: team_s.clone() }
+        );
+        assert_eq!(session_jsonl_path(name), Some(transcript));
+        assert_eq!(observe_tree_with(name, &pids, reader), Observed::Seen, "kept, nothing to do");
     }
 
     /// The child [`reads_a_live_child_process_environment`] spawns: this test
