@@ -12625,8 +12625,8 @@ p.communicate(msg.encode())
   _land_rl_field() { git log -1 --format=%B "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -1; }
   _land_rl_commit() { # <expires_at> -> a lease commit sha (holder, start, lane, head, expiry)
     local _t; _t="$(git mktree </dev/null)" || return 1
-    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\npriority=%s\n' \
-      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" "${_LAND_RL_PRIO:-0}" \
+    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\npriority=%s\nwait_since=%s\n' \
+      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" "${_LAND_RL_PRIO:-0}" "${_LAND_RL_WAIT_SINCE:-}" \
       | GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost git commit-tree "$_t"
   }
   _land_rl_push() { # <remote> <ref> <expected sha or empty> <new sha or empty to delete>
@@ -12669,7 +12669,7 @@ p.communicate(msg.encode())
     local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _exp _c
     _exp="$(cat "$_LAND_RL_DIR/rl-wait" 2>/dev/null)"; case "$_exp" in ''|*[!0-9]*) _exp=0 ;; esac
     [ $(( _exp - $3 )) -ge $(( _poll * 2 )) ] && return 0
-    _exp=$(( $3 + _poll * 4 ))
+    _exp=$(( $3 + _poll * 4 )); [ -n "${_LAND_RL_WAIT_SINCE:-}" ] || _LAND_RL_WAIT_SINCE="$3"   # its place in line
     if _c="$(_land_rl_commit "$_exp")" && git push --no-verify --porcelain --force "$1" "$_c:$(_land_rl_wref "$2")" >/dev/null 2>&1; then
       echo "$_exp" > "$_LAND_RL_DIR/rl-wait"
     else
@@ -12699,6 +12699,14 @@ p.communicate(msg.encode())
       _exp="$(_land_rl_field "$_sha" expires_at)"; case "$_exp" in ''|*[!0-9]*) continue ;; esac
       # A waiter that stopped refreshing (killed) is gone past its expiry and the skew.
       [ "$(date +%s)" -le $(( _exp + ${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120} )) ] || continue
+      # First come, first served: a land that itself waits yields only to a
+      # waiter that started waiting before it (ties by holder name), so two
+      # waiters never yield to each other. One with no wait_since predates
+      # the field and counts as first.
+      local _ws; _ws="$(_land_rl_field "$_sha" wait_since)"
+      if [ -n "${_LAND_RL_WAIT_SINCE:-}" ] && case "$_ws" in ''|*[!0-9]*) false ;; *) true ;; esac; then
+        [ "$_ws" -lt "$_LAND_RL_WAIT_SINCE" ] || { [ "$_ws" = "$_LAND_RL_WAIT_SINCE" ] && [[ "$(_land_rl_field "$_sha" holder)" < "$_LAND_RL_ID" ]]; } || continue
+      fi
       if [ -n "${3:-}" ] && [ "$(_land_rl_field "$_sha" priority)" != 1 ]; then
         _land_rl_say "verdict=land_remote_lease_priority_passes: $(_land_rl_field "$_sha" holder) ($(_land_rl_field "$_sha" lane)) waits without --priority; this --priority land does not yield to it"
         continue
@@ -12721,6 +12729,7 @@ p.communicate(msg.encode())
     _LAND_RL_ME="$me"; _LAND_RL_LOG="$log"; _LAND_RL_KEY="$key"
     _LAND_RL_HEAD="$(git rev-parse --short HEAD 2>/dev/null)"
     _LAND_RL_TAKEN=""   # set when taken; a waiter's announcement is written before that (set -u)
+    _LAND_RL_WAIT_SINCE=""   # set by the first announcement: this land's place in the line
     _LAND_RL_PRIO="${priority:-0}"   # land's --priority; announced, and it decides whom this land yields to
     while :; do
       _now="$(date +%s)"
@@ -12755,16 +12764,34 @@ p.communicate(msg.encode())
       # here would take the lease at once while the other machine polls every
       # POLL_S, so back-to-back lands here could starve it. Yield once, and
       # only to a waiter that announced itself (_land_rl_announce).
+      # THE YIELD LASTS UNTIL THE WAITER TAKES THE LEASE (mixpeek-meta-worker,
+      # 2026-11-25): it was a fixed 20-40 s sleep, and a loaded machine's
+      # waiter came round every 60-110 s, so mvs-infra's land on the Mac sat
+      # 3.5 h behind eight mixpeek-dev lands, each taking the lease inside its
+      # waiter's poll gap. It is also asked on every take, not only right
+      # after this machine released: a land that reaches the lease late after
+      # its local queue would otherwise still jump the line. A waiter that
+      # stops refreshing drops out, and YIELD_MAX_S bounds the hold.
       local _rel; _rel="$(cat "$_LAND_RL_LOCK.rl-released" 2>/dev/null || echo 0)"; case "$_rel" in ''|*[!0-9]*) _rel=0 ;; esac
       local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _waiter
-      if [ -z "${_yielded:-}" ] && [ $(( _now - _rel )) -lt $(( _poll * 2 )) ]; then
+      if [ -z "${_yielded:-}" ]; then
         _yielded=1
         if _waiter="$(_land_rl_other_waiter "$_r" "$2" "$(_land_rl_prio_only)")"; then
-          local _y="${AMUX_LAND_REMOTE_LEASE_YIELD_S:-$(( _poll + RANDOM % (_poll + 1) ))}"
-          _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago and $_waiter waits; yielding ${_y}s so it can take it first"
-          sleep "$_y"; continue
+          local _ymax="${AMUX_LAND_REMOTE_LEASE_YIELD_S:-${AMUX_LAND_REMOTE_LEASE_YIELD_MAX_S:-$(( _poll * 15 ))}}" _ys=0 _step _yend _ycur
+          _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago and $_waiter waits; yielding until it takes the lease (at most ${_ymax}s)"
+          _yend="still waits, so this land takes it,"
+          while [ "$_ys" -lt "$_ymax" ]; do
+            _step="$_poll"; [ $(( _ymax - _ys )) -lt "$_step" ] && _step=$(( _ymax - _ys ))
+            sleep "$_step"; _ys=$(( _ys + _step ))
+            [ -e "$_LAND_RL_DIR/rl-wait" ] && _land_rl_announce "$_r" "$2" "$(date +%s)"
+            _ycur="$(_land_rl_ls "$_r" "$_ref" 2>/dev/null)" || continue
+            [ -n "$_ycur" ] && [ "$_ycur" != "$_cur" ] && { _yend="took it"; break; }
+            _land_rl_other_waiter "$_r" "$2" "$(_land_rl_prio_only)" >/dev/null || { _yend="stopped waiting"; break; }
+          done
+          _land_rl_say "verdict=land_remote_lease_yield_done: $_waiter $_yend after ${_ys}s"
+          _w=$(( _w + _ys )); continue
         fi
-        _land_rl_say "verdict=land_remote_lease_no_yield: this machine released the lease $(( _now - _rel ))s ago and no other $([ "${_LAND_RL_PRIO:-0}" = 1 ] && echo '--priority ')land waits; taking it now"
+        [ $(( _now - _rel )) -lt $(( _poll * 2 )) ] && _land_rl_say "verdict=land_remote_lease_no_yield: this machine released the lease $(( _now - _rel ))s ago and no other $([ "${_LAND_RL_PRIO:-0}" = 1 ] && echo '--priority ')land waits; taking it now"
       fi
       _LAND_RL_TAKEN="$_now"
       _new="$(_land_rl_commit $(( _now + _ttl )))" || { _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not write a lease commit; nothing pushed"; return 7; }

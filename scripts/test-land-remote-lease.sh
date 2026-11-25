@@ -51,6 +51,11 @@
 #      Linux's 128 KiB per argument and macOS's 1 MiB per command line) is
 #      replayed onto a moved main with its message intact (mixpeek-cicd,
 #      2026-11-25 15:52Z: "Argument list too long" on a 189,880-byte message)
+#  23. the yield to the other machine's waiter lasts until that waiter takes
+#      the lease, however slowly it polls, and a land that itself waits
+#      yields only to a waiter that started waiting before it
+#      (mixpeek-meta-worker, 2026-11-25: mvs-infra's land on the Mac waited
+#      3.5 h behind eight mixpeek-dev lands under a fixed 20-40 s yield)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -191,6 +196,37 @@ mv "$H/origin.git" "$H/origin.away"; sleep 2.5; mv "$H/origin.away" "$H/origin.g
 wait "$p8"; rc=$?; echo 0 > "$H/gate-s"
 [ "$rc" = 0 ] && [ "$(main_has f)" = outage ] && ! grep -q 'land_remote_lease_lost' "$H/eight.out" && ok "an unreadable remote for a few beats is not a lost lease" || bad "8: rc=$rc f=$(main_has f): $(grep -m1 lease_lost "$H/eight.out")"
 
+
+# 23: the waiter comes round after 6 s, several poll intervals past the old
+# fixed yield (one to two polls, POLL_S=1 here); the land holds off until it
+# has taken the lease, waits on it, and lands after it.
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+vm23() { # <wait_since or empty>: the other machine's announcement
+  local t c; t="$(git -C "$H/a" mktree </dev/null)"
+  c="$(printf 'amux land lease\n\nholder=vm:2323\nlane=vm-slow\nhead=abc1234\ntaken_at=\nexpires_at=%s\npriority=0\nwait_since=%s\n' "$(( $(date +%s) + 600 ))" "$1" | git -C "$H/a" commit-tree "$t")"
+  git -C "$H/a" push -q --no-verify --force origin "$c:refs/amux/land-wait/main/vm-2323"
+}
+vm23 ""
+commit a f t23
+land a t23 AMUX_LAND_REMOTE_LEASE_YIELD_MAX_S=60 AMUX_LAND_REMOTE_LEASE_SKEW_S=0 & p23=$!
+sleep 6
+other_lease vm:2323 $(( $(date +%s) + 4 )) >/dev/null
+git -C "$H/a" push -q --no-verify origin ":refs/amux/land-wait/main/vm-2323"
+wait "$p23"; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = t23 ] && grep -q 'verdict=land_remote_lease_yield_done: vm:2323 (vm-slow) took it after' "$H/t23.out" \
+  && grep -q 'verdict=land_remote_lease_wait: .*vm:2323' "$H/t23.out" && [ -z "$(lease_now)" ] \
+  && ok "the yield lasts until a slow waiter on the other machine takes the lease" || bad "23: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/t23.out" | head -4)"
+# A land waiting on a held lease announced first; the other machine's waiter
+# announced later, so when the lease frees this land takes it without yielding.
+other_lease vm:9999 $(( $(date +%s) + 3 )) >/dev/null
+commit a f t23b
+land a t23b AMUX_LAND_REMOTE_LEASE_SKEW_S=0 & p23=$!
+for _ in $(seq 1 40); do grep -q 'lease_wait' "$H/t23b.out" 2>/dev/null && break; sleep 0.25; done
+vm23 $(( $(date +%s) + 1000 ))
+wait "$p23"; rc=$?
+git -C "$H/a" push -q --no-verify origin ":refs/amux/land-wait/main/vm-2323" 2>/dev/null
+[ "$rc" = 0 ] && [ "$(main_has f)" = t23b ] && ! grep -q 'verdict=land_remote_lease_yield:' "$H/t23b.out" \
+  && ok "a waiter yields only to a waiter that started waiting before it" || bad "23b: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/t23b.out" | head -4)"
 fi
 if part b; then
 # 9
