@@ -960,7 +960,9 @@ pub struct ScheduleBody {
     pub pass_fail: Option<i64>,
     /// Wake condition (runtime_jobs/schedule_wake.rs, stored as `when_check`):
     /// a shell command run before each scheduled fire of a tmux schedule.
-    /// Exit 0 delivers the prompt; anything else skips the fire. `null` or ""
+    /// Exit 0 delivers the prompt; exit 1 skips the fire. Any other exit or a
+    /// timeout skips it too and counts as a broken check (the owner is told
+    /// after six in a row). `null` or ""
     /// clears it.
     #[serde(default, deserialize_with = "de_present")]
     pub when: Option<Option<String>>,

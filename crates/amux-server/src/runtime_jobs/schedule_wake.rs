@@ -31,9 +31,14 @@
 //!
 //! A tmux schedule may carry `when_check`, a shell command run before each
 //! SCHEDULED fire (Claude Code's "wake me when X finishes"). Exit 0 delivers
-//! the prompt. Anything else, or no exit within [`WHEN_TIMEOUT_S`], skips the
-//! fire: the run row reads `skipped` with a [`WHEN_PREFIX`] note, the failure
-//! router treats it as neutral, and the fire gives its `max_runs` count back.
+//! the prompt. Exit 1 is "not yet": the fire is skipped, the run row reads
+//! `skipped` with a [`WHEN_PREFIX`] note, and the fire gives its `max_runs`
+//! count back. Any other exit, no exit within [`WHEN_TIMEOUT_S`], or a check
+//! that could not run is a BROKEN check ([`WHEN_BROKEN_PREFIX`]): the fire is
+//! skipped the same way, and the failure router counts it, so after
+//! `schedule_failure::WHEN_BROKEN_AFTER` in a row the owner hears about it
+//! like any failing schedule (p90's SCHED-2794 sat blind 18.5 hours on a check
+//! that crashed every run and read as "not yet").
 //! With `when_once` (the default) the schedule disables itself after the
 //! first fire whose check passed and that delivered or queued. A manual Run
 //! now does not run the check: the human asked, as with the goal gate.
@@ -47,6 +52,10 @@ use super::scheduler::DurableSchedule;
 pub const GATE_PREFIX: &str = "goal wake gate:";
 /// The refusal prefix of a fire skipped because its wake condition failed.
 pub const WHEN_PREFIX: &str = "wake condition:";
+/// The refusal prefix of a fire skipped because its check broke: an exit
+/// other than 0 or 1, a timeout, or no exit at all. It starts with
+/// [`WHEN_PREFIX`], so the fire is skipped like any other.
+pub const WHEN_BROKEN_PREFIX: &str = "wake condition: the check broke:";
 /// Seconds a wake condition may run before the fire is skipped.
 pub const WHEN_TIMEOUT_S: u64 = 60;
 
@@ -73,14 +82,27 @@ pub async fn when_gate(sched: &DurableSchedule, check: &str) -> Result<(), Strin
         return Ok(());
     }
     let reason = when_reason(check, r.exit_code, r.timed_out, &r.tail);
-    tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
-        verdict = "schedule_when_skipped", exit_code = ?r.exit_code, timed_out = r.timed_out,
-        measured = true, n_considered = 1, "{reason}");
+    if check_broke(r.exit_code, r.timed_out) {
+        tracing::warn!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
+            verdict = "schedule_when_check_broken", exit_code = ?r.exit_code, timed_out = r.timed_out,
+            measured = true, n_considered = 1, "{reason}");
+    } else {
+        tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
+            verdict = "schedule_when_skipped", exit_code = ?r.exit_code, timed_out = r.timed_out,
+            measured = true, n_considered = 1, "{reason}");
+    }
     Err(reason)
+}
+
+/// Did the check fail to answer? Exit 0 is "go" and exit 1 "not yet";
+/// anything else is the check itself going wrong.
+pub fn check_broke(exit_code: Option<i32>, timed_out: bool) -> bool {
+    timed_out || !matches!(exit_code, Some(0 | 1))
 }
 
 /// The skip reason, pure.
 pub fn when_reason(check: &str, exit_code: Option<i32>, timed_out: bool, tail: &str) -> String {
+    let prefix = if check_broke(exit_code, timed_out) { WHEN_BROKEN_PREFIX } else { WHEN_PREFIX };
     let how = match (timed_out, exit_code) {
         (true, _) => format!("timed out after {WHEN_TIMEOUT_S}s"),
         (false, Some(c)) => format!("exited {c}"),
@@ -89,8 +111,8 @@ pub fn when_reason(check: &str, exit_code: Option<i32>, timed_out: bool, tail: &
     let short: String = check.chars().take(120).collect();
     let last = tail.lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.chars().take(160).collect::<String>());
     match last {
-        Some(l) => format!("{WHEN_PREFIX} `{short}` {how} ({l}); fire skipped"),
-        None => format!("{WHEN_PREFIX} `{short}` {how}; fire skipped"),
+        Some(l) => format!("{prefix} `{short}` {how} ({l}); fire skipped"),
+        None => format!("{prefix} `{short}` {how}; fire skipped"),
     }
 }
 

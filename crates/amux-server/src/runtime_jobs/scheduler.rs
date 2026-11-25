@@ -3660,9 +3660,14 @@ async fn fire_one(
     // An empty outcome set still warns — nothing was delivered because nothing
     // was attempted, which is the same silence from a reader's side.
     // A wake-condition skip is a deliberate no-op: no "nothing was delivered"
-    // warning (it would fire every check interval), no failure notice and no
-    // pass-check scheduling. `schedule_when_skipped` already logged it.
+    // warning (it would fire every check interval) and no pass-check
+    // scheduling. `schedule_when_skipped` already logged it. The failure
+    // router still hears it once: a check that answered "not yet" passes, and
+    // a broken one counts toward its notice (schedule_failure::WHEN_BROKEN_AFTER).
     if when_skipped_all {
+        if let Some(o) = for_notice.first() {
+            super::schedule_failure::on_run_outcome(store, &claim.sched, o, "cron-rs").await;
+        }
         return Ok(true);
     }
     if all_lost {
@@ -4104,7 +4109,7 @@ mod tests {
         let due = fmt_minute(now - ChronoDuration::minutes(1));
         let mut row = make_row("WHEN", "lane", Some("every 2m"), &due);
         row.set("max_runs", Value::from(1));
-        row.set("when_check", Value::from("echo not yet; exit 3"));
+        row.set("when_check", Value::from("echo not yet; exit 1"));
         put_row(&store, row);
         let ok = StubDeliverer::confirmed();
         for _ in 0..2 {
@@ -4119,9 +4124,25 @@ mod tests {
         let s = get_schedule(&store.read().unwrap(), "WHEN").unwrap().unwrap();
         assert_eq!(s.str_field("last_delivery"), "skipped");
         let reason = s.str_field("last_refusal_reason").to_string();
-        assert!(reason.starts_with(super::super::schedule_wake::WHEN_PREFIX) && reason.contains("exited 3"), "{reason}");
+        assert!(reason.starts_with(super::super::schedule_wake::WHEN_PREFIX) && reason.contains("exited 1"), "{reason}");
         let streak = s.i64_field("failure_streak", 0);
         assert_eq!(streak, 0, "a skip is not a failure");
+
+        // A check that crashes (exit 2) is skipped the same way, and counted.
+        for _ in 0..2 {
+            exec(&store, format!("UPDATE schedules SET next_run='{due}', when_check='echo 404 >&2; exit 2' WHERE id='WHEN'"));
+            assert!(fire_one(&store, &ok, "WHEN", now, MissedRunPolicy::Skip).await.unwrap());
+        }
+        assert_eq!(ok.calls(), 0);
+        let s = get_schedule(&store.read().unwrap(), "WHEN").unwrap().unwrap();
+        assert!(s.str_field("last_refusal_reason").starts_with(super::super::schedule_wake::WHEN_BROKEN_PREFIX));
+        assert_eq!(s.i64_field("failure_streak", 0), 2, "a broken check counts toward its notice");
+        assert_eq!(run_statuses(&store, "WHEN").last().map(String::as_str), Some("skipped"));
+        exec(&store, "UPDATE schedules SET when_check='echo not yet; exit 1' WHERE id='WHEN'".to_string());
+        exec(&store, format!("UPDATE schedules SET next_run='{due}' WHERE id='WHEN'"));
+        assert!(fire_one(&store, &ok, "WHEN", now, MissedRunPolicy::Skip).await.unwrap());
+        let s = get_schedule(&store.read().unwrap(), "WHEN").unwrap().unwrap();
+        assert_eq!(s.i64_field("failure_streak", 0), 0, "a check that answers again ends the streak");
 
         // The condition comes true: one delivery, then the row ends.
         exec(&store, format!("UPDATE schedules SET next_run='{due}', when_check='true' WHERE id='WHEN'"));

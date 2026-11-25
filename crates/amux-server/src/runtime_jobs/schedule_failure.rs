@@ -59,6 +59,10 @@ use crate::db::{PendingEvent, SharedStore, WriteOutcome};
 
 /// Same-signature failures after the last notice before telling again.
 pub const ESCALATE_AFTER: i64 = 3;
+/// Broken wake-condition checks in a row before the first notice. A check
+/// that breaks once (a flaky network call) recovers on its own; six in a row
+/// at a typical 5 to 15 minute interval is a check that has gone blind.
+pub const WHEN_BROKEN_AFTER: i64 = 6;
 /// Consecutive failures after which a schedule whose worker is gone is paused.
 pub const PAUSE_ORPHAN_AFTER: i64 = 3;
 
@@ -152,10 +156,21 @@ fn classify_raw(outcome: &RunOutcome) -> Verdict {
         RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::GATE_PREFIX) => {
             Verdict::Neutral
         }
-        // A fire skipped because its wake condition (`when`) is not met yet.
-        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::WHEN_PREFIX) => {
-            Verdict::Neutral
+        // A wake condition (`when`) that crashed, timed out or exited other
+        // than 0 or 1: the check is blind. Counted, and told after
+        // WHEN_BROKEN_AFTER in a row (see `decide`).
+        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::WHEN_BROKEN_PREFIX) => {
+            Verdict::Fail(Failure {
+                kind: "when_check",
+                exit_code: None,
+                error_line: reason.clone(),
+                detail: format!("skipped: {reason}"),
+                tail: String::new(),
+            })
         }
+        // A wake condition that ran and answered "not yet" (exit 1): the
+        // check works, so it ends a broken-check streak.
+        RunOutcome::Refused { reason } if reason.starts_with(super::schedule_wake::WHEN_PREFIX) => Verdict::Pass,
         RunOutcome::Refused { reason } => Verdict::Fail(Failure {
             kind: "refused",
             exit_code: None,
@@ -271,6 +286,12 @@ pub fn decide(prev_streak: i64, prev: Option<&Notice>, v: &Verdict) -> (i64, Act
         Verdict::Neutral => (prev_streak, Action::Nothing),
         Verdict::Fail(f) => {
             let n = prev_streak + 1;
+            if f.kind == "when_check" && n < WHEN_BROKEN_AFTER {
+                return (n, Action::Nothing);
+            }
+            if f.kind == "when_check" && n == WHEN_BROKEN_AFTER {
+                return (n, Action::Notify("first"));
+            }
             let Some(p) = prev.filter(|_| prev_streak > 0) else {
                 return (n, Action::Notify("first"));
             };
@@ -1142,9 +1163,27 @@ mod tests {
             classify(&RunOutcome::Refused {
                 reason: super::super::schedule_wake::when_reason("test -f /x", Some(1), false, "")
             }),
-            Verdict::Neutral,
-            "a wake condition that is not met yet is not a failure"
+            Verdict::Pass,
+            "a wake condition that is not met yet is not a failure; the check works"
         );
+        // mixpeek-meta-worker, 2026-11-25: a check that crashes, times out or
+        // exits other than 0 or 1 is blind. Counted, and told at the sixth.
+        for (code, timed_out) in [(Some(2), false), (Some(127), false), (None, false), (Some(1), true)] {
+            let v = classify(&RunOutcome::Refused {
+                reason: super::super::schedule_wake::when_reason("curl -f https://x/y", code, timed_out, "404"),
+            });
+            assert!(matches!(&v, Verdict::Fail(f) if f.kind == "when_check"), "{code:?} {timed_out}: {v:?}");
+        }
+        let broken = classify(&RunOutcome::Refused {
+            reason: super::super::schedule_wake::when_reason("curl -f https://x/y", Some(22), false, "404"),
+        });
+        let mut streak = 0;
+        for i in 1..WHEN_BROKEN_AFTER {
+            let (s, a) = decide(streak, None, &broken);
+            assert_eq!((s, a), (i, Action::Nothing), "silent before the sixth");
+            streak = s;
+        }
+        assert_eq!(decide(streak, None, &broken), (WHEN_BROKEN_AFTER, Action::Notify("first")), "told at the sixth");
         assert!(matches!(classify(&RunOutcome::Failed { reason: "timed out after 600s".into() }), Verdict::Fail(_)));
     }
 
