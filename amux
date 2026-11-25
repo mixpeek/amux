@@ -12702,7 +12702,7 @@ p.communicate(msg.encode())
       local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _waiter
       if [ -z "${_yielded:-}" ] && [ $(( _now - _rel )) -lt $(( _poll * 2 )) ]; then
         _yielded=1
-        if _waiter="$(_land_rl_other_waiter "$_r" "$2" $(_land_rl_prio_only))"; then
+        if _waiter="$(_land_rl_other_waiter "$_r" "$2" "$(_land_rl_prio_only)")"; then
           local _y="${AMUX_LAND_REMOTE_LEASE_YIELD_S:-$(( _poll + RANDOM % (_poll + 1) ))}"
           _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago and $_waiter waits; yielding ${_y}s so it can take it first"
           sleep "$_y"; continue
@@ -12846,7 +12846,7 @@ p.communicate(msg.encode())
     [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
     [ -n "${_LAND_RL_DIR:-}" ] && [ -s "$_LAND_RL_DIR/rl-sha" ] || return 0
     local _waiter _traps
-    _waiter="$(_land_rl_other_waiter "$1" "$2" $(_land_rl_prio_only))" || return 0
+    _waiter="$(_land_rl_other_waiter "$1" "$2" "$(_land_rl_prio_only)")" || return 0
     _land_rl_say "verdict=land_remote_lease_handover: $_waiter waits for $2; releasing the lease between attempts so it lands first"
     # The release ignores TERM, INT and HUP for the exit trap's sake; here the
     # land goes on, so its own handlers come back after.
