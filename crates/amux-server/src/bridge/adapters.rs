@@ -54,6 +54,12 @@ pub fn configured() -> Vec<(&'static str, bool, Vec<&'static str>)> {
 
 /// Send `text` into a conversation. Returns the platform's message id.
 pub async fn send(platform: &str, conversation: &str, is_group: bool, text: &str) -> Result<String, String> {
+    send_in_thread(platform, conversation, is_group, text, None).await
+}
+
+/// [`send`], as a reply in a platform thread where the platform has them
+/// (Slack's `thread_ts`); other platforms ignore `thread`.
+pub async fn send_in_thread(platform: &str, conversation: &str, is_group: bool, text: &str, thread: Option<&str>) -> Result<String, String> {
     let text: String = text.chars().take(3800).collect();
     if platform == super::whatsapp_app::PLATFORM {
         return super::whatsapp_app::send(&text).await;
@@ -75,7 +81,10 @@ pub async fn send(platform: &str, conversation: &str, is_group: bool, text: &str
         }
         "slack" => {
             let r = c.post(format!("{}/chat.postMessage", base("slack", "https://slack.com/api"))).bearer_auth(need("SLACK_BOT_TOKEN")?)
-                .json(&json!({"channel": conversation, "text": text})).send().await.map_err(|e| e.to_string())?;
+                .json(&match thread {
+                    Some(ts) => json!({"channel": conversation, "text": text, "thread_ts": ts}),
+                    None => json!({"channel": conversation, "text": text}),
+                }).send().await.map_err(|e| e.to_string())?;
             (r.status().as_u16(), r.json().await.unwrap_or(Value::Null))
         }
         "telegram" => {
@@ -192,6 +201,32 @@ pub fn slack_parse(v: &Value) -> Option<Inbound> {
         text: e["text"].as_str().unwrap_or("").to_string(),
         platform_msg_id: format!("{}:{}", e["channel"].as_str().unwrap_or(""), e["ts"].as_str().unwrap_or("")),
     })
+}
+
+/// The thread a Slack message replies in, as the `<channel>:<ts>` id its
+/// parent was recorded under. `None` for a top-level message (Slack sets
+/// `thread_ts` to the message's own ts on a thread's parent).
+pub fn slack_thread_of(v: &Value) -> Option<String> {
+    let e = &v["event"];
+    let (ts, thread) = (e["ts"].as_str()?, e["thread_ts"].as_str()?);
+    (ts != thread).then(|| format!("{}:{thread}", e["channel"].as_str().unwrap_or("")))
+}
+
+/// The `slack.message` event for a message a person wrote (what
+/// [`slack_parse`] accepts), in any channel the app's bot is in, linked to
+/// amux or not, and the key that makes Slack's retries one event.
+pub fn slack_event(v: &Value) -> Option<(Value, String)> {
+    slack_parse(v)?;
+    let e = &v["event"];
+    let s = |k: &str| e[k].as_str().unwrap_or("").to_string();
+    let (channel, ts) = (s("channel"), s("ts"));
+    let thread_ts = e["thread_ts"].as_str().filter(|t| *t != ts).unwrap_or("").to_string();
+    let team = v["team_id"].as_str().or(e["team"].as_str()).unwrap_or("").to_string();
+    let key = format!("slack:{team}:{channel}:{ts}");
+    Some((json!({
+        "team": team, "channel": channel, "channel_type": s("channel_type"), "user": s("user"),
+        "text": s("text"), "ts": ts, "thread_ts": thread_ts, "is_reply": !thread_ts.is_empty(), "key": key,
+    }), key))
 }
 
 // ---- Telegram ----------------------------------------------------------------
@@ -349,6 +384,28 @@ mod tests {
         assert!(!slack_signature_ok(Some(ts), Some(&sig), body, 1_793_000_400), "older than five minutes is a replay");
         assert_eq!(whatsapp_verify(Some("subscribe"), Some("vt"), Some("123")), Some("123".into()));
         assert_eq!(whatsapp_verify(Some("subscribe"), Some("no"), Some("123")), None);
+    }
+
+    #[test]
+    fn a_slack_message_is_an_event_with_its_channel_and_thread() {
+        let top = json!({"type": "event_callback", "team_id": "T037Q7LME85", "event": {"type": "message", "channel": "C08CJ3U2Y3E",
+            "channel_type": "channel", "user": "U9", "text": "any update?", "ts": "1.1"}});
+        let (d, key) = slack_event(&top).unwrap();
+        assert_eq!(key, "slack:T037Q7LME85:C08CJ3U2Y3E:1.1");
+        assert_eq!((d["channel"].clone(), d["team"].clone(), d["is_reply"].clone(), d["thread_ts"].clone()),
+            (json!("C08CJ3U2Y3E"), json!("T037Q7LME85"), json!(false), json!("")));
+        assert_eq!(slack_thread_of(&top), None);
+        let mut reply = top.clone();
+        reply["event"]["ts"] = json!("1.2");
+        reply["event"]["thread_ts"] = json!("1.1");
+        assert_eq!(slack_event(&reply).unwrap().0["is_reply"], json!(true));
+        assert_eq!(slack_thread_of(&reply).as_deref(), Some("C08CJ3U2Y3E:1.1"));
+        let mut parent = top.clone();
+        parent["event"]["thread_ts"] = json!("1.1");
+        assert_eq!(slack_thread_of(&parent), None, "a thread's parent is top level");
+        let mut bot = top;
+        bot["event"]["bot_id"] = json!("B1");
+        assert!(slack_event(&bot).is_none(), "the bot's own posts are not events");
     }
 
     #[test]

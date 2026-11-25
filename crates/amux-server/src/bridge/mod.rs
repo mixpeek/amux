@@ -162,6 +162,13 @@ fn already_posted(state: &AppState, platform: &str, pmid: &str) -> bool {
 }
 
 pub async fn inbound(state: &AppState, m: Inbound) -> Outcome {
+    inbound_threaded(state, m, None).await
+}
+
+/// [`inbound`] for a message that replies in a platform thread: `thread` is
+/// the platform id its parent was recorded under, and the message is posted
+/// in that post's Messages thread when amux has it.
+pub async fn inbound_threaded(state: &AppState, m: Inbound, thread: Option<String>) -> Outcome {
     let owner = is_owner(&m.platform, &m.sender_id);
     let text = m.text.trim().to_string();
     if text.is_empty() {
@@ -198,7 +205,38 @@ pub async fn inbound(state: &AppState, m: Inbound) -> Outcome {
         }
         return Outcome::Unlinked;
     };
-    post_inbound(state, &m, owner, &conv).await
+    let parent = thread.and_then(|t| state.store.read().ok().and_then(|c| thread_parent(&c, &m.platform, &m.conversation, &t)));
+    post_inbound_in(state, &m, owner, &conv, parent).await
+}
+
+/// The Messages post a platform thread hangs from: the post a chat message
+/// with that id became, or the post amux sent as it (Slack records a sent
+/// post by its bare ts). Its thread root, since Messages threads are one deep.
+fn thread_parent(conn: &rusqlite::Connection, platform: &str, conversation: &str, thread: &str) -> Option<i64> {
+    let bare = thread.rsplit(':').next().unwrap_or(thread);
+    let post: Option<i64> = conn.query_row(
+        "SELECT post_id FROM bridge_inbound WHERE platform=?1 AND conversation=?2 AND platform_msg_id=?3
+         UNION ALL SELECT post_id FROM bridge_outbound WHERE platform=?1 AND conversation=?2 AND state='sent' AND platform_msg_id=?4
+         LIMIT 1", params![platform, conversation, thread, bare], |r| r.get(0)).optional().ok().flatten();
+    post.and_then(|p| conn.query_row("SELECT COALESCE(parent_id, id) FROM conversation_posts WHERE id=?1", [p], |r| r.get(0))
+        .optional().ok().flatten())
+}
+
+/// The platform thread a Messages reply goes into: its thread root's Slack ts,
+/// whether the root came in from the chat or amux sent it there. `None` for a
+/// top-level post, a root the chat never saw, and every platform but Slack.
+fn platform_thread(conn: &rusqlite::Connection, p: &Pending) -> Option<String> {
+    if p.platform != "slack" {
+        return None;
+    }
+    let root: i64 = conn.query_row("SELECT parent_id FROM conversation_posts WHERE id=?1", [p.post_id], |r| r.get::<_, Option<i64>>(0))
+        .optional().ok().flatten().flatten()?;
+    let pmid: String = conn.query_row(
+        "SELECT platform_msg_id FROM bridge_inbound WHERE post_id=?1 AND platform=?2 AND conversation=?3
+         UNION ALL SELECT platform_msg_id FROM bridge_outbound WHERE post_id=?1 AND platform=?2 AND conversation=?3 AND state='sent'
+         LIMIT 1", params![root, p.platform, p.conversation], |r| r.get(0)).optional().ok().flatten()?;
+    let ts = pmid.rsplit(':').next().unwrap_or(&pmid).to_string();
+    (!ts.is_empty()).then_some(ts)
 }
 
 /// Post a platform message into its Messages conversation and record it.
@@ -486,7 +524,8 @@ pub async fn outbound_once(state: &AppState) -> usize {
                 "bridge: another pass already took this post; not sent twice");
             continue;
         }
-        match adapters::send(&p.platform, &p.conversation, p.is_group, &render(&p)).await {
+        let thread = state.store.read().ok().and_then(|c| platform_thread(&c, &p));
+        match adapters::send_in_thread(&p.platform, &p.conversation, p.is_group, &render(&p), thread.as_deref()).await {
             Ok(pmid) => {
                 record(state, &p, "sent", None, Some(pmid), None).await;
                 tracing::info!(id = %p.id, platform = %p.platform, measured = true, n_considered = 1, verdict = "bridge_outbound_sent",
@@ -778,6 +817,48 @@ mod tests {
         assert!(sent[0]["text"].as_str().unwrap().contains("Here is the deck: https://example.com/deck"));
         outbound_once(&state).await;
         assert_eq!(got.lock().unwrap().len(), 1, "and never again");
+    }
+
+    /// mxp-presales, 2026-11-25: a reply to a Slack message goes back as a
+    /// reply in its Slack thread, after the same approval, and a Slack reply
+    /// in that thread lands in the same Messages thread.
+    #[tokio::test]
+    async fn a_reply_to_a_slack_message_goes_into_its_slack_thread_and_back() {
+        let got: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = Default::default();
+        let g2 = got.clone();
+        let app = axum::Router::new().route("/chat.postMessage", axum::routing::post(move |axum::Json(b): axum::Json<Value>| {
+            let g = g2.clone();
+            async move { g.lock().unwrap().push(b); axum::Json(json!({"ok": true, "ts": "1700000000.000200"})) }
+        }));
+        let lis = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = lis.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(lis, app).await.ok() });
+        let (home, state) = slack_home(&format!("http://{addr}"));
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        shared_slack_chat(&state, "C7", "top-level answer");
+        state.store.write(|c| {
+            c.execute("UPDATE bridge_inbound SET platform_msg_id='C7:1699.0001' WHERE post_id=1", [])?;
+            c.execute("INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts, parent_id)
+                       VALUES (3, 'w:sales', 'worker:sales', 'sales', 'in the thread', 0, 1)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        outbound_once(&state).await;
+        approve_by(&state, "2|slack|C7", "owner").await.unwrap();
+        approve_by(&state, "3|slack|C7", "owner").await.unwrap();
+        outbound_once(&state).await;
+        let sent = got.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        let by = |t: &str| sent.iter().find(|b| b["text"].as_str().unwrap_or("").contains(t)).cloned().unwrap();
+        assert_eq!(by("in the thread")["thread_ts"], json!("1699.0001"), "a Messages reply is a Slack thread reply");
+        assert!(by("top-level answer").get("thread_ts").is_none(), "a top-level post stays top level");
+
+        let m = Inbound { platform: "slack".into(), conversation: "C7".into(), is_group: true, sender_id: "UGUEST".into(),
+            sender_name: "Dana".into(), text: "thanks".into(), platform_msg_id: "C7:1699.0005".into() };
+        inbound_threaded(&state, m, Some("C7:1699.0001".into())).await;
+        let parent: Option<i64> = state.store.read().unwrap().query_row(
+            "SELECT p.parent_id FROM conversation_posts p JOIN bridge_inbound b ON b.post_id=p.id WHERE b.platform_msg_id='C7:1699.0005'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(parent, Some(1), "a Slack thread reply lands in the Messages thread");
     }
 
     #[tokio::test]

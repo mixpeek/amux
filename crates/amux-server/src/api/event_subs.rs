@@ -206,6 +206,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("browser.stopped", "a browser was stopped"),
     ("browser.navigated", "a browser went to a url"),
     ("email.received", "a new email arrived in a connected Gmail inbox: fields account (the inbox), from (\"Name <addr>\"), from_address, from_domain, to, cc, subject, snippet (the first lines), thread_id, message_id, labels, unread, bulk (true for a mailing list or newsletter). Match a sender with eq on from_address or from_domain, an inbox with eq on account, drop newsletters with bulk eq false; judge when the request is about what the mail means"),
+    ("slack.message", "a person wrote in a Slack channel or DM the amux app's bot is in (Events API at /api/bridge/hook/slack, signature-checked; the bot's own posts are not events): fields team (workspace id), channel (id), channel_type (channel, group, im, mpim), user (Slack user id), text, ts, thread_ts (the thread's parent ts, empty for a top-level message), is_reply, key. Match a channel with eq on channel, a workspace with eq on team, top-level only with is_reply eq false; judge when the request is about what the message means. A reply is posted through the chat bridge (link the channel with /link) and held for the owner's approval"),
     ("linkedin.message_received", "a new unread LinkedIn message to the owner (read from the ethan browser profile about every 45 minutes, without opening it): fields account, from_name, snippet (the list preview), time_label (LinkedIn's own label, such as 3:45 PM or Nov 14), is_inmail, sponsored, conversation_url (the inbox; the list has no per-thread link), key. Match a sender with eq on from_name, drop InMail with is_inmail eq false; judge when the request is about what the message means"),
     ("crm.channel.changed", "a watched CRM channel shows something new (a company's careers page lists a new job, a person's profile a new post): fields channel_id, kind (careers, website, linkedin, x, instagram, ...), owner_kind (contact or account), owner_id, owner_name, url, added (the new items, each with title and maybe url), n_added, summary, checked_by. Match a company or person with eq on owner_name or owner_id, a kind with eq on kind; judge when the request is about what the change means"),
     ("crm.touch.approved", "the owner approved a planned outreach touch in the CRM, so its assignee does it now: fields id, contact_id, contact_name, account_name, channel (linkedin, x, email, ...), action (dm, comment, connect, email, ...), body (the approved text), target_url, assignee. A worker matches its own with eq on assignee"),
@@ -322,6 +323,7 @@ pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
         &["account", "from", "from_address", "from_domain", "to", "cc", "subject", "snippet", "thread_id", "message_id",
             "gmail_id", "labels", "unread", "bulk", "date"],
     ),
+    ("slack.message", &["team", "channel", "channel_type", "user", "text", "ts", "thread_ts", "is_reply", "key"]),
     (
         "linkedin.message_received",
         &["account", "from_name", "snippet", "time_label", "is_inmail", "sponsored", "conversation_url", "key"],

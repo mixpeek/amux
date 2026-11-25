@@ -154,8 +154,18 @@ async fn slack_hook(State(state): State<AppState>, headers: HeaderMap, body: Byt
     if v["type"] == "url_verification" {
         return Json(json!({"challenge": v["challenge"]})).into_response();
     }
+    // Every message a person writes in a channel the bot is in is a
+    // `slack.message` event (`amux subscribe` matches it), linked to amux or
+    // not; a linked chat's message is also posted into its Messages thread.
+    if let Some((data, key)) = crate::bridge::adapters::slack_event(&v) {
+        let s2 = state.clone();
+        tokio::spawn(async move {
+            crate::api::session_verbs::emit_event_store(&s2.store, "", "slack.message", Some(data), Some(key), "slack").await;
+        });
+    }
     if let Some(m) = crate::bridge::adapters::slack_parse(&v) {
-        tokio::spawn(async move { crate::bridge::inbound(&state, m).await; });
+        let thread = crate::bridge::adapters::slack_thread_of(&v);
+        tokio::spawn(async move { crate::bridge::inbound_threaded(&state, m, thread).await; });
     }
     StatusCode::OK.into_response()
 }
