@@ -11937,7 +11937,9 @@ _land_mq_push_ref() { # <sha> <batch id>
   done
   return 1
 }
-_land_mq_drop_ref() { git push --no-verify -q "$remote" ":refs/heads/mq/$1" >/dev/null 2>&1 || true; }
+# Returns the push's status, so a caller can say when a ref was NOT dropped
+# (it used to end in `|| true`, and the sweep's failure line never fired).
+_land_mq_drop_ref() { git push --no-verify -q "$remote" ":refs/heads/mq/$1" >/dev/null 2>&1; }
 # A GREEN CANDIDATE'S REF STANDS until the land that carries it is pushed or it
 # is set aside, then it is dropped. deployd finds queue candidates only through
 # refs/heads/mq/* and boots one ahead of its land (mixpeek-meta-worker,
@@ -12022,12 +12024,12 @@ _land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <ru
   for try in 1 2; do
     _land_mq_push_ref "$3" "$id" || { echo "unmeasured - - candidate_push_failed"; return 0; }
     if ! err="$(_land_mq_dispatch "$id" "$2" 2>&1)"; then
-      _land_mq_drop_ref "$id"
+      _land_mq_drop_ref "$id" || _land_log "WARN merge queue: could not delete mq/$id after its dispatch failed (verdict=mq_drop_failed); the sweep removes it after twice the budget"
       echo "unmeasured - - dispatch_failed:$(printf '%s' "$err" | tr -s ' \n' '__' | cut -c1-160)"; return 0
     fi
     _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$id (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
     v="$(_land_mq_wait "$id" "$3")"
-    if [ "${v%% *}" = green ]; then _land_mq_keep "$id"; else _land_mq_drop_ref "$id"; fi
+    if [ "${v%% *}" = green ]; then _land_mq_keep "$id"; elif ! _land_mq_drop_ref "$id"; then _land_log "WARN merge queue: could not delete mq/$id after its run (verdict=mq_drop_failed); the sweep removes it after twice the budget"; fi
     _land_mq_ledger phase=judge batch="$id" base="$2" candidate="$3" verdict="${v%% *}" run="$(printf '%s' "$v" | cut -d' ' -f3)" what="${4:-}"
     { [ "${v%% *}" = lost ] && [ "$try" = 1 ]; } || break
     _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
@@ -12091,7 +12093,8 @@ _land_mq_sweep() {
     name="${ref#refs/heads/mq/}"
     case "${name%%-*}" in ''|*[!0-9]*) continue ;; esac
     if [[ "$name" =~ ^[0-9]+-([0-9]+)-a[0-9]+-b[0-9]+(-r)?$ ]] && [[ "$live" != *" ${BASH_REMATCH[1]} "* ]]; then
-      if _land_mq_drop_ref "$name"; then _land_log "merge queue: dropped mq/$name, a green bisect step whose holder no longer lands (verdict=mq_sweep_orphan_step)"; fi
+      if _land_mq_drop_ref "$name"; then _land_log "merge queue: dropped mq/$name, a green bisect step whose holder no longer lands (verdict=mq_sweep_orphan_step)"
+      else _land_log "WARN merge queue: could not delete orphaned step mq/$name (verdict=mq_sweep_drop_failed)"; fi
     elif [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ]; then
       _land_mq_drop_ref "$name" || _land_log "merge queue: could not delete stale mq/$name (verdict=mq_sweep_drop_failed)"
     fi
