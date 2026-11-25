@@ -63013,7 +63013,9 @@ function _settingsPlace() {
   const btn = document.getElementById('settings-btn');
   const r = btn ? btn.getBoundingClientRect() : null;
   const seen = r && r.width > 0 && r.bottom > 0 && r.top < vh;
-  let top = 8, right = 12;
+  // Below the in-page tab bar when there is one.
+  const floor = 8 + (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--chrome-tab-h')) || 0);
+  let top = floor, right = 12;
   if (seen && vh - r.bottom - 18 >= Math.min(480, vh * 0.6)) { top = r.bottom + 6; right = vw - r.right; }
   else if (seen) { right = Math.max(8, vw - r.left + 8); }
   st.position = 'fixed';

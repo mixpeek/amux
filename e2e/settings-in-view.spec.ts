@@ -49,6 +49,9 @@ test('many held emails leave the header and its gear on the first screen', async
   expect(b.bottom).toBeLessThanOrEqual(b.vh + 1);
   expect(b.hit).toBe(true);
   expect(b.right - b.left).toBeLessThanOrEqual(460);
+  // Its tab row is not under the page's own tab bar.
+  const bar = await page.evaluate(() => (document.getElementById('chrome-tabs-bar')?.getBoundingClientRect().bottom) || 0);
+  expect(b.top).toBeGreaterThanOrEqual(bar);
   await page.screenshot({ path: test.info().outputPath('settings-with-held-mail.png') });
 });
 
