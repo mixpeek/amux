@@ -62998,10 +62998,17 @@ function _settingsPlace() {
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   const st = menu.style;
+  // The menu lives in the sticky header, whose stacking level (40) is under
+  // the held-email strip's (90): wherever they overlap the strip painted over
+  // the menu. While Settings is open the header sits above the strip, still
+  // under the overlays (100+, AF-390).
+  const header = menu.closest('.header-row');
   if (!menu.classList.contains('open') || window.matchMedia('(max-width: 600px)').matches) {
     st.position = st.top = st.right = st.maxHeight = st.maxWidth = '';
+    if (header) header.style.zIndex = '';
     return;
   }
+  if (header) header.style.zIndex = '95';
   const vh = window.innerHeight, vw = document.documentElement.clientWidth;
   const btn = document.getElementById('settings-btn');
   const r = btn ? btn.getBoundingClientRect() : null;
@@ -63013,7 +63020,7 @@ function _settingsPlace() {
   st.top = Math.round(top) + 'px';
   st.right = Math.round(right) + 'px';
   st.maxHeight = Math.max(200, Math.round(vh - top - 12)) + 'px';
-  st.maxWidth = Math.max(260, Math.round(vw - right - 8)) + 'px';
+  st.maxWidth = Math.max(260, Math.min(440, Math.round(vw - right - 8))) + 'px';
 }
 (function _settingsPlaceWatch() {
   const go = () => {
