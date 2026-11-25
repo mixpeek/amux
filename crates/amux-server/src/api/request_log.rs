@@ -3071,6 +3071,14 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
+        path: "/api/social/queue/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/social/queue/{id}/reject",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/social/queue/{id}/reschedule",
         methods: &["POST"],
     },
@@ -4511,6 +4519,30 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
     },
     RouteEntry {
         path: "/api/approvals/decide",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/outbound",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/outbound/{id}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/outbound/check",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/outbound/{id}/approve",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/outbound/{id}/reject",
+        methods: &["POST"],
+    },
+    RouteEntry {
+        path: "/api/outbound/{id}/done",
         methods: &["POST"],
     },
     RouteEntry {

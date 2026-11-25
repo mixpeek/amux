@@ -1224,6 +1224,11 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("crm_touches", "approved_at", false),
     ("crm_touches", "done_at", false),
     ("crm_touches", "due_announced_at", false),
+    // 0175: api/outbound.rs writes now_f64() as i64, epoch seconds.
+    ("outbound_requests", "created_at", false),
+    ("outbound_requests", "decided_at", false),
+    ("outbound_requests", "window_until", false),
+    ("outbound_requests", "done_at", false),
     // api/history.rs (pin_message) writes epoch milliseconds.
     ("message_pins", "pinned_at", true),
     // api/palette_history.rs writes Date-style epoch milliseconds (now_ms).

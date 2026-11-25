@@ -734,6 +734,7 @@ pub async fn send(
             if let Some(refused) = voice_refusal(&ctx, &lane, "send", &to, &subject, &mut voice, &body_str(&body, "voice_override")) {
                 return refused;
             }
+            let to_all = if cc.is_empty() { to.clone() } else { format!("{to}, cc {cc}") };
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
@@ -742,6 +743,8 @@ pub async fn send(
                 "conv": (conv.starts_with("o:") && conv.len() < 64).then_some(conv),
                 "links": links,
                 "voice": voice,
+                "outbound": crate::api::outbound::context("email", "send", &from_acct, &to_all, "", &subject, &message, &lane,
+                    &crate::api::outbound::caller_context(&body)),
             });
             let attachments = match frozen_attachments(&body) {
                 Ok(a) => a,
@@ -1069,6 +1072,11 @@ pub async fn reply_with(
                     if let Some(refused) = voice_refusal(&ctx, &lane, "reply", &r_to, &r_subject, &mut voice, &body_str(&body, "voice_override")) {
                         return refused;
                     }
+                    let mut extra = crate::api::outbound::caller_context(&body);
+                    if extra.get("parent").is_none() {
+                        extra["parent"] = reply_parent(&ctx, &gmail_from, &message_id).await;
+                    }
+                    let to_all = if r_cc.is_empty() { r_to.clone() } else { format!("{r_to}, cc {r_cc}") };
                     let preview = json!({
                         "endpoint": "reply", "from": gmail_from,
                         "in_reply_to": message_id, "reply_all": reply_all,
@@ -1077,6 +1085,8 @@ pub async fn reply_with(
                         "external_recipients": externals,
                         "links": links,
                         "voice": voice,
+                        "outbound": crate::api::outbound::context("email", if reply_all { "reply all" } else { "reply" },
+                            &gmail_from, &to_all, "", &r_subject, &reply_body, &lane, &extra),
                     });
                     let frozen = match frozen_attachments(&body) {
                         Ok(a) => a,
@@ -1236,6 +1246,26 @@ fn voice_refusal(ctx: &EmailCtx, lane: &str, endpoint: &str, to: &str, subject: 
 
 /// The link check's and the voice's lines on the approval card, so the owner
 /// reads them before Approve.
+/// The message a held reply answers, for its approval: who wrote it, when,
+/// and its text. Best effort and bounded; a miss says why, so the card shows
+/// "not shown: ..." rather than nothing.
+async fn reply_parent(ctx: &EmailCtx, account: &str, message_id: &str) -> Value {
+    let fetch = async {
+        let meta = ctx.client.find_message_by_rfc822(account, message_id).await.ok_or("the message was not found in that mailbox")?;
+        let gid = meta.get("id").and_then(Value::as_str).ok_or("the mailbox returned no message id")?.to_string();
+        ctx.client.get_message_full(account, &gid).await.map_err(|_| "the message could not be read")
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(8), fetch).await {
+        Ok(Ok(m)) => {
+            let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            let text = if s("body").trim().is_empty() { s("snippet") } else { s("body") };
+            json!({"author": s("from"), "ts": s("date"), "subject": s("subject"), "text": text.chars().take(8000).collect::<String>()})
+        }
+        Ok(Err(why)) => json!({"why_unmeasured": why}),
+        Err(_) => json!({"why_unmeasured": "reading the message took over 8 s"}),
+    }
+}
+
 fn with_links(mut ask: crate::api::approval_cards::Ask, preview: &Value) -> crate::api::approval_cards::Ask {
     let links = &preview["links"];
     let line = if links["measured"] == json!(true) {
@@ -1244,6 +1274,10 @@ fn with_links(mut ask: crate::api::approval_cards::Ask, preview: &Value) -> crat
         format!("not checked ({})", links["why_unmeasured"].as_str().unwrap_or("?"))
     };
     ask.desc.push_str(&format!("\nLinks: {line}\n{}", crate::api::crm_voice::card_line(&preview["voice"])));
+    if preview["outbound"].is_object() {
+        ask.desc.push_str(&format!("\n\n{}", crate::api::outbound::context_desc(&preview["outbound"])));
+        ask.meta["outbound"] = preview["outbound"].clone();
+    }
     ask
 }
 

@@ -256,6 +256,28 @@ async fn send(
     let Some(chat_id) = chat_id else {
         unreachable!()
     };
+    // A worker's message to a chat it names by id may reach someone outside,
+    // so it needs an approved outbound request for that chat
+    // (api/outbound.rs, channel telegram, to <chat_id>). A message to the
+    // chat linked to its own session (the owner linked it, private only) is
+    // its relay to the owner and goes as before.
+    let mut approval: Option<String> = None;
+    let own_chat = |worker: &str| {
+        state.store.read().ok().and_then(|c| tg_db::by_chat(&c, chat_id).ok().flatten()).is_some_and(|m| m.session == worker)
+    };
+    if let (Some(worker), Some(_)) = (headers.get("X-Amux-Session").and_then(|v| v.to_str().ok()).filter(|w| !own_chat(w)), body.chat_id) {
+        let host = super::outbound::recipient_key("telegram", &chat_id.to_string());
+        approval = state.store.read().ok().and_then(|c| super::outbound::window_in(&c, worker, &host, crate::config::now_f64() as i64));
+        if approval.is_none() {
+            tracing::warn!(worker, chat_id, measured = true, n_considered = 1, verdict = "telegram_send_needs_approval",
+                "telegram: a worker's message to a chat by id has no approved outbound request; refused");
+            return err(StatusCode::FORBIDDEN, json!({
+                "code": "outbound_needs_approval",
+                "error": "a message to a Telegram chat by id needs the owner's approval of that exact message first",
+                "next": format!("POST $AMUX_URL/api/outbound {{\"channel\":\"telegram\",\"action\":\"message\",\"to\":\"{chat_id}\",\"text\":...,\"reason\":...}}; send it here once approved"),
+            }));
+        }
+    }
     let Some(token) = telegram_poll::bot_token() else {
         return err(
             StatusCode::PRECONDITION_FAILED,
@@ -271,11 +293,12 @@ async fn send(
     )
     .await
     {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "sent": true, "chat_id": chat_id })),
-        )
-            .into_response(),
+        Ok(()) => {
+            if let (Some(id), Some(worker)) = (&approval, headers.get("X-Amux-Session").and_then(|v| v.to_str().ok())) {
+                super::outbound::mark_sent(&state, id, worker, &format!("sent to Telegram chat {chat_id}")).await;
+            }
+            (StatusCode::OK, Json(json!({ "sent": true, "chat_id": chat_id, "approval": approval }))).into_response()
+        }
         Err(e) => err(StatusCode::BAD_GATEWAY, json!({ "error": e })),
     }
 }

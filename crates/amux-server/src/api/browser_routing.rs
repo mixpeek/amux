@@ -826,6 +826,9 @@ async fn request_inner(
         .and_then(|v| v.get("user_name"))
         .cloned()
         .unwrap_or(json!(""));
+    // Sites where typing sends a message outside: the driver asks
+    // /api/outbound/check before a CDP or CUA write there (api/outbound.rs).
+    context["outbound_hosts"] = json!(super::outbound::HOSTS);
     let (methods, method_errors) = methods();
     for e in &method_errors {
         tracing::warn!(error = %e, measured = true, n_considered = 1, verdict = "browser_methods_unloadable", "a browser-methods layer did not parse; using the rest");

@@ -30,6 +30,7 @@ pub mod cli_sandbox;
 pub mod customer_isolation;
 pub mod at_rest;
 pub mod approval_cards;
+pub mod outbound;
 pub mod schedule_authority;
 pub mod connector_scope;
 pub mod email_scope;
@@ -493,6 +494,7 @@ pub fn router_with_connector_transport(
         // Outbound phone calls (calls.rs, docs/design/phone-calls.md).
         .merge(calls::routes())
         .merge(approval_cards::routes())
+        .merge(outbound::routes())
         .merge(schedule_authority::routes())
         .merge(mfa::routes())
         .merge(sso::routes())

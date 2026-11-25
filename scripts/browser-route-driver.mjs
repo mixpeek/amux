@@ -347,6 +347,19 @@ async function goal(ctx,state,b){
   }
   return finish({ok:false,done:false,reason:`no answer within ${maxSteps} steps`});
 }
+// The outbound site a URL is on (ctx.outbound_hosts, from the server), or null.
+export function outboundHost(ctx,url) {
+  let h;try{h=new URL(url).hostname.toLowerCase().replace(/^www\./,'');}catch{return null;}
+  if(h==='twitter.com'||h.endsWith('.twitter.com'))h='x.com';
+  return (ctx.outbound_hosts||[]).find(s=>h===s||h.endsWith('.'+s))||null;
+}
+// A write into an outbound site needs an approved /api/outbound request; the
+// server decides which actions write and answers 403 outbound_needs_approval.
+async function outboundCheck(ctx,state,b) {
+  const url=state.backend==='cdp'?(await target(state)).url:state.url;
+  if(!outboundHost(ctx,url||''))return;
+  await api(ctx.base,'/api/outbound/check','POST',{url,action:b.action,key:b.key,script:b.script||b.expression||b.code||b.js||''},ctx.session,ctx.token);
+}
 export async function route(ctx,verb,b={}) {
   if(!component(ctx.session))throw new RouteError('route requires an explicit session',400);
   ctx.cleanup_events=[];
@@ -396,6 +409,9 @@ export async function route(ctx,verb,b={}) {
     if(verb==='goal')return await goal(ctx,state,b);
     const backend=BACKENDS[state.backend];
     if(!backend)throw new RouteError(`this route's backend ${JSON.stringify(state.backend)} is not available in this driver`,409);
+    // The amux backend's actions pass the server's outbound gate on their own;
+    // a CDP or CUA write on an outbound site asks it first (api/outbound.rs).
+    if(verb==='action'&&state.backend!=='amux')await outboundCheck(ctx,state,b);
     const result=await backend.verb(ctx,state,verb,b);
     if(verb==='stop')rmSync(ctx.receipt,{force:true});else atomic(ctx.receipt,state);return {...result,route:state,...(ctx.cleanup_events.length?{cleanup_events:ctx.cleanup_events}:{})};
   } catch(e) {

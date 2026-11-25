@@ -7884,7 +7884,8 @@ function _niRender() {
     + (it.unblocks ? '<div class="ni-unblocks"><span class="ni-label">Unblocks</span> ' + esc(it.unblocks) + '</div>' : '')
     + (it.email ? '<div class="ni-email"><div><span class="ni-label">To</span> ' + esc(it.email.to || '') + (it.email.cc ? ' <span class="ni-label">cc</span> ' + esc(it.email.cc) : '') + '</div>'
         + '<div><span class="ni-label">Subject</span> ' + esc(it.email.subject || '') + '</div></div>' : '')
-    + (it.context ? '<details class="ni-context" open><summary>Context</summary><pre>' + esc(it.context) + '</pre></details>' : '')
+    + (it.outbound ? _niOutboundHtml(it.outbound)
+        : it.context ? '<details class="ni-context" open><summary>Context</summary><pre>' + esc(it.context) + '</pre></details>' : '')
     + _niPanelHtml(it);
   const hasTarget = !!(it.worker || it.kind === 'email' || it.card);
   if (_niAllArmed) { foot.innerHTML = _niApproveAllConfirmHtml(); return; }
@@ -7909,6 +7910,26 @@ function _niRender() {
     + '</div>';
   foot.querySelectorAll('button').forEach(b => { if (_niBusy) b.disabled = true; });
 }
+// A held outbound message, whole: where it goes, why, what it answers, the
+// recent conversation, and the full text (api/outbound.rs context).
+function _niOutboundHtml(o) {
+  const row = (label, v) => v ? '<div><span class="ni-label">' + label + '</span> ' + _linkifyUrls(esc(String(v))) + '</div>' : '';
+  const what = [o.channel, o.action].filter(Boolean).join(' ') + (o.account ? ', as ' + o.account : '');
+  const p = o.parent && typeof o.parent === 'object' ? o.parent : null;
+  const thread = Array.isArray(o.thread) ? o.thread : [];
+  return '<div class="ni-email ni-outbound">'
+    + row('What', what) + row('To', o.to) + row('Where', o.target_url) + row('Subject', o.subject) + row('Contact', o.contact)
+    + row('Why', o.reason || 'the worker gave no reason')
+    + '</div>'
+    + (p ? '<details class="ni-context" open><summary>Replying to' + (p.author ? ' ' + esc(p.author) : '') + (p.ts ? ' · ' + esc(p.ts) : '') + '</summary>'
+        + (p.url ? '<div>' + _linkifyUrls(esc(p.url)) + '</div>' : '')
+        + '<pre>' + esc(p.text || ('not shown: ' + (p.why_unmeasured || 'no text was given'))) + '</pre></details>' : '')
+    + (thread.length ? '<details class="ni-context"><summary>Recent conversation (' + thread.length + ')</summary><pre>'
+        + esc(thread.map(m => (m.author || '?') + ': ' + (m.text || '')).join('\n\n')) + '</pre></details>' : '')
+    + (o.notes ? row('Notes', o.notes) : '')
+    + '<details class="ni-context" open><summary>Full text</summary><pre>' + esc(o.text || '') + '</pre></details>';
+}
+
 function _niPanelHtml(it) {
   if (_niPanel === 'reply') {
     return '<div class="ni-panel ni-reply-panel">'

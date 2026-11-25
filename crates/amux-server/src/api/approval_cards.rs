@@ -712,6 +712,11 @@ pub async fn dispatch(state: &AppState, headers: HeaderMap, link: &Link, approve
                 Err(e) => bad(StatusCode::NOT_FOUND, &e),
             }
         }
+        "social" => match id.parse::<i64>() {
+            Ok(n) => super::social_publish::decide(state, &headers, n, approve, body.get("reason").and_then(Value::as_str).map(str::to_string)).await,
+            Err(_) => bad(StatusCode::BAD_REQUEST, &format!("{id} is not a social queue id")),
+        },
+        "outbound" => super::outbound::decide(state, &headers, &id, approve, body.get("reason").and_then(Value::as_str).map(str::to_string)).await,
         "grant" => {
             if approve {
                 super::grants::approve(headers, AxPath(id)).await
@@ -1033,6 +1038,11 @@ pub fn annotate_in(conn: &Connection, items: &mut Vec<Value>) {
         let card = it["card"].as_str().unwrap_or("").to_string();
         if let Some(l) = links.iter().find(|l| l.card_id.as_deref() == Some(card.as_str())) {
             it["approval"] = approval(l);
+            // The whole held message (api/outbound.rs context), so the owner
+            // decides from the full text, the reason and what it answers.
+            if l.meta.get("outbound").is_some_and(Value::is_object) {
+                it["outbound"] = l.meta["outbound"].clone();
+            }
         }
     }
 }

@@ -185,7 +185,16 @@ fn group_id() -> String {
 
 /// Queue drafts to publish at `when`. Every draft is checked first, so a bad
 /// one refuses the whole request and nothing is half-queued.
-pub async fn enqueue(state: &AppState, ctx: &SocialCtx, headers: &HeaderMap, drafts: Vec<Draft>, when: i64) -> Response {
+/// A worker's post that would be public: it waits for the owner. With
+/// AMUX_SOCIAL_PUBLIC off nothing goes public (a private upload or a draft),
+/// and the owner's own posts carry no worker header.
+pub fn needs_owner(ctx: &SocialCtx, headers: &HeaderMap, drafts: &[Draft]) -> bool {
+    !social::caller(headers).trim().is_empty()
+        && social::env_val(ctx, "AMUX_SOCIAL_PUBLIC").as_deref() == Some("1")
+        && drafts.iter().any(|d| d.privacy.as_deref() != Some("private"))
+}
+
+pub async fn enqueue(state: &AppState, ctx: &SocialCtx, headers: &HeaderMap, drafts: Vec<Draft>, when: i64, reason: &str) -> Response {
     let at = social::now();
     if when < at - 60 {
         return social::err(StatusCode::BAD_REQUEST, format!("scheduled_at {when} is in the past (now {at})"));
@@ -201,20 +210,24 @@ pub async fn enqueue(state: &AppState, ctx: &SocialCtx, headers: &HeaderMap, dra
     }
     let group = group_id();
     let session = social::caller(headers);
+    let held = needs_owner(ctx, headers, &drafts);
     let rows: Vec<(String, String, String)> = drafts
         .iter()
         .map(|d| (d.platform.clone(), d.account.clone(), serde_json::to_string(d).unwrap_or_default()))
         .collect();
     let (g, s) = (group.clone(), session.clone());
+    let ids = std::sync::Arc::new(std::sync::Mutex::new(Vec::<i64>::new()));
+    let idw = ids.clone();
     let written = state
         .store
         .write_async(move |conn| {
             for (platform, account, draft) in &rows {
                 conn.execute(
-                    "INSERT INTO social_queue (group_id, platform, account, draft, scheduled_at, next_attempt_at, session, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?7)",
-                    rusqlite::params![g, platform, account, draft, when, s, at],
+                    "INSERT INTO social_queue (group_id, platform, account, draft, scheduled_at, next_attempt_at, session, created_at, updated_at, status)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?7, ?8)",
+                    rusqlite::params![g, platform, account, draft, when, s, at, if held { "held" } else { "queued" }],
                 )?;
+                idw.lock().unwrap_or_else(|e| e.into_inner()).push(conn.last_insert_rowid());
             }
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })
@@ -222,15 +235,83 @@ pub async fn enqueue(state: &AppState, ctx: &SocialCtx, headers: &HeaderMap, dra
     if let Err(e) = written {
         return social::err(StatusCode::INTERNAL_SERVER_ERROR, format!("queue write failed: {e}"));
     }
+    if held {
+        let ids = ids.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for (id, d) in ids.iter().zip(drafts.iter()) {
+            let c = crate::api::outbound::context(&d.platform, "post", &d.account, "", "", d.title.as_deref().unwrap_or(""), &d.caption, &session,
+                &json!({"reason": reason, "notes": if d.file.is_empty() { String::new() } else { format!("attached file: {}", d.file) }}));
+            crate::api::approval_cards::file(crate::api::approval_cards::Ask {
+                kind: "social",
+                item_id: id.to_string(),
+                requester: session.clone(),
+                title: format!("{session}: {} post as {}: {}", d.platform, d.account, d.caption.chars().take(70).collect::<String>().replace('\n', " ")),
+                question: format!("Publish {session}'s {} post as {}?", d.platform, d.account),
+                unblocks: "The post is published at its scheduled time exactly as written. Rejecting cancels it; nothing is posted.".into(),
+                desc: crate::api::outbound::context_desc(&c),
+                ask_type: "customer_outbound",
+                expires_at: None,
+                meta: json!({"outbound": c, "group": group}),
+            })
+            .await;
+        }
+        tracing::info!(group = %group, n = drafts.len(), session = %session, measured = true, n_considered = drafts.len(),
+            verdict = "social_held", "social: a worker's public post waits for the owner's approval");
+    }
     let queued = match state.store.read() {
         Ok(conn) => queue_rows(&conn, &QueueQuery { group: Some(group.clone()), ..Default::default() }),
         Err(e) => return social::err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
     };
     tracing::info!(group = %group, n = drafts.len(), scheduled_at = when, session = %session, verdict = "social_queued", "social post queued");
     (StatusCode::ACCEPTED, Json(json!({
-        "ok": true, "group_id": group, "scheduled_at": when, "queued": queued,
-        "published_by": "the social-publish job, within a minute of scheduled_at",
+        "ok": true, "group_id": group, "scheduled_at": when, "queued": queued, "held_for_owner": held,
+        "published_by": if held { "the social-publish job, once the owner approves it and scheduled_at has come" }
+            else { "the social-publish job, within a minute of scheduled_at" },
     }))).into_response()
+}
+
+/// The owner's decision on a held post: approve queues it for its time,
+/// reject cancels it. A worker never decides.
+pub async fn decide(state: &AppState, headers: &HeaderMap, id: i64, approve: bool, note: Option<String>) -> Response {
+    if let Some(w) = crate::api::capabilities::acting_worker(&crate::config::amux_home(), headers) {
+        return social::err(StatusCode::FORBIDDEN, format!("{w} is a worker; only a person decides a held post"));
+    }
+    if let Some(r) = crate::api::approval_cards::duties("social", &id.to_string(), headers) {
+        return r;
+    }
+    let by = match crate::api::human_proof::check(headers, "social_decide") {
+        crate::api::human_proof::Verdict::Refused => return crate::api::human_proof::refusal("social_decide"),
+        crate::api::human_proof::Verdict::Proven(p) => p.actor(),
+        crate::api::human_proof::Verdict::Unproven => "owner (unproven)".to_string(),
+    };
+    let resp = if approve {
+        transition(state, id,
+            "UPDATE social_queue SET status = 'queued', next_attempt_at = MAX(scheduled_at, ?2), updated_at = ?2 WHERE id = ?1 AND status = 'held'",
+            vec![id.into(), social::now().into()], "approve").await
+    } else {
+        transition(state, id, "UPDATE social_queue SET status = 'cancelled', updated_at = ?2 WHERE id = ?1 AND status = 'held'",
+            vec![id.into(), social::now().into()], "reject").await
+    };
+    if resp.status().is_success() {
+        let decision = if approve { "approved" } else { "rejected" };
+        crate::api::approval_cards::resolved("social", &id.to_string(), decision, &by, note).await;
+        tracing::info!(id, decision, by = %by, measured = true, n_considered = 1, verdict = "social_decided",
+            "social: the owner decided a held post");
+    }
+    resp
+}
+
+#[derive(Deserialize, Default)]
+pub struct DecideBody {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+pub async fn approve_route(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, b: Option<Json<DecideBody>>) -> Response {
+    decide(&state, &headers, id, true, b.and_then(|Json(b)| b.reason)).await
+}
+
+pub async fn reject_route(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<i64>, b: Option<Json<DecideBody>>) -> Response {
+    decide(&state, &headers, id, false, b.and_then(|Json(b)| b.reason)).await
 }
 
 #[derive(Deserialize, Default)]
@@ -309,14 +390,19 @@ async fn transition(state: &AppState, id: i64, sql: &'static str, params: Vec<ru
 }
 
 pub async fn cancel(State(state): State<AppState>, Path(id): Path<i64>) -> Response {
-    transition(
+    let resp = transition(
         &state,
         id,
-        "UPDATE social_queue SET status = 'cancelled', updated_at = ?2 WHERE id = ?1 AND status IN ('queued', 'failed', 'uncertain')",
+        "UPDATE social_queue SET status = 'cancelled', updated_at = ?2 WHERE id = ?1 AND status IN ('queued', 'held', 'failed', 'uncertain')",
         vec![id.into(), social::now().into()],
         "cancel",
     )
-    .await
+    .await;
+    // A held post cancelled before the owner decided: its card closes with it.
+    if resp.status().is_success() {
+        crate::api::approval_cards::resolved("social", &id.to_string(), "rejected", "cancelled", Some("the post was cancelled".into())).await;
+    }
+    resp
 }
 
 #[derive(Deserialize)]
@@ -551,3 +637,35 @@ async fn record_posted(state: &AppState, c: &Claimed, p: Published) {
         Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
     }).await;
 }
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    fn ctx(pairs: &'static [(&'static str, &'static str)]) -> SocialCtx {
+        SocialCtx {
+            env: std::sync::Arc::new(move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())),
+            ..SocialCtx::live()
+        }
+    }
+
+    fn draft(privacy: Option<&str>) -> Draft {
+        Draft { platform: "x".into(), account: "ethan".into(), caption: "hello".into(), privacy: privacy.map(String::from), ..Default::default() }
+    }
+
+    /// Owner, 2026-11-25: every direct outbound goes through the approval
+    /// flow. A worker's post that would be public waits; the owner's own
+    /// post, a private one, and anything while posting is private do not.
+    #[test]
+    fn only_a_workers_public_post_waits_for_the_owner() {
+        let public = ctx(&[("AMUX_SOCIAL_PUBLIC", "1")]);
+        let mut worker = HeaderMap::new();
+        worker.insert("x-amux-session", HeaderValue::from_static("gtm"));
+        assert!(needs_owner(&public, &worker, &[draft(None)]));
+        assert!(needs_owner(&public, &worker, &[draft(Some("private")), draft(Some("public"))]), "one public draft is enough");
+        assert!(!needs_owner(&public, &worker, &[draft(Some("private"))]));
+        assert!(!needs_owner(&public, &HeaderMap::new(), &[draft(None)]), "the owner's own post is not held");
+        assert!(!needs_owner(&ctx(&[]), &worker, &[draft(None)]), "with posting private nothing goes public");
+    }
+}
+

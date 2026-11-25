@@ -500,6 +500,9 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
                 "unblocks": "The email is sent exactly as drafted. Decline discards it; nothing is sent.",
                 "context": clip(&s("body"), 600),
                 "email": {"to": s("to"), "cc": s("cc"), "from": s("from"), "subject": s("subject"), "endpoint": doc["endpoint"].clone()},
+                // The whole held message with its reason and what it answers;
+                // the preview's body is cut at 2000 characters, the frozen payload is not.
+                "outbound": email_outbound(&doc),
                 "category": "outbound", "rank": 0,
                 "since": doc["created"].as_f64().unwrap_or(now),
                 "chips": [],
@@ -529,6 +532,18 @@ pub fn build(conn: &Connection, home: &Path, now: f64) -> rusqlite::Result<Queue
         n_considered,
         excluded_peer_actor,
     })
+}
+
+/// A held email's context (api/outbound.rs), with the full drafted text.
+fn email_outbound(doc: &Value) -> Value {
+    let mut c = doc["preview"]["outbound"].clone();
+    if !c.is_object() {
+        return Value::Null;
+    }
+    if let Some(full) = doc["payload"]["body"].as_str() {
+        c["text"] = json!(full);
+    }
+    c
 }
 
 /// One queue shared by every READ of it for [`QUEUE_TTL`] (AF-1029).

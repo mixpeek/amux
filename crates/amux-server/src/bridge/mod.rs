@@ -376,9 +376,42 @@ struct Pending {
     state: Option<String>,
 }
 
-fn shared(conn: &rusqlite::Connection, platform: &str, conversation: &str) -> bool {
-    conn.query_row("SELECT 1 FROM bridge_inbound WHERE platform=?1 AND conversation=?2 AND is_owner=0 LIMIT 1",
-        params![platform, conversation], |_| Ok(())).optional().ok().flatten().is_some()
+/// Whether a post into this chat may reach someone other than the owner.
+/// Only a direct chat the owner is shown to be in, with nobody else ever
+/// writing there, is the owner's own: a group or channel, a direct chat
+/// linked from outside it, and any chat an outsider wrote in all count as
+/// outside. This used to ask only "has an outsider written here yet", so a
+/// worker's first post into a customer channel went straight out (owner,
+/// 2026-11-25: all direct outbound goes through the approval flow).
+fn outside(conn: &rusqlite::Connection, platform: &str, conversation: &str, is_group: bool) -> bool {
+    if is_group {
+        return true;
+    }
+    let one = |sql: &str| conn.query_row(sql, params![platform, conversation], |_| Ok(())).optional().ok().flatten().is_some();
+    if one("SELECT 1 FROM bridge_inbound WHERE platform=?1 AND conversation=?2 AND is_owner=0 LIMIT 1") {
+        return true;
+    }
+    if one("SELECT 1 FROM bridge_inbound WHERE platform=?1 AND conversation=?2 AND is_owner=1 LIMIT 1") {
+        return false;
+    }
+    let by: String = conn
+        .query_row("SELECT linked_by FROM bridge_links WHERE platform=?1 AND conversation=?2", params![platform, conversation], |r| r.get(0))
+        .optional().ok().flatten().unwrap_or_default();
+    let linked_by_owner = by == "telegram_mappings"
+        || by.split_once(':').is_some_and(|(pl, id)| pl == platform && is_owner(platform, id));
+    !linked_by_owner
+}
+
+/// The conversation a held post answers: the last few posts before it.
+fn recent_thread(conn: &rusqlite::Connection, conv: &str, before: i64) -> Vec<Value> {
+    let Ok(mut st) = conn.prepare("SELECT author_name, body, ts FROM conversation_posts WHERE conv=?1 AND id<?2 ORDER BY id DESC LIMIT 8") else {
+        return vec![];
+    };
+    let rows = st.query_map(params![conv, before], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)));
+    let mut out: Vec<Value> = rows.map(|it| it.flatten().map(|(a, b, ts)| json!({"author": a, "text": b.chars().take(2000).collect::<String>(), "ts": ts.to_string()})).collect())
+        .unwrap_or_default();
+    out.reverse();
+    out
 }
 
 /// New posts past each link's watermark that did not come from that chat,
@@ -504,7 +537,7 @@ pub async fn outbound_once(state: &AppState) -> usize {
     }
     for p in work {
         let worker_post = p.author_key.starts_with("worker:");
-        let is_shared = state.store.read().map(|c| shared(&c, &p.platform, &p.conversation)).unwrap_or(true);
+        let is_shared = state.store.read().map(|c| outside(&c, &p.platform, &p.conversation, p.is_group)).unwrap_or(true);
         // A standing "approve and remember" for this worker in this chat lets
         // the post through; each use is recorded (approval_cards::standing_use).
         let remembered = worker_post && is_shared && p.state.as_deref() != Some("approved") && {
@@ -516,7 +549,7 @@ pub async fn outbound_once(state: &AppState) -> usize {
             let card = hold_for_owner(state, &p).await;
             record(state, &p, "held", None, None, card).await;
             tracing::info!(id = %p.id, platform = %p.platform, measured = true, n_considered = 1, verdict = "bridge_outbound_held",
-                "bridge: a worker's post into a chat with someone other than the owner waits for the owner's approval");
+                "bridge: a worker's post into a chat that may reach someone other than the owner waits for the owner's approval");
             continue;
         }
         if !claim_send(state, &p).await {
@@ -560,6 +593,10 @@ pub(crate) fn chat_key(platform: &str, conversation: &str) -> String {
 async fn hold_for_owner(state: &AppState, p: &Pending) -> Option<String> {
     if crate::api::approval_cards::enabled() {
         let worker = p.author_key.trim_start_matches("worker:").to_string();
+        let thread = state.store.read().map(|c| recent_thread(&c, &p.conv, p.post_id)).unwrap_or_default();
+        let ctx = crate::api::outbound::context(&p.platform, if p.is_group { "channel post" } else { "direct message" }, "",
+            &format!("{} chat {}", label(&p.platform), p.conversation), "", "", &p.body, &worker,
+            &json!({"reason": format!("{} answered in the Messages conversation {}", p.author_name, p.conv), "thread": thread}));
         let ask = crate::api::approval_cards::Ask {
             kind: "chat",
             item_id: p.id.clone(),
@@ -567,11 +604,11 @@ async fn hold_for_owner(state: &AppState, p: &Pending) -> Option<String> {
             title: format!("Send {}'s {} message: {}", p.author_name, label(&p.platform), p.body.chars().take(80).collect::<String>()),
             question: format!("Send {}'s message into the {} chat ({})?", p.author_name, label(&p.platform), p.conv),
             unblocks: "The message goes into the chat exactly as written. Rejecting drops it; nothing is sent.".into(),
-            desc: format!("{} wants to send this into a {} chat that includes someone other than you (linked to {}):\n\n{}",
-                p.author_name, label(&p.platform), p.conv, p.body.chars().take(3000).collect::<String>()),
+            desc: format!("{} wants to send this into a {} chat that may include someone other than you (linked to {}).\n\n{}",
+                p.author_name, label(&p.platform), p.conv, crate::api::outbound::context_desc(&ctx)),
             ask_type: "customer_outbound",
             expires_at: None,
-            meta: json!({"key": chat_key(&p.platform, &p.conversation), "platform": p.platform, "conv": p.conv}),
+            meta: json!({"key": chat_key(&p.platform, &p.conversation), "platform": p.platform, "conv": p.conv, "outbound": ctx}),
         };
         let made = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let mw = made.clone();
@@ -748,6 +785,39 @@ mod tests {
         let c = store.read().unwrap();
         let ids: Vec<i64> = pending(&c).unwrap().iter().map(|p| p.post_id).collect();
         assert_eq!(ids, vec![2], "only the answer in the chat's own thread goes back, though its old link names #general");
+    }
+
+    /// Owner, 2026-11-25: all direct outbound goes through the approval flow.
+    /// Only a direct chat the owner is shown to be in, with nobody else ever
+    /// writing there, is the owner's own; everything else may reach someone
+    /// outside, including a channel nobody outside has written in yet.
+    #[test]
+    fn only_a_direct_chat_shown_to_be_the_owners_is_not_outside() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("server.env"), "AMUX_BRIDGE_OWNERS=slack:UOWNER\n").unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        let store = crate::db::Store::open(&home.path().join("b.db")).unwrap();
+        store.write(|c| {
+            c.execute_batch(
+                "INSERT INTO bridge_links (platform, conversation, kind, conv, last_post_id, linked_by, linked_at) VALUES
+                   ('slack', 'C1', 'group', 'w:a', 0, 'slack:UOWNER', 0),
+                   ('slack', 'D1', 'dm', 'w:a', 0, 'owner', 0),
+                   ('slack', 'D2', 'dm', 'w:a', 0, 'slack:UOWNER', 0),
+                   ('slack', 'D3', 'dm', 'w:a', 0, 'owner', 0),
+                   ('slack', 'D4', 'dm', 'w:a', 0, 'slack:UOWNER', 0),
+                   ('slack', 'D5', 'dm', 'w:a', 0, 'slack:UGUEST', 0);
+                 INSERT INTO bridge_inbound (post_id, platform, conversation, platform_msg_id, sender_id, sender_name, is_owner, received_at) VALUES
+                   (1, 'slack', 'D3', 'm1', 'UOWNER', 'owner', 1, 0),
+                   (2, 'slack', 'D4', 'm2', 'UGUEST', 'Dana', 0, 0);")?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let c = store.read().unwrap();
+        assert!(outside(&c, "slack", "C1", true), "a channel is outside even before anyone outside writes");
+        assert!(outside(&c, "slack", "D1", false), "a direct chat linked from the dashboard with no message is not known to be the owner's");
+        assert!(!outside(&c, "slack", "D2", false), "the owner linked it from inside the chat");
+        assert!(!outside(&c, "slack", "D3", false), "the owner wrote in it");
+        assert!(outside(&c, "slack", "D4", false), "someone else wrote in it");
+        assert!(outside(&c, "slack", "D5", false), "someone else linked it");
     }
 
     /// A test home whose Slack goes to `base`, with a store and an AppState.

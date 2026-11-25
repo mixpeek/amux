@@ -162,6 +162,8 @@ pub fn routes_with(ctx: SocialCtx) -> Router<AppState> {
         .route("/queue", axum::routing::get(super::social_publish::list))
         .route("/queue/{id}/cancel", axum::routing::post(super::social_publish::cancel))
         .route("/queue/{id}/reschedule", axum::routing::post(super::social_publish::reschedule))
+        .route("/queue/{id}/approve", axum::routing::post(super::social_publish::approve_route))
+        .route("/queue/{id}/reject", axum::routing::post(super::social_publish::reject_route))
         .layer(Extension(Arc::new(ctx)))
 }
 
@@ -255,6 +257,9 @@ struct PublishBody {
     privacy: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
+    /// Why a worker posts this; shown on the owner's approval card.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// A YouTube title: the given one, else the caption's first line, cut to the
@@ -302,12 +307,15 @@ async fn publish(
             tags: body.tags.clone(),
         })
         .collect();
-    if body.scheduled_at.is_some() || body.platforms.len() > 1 {
+    // A worker's public post waits in the queue for the owner's approval
+    // (social_publish::needs_owner), so it goes through enqueue even when it
+    // was asked for now.
+    if body.scheduled_at.is_some() || body.platforms.len() > 1 || social_publish::needs_owner(&ctx, &headers, &drafts) {
         let when = match body.scheduled_at.as_ref().map(social_publish::parse_when).unwrap_or_else(|| Ok(now())) {
             Ok(w) => w,
             Err(e) => return err(StatusCode::BAD_REQUEST, e),
         };
-        return social_publish::enqueue(&state, &ctx, &headers, drafts, when).await;
+        return social_publish::enqueue(&state, &ctx, &headers, drafts, when, body.reason.as_deref().unwrap_or("")).await;
     }
     let draft = &drafts[0];
     let Some(publisher) = social_publish::publisher(&draft.platform) else {

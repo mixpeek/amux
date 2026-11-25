@@ -3960,11 +3960,22 @@ pub(crate) async fn drive(state: &AppState, session: &str, verb: &str, body: Val
     drive_status(state, session, verb, body).await.map_err(|(_, e)| e)
 }
 
+tokio::task_local! {
+    /// Set while the server drives the browser itself ([`drive_status`]), so
+    /// the outbound gate can tell its own publishers from a worker's request.
+    static SERVER_DRIVE: ();
+}
+
 /// [`drive`] with the reply's status kept beside the error, so a caller can
 /// pass a refusal on as one (a 409 for a profile another session holds)
 /// instead of reporting it as amux failing (AF-1065). A failure before any
 /// reply carries 502.
 pub(crate) async fn drive_status(state: &AppState, session: &str, verb: &str, body: Value)
+    -> Result<Value, (StatusCode, String)> {
+    SERVER_DRIVE.scope((), drive_status_inner(state, session, verb, body)).await
+}
+
+async fn drive_status_inner(state: &AppState, session: &str, verb: &str, body: Value)
     -> Result<Value, (StatusCode, String)> {
     let bad = |e: String| (StatusCode::BAD_GATEWAY, e);
     let mut headers = HeaderMap::new();
@@ -4140,6 +4151,16 @@ async fn action_inner(
         Ok(x) => x,
         Err(r) => return r,
     };
+    // A worker's write into a site that messages people outside needs the
+    // owner's approval of that message first (api/outbound.rs). The server's
+    // own publishers (drive) hold their own approval.
+    if SERVER_DRIVE.try_with(|_| ()).is_err() {
+        if let Some(worker) = headers.get("x-amux-session").and_then(|v| v.to_str().ok()).map(str::trim).filter(|w| !w.is_empty()) {
+            if let Some(refused) = super::outbound::browser_gate(&state, worker, &page.url, &action, &body) {
+                return refused;
+            }
+        }
+    }
     crate::integrations::browser::touch_verb_for_session(&session);
     let ten = Duration::from_secs(10);
     let mut audit = action_audit_fields(&body, &page.url);

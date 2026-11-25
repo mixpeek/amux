@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as opagent from '../scripts/browser-agents/opagent-v1.mjs';
-import { ladder, pickAgent } from '../scripts/browser-route-driver.mjs';
+import { ladder, outboundHost, pickAgent } from '../scripts/browser-route-driver.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (n) => readFileSync(join(here, 'fixtures', n), 'utf8');
@@ -76,4 +76,17 @@ test('an agent is chosen by name, refused when disabled, and the first enabled o
   assert.throws(() => pickAgent(ctx, 'opagent'), /disabled/);
   assert.throws(() => pickAgent(ctx, 'missing'), /no browser agent/);
   assert.throws(() => pickAgent({ methods: { agents: [{ id: 'opagent', enabled: false }] } }), /no browser agent is enabled/);
+});
+
+// A CDP or CUA write is checked with the server only on an outbound site
+// (api/outbound.rs HOSTS, handed over as ctx.outbound_hosts).
+test('the driver knows an outbound site the way the server does', () => {
+  const ctx = { outbound_hosts: ['x.com', 'linkedin.com', 'app.slack.com'] };
+  assert.equal(outboundHost(ctx, 'https://x.com/jane/status/9'), 'x.com');
+  assert.equal(outboundHost(ctx, 'https://mobile.twitter.com/jane'), 'x.com');
+  assert.equal(outboundHost(ctx, 'https://www.linkedin.com/in/jane'), 'linkedin.com');
+  assert.equal(outboundHost(ctx, 'https://notx.com/'), null);
+  assert.equal(outboundHost(ctx, 'https://slack.com/pricing'), null);
+  assert.equal(outboundHost(ctx, 'not a url'), null);
+  assert.equal(outboundHost({}, 'https://x.com/'), null, 'an old server sends no list; the server-side gate still holds the amux backend');
 });
