@@ -87,7 +87,7 @@ test('real Markdown preview, raw and edit reach the end in dashboard and embedde
         expect(atEnd.at).toBe(atEnd.length); expect(atEnd.remaining).toBeLessThanOrEqual(2);
         await page.locator('#mdx-mode [data-m="preview"]').click(); await finalLine(page);
         if (size.height===350) await page.screenshot({path:info.outputPath(route==='/'?'markdown-dashboard.png':'markdown-embedded.png')});
-        await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+        await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
       }
     }
   } finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
@@ -124,7 +124,7 @@ test('code, plain text, JSON, CSV and HTML reach their final content in every wi
         }
         await page.locator('#file-tab-raw').click(); await finalLine(page);
         if (size.height===350) await page.screenshot({path:info.outputPath(name+'-short.png')});
-        await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+        await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
       }
     }
   } finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
@@ -165,7 +165,7 @@ test('images, video, audio, binary downloads and unsupported ebooks fit their fi
           await expect(last).toBeVisible();
         }
         if(size.height===350)await page.screenshot({path:info.outputPath(name+'-short.png')});
-        await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+        await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
       }
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
@@ -201,7 +201,7 @@ test('PDF final page remains reachable; cached Markdown still reaches the last l
       await fits(page); await page.locator('#file-body').evaluate(el=>{el.scrollTop=el.scrollHeight;});
       const last=page.locator('#file-body .pdf-page').last();
       expect(await last.evaluate(el=>{const r=el.getBoundingClientRect(),b=el.closest('#file-body')!.getBoundingClientRect();return r.bottom<=Math.min(innerHeight,b.bottom)&&r.bottom>b.top;})).toBe(true);
-      await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+      await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
     }
     await page.setViewportSize({width:1280,height:350});
     const cached=join(dir,'cached.md');
@@ -256,7 +256,7 @@ test('spreadsheet read-only views expose the last row and XLSX editor keeps its 
       await page.evaluate(p=>(window as any).openFilePreview(p),join(dir,'workbook.ods'));
       await expect(page.locator('#file-body')).toContainText(end);
       await fits(page);await finalLine(page);
-      await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+      await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
     }
     // The editor is a canvas surface. Verify the real imported cell model and
     // the whole canvas/footer frame, rather than mistaking DOM text for cells.
@@ -295,7 +295,7 @@ test('the Files listing and its previews expose their final row and complete scr
       expect(await row.evaluate(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})).toBe(true);
       if(await row.getAttribute('title')==='Double-click to open')await row.dblclick();else await row.click();
       await expect(page.locator('#file-body')).toContainText(end);await finalLine(page);
-      await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+      await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
 });
@@ -336,7 +336,7 @@ test('computed Markdown node editor and raw view fit with its full instruction r
       await fits(page,'.explore-menu-popup');
       await page.getByRole('button',{name:'Open raw .mdai file',exact:true}).click();
       await expect(page.locator('#file-body')).toContainText(end);await fits(page);await finalLine(page);
-      await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+      await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
     }
     expect(runs).toBe(0);
     await expect.poll(()=>page.evaluate(async()=>{const r=await (await fetch('/api/client-debug?kind=mdai-raw-view')).json();return r.beacons.some((b:any)=>b.body.verdict==='opened');})).toBe(true);
@@ -387,7 +387,7 @@ test('capped PDF and large text disclose their limits and download the complete 
       await page.locator('#file-menu-btn').click();
       const downloading=page.waitForEvent('download');await page.locator('#file-download-btn').click();const download=await downloading;
       expect(createHash('sha256').update(await readFile((await download.path())!)).digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'));
-      await download.delete();await page.locator('#file-overlay button[onclick="closeFilePreview()"]').click();
+      await download.delete();await page.locator('#file-overlay button[onclick="dismissFilePreview()"]').click();
     }
   }finally { await cleanup('remove temp folder', () => rm(dir,{recursive:true,force:true})); }
 });

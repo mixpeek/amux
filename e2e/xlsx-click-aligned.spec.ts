@@ -212,7 +212,7 @@ test('Cmd+F opens Find over the sheet and leaves Save and close uncovered', asyn
       let d = [...document.querySelectorAll('*')].find(e => e.children.length === 0 && e.textContent!.trim() === 'Advanced Searching & Replace') as HTMLElement;
       while (d.parentElement && getComputedStyle(d).position !== 'absolute') d = d.parentElement;
       const at = (sel: string) => { const el = document.querySelector(sel)!, b = el.getBoundingClientRect(); const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!hit && el.contains(hit); };
-      return { belowHeader: d.getBoundingClientRect().top >= grid.top, save: at('#file-save-btn'), menu: at('#file-menu-btn'), close: at('#file-overlay button[onclick="closeFilePreview()"]') };
+      return { belowHeader: d.getBoundingClientRect().top >= grid.top, save: at('#file-save-btn'), menu: at('#file-menu-btn'), close: at('#file-overlay button[onclick="dismissFilePreview()"]') };
     });
     expect(placed).toEqual({ belowHeader: true, save: true, menu: true, close: true });
     await page.evaluate(() => (window as any).closeFilePreview());

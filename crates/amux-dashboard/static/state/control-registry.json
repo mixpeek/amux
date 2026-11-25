@@ -2268,6 +2268,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_fileBootLinkClose": {
+      "kind": "command._fileBootLinkClose",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_fileConflictResolve": {
       "kind": "command._fileConflictResolve",
       "feedback_required": true,
@@ -3068,6 +3074,12 @@
     },
     "_libOpenBook": {
       "kind": "command._libOpenBook",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_linkViewerReturn": {
+      "kind": "command._linkViewerReturn",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
@@ -6944,6 +6956,12 @@
     },
     "deleteSkill": {
       "kind": "command.deleteSkill",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "dismissFilePreview": {
+      "kind": "command.dismissFilePreview",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

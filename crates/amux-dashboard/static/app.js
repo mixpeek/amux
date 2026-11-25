@@ -20467,7 +20467,18 @@ function _frozenWorker(next) {
   return true;
 }
 
+// A page opened on a #peek= address keeps the fleet hidden until the worker
+// opens (index.html adds boot-peek-pending): a tab returned to from a link
+// showed the Workers list first, then entered the worker (owner, 2026-11-23).
+function _peekBootReveal(verdict, name) {
+  const h = document.documentElement;
+  if (!h.classList.contains('boot-peek-pending')) return;
+  h.classList.remove('boot-peek-pending');
+  amuxTrack('peek_boot_reveal', { verdict, session: name || '', ms: Math.round(performance.now()), measured: true, n_considered: 1 });
+  if (verdict !== 'worker_opened') console.warn('[amux] peek_boot_reveal: ' + verdict + ', the Workers list shows instead of ' + (name || 'the worker'));
+}
 function openPeek(name, opts) {
+  _peekBootReveal('worker_opened', name);
   if (_frozenWorker(name)) return;
   _peekAgentsReset();
   _vxOnPeekOpen(name);   // switching worker ends another worker's live conversation
@@ -22212,7 +22223,7 @@ function _outputFileHref(p) {
   const cwd = (typeof peekSessionDir === 'string' && peekSessionDir) || '';
   const full = _outputHrefCache.get(cwd + '\n' + raw) || _resolveOutputPath(raw);
   if (!full.startsWith('/') && !full.startsWith('~/')) return '';
-  return location.origin + location.pathname + '#path=' + _encodeHashPath(full);
+  return location.origin + location.pathname + (typeof _linkViewerQuery === 'function' ? _linkViewerQuery() : '') + '#path=' + _encodeHashPath(full);
 }
 // labelHtml is already-escaped HTML (the visible path, possibly coloured).
 function _outputFileLink(cls, path, attrs, labelHtml) {
@@ -22548,7 +22559,7 @@ async function _fileCtxRun(act) {
   if (act === 'window') {
     // Synchronous on purpose: after an await the browser no longer treats this
     // as the user's click and blocks the window.
-    window.open(location.origin + location.pathname + '#path=' + _encodeHashPath(c.full), '_blank');
+    window.open(location.origin + location.pathname + (c.output ? _linkViewerQuery() : '') + '#path=' + _encodeHashPath(c.full), '_blank');
     return;
   }
   if (c.ready) await c.ready;
@@ -37566,6 +37577,15 @@ function _fileEditBeacon(verdict) {
         is_new: !!(_fileData && _fileData._isNew), measured: true, n_considered: 1, ver: (typeof APP_VER !== 'undefined' ? APP_VER : '?') }) }).catch(() => {});
   } catch (e) {}
 }
+// THE PERSON CLOSING THE FILE (✕, Escape, swipe). closeFilePreview is also
+// called on the way somewhere else (Show in folder, rename and move reopening
+// the file, a worker link, Back); only a dismissal runs what follows a close:
+// the link viewer's return and clearing the address a #path= link opened.
+let _fileDismissPath = null;
+function dismissFilePreview() {
+  _fileDismissPath = (_fileData && _fileData.path) || '';
+  closeFilePreview();
+}
 function closeFilePreview() {
   if (_fileEditDirty()) {
     if (_fileIsScratchpad(_fileData.path)) {
@@ -37573,13 +37593,13 @@ function closeFilePreview() {
       // stays open with the text, so nothing is lost.
       _fileEditBeacon('scratchpad_saved_on_close');
       _fileSave().then(() => {
-        if (_fileEditDirty()) { _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
+        if (_fileEditDirty()) { _fileDismissPath = null; _fileEditBeacon('scratchpad_save_on_close_failed'); showToast('Note not saved yet: it stays open so your text is kept'); return; }
         closeFilePreview();
       });
       return;
     }
     showConfirm('This file has unsaved edits. Close without saving?', 'Discard changes', true).then(ok => {
-      if (!ok || !_fileData) return;
+      if (!ok || !_fileData) { _fileDismissPath = null; return; }
       _fileEditBeacon('discarded_after_confirm');
       _fileData.content = document.getElementById('file-edit-ta').value;
       closeFilePreview();
@@ -37588,7 +37608,7 @@ function closeFilePreview() {
   }
   if (_xlsxEd && _xlsxEd.dirty) {
     showConfirm('This spreadsheet has unsaved changes. Close without saving?', 'Discard changes', true)
-      .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } });
+      .then(ok => { if (ok && _xlsxEd) { _xlsxEd.dirty = false; closeFilePreview(); } else _fileDismissPath = null; });
     return;
   }
   _xlsxEditorTeardown();
@@ -37614,12 +37634,38 @@ function closeFilePreview() {
   if (searchTab) searchTab.style.display = 'none';
   document.getElementById('file-edit-wrap').style.display = 'none';
   document.getElementById('file-body').style.display = '';
+  const closingPath = (_fileData && _fileData.path) || null;
   _fileData = null;
   _fileViewMode = 'preview';
   // A load still in flight belongs to a viewer that is gone: without this its
   // cache read or reply passed the generation check and set _fileData on a
   // closed overlay (2026-11-06).
   _filePreviewGen++;
+  // A link viewer has nothing behind the file: closing it goes back to where
+  // the link was clicked.
+  const dismissed = _fileDismissPath !== null && _fileDismissPath === (closingPath || '');
+  _fileDismissPath = null;
+  const boot = _fileBootLinkPath;
+  if (boot && boot === closingPath) _fileBootLinkPath = null;   // closed by any means, the link is spent
+  if (!dismissed) return;
+  if (_linkViewer) { _linkViewerReturn(); return; }
+  if (boot && boot === closingPath) _fileBootLinkClose();
+}
+// THE FILE A PAGE WAS OPENED ON LEAVES NO ADDRESS WHEN CLOSED (owner,
+// 2026-11-23: "if I close the file, the path param ... remains in my browser
+// URL"). A #path= link opens the Files view on the file's folder and the file
+// over it; the close rewrote the address to #path=<folder>, so the link's path
+// stayed in the bar. Dismissing that file now clears the address and lands
+// where an empty address does. Only that file, only a dismissal, and only
+// while the address is still a #path=: a file opened later, an internal close
+// (Show in folder), or a page moved elsewhere keeps the usual close.
+let _fileBootLinkPath = null;
+function _fileBootLinkClose() {
+  if (location.hash && !location.hash.startsWith('#path=')) return;
+  try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { console.warn('[amux] file_link_close: address not cleared', e); return; }
+  console.info('[amux] file_link_close', { verdict: 'address_cleared' });
+  amuxTrack('file_link_close', { verdict: 'address_cleared', measured: true, n_considered: 1 });
+  switchView('sessions');
 }
 
 async function _downloadFileBytes(url, filename) {
@@ -43386,7 +43432,7 @@ function _exploreSearchFilter(q) {
     const dyEnd = Math.abs(e.changedTouches[0].clientY - sy);
     if (dx > _SWIPE_CLOSE && dx > dyEnd * _SWIPE_RATIO) {
       el.style.transform = 'translateX(100%)';
-      setTimeout(() => { closeFilePreview(); el.style.transform = ''; el.style.transition = ''; }, 260);
+      setTimeout(() => { dismissFilePreview(); el.style.transform = ''; el.style.transition = ''; }, 260);
     } else {
       el.style.transform = '';
       setTimeout(() => { el.style.transition = ''; }, 260);
@@ -44946,7 +44992,7 @@ document.addEventListener('keydown', (e) => {
       // cancels a cell edit or closes a panel, and never closes the workbook
       // (closing on Escape threw away a half-typed cell, 2026-10-26). The ✕ closes.
       if (_xlsxEd) return;
-      closeFilePreview();
+      dismissFilePreview();
     }
     return;
   }
@@ -46317,6 +46363,21 @@ function statusStyle(id) {
 const _DEEPLINK_HASH_RE = /^#(?:peek|issue|menu|view|path|edit|browser|bq|task|reconnect)=/;
 const _isInTab = new URLSearchParams(location.search).has('_tab');
 if (_isInTab) document.body.classList.add('in-tab');
+// A LINK OPENED IN A NEW BROWSER TAB IS A VIEWER, NOT A WINDOW (owner,
+// 2026-11-23: a middle-clicked path "shows the markdown under one of your
+// existing tabs ... that may not even correlate with where the relative link
+// came from"). A worker-output link carries ?_viewer=1 plus the worker and the
+// in-page tab it was clicked in (_linkViewerQuery). Such a page shows the file
+// with no tab bar and no nav, reads and writes no tab state, and on close
+// (_linkViewerReturn) becomes the full page on the tab the link came from, or
+// a new tab on that worker when that tab is gone.
+let _linkViewer = null;
+(function _linkViewerBoot() {
+  const q = new URLSearchParams(location.search);
+  if (_isInTab || !q.has('_viewer')) return;
+  _linkViewer = { session: q.get('_from') || '', tab: parseInt(q.get('_from_tab'), 10) || 0 };
+  document.body.classList.add('link-viewer');
+})();
 // EACH TAB OF THE IN-PAGE TAB BAR KEEPS ITS OWN PLACE (owner, 2026-11-13:
 // "the other tab will then also become that session"). Tabs after the first
 // are iframes, rebuilt after any reload of the page (a deploy, Chrome
@@ -46383,7 +46444,7 @@ if (_nativePaneBridge()) {
 const _CHROME_STATE_KEY = 'amux_chrome_state';
 function _chromeLoad() {
   const one = { tabs: [{id: 1, name: 'Tab 1'}], active: 1, page: 1 };
-  if (_isInTab) return one;
+  if (_isInTab || _linkViewer) return one;
   try {
     const s = JSON.parse(sessionStorage.getItem(_CHROME_STATE_KEY) || 'null');
     if (s && Array.isArray(s.tabs) && s.tabs.length) return { tabs: s.tabs, active: s.active, page: s.page };
@@ -46702,6 +46763,9 @@ function _chromeCloseTab(id) {
 // The snapshot a browser tab with no bar of its own starts from.
 let _chromeSnapLast = '';
 function _chromeSnapshot() {
+  // A link viewer has no bar: its one placeholder tab must not overwrite the
+  // snapshot of the window it came from, which _linkViewerReturn reads.
+  if (_linkViewer) return;
   const snap = JSON.stringify(_chromeTabs.map(t => t.id === _chromePageId
     ? { id: t.id, name: t.name || '', hash: location.hash || '', page: true }
     : { id: t.id, name: t.name || '', hash: _chromeTabLiveHash(t.id) }));
@@ -46711,12 +46775,80 @@ function _chromeSnapshot() {
   localStorage.setItem('amux_chrome_active2', String(_chromeActiveId));
 }
 function _chromeSave() {
-  if (_isInTab) return;
+  if (_isInTab || _linkViewer) return;
   try {
     sessionStorage.setItem(_CHROME_STATE_KEY, JSON.stringify({ tabs: _chromeTabs, active: _chromeActiveId, page: _chromePageId }));
     _chromeSnapLast = '';
     _chromeSnapshot();
   } catch(e) {}
+}
+// The query a worker-output link opens with in a new browser tab: the worker
+// and the in-page tab it was clicked in (the page itself is the first tab; an
+// iframe tab knows its id from ?_tab=).
+function _linkViewerQuery() {
+  const q = new URLSearchParams();
+  q.set('_viewer', '1');
+  const s = (typeof peekSession === 'string' && peekSession) || '';
+  if (s) q.set('_from', s);
+  let tab = 0;
+  try {
+    if (_isInTab) tab = parseInt(new URLSearchParams(location.search).get('_tab'), 10) || 0;
+    else if (!_nativeTabs && _chromeTabs.length) tab = _chromeTabs[0].id;
+  } catch (e) { console.warn('[amux] link_viewer: origin tab unreadable', e); }
+  if (tab) q.set('_from_tab', String(tab));
+  return '?' + q.toString();
+}
+// Whether a tab's address shows this worker (#peek=<name>, optionally &tab=).
+function _hashShowsSession(h, s) {
+  const p = '#peek=' + encodeURIComponent(s);
+  return typeof h === 'string' && (h === p || h.startsWith(p + '&'));
+}
+// Leave the link viewer: this browser tab becomes the full page, its bar
+// rebuilt from the snapshot of the window the link came from, on the tab the
+// link was clicked in when it still shows that worker, else on another tab
+// showing it, else on a new tab opened on the worker. In place, no reload.
+function _linkViewerReturn() {
+  const lv = _linkViewer;
+  if (!lv) return false;
+  _linkViewer = null;
+  document.body.classList.remove('link-viewer');
+  const peekHash = lv.session ? '#peek=' + encodeURIComponent(lv.session) : '';
+  let verdict = 'native_window', firstHash = peekHash;
+  if (!_nativeTabs) {
+    let snap = null;
+    try { snap = JSON.parse(localStorage.getItem('amux_chrome_tabs2') || 'null'); } catch (e) { console.warn('[amux] link_viewer: tab snapshot unreadable', e); }
+    const tabs = (Array.isArray(snap) ? snap : []).filter(t => t && Number.isInteger(t.id))
+      .map(t => ({ id: t.id, name: t.name || '', page: t.page === true, hash: (typeof t.hash === 'string' && t.hash.charAt(0) === '#') ? t.hash : '' }));
+    const shows = t => !lv.session || _hashShowsSession(t.hash, lv.session);
+    let target = tabs.find(t => t.id === lv.tab && shows(t));
+    verdict = 'origin_tab';
+    if (!target && lv.session) { target = tabs.find(shows); verdict = 'tab_showing_worker'; }
+    if (!target) {
+      target = { id: Math.max(0, ...tabs.map(t => t.id)) + 1, name: '', hash: peekHash };
+      tabs.push(target);
+      verdict = tabs.length === 1 ? 'new_window' : 'new_tab';
+    }
+    // The page is the tab the snapshot marks as the page, wherever it sits
+    // (as _chromeLoad reads it); a snapshot from before that had it first.
+    const pageTab = tabs.find(t => t.page) || tabs[0];
+    tabs.filter(t => t !== pageTab).forEach(t => {
+      try { if (t.hash) sessionStorage.setItem(_CHROME_TAB_VIEW_KEY + t.id, t.hash); else sessionStorage.removeItem(_CHROME_TAB_VIEW_KEY + t.id); } catch (e) { console.warn('[amux] link_viewer: tab ' + t.id + ' address not saved, it opens bare', e); }
+    });
+    firstHash = pageTab.hash;
+    _chromeTabs = tabs.map(t => ({ id: t.id, name: t.name }));
+    _chromePageId = pageTab.id;
+    _chromeActiveId = target.id;
+    _chromeNextId = Math.max(..._chromeTabs.map(t => t.id), 0) + 1;
+    const fc = document.getElementById('chrome-tab-frames');
+    if (fc) fc.querySelectorAll('iframe').forEach(f => f.remove());
+  }
+  console.info('[amux] link_viewer_return', { verdict, from_tab: lv.tab, has_worker: !!lv.session });
+  amuxTrack('link_viewer_return', { verdict, measured: true, n_considered: 1 });
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch (e) { console.warn('[amux] link_viewer: viewer query not cleared from the address', e); }
+  _chromePageGoTo(firstHash);
+  _chromeRender();
+  _chromeSave();
+  return true;
 }
 // Addresses move without a save (a worker opened inside a tab), so the
 // snapshot follows them, written only when it changed, and when the page is
@@ -63683,6 +63815,7 @@ async function _handleDeeplink(hash) {
         return;
       }
       if (attempt < 20) setTimeout(() => tryOpen(attempt + 1), 400);
+      else _peekBootReveal('worker_not_found', target);
     };
     tryOpen(0);
     return;
@@ -63891,6 +64024,7 @@ async function _handleDeeplink(hash) {
       _filesPath = parent;
       switchView('files');
       await openFilePreview(dpath);
+      _fileBootLinkPath = (_fileData && _fileData.path) || null;
       if (edit) {
         const ok = !!(_fileData && _fileData.path && _fileEditable(_fileData));
         if (ok) setFileViewMode('edit');

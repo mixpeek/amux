@@ -17,6 +17,9 @@ import os from 'os';
 import path from 'path';
 
 const CWD = '/private/tmp/amux-e2e-newtab';
+// The page is the bar's first tab (id 1) and shows no worker, so the link
+// opens as a viewer that returns to tab 1 (e2e/link-viewer-return.spec.ts).
+const VIEWER = '/?_viewer=1&_from_tab=1';
 const RAW = '\x1b[37m⏺\x1b[39m Wrote the plan to notes/plan.md and the data to data/x.csv.\n'
   + '  Both are ready.\n';
 
@@ -85,14 +88,14 @@ test('a relative path in a reply is a link that opens the file in a new tab', as
   await expect(csv).toHaveCount(1);
   const origin = new URL(page.url()).origin;
   // Before the pointer arrives: the blind join against the worker's cwd.
-  await expect(link).toHaveAttribute('href', origin + '/#path=' + CWD + '/notes/plan.md');
+  await expect(link).toHaveAttribute('href', origin + VIEWER + '#path=' + CWD + '/notes/plan.md');
   // A server with no answer leaves the blind join in place.
   await csv.hover();
   await expect(csv).toHaveAttribute('data-resolved', '1');
-  await expect(csv).toHaveAttribute('href', origin + '/#path=' + CWD + '/data/x.csv');
+  await expect(csv).toHaveAttribute('href', origin + VIEWER + '#path=' + CWD + '/data/x.csv');
   // Hovering asks the server; its answer becomes the href.
   await link.hover();
-  await expect(link).toHaveAttribute('href', origin + '/#path=' + resolved);
+  await expect(link).toHaveAttribute('href', origin + VIEWER + '#path=' + resolved);
 
   // Nothing amux runs cancels a middle or modifier press, or opens the file
   // here instead.

@@ -4413,6 +4413,20 @@
   body.native-tabs .chrome-tabs-bar,
   body.native-tabs .chrome-tab-frames { display: none !important; }
   body.in-tab { padding-top: 0 !important; }
+  /* A link opened in a new browser tab is a viewer (_linkViewerReturn): no tab
+     bar, no nav, nothing to switch to. Its one way out is the file's own close,
+     or Back when no file is open (a folder link). */
+  .link-viewer-back { display: none; }
+  body.link-viewer .chrome-tabs-bar,
+  body.link-viewer .chrome-tab-frames,
+  body.link-viewer .header-row,
+  body.link-viewer .tab-bar-outer { display: none !important; }
+  /* Back takes the header's place as its own row, so it covers nothing. */
+  body.link-viewer:not(:has(#file-overlay.active)) { padding-top: calc(var(--space-12) + var(--space-2) + env(safe-area-inset-top)) !important; }
+  body.link-viewer:not(:has(#file-overlay.active)) .link-viewer-back {
+    display: inline-flex; align-items: center; position: fixed; z-index: 250; min-height: 44px;
+    top: calc(var(--space-1-5) + env(safe-area-inset-top)); left: max(var(--space-3), env(safe-area-inset-left));
+  }
   .chrome-tab-rename {
     background: transparent; border: none; outline: none;
     color: inherit; font: inherit; width: 100%;
@@ -11501,6 +11515,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
    the bottom of the view; in simple mode (a new person) only these tabs and
    "Everything else" show, and the header with them. */
 html.boot-home-pending #session-view, html.boot-home-pending .tab-bar-outer, html.boot-home-pending .header-row { visibility: hidden; }
+html.boot-peek-pending #session-view, html.boot-peek-pending .tab-bar-outer, html.boot-peek-pending .header-row { visibility: hidden; }
 /* The approvals banner names the helper; in simple mode a held draft shows in
    its conversation instead (_homeHeldDraftHtml). */
 body.intent-simple .header-row, body.intent-simple #no-apikey-banner, body.intent-simple #chrome-tabs-bar,
