@@ -15,6 +15,9 @@
 #             file is shared
 #   enforce   red on the holder's own commit in a batch: rc 6, waiters keep
 #             their tickets
+#   enforce   a green bisect step's mq ref stands while the next step runs
+#             and is gone once its prefix lands; a killed holder's kept ref
+#             and an orphaned step ref are dropped by the next holder
 #   enforce   lost runner: dispatched once more, lands
 #   enforce   dispatch fails: rc 6, nothing pushed to main
 #   enforce   only no-code paths: lands with no candidate; an excluded path or code
@@ -52,6 +55,8 @@ if [ "$1 $2" = "workflow run" ]; then
   ref=""; prev=""; for a in "$@"; do [ "$prev" = --ref ] && ref="$a"; prev="$a"; done
   sha="$(git --git-dir="$O" rev-parse -q --verify "refs/heads/$ref")" || { echo "no ref $ref" >&2; exit 1; }
   echo "$ref $sha" >> "$H/dispatched"
+  # A stand-in deployd: the candidates it could boot ahead while this one runs.
+  git --git-dir="$O" for-each-ref --format='%(refname:short)' refs/heads/mq/ > "$H/seen-${ref##*/}"
   # Main moves while this candidate runs, once.
   if [ -f "$H/move-main" ]; then
     f="$(cat "$H/move-main")"; rm -f "$H/move-main"
@@ -166,7 +171,32 @@ ls "$q" | grep -q . && ok "enforce red batch: the waiter after the culprit keeps
 grep -q "refused the batch on your commit" "$H/.amux/locks/land-$key.r/"* 2>/dev/null && ok "enforce red batch: the culprit's waiter is told it was refused" || bad "no refusal written for w2"
 grep -q "bisected to w2's commit" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log names the culprit lane" || bad "culprit not logged"
 [ "$(mq_refs)" = 0 ] && ok "enforce red batch: no candidate ref left" || bad "mq refs left: $(mq_refs)"
+# mixpeek-meta-worker, 2026-11-25: the green prefix lost its ref when its run
+# ended, so deployd could not boot it while the bisect tested the next step.
+b1="$(awk '/-b1 /{print $1}' "$H/dispatched" | tail -1)"; b2="$(awk '/-b2 /{print $1}' "$H/dispatched" | tail -1)"
+{ [ -n "$b1" ] && [ -n "$b2" ] && grep -qx "$b1" "$H/seen-${b2##*/}"; } \
+  && ok "enforce red batch: the green step's ref stands while the next step runs" || bad "b1=$b1 not seen at $b2: $(cat "$H/seen-${b2##*/}" 2>/dev/null)"
+grep -q "mq/${b1#mq/} stays on origin until its land is pushed or set aside (verdict=mq_green_ref_kept)" "$H/.amux/logs/land.log" && grep -q "dropped green candidate ${b1} (its land is pushed" "$H/out" \
+  && ok "enforce red batch: the kept ref is logged, and dropped once the prefix lands" || bad "no kept/dropped lines: $(grep -a 'green candidate\|green_ref' "$H/out" | tail -4)"
 kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- a kept ref a killed holder left, and a step ref nobody lands, are dropped;
+# a step ref of a land announced as waiting stays
+setup; queue_on; commit_file g1 x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+now=$(date +%s); mkdir -p "$H/.amux/locks"
+for n in "$now-11111-a1" "$now-999999-a2-b1" "$now-424242-a1-b1"; do git push -q origin "HEAD~1:refs/heads/mq/$n" 2>/dev/null; done
+echo "$now-11111-a1" > "$H/.amux/locks/land-$key.mq-kept"
+wc="$(printf 'amux land wait\n\nholder=othermac:424242\nlane=other-machine\nexpires_at=%s\n' $(( now + 900 )) | git commit-tree "$(git mktree </dev/null)")"
+git push -q origin "$wc:refs/amux/land-wait/main/othermac-424242" 2>/dev/null
+land; rc=$?
+has_ref() { git --git-dir="$H/origin.git" rev-parse -q --verify "refs/heads/mq/$1" >/dev/null; }
+{ [ "$rc" = 0 ] && main_has g1 && ! has_ref "$now-11111-a1" && [ ! -e "$H/.amux/locks/land-$key.mq-kept" ]; } \
+  && ok "a green ref a killed holder kept is dropped by the next holder" || bad "stale kept rc=$rc: $(git --git-dir="$H/origin.git" for-each-ref refs/heads/mq/)"
+{ ! has_ref "$now-999999-a2-b1" && grep -q "verdict=mq_sweep_orphan_step" "$H/.amux/logs/land.log"; } \
+  && ok "a green step ref whose holder no longer lands is dropped at once" || bad "orphan step left: $(git --git-dir="$H/origin.git" for-each-ref refs/heads/mq/)"
+has_ref "$now-424242-a1-b1" && ok "a step ref of a land announced as waiting stays" || bad "the waiting land's step ref was dropped"
 done_case
 
 # --- enforce, red batch whose culprit is the first waiter: the holder lands

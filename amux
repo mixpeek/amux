@@ -10231,7 +10231,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-25.63"
+LAND_BEHAVIOR_VERSION="2026-11-25.64"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -11938,6 +11938,33 @@ _land_mq_push_ref() { # <sha> <batch id>
   return 1
 }
 _land_mq_drop_ref() { git push --no-verify -q "$remote" ":refs/heads/mq/$1" >/dev/null 2>&1 || true; }
+# A GREEN CANDIDATE'S REF STANDS until the land that carries it is pushed or it
+# is set aside, then it is dropped. deployd finds queue candidates only through
+# refs/heads/mq/* and boots one ahead of its land (mixpeek-meta-worker,
+# 2026-11-25: the green prefix 6ccaf21501 lost its ref at 03:51:55Z while the
+# bisect tested the next step until 04:06:43Z, so deployd never booted its
+# replay c8bc425515 ahead and infrastructure's release ran after the land, 16.6
+# min to serving). The kept names are a file beside the lock, so the next
+# holder on this machine drops a killed holder's (each attempt starts with
+# _land_mq_release_kept). Works from the EXIT trap, where land's locals are gone.
+_land_mq_keep() { # <batch id>
+  echo "$1" >> "$lock.mq-kept"
+  _land_log "merge queue: green candidate mq/$1 stays on $remote until its land is pushed or set aside (verdict=mq_green_ref_kept)"
+}
+_land_mq_release_kept() { # <remote> <lock> <why> [last]: drop the kept refs; with last, all but the newest
+  local f="$2.mq-kept" n keep=""
+  [ -s "$f" ] || { rm -f -- "$f"; return 0; }
+  [ "${4:-}" = last ] && keep="$(tail -1 "$f")"
+  while read -r n; do
+    [ -n "$n" ] && [ "$n" != "$keep" ] || continue
+    if git push --no-verify -q "$1" ":refs/heads/mq/$n" >/dev/null 2>&1; then
+      echo "amux land: merge queue: dropped green candidate mq/$n ($3, verdict=mq_green_ref_dropped)" >&2
+    else
+      echo "amux land: WARN merge queue: could not drop green candidate mq/$n ($3, verdict=mq_green_ref_drop_failed); the sweep removes it after twice the budget" >&2
+    fi
+  done < "$f"
+  if [ -n "$keep" ]; then echo "$keep" > "$f"; else rm -f -- "$f"; fi
+}
 _land_mq_dispatch() { # <batch id> <base sha>; the error on stderr
   local input args=()
   input="$(_land_mq_cfg BaseInput)"
@@ -12000,7 +12027,7 @@ _land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <ru
     fi
     _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$id (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
     v="$(_land_mq_wait "$id" "$3")"
-    _land_mq_drop_ref "$id"
+    if [ "${v%% *}" = green ]; then _land_mq_keep "$id"; else _land_mq_drop_ref "$id"; fi
     _land_mq_ledger phase=judge batch="$id" base="$2" candidate="$3" verdict="${v%% *}" run="$(printf '%s' "$v" | cut -d' ' -f3)" what="${4:-}"
     { [ "${v%% *}" = lost ] && [ "$try" = 1 ]; } || break
     _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
@@ -12028,7 +12055,7 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
     v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
     v="$(_land_mq_judge "$2-b$mid" "$1" "$tip" "bisect: prefix of $((mid + 1)) of $((n + 1)) landings")"
     case "${v%% *}" in
-      green) lo="$mid"; gtip="$tip" ;;
+      green) lo="$mid"; gtip="$tip"; _land_mq_release_kept "$remote" "$lock" "a longer prefix ran green" last ;;
       red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
       *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
     esac
@@ -12046,9 +12073,15 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
 }
 # Candidate refs land made, past twice the budget (shadow leaves its refs for the
 # run; a killed holder leaves one). Other mq/ refs (a CI self-test) are not ours.
+# A kept bisect step ref (<ts>-<pid>-a<n>-b<k>) is dropped at once when its
+# holder is gone: this sweep runs under the remote lease, so a live holder of
+# another batch is a land announced on refs/amux/land-wait/ (a bisect hands the
+# lease over between steps and waits announced). Only a green step's ref
+# outlives its run, so nothing in flight matches (mixpeek-cicd, 2026-11-25).
 _land_mq_sweep() {
-  local cut ref name
+  local cut ref name live
   cut=$(( $(date +%s) - 2 * $(_land_mq_cfg BudgetMin 75) * 60 ))
+  live=" $$ $(git ls-remote "$remote" "refs/amux/land-wait/$branch/*" 2>/dev/null | awk '{n=$2; sub(/.*-/, "", n); printf "%s ", n}')"
   # A loop exits with its body's last status: a young ref (another lane's
   # land in flight) ended it on a false test, and under set -e the whole land
   # exited 1 with no word right after "merge queue: enforce" (mixpeek-ops-server,
@@ -12057,7 +12090,9 @@ _land_mq_sweep() {
   git ls-remote "$remote" 'refs/heads/mq/*' 2>/dev/null | while read -r _ ref; do
     name="${ref#refs/heads/mq/}"
     case "${name%%-*}" in ''|*[!0-9]*) continue ;; esac
-    if [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ]; then
+    if [[ "$name" =~ ^[0-9]+-([0-9]+)-a[0-9]+-b[0-9]+(-r)?$ ]] && [[ "$live" != *" ${BASH_REMATCH[1]} "* ]]; then
+      if _land_mq_drop_ref "$name"; then _land_log "merge queue: dropped mq/$name, a green bisect step whose holder no longer lands (verdict=mq_sweep_orphan_step)"; fi
+    elif [ "${#name}" -gt 11 ] && [ "${name%%-*}" -lt "$cut" ]; then
       _land_mq_drop_ref "$name" || _land_log "merge queue: could not delete stale mq/$name (verdict=mq_sweep_drop_failed)"
     fi
   done || true
@@ -13351,7 +13386,7 @@ p.communicate(msg.encode())
   # A hold cancelled by another lane (--cancel-for) names who and why in the
   # holder's OWN output: gs12-compute's detached log ended at "batching ..."
   # with neither, and it read as a crash (2026-10-02 20:31Z).
-  trap "_land_rl_release '$remote' '$branch'; [ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
+  trap "_land_mq_release_kept '$remote' '${lock:?}' 'the hold ended'; _land_rl_release '$remote' '$branch'; [ -f '${lock:?}/cancelled' ] && [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && echo \"amux land: this hold was cancelled \$(cat '${lock:?}/cancelled'); nothing was pushed for this attempt\"; [ \"\$(cat '${lock:?}/pid' 2>/dev/null)\" = '$$' ] && rm -rf -- '${lock:?}'" EXIT
   [ "$waited" -gt 0 ] && _land_log "acquired $branch after waiting ${waited}s"
   # LANDING WINDOW (Ethan, 2026-10-04 15:31 ET, harness efficiency): with
   # `git config amux.landMinIntervalS N`, a holder whose branch was pushed less
@@ -13823,6 +13858,8 @@ $f"
     # MERGE QUEUE (see _land_mq_mode). Shadow sends the stack as a candidate and
     # lands it below as before; enforce lands it only once its candidate is green.
     if [ "$_mq" != off ]; then
+      # A green ref kept by an earlier attempt, or by a killed holder, was set aside.
+      _land_mq_release_kept "$remote" "$lock" "set aside before attempt $i"
       _mq_base="$(git rev-parse "$remote/$branch")"
       _mq_id="$(date +%s)-$$-a$i"
       if [ "$_mq" = shadow ]; then
@@ -13867,6 +13904,7 @@ $f"
             fi
             if ! git merge-base --is-ancestor "$remote/$branch" "$stack_tip"; then
               _land_log "merge queue: $branch moved under the green candidate ($_mq_url); re-composing on the new tip (attempt $i)"
+              _land_mq_release_kept "$remote" "$lock" "its carry was refused; re-composing"
               continue
             fi
             _land_log "merge queue: candidate green ($_mq_url); fast-forwarding $branch" ;;
@@ -13929,6 +13967,7 @@ $f"
                   _land_log "merge queue: bisected to ${_mq_tk}'s commit ($_mq_burl); ejected it and landing the prefix that already passed (this lane and $(( _mq_bi - 1 )) waiter(s), verdict=mq_prefix_landed); the waiters after it keep their places for the next holder"
                 else
                   _land_log "merge queue: bisected to ${_mq_tk}'s commit ($_mq_burl); ejected it, re-composing the rest (attempt $i)"
+                  _land_mq_release_kept "$remote" "$lock" "the green prefix's carry was refused; re-composing"
                   continue
                 fi ;;
               *)
@@ -14027,6 +14066,7 @@ $f"
         [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_log "ERROR verdict=land_pushed_after_lease_lost: the lease was lost while this push ran and it still landed; check $branch for a second machine's push"
       fi
       [ "$_mq" = off ] || _land_mq_ledger phase=landed mode="$_mq" batch="$_mq_id" base="$_mq_base" sha="$stack_tip" lanes="$me${lanes:+, $lanes}"
+      [ "$_mq" = off ] || _land_mq_release_kept "$remote" "$lock" "its land is pushed"
       if [ -n "$lanes" ]; then
         _land_tell "landed $(git rev-parse --short "$stack_tip") on $branch, batched by $me"
         _land_log "landed $(git rev-parse --short "$stack_tip") on $branch (attempt $i), with ${lanes}. Hook output: $full"
