@@ -44,6 +44,9 @@
 #  20. a --priority land does not yield to the other machine's ordinary
 #      waiter, and still yields to a priority one (mixpeek-meta-worker,
 #      2026-11-25: a production S1 fix waited out an ordinary land)
+#  21. a heartbeat renewal that lands at the release (rl-sha one behind the
+#      remote) is still released: the lease on the remote is our own
+#      (mxp-gs12, 2026-11-25 13:54Z: release_failed left it for the TTL)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -321,6 +324,16 @@ case "$order" in "f=e1 g=e2 h=race "*) ok "the waiter landed between the holder'
 [ -z "$(lease_now)" ] && [ -z "$(waiters)" ] && ok "and the lease and every announcement are gone after" || bad "18: left: lease=$(lease_now) waiters=$(waiters)"
 grep -q 'verdict=land_branch_moved_under_lease: main moved to [0-9a-f]* by .*h=race' "$H/e1.out" \
   && ok "the lost push names the commit that moved main under the lease" || bad "18: no moved-under-lease line: $(grep 'lost a race' -A1 "$H/e1.out" | tail -2)"
+
+# 21: a renewal at the release is our own lease, and it is released
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+commit a f twentyone; echo 0 > "$H/gate-s"
+land a twentyone AMUX_LAND_TEST_RENEW_AT_RELEASE=1; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = twentyone ] && [ -z "$(lease_now)" ] \
+  && grep -q 'verdict=land_remote_lease_release_own_renewal' "$H/twentyone.out" && grep -q 'verdict=land_remote_lease_released' "$H/twentyone.out" \
+  && ! grep -q 'land_remote_lease_release_failed' "$H/twentyone.out" \
+  && ok "a renewal that lands at the release is our own lease and is released" \
+  || bad "21: rc=$rc f=$(main_has f) lease=$(lease_now): $(grep 'lease_' "$H/twentyone.out" | tail -3)"
 
 # 19: amux land --lease-check in a pre-push hook keeps a push outside land
 # (mixpeek's ci/tip/land.sh, 2026-11-23 03:36:37Z) from landing under a lease

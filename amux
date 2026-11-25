@@ -12862,6 +12862,12 @@ p.communicate(msg.encode())
       [ -e "$_LAND_RL_DIR/rl-lost" ] && _land_rl_say "verdict=land_remote_lease_not_released: $(_land_rl_ref "$2") is not ours; left for its holder"
       rm -rf -- "${_LAND_RL_DIR:?}"; _LAND_RL_DIR=""; return 0
     fi
+    # Test hook: the heartbeat's renewal lands on the remote at the moment of
+    # the release, after rl-sha was read (the race below, reproduced).
+    if [ -n "${AMUX_LAND_TEST_RENEW_AT_RELEASE:-}" ]; then
+      local _tn; _tn="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" \
+        && _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "$_tn" || true
+    fi
     # A CAS delete is safe to repeat (review item 5).
     local _i _ok=""
     for _i in 1 2 3; do
@@ -12869,6 +12875,20 @@ p.communicate(msg.encode())
       # Gone only on a read that ANSWERS with nothing: a failed read is empty
       # too, and counted as released it logged a false verdict (gate review).
       local _left; if _left="$(_land_rl_ls "$1" "$(_land_rl_ref "$2")" 2>/dev/null)" && [ -z "$_left" ]; then _ok=1; break; fi
+      # OUR OWN RENEWAL (mxp-gs12, 2026-11-25 13:54Z: a finished land left the
+      # lease for its full TTL). The TERM above reaches a heartbeat mid-push,
+      # bash runs its trap once the push returns, and it exits before writing
+      # the new sha to rl-sha: the remote holds a lease we wrote and rl-sha
+      # names the one before it, so every CAS here failed. A lease on the
+      # remote with our holder id and start is ours: delete that one.
+      if [ -n "$_left" ] && [ "$_left" != "$_sha" ]; then
+        git fetch -q --no-tags "$1" "+$(_land_rl_ref "$2"):refs/amux/land-lock-seen/$2" 2>/dev/null || true
+        if [ "$(_land_rl_field "$_left" holder)" = "$_LAND_RL_ID" ] && [ "$(_land_rl_field "$_left" holder_start)" = "$_LAND_RL_START" ]; then
+          _land_rl_say "verdict=land_remote_lease_release_own_renewal: $(_land_rl_ref "$2") moved to our own renewal at the release; deleting that one"
+          _sha="$_left"
+          _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "" && { _ok=1; break; }
+        fi
+      fi
       [ "$_i" = 3 ] || sleep $(( ${AMUX_LAND_REMOTE_LEASE_RETRY_S:-10} * _i ))
     done
     if [ -n "$_ok" ]; then
