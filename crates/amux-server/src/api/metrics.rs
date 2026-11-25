@@ -823,6 +823,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
             tracing::warn!("system metrics collection failed: {e}");
         }
     }
+    body["routes"] = crate::api::route_metrics::snapshot();
     Json(body).into_response()
 }
 
@@ -1252,6 +1253,33 @@ mod tests {
     /// RR-0044b metrics shape: /api/metrics/fleet reports per-provider
     /// {state, reset_at, workers_parked, workers_total}, from the same
     /// derivation the runtime parks with.
+    /// RC-13: per-route request counters appear on the metrics endpoint.
+    #[tokio::test]
+    async fn metrics_endpoint_exposes_per_route_request_counters() {
+        let (app, _store, _dir) = app();
+        for _ in 0..3 {
+            let _ = app
+                .clone()
+                .oneshot(Request::builder().uri("/api/logs/none-ll395").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+        }
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let by = &v["routes"]["by_route"];
+        assert!(
+            by["GET /api/logs/*"].as_u64().unwrap_or(0) >= 3,
+            "three GETs under /api/logs/ must be counted: {v}"
+        );
+        assert!(v["routes"]["total"].as_u64().unwrap_or(0) >= 3);
+    }
+
     #[tokio::test]
     async fn fleet_metrics_report_per_provider_state() {
         let (app, store, _dir) = app();

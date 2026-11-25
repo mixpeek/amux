@@ -174,6 +174,7 @@ pub mod recordings;
 pub(crate) mod transcription;
 pub mod reports;
 pub mod request_log;
+pub mod route_metrics;
 pub mod review;
 pub mod saved_messages;
 pub mod schedules;
