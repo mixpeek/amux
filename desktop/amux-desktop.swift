@@ -427,11 +427,21 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     /// A restored tab that is not showing waits to load (launch speed, 2026-10-25):
     /// the shown tabs load first, then these one at a time, or at once when picked.
     var deferredURL: URL?
+    /// The page was unloaded to free memory after a long time out of sight
+    /// (AppDelegate.discardHiddenTabs); it comes back when it is shown, never
+    /// from the background queue.
+    var discarded = false
+    var discardedAt = Date.distantPast
 
     func loadDeferred(_ why: String) {
         guard let u = deferredURL else { return }
         deferredURL = nil
-        dlog("verdict=deferred_tab_loaded why=\(why) url=\(u.fragment ?? "")")
+        if discarded {
+            discarded = false
+            dlog("verdict=discarded_tab_restored why=\(why) away_s=\(Int(-discardedAt.timeIntervalSinceNow)) url=\(u.fragment ?? "")")
+        } else {
+            dlog("verdict=deferred_tab_loaded why=\(why) url=\(u.fragment ?? "")")
+        }
         load(u)
     }
 
@@ -820,6 +830,8 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
     // its saved view, and report it.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if memoryKillPending { memoryKillPending = false; return }
+        // A discarded page's blank stand-in: it loads again when shown.
+        if discarded { return }
         dlog("verdict=webcontent_terminated view=\(viewHash) url=\(webView.url?.absoluteString ?? "-")")
         app?.beaconFrom(self, ["kind": "desktop-web-process-ended", "verdict": "webcontent_terminated", "measured": true,
                                "n_considered": 1, "view": viewHash])
@@ -1184,7 +1196,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         needsTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.pollNeedsInput() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in self?.reportResources() }
         resourcesTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.reportResources() }
-        memoryGuardTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60), repeats: true) { [weak self] _ in self?.guardTabMemory() }
+        memoryGuardTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_MEM_TICK_S", 60), repeats: true) { [weak self] _ in
+            self?.guardTabMemory()
+            self?.discardHiddenTabs()
+        }
+        // A discarded page loads again the moment it is on screen: a tab picked
+        // in the tab bar, a window brought forward, a pane's tab selected.
+        for n in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification, NSWindow.didChangeOcclusionStateNotification] {
+            NotificationCenter.default.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in self?.wakeShownDiscarded() }
+        }
+        // A tab chosen with no window becoming key (AppKit posts nothing for
+        // that) is caught within a second; only while a page is discarded.
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self = self, self.controllers.contains(where: { $0.discarded }) else { return }
+            self.wakeShownDiscarded()
+        }
         activateApp()
         // `amux amux://worker/x` on the command line, once the pins are known.
         let links = CommandLine.arguments.dropFirst().compactMap { URL(string: $0) }.filter { $0.scheme == "amux" }
@@ -1522,6 +1548,71 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             }
             c.webView.load(URLRequest(url: target))
         }
+    }
+
+    // ── Discard (owner, 2026-11-25: "make it faster to open, load, refresh") ──
+    // Every tab, and every tab inside a pane, is a whole dashboard in its own
+    // web process: 57 of them held 27 GB with 13 GB of swap in use, and the
+    // swapping slowed every window, the shown ones too. A page nobody has
+    // looked at for half an hour is unloaded while the tabs together are over
+    // a budget, oldest first. Its tab, title and place stay; it loads again,
+    // on the view it had, the moment it is shown (as a browser discards tabs).
+    // AMUX_DESKTOP_DISCARD_HIDDEN_S=0 turns it off.
+    func discardHiddenTabs() {
+        let minHidden = envSeconds("AMUX_DESKTOP_DISCARD_HIDDEN_S", 1800)
+        guard minHidden > 0 else { return }
+        let ramMB = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
+        let budget = Int(envSeconds("AMUX_DESKTOP_WEB_BUDGET_MB", Double(max(4096, ramMB / 8))))
+        let pidKey = NSSelectorFromString("_webProcessIdentifier")
+        var pidOf: [ObjectIdentifier: pid_t] = [:], users: [pid_t: Int] = [:], mbOf: [pid_t: Int] = [:]
+        for c in controllers where c.webView.responds(to: pidKey) {
+            guard let pid = (c.webView.value(forKey: "_webProcessIdentifier") as? NSNumber)?.int32Value, pid > 0 else { continue }
+            pidOf[ObjectIdentifier(c)] = pid
+            users[pid, default: 0] += 1
+            if mbOf[pid] == nil { mbOf[pid] = footprintMB(pid) ?? 0 }
+        }
+        var total = mbOf.values.reduce(0, +)
+        guard total > budget else { return }
+        let now = Date()
+        let live = { (c: DashboardWindowController) -> Bool in
+            !c.discarded && c.deferredURL == nil && (c.webView.url?.scheme == "https" || c.webView.url?.scheme == "http")
+        }
+        let candidates = controllers.filter { c in
+            live(c) && !isShown(c) && now.timeIntervalSince(c.lastShown) >= minHidden && !c.memoryKillPending
+        }.sorted { $0.lastShown < $1.lastShown }
+        let maxPerTick = Int(envSeconds("AMUX_DESKTOP_DISCARD_PER_TICK", 6))
+        var n = 0
+        for c in candidates where total > budget && n < maxPerTick {
+            guard let pid = pidOf[ObjectIdentifier(c)], users[pid] == 1, let url = c.webView.url else { continue }
+            // Keep one live page per server: beacons, the Dock count and the
+            // workspaces sync go through a page.
+            let origin = c.serverOrigin
+            guard controllers.contains(where: { $0 !== c && live($0) && $0.serverOrigin == origin }) else { continue }
+            let mb = mbOf[pid] ?? 0
+            let target = c.savedURL().flatMap { URL(string: $0) } ?? url
+            if c.pageLabel.isEmpty { c.pageLabel = c.pageTitle }
+            c.lastServerURL = target
+            c.deferredURL = target
+            c.discarded = true
+            c.discardedAt = now
+            let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+            if c.webView.responds(to: kill) { c.memoryKillPending = true; c.webView.perform(kill) }
+            c.webView.load(URLRequest(url: URL(string: "about:blank")!))
+            total -= mb
+            n += 1
+            dlog("verdict=tab_discarded mb=\(mb) hidden_s=\(Int(now.timeIntervalSince(c.lastShown))) web_mb_total=\(total + mb) budget_mb=\(budget) view=\(c.viewHash)")
+        }
+        if n > 0 {
+            dlog("verdict=tabs_discarded n=\(n) candidates=\(candidates.count) web_mb_after=\(total) budget_mb=\(budget)")
+            beaconFrom(controllers.first { live($0) } ?? controllers[0],
+                       ["kind": "desktop-tabs-discarded", "verdict": "tabs_discarded", "measured": true, "n_considered": candidates.count,
+                        "discarded": n, "web_mb_after": total, "budget_mb": budget])
+        }
+    }
+
+    /// Load every discarded page that is on screen now.
+    func wakeShownDiscarded() {
+        for c in controllers where c.discarded && isShown(c) { c.loadDeferred("shown") }
     }
 
     /// Whether the person is working in this page now: its window is the key

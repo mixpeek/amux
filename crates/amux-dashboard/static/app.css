@@ -11261,6 +11261,10 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 
 /* Schedule a held outbound email (email approval banner, 2026-11-08). The
    banner's own buttons are still inline-styled; these match them. */
+/* The held drafts scroll INSIDE the strip. Expanded, it grew with every held
+   email (17,536px on 2026-11-25), which pushed the header, its gear and every
+   tab below the first screen: the owner "can't open the settings". */
+#email-approvals-banner { max-height: 45vh; overflow-y: auto; overscroll-behavior: contain; }
 #email-approvals-banner .appr-btn-outline {
   background: transparent; color: var(--on-solid);
   border: 1px solid color-mix(in srgb, var(--on-solid) 45%, transparent);

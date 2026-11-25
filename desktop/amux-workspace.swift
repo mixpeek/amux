@@ -232,7 +232,7 @@ extension AppDelegate {
     /// so tabs behind others load one at a time instead of all at launch. A
     /// fallback timer keeps the queue moving if a page never finishes.
     func loadNextDeferred(after c: DashboardWindowController?) {
-        guard let next = controllers.first(where: { $0.deferredURL != nil }) else { return }
+        guard let next = controllers.first(where: { $0.deferredURL != nil && !$0.discarded }) else { return }
         deferredTimer?.invalidate()
         deferredTimer = Timer.scheduledTimer(withTimeInterval: envSeconds("AMUX_DESKTOP_DEFER_STEP_S", 4), repeats: false) { [weak self] _ in
             self?.loadNextDeferred(after: nil)
@@ -333,7 +333,7 @@ extension AppDelegate {
         if let front = placed.reversed().first(where: { $0.0.window?.isOnActiveSpace == true && $0.1.minimized != true && $0.1.selected != false })?.0 {
             front.window?.makeKeyAndOrderFront(nil)
         }
-        if controllers.contains(where: { $0.deferredURL != nil }) {
+        if controllers.contains(where: { $0.deferredURL != nil && !$0.discarded }) {
             // The queue also starts on its own if no shown page ever finishes.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 if self?.deferredTimer == nil { self?.loadNextDeferred(after: nil) }
@@ -1458,6 +1458,7 @@ extension AppDelegate {
                                      "pages": controllers.map { c -> [String: Any] in
                                          let pid = webPID(c)
                                          return ["view": c.viewHash, "shown": isShown(c), "pid": pid ?? 0,
+                                                 "url": c.webView.url?.absoluteString ?? "", "saved": c.savedURL() ?? "", "discarded": c.discarded,
                                                  "mb": pid.flatMap { footprintMB($0) } ?? -1, "cpu_s": pid.flatMap { cpuSeconds($0) } ?? -1]
                                      },
                                      "app_mb": footprintMB(getpid()) ?? -1, "app_cpu_s": cpuSeconds(getpid()) ?? -1,

@@ -185,6 +185,7 @@ async fn serve_path(
     // app.js again in full (1MB gzipped, recompressed per request). The hash
     // covers all of static/, so any change moves every file's ETag.
     let etag = format!("\"d-{}\"", amux_dashboard::asset_version());
+    let cache = cache_control_for(uri.query());
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -192,20 +193,37 @@ async fn serve_path(
     if fresh && amux_dashboard::asset(path).is_some() {
         return (
             StatusCode::NOT_MODIFIED,
-            [(header::ETAG, etag), (header::CACHE_CONTROL, "no-cache".to_string())],
+            [(header::ETAG, etag), (header::CACHE_CONTROL, cache.to_string())],
         )
             .into_response();
     }
     match amux_dashboard::asset(path) {
         Some(content) => {
             let mime = mime_for(path);
-            let mut resp =
-                ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response();
+            // Compressed once per deploy, not per request: app.js is ~6 MB and
+            // gzipping it took ~55 ms of every cold page load, once for each
+            // of the Mac app's tabs. CompressionLayer leaves a response that
+            // already names its encoding alone.
+            let gz = accepts_gzip(&headers)
+                .then(|| gzipped(path, &content))
+                .flatten();
+            let mut resp = match gz {
+                Some(bytes) => (
+                    [
+                        (header::CONTENT_TYPE, mime),
+                        (header::CONTENT_ENCODING, "gzip"),
+                        (header::VARY, "accept-encoding"),
+                    ],
+                    bytes,
+                )
+                    .into_response(),
+                None => ([(header::CONTENT_TYPE, mime)], content.into_owned()).into_response(),
+            };
             if let Ok(v) = HeaderValue::from_str(&etag) {
                 resp.headers_mut().insert(header::ETAG, v);
             }
             resp.headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
             resp
         }
         // SPA fallback: unknown NON-API paths get the shell so client routing
@@ -731,6 +749,66 @@ fn inject_bootstrap(
     with_bootstrap
 }
 
+/// A URL that names the dashboard's current content hash (`/app.js?v=<hash>`,
+/// stamped into index.html at serve time) can never change under that name:
+/// a deploy moves the hash and with it the URL. So it is cached for a year
+/// and a reload does not even ask (a WKWebView tab of the Mac app revalidated
+/// it on every load). Any other URL, and a stale `v`, revalidates as before.
+fn cache_control_for(query: Option<&str>) -> &'static str {
+    let current = amux_dashboard::asset_version();
+    let versioned = query.is_some_and(|q| {
+        q.split('&')
+            .any(|kv| kv.strip_prefix("v=").is_some_and(|v| v == current))
+    });
+    if versioned {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+fn accepts_gzip(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|t| {
+            let mut parts = t.trim().split(';');
+            parts.next().is_some_and(|n| n.trim().eq_ignore_ascii_case("gzip"))
+                && !parts.any(|q| q.trim().replace(' ', "") == "q=0")
+        })
+}
+
+/// The gzip of one dashboard file at the current content hash, made the first
+/// time it is asked for. Only text worth compressing; `None` means send it
+/// as is (CompressionLayer may still compress it).
+fn gzipped(path: &str, content: &[u8]) -> Option<Vec<u8>> {
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static GZ: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+    let mime = mime_for(path);
+    let text = mime.starts_with("text/") || mime == "application/json" || mime == "image/svg+xml";
+    if content.len() < 1024 || !text {
+        return None;
+    }
+    let key = format!("{}:{path}", amux_dashboard::asset_version());
+    let map = GZ.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(b) = map.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        return Some(b.clone());
+    }
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(content).ok()?;
+    let bytes = enc.finish().ok()?;
+    let mut m = map.lock().unwrap_or_else(|p| p.into_inner());
+    // A deploy moves the hash: drop the old version's entries.
+    let ver = format!("{}:", amux_dashboard::asset_version());
+    m.retain(|k, _| k.starts_with(&ver));
+    m.insert(key, bytes.clone());
+    Some(bytes)
+}
+
 fn mime_for(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
@@ -752,6 +830,43 @@ fn mime_for(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_current_versioned_url_is_cached_for_a_year() {
+        let v = amux_dashboard::asset_version();
+        let year = "public, max-age=31536000, immutable";
+        assert_eq!(cache_control_for(Some(&format!("v={v}"))), year);
+        assert_eq!(cache_control_for(Some(&format!("x=1&v={v}"))), year);
+        assert_eq!(cache_control_for(Some("v=0000stale")), "no-cache");
+        assert_eq!(cache_control_for(Some(&format!("vv={v}"))), "no-cache");
+        assert_eq!(cache_control_for(None), "no-cache");
+    }
+
+    #[test]
+    fn gzip_is_sent_only_to_a_client_that_takes_it() {
+        let mut h = HeaderMap::new();
+        assert!(!accepts_gzip(&h));
+        h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("br, gzip, deflate"));
+        assert!(accepts_gzip(&h));
+        h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip;q=0, br"));
+        assert!(!accepts_gzip(&h));
+        h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("GZIP;q=0.5"));
+        assert!(accepts_gzip(&h));
+    }
+
+    #[test]
+    fn a_dashboard_file_is_gzipped_once_and_decodes_to_itself() {
+        use std::io::Read;
+        let body = "console.log('amux');\n".repeat(400);
+        let a = gzipped("probe-test.js", body.as_bytes()).expect("text over 1 KB is gzipped");
+        let b = gzipped("probe-test.js", body.as_bytes()).expect("cached");
+        assert_eq!(a, b);
+        let mut out = String::new();
+        flate2::read::GzDecoder::new(&a[..]).read_to_string(&mut out).unwrap();
+        assert_eq!(out, body);
+        assert!(gzipped("tiny.js", b"x").is_none(), "too small to bother");
+        assert!(gzipped("icon.png", &[0u8; 4096]).is_none(), "binary passes through");
+    }
     use std::sync::Arc;
     use std::time::Instant;
 

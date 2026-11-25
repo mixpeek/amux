@@ -488,13 +488,29 @@ extension AppDelegate {
     /// all our settings"). The app's own window is the fallback for a Mac with
     /// no server page open, or a server whose dashboard has no such tab.
     @objc func showSettings(_ sender: Any?) {
-        guard let page = keyPage ?? controllers.first, page.webView.url.map({ isServerURL($0) }) ?? false else {
+        // The page you are looking at; from the Dock or menu bar menu, with no
+        // key window, a page on screen before any hidden tab (opening it in a
+        // hidden tab switched the window away from what it showed).
+        let onServer = { (c: DashboardWindowController) in c.webView.url.map { self.isServerURL($0) } ?? false }
+        guard let page = keyPage.flatMap({ onServer($0) ? $0 : nil })
+                ?? controllers.first(where: { isShown($0) && onServer($0) })
+                ?? controllers.first(where: onServer) else {
             dlog("verdict=settings_native reason=no_server_page")
             showNativeSettings(sender)
             return
         }
+        // A page that does not answer (busy, or its process gone) must not
+        // leave ⌘, doing nothing: after 2 s the app's own window opens.
+        var answered = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + envSeconds("AMUX_DESKTOP_SETTINGS_WAIT_S", 2)) { [weak self] in
+            guard !answered, let self = self else { return }
+            answered = true
+            dlog("verdict=settings_native reason=page_did_not_answer")
+            self.showNativeSettings(sender)
+        }
         page.webView.evaluateJavaScript("typeof _macSettingsOpen === 'function' && _macSettingsOpen()") { [weak self] r, _ in
-            guard let self = self else { return }
+            guard let self = self, !answered else { return }
+            answered = true
             if (r as? Bool) == true {
                 dlog("verdict=settings_in_page")
                 page.window?.makeKeyAndOrderFront(nil)

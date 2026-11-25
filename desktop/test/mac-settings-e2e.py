@@ -150,6 +150,46 @@ try:
     check("a workspace saved there is in the config", any(l.get("name") == "E2E desk" for l in config().get("layouts", [])), config().get("layouts"))
     check("and listed on the tab", "E2E desk" in page().get("text", ""), page().get("text", "")[:300])
 
+    # Settings opens inside the window wherever the gear is (2026-11-25: the
+    # Needs-you approvals above the header pushed the gear to 777px of an 832px
+    # window and the menu hung off the bottom, so Settings "could not open").
+    def placed():
+        r = js("await new Promise(r => setTimeout(r, 400)); const m = document.getElementById('settings-menu'), r = m.getBoundingClientRect();"
+               " const t = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 200));"
+               " const g = document.getElementById('settings-btn').getBoundingClientRect();"
+               " return JSON.stringify({open: m.classList.contains('open'), top: r.top, bottom: r.bottom, left: r.left, right: r.right, vh: innerHeight, vw: innerWidth,"
+               " hit: !!(t && m.contains(t)), gear_top: g.top, gear_hit: m.contains(document.elementFromPoint(g.left + g.width / 2, g.top + g.height / 2))})")
+        try:
+            return json.loads(r)
+        except ValueError:
+            return {"error": r}
+    # A new server starts in the simple layout, which has no header; the
+    # owner's has one. "Everything else" is how a person gets it.
+    js("closeSettings(); _homeShowEverything(); return 'ok'")
+    time.sleep(1.5)
+    js("closeSettings(); const d = document.createElement('div'); d.id = 'e2e-push'; d.style.height = (innerHeight - 70) + 'px';"
+       " const h = document.querySelector('.header-row'); h.parentNode.insertBefore(d, h); scrollTo(0, 0); return 'pushed'")
+    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2.5)
+    pl = placed()
+    check("the gear really is near the bottom of the window", pl.get("gear_top", 0) > pl.get("vh", 1) - 140, pl)
+    check("Settings still opens fully inside the window", pl.get("open") and pl.get("top", -1) >= 0 and pl.get("bottom", 1e9) <= pl.get("vh", 0) + 1
+          and pl.get("left", -1) >= 0 and pl.get("right", 1e9) <= pl.get("vw", 0) + 1, pl)
+    check("and it is what you see there, not covered", pl.get("hit"), pl)
+    check("the gear stays uncovered, so it can close Settings", pl.get("gear_hit") is False, pl)
+    js("closeSettings(); document.getElementById('e2e-push').remove(); return 'ok'")
+    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2.5)
+    pl = placed()
+    check("with the gear at the top it opens under the gear", pl.get("open") and pl.get("top", 0) >= pl.get("gear_top", 0) and pl.get("bottom", 1e9) <= pl.get("vh", 0) + 1, pl)
+    js("closeSettings(); return 'ok'")
+
+    # A page that does not answer must not leave ⌘, doing nothing.
+    mark = len(log())
+    js("setTimeout(() => { const t = Date.now() + 5000; while (Date.now() < t) {} }, 50); return 'busy'")
+    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 3.5)
+    check("a page busy for 5 s gets the app's own Settings window after 2 s", "verdict=settings_native reason=page_did_not_answer" in log()[mark:], log()[mark:][-500:])
+    time.sleep(3)
+    check("and the late answer does not open a second one", log()[mark:].count("verdict=settings_") == 1, log()[mark:][-500:])
+
     for gone in ("Show in Menu Bar", "Notify When amux Needs You", "Show Count on Dock Icon", "Zoom All Windows"):
         send("amux://test/menu?title=" + urllib.parse.quote(gone), 0.8)
         check(f"the menus no longer carry {gone!r}", f"verdict=test_menu_chosen title={gone} found=0" in log(), log()[-300:])

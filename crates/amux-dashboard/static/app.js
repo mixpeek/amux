@@ -62988,6 +62988,44 @@ async function sendTestAlert(btn) {
   if (btn) btn.disabled = false;
 }
 
+// Settings opens INSIDE the window, wherever the gear is. On a wide screen the
+// menu hung under the gear, so when the Needs-you approvals above the header
+// pushed the gear down (777px in an 832px Mac app window, 2026-11-25) the menu
+// started 55px from the bottom and the owner could not open Settings at all.
+// Under the gear when there is room for most of it, else beside the gear from
+// the top, so the gear stays clickable. A phone keeps its own CSS placement.
+function _settingsPlace() {
+  const menu = document.getElementById('settings-menu');
+  if (!menu) return;
+  const st = menu.style;
+  if (!menu.classList.contains('open') || window.matchMedia('(max-width: 600px)').matches) {
+    st.position = st.top = st.right = st.maxHeight = st.maxWidth = '';
+    return;
+  }
+  const vh = window.innerHeight, vw = document.documentElement.clientWidth;
+  const btn = document.getElementById('settings-btn');
+  const r = btn ? btn.getBoundingClientRect() : null;
+  const seen = r && r.width > 0 && r.bottom > 0 && r.top < vh;
+  let top = 8, right = 12;
+  if (seen && vh - r.bottom - 18 >= Math.min(480, vh * 0.6)) { top = r.bottom + 6; right = vw - r.right; }
+  else if (seen) { right = Math.max(8, vw - r.left + 8); }
+  st.position = 'fixed';
+  st.top = Math.round(top) + 'px';
+  st.right = Math.round(right) + 'px';
+  st.maxHeight = Math.max(200, Math.round(vh - top - 12)) + 'px';
+  st.maxWidth = Math.max(260, Math.round(vw - right - 8)) + 'px';
+}
+(function _settingsPlaceWatch() {
+  const go = () => {
+    const menu = document.getElementById('settings-menu');
+    if (!menu) return;
+    new MutationObserver(_settingsPlace).observe(menu, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('resize', _settingsPlace);
+    document.addEventListener('scroll', _settingsPlace, { capture: true, passive: true });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+})();
+
 function closeSettings() {
   document.getElementById('settings-menu').classList.remove('open');
   const banner=document.getElementById('amux-auth-withheld'); if(banner) banner.hidden=false;

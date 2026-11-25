@@ -99,6 +99,7 @@ final class PaneGrid {
         window?.makeFirstResponder(c.webView)
         host?.updateTitle()
         dlog("verdict=pane_tab_selected pane_tabs=\(tabs(id).count)")
+        host?.app?.wakeShownDiscarded()
         host?.app?.saveWindowsSoon()
     }
 
