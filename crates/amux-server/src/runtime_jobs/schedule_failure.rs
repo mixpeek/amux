@@ -405,10 +405,12 @@ pub fn notice_text(
         ),
         _ => format!("[amux] SCHEDULE FAILED: {id} \"{title}\", your schedule, failed ({streak} in a row)."),
     };
+    let when = f.kind == "when_check";
+    let (ran_label, ran) = if when { ("when check", sched.str_field("when_check")) } else { (skind, sched.str_field("command")) };
     let mut out = format!(
-        "{head}\n\nWhen: {} ({source})\nRan ({skind}): {}\nResult: {}\n",
+        "{head}\n\nWhen: {} ({source})\nRan ({ran_label}): {}\nResult: {}\n",
         fmt_ts(ran_at),
-        truncate(sched.str_field("command"), 200),
+        truncate(ran, 200),
         truncate(&f.detail, 300),
     );
     if !f.tail.trim().is_empty() {
@@ -419,6 +421,20 @@ pub fn notice_text(
     }
     if f.kind == "credential" {
         out.push_str(&format!("\n{}\n", super::schedule_lifecycle::CREDENTIAL_HINT));
+    }
+    if when {
+        // Run now delivers the prompt WITHOUT the check and reads as a pass, so
+        // the old Ask below reset the streak while the check stayed broken.
+        out.push_str(&format!(
+            "\nAsk: the wake condition itself is broken: it must exit 0 (deliver) or 1 (not yet), and it \
+             crashed, timed out or exited otherwise. Run it by hand as this schedule's owner \
+             (bash -o pipefail -c '<the check>'; echo $?), fix it, then read the next SCHEDULED run: \
+             GET /api/schedules/{id} shows failure_streak 0 once a scheduled check answers 0 or 1. Do \
+             not use Run now to confirm: it delivers the prompt without running the check.\n\
+             You will not be told again about this same error until it changes or fails \
+             {ESCALATE_AFTER} more times."
+        ));
+        return out;
     }
     out.push_str(&format!(
         "\nAsk: fix the cause (the script, its inputs, or the schedule itself), then rerun it with \
@@ -1406,5 +1422,23 @@ mod tests {
         assert_eq!(take_queue(&store, "mixpeek-funnel").await.len(), 1, "the scheduler's notice is delivered");
         let peer = crate::api::session_verbs::steer_enqueue_store(&store, "mixpeek-funnel", "hi", "", "amux-app").await;
         assert_eq!(peer, Err("worker_group_boundary"), "a worker-origin send across groups is still refused");
+    }
+
+    /// p90, 2026-11-25: the notice for a broken wake condition told the lane
+    /// to confirm with Run now, which skips the check and reads as a pass.
+    #[test]
+    fn a_broken_when_checks_notice_names_the_check_and_not_run_now() {
+        let mut s = sched("SCHED-2896", "lane");
+        s.set("kind", Value::from("tmux"));
+        s.set("when_check", Value::from("gh api /x; exit 2"));
+        let reason = super::super::schedule_wake::when_reason("gh api /x; exit 2", Some(2), false, "");
+        let Verdict::Fail(f) = classify(&RunOutcome::Refused { reason }) else { panic!("a broken check is a failure") };
+        let t = notice_text(&s, &f, WHEN_BROKEN_AFTER, "first", "cron-rs", 0);
+        assert!(t.contains("Ran (when check): gh api /x; exit 2"), "{t}");
+        assert!(t.contains("exit 0 (deliver) or 1 (not yet)") && t.contains("Do not use Run now"), "{t}");
+        assert!(!t.contains("/run (curl"), "{t}");
+        let plain = sched("SCHED-1", "lane");
+        let Verdict::Fail(g) = classify(&RunOutcome::Failed { reason: "boom".into() }) else { panic!() };
+        assert!(notice_text(&plain, &g, 1, "first", "cron-rs", 0).contains("/run (curl"), "other failures keep their Ask");
     }
 }

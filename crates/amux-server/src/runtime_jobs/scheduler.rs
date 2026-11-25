@@ -2795,7 +2795,7 @@ impl Deliverer for LiveDeliverer {
         );
         let home = crate::api::session_verbs::home();
         let (text, carried) =
-            super::receipts::attach(&home, &session, &delivered_text(&brief.text, source));
+            super::receipts::attach(&home, &session, &delivered_text(&super::schedule_wake::with_when_output(&brief.text, sched), source));
         let d = crate::api::session_verbs::deliver_automated(
             &self.state,
             &session,
@@ -3457,10 +3457,19 @@ async fn fire_one(
     // check skips the fire; it is not a delivery attempt, so it spends no
     // max_runs and wakes nobody. Run now never reaches here, so it skips it.
     let when_check = super::schedule_wake::when_check_of(&claim.sched);
-    let when_skip: Option<String> = match &when_check {
-        Some(c) => super::schedule_wake::when_gate(&claim.sched, c).await.err(),
-        None => None,
+    let (when_skip, when_output): (Option<String>, String) = match &when_check {
+        Some(c) => match super::schedule_wake::when_gate(&claim.sched, c).await {
+            Ok(out) => (None, out),
+            Err(reason) => (Some(reason), String::new()),
+        },
+        None => (None, String::new()),
     };
+    // The passing check's output rides on this fire's copy of the row, and the
+    // tmux delivery appends it after the brief (schedule_wake::with_when_output).
+    let mut fire_sched = claim.sched.clone();
+    if !when_output.trim().is_empty() {
+        fire_sched.set(super::schedule_wake::WHEN_OUTPUT_KEY, Value::from(when_output));
+    }
     let mut outcomes: Vec<RunOutcome> = Vec::with_capacity(claim.notes.len());
     for i in 0..claim.notes.len() {
         outcomes.push(match (&when_skip, claim.run_ids.get(i)) {
@@ -3469,10 +3478,10 @@ async fn fire_one(
             // name the row a restarted server finishes (shell_detached.rs).
             (None, Some(id)) => {
                 super::shell_detached::SHELL_RUN_ID
-                    .scope(*id, deliverer.deliver(&claim.sched, "cron-rs"))
+                    .scope(*id, deliverer.deliver(&fire_sched, "cron-rs"))
                     .await
             }
-            (None, None) => deliverer.deliver(&claim.sched, "cron-rs").await,
+            (None, None) => deliverer.deliver(&fire_sched, "cron-rs").await,
         });
     }
     let when_skipped_all = when_skip.is_some();

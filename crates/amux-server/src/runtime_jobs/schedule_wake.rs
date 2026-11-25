@@ -70,16 +70,17 @@ pub fn when_check_of(sched: &DurableSchedule) -> Option<String> {
 }
 
 /// Run the wake condition as the schedule's owner (AMUX_SESSION and a worker
-/// run token, the shell-run environment). `Ok(())` = deliver; `Err(reason)`
-/// carries [`WHEN_PREFIX`] and how the check ended.
-pub async fn when_gate(sched: &DurableSchedule, check: &str) -> Result<(), String> {
+/// run token, the shell-run environment). `Ok(output)` = deliver, with the
+/// check's output tail; `Err(reason)` carries [`WHEN_PREFIX`] and how the
+/// check ended.
+pub async fn when_gate(sched: &DurableSchedule, check: &str) -> Result<String, String> {
     let owner = sched.str_field("session").trim().to_string();
     let r = super::schedule_check::run_bounded(check, &owner, WHEN_TIMEOUT_S, true).await;
     if r.exit_code == Some(0) && !r.timed_out {
         tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), session = %owner,
             verdict = "schedule_when_met", exit_code = 0, measured = true, n_considered = 1,
             "wake condition passed; delivering the scheduled prompt");
-        return Ok(());
+        return Ok(r.tail);
     }
     let reason = when_reason(check, r.exit_code, r.timed_out, &r.tail);
     if check_broke(r.exit_code, r.timed_out) {
@@ -98,6 +99,26 @@ pub async fn when_gate(sched: &DurableSchedule, check: &str) -> Result<(), Strin
 /// anything else is the check itself going wrong.
 pub fn check_broke(exit_code: Option<i32>, timed_out: bool) -> bool {
     timed_out || !matches!(exit_code, Some(0 | 1))
+}
+
+/// The key a fire carries the passing check's output under, on its own copy
+/// of the schedule row (never stored).
+pub const WHEN_OUTPUT_KEY: &str = "_when_output";
+
+/// The prompt as delivered: the brief, then what the wake condition printed,
+/// redacted, so the woken worker reads why it was woken without running the
+/// check again (p90 saved the output by hand in a when.sh wrapper).
+pub fn with_when_output(text: &str, sched: &DurableSchedule) -> String {
+    let out = sched.str_field(WHEN_OUTPUT_KEY).trim();
+    if out.is_empty() {
+        return text.to_string();
+    }
+    let (clean, masked) = crate::api::session_verbs::redact_secrets_counted(out);
+    if masked > 0 {
+        tracing::info!(target: "amux::schedule_wake", schedule = %sched.id(), masked, measured = true, n_considered = 1,
+            verdict = "schedule_when_output_redacted", "secrets in the wake condition's output were masked before delivery");
+    }
+    format!("{text}\n\n[wake condition output]\n{clean}")
 }
 
 /// The skip reason, pure.
@@ -286,6 +307,23 @@ pub fn briefs_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// p90, 2026-11-25: the woken worker had to rerun the check (or a when.sh
+    /// wrapper saved it) to learn why it was woken. The output rides after the
+    /// brief, with secrets masked; a check that printed nothing adds nothing.
+    #[test]
+    fn a_passing_checks_output_follows_the_prompt_redacted() {
+        let mut m = serde_json::Map::new();
+        m.insert("id".into(), serde_json::Value::from("SCHED-9"));
+        let mut s = DurableSchedule::from_map(m);
+        assert_eq!(with_when_output("look", &s), "look");
+        // Assembled at run time so the fixture is not a key-shaped literal.
+        let fake = format!("{}-{}-{}", "sk", "ant", "api03-abcdefghijklmnopqrstuvwxyz0123456789");
+        s.set(WHEN_OUTPUT_KEY, serde_json::Value::from(format!("pod p-1 OOMKilled\nANTHROPIC_API_KEY={fake}")));
+        let t = with_when_output("look", &s);
+        assert!(t.starts_with("look\n\n[wake condition output]\npod p-1 OOMKilled"), "{t}");
+        assert!(!t.contains("abcdefghijklmnopqrstuvwxyz0123456789"), "{t}");
+    }
 
     #[test]
     fn the_sched_656_shape_is_a_goal_continuation_and_a_sweep_is_not() {

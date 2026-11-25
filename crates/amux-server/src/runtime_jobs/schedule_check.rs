@@ -165,8 +165,57 @@ pub async fn run_bounded(check: &str, owner: &str, secs: u64, with_token: bool) 
             None => cmd.env_remove(crate::api::worker_identity::TOKEN_ENV),
         };
     }
-    cmd.kill_on_drop(true).stdin(std::process::Stdio::null());
-    let ran = tokio::time::timeout(Duration::from_secs(secs), cmd.output()).await;
+    cmd.kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // The check leads its own process group (shell_schedule_command). On a
+    // timeout the whole group goes: kill_on_drop alone signals bash and left a
+    // hung gcloud or gh running after the skip (p90, 2026-11-25).
+    let ran = match cmd.spawn() {
+        Err(e) => Ok(Err(e)),
+        Ok(mut child) => {
+            use tokio::io::AsyncReadExt;
+            let pid = child.id().map(|p| p as i32);
+            let (mut so, mut se) = (child.stdout.take(), child.stderr.take());
+            // Exit AND both pipes closed, inside one limit: a check that exits
+            // while a background child holds its output open is a timeout too
+            // (as with `output()` before), never an unbounded wait.
+            let run = async {
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                // A read error ends that stream early; what was read is kept.
+                let read_out = async {
+                    if let Some(Err(e)) = match so.as_mut() { Some(o) => Some(o.read_to_end(&mut a).await), None => None } {
+                        tracing::debug!(target: "amux::schedule_check", error = %e, verdict = "schedule_check_read_short", "a check's stdout ended early");
+                    }
+                };
+                let read_err = async {
+                    if let Some(Err(e)) = match se.as_mut() { Some(o) => Some(o.read_to_end(&mut b).await), None => None } {
+                        tracing::debug!(target: "amux::schedule_check", error = %e, verdict = "schedule_check_read_short", "a check's stderr ended early");
+                    }
+                };
+                let (status, _, _) = tokio::join!(child.wait(), read_out, read_err);
+                status.map(|status| std::process::Output { status, stdout: a, stderr: b })
+            };
+            let outcome = tokio::time::timeout(Duration::from_secs(secs), run).await;
+            match outcome {
+                Err(elapsed) => {
+                    // Still the live leader here: the whole group goes before
+                    // bash is reaped.
+                    if let Some(pid) = pid {
+                        super::shell_detached::kill_group(pid);
+                        tracing::warn!(target: "amux::schedule_check", pid, secs, measured = true, n_considered = 1,
+                            verdict = "schedule_check_timeout_group_killed", "a check ran past its limit; its whole process group was killed");
+                    }
+                    if let Err(e) = child.kill().await {
+                        tracing::debug!(target: "amux::schedule_check", error = %e, verdict = "schedule_check_kill_after_group", "bash was already gone after the group kill");
+                    }
+                    Err(elapsed)
+                }
+                Ok(r) => Ok(r),
+            }
+        }
+    };
     match ran {
         Err(_) => CheckResult { verdict: Verdict::Fail, exit_code: None, timed_out: true, tail: String::new() },
         Ok(Err(e)) => CheckResult {
@@ -186,6 +235,31 @@ pub async fn run_bounded(check: &str, owner: &str, secs: u64, with_token: bool) 
                 tail: super::scheduler::shell_output_tail(&all, 0, TAIL_BYTES),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod group_kill_tests {
+    /// p90, 2026-11-25: a timed-out check's children kept running. The
+    /// background sleeper (same process group) is gone after the timeout.
+    #[tokio::test]
+    async fn a_timed_out_check_takes_its_whole_process_group_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("child.pid");
+        let check = format!("sleep 300 & echo $! > {}; wait", pidfile.display());
+        let r = super::run_bounded(&check, "", 2, false).await;
+        assert!(r.timed_out, "{r:?}");
+        let pid: i32 = std::fs::read_to_string(&pidfile).unwrap().trim().parse().unwrap();
+        let mut gone = false;
+        for _ in 0..50 {
+            // SAFETY: probing a pid this test started.
+            if unsafe { libc::kill(pid, 0) } != 0 { gone = true; break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !gone {
+            unsafe { libc::kill(pid, libc::SIGKILL); }
+        }
+        assert!(gone, "the check's child outlived the timeout");
     }
 }
 
