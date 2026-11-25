@@ -12875,9 +12875,12 @@ p.communicate(msg.encode())
     fi
     # Test hook: the heartbeat's renewal lands on the remote at the moment of
     # the release, after rl-sha was read (the race below, reproduced).
+    # A renewal in the same second as the take is the same commit, which moves
+    # nothing (CI, 2026-11-25: case 21 then passed through the plain delete), so
+    # the hook's expiry is one past whatever the held lease says.
     if [ -n "${AMUX_LAND_TEST_RENEW_AT_RELEASE:-}" ]; then
-      local _tn; _tn="$(_land_rl_commit $(( $(date +%s) + ${AMUX_LAND_REMOTE_LEASE_TTL_S:-1200} )))" \
-        && _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "$_tn" || true
+      local _tn _te; _te="$(_land_rl_field "$_sha" expires_at)"; case "$_te" in ''|*[!0-9]*) _te="$(date +%s)" ;; esac
+      _tn="$(_land_rl_commit $(( _te + 1 )))" && _land_rl_push "$1" "$(_land_rl_ref "$2")" "$_sha" "$_tn" || true
     fi
     # A CAS delete is safe to repeat (review item 5).
     local _i _ok=""
