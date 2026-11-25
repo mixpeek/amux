@@ -482,15 +482,44 @@ extension AppDelegate {
         return parts.joined(separator: " · ") + "\n" + workspaceWindows(l).joined(separator: "\n")
     }
 
+    /// amux > Settings… (⌘,), the Dock menu and the menu bar item: the
+    /// dashboard's Settings opened on its This Mac tab, so every setting, this
+    /// Mac's and the server's, is in one place (owner, 2026-11-25: "consolidate
+    /// all our settings"). The app's own window is the fallback for a Mac with
+    /// no server page open, or a server whose dashboard has no such tab.
     @objc func showSettings(_ sender: Any?) {
+        guard let page = keyPage ?? controllers.first, page.webView.url.map({ isServerURL($0) }) ?? false else {
+            dlog("verdict=settings_native reason=no_server_page")
+            showNativeSettings(sender)
+            return
+        }
+        page.webView.evaluateJavaScript("typeof _macSettingsOpen === 'function' && _macSettingsOpen()") { [weak self] r, _ in
+            guard let self = self else { return }
+            if (r as? Bool) == true {
+                dlog("verdict=settings_in_page")
+                page.window?.makeKeyAndOrderFront(nil)
+                activateApp()
+                self.checkUpdatesIfStale()
+            } else {
+                dlog("verdict=settings_native reason=page_has_no_mac_tab")
+                self.showNativeSettings(sender)
+            }
+        }
+    }
+
+    /// At most every 10 minutes, opening Settings also checks for an update.
+    func checkUpdatesIfStale() {
+        let u = Updater.shared
+        if u.state == .idle || (u.state != .checking && u.state != .installing && -(u.checkedAt?.timeIntervalSinceNow ?? -1e9) > 600) { u.check() }
+    }
+
+    @objc func showNativeSettings(_ sender: Any?) {
         if settings == nil { settings = SettingsWindowController(app: self) }
         settings?.reload()
         settings?.showWindow(nil)
         settings?.window?.makeKeyAndOrderFront(nil)
         activateApp()
-        // Opening Settings checks too, at most every 10 minutes.
-        let u = Updater.shared
-        if u.state == .idle || (u.state != .checking && u.state != .installing && -(u.checkedAt?.timeIntervalSinceNow ?? -1e9) > 600) { u.check() }
+        checkUpdatesIfStale()
         // Workspaces another Mac saved show up here: the list redraws when the
         // server's copy differs from this Mac's.
         let before = (try? JSONEncoder().encode(loadConfig().layouts ?? [])) ?? Data()
@@ -525,7 +554,7 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
         w.center()
         w.setFrameAutosaveName("amuxSettings")
         super.init(window: w)
-        Updater.shared.changed = { [weak self] in self?.reload() }
+
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxSettings")
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
@@ -547,53 +576,127 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
     }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let app = app, let m = message.body as? [String: Any], let action = m["action"] as? String else { return }
+        guard let app = app, let m = message.body as? [String: Any] else { return }
+        app.settingsAction(m)
+    }
+}
+
+// ── One handler for every Settings surface ──
+// The dashboard's This Mac tab (app.js _macSettings*, through amuxSettings)
+// and the fallback window send the same {action, name, value}; after each,
+// every surface is told the new state, so two pages never disagree.
+extension AppDelegate {
+    func settingsAction(_ m: [String: Any]) {
+        guard let action = m["action"] as? String else { return }
         let name = m["name"] as? String ?? ""
         var cfg = loadConfig()
+        dlog("verdict=settings_action action=\(action) name=\(name)")
+        let after: () -> Void = { [weak self] in self?.settingsChanged() }
         switch action {
-        case "open": app.openLayout(named: name)
-        case "update": app.saveLayout(named: name) { [weak self] in self?.reload() }; return
-        case "save": app.saveLayout(named: name) { [weak self] in self?.reload() }; return
-        case "delete": app.deleteLayout(named: name)
+        case "state": break
+        case "open": openLayout(named: name)
+        case "update", "save": saveLayout(named: name) { after() }; return
+        case "delete": deleteLayout(named: name)
         case "rename":
-            if let new = app.askText(title: "Rename Layout", message: "", value: name, ok: "Rename") {
-                app.renameLayout(name, to: new)
+            if let new = askText(title: "Rename Workspace", message: "", value: name, ok: "Rename") {
+                renameLayout(name, to: new)
             }
         case "launch":
             cfg.launch = m["value"] as? String
             saveConfig(cfg)
-            app.config = cfg
+            config = cfg
         case "splitDirection":
             cfg.splitDirection = m["value"] as? String
             saveConfig(cfg)
-            app.config = cfg
+            config = cfg
             dlog("verdict=split_direction_set value=\(cfg.splitDirection ?? "right")")
         case "toggle":
             let on = m["value"] as? Bool ?? true
             switch name {
             case "menuBar": cfg.menuBar = on
-            case "notifications": app.setNotifications(on, source: "settings"); cfg = app.config
+            case "notifications": setNotifications(on, source: "settings"); cfg = config
             case "dockBadge": cfg.dockBadge = on
             case "snapToGrid": cfg.snapToGrid = on
             case "openAtLogin": cfg.openAtLogin = on
             case "computerUse": cfg.computerUse = on
             case "quickAsk": cfg.quickAsk = on; if !desktopTestQuiet { setQuickAskHotKey(on) }
+            case "zoomAllWindows":
+                if on != zoomAllWindows { toggleZoomAllWindows(nil) }
+                cfg = loadConfig()
             default: break
             }
             saveConfig(cfg)
-            app.config = cfg
-            app.applyBadge()
-            if name == "openAtLogin" { app.applyOpenAtLogin() }
-            if name == "menuBar" { app.startMenuBarItem() }
+            config = cfg
+            applyBadge()
+            if name == "openAtLogin" { applyOpenAtLogin() }
+            if name == "menuBar" { startMenuBarItem() }
             if name == "computerUse" { MacComputer.shared.apply(on) }
         case "server":
-            (app.keyController ?? app.openWindow(url: nil, frame: nil)).showConnectPage()
-        case "permission": MacPermissions.turnOn(name); DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.reload() }; return
+            (keyController ?? openWindow(url: nil, frame: nil)).showConnectPage()
+        case "permission":
+            MacPermissions.turnOn(name)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { after() }
+            return
         case "update-check": Updater.shared.check(); return
         case "update-install": Updater.shared.install(); return
-        default: break
+        default:
+            dlog("verdict=settings_action_unknown action=\(action)")
+            return
         }
-        reload()
+        after()
+    }
+
+    /// Every Settings surface redraws from the new state.
+    func settingsChanged() {
+        settings?.reload()
+        for p in allPages { tellMacSettings(p) }
+    }
+
+    func tellMacSettings(_ p: DashboardWindowController) {
+        guard p.webView.url.map({ isServerURL($0) }) ?? false,
+              let d = try? JSONSerialization.data(withJSONObject: macSettingsState()),
+              let json = String(data: d, encoding: .utf8) else { return }
+        p.webView.evaluateJavaScript("typeof _macSettingsState === 'function' && _macSettingsState(\(json))", completionHandler: nil)
+    }
+
+    /// What the This Mac tab draws. Keys are the toggles' names in settingsAction.
+    func macSettingsState() -> [String: Any] {
+        let c = loadConfig()
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        let u = Updater.shared
+        let built = u.commit.isEmpty ? "a build that does not record its commit" : "built from \(String(u.commit.prefix(9)))"
+            + (u.builtAt.isEmpty ? "" : " on \(u.builtAt)")
+        return [
+            "workspaces": (c.layouts ?? []).map { l -> [String: Any] in
+                ["name": l.name,
+                 "summary": workspaceSummary(l).components(separatedBy: "\n")[0],
+                 "shows": workspaceWindows(l),
+                 "saved": df.string(from: Date(timeIntervalSince1970: l.savedAt)),
+                 "open": c.activeWorkspace == l.name]
+            },
+            "launch": c.launch ?? "last",
+            "split": c.splitDirection ?? "right",
+            "toggles": [
+                "computerUse": c.computerUse ?? false,
+                "quickAsk": c.quickAsk ?? true,
+                "openAtLogin": c.openAtLogin ?? true,
+                "menuBar": c.menuBar ?? true,
+                "notifications": c.notifications ?? true,
+                "dockBadge": c.dockBadge ?? true,
+                "snapToGrid": c.snapToGrid ?? true,
+                "zoomAllWindows": c.zoomAllWindows ?? true,
+            ],
+            "computerUseNow": MacComputer.shared.stateLine,
+            "openAtLoginNow": openAtLoginStatus,
+            "spacesCanMove": Spaces.canMove,
+            "permissions": MacPermissions.all(),
+            "update": ["built": built, "state": "\(u.state)", "detail": u.state == .idle ? "" : u.detail,
+                       "canInstall": u.state == .available || (u.state == .failed && !u.latest.isEmpty),
+                       "busy": u.state == .checking || u.state == .installing],
+            "server": serverURL?.absoluteString ?? "",
+        ]
     }
 }
 

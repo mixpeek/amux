@@ -324,6 +324,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
           <button class="settings-tab-btn" data-stab="device" onclick="event.stopPropagation();_settingsTab('device')">Device</button>
           <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
           <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
+          <button class="settings-tab-btn" data-stab="mac" id="settings-tab-mac" hidden onclick="event.stopPropagation();_settingsTab('mac')">This Mac</button>
         </div>
         <div class="settings-tab-panel active" id="stab-account" data-stab="account">
         <div class="settings-section" id="settings-usage-section">
@@ -648,6 +649,9 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
           <p class="connection-help ui-help">Connect ChatGPT to this amux so it can list workers, read their output, message them and manage board cards. Nothing can delete or stop a worker from ChatGPT. Every connection waits here for your approval.</p>
           <div id="chatgpt-app">Loading…</div>
         </section>
+        </div>
+        <div class="settings-tab-panel" id="stab-mac" data-stab="mac">
+          <div id="mac-settings" class="settings-section"><p class="ui-help">Loading this Mac's settings…</p></div>
         </div>
         <div class="settings-tab-panel" id="stab-device" data-stab="device">
         <div class="settings-section" style="padding:var(--space-2-5) var(--space-3-5);">

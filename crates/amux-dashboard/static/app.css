@@ -11675,3 +11675,17 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .dict-context { width: 100%; margin-top: var(--space-1-5); }
 .dict-set-actions { display: flex; justify-content: flex-end; margin-top: var(--space-1-5); }
 .dict-set-gap { margin-top: var(--space-3); }
+
+/* Settings > This Mac (app.js _macSettingsRender) */
+#settings-tab-mac[hidden] { display: none; }
+.mac-set-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) 0; }
+.mac-set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-md); cursor: pointer; }
+.mac-set-label .ui-help { font-weight: normal; overflow-wrap: anywhere; }
+.mac-set-actions { display: flex; gap: var(--space-1); flex-wrap: nowrap; max-width: 100%; overflow-x: auto; }
+/* A row with several buttons: its text on top, the buttons in one row below. */
+.mac-set-stack { flex-wrap: wrap; }
+.mac-set-stack > .mac-set-label { flex: 1 1 100%; }
+.mac-set-row > .input { flex: 1; min-width: 0; }
+.mac-perm-state { font-size: var(--fs-sm); color: var(--dim); }
+.mac-perm-state[data-state="on"] { color: var(--green, var(--accent)); }
+@media (max-width: 600px) { .mac-set-row .btn, .mac-set-row .input { min-height: 44px; } }

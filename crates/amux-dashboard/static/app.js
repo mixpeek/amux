@@ -62201,8 +62201,109 @@ async function _vaultAudit(key) {
       + '<span class="vault-audit-what">' + line(x) + '</span><time class="ui-help" title="' + esc(new Date((x.ts || 0) * 1000).toLocaleString()) + '">' + esc(timeAgo(x.ts)) + '</time></li>').join('') + '</ol>'
       : '<p class="ui-help">Nothing recorded yet.</p>');
 }
+// ── Settings > This Mac: the Mac app's own settings, in the one Settings ──
+// The app answers through amuxSettings (desktop/amux-settings.swift
+// settingsAction) and calls _macSettingsState with what to draw; ⌘, and every
+// "Settings…" menu item open this tab (owner, 2026-11-25: "consolidate all our
+// settings"). A browser has no such bridge, so the tab stays hidden there.
+let _macSettings = null;
+function _macSettingsBridge() { return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.amuxSettings; }
+function _macSettingsSend(action, name, value) {
+  const b = _macSettingsBridge();
+  if (b) b.postMessage({ action, name: name || '', value });
+}
+function _macSettingsTabSync() {
+  const t = document.getElementById('settings-tab-mac');
+  if (t) t.hidden = !_macSettingsBridge();
+}
+// Called by the app (showSettings). True means the tab is open.
+function _macSettingsOpen() {
+  if (!_macSettingsBridge()) return false;
+  _macSettingsTabSync();
+  const menu = document.getElementById('settings-menu');
+  if (!menu) return false;
+  if (!menu.classList.contains('open')) toggleSettings();
+  _settingsTab('mac');
+  return true;
+}
+function _macSettingsState(s) {
+  _macSettings = s || null;
+  _macSettingsRender();
+}
+function _macToggleRow(key, label, hint) {
+  const on = !!(_macSettings.toggles || {})[key];
+  return '<div class="settings-row mac-set-row"><label class="mac-set-label" for="mac-set-' + key + '"><b>' + esc(label) + '</b>'
+    + (hint ? '<span class="ui-help">' + esc(hint) + '</span>' : '') + '</label>'
+    + '<label class="theme-toggle"><input type="checkbox" id="mac-set-' + key + '"' + (on ? ' checked' : '')
+    + ' onchange="_macSettingsSend(\'toggle\',\'' + key + '\',this.checked)"><span class="theme-track"><span class="theme-thumb"></span></span></label></div>';
+}
+let _macSettingsDraws = 0;
+function _macSettingsRender() {
+  const host = document.getElementById('mac-settings');
+  if (!host) return;
+  host.dataset.draws = String(++_macSettingsDraws);
+  const s = _macSettings;
+  if (!s) { host.innerHTML = '<p class="ui-help">Loading this Mac\'s settings…</p>'; return; }
+  const sec = (label, body) => '<div class="settings-section-label">' + esc(label) + '</div>' + body + '<div class="settings-sep"></div>';
+  const ws = s.workspaces || [];
+  const wsRows = ws.length ? ws.map(w => {
+    // A name can carry any character (a workspace saved on another Mac syncs here): escJs.
+    const n = "'" + escJs(w.name) + "'";
+    return '<div class="settings-row mac-set-row mac-set-stack"><div class="mac-set-label"><b>' + esc(w.name) + '</b><span class="ui-help">'
+      + esc(w.summary) + (w.open ? ' · open now' : '') + ' · saved ' + esc(w.saved) + '</span></div>'
+      + '<span class="mac-set-actions"><button class="btn primary" onclick="_macSettingsSend(\'open\',' + n + ')">Open</button>'
+      + '<button class="btn" title="Replace with the windows open now" onclick="_macSettingsSend(\'update\',' + n + ')">Update</button>'
+      + '<button class="btn" onclick="_macSettingsSend(\'rename\',' + n + ')">Rename</button>'
+      + '<button class="btn danger" onclick="_macSettingsSend(\'delete\',' + n + ')">Delete</button></span></div>';
+  }).join('') : '<p class="ui-help">No saved workspaces yet. Arrange your windows across your Desktops, then save them here.</p>';
+  const opt = (v, t, cur) => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(t) + '</option>';
+  const launch = [['last', 'Reopen the windows from last time'], ['new', 'Open one new window']]
+    .concat(ws.map(w => ['layout:' + w.name, 'Open workspace: ' + w.name])).map(o => opt(o[0], o[1], s.launch)).join('');
+  const split = [['right', 'To the right'], ['below', 'Below'], ['longer', "Along the pane's longer side"]].map(o => opt(o[0], o[1], s.split)).join('');
+  const perms = (s.permissions || []).map(p => {
+    const on = p.state === 'on';
+    return '<div class="settings-row mac-set-row" data-permission="' + esc(p.id || '') + '"><div class="mac-set-label"><b>' + esc(p.name || '') + '</b><span class="ui-help">' + esc(p.for || '') + '</span></div>'
+      + '<span class="mac-perm-state" data-state="' + esc(p.state || '') + '">' + (on ? 'On' : p.state === 'off' ? 'Off' : 'Not set up') + '</span>'
+      + (on ? '' : '<button class="btn" onclick="_macSettingsSend(\'permission\',\'' + escJs(p.id || '') + '\')">Turn On</button>') + '</div>';
+  }).join('');
+  const u = s.update || {};
+  // The app redraws this on every change from any window; a name being typed survives it.
+  const typing = document.getElementById('mac-ws-name');
+  const typed = typing ? typing.value : '', hadFocus = typing && document.activeElement === typing;
+  host.innerHTML =
+    sec('Workspaces', wsRows + '<div class="settings-row mac-set-row"><input class="input" id="mac-ws-name" placeholder="Name this workspace, e.g. Morning triage"'
+      + ' onkeydown="if(event.key===\'Enter\')_macSettingsSaveWs()"><button class="btn primary" id="mac-ws-save" onclick="_macSettingsSaveWs()">Save current windows</button></div>')
+    + sec('Computer use', _macToggleRow('computerUse', "Let workers use this Mac's apps",
+      "In the background, with their own cursor: your pointer and keyboard stay yours. Each worker may use only the apps you approve for it (AMUX_MAC_APPS in its Scope tab); terminals, password managers and System Settings stay off limits. ⌘⇧Esc stops it from any app. Now: " + (s.computerUseNow || '') + '.'))
+    + sec('Permissions', perms || '<p class="ui-help">No permissions to show.</p>')
+    + sec('Quick Ask', _macToggleRow('quickAsk', '⌥Space asks a worker from any app', 'A small panel to send a worker a message, with the window you were in or the text you selected attached if you want.'))
+    + sec('When amux opens', '<div class="settings-row mac-set-row"><select class="input" id="mac-set-launch" onchange="_macSettingsSend(\'launch\',\'\',this.value)">' + launch + '</select></div>'
+      + _macToggleRow('openAtLogin', 'Open amux at login', 'So a restart comes back to your windows on their Desktops. Now: ' + (s.openAtLoginNow || '') + '.')
+      + '<p class="ui-help">Each window goes back to its display and Desktop (' + (s.spacesCanMove ? 'available on this Mac' : 'not available on this macOS, so windows open on the current Desktop') + ').</p>')
+    + sec('Windows', _macToggleRow('menuBar', 'Show in menu bar', 'The amux icon, with who needs you, new windows, recording, computer use, pins and workspaces.')
+      + _macToggleRow('notifications', 'Notifications', 'Each new item waiting on you, and Messages addressed to you.')
+      + _macToggleRow('dockBadge', 'Show count on Dock icon', 'The number of items waiting on you.')
+      + _macToggleRow('zoomAllWindows', 'Zoom all windows together', 'Zooming one window zooms every amux window.')
+      + _macToggleRow('snapToGrid', 'Snap windows to a grid', 'While you drag, an outline shows where the window lands. Hold Option to place it freely.')
+      + '<div class="settings-row mac-set-row"><label class="mac-set-label" for="mac-set-split"><b>Split opens the new pane</b></label><select class="input" id="mac-set-split" onchange="_macSettingsSend(\'splitDirection\',\'\',this.value)">' + split + '</select></div>')
+    + sec('Updates', '<div class="settings-row mac-set-row mac-set-stack"><div class="mac-set-label"><b>This app: ' + esc(u.built || '') + '</b><span class="ui-help" id="mac-upd-status" data-state="' + esc(u.state || '') + '">'
+      + esc(u.detail || 'Check whether a newer build is out.') + '</span></div><span class="mac-set-actions">'
+      + (u.canInstall ? '<button class="btn primary" id="mac-upd-install" onclick="_macSettingsSend(\'update-install\')"' + (u.busy ? ' disabled' : '') + '>Update and Relaunch</button>' : '')
+      + '<button class="btn" id="mac-upd-check" onclick="_macSettingsSend(\'update-check\')"' + (u.busy ? ' disabled' : '') + '>Check for Updates</button></span></div>')
+    + '<div class="settings-section-label">Server</div><div class="settings-row mac-set-row"><div class="mac-set-label"><b>' + esc(s.server || 'not connected') + '</b><span class="ui-help">Every window connects here.</span></div>'
+      + '<button class="btn" onclick="_macSettingsSend(\'server\')">Change…</button></div>';
+  const again = document.getElementById('mac-ws-name');
+  if (again && typed) again.value = typed;
+  if (again && hadFocus) again.focus();
+}
+function _macSettingsSaveWs() {
+  const i = document.getElementById('mac-ws-name');
+  const v = i && i.value.trim();
+  if (v) { i.value = ''; _macSettingsSend('save', v); }
+}
 function _settingsTab(name) {
   if (name === 'integrations') setTimeout(() => { _chatgptAppLoad(); }, 0);
+  if (name === 'mac') { _macSettingsTabSync(); _macSettingsRender(); _macSettingsSend('state'); }
   const menu = document.getElementById('settings-menu');
   if (!menu) return;
   menu.querySelectorAll('.settings-tab-btn').forEach(b =>
@@ -62277,9 +62378,11 @@ function toggleSettings() {
   const open = menu.classList.toggle('open');
   if(!open) closeSettings();
   if (open) {
+    _macSettingsTabSync();
     // Restore the last-used settings tab (default: account) before painting.
     let savedTab = 'account';
     try { savedTab = localStorage.getItem('amux_settings_tab') || 'account'; } catch (e) {}
+    if (savedTab === 'mac' && !_macSettingsBridge()) savedTab = 'account';
     _settingsTab(savedTab);
     // Load the server-saved caps before painting, so the selects show the real
     // values rather than defaults that then silently change under the user.

@@ -54,6 +54,11 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   feed); both overlays use `sharingType = .none`. ⌥Space opens Quick Ask (Settings can turn it
   off; a quiet test copy never registers it). Settings > Permissions shows what macOS granted.
   `agent-view-e2e.py` proves them; `amux://test/quickask` drives Quick Ask.
+- Settings is one place: amux > Settings… (⌘,), the Dock menu and the menu bar item open the
+  dashboard's Settings on its This Mac tab (app.js `_macSettings*`, bridge `amuxSettings`,
+  `settingsAction` and `macSettingsState` in `amux-settings.swift`). A new app setting goes there,
+  never as a second switch in a menu. The app's own Settings window is only the fallback with no
+  server page open. `mac-settings-e2e.py` proves it; `amux://test/settings-action` sends one action.
 - A test screenshot captures its own window or rectangle, never the whole screen: the owner's
   screen can hold a live call.
 - The page side of a feature lives in `crates/amux-dashboard`; the app side is opt-in behind

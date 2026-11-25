@@ -533,6 +533,9 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
         // Dictation on device (amux-dictation.swift, app.js _dictNativeStart).
         cfg.userContentController.removeScriptMessageHandler(forName: "amuxDictation")
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxDictation")
+        // Settings > This Mac (app.js _macSettings*, amux-settings.swift settingsAction).
+        cfg.userContentController.removeScriptMessageHandler(forName: "amuxSettings")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxSettings")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         themeObservation = webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] wv, _ in
@@ -556,6 +559,13 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             if webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let d = message.body as? [String: Any] {
                 NativeDictation.shared.message(d, from: self)
             }
+            return
+        }
+        if message.name == "amuxSettings" {
+            // Only a page on this tab's own server reads or changes this Mac's settings.
+            guard webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let app = app,
+                  let d = message.body as? [String: Any] else { return }
+            if (d["action"] as? String) == "state" { app.tellMacSettings(self) } else { app.settingsAction(d) }
             return
         }
         if message.name == "amuxZoom" {
@@ -1107,12 +1117,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         NSApp.dockTile.badgeLabel = show && lastNeedsCount > 0 ? String(lastNeedsCount) : nil
     }
 
-    @objc func toggleDockBadge(_ sender: Any?) {
-        config = loadConfig()
-        config.dockBadge = !(config.dockBadge ?? true)
-        saveConfig(config)
-        applyBadge()
-    }
 
     var serverURL: URL? {
         config.connections.isEmpty ? nil : URL(string: normalized(config.lastUrl))
@@ -1140,6 +1144,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // An update check (from either Settings surface, or on its own) redraws both.
+        Updater.shared.changed = { [weak self] in self?.settingsChanged() }
         routeStderrToLogFile()
         QuietTestCopy.start()
         registerTextCheckingDefaults()
@@ -1788,12 +1794,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         api("/api/computer/status") { [weak self] obj in self?.menuBar?.setComputers(obj as? [String: Any]) }
     }
 
-    @objc func toggleMenuBarItem(_ sender: NSMenuItem) {
-        config = loadConfig()
-        config.menuBar = !(config.menuBar ?? true)
-        saveConfig(config)
-        startMenuBarItem()
-    }
 
     // ── Needs you: Dock badge and notifications ──
     /// Notifications need a real .app bundle: UNUserNotificationCenter throws
@@ -2002,9 +2002,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
     }
 
-    @objc func toggleNotifications(_ sender: NSMenuItem) {
-        setNotifications(!(loadConfig().notifications ?? true), source: "menu")
-    }
 
     /// The one switch for this Mac's notifications (needs-you and Messages).
     /// The menu, the app's Settings and any dashboard page set it; every page
@@ -2146,11 +2143,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     @objc func zoomReset(_ sender: Any?) { zoom("resetZoom") { $0.pageZoom = 1 } }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(toggleMenuBarItem(_:)) { item.state = (config.menuBar ?? true) ? .on : .off }
-        if item.action == #selector(toggleNotifications(_:)) { item.state = (config.notifications ?? true) ? .on : .off }
-        if item.action == #selector(toggleDockBadge(_:)) { item.state = (config.dockBadge ?? true) ? .on : .off }
         if item.action == #selector(toggleSnap(_:)) { item.state = snapEnabled ? .on : .off }
-        if item.action == #selector(toggleZoomAllWindows(_:)) { item.state = zoomAllWindows ? .on : .off }
         // Window > Panes acts on a window split into panes; elsewhere its keys
         // (⌘1-9 among them) go on to the page.
         let paneActions: [Selector] = [#selector(paneCloseTab(_:)), #selector(paneZoom(_:)), #selector(paneNextTab(_:)),
@@ -2169,10 +2162,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let m = NSMenu()
         m.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "").target = self
         m.addItem(withTitle: "New Tab", action: #selector(newTabAction(_:)), keyEquivalent: "").target = self
-        let badge = NSMenuItem(title: "Show Count on Dock Icon", action: #selector(toggleDockBadge(_:)), keyEquivalent: "")
-        badge.target = self
-        badge.state = (config.dockBadge ?? true) ? .on : .off
-        m.addItem(badge)
         let p = NSMenuItem(title: "Pins", action: nil, keyEquivalent: "")
         let copy = NSMenu(title: "Pins")
         for it in pinsMenu.items { copy.addItem(it.copy() as! NSMenuItem) }
@@ -2236,11 +2225,9 @@ func buildMenuBar(_ d: AppDelegate) {
     add(appMenu, "About amux", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), "")
     appMenu.addItem(.separator())
     add(appMenu, "Check for Updates…", #selector(AppDelegate.checkForUpdates(_:)), "", target: d)
+    // Every setting is in Settings (its This Mac tab for this app's own), so
+    // the menus carry no second copy of a switch (owner, 2026-11-25).
     add(appMenu, "Settings…", #selector(AppDelegate.showSettings(_:)), ",", target: d)
-    appMenu.addItem(.separator())
-    add(appMenu, "Show in Menu Bar", #selector(AppDelegate.toggleMenuBarItem(_:)), "", target: d)
-    add(appMenu, "Notify When amux Needs You", #selector(AppDelegate.toggleNotifications(_:)), "", target: d)
-    add(appMenu, "Show Count on Dock Icon", #selector(AppDelegate.toggleDockBadge(_:)), "", target: d)
     appMenu.addItem(.separator())
     add(appMenu, "Hide amux", #selector(NSApplication.hide(_:)), "h")
     add(appMenu, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option])
@@ -2305,7 +2292,6 @@ func buildMenuBar(_ d: AppDelegate) {
     add(view, "Zoom In", #selector(AppDelegate.zoomIn(_:)), "+", target: d)
     add(view, "Zoom Out", #selector(AppDelegate.zoomOut(_:)), "-", target: d)
     add(view, "Actual Size", #selector(AppDelegate.zoomReset(_:)), "0", target: d)
-    add(view, "Zoom All Windows", #selector(AppDelegate.toggleZoomAllWindows(_:)), "", target: d)
     view.addItem(.separator())
     add(view, "Show Tab Bar", #selector(NSWindow.toggleTabBar(_:)), "t", [.command, .shift])
     add(view, "Show All Tabs", #selector(NSWindow.toggleTabOverview(_:)), "\\", [.command, .shift])

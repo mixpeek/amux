@@ -3132,6 +3132,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_macSettingsOpen": {
+      "kind": "command._macSettingsOpen",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_mapBulk": {
       "kind": "command._mapBulk",
       "feedback_required": true,

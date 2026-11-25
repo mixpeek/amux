@@ -708,6 +708,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Alerts | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Connect | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Device | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | This Mac | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Workers | `_settingsTab` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | ⋯ | `_showExploreMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | ⋯ | `_showFilesMenu` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
@@ -1418,6 +1419,15 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Upload now | `_locNative` | onclick |
 | app.js | … | `_locNative` | onclick |
 | app.js | Show  | `_locToggleMode` | onclick |
+| app.js | Save current windows | `_macSettingsSaveWs` | onclick |
+| app.js | Change… | `_macSettingsSend` | onclick |
+| app.js | Check for Updates | `_macSettingsSend` | onclick |
+| app.js | Delete | `_macSettingsSend` | onclick |
+| app.js | Open | `_macSettingsSend` | onclick |
+| app.js | Rename | `_macSettingsSend` | onclick |
+| app.js | Turn On | `_macSettingsSend` | onclick |
+| app.js | Update | `_macSettingsSend` | onclick |
+| app.js | Update and Relaunch | `_macSettingsSend` | onclick |
 | index.html | Drop a pin on the map | `_mapAddPin` | onclick |
 | index.html | + Group | `_mapAddTag` | onclick |
 | index.html | Cancel | `_mapCloseModal` | onclick |

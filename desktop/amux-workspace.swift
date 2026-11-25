@@ -1216,11 +1216,27 @@ extension AppDelegate {
         // Through Window > Arrange > Snap to Grid While Dragging, as a person turns it off.
         case "/snap": if snapEnabled != (q.first { $0.name == "on" }?.value != "0") { toggleSnap(nil) }
         // Click a button in Settings by id, as a person does (desktop/test/update-e2e.py).
+        // One Settings action, as Settings > This Mac sends it (?action=toggle&name=menuBar&value=0).
+        case "/settings-action":
+            var m: [String: Any] = ["action": q.first { $0.name == "action" }?.value ?? "", "name": q.first { $0.name == "name" }?.value ?? ""]
+            if let v = q.first(where: { $0.name == "value" })?.value { m["value"] = v == "1" ? true : v == "0" ? false : v as Any }
+            settingsAction(m)
+        // in=page clicks it in the dashboard's Settings > This Mac instead.
         case "/settings-click":
-            showSettings(nil)
             let id = q.first { $0.name == "id" }?.value ?? ""
             // JSON-quoted for JavaScript (jsString also escapes for HTML attributes).
             let lit = String(data: (try? JSONSerialization.data(withJSONObject: [id])) ?? Data("[\"\"]".utf8), encoding: .utf8)?.dropFirst().dropLast() ?? "\"\""
+            let click = "(function(){const b=document.getElementById(\(lit));if(!b)return 'missing';if(b.disabled)return 'disabled';b.click();return 'clicked'})()"
+            if q.first(where: { $0.name == "in" })?.value == "page" {
+                showSettings(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    (self?.keyPage ?? self?.controllers.first)?.webView.evaluateJavaScript(click) { r, e in
+                        dlog("verdict=test_settings_click in=page id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
+                    }
+                }
+                break
+            }
+            showNativeSettings(nil)
             settings?.afterLoad.append { [weak self] in
                 self?.settings?.webView.evaluateJavaScript("(function(){const b=document.getElementById(\(lit));if(!b)return 'missing';if(b.disabled)return 'disabled';b.click();return 'clicked'})()") { r, e in
                     dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
@@ -1437,6 +1453,7 @@ extension AppDelegate {
                                      "quick_ask": QuickAsk.made ? QuickAsk.shared.state : ["visible": false, "workers": [String](), "last_sent": [String: Any]()],
                                      "permissions": MacPermissions.all(),
                                      "settings_permission_rows": settingsHTML(self).components(separatedBy: "data-permission=").count - 1,
+                                     "mac_settings": macSettingsState(),
                                      // Every page, shown or not: its web process and what it costs.
                                      "pages": controllers.map { c -> [String: Any] in
                                          let pid = webPID(c)

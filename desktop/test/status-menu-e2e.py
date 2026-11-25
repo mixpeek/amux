@@ -11,7 +11,7 @@ amux://test/status-menu?title=, which performs the item's action as a click
 does. Checks: the icon is the app icon, the menu has the expected items in
 order, the needs-you section lists each waiting worker and its count shows
 beside the icon, choosing a worker opens it, New Window opens a window, and the
-Show in Menu Bar switch removes and restores the item.
+Show in menu bar switch (Settings > This Mac) removes and restores the item.
 """
 import json, os, signal, subprocess, sys, tempfile, time
 
@@ -115,11 +115,11 @@ try:
     m = state(p.pid)["status_menu"]
     check("with nobody waiting the count goes away", m.get("title", "") == "" and m["items"][0] == "Nothing needs you", m)
 
-    # The Show in Menu Bar switch in the app menu.
-    send(p.pid, "amux://test/menu?title=Show in Menu Bar")
+    # The Show in Menu Bar switch in Settings > This Mac.
+    send(p.pid, "amux://test/settings-action?action=toggle&name=menuBar&value=0")
     off = wait(lambda: state(p.pid).get("status_menu") is None)
     check("Show in Menu Bar off removes it", off, state(p.pid).get("status_menu"))
-    send(p.pid, "amux://test/menu?title=Show in Menu Bar")
+    send(p.pid, "amux://test/settings-action?action=toggle&name=menuBar&value=1")
     on = wait(lambda: state(p.pid).get("status_menu") is not None)
     check("and on brings it back", on)
 finally:
