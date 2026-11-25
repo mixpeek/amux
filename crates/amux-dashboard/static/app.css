@@ -201,8 +201,6 @@
   .sortable-ghost { opacity: 0.35; background: color-mix(in srgb, var(--accent) 7%, transparent) !important; border: 2px dashed var(--accent) !important; border-radius: var(--radius-xl); }
   .sortable-chosen { opacity: 0.7; box-shadow: none; }
   .sortable-drag { opacity: 0.96; box-shadow: var(--shadow-lg); transform: rotate(1deg) scale(1.02); border-radius: var(--radius-xl); }
-  .cards.grid-mode .card { cursor: grab; }
-  .cards.grid-mode .card:active { cursor: grabbing; }
 
   .card {
     background: var(--card); border: 1px solid var(--border);
@@ -231,10 +229,18 @@
     cursor: default; color: var(--dim); opacity: 0; transition: opacity 0.15s; border-radius: var(--radius-sm);
     user-select: none; -webkit-user-select: none; touch-action: none;
   }
-  .card:hover .card-drag-handle { opacity: 0.7; cursor: grab; }
-  .card-drag-handle:hover { opacity: 1 !important; cursor: grab; color: var(--text); background: color-mix(in srgb, var(--dim) 10%, transparent); }
-  .card-drag-handle:active { cursor: grabbing; }
-  @media (hover: none) { .card-drag-handle { opacity: 0.6; cursor: grab; } }
+  /* The grip exists only under the Manual sort (.cards.manual-order); under
+     any other sort it keeps its space so cards do not shift, and the grab
+     cursor is on the grip alone, never the whole card. */
+  .cards:not(.manual-order) .card-drag-handle { visibility: hidden; }
+  .cards.manual-order .card:hover .card-drag-handle { opacity: 0.7; cursor: grab; }
+  .cards.manual-order .card-drag-handle:hover { opacity: 1 !important; cursor: grab; color: var(--text); background: color-mix(in srgb, var(--dim) 10%, transparent); }
+  .cards.manual-order .card-drag-handle:active { cursor: grabbing; }
+  @media (hover: none) {
+    .cards.manual-order .card-drag-handle { opacity: 0.6; cursor: grab; position: relative; }
+    /* 44x44 touch target without moving the 16x20 grip or the name beside it. */
+    .cards.manual-order .card-drag-handle::before { content: ''; position: absolute; inset: -12px -14px; }
+  }
   .card-header-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1-5); margin-left: var(--space-5); min-width: 0; }
   /* The sched/doing counts get their OWN row under the status line (Ethan,
      2026-08-09). On one line they were the last item in a row that already

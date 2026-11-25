@@ -8004,12 +8004,6 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "toggleFreeze": {
-      "kind": "command.toggleFreeze",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
     "toggleIsolated": {
       "kind": "command.toggleIsolated",
       "feedback_required": true,
