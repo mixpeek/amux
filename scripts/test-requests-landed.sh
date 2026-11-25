@@ -142,4 +142,13 @@ echo "$OUT2" | grep -E '^(on-main|held) +w-srv +MSG-202' >/dev/null || fail "wit
 pass=$((pass+1))
 echo "$OUT2" | grep -E '^landed +w-other +MSG-101' >/dev/null || fail "and another repo's work still reads landed: $OUT2"
 pass=$((pass+1))
+# AF-1401: the stranded pass is cached by the refs it reads. An unchanged repo
+# answers from the cache; a ref that moved is read again.
+J=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other --json 2>/dev/null)
+echo "$J" | python3 -c 'import json,sys; c=json.load(sys.stdin)["stranded_cache"]; sys.exit(0 if c["hit"] >= 1 and c["miss"] == 0 else 1)' || fail "an unchanged repo answers the stranded pass from its cache: $J"
+pass=$((pass+1))
+git -C "$T/other" branch -q -D local-only
+OUT3=$(CC_HOME="$T/home" AMUX_HOME="$T/home" AMUX_API="$API" bash "$ROOT/amux" requests w-other 2>&1)
+echo "$OUT3" | grep -E '^open +w-other +MSG-505 ' >/dev/null || fail "a deleted branch is read again, not answered from the cache: $OUT3"
+pass=$((pass+1))
 echo "test-requests-landed: $pass passed, 0 failed"

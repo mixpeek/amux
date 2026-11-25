@@ -10451,7 +10451,7 @@ HELP
   [[ ${#workers[@]} -eq 0 && -z "$all" ]] && workers=("${AMUX_SESSION:-}")
   [[ -z "$all" && -z "${workers[0]:-}" ]] && die "amux requests: name a worker (or --all); \$AMUX_SESSION is empty"
   AMUX_API="$AMUX_API" python3 - "$days" "$only_open" "$raw" "$all" "${AMUX_HOME:-$HOME/.amux}/requests-closed.json" ${workers[@]+"${workers[@]}"} <<'PY'
-import glob, json, os, re, subprocess, sys, time, urllib.parse
+import glob, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.parse
 days, only_open, raw, all_, closed_path = sys.argv[1:6]
 days = float(days)
 api = os.environ.get("AMUX_API", "https://localhost:8824")
@@ -10504,6 +10504,12 @@ def landed(repo):
 #   stray     the request landed, but this commit's change (by patch id) did not.
 # Per repository, like landed(), so twelve worktrees cost one pass.
 stranded_by_repo, history_cache = {}, {}
+stranded_cache_path = os.path.join(os.path.dirname(closed_path), "requests-stranded-cache.json")
+stranded_stats = {"hit": 0, "miss": 0}
+try:
+    stranded_cache = json.load(open(stranded_cache_path))
+except (OSError, ValueError):
+    stranded_cache = {}
 def _patch_ids(repo, shas):
     """{commit: patch id}, for many commits in one git call each way."""
     if not shas:
@@ -10547,6 +10553,19 @@ def stranded(repo):
         elif line.startswith("HEAD ") and len(line) > 5:
             heads.append(line[5:].strip())
             where.setdefault(line[5:].strip(), path)
+    # CACHED BY ITS INPUTS (velocity audit 2026-11-25, AF-1401): this pass took
+    # 19s of a 41s `amux requests <worker> --open`, every lane runs that before
+    # ending a turn, and the answer only changes when origin/main, a branch tip
+    # or a worktree's HEAD or path does. Those refs are the key.
+    refs = subprocess.run(["git", "-C", repo, "for-each-ref", "--format=%(refname) %(objectname)",
+                           "refs/heads", "refs/remotes/origin/main"], capture_output=True, text=True).stdout
+    sig = hashlib.sha256((refs + "\0" + wl).encode()).hexdigest()
+    cached = stranded_cache.get(key) or {}
+    if cached.get("sig") == sig and isinstance(cached.get("m"), dict):
+        stranded_stats["hit"] += 1
+        stranded_by_repo[key] = cached["m"]
+        return cached["m"]
+    stranded_stats["miss"] += 1
     log = subprocess.run(["git", "-C", repo, "log", "--no-merges", "--branches", *heads, "--not", "origin/main",
                           "--source", "--format=%H%x1f%S%x1f%B%x1e"], capture_output=True, text=True).stdout
     cand = {}
@@ -10580,6 +10599,14 @@ def stranded(repo):
         if stray:
             m[mid] = {"main": True, "stray": stray}
     stranded_by_repo[key] = m
+    stranded_cache[key] = {"sig": sig, "m": m}
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(stranded_cache_path))
+        with os.fdopen(fd, "w") as f:
+            json.dump(stranded_cache, f)
+        os.replace(tmp, stranded_cache_path)
+    except OSError:
+        pass  # uncached next time, never wrong
     return m
 def history_row(mid):
     if mid not in history_cache:
@@ -10765,7 +10792,7 @@ for r in landed_rows:
         r["e2e"], k = "no spec ran (%s)" % (v or "no verdict"), "none"
     e2e_counts[k] += 1
 counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("open", "stranded", "on-main", "live", "landed", "answered", "closed")}
-summary = {"e2e": e2e_counts, "stray_commits": strays, "measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
+summary = {"e2e": e2e_counts, "stray_commits": strays, "stranded_cache": stranded_stats, "measured": not unmeasured, "n_considered": len(rows), "tasks_measured": tasks_measured, "acks_dropped": dropped, "days": days,
            "build": build[:12], "counts": counts, "fetch_timed_out": stale, "why_unmeasured": unmeasured and ("no history/session for " + ", ".join(unmeasured))}
 # WHY ON MAIN IS NOT LIVE (velocity audit 2026-10-21): the builder's CI gate
 # keeps the last green image while main is red, and said so only in its log.
