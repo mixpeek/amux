@@ -135,9 +135,15 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
 # host, and alerting on GitHub alone was every alert they raised (11-22 to
 # 11-24: grep, date and git, each to 140.82.112.0/20). So they are judged per
 # destination like a shell: GitHub is quiet, anything else alerts.
-GIT_AND_INHERITORS = {"git", "git-remote-https", "git-remot", "date", "grep", "sed",
+# lsof and the kernel cut a name short (git-remot, git-remote-http), so any
+# git-remote-* helper counts by prefix.
+GIT_AND_INHERITORS = {"git", "date", "grep", "sed",
                       "awk", "cat", "head", "tail", "sort", "cut", "tr", "wc", "sleep"}
 PER_DESTINATION = SHELLS | GIT_AND_INHERITORS
+
+
+def per_destination(cmd: str) -> bool:
+    return cmd in PER_DESTINATION or cmd.startswith("git-remot")
 
 
 def is_github(addr: str) -> bool:
@@ -312,7 +318,7 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         out.append({"key": f"firewall:{snap['firewall']}", "kind": "FIREWALL", "state": snap["firewall"]})
     known_egress = set(base.get("egress", []))
     for cmd in sorted(snap["egress"]):
-        if cmd in PER_DESTINATION:
+        if per_destination(cmd):
             for addr in sorted(snap["egress"][cmd]):
                 if not is_github(addr):
                     out.append({"key": f"egress:{cmd}:{addr}", "kind": "NEW-EGRESS",

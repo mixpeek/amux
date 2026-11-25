@@ -135,6 +135,10 @@ git_rows = [r["key"] for r in nw.evaluate(
     {**base, "egress": ["claude", "git", "date"]}, reqs) if r["kind"] == "NEW-EGRESS"]
 check("git and a child that inherits its socket are quiet to GitHub and alert elsewhere, even accepted by name",
       git_rows == ["egress:git:203.0.113.7"], str(git_rows))
+check("a git-remote helper is judged per destination under any truncated name",
+      all(nw.per_destination(n) for n in ["git-remot", "git-remote-http", "git-remote-https"])
+      and not any(r["kind"] == "NEW-EGRESS" for r in nw.evaluate(
+          {**snap, "egress": {"git-remote-http": {"140.82.114.4"}}}, base, reqs)))
 now = 1_000_000.0
 kept = nw.remember({"listener:node:3931": now - 3600, "old": now - 25 * 3600}, ["new"], now)
 check("a key gone for an hour stays quiet, one gone a day alerts again",
