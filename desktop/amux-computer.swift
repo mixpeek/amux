@@ -229,6 +229,7 @@ final class MacComputer {
                 guard status == 200, let obj = obj else { self.retryPoll(gen, why: "poll answered \(status)"); return }
                 self.pollFailures = 0
                 self.lastPollOK = Date()
+                self.restoreEndpointIfMissing()
                 if let job = obj["job"] as? [String: Any], let id = job["id"] as? String, let tool = job["tool"] as? String {
                     let args = job["args"] as? [String: Any] ?? [:]
                     d.request("tools/call", ["name": tool, "arguments": args]) { result, err in
@@ -277,8 +278,23 @@ final class MacComputer {
         }.resume()
     }
 
-    func stop(reason: String) {
+    /// Removes endpoint.json only when it names this app's own driver. Any
+    /// other copy of the app (a quiet test copy shares ~/.amux) quitting used
+    /// to delete the owner's file, so the server read computer use as off while
+    /// the owner's driver kept running (2026-11-25, twice in one morning).
+    private func removeOwnEndpoint(_ pid: Int32?, why: String) {
+        guard let data = try? Data(contentsOf: endpointFile),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let named = (obj["pid"] as? NSNumber)?.int32Value
+        guard let pid = pid, named == pid else {
+            dlog("verdict=computer_use_endpoint_kept why=\(why) names_pid=\(named.map(String.init) ?? "-") own_pid=\(pid.map(String.init) ?? "none")")
+            return
+        }
         try? FileManager.default.removeItem(at: endpointFile)
+    }
+
+    func stop(reason: String) {
+        removeOwnEndpoint(proc?.processIdentifier, why: reason)
         pollGen += 1
         lastPollOK = nil
         driver?.stop()
@@ -299,17 +315,26 @@ final class MacComputer {
     private func exited(_ status: Int32) {
         let wasStopping = stopping
         stopping = false
+        let pid = proc?.processIdentifier
         proc = nil
         pollGen += 1
         driver?.stop()
         driver = nil
         if wasStopping { return }
-        try? FileManager.default.removeItem(at: endpointFile)
+        removeOwnEndpoint(pid, why: "driver_exited")
         dlog("verdict=computer_use_driver_exited status=\(status) restarts=\(restarts)")
         // A crash restarts, a few times, then stays down and says so.
         guard restarts < 3, (AmuxDesktop.delegate.config.computerUse ?? false), !stoppedByOwner else { return }
         restarts += 1
         DispatchQueue.main.asyncAfter(deadline: .now() + Double(restarts * 2)) { [weak self] in self?.start() }
+    }
+
+    /// A running driver whose endpoint.json is gone (deleted by another copy,
+    /// or by hand) writes it again, so the server sees it within one poll.
+    private func restoreEndpointIfMissing() {
+        guard let p = proc, p.isRunning, let bin = binary, !FileManager.default.fileExists(atPath: endpointFile.path) else { return }
+        writeEndpoint(pid: p.processIdentifier, bin: bin)
+        dlog("verdict=computer_use_endpoint_restored pid=\(p.processIdentifier)")
     }
 
     private func writeEndpoint(pid: Int32, bin: URL) {

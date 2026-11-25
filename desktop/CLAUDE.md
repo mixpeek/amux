@@ -45,7 +45,9 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
 - Computer use on this Mac (`amux-computer.swift`): the app bundles trycua's cua-driver
   (pinned and checksummed in `build-desktop.sh`) and runs it embedded, with Amux's own
   permissions, when Settings > Computer use is on; it writes `<AMUX_HOME>/cua/endpoint.json`
-  for the server (`integrations/computer_mac.rs` holds the per-app gate). ⌘⇧Esc or the menu
+  for the server (`integrations/computer_mac.rs` holds the per-app gate). A copy removes that
+  file only when it names its own driver (a test copy shares `~/.amux`; `computer-endpoint-e2e.py`),
+  and a running driver writes it again if it goes missing. ⌘⇧Esc or the menu
   bar's Stop Computer Use ends it. `computer-mac-e2e.py` proves it with reads only.
 - While a worker uses this Mac the app shows a live preview and an outline over the driven
   window, and a dot on the menu bar icon (`amux-agentview.swift`, from the server's activity
