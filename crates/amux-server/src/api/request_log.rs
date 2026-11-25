@@ -3416,12 +3416,16 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "PATCH", "DELETE"],
     },
     RouteEntry {
+        path: "/api/crm/accounts/{id}/interactions",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/crm/deals",
         methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/crm/deals/{id}",
-        methods: &["PATCH", "DELETE"],
+        methods: &["GET", "PATCH", "DELETE"],
     },
     RouteEntry {
         path: "/api/crm/lookalikes",

@@ -69,7 +69,7 @@ pub fn routes() -> Router<AppState> {
 // DM, a call, a letter by post and a meeting at an event.
 pub const KINDS: &[&str] = &["linkedin", "x", "instagram", "website", "careers", "email", "phone", "youtube", "tiktok", "github",
     "sms", "whatsapp", "slack", "discord", "community", "post", "event", "in_person", "other"];
-pub const ACTIONS: &[&str] = &["dm", "comment", "connect", "email", "follow", "like", "call", "note",
+pub const ACTIONS: &[&str] = &["dm", "comment", "connect", "email", "followup", "follow", "like", "call", "note",
     "text", "voicemail", "letter", "gift", "meet", "invite", "intro", "visit"];
 /// Touch points that happen off a screen: the owner or a worker records them done.
 pub const OFFLINE: &[&str] = &["post", "event", "in_person"];
@@ -305,6 +305,13 @@ pub(crate) fn record_observation(conn: &rusqlite::Connection, id: &str, items: &
     }
     let summary: Vec<String> = added.iter().take(5).map(|v| v.get("title").and_then(Value::as_str).unwrap_or_else(|| v.get("url").and_then(Value::as_str).unwrap_or("")).chars().take(160).collect()).collect();
     // The person's (or company's) timeline shows it too.
+    if owner_kind == "account" {
+        conn.execute(
+            "INSERT OR IGNORE INTO crm_account_activity (id,account_id,date,type,direction,subject,notes,message_id,source,created) VALUES (?1,?2,?3,'signal','in',?4,?5,?6,'crm-watch',?7)",
+            rusqlite::params![ulid::Ulid::new().to_string(), &owner_id, chrono::Local::now().format("%Y-%m-%d").to_string(),
+                format!("{kind}: {} new", added.len()), summary.join("\n"), format!("signal:{id}:{hash}"), now],
+        )?;
+    }
     if owner_kind == "contact" {
         conn.execute(
             "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,created,updated,direction,subject,message_id) VALUES (?1,?2,?3,'signal',?4,?5,?5,'in',?6,?7)",
@@ -809,8 +816,9 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
             }
             let addr = d.get("from_address").and_then(Value::as_str).unwrap_or("").to_lowercase();
             let Some((cid, name)) = conn.query_row("SELECT id,name FROM crm_contacts WHERE lower(email)=?1 AND deleted IS NULL", [&addr], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).ok() else { continue };
-            (cid, name, "email", d.get("subject").and_then(Value::as_str).unwrap_or("").to_string(),
-                d.get("snippet").and_then(Value::as_str).unwrap_or("").to_string(), d.get("message_id").and_then(Value::as_str).unwrap_or("").to_string())
+            // Gmail's snippet is HTML-escaped (`we&#39;re`, `&lt;ethan@...&gt;`).
+            (cid, name, "email", unescape_html(d.get("subject").and_then(Value::as_str).unwrap_or("")),
+                unescape_html(d.get("snippet").and_then(Value::as_str).unwrap_or("")), d.get("message_id").and_then(Value::as_str).unwrap_or("").to_string())
         } else {
             let who = d.get("from_name").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
             if who.is_empty() || d.get("sponsored").and_then(Value::as_bool) == Some(true) {
@@ -822,7 +830,7 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
                 continue;
             }
             let (cid, name) = hits[0].clone();
-            (cid, name, "linkedin", "LinkedIn message".to_string(), d.get("snippet").and_then(Value::as_str).unwrap_or("").to_string(),
+            (cid, name, "linkedin", "LinkedIn message".to_string(), unescape_html(d.get("snippet").and_then(Value::as_str).unwrap_or("")),
                 format!("linkedin:{}", d.get("key").and_then(Value::as_str).unwrap_or("")))
         };
         let added = conn.execute(
@@ -840,6 +848,12 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
     }
     state_set(conn, "events_id", &last.to_string())?;
     Ok((n, replied))
+}
+
+/// The five entities Gmail puts in a snippet, decoded (`&amp;` last, so an
+/// escaped entity such as `&amp;lt;` decodes once).
+pub(crate) fn unescape_html(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&#x27;", "'").replace("&amp;", "&")
 }
 
 /// Outbound: each delivered send in the sent-mail log, on each recipient in
@@ -875,7 +889,12 @@ pub(crate) fn capture_sent(conn: &rusqlite::Connection, path: &std::path::Path) 
             continue;
         }
         let subject = r.get("subject").and_then(Value::as_str).unwrap_or("").to_string();
-        let msg = r.get("message_id").and_then(Value::as_str).or_else(|| r.get("gmail_id").and_then(Value::as_str)).unwrap_or("").to_string();
+        let msg = r.get("message_id").and_then(Value::as_str).or_else(|| r.get("gmail_id").and_then(Value::as_str))
+            .or_else(|| r.get("id").and_then(Value::as_str).filter(|_| r.get("via").and_then(Value::as_str) == Some("gmail"))).unwrap_or("").to_string();
+        // The send log keeps `body_preview` (and `body_chars`), not the body:
+        // reading only `body` left every captured send with an empty note.
+        let note: String = r.get("body").and_then(Value::as_str).filter(|b| !b.trim().is_empty())
+            .or_else(|| r.get("body_preview").and_then(Value::as_str)).unwrap_or("").chars().take(2000).collect();
         let msg = if msg.is_empty() { format!("sent:{}:{}", r.get("ts").and_then(Value::as_str).unwrap_or(""), subject) } else { msg };
         let to: String = ["to", "cc"].iter().filter_map(|k| r.get(*k).and_then(Value::as_str)).collect::<Vec<_>>().join(",");
         for addr in to.split([',', ';']).map(|a| a.trim()).filter(|a| a.contains('@')) {
@@ -884,7 +903,7 @@ pub(crate) fn capture_sent(conn: &rusqlite::Connection, path: &std::path::Path) 
             n += conn.execute(
                 "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,created,updated,direction,subject,message_id) VALUES (?1,?2,?3,'email',?4,?5,?5,'out',?6,?7)",
                 rusqlite::params![ulid::Ulid::new().to_string(), &cid, chrono::Local::now().format("%Y-%m-%d").to_string(),
-                    r.get("body").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect::<String>(), now_secs(), &subject, &msg],
+                    &note, now_secs(), &subject, &msg],
             )?;
         }
     }
@@ -992,5 +1011,19 @@ mod tests {
         let dirs: Vec<String> = conn.prepare("SELECT direction FROM crm_interactions WHERE contact_id='PPL-1' ORDER BY direction").unwrap()
             .query_map([], |r| r.get(0)).unwrap().filter_map(Result::ok).collect();
         assert_eq!(dirs, vec!["in", "in", "out"]);
+
+        // gtm-engine, 2026-11-25: a snippet kept `&#39;` and `&lt;`, and a send
+        // logged with `body_preview` only was captured with an empty note.
+        conn.execute("INSERT INTO session_events (ts,type,data,source) VALUES (?1,'email.received',?2,'x')",
+            rusqlite::params![now as f64, json!({"from_address": "ada@acme.io", "subject": "Re: it&#39;s on", "snippet": "we&#39;re in &lt;hold&gt; &amp; back", "message_id": "<m2>"}).to_string()]).unwrap();
+        assert_eq!(capture_events(&conn).unwrap().0, 1);
+        let (subj, note): (String, String) = conn.query_row("SELECT subject, notes FROM crm_interactions WHERE message_id='<m2>'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((subj.as_str(), note.as_str()), ("Re: it's on", "we're in <hold> & back"));
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        use std::io::Write;
+        writeln!(f, "{}", json!({"to": "ada@acme.io", "subject": "Re: hold", "body_preview": "Understood, thanks.", "id": "g1", "via": "gmail"})).unwrap();
+        assert_eq!(capture_sent(&conn, &log).unwrap(), 1);
+        let note: String = conn.query_row("SELECT notes FROM crm_interactions WHERE message_id='g1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(note, "Understood, thanks.");
     }
 }

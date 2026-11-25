@@ -499,6 +499,8 @@ mod tests {
     fn a_later_email_step_is_a_followup() {
         assert_eq!(key_of("email", "email", 1), "email/email");
         assert_eq!(key_of("email", "email", 2), "email/followup");
+        assert_eq!(key_of("email", "followup", 0), "email/followup", "a follow-up made outside a sequence keys the same rule");
+        assert!(super::super::crm_agent::ACTIONS.contains(&"followup"));
         assert_eq!(key_of("linkedin", "dm", 3), "linkedin/dm");
     }
 

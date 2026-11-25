@@ -197,8 +197,15 @@ fn steps_of(conn: &rusqlite::Connection, seq: &str) -> Option<(Vec<Value>, Strin
 
 /// Plans step `n` (1-based) of a sequence for a person. Returns the touch id.
 fn plan_step(conn: &rusqlite::Connection, seq: &str, contact: &str, n: usize, fallback_assignee: &str, source: &str) -> rusqlite::Result<Option<String>> {
+    plan_step_due(conn, seq, contact, n, None, fallback_assignee, source)
+}
+
+/// [`plan_step`], due `day` days from today instead of the step's own `day`
+/// (a person who enters at a later step starts on step 1's day).
+fn plan_step_due(conn: &rusqlite::Connection, seq: &str, contact: &str, n: usize, day: Option<i64>, fallback_assignee: &str, source: &str) -> rusqlite::Result<Option<String>> {
     let Some((steps, seq_assignee)) = steps_of(conn, seq) else { return Ok(None) };
     let Some(step) = steps.get(n - 1) else { return Ok(None) };
+    let day = day.unwrap_or_else(|| step.get("day").and_then(Value::as_i64).unwrap_or(0));
     let s = |k: &str| step.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let body = fill(conn, &s("template"), contact);
     let assignee = [s("assignee"), seq_assignee, fallback_assignee.to_string()].into_iter().find(|a| !a.is_empty()).unwrap_or_default();
@@ -207,7 +214,7 @@ fn plan_step(conn: &rusqlite::Connection, seq: &str, contact: &str, n: usize, fa
     conn.execute(
         "INSERT INTO crm_touches (id,contact_id,channel,action,body,due_date,assignee,status,sequence,step,source,created,updated,voice_check) \
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?12,?13)",
-        rusqlite::params![&id, contact, s("channel"), s("action"), &body, day_plus(step.get("day").and_then(Value::as_i64).unwrap_or(0)),
+        rusqlite::params![&id, contact, s("channel"), s("action"), &body, day_plus(day),
             &assignee, if body.is_empty() { "planned" } else { "drafted" }, seq, n as i64, source, now,
             super::crm_voice::plan_check(conn, &s("channel"), &s("action"), n as i64, &body)],
     )?;
@@ -312,6 +319,25 @@ pub(crate) fn on_reply(conn: &rusqlite::Connection, contact: &str, text: &str) -
     Ok(stopped)
 }
 
+/// A person booked a meeting (a /demo booking, logged as a `meeting` or
+/// `booking` interaction): every active sequence they are in has done its job.
+/// Their open sequence touches are skipped and the enrollments read `booked`,
+/// whatever the sequence's stop_on_reply says. Returns (sequences, touches).
+pub(crate) fn on_booking(conn: &rusqlite::Connection, contact: &str) -> rusqlite::Result<(usize, usize)> {
+    let now = now_secs();
+    let touches = conn.execute(
+        "UPDATE crm_touches SET status='skipped', result='stopped: they booked a meeting', updated=?2 WHERE contact_id=?1 AND deleted IS NULL \
+         AND status IN ('planned','drafted','approved') AND sequence IN (SELECT sequence_id FROM crm_enrollments WHERE contact_id=?1 AND status='active')",
+        rusqlite::params![contact, now],
+    )?;
+    let sequences = conn.execute("UPDATE crm_enrollments SET status='booked', updated=?2 WHERE contact_id=?1 AND status='active'", rusqlite::params![contact, now])?;
+    if sequences + touches > 0 {
+        tracing::info!(target: "amux::crm", contact = %contact, sequences, touches_skipped = touches, measured = true, n_considered = sequences,
+            verdict = "crm_sequence_stopped_on_booking", "a booked meeting stopped the person's sequences");
+    }
+    Ok((sequences, touches))
+}
+
 /// Everything a drafter needs to make a touch personal, in one read.
 pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<Option<Value>> {
     let Some(person) = query_rows_json(conn, "SELECT * FROM crm_contacts WHERE id=?1 AND deleted IS NULL", &[&id as &dyn rusqlite::ToSql])?.into_iter().next() else {
@@ -340,8 +366,9 @@ pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<O
     let replied = activity.iter().find(|a| a["direction"] == "in").cloned().unwrap_or(Value::Null);
     let voice = super::crm_voice::brief_voice(conn, &channels, &person)?;
     let can_reach = guard(conn, id, "email", "email", "", true).map(|(v, m, _)| json!({ "ok": false, "verdict": v, "why": m })).unwrap_or(json!({ "ok": true }));
+    let held = super::crm::held_emails_for(person["email"].as_str().unwrap_or(""));
     Ok(Some(json!({
-        "person": person, "company": company, "channels": channels, "signals": signals, "activity": activity, "last_inbound": replied,
+        "person": person, "company": company, "channels": channels, "signals": signals, "activity": activity, "last_inbound": replied, "held_emails": held,
         "touches": touches, "deals": deals, "sequences": sequences, "lookalikes": lookalikes, "can_reach": can_reach, "voice": voice,
         "measured": true, "n_considered": activity.len() + touches.len() + signals.len(),
     })))
@@ -520,8 +547,8 @@ async fn delete_sequence(State(state): State<AppState>, Path(id): Path<String>) 
 /// already in it, is listed with the reason rather than enrolled.
 pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[String], by: &str) -> rusqlite::Result<Option<Value>> {
     let Some((steps, _)) = steps_of(conn, seq) else { return Ok(None) };
-    let first = steps.first().cloned().unwrap_or(Value::Null);
-    let (ch, ac) = (first["channel"].as_str().unwrap_or(""), first["action"].as_str().unwrap_or(""));
+    let first_day = steps.first().and_then(|s| s.get("day")).and_then(Value::as_i64).unwrap_or(0);
+    let channels: Vec<String> = steps.iter().map(|s| s["channel"].as_str().unwrap_or("").to_string()).collect();
     let (mut enrolled, mut skipped) = (Vec::new(), Vec::new());
     let worker = by.strip_prefix("worker:").unwrap_or("");
     for cid in ids {
@@ -535,18 +562,28 @@ pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[Strin
             skipped.push(json!({ "contact_id": cid, "verdict": "already_enrolled", "status": st }));
             continue;
         }
+        // gtm-engine, 2026-11-25: SEQ-5 refused three people with no LinkedIn
+        // whose next steps were an email and a letter. A person starts at the
+        // first step they can be reached on, due on step 1's day.
+        let Some(k) = channels.iter().position(|ch| reachable(conn, cid, ch)) else {
+            let mut uniq = channels.clone();
+            uniq.dedup();
+            skipped.push(json!({ "contact_id": cid, "verdict": "crm_touch_no_channel", "why": format!("no address or channel for any step ({})", uniq.join(", ")) }));
+            continue;
+        };
+        let (ch, ac) = (steps[k]["channel"].as_str().unwrap_or(""), steps[k]["action"].as_str().unwrap_or(""));
         if let Some((v, why, existing)) = guard(conn, cid, ch, ac, seq, false) {
             skipped.push(json!({ "contact_id": cid, "verdict": v, "why": why, "existing": existing }));
             continue;
         }
-        if !reachable(conn, cid, ch) {
-            skipped.push(json!({ "contact_id": cid, "verdict": "crm_touch_no_channel", "why": format!("no {ch} address or channel for this person") }));
-            continue;
-        }
         let now = now_secs();
         conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated) VALUES (?1,?2,?3,?4,?4)", rusqlite::params![seq, cid, by, now])?;
-        let touch = plan_step(conn, seq, cid, 1, worker, &format!("sequence:{seq}"))?;
-        enrolled.push(json!({ "contact_id": cid, "touch_id": touch }));
+        let touch = plan_step_due(conn, seq, cid, k + 1, Some(first_day), worker, &format!("sequence:{seq}"))?;
+        if k > 0 {
+            tracing::info!(target: "amux::crm", sequence = %seq, contact = %cid, step = k + 1, unreachable = %channels[..k].join(","), measured = true, n_considered = 1,
+                verdict = "crm_sequence_entered_later", "this person cannot be reached on the first step(s); they start at the first step they can be");
+        }
+        enrolled.push(json!({ "contact_id": cid, "touch_id": touch, "step": k + 1, "skipped_steps": channels[..k] }));
     }
     tracing::info!(target: "amux::crm", sequence = %seq, enrolled = enrolled.len(), skipped = skipped.len(), measured = true, n_considered = ids.len(),
         verdict = "crm_sequence_enrolled", "people enrolled in a sequence");
@@ -833,6 +870,56 @@ mod tests {
         assert_eq!(deal["stage"], "qualification");
         let (_, a) = call(&app, "GET", "/accounts?q=Acme", &owner, None).await;
         assert_eq!(a[0]["domain"].as_str(), Some("acme.io"), "the most common work-email domain of its people");
+    }
+
+    /// gtm-engine, 2026-11-25: SEQ-5 refused people with no LinkedIn at step
+    /// 1 although its next steps were an email and a letter. They start at the
+    /// first step they can be reached on; nobody reachable on any step is still
+    /// refused, naming the channels.
+    #[tokio::test]
+    async fn a_person_unreachable_on_step_one_starts_at_the_first_step_they_can_be_reached_on() {
+        let (app, _state, ids) = app_with_people().await;
+        let owner = [("authorization", "Bearer owner-secret")];
+        let w = [("x-amux-session", "amux-gtm")];
+        let (_, p) = call(&app, "POST", "/contacts", &owner, Some(json!({"name": "No Mail", "company": "Nomail"}))).await;
+        let nomail = p["id"].as_str().unwrap().to_string();
+        let (_, s) = call(&app, "POST", "/sequences", &w, Some(json!({"name": "mixed", "steps": [
+            {"day": 0, "channel": "linkedin", "action": "connect"}, {"day": 3, "channel": "email", "action": "email", "template": "hi"}]}))).await;
+        let seq = s["id"].as_str().unwrap().to_string();
+        let (_, e) = call(&app, "POST", &format!("/sequences/{seq}/enroll"), &w, Some(json!({"contact_ids": [ids[0].clone(), nomail.clone()]}))).await;
+        assert_eq!(e["enrolled"][0]["step"], json!(2), "{e}");
+        assert_eq!(e["enrolled"][0]["skipped_steps"], json!(["linkedin"]));
+        assert_eq!(e["skipped"][0]["verdict"].as_str(), Some("crm_touch_no_channel"));
+        assert!(e["skipped"][0]["why"].as_str().unwrap().contains("linkedin, email"), "{e}");
+        let touch = e["enrolled"][0]["touch_id"].as_str().unwrap().to_string();
+        let (_, t) = call(&app, "GET", &format!("/touches?contact_id={}", ids[0]), &owner, None).await;
+        let row = t.as_array().unwrap().iter().find(|x| x["id"] == touch.as_str()).cloned().unwrap();
+        assert_eq!((row["channel"].as_str(), row["step"].as_i64(), row["due_date"].as_str()),
+            (Some("email"), Some(2), Some(chrono::Local::now().format("%Y-%m-%d").to_string().as_str())), "due on step 1's day: {row}");
+    }
+
+    /// gtm-engine, 2026-11-25: a /demo booking did not stop a sequence (only a
+    /// reply did). A `meeting` interaction stops every active sequence for the
+    /// person, skips their open touches and emits crm.contact.booked.
+    #[tokio::test]
+    async fn a_booked_meeting_stops_the_persons_sequences_and_is_an_event() {
+        let (app, state, ids) = app_with_people().await;
+        let owner = [("authorization", "Bearer owner-secret")];
+        let w = [("x-amux-session", "amux-gtm")];
+        let (_, s) = call(&app, "POST", "/sequences", &w, Some(json!({"name": "no reply stop", "stop_on_reply": false,
+            "steps": [{"channel": "email", "action": "email", "template": "hi"}, {"day": 3, "channel": "email", "action": "followup"}]}))).await;
+        let seq = s["id"].as_str().unwrap().to_string();
+        call(&app, "POST", &format!("/sequences/{seq}/enroll"), &w, Some(json!({"contact_ids": [ids[0].clone()]}))).await;
+        let (st, _) = call(&app, "POST", &format!("/contacts/{}/interactions", ids[0]), &w,
+            Some(json!({"type": "meeting", "notes": "calendly 0f1e2d3c", "direction": "in"}))).await;
+        assert_eq!(st, StatusCode::CREATED);
+        let (_, v) = call(&app, "GET", &format!("/sequences/{seq}"), &w, None).await;
+        assert_eq!(v["enrollments"][0]["status"], "booked", "{v}");
+        let (_, t) = call(&app, "GET", &format!("/touches?contact_id={}", ids[0]), &owner, None).await;
+        assert!(t.as_array().unwrap().iter().all(|x| x["status"] == "skipped"), "{t}");
+        let n: i64 = state.store.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_events WHERE type='crm.contact.booked' AND json_extract(data,'$.contact_id')=?1", [&ids[0]], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the booking is an event");
     }
 
     #[tokio::test]

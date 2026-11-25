@@ -146,6 +146,32 @@ fn replace_tags(conn: &rusqlite::Connection, id: &str, tags: &[Value]) -> rusqli
     Ok(())
 }
 
+/// Emails to this address held for the owner's approval (gtm-engine,
+/// 2026-11-25: apr_b92a3a8dd1ad259b sat 44 hours and the person's record could
+/// not see it). Read from the approval store itself, so it can never disagree
+/// with the Needs-you list: id, subject, the worker that drafted it, age.
+pub(crate) fn held_emails_for(email: &str) -> Vec<Value> {
+    let email = email.trim().to_lowercase();
+    if !email.contains('@') {
+        return vec![];
+    }
+    let home = crate::config::amux_home();
+    super::email_approval::list_pending(&home)
+        .into_iter()
+        .filter(|d| {
+            ["/preview/to", "/payload/to", "/preview/cc", "/payload/cc"].iter().any(|p| {
+                d.pointer(p).and_then(Value::as_str).is_some_and(|v| {
+                    v.split([',', ';']).any(|a| a.rsplit('<').next().unwrap_or(a).trim_end_matches('>').trim().eq_ignore_ascii_case(&email))
+                })
+            })
+        })
+        .map(|d| json!({
+            "id": d["id"], "subject": d.pointer("/preview/subject").or_else(|| d.pointer("/payload/subject")).cloned().unwrap_or(Value::Null),
+            "session": d["session"], "endpoint": d["endpoint"], "created": d["created"], "age_s": d["age_s"],
+        }))
+        .collect()
+}
+
 // ---- GET /api/crm/contacts -------------------------------------------------
 
 /// The list view, with each contact's last-contacted date and soonest pending
@@ -158,9 +184,36 @@ fn replace_tags(conn: &rusqlite::Connection, id: &str, tags: &[Value]) -> rusqli
 /// as callers before paging expect).
 pub(crate) fn page_of(q: &HashMap<String, String>) -> String {
     match q.get("limit").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0) {
-        Some(n) => format!(" LIMIT {} OFFSET {}", n.min(5000), q.get("offset").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)),
+        Some(n) => format!(" LIMIT {} OFFSET {}", n.min(PAGE_MAX), q.get("offset").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)),
         None => String::new(),
     }
+}
+
+/// The most one page holds. A larger `limit` is cut to it, and the list says so.
+pub(crate) const PAGE_MAX: u64 = 5000;
+
+/// Headers that say how much of the list this response holds (the body is a
+/// bare array, like the board's): `x-amux-total` rows match, `x-amux-returned`
+/// came back, `x-amux-truncated: 1` when more remain past this page, and
+/// `x-amux-limit-capped: 1` when the asked-for limit was over [`PAGE_MAX`]
+/// (gtm-engine, 2026-11-25: limit=6000 returned 5,000 of 5,688 and said nothing).
+pub(crate) fn page_headers(q: &HashMap<String, String>, total: usize, returned: usize) -> axum::http::HeaderMap {
+    let mut h = axum::http::HeaderMap::new();
+    let offset = q.get("offset").and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+    let asked = q.get("limit").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0);
+    let capped = asked.is_some_and(|n| n > PAGE_MAX);
+    let truncated = offset + returned < total;
+    for (k, v) in [("x-amux-total", total.to_string()), ("x-amux-returned", returned.to_string()),
+        ("x-amux-truncated", (truncated as u8).to_string()), ("x-amux-limit-capped", (capped as u8).to_string())] {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&v) {
+            h.insert(k, v);
+        }
+    }
+    if capped || truncated {
+        tracing::info!(target: "amux::crm", total, returned, offset, capped, measured = true, n_considered = total,
+            verdict = "crm_list_truncated", "the contact list returned one page of a longer list; the headers say how much");
+    }
+    h
 }
 
 pub async fn list_contacts(
@@ -175,7 +228,9 @@ pub async fn list_contacts(
         .collect();
     let tag = q.get("tag").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let store = state.store.clone();
-    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+    let q2 = q.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<(Vec<Value>, usize)> {
+        let q = q2;
         let conn = store.read()?;
         let base = "SELECT c.id,c.name,c.company,c.role,c.email,c.linkedin,c.twitter,c.phone,\
              c.account_id,c.status,c.icp_grade,c.location,c.source,c.unsubscribed_at,c.bounced_at,\
@@ -203,6 +258,7 @@ pub async fn list_contacts(
         // imported 4,292 LinkedIn connections on 2026-11-23, 1.4 MB as one list).
         let page = page_of(&q);
         let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
+        let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM crm_contacts c WHERE c.deleted IS NULL{cond}"), refs.as_slice(), |r| r.get(0))?;
         let mut rows = query_rows_json(&conn, &format!("{base}{cond}{order}{page}"), &refs)?;
         for r in rows.iter_mut() {
             let id = r.get("id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -210,11 +266,11 @@ pub async fn list_contacts(
                 o.insert("tags".into(), Value::Array(tags_for(&conn, &id)?));
             }
         }
-        Ok(rows)
+        Ok((rows, total as usize))
     })
     .await;
     match joined {
-        Ok(Ok(rows)) => Json(Value::Array(rows)).into_response(),
+        Ok(Ok((rows, total))) => (page_headers(&q, total, rows.len()), Json(Value::Array(rows))).into_response(),
         Ok(Err(e)) => internal(e),
         Err(e) => internal(e),
     }
@@ -342,6 +398,8 @@ pub async fn get_contact(State(state): State<AppState>, Path(id): Path<String>) 
             o.insert("account".into(), account);
             o.insert("deals".into(), Value::Array(deals));
             o.insert("lookalikes".into(), Value::Array(looks));
+            let email = o.get("email").and_then(Value::as_str).unwrap_or("").to_string();
+            o.insert("held_emails".into(), Value::Array(held_emails_for(&email)));
         }
         Ok(Some(c))
     })
@@ -474,6 +532,9 @@ pub async fn add_interaction(
 ) -> Response {
     let slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
+    let booked: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let booked_w = booked.clone();
+    let cid = id.clone();
     let write = state
         .store
         .write_async(move |conn| {
@@ -538,10 +599,26 @@ pub async fn add_interaction(
                 "UPDATE crm_contacts SET updated=?1 WHERE id=?2",
                 rusqlite::params![now, &id],
             )?;
+            // A booked meeting (gtm-engine logs a /demo booking as a `meeting`
+            // with "calendly <uuid>" in its notes) ends the person's sequences.
+            if matches!(ty.as_str(), "meeting" | "booking") {
+                let (sequences, touches) = super::crm_outbound::on_booking(conn, &id)?;
+                let name: String = conn.query_row("SELECT name FROM crm_contacts WHERE id=?1", [&id], |r| r.get(0)).unwrap_or_default();
+                *booked_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(json!({
+                    "contact_id": id.clone(), "name": name, "interaction_id": ix_id.clone(), "type": ty.clone(), "date": date.clone(),
+                    "notes": str_field(&body, "notes").chars().take(300).collect::<String>(),
+                    "stopped_sequences": sequences, "skipped_touches": touches,
+                }));
+            }
             *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ix_id);
             Ok(WriteOutcome { applied: true, events: vec![ev(&id, MutationKind::Updated)] })
         })
         .await;
+    let booking = booked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    if let Some(b) = booking {
+        super::crm_agent::emit(&state, "crm.contact.booked", b).await;
+        tracing::info!(target: "amux::crm", contact = %cid, measured = true, n_considered = 1, verdict = "crm_contact_booked", "a booked meeting was recorded for a person");
+    }
     match write {
         Ok(_) => {
             let ix = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().unwrap_or_default();

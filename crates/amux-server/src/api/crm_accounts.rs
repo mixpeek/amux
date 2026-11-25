@@ -9,7 +9,9 @@
 //!   DELETE /api/crm/accounts/{id}                  soft delete
 //!   GET    /api/crm/deals[?stage=&account_id=]     deals, newest first
 //!   POST   /api/crm/deals                          201 {id}; `title` required
+//!   GET    /api/crm/deals/{id}                     one deal, with its company and people
 //!   PATCH  /api/crm/deals/{id}, DELETE (soft)
+//!   POST   /api/crm/accounts/{id}/interactions     activity on the company itself {type, notes, subject?, date?, direction?, message_id?}
 //!   POST   /api/crm/lookalikes                     {kind, from_id, to_id, score, reason}
 //!   DELETE /api/crm/lookalikes                     {kind, from_id, to_id}
 //!   GET    /api/crm/summary                        counts for the tab's header
@@ -38,7 +40,8 @@ pub fn routes() -> Router<AppState> {
         .route("/accounts", get(list_accounts).post(create_account))
         .route("/accounts/{id}", get(get_account).patch(patch_account).delete(delete_account))
         .route("/deals", get(list_deals).post(create_deal))
-        .route("/deals/{id}", axum::routing::patch(patch_deal).delete(delete_deal))
+        .route("/deals/{id}", get(get_deal).patch(patch_deal).delete(delete_deal))
+        .route("/accounts/{id}/interactions", axum::routing::post(add_account_interaction))
         .route("/lookalikes", axum::routing::post(add_lookalike).delete(delete_lookalike))
         .route("/summary", get(summary))
 }
@@ -141,7 +144,8 @@ async fn list_accounts(State(state): State<AppState>, Query(q): Query<HashMap<St
             "SELECT a.id,a.name,a.domain,a.industry,a.size,a.location,a.website,a.linkedin,a.status,a.icp_grade,a.icp_reasons,a.source,a.tags,a.updated,\
              (SELECT COUNT(*) FROM crm_contacts c WHERE c.account_id=a.id AND c.deleted IS NULL) AS people,\
              (SELECT COUNT(*) FROM crm_deals d WHERE d.account_id=a.id AND d.deleted IS NULL AND d.stage NOT IN ('won','lost')) AS open_deals,\
-             (SELECT MAX(i.date) FROM crm_interactions i JOIN crm_contacts c ON c.id=i.contact_id WHERE c.account_id=a.id AND c.deleted IS NULL) AS last_date \
+             MAX(COALESCE((SELECT MAX(i.date) FROM crm_interactions i JOIN crm_contacts c ON c.id=i.contact_id WHERE c.account_id=a.id AND c.deleted IS NULL),''), \
+                 COALESCE((SELECT MAX(x.date) FROM crm_account_activity x WHERE x.account_id=a.id),'')) AS last_date \
              FROM crm_accounts a WHERE a.deleted IS NULL",
         );
         let mut args: Vec<String> = Vec::new();
@@ -237,9 +241,18 @@ async fn get_account(State(state): State<AppState>, Path(id): Path<String>) -> R
             "SELECT id,name,role,email,phone,linkedin,status,icp_grade FROM crm_contacts WHERE account_id=?1 AND deleted IS NULL ORDER BY name", &p)?;
         let deals = query_rows_json(&conn,
             "SELECT * FROM crm_deals WHERE account_id=?1 AND deleted IS NULL ORDER BY updated DESC", &p)?;
-        let activity = query_rows_json(&conn,
+        let mut activity = query_rows_json(&conn,
             "SELECT i.*, c.name AS contact_name FROM crm_interactions i JOIN crm_contacts c ON c.id=i.contact_id \
              WHERE c.account_id=?1 AND c.deleted IS NULL ORDER BY i.date DESC, i.created DESC LIMIT 50", &p)?;
+        // The company's own activity (competitor changes, company-level
+        // events, a watched company channel) beside its people's.
+        activity.extend(query_rows_json(&conn,
+            "SELECT x.*, '' AS contact_id, '' AS contact_name FROM crm_account_activity x WHERE x.account_id=?1 ORDER BY x.date DESC, x.created DESC LIMIT 50", &p)?);
+        activity.sort_by(|a, b| {
+            let k = |v: &Value| (v["date"].as_str().unwrap_or("").to_string(), v["created"].as_i64().unwrap_or(0));
+            k(b).cmp(&k(a))
+        });
+        activity.truncate(50);
         let looks = lookalikes_of(&conn, "account", &id)?;
         if let Some(o) = a.as_object_mut() {
             o.insert("people".into(), Value::Array(people));
@@ -350,15 +363,14 @@ async fn list_deals(State(state): State<AppState>, Query(q): Query<HashMap<Strin
                 sql.push_str(&format!(" AND {col}=?{}", args.len()));
             }
         }
+        if let Some(t) = q.get("tag").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            args.push(t.to_string());
+            sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(d.tags) THEN d.tags ELSE '[]' END) WHERE value=?{})", args.len()));
+        }
         sql.push_str(" ORDER BY d.updated DESC");
         let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         let mut rows = query_rows_json(&conn, &sql, &refs)?;
-        for r in rows.iter_mut() {
-            if let Some(o) = r.as_object_mut() {
-                let ids = o.get("contact_ids").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(json!([]));
-                o.insert("contact_ids".into(), ids);
-            }
-        }
+        rows.iter_mut().for_each(deal_arrays);
         Ok(rows)
     })
     .await;
@@ -366,6 +378,94 @@ async fn list_deals(State(state): State<AppState>, Query(q): Query<HashMap<Strin
         Ok(Ok(rows)) => Json(Value::Array(rows)).into_response(),
         Ok(Err(e)) => internal(e),
         Err(e) => internal(e),
+    }
+}
+
+/// A deal row's JSON-array columns, as arrays.
+fn deal_arrays(r: &mut Value) {
+    if let Some(o) = r.as_object_mut() {
+        for k in ["contact_ids", "tags"] {
+            let v = o.get(k).and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok()).filter(Value::is_array).unwrap_or(json!([]));
+            o.insert(k.into(), v);
+        }
+    }
+}
+
+async fn get_deal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let store = state.store.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+        let conn = store.read()?;
+        let mut rows = query_rows_json(&conn,
+            "SELECT d.*, a.name AS account_name FROM crm_deals d LEFT JOIN crm_accounts a ON a.id=d.account_id WHERE d.id=?1 AND d.deleted IS NULL",
+            &[&id as &dyn rusqlite::ToSql])?;
+        let Some(mut d) = rows.pop() else { return Ok(None) };
+        deal_arrays(&mut d);
+        let mut people = Vec::new();
+        for cid in d["contact_ids"].as_array().cloned().unwrap_or_default().iter().filter_map(Value::as_str) {
+            people.extend(query_rows_json(&conn, "SELECT id,name,role,email,status FROM crm_contacts WHERE id=?1 AND deleted IS NULL",
+                &[&cid as &dyn rusqlite::ToSql])?);
+        }
+        d["people"] = Value::Array(people);
+        Ok(Some(d))
+    })
+    .await;
+    match joined {
+        Ok(Ok(Some(d))) => Json(d).into_response(),
+        Ok(Ok(None)) => err(StatusCode::NOT_FOUND, json!({ "error": "not found" })),
+        Ok(Err(e)) => internal(e),
+        Err(e) => internal(e),
+    }
+}
+
+/// Activity on the company itself (gtm-engine, 2026-11-25: a competitor's
+/// change had nowhere to go, and the company's activity stayed empty). The
+/// same message id twice for a company is one row.
+async fn add_account_interaction(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
+    let s = |k: &str| body.get(k).and_then(Value::as_str).map(str::trim).unwrap_or("").to_string();
+    let ty = { let t = s("type"); if t.is_empty() { "other".to_string() } else { t } };
+    let date = { let d = s("date"); if d.is_empty() { chrono::Local::now().format("%Y-%m-%d").to_string() } else { d } };
+    let (notes, subject, direction, message_id) = (s("notes"), s("subject"), s("direction"), s("message_id"));
+    if notes.is_empty() && subject.is_empty() {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": "send notes or a subject" }));
+    }
+    let source = source_of(&body, &headers);
+    let slot: Arc<Mutex<Option<Result<String, &'static str>>>> = Arc::new(Mutex::new(None));
+    let w = slot.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            let live: bool = conn.query_row("SELECT 1 FROM crm_accounts WHERE id=?1 AND deleted IS NULL", [&id], |_| Ok(true)).unwrap_or(false);
+            if !live {
+                *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err("not_found"));
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
+            let ix = ulid::Ulid::new().to_string();
+            let n = conn.execute(
+                "INSERT OR IGNORE INTO crm_account_activity (id,account_id,date,type,direction,subject,notes,message_id,source,created) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                rusqlite::params![&ix, &id, &date, &ty, &direction, &subject, &notes, &message_id, &source, now_secs()],
+            )?;
+            if n == 0 {
+                let existing: String = conn.query_row("SELECT id FROM crm_account_activity WHERE account_id=?1 AND message_id=?2",
+                    [&id, &message_id], |r| r.get(0)).unwrap_or_default();
+                *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(format!("dup:{existing}")));
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
+            conn.execute("UPDATE crm_accounts SET updated=?2 WHERE id=?1", rusqlite::params![&id, now_secs()])?;
+            *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(ix));
+            Ok(WriteOutcome { applied: true, events: vec![ev("crm_account", &id, MutationKind::Updated)] })
+        })
+        .await;
+    if let Err(e) = res {
+        return internal(e);
+    }
+    let taken = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    match taken {
+        Some(Ok(ix)) => match ix.strip_prefix("dup:") {
+            Some(existing) => (StatusCode::OK, Json(json!({ "id": existing, "ok": true, "duplicate": true }))).into_response(),
+            None => (StatusCode::CREATED, Json(json!({ "id": ix, "ok": true }))).into_response(),
+        },
+        Some(Err(_)) => err(StatusCode::NOT_FOUND, json!({ "error": "not found" })),
+        None => internal(anyhow::anyhow!("add_account_interaction wrote nothing")),
     }
 }
 
@@ -388,13 +488,14 @@ async fn create_deal(State(state): State<AppState>, headers: HeaderMap, Json(bod
             let now = now_secs();
             let s = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("").to_string();
             conn.execute(
-                "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,amount,currency,close_date,next_step,owner,notes,source,external,created,updated) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",
+                "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,amount,currency,close_date,next_step,owner,notes,source,external,created,updated,tags) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15)",
                 rusqlite::params![&id, &title, s("account_id"),
                     body.get("contact_ids").filter(|v| v.is_array()).map(Value::to_string).unwrap_or_else(|| "[]".into()),
                     &stage, body.get("amount").and_then(Value::as_f64), if s("currency").is_empty() { "USD".into() } else { s("currency") },
                     s("close_date"), s("next_step"), s("owner"), s("notes"), &source,
-                    body.get("external").filter(|e| e.is_object()).map(Value::to_string).unwrap_or_else(|| "{}".into()), now],
+                    body.get("external").filter(|e| e.is_object()).map(Value::to_string).unwrap_or_else(|| "{}".into()), now,
+                    body.get("tags").filter(|t| t.is_array()).map(Value::to_string).unwrap_or_else(|| "[]".into())],
             )?;
             *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id.clone());
             Ok(WriteOutcome { applied: true, events: vec![ev("crm_deal", &id, MutationKind::Created)] })
@@ -419,6 +520,9 @@ async fn patch_deal(State(state): State<AppState>, Path(id): Path<String>, Json(
     }
     if let Some(c) = body.get("contact_ids").filter(|v| v.is_array()) {
         extra.push(("contact_ids", SqlValue::Text(c.to_string())));
+    }
+    if let Some(t) = body.get("tags").filter(|v| v.is_array()) {
+        extra.push(("tags", SqlValue::Text(t.to_string())));
     }
     let res = state
         .store
@@ -610,5 +714,60 @@ mod tests {
         h.insert("x-amux-session", "gtm-engine".parse().unwrap());
         assert_eq!(source_of(&json!({}), &h), "worker:gtm-engine");
         assert_eq!(source_of(&json!({"source": "rb2b"}), &h), "rb2b");
+    }
+
+    /// gtm-engine's CRM pilot, 2026-11-25: a company had nowhere to put its
+    /// own activity, a deal had no tags, a single deal could not be read, the
+    /// contact list cut a large limit silently, and a held email was invisible
+    /// on the person it was to.
+    #[tokio::test]
+    async fn company_activity_deal_tags_one_deal_page_headers_and_held_email() {
+        use crate::api::standing_approvals::tests::{call, test_state};
+        let home = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        std::fs::create_dir_all(crate::api::email_approval::approvals_dir(home.path())).unwrap();
+        let app = crate::api::crm::routes().merge(routes()).with_state(test_state());
+        let w = [("x-amux-session", "gtm-engine")];
+        let (_, a) = call(&app, "POST", "/accounts", &w, Some(json!({"name": "Rival"}))).await;
+        let acct = a["id"].as_str().unwrap().to_string();
+        let (st, x) = call(&app, "POST", &format!("/accounts/{acct}/interactions"), &w,
+            Some(json!({"type": "competitor", "subject": "pricing page", "notes": "new enterprise tier", "message_id": "m1"}))).await;
+        assert_eq!(st, StatusCode::CREATED, "{x}");
+        let (st, again) = call(&app, "POST", &format!("/accounts/{acct}/interactions"), &w, Some(json!({"notes": "x", "message_id": "m1"}))).await;
+        assert_eq!((st, again["duplicate"].as_bool()), (StatusCode::OK, Some(true)));
+        let (st, _) = call(&app, "POST", "/accounts/ACCT-404/interactions", &w, Some(json!({"notes": "x"}))).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+        let (_, got) = call(&app, "GET", &format!("/accounts/{acct}"), &w, None).await;
+        assert_eq!((got["activity"].as_array().map(Vec::len), got["activity"][0]["subject"].as_str()), (Some(1), Some("pricing page")), "{got}");
+        let (_, list) = call(&app, "GET", "/accounts?q=Rival", &w, None).await;
+        assert!(list[0]["last_date"].as_str().is_some_and(|d| !d.is_empty()), "{list}");
+
+        let (_, p) = call(&app, "POST", "/contacts", &w, Some(json!({"name": "Ada", "email": "ada@rival.io", "account_id": acct}))).await;
+        let ada = p["id"].as_str().unwrap().to_string();
+        let (_, d) = call(&app, "POST", "/deals", &w, Some(json!({"title": "Rival pilot", "account_id": acct, "contact_ids": [ada], "tags": ["cohort-nov", "play-swap"]}))).await;
+        let deal = d["id"].as_str().unwrap().to_string();
+        let (st, one) = call(&app, "GET", &format!("/deals/{deal}"), &w, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!((one["tags"].clone(), one["people"][0]["name"].as_str(), one["account_name"].as_str()),
+            (json!(["cohort-nov", "play-swap"]), Some("Ada"), Some("Rival")), "{one}");
+        call(&app, "PATCH", &format!("/deals/{deal}"), &w, Some(json!({"tags": ["cohort-dec"]}))).await;
+        let (_, tagged) = call(&app, "GET", "/deals?tag=cohort-dec", &w, None).await;
+        assert_eq!(tagged.as_array().map(Vec::len), Some(1));
+        let (_, none) = call(&app, "GET", "/deals?tag=cohort-nov", &w, None).await;
+        assert_eq!(none.as_array().map(Vec::len), Some(0));
+        let (st, _) = call(&app, "GET", "/deals/DEAL-404", &w, None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+
+        let q = |l: &str, o: &str| [("limit".to_string(), l.to_string()), ("offset".to_string(), o.to_string())].into_iter().collect::<HashMap<_, _>>();
+        let h = crate::api::crm::page_headers(&q("6000", "0"), 5688, 5000);
+        assert_eq!((h["x-amux-total"].to_str().unwrap(), h["x-amux-truncated"].to_str().unwrap(), h["x-amux-limit-capped"].to_str().unwrap()), ("5688", "1", "1"));
+        let h = crate::api::crm::page_headers(&q("5000", "5000"), 5688, 688);
+        assert_eq!((h["x-amux-truncated"].to_str().unwrap(), h["x-amux-limit-capped"].to_str().unwrap()), ("0", "0"));
+
+        let apr = crate::api::email_approval::create_approval(home.path(), "gtm-engine", "send",
+            json!({"to": "Ada <ADA@rival.io>", "subject": "Intro", "body": "hi"}), json!({"to": "ADA@rival.io", "subject": "Intro"})).unwrap();
+        let (_, c) = call(&app, "GET", &format!("/contacts/{ada}"), &w, None).await;
+        assert_eq!((c["held_emails"][0]["id"].as_str(), c["held_emails"][0]["subject"].as_str()), (Some(apr.as_str()), Some("Intro")), "{c}");
+        assert!(crate::api::crm::held_emails_for("bo@rival.io").is_empty());
     }
 }
