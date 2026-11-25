@@ -263,7 +263,16 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
             "outside_content" => super::capabilities::ask(&home, &w, "mac_outside", &label, ""),
             _ => {}
         }
-        err(StatusCode::FORBIDDEN, r.json())
+        let mut body = r.json();
+        if matches!(r.code, "app_not_allowed" | "outside_content") {
+            // The ask is already filed; a worker told "ask the owner" asks a
+            // second time in chat and then waits for a "try again".
+            body["asked"] = json!(true);
+            body["next"] = json!(
+                "the owner has a Needs-you card for this; you get a message here when it is approved, then retry. Do not route around it"
+            );
+        }
+        err(StatusCode::FORBIDDEN, body)
     };
     if let Err(r) = mac::decide(&tool, &args, &apps, &policy) {
         return refuse(r);
