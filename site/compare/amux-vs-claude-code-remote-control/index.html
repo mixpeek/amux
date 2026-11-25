@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e2330">
+  <title>amux vs Claude Code Remote Control (2026): Run Coding Agents from Your Phone | amux</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="description" content="amux vs Claude Code Remote Control compared: setup, running many sessions, where agents run, laptop sleep, phone access, data and price. Remote Control lets the Claude app drive Claude Code sessions on your own machine; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server we run for you.">
+  <meta name="keywords" content="amux vs claude code remote control, claude code remote control alternative, claude remote-control, claude rc, run claude code from phone, control claude code from iphone, claude code mobile, run coding agents with laptop closed">
+  <link rel="canonical" href="https://amux.io/compare/amux-vs-claude-code-remote-control/">
+  <meta property="og:title" content="amux vs Claude Code Remote Control (2026): Run Coding Agents from Your Phone">
+  <meta property="og:description" content="amux vs Claude Code Remote Control compared: setup, running many sessions, where agents run, laptop sleep, phone access, data and price. Remote Control lets the Claude app drive Claude Code sessions on your own machine; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server we run for you.">
+  <meta property="og:url" content="https://amux.io/compare/amux-vs-claude-code-remote-control/">
+  <meta property="og:image" content="https://amux.io/og-image.png">
+  <meta property="og:type" content="article">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="amux vs Claude Code Remote Control (2026): Run Coding Agents from Your Phone">
+  <meta name="twitter:description" content="amux vs Claude Code Remote Control compared: setup, running many sessions, where agents run, laptop sleep, phone access, data and price. Remote Control lets the Claude app drive Claude Code sessions on your own machine; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server we run for you.">
+  <link rel="alternate" type="application/rss+xml" title="amux Blog" href="https://amux.io/blog/rss.xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "amux", "item": "https://amux.io/"}, {"@type": "ListItem", "position": 2, "name": "Compare", "item": "https://amux.io/compare/"}, {"@type": "ListItem", "position": 3, "name": "amux vs Claude Code Remote Control", "item": "https://amux.io/compare/amux-vs-claude-code-remote-control/"}]}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Article", "headline": "amux vs Claude Code Remote Control: Which Should You Use to Run Agents from Your Phone?", "description": "amux vs Claude Code Remote Control compared: setup, running many sessions, where agents run, laptop sleep, phone access, data and price. Remote Control lets the Claude app drive Claude Code sessions on your own machine; amux runs a team of Claude Code, Codex and Gemini CLI agents on a shared board, self-hosted or on an always-on server we run for you.", "url": "https://amux.io/compare/amux-vs-claude-code-remote-control/", "datePublished": "2026-11-25", "dateModified": "2026-11-25", "author": {"@type": "Organization", "name": "amux", "url": "https://amux.io/"}, "publisher": {"@type": "Organization", "name": "amux", "url": "https://amux.io/", "logo": {"@type": "ImageObject", "url": "https://amux.io/icon.png"}}, "image": "https://amux.io/og-image.png", "mainEntityOfPage": {"@type": "WebPage", "@id": "https://amux.io/compare/amux-vs-claude-code-remote-control/"}}</script>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "What is Claude Code Remote Control?", "acceptedAnswer": {"@type": "Answer", "text": "A Claude Code feature that lets you continue a session running on your own machine from claude.ai/code, the Claude app for iOS and Android, the Claude desktop app or VS Code. You start it with claude remote-control (server mode), claude --remote-control, or /remote-control inside a session, and connect by URL or QR code. Claude keeps running locally the whole time."}}, {"@type": "Question", "name": "Is amux a Claude Code Remote Control alternative?", "acceptedAnswer": {"@type": "Answer", "text": "For steering coding agents from your phone, yes, and the two can also be used together. Remote Control connects the Claude apps to Claude Code sessions on a machine you keep on. amux runs a team of Claude Code, Codex and Gemini CLI workers on a shared task board with a scheduler, CRM, email and browser automation, and amux Cloud runs it on a dedicated server that stays on without your laptop."}}, {"@type": "Question", "name": "Does Claude Code Remote Control work when my laptop is closed?", "acceptedAnswer": {"@type": "Answer", "text": "No. Anthropic's docs say your computer must stay on and the claude process must keep running. If the laptop sleeps or the network drops, the session reconnects when the machine comes back online. To keep agents working while you sleep, run them on a machine that stays on, such as a self-hosted amux server or an amux Cloud server from $39 a month."}}, {"@type": "Question", "name": "Which plans include Claude Code Remote Control?", "acceptedAnswer": {"@type": "Answer", "text": "Anthropic lists Pro, Max, Ultra, Team and Enterprise plans, and API keys are not supported. On Team and Enterprise an Owner must turn on the Remote Control toggle first, and it is not available through Bedrock, Google Cloud, Microsoft Foundry or a custom base URL. amux works with your own Claude, ChatGPT or Gemini sign-in or an API key."}}, {"@type": "Question", "name": "Can Remote Control run several sessions at once?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, in server mode. claude remote-control accepts up to 32 concurrent sessions by default (set with --capacity), and --spawn worktree gives each new session its own git worktree. An interactive session started with --remote-control or /remote-control carries one remote session. All of them are Claude Code sessions."}}]}</script>
+  <link rel="stylesheet" href="/nav.css?v=20261108">
+  <script src="/site.js?v=20261108"></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">amux</a>
+    <nav aria-label="Main">
+      <details class="nav-drop" data-cta-loc="nav-solutions">
+        <summary><span class="nd-label">solutions</span><span class="nd-sr">Menu</span><svg class="nd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="nd-burger" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+        <div class="nav-drop-menu">
+          <div class="nd-head">Solutions by industry</div>
+          <a href="/solutions/accounting-firms/" data-cta-loc="nav-solutions-accounting-firms">Accounting firms</a>
+          <a href="/solutions/skilled-nursing-facilities/" data-cta-loc="nav-solutions-skilled-nursing-facilities">Skilled nursing facilities</a>
+          <a href="/solutions/healthcare-recruiting/" data-cta-loc="nav-solutions-healthcare-recruiting">Healthcare recruiting</a>
+          <a href="/solutions/dental-practices/" data-cta-loc="nav-solutions-dental-practices">Dental practices</a>
+          <a href="/solutions/merchant-cash-advance/" data-cta-loc="nav-solutions-merchant-cash-advance">Merchant cash advance</a>
+          <a href="/solutions/" class="nd-all" data-cta-loc="nav-solutions-all">All solutions &rarr;</a>
+          <div class="nd-more" data-cta-loc="nav-menu"><a href="/demos/">demos</a><a href="/docs/">docs</a><a href="/pricing/">pricing</a></div>
+        </div>
+      </details>
+      <a href="/demos/" class="hide-mobile">demos</a>
+      <a href="/docs/" class="hide-mobile">docs</a>
+      <a href="/pricing/" class="hide-mobile">pricing</a>
+      <div class="theme-pick">
+        <button type="button" class="theme-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Theme" title="Theme"><svg class="ti ti-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><svg class="ti ti-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ti ti-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+        <div class="theme-menu" role="menu" hidden>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>System</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Light</button>
+          <button type="button" role="menuitemradio" aria-checked="false" data-theme-set="dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>Dark</button>
+        </div>
+      </div>
+      <a href="/#get" class="nav-cta nav-cta-primary">Get started</a>
+      <a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener" class="nav-cta nav-gh" aria-label="Star amux on GitHub"><span class="gh-label">GitHub</span> <span class="gh-stars" id="gh-stars">★</span></a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="breadcrumb"><a href="/">amux</a> <span class="sep">&rsaquo;</span> <a href="/compare/">Compare</a> <span class="sep">&rsaquo;</span> <span>amux vs Claude Code Remote Control</span></div>
+
+    <h1>amux vs Claude Code Remote Control: Which Should You Use to Run Agents from Your Phone?</h1>
+    <p class="subtitle">Claude Code Remote Control and amux both let you steer coding agents from your phone while the work runs on a real machine. Compared on setup, running many sessions, where agents run, what happens when your laptop sleeps, phone access, data and price. Updated November 2026.</p>
+
+    <div class="cta-box" data-cta-loc="cloud-inline-top">
+      <p style="margin:0;"><strong>amux Cloud:</strong> your agents keep running when your laptop sleeps, and you steer them from your phone. You get your own server at <code>yourname.amux.io</code>, from $39/mo, with no per-token markup and no Mac to leave awake.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-top:1rem;">
+        <a class="btn btn-primary" href="/start/?source=amux-vs-claude-code-remote-control">Start amux Cloud</a>
+        <a class="btn" href="/pricing/">See pricing</a>
+      </div>
+      <p style="font-size:0.88rem;color:var(--fg-dim);margin:1rem 0 0;">Freelancer, agency or small team? <a href="/start/?plan=team&amp;source=amux-vs-claude-code-remote-control" style="color:var(--accent);">Cloud Team</a> is $69/mo with 8 vCPU and 16 GB RAM, one shared server your agents and teammates reach from any device, at a flat price per server instead of per seat.</p>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.4rem;margin:1.5rem 0;font-size:0.88rem;line-height:1.7;">
+      <strong>Short answer:</strong> use <a href="#remote-control">Claude Code Remote Control</a> if you run Claude Code on a computer you keep on and want to pick up those sessions from the Claude app on your phone, with nothing extra to install. Use <a href="#amux">amux</a> if you want to run a team of agents (Claude Code, Codex and Gemini CLI) that claim work from one shared board, run on a schedule and keep going while your laptop sleeps, on your own server or an always-on server we run for you.
+    </div>
+
+    <h2 id="what">What are amux and Claude Code Remote Control?</h2>
+    <p><strong>amux</strong> is a self-hosted control plane for running an AI engineering team from a single dashboard or your phone. It launches and monitors dozens of parallel Claude Code, Codex or Gemini CLI sessions, with a built-in kanban board, notes, CRM, email, browser automation and a scheduler. It is one Rust binary plus SQLite, source-available under MIT + Commons Clause, and you can self-host it or rent an always-on server from amux Cloud.</p>
+    <p><strong><a href="https://code.claude.com/docs/en/remote-control" target="_blank" rel="noopener">Remote Control</a></strong> is part of Anthropic's Claude Code. It connects a Claude Code session on your machine to claude.ai/code, the Claude app for iOS and Android, the Claude desktop app or VS Code. You start it three ways: <code>claude remote-control</code> (or <code>claude rc</code>) waits in a terminal for sessions started from your other devices; <code>claude --remote-control</code> opens a normal local session that you can also drive remotely; and <code>/remote-control</code> (or <code>/rc</code>) hands an existing session over with its history. You connect by URL or QR code. The code, files and tools stay on your machine.</p>
+
+    <h2 id="table">amux vs Claude Code Remote Control comparison table</h2>
+    <div style="overflow-x:auto;margin:2rem 0;">
+      <table class="data-table" style="font-size:0.85rem;">
+        <thead><tr><th style="min-width:150px;"></th><th>amux</th><th>Claude Code Remote Control</th></tr></thead>
+        <tbody>
+          <tr><td>Best for</td><td>Running a team of agents on one shared board, from a dashboard or your phone</td><td>Picking up your own Claude Code sessions from the Claude app</td></tr>
+          <tr><td>Setup</td><td>One install command, or an amux Cloud server in about three minutes</td><td>Built into Claude Code; one command or slash command</td></tr>
+          <tr><td>Agents</td><td>Claude Code, Codex, Gemini CLI, OpenCode, Ollama</td><td>Claude Code only</td></tr>
+          <tr><td>Many sessions</td><td>Dozens of named workers on one dashboard</td><td>Server mode: up to 32 concurrent sessions by default, optional worktree per session</td></tr>
+          <tr><td>Coordinating agents</td><td>Atomic task claiming from a shared board, messages and @mentions between workers, shared memory</td><td>None between sessions; each is a separate conversation</td></tr>
+          <tr><td>Scheduling</td><td>Built-in scheduler for overnight and recurring work</td><td>None in Remote Control</td></tr>
+          <tr><td>Where agents run</td><td>Your machine, or a dedicated amux Cloud server we keep on</td><td>Your machine, which must stay on with the claude process running</td></tr>
+          <tr><td>Laptop sleeps</td><td>Agents on a Cloud or always-on server keep working</td><td>Work pauses; the session reconnects when the machine is back online</td></tr>
+          <tr><td>Phone access</td><td>Native iPhone and iPad app, Mac app, any browser; Android through the installable web app</td><td>Claude app for iOS and Android, claude.ai/code, Claude desktop, VS Code</td></tr>
+          <tr><td>Transcript storage</td><td>On your server</td><td>Stored on Anthropic's servers while connected</td></tr>
+          <tr><td>Business tools</td><td>CRM, email, browser automation, notes</td><td>Claude Code's own tools and connectors</td></tr>
+          <tr><td>Sign-in</td><td>Your Claude, ChatGPT or Gemini account, or an API key</td><td>Claude Pro, Max, Ultra, Team or Enterprise; API keys not supported</td></tr>
+          <tr><td>Price</td><td>Free to self-host; Cloud Solo $39, Team $69, Max $129 per month per server</td><td>Included in eligible Claude plans</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="setup">How do you start each one?</h2>
+    <p>Remote Control needs nothing beyond Claude Code and a claude.ai sign-in. Run <code>claude remote-control</code> in a project folder, press the spacebar for a QR code, scan it with your phone, and start or continue sessions from the Claude app. Inside a session already running, <code>/remote-control</code> does the same for that conversation. On Team and Enterprise plans an Owner has to turn on the Remote Control toggle in the admin settings first, and organizations with Zero Data Retention or HIPAA settings cannot turn it on.</p>
+    <p>amux installs on a Mac or Linux machine with <code>curl -fsSL https://amux.io/install.sh | bash</code>, or you start an amux Cloud server and skip the machine. Either way you open one dashboard, in a browser, the iPhone and iPad app or the Mac app, and every agent appears as a named worker card with its live terminal.</p>
+
+    <h2 id="team">Which is better for running many agents at once?</h2>
+    <p>Remote Control's server mode can hold many sessions: up to 32 by default (<code>--capacity</code> changes it), and <code>--spawn worktree</code> gives each new session its own git worktree so parallel sessions do not edit the same files. Each session is its own conversation that you open and answer one at a time.</p>
+    <p>amux adds the layer that keeps a team of agents working without you: one board that agents claim tasks from atomically, so two never grab the same work; messages and @mentions between workers for handoffs and reviews; a scheduler for overnight and recurring runs; held delivery through a provider's usage limit, so a worker picks up again when the limit resets; and stall alerts when a worker stops making progress. It also runs Codex and Gemini CLI workers beside Claude Code, and keeps a CRM, email with owner approval for outside sends, and browser automation next to them.</p>
+
+    <h2 id="where">What happens when your laptop sleeps?</h2>
+    <p>With Remote Control, Claude keeps running on your machine the entire time, so that machine has to stay on with the <code>claude</code> process running. If the laptop sleeps or the network drops, the session reconnects when the machine comes back online, and the work waits until then. Your session makes outbound HTTPS requests only and opens no inbound ports, and the transcript of messages, responses and tool activity is stored on Anthropic's servers while connected.</p>
+    <p>amux self-hosted keeps running when you close the browser tab, on whatever machine you installed it on. <strong>amux Cloud</strong> removes the machine from the problem: it provisions a dedicated server at <code>yourname.amux.io</code> in about three minutes, 4 vCPU and 8 GB on Solo or 8 vCPU and 16 GB on Team. You sign in with your own Claude, ChatGPT or Gemini account or an API key, and we keep the box running and patched, so agents keep working overnight and your phone reaches them from anywhere. You can export everything at any time (<a href="/own-your-data/">how</a>).</p>
+
+    <h2 id="cost">How much do amux and Remote Control cost?</h2>
+    <p>Remote Control is included in Claude Pro, Max, Ultra, Team and Enterprise plans, with nothing extra to pay. Usage counts against your Claude plan as any Claude Code session does, and you supply the computer that stays on.</p>
+    <p>amux is free to self-host with every feature, and the code is on GitHub. amux Cloud costs $39/mo for Solo, $69/mo for Team and $129/mo for Max. The price covers the server itself, models are billed by your own provider plan, and the cost does not grow with the number of agents or teammates on the box.</p>
+    <p>For freelancers and agencies running agents across several client repos, <a href="/start/?plan=team&amp;source=amux-vs-claude-code-remote-control">Cloud Team</a> is one always-on server every teammate can open, at $69 a month, with no Mac to leave awake and no VPS to set up and secure.</p>
+
+    <h2 id="choose">When should you choose amux or Remote Control?</h2>
+    <h3 id="remote-control">Choose Claude Code Remote Control if</h3>
+    <ul>
+      <li>You only use Claude Code and already have an eligible Claude plan.</li>
+      <li>You work on a computer that stays on, such as a desktop or a server you already run.</li>
+      <li>You want to continue a session from the Claude app with nothing else to install.</li>
+      <li>You want a handful of parallel sessions, each in its own worktree, and you answer them yourself.</li>
+    </ul>
+    <h3 id="amux">Choose amux if</h3>
+    <ul>
+      <li>You want agents that keep working while your laptop sleeps, without leaving a Mac awake.</li>
+      <li>You want agents that claim work from one shared board, message each other and hold through usage limits.</li>
+      <li>You run Codex or Gemini CLI as well as Claude Code, or sign in with an API key.</li>
+      <li>You want a scheduler, CRM, email and browser automation beside your agents.</li>
+      <li>You want an always-on server without running one: <a href="/start/?source=amux-vs-claude-code-remote-control">amux Cloud</a> from $39/mo, or $69 for a team.</li>
+    </ul>
+    <p>Related: <a href="/compare/amux-vs-claude-code-agent-view/">amux vs Claude Code agent view</a>, <a href="/compare/amux-vs-claude-code-web-ui/">amux vs Claude Code web UIs</a>, <a href="/guides/best-phone-apps-for-coding-agents-2026/">best phone apps for coding agents</a>, <a href="/guides/manage-coding-agents-from-iphone/">manage coding agents from your iPhone</a>, <a href="/guides/best-claude-code-session-managers-2026/">best Claude Code session managers</a>.</p>
+
+    <p style="font-size:0.82rem;color:var(--fg-mute);">Remote Control details from Anthropic's <a href="https://code.claude.com/docs/en/remote-control" target="_blank" rel="noopener">Remote Control documentation</a>, read November 25, 2026. Claude Code ships often; check the docs for the current flags and plans.</p>
+
+    <h2 id="faq">FAQ</h2>
+    <h3>What is Claude Code Remote Control?</h3>
+    <p>A Claude Code feature that lets you continue a session running on your own machine from claude.ai/code, the Claude app for iOS and Android, the Claude desktop app or VS Code. You start it with claude remote-control (server mode), claude --remote-control, or /remote-control inside a session, and connect by URL or QR code. Claude keeps running locally the whole time.</p>
+    <h3>Is amux a Claude Code Remote Control alternative?</h3>
+    <p>For steering coding agents from your phone, yes, and the two can also be used together. Remote Control connects the Claude apps to Claude Code sessions on a machine you keep on. amux runs a team of Claude Code, Codex and Gemini CLI workers on a shared task board with a scheduler, CRM, email and browser automation, and amux Cloud runs it on a dedicated server that stays on without your laptop.</p>
+    <h3>Does Claude Code Remote Control work when my laptop is closed?</h3>
+    <p>No. Anthropic&#x27;s docs say your computer must stay on and the claude process must keep running. If the laptop sleeps or the network drops, the session reconnects when the machine comes back online. To keep agents working while you sleep, run them on a machine that stays on, such as a self-hosted amux server or an amux Cloud server from $39 a month.</p>
+    <h3>Which plans include Claude Code Remote Control?</h3>
+    <p>Anthropic lists Pro, Max, Ultra, Team and Enterprise plans, and API keys are not supported. On Team and Enterprise an Owner must turn on the Remote Control toggle first, and it is not available through Bedrock, Google Cloud, Microsoft Foundry or a custom base URL. amux works with your own Claude, ChatGPT or Gemini sign-in or an API key.</p>
+    <h3>Can Remote Control run several sessions at once?</h3>
+    <p>Yes, in server mode. claude remote-control accepts up to 32 concurrent sessions by default (set with --capacity), and --spawn worktree gives each new session its own git worktree. An interactive session started with --remote-control or /remote-control carries one remote session. All of them are Claude Code sessions.</p>
+  </main>
+
+
+
+
+  <footer class="site-foot">
+  <div class="site-foot-inner">
+    <div class="site-foot-brand">
+      <a href="/" class="site-foot-logo">amux</a>
+      <p>The agent control plane. Run, watch and govern parallel coding agents from one place.</p>
+    </div>
+    <nav class="site-foot-cols" aria-label="Footer">
+      <div><b>Product</b><a href="/features/">Features</a><a href="/pricing/">Pricing</a><a href="/changelog/">Changelog</a><a href="/security/">Security</a><a href="/own-your-data/">Your data</a></div>
+      <div><b>Learn</b><a href="/docs/">Docs</a><a href="/guides/">Guides</a><a href="/walkthrough/">Walkthrough</a><a href="/demos/">Demos</a><a href="/blog/">Blog</a><a href="/faq/">FAQ</a></div>
+      <div><b>Compare</b><a href="/compare/amux-vs-cursor/">vs Cursor</a><a href="/compare/amux-vs-devin/">vs Devin</a><a href="/compare/amux-vs-cline/">vs Cline</a><a href="/compare/">All comparisons</a></div>
+      <div><b>More</b><a href="/use-cases/">Use cases</a><a href="/solutions/">Solutions</a><a href="/for/">For your stack</a><a href="/glossary/">Glossary</a></div>
+    </nav>
+  </div>
+  <div class="site-foot-bottom">
+    <span>&copy; 2026 <a href="https://mixpeek.com">Mixpeek</a> &middot; MIT + Commons Clause</span>
+    <span class="site-foot-links"><a href="https://github.com/mixpeek/amux" target="_blank" rel="noopener">GitHub</a><a href="https://apps.apple.com/us/app/amux-agent-multiplexer/id6760410435" target="_blank" rel="noopener">iOS app</a><a href="/privacy/">Privacy</a></span>
+  </div>
+</footer>
+
+  <script>
+    // GitHub stars
+    fetch('https://api.github.com/repos/mixpeek/amux')
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gh-stars');
+        if (el && d.stargazers_count) {
+          const n = d.stargazers_count;
+          el.textContent = n >= 1000 ? (n/1000).toFixed(1) + 'k' : n;
+        }
+      }).catch(() => {});
+  </script>
+</body>
+</html>
