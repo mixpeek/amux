@@ -27739,6 +27739,7 @@ async function _approvalsRefresh() {
         + esc(_bodyText) + '</div>'
         + _apprAttachHtml(p)
         + _apprLinksHtml(pv)
+        + _apprVoiceHtml(pv)
         + '<div id="appr-sched-' + esc(p.id) + '" class="appr-sched-row" data-send-at="' + (_sched ? _sched.send_at : '') + '" hidden></div>'
         + (p.schedule_failed ? '<div class="appr-sched-failed">'
           + 'It was scheduled for ' + esc(_apprWhenText(p.schedule_failed.send_at)) + ' and did not send. It is waiting for you again.</div>' : '')
@@ -27757,6 +27758,22 @@ async function _approvalsRefresh() {
 // checked"). The server fetched every URL in the draft when it was held
 // (api/email_links.rs) and refused it on a dead one; this line says what it
 // found, so a bot-walled or slow link is seen before Approve.
+// The owner's voice and the /slop pass (Ethan, 2026-11-24: "everything should
+// use my founder voice and be run thru anti slop skill"): what the voice check
+// found when the draft was held, the worker's reason if it broke a rule, and
+// whether the drafter attested the /slop pass.
+function _apprVoiceHtml(pv) {
+  const v = pv.voice;
+  if (!v) return '';
+  let text;
+  if (v.measured !== true) text = 'Voice not checked (' + (v.why_unmeasured || 'unknown') + ')';
+  else if (!v.voice) text = 'Voice: none set';
+  else text = v.ok ? 'Voice: fits ' + v.voice : 'Voice: ' + (v.problems || []).join('; ');
+  if (v.override) text += ' (sent as written because: ' + v.override + ')';
+  text += v.slop === true ? ' · slop pass attested' : ' · slop pass NOT attested';
+  const bad = v.measured !== true || v.ok === false || v.slop !== true;
+  return '<div class="appr-links' + (bad ? ' appr-links-warn' : '') + '">' + esc(text) + '</div>';
+}
 function _apprLinksHtml(pv) {
   const l = pv.links;
   if (!l) return '';
@@ -47201,8 +47218,9 @@ function _crmVoiceLine(t) {
   const links = v.links || {};
   const linkText = links.measured === true ? 'links: ' + (links.summary || links.checked + ' checked') : 'links not checked yet';
   const head = v.ok ? 'Voice: fits' + (v.rule ? ' ' + v.rule : '') : 'Voice: ' + (v.problems || []).join('; ');
-  return '<span class="crm-meta crm-voice' + (v.ok ? '' : ' crm-voice-bad') + '">' + esc(head)
-    + (v.override ? ' · sent as written because: ' + esc(v.override) : '') + ' · ' + esc(linkText) + '</span>';
+  const slop = v.slop === true ? 'slop pass attested' : 'slop pass NOT attested';
+  return '<span class="crm-meta crm-voice' + (v.ok && v.slop === true ? '' : ' crm-voice-bad') + '">' + esc(head)
+    + (v.override ? ' · sent as written because: ' + esc(v.override) : '') + ' · ' + esc(linkText) + ' · ' + esc(slop) + '</span>';
 }
 
 function _crmTouchCard(t, withWho) {

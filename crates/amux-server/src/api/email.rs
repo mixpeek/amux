@@ -730,6 +730,10 @@ pub async fn send(
             if let Some(refused) = dead_links_refusal(&ctx, &lane, "send", &to, &subject, &links) {
                 return refused;
             }
+            let mut voice = crate::api::crm_voice::check_text(&state, "email/email", &message, body.get("slop").map(truthy).unwrap_or(false)).await;
+            if let Some(refused) = voice_refusal(&ctx, &lane, "send", &to, &subject, &mut voice, &body_str(&body, "voice_override")) {
+                return refused;
+            }
             let preview = json!({
                 "endpoint": "send", "from": from_acct, "to": to, "cc": cc,
                 "subject": subject,
@@ -737,6 +741,7 @@ pub async fn send(
                 "external_recipients": externals,
                 "conv": (conv.starts_with("o:") && conv.len() < 64).then_some(conv),
                 "links": links,
+                "voice": voice,
             });
             let attachments = match frozen_attachments(&body) {
                 Ok(a) => a,
@@ -773,7 +778,7 @@ pub async fn send(
                         "[email] EXTERNAL send from a worker held for human approval (AMUX-3510)"
                     );
                     crate::api::approval_cards::file(with_links(crate::api::approval_cards::email_ask(
-                        &id, &lane, "send", &to, &subject, &externals), &preview["links"])).await;
+                        &id, &lane, "send", &to, &subject, &externals), &preview)).await;
                     approval_required_response(&req, preview)
                 }
                 Err(e) => err(
@@ -1056,6 +1061,14 @@ pub async fn reply_with(
                     if let Some(refused) = dead_links_refusal(&ctx, &lane, "reply", &r_to, &r_subject, &links) {
                         return refused;
                     }
+                    let slop = body.get("slop").map(truthy).unwrap_or(false);
+                    let mut voice = match state {
+                        Some(st) => crate::api::crm_voice::check_text(st, "email/reply", &reply_body, slop).await,
+                        None => json!({"measured": false, "why_unmeasured": "the email bridge holds no store", "slop": slop}),
+                    };
+                    if let Some(refused) = voice_refusal(&ctx, &lane, "reply", &r_to, &r_subject, &mut voice, &body_str(&body, "voice_override")) {
+                        return refused;
+                    }
                     let preview = json!({
                         "endpoint": "reply", "from": gmail_from,
                         "in_reply_to": message_id, "reply_all": reply_all,
@@ -1063,6 +1076,7 @@ pub async fn reply_with(
                         "body": reply_body.chars().take(2000).collect::<String>(),
                         "external_recipients": externals,
                         "links": links,
+                        "voice": voice,
                     });
                     let frozen = match frozen_attachments(&body) {
                         Ok(a) => a,
@@ -1101,7 +1115,7 @@ pub async fn reply_with(
                                 "[email] EXTERNAL reply from a worker held for human approval (AMUX-3510)"
                             );
                             crate::api::approval_cards::file(with_links(crate::api::approval_cards::email_ask(
-                                &id, &lane, "reply", &r_to, &r_subject, &externals), &preview["links"])).await;
+                                &id, &lane, "reply", &r_to, &r_subject, &externals), &preview)).await;
                             approval_required_response(&req, preview)
                         }
                         Err(e) => err(
@@ -1189,14 +1203,47 @@ fn dead_links_refusal(ctx: &EmailCtx, lane: &str, endpoint: &str, to: &str, subj
     Some(err(StatusCode::UNPROCESSABLE_ENTITY, refused))
 }
 
-/// The link check's line on the approval card, so the owner reads it before Approve.
-fn with_links(mut ask: crate::api::approval_cards::Ask, links: &Value) -> crate::api::approval_cards::Ask {
+/// A worker's held send in the owner's voice (crm_voice.rs, VOX with sender
+/// owner; owner 2026-11-24: "everything should use my founder voice"): a body
+/// that breaks a rule is refused with the problems unless the worker sends
+/// `voice_override` with its reason, which rides the card. Logged as
+/// `verdict=email_voice_refused` or `email_voice_flagged`.
+fn voice_refusal(ctx: &EmailCtx, lane: &str, endpoint: &str, to: &str, subject: &str, voice: &mut Value, why: &str) -> Option<Response> {
+    if voice["ok"] != json!(false) {
+        return None;
+    }
+    let problems = voice["problems"].clone();
+    if why.trim().is_empty() {
+        email_log(
+            ctx.client.home(),
+            json!({"endpoint": endpoint, "blocked": "email_voice", "to": to, "subject": subject, "session": lane, "problems": problems}),
+        );
+        tracing::warn!(session = %lane, endpoint, problems = %problems, verdict = "email_voice_refused",
+            "[email] held send refused: the body breaks the owner's voice");
+        let list = problems.as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+        return Some(err(StatusCode::UNPROCESSABLE_ENTITY, json!({
+            "error": format!("not held: the email breaks the owner's voice ({}): {list}. Rewrite it, or send voice_override with the reason it should go as written; nothing was parked.",
+                voice["voice"].as_str().unwrap_or("")),
+            "code": "email_voice", "voice": voice.clone(),
+        })));
+    }
+    voice["override"] = json!(why.trim());
+    voice["flagged"] = json!(true);
+    tracing::info!(session = %lane, endpoint, problems = %problems, verdict = "email_voice_flagged",
+        "[email] held send breaks the owner's voice; parked flagged with the worker's reason");
+    None
+}
+
+/// The link check's and the voice's lines on the approval card, so the owner
+/// reads them before Approve.
+fn with_links(mut ask: crate::api::approval_cards::Ask, preview: &Value) -> crate::api::approval_cards::Ask {
+    let links = &preview["links"];
     let line = if links["measured"] == json!(true) {
         links["summary"].as_str().unwrap_or("").to_string()
     } else {
         format!("not checked ({})", links["why_unmeasured"].as_str().unwrap_or("?"))
     };
-    ask.desc.push_str(&format!("\nLinks: {line}"));
+    ask.desc.push_str(&format!("\nLinks: {line}\n{}", crate::api::crm_voice::card_line(&preview["voice"])));
     ask
 }
 
@@ -3521,6 +3568,46 @@ mod tests {
         assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
         assert_eq!(res["code"], json!("approval_required"));
         assert_eq!(res["preview"]["links"]["summary"], json!("1 checked, all live"));
+    }
+
+    // Owner 2026-11-24: "everything should use my founder voice and be run
+    // thru anti slop skill". A worker's held email that breaks the owner's
+    // voice is refused with what broke; with a reason it parks flagged, and
+    // the preview carries the voice and whether the /slop pass was attested.
+    #[tokio::test]
+    async fn a_held_send_is_checked_against_the_owners_voice_and_says_if_slop_ran() {
+        let home = temp_home();
+        let http = MockHttp::new(vec![
+            ("GET", "/messages?q=", 200, json!({ "messages": [] })),
+            ("GET", "/settings/sendAs", 200, json!({ "sendAs": [] })),
+        ]);
+        let (app, d, _r) = app_with(http.clone(), home.path());
+        let db = rusqlite::Connection::open(d.path().join("email-api-test.db")).unwrap();
+        db.execute("INSERT INTO crm_voices (id,sender,name,rules,created,updated) VALUES ('VOX-1','owner','Ethan',?1,1,1)",
+            [json!({"banned": ["circling back"], "channels": {"email/email": {"max_words": 40}}}).to_string()]).unwrap();
+        let send = |body: Value| send_req(&app, "POST", "/api/email/send", Some(body), &[("x-amux-session", "autodesk")]);
+        let draft = json!({ "to": "hilmar.koch@autodesk.com", "subject": "Update", "from": ACCT,
+                            "body": "Just circling back on the drift report." });
+        let (st, res) = send(draft.clone()).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{res}");
+        assert_eq!(res["code"], json!("email_voice"));
+        assert!(res["error"].as_str().unwrap().contains("banned phrase: \"circling back\""), "{res}");
+        let (_, lst) = send_req(&app, "GET", "/api/email/approvals", None, &[]).await;
+        assert_eq!(lst["pending"].as_array().map(|a| a.len()), Some(0), "nothing parked: {lst}");
+
+        let mut kept = draft.clone();
+        kept["voice_override"] = json!("their subject line says circling back");
+        let (st, res) = send(kept).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
+        let v = &res["preview"]["voice"];
+        assert_eq!((v["voice"].as_str(), v["flagged"].as_bool(), v["slop"].as_bool()), (Some("VOX-1"), Some(true), Some(false)), "{res}");
+        assert_eq!(crate::api::crm_voice::card_line(v),
+            "Voice: banned phrase: \"circling back\" (sent as written because: their subject line says circling back) · slop pass NOT attested");
+
+        let (st, res) = send(json!({ "to": "bo@beta.io", "subject": "Drift", "from": ACCT, "slop": true,
+                                     "body": "Saw your drift post. Curious how you catch it today?" })).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{res}");
+        assert_eq!(crate::api::crm_voice::card_line(&res["preview"]["voice"]), "Voice: fits VOX-1 · slop pass attested");
     }
 
     #[tokio::test]

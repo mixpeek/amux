@@ -232,6 +232,42 @@ pub(crate) fn brief_voice(conn: &rusqlite::Connection, channels: &[Value], perso
     Ok(v)
 }
 
+/// The owner's voice for a text written outside the CRM (a held email), as
+/// rule problems only: the caller has checked its links already. `slop` is the
+/// drafter's attestation that the text went through the /slop pass (owner
+/// 2026-11-24: "everything should use my founder voice and be run thru anti
+/// slop skill"); a regex covers the banned phrases, and the judgement half of
+/// /slop is the drafter's, so the card says when it is not attested.
+pub(crate) async fn check_text(state: &AppState, key: &str, text: &str, slop: bool) -> Value {
+    let store = state.store.clone();
+    let voice = tokio::task::spawn_blocking(move || store.read().ok().and_then(|c| voice_for(&c, ""))).await.ok().flatten();
+    let Some((vid, rules)) = voice else {
+        return json!({"measured": true, "voice": null, "ok": true, "problems": [], "slop": slop, "why": "no owner voice in the CRM"});
+    };
+    let (problems, applied) = lint(&rules, key, text);
+    json!({"voice": vid, "key": key, "rule": applied, "measured": true, "ok": problems.is_empty(), "problems": problems, "slop": slop})
+}
+
+/// One line for an approval card: what the voice found, a worker's reason for
+/// sending it anyway, and whether the /slop pass was attested.
+pub(crate) fn card_line(v: &Value) -> String {
+    if v["measured"] != json!(true) {
+        return format!("Voice: not checked ({})", v["why_unmeasured"].as_str().unwrap_or("?"));
+    }
+    let mut s = if v["voice"].is_null() {
+        "Voice: none set".to_string()
+    } else if v["ok"] == json!(true) {
+        format!("Voice: fits {}", v["voice"].as_str().unwrap_or(""))
+    } else {
+        format!("Voice: {}", v["problems"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("; ")).unwrap_or_default())
+    };
+    if let Some(o) = v["override"].as_str() {
+        s += &format!(" (sent as written because: {o})");
+    }
+    s += if v["slop"] == json!(true) { " · slop pass attested" } else { " · slop pass NOT attested" };
+    s
+}
+
 /// A touch text's voice check, read and fetched outside the writer: the
 /// voice named (or the default), the channel rule for its step, and links.
 pub(crate) async fn check_touch(state: &AppState, hint: &str, channel: &str, action: &str, step: i64, text: &str) -> Value {

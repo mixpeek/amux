@@ -404,6 +404,7 @@ async fn create_touch(State(state): State<AppState>, headers: HeaderMap, Json(bo
     // The voice (api/crm_voice.rs): a text is checked when it is written.
     let voice_check = if text.is_empty() { None } else {
         let mut c = super::crm_voice::check_touch(&state, &s("voice"), &channel, &action, step.max(1), &text).await;
+        c["slop"] = json!(body.get("slop").and_then(Value::as_bool) == Some(true));
         if let Some(r) = super::crm_voice::refusal(&mut c, super::standing_approvals::is_owner_request(&headers), &s("voice_override"), "new") {
             return r;
         }
@@ -471,6 +472,7 @@ async fn patch_touch(State(state): State<AppState>, headers: HeaderMap, Path(id)
         if let Ok(Ok(Some((ch, ac, step, vid)))) = cur {
             let hint = body.get("voice").and_then(Value::as_str).unwrap_or(&vid).to_string();
             let mut c = super::crm_voice::check_touch(&state, &hint, &ch, &ac, step.max(1), text).await;
+            c["slop"] = json!(body.get("slop").and_then(Value::as_bool) == Some(true));
             let why = body.get("voice_override").and_then(Value::as_str).unwrap_or("").trim().to_string();
             if let Some(r) = super::crm_voice::refusal(&mut c, owner, &why, &id) {
                 return r;
