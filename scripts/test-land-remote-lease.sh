@@ -41,6 +41,9 @@
 #      another land's lease, not an expired one or land's own push; and a lost
 #      push names the commit that moved the branch under the lease
 #      (mxp-decomp, 2026-11-23: ci/tip/land.sh landed d0dff040f6 that way)
+#  20. a --priority land does not yield to the other machine's ordinary
+#      waiter, and still yields to a priority one (mixpeek-meta-worker,
+#      2026-11-25: a production S1 fix waited out an ordinary land)
 #  13. `amux land --cancel` (TERM to the land's process group, twice) and an
 #      INT to the group both release the lease (mixpeek-cicd, 2026-11-06
 #      23:52:20Z: a cancelled land left it held for the TTL)
@@ -344,6 +347,36 @@ echo own > "$H/k/i"; git -C "$H/k" add i; git -C "$H/k" commit -qm "i=own"
 land k nineteen; rc=$?
 [ "$rc" = 0 ] && [ "$(main_has i)" = own ] && [ -z "$(lease_now)" ] && ! grep -q land_lease_push_refused "$H/nineteen.out" \
   && ok "land's own push passes the check under its own lease" || bad "19: own land: rc=$rc i=$(main_has i): $(tail -3 "$H/nineteen.out")"
+
+# 20: a --priority land takes the lease at once past an ordinary waiter
+# announced by the other machine, and still yields to a priority waiter, so
+# two priority lands alternate (mixpeek-meta-worker, 2026-11-25 04:09Z:
+# mxp-gs12's production S1 fix yielded main to an ordinary land on the Mac).
+# A 30 s poll keeps each land inside the window after the previous release.
+git -C "$H/a" push -q --no-verify origin ":$REF" 2>/dev/null
+vm_waiter() { # <lane> <priority>: an announcement pushed by the other machine
+  local t c; t="$(git -C "$H/a" mktree </dev/null)"
+  c="$(printf 'amux land lease\n\nholder=vm:4242\nlane=%s\nhead=abc1234\ntaken_at=%s\nexpires_at=%s\npriority=%s\n' "$1" "$(date +%s)" "$(( $(date +%s) + 600 ))" "$2" | git -C "$H/a" commit-tree "$t")"
+  git -C "$H/a" push -q --no-verify --force origin "$c:refs/amux/land-wait/main/vm-4242"
+}
+pland() { # <lane>: a --priority land from checkout a
+  (cd "$H/a" && HOME="$H" AMUX_LAND_NOTIFY=0 AMUX_WORKER="$1" AMUX_LAND_REMOTE_LEASE_POLL_S=30 AMUX_LAND_REMOTE_LEASE_YIELD_S=2 \
+    bash "$AM" land --tries 2 --no-batch --priority --reason "grant: test case 20" >"$H/$1.out" 2>&1)
+}
+commit a f p20; land a p20-first AMUX_LAND_REMOTE_LEASE_POLL_S=30   # this machine has just released
+vm_waiter vm-plain 0
+commit a f p20-prio; pland p20-prio; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = p20-prio ] && grep -q 'verdict=land_remote_lease_priority_passes: vm:4242 (vm-plain) waits without --priority' "$H/p20-prio.out" \
+  && grep -q 'verdict=land_remote_lease_no_yield: .*no other --priority land waits' "$H/p20-prio.out" && ! grep -q 'verdict=land_remote_lease_yield' "$H/p20-prio.out" \
+  && ok "a --priority land does not yield to an ordinary waiter on the other machine" || bad "20: rc=$rc f=$(main_has f): $(grep 'lease_' "$H/p20-prio.out" | head -4)"
+commit a f p20-plain; land a p20-plain AMUX_LAND_REMOTE_LEASE_POLL_S=30 AMUX_LAND_REMOTE_LEASE_YIELD_S=2; rc=$?
+[ "$rc" = 0 ] && grep -q 'verdict=land_remote_lease_yield: .*vm:4242 (vm-plain) waits' "$H/p20-plain.out" \
+  && ok "an ordinary land still yields to that waiter" || bad "20: ordinary rc=$rc: $(grep 'lease_' "$H/p20-plain.out" | head -3)"
+vm_waiter vm-prio 1
+commit a f p20-both; pland p20-both; rc=$?
+[ "$rc" = 0 ] && [ "$(main_has f)" = p20-both ] && grep -q 'verdict=land_remote_lease_yield: .*vm:4242 (vm-prio) waits' "$H/p20-both.out" \
+  && ok "two --priority lands still alternate: a priority land yields to a priority waiter" || bad "20: both rc=$rc: $(grep 'lease_' "$H/p20-both.out" | head -3)"
+git -C "$H/a" push -q --no-verify origin ":refs/amux/land-wait/main/vm-4242" 2>/dev/null
 
 # 7
 commit a f off

@@ -10231,7 +10231,7 @@ _land_cancel() {
 # install moved that time, and on 2026-10-01 a lint-only install (b6a1172f)
 # had eight waiters flagged for a cancel-and-requeue that would have cost
 # each its place for nothing.
-LAND_BEHAVIOR_VERSION="2026-11-24.62"
+LAND_BEHAVIOR_VERSION="2026-11-25.63"
 
 # SYNC-CHECKOUT (Ethan, 2026-10-17). `amux land` replays a lane's commits onto
 # origin and never moves the checkout's branch, so a shared checkout only drifts:
@@ -12533,8 +12533,8 @@ p.communicate(msg.encode())
   _land_rl_field() { git log -1 --format=%B "$1" 2>/dev/null | sed -n "s/^$2=//p" | head -1; }
   _land_rl_commit() { # <expires_at> -> a lease commit sha (holder, start, lane, head, expiry)
     local _t; _t="$(git mktree </dev/null)" || return 1
-    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\n' \
-      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" \
+    printf 'amux land lease\n\nholder=%s\nholder_start=%s\nlane=%s\nhead=%s\ntaken_at=%s\nexpires_at=%s\npriority=%s\n' \
+      "$_LAND_RL_ID" "$_LAND_RL_START" "$_LAND_RL_ME" "$_LAND_RL_HEAD" "$_LAND_RL_TAKEN" "$1" "${_LAND_RL_PRIO:-0}" \
       | GIT_AUTHOR_NAME=amux GIT_AUTHOR_EMAIL=amux@localhost GIT_COMMITTER_NAME=amux GIT_COMMITTER_EMAIL=amux@localhost git commit-tree "$_t"
   }
   _land_rl_push() { # <remote> <ref> <expected sha or empty> <new sha or empty to delete>
@@ -12591,7 +12591,13 @@ p.communicate(msg.encode())
     rm -f -- "$_LAND_RL_DIR/rl-wait"
     git push --no-verify --porcelain "$1" ":$(_land_rl_wref "$2")" >/dev/null 2>&1 || true
   }
-  _land_rl_other_waiter() { # <remote> <branch>: prints the waiter, 0 when another land announced it waits
+  # [priority-only]: count only a waiter that announced priority=1. A
+  # --priority land passes it, so it yields to another priority land (the two
+  # still alternate) and never to an ordinary one: mxp-gs12's production S1
+  # fix yielded main to an ordinary land on the Mac (mixpeek-meta-worker,
+  # 2026-11-25 04:09Z). An announcement from before the field reads as ordinary.
+  _land_rl_prio_only() { [ "${_LAND_RL_PRIO:-0}" = 1 ] && echo priority-only; return 0; }
+  _land_rl_other_waiter() { # <remote> <branch> [priority-only]: prints the waiter, 0 when another land announced it waits
     local _ls _sha _name _mine _exp _pre="refs/amux/land-wait/$2"
     _ls="$(git ls-remote "$1" "$_pre/*" 2>/dev/null)" || return 1
     _mine="$(_land_rl_wref "$2")"
@@ -12601,6 +12607,10 @@ p.communicate(msg.encode())
       _exp="$(_land_rl_field "$_sha" expires_at)"; case "$_exp" in ''|*[!0-9]*) continue ;; esac
       # A waiter that stopped refreshing (killed) is gone past its expiry and the skew.
       [ "$(date +%s)" -le $(( _exp + ${AMUX_LAND_REMOTE_LEASE_SKEW_S:-120} )) ] || continue
+      if [ -n "${3:-}" ] && [ "$(_land_rl_field "$_sha" priority)" != 1 ]; then
+        _land_rl_say "verdict=land_remote_lease_priority_passes: $(_land_rl_field "$_sha" holder) ($(_land_rl_field "$_sha" lane)) waits without --priority; this --priority land does not yield to it"
+        continue
+      fi
       echo "$(_land_rl_field "$_sha" holder) ($(_land_rl_field "$_sha" lane))"; return 0
     done <<< "$_ls"
     return 1
@@ -12619,6 +12629,7 @@ p.communicate(msg.encode())
     _LAND_RL_ME="$me"; _LAND_RL_LOG="$log"; _LAND_RL_KEY="$key"
     _LAND_RL_HEAD="$(git rev-parse --short HEAD 2>/dev/null)"
     _LAND_RL_TAKEN=""   # set when taken; a waiter's announcement is written before that (set -u)
+    _LAND_RL_PRIO="${priority:-0}"   # land's --priority; announced, and it decides whom this land yields to
     while :; do
       _now="$(date +%s)"
       if ! _cur="$(_land_rl_ls "$_r" "$_ref")"; then
@@ -12656,12 +12667,12 @@ p.communicate(msg.encode())
       local _poll="${AMUX_LAND_REMOTE_LEASE_POLL_S:-20}" _waiter
       if [ -z "${_yielded:-}" ] && [ $(( _now - _rel )) -lt $(( _poll * 2 )) ]; then
         _yielded=1
-        if _waiter="$(_land_rl_other_waiter "$_r" "$2")"; then
-          local _y=$(( _poll + RANDOM % (_poll + 1) ))
+        if _waiter="$(_land_rl_other_waiter "$_r" "$2" $(_land_rl_prio_only))"; then
+          local _y="${AMUX_LAND_REMOTE_LEASE_YIELD_S:-$(( _poll + RANDOM % (_poll + 1) ))}"
           _land_rl_say "verdict=land_remote_lease_yield: this machine released the lease $(( _now - _rel ))s ago and $_waiter waits; yielding ${_y}s so it can take it first"
           sleep "$_y"; continue
         fi
-        _land_rl_say "verdict=land_remote_lease_no_yield: this machine released the lease $(( _now - _rel ))s ago and no other land waits; taking it now"
+        _land_rl_say "verdict=land_remote_lease_no_yield: this machine released the lease $(( _now - _rel ))s ago and no other $([ "${_LAND_RL_PRIO:-0}" = 1 ] && echo '--priority ')land waits; taking it now"
       fi
       _LAND_RL_TAKEN="$_now"
       _new="$(_land_rl_commit $(( _now + _ttl )))" || { _land_rl_say "ERROR verdict=land_remote_lease_unavailable: could not write a lease commit; nothing pushed"; return 7; }
@@ -12800,7 +12811,7 @@ p.communicate(msg.encode())
     [ "${AMUX_LAND_REMOTE_LEASE:-on}" = off ] && return 0
     [ -n "${_LAND_RL_DIR:-}" ] && [ -s "$_LAND_RL_DIR/rl-sha" ] || return 0
     local _waiter _traps
-    _waiter="$(_land_rl_other_waiter "$1" "$2")" || return 0
+    _waiter="$(_land_rl_other_waiter "$1" "$2" $(_land_rl_prio_only))" || return 0
     _land_rl_say "verdict=land_remote_lease_handover: $_waiter waits for $2; releasing the lease between attempts so it lands first"
     # The release ignores TERM, INT and HUP for the exit trap's sake; here the
     # land goes on, so its own handlers come back after.
