@@ -1066,7 +1066,7 @@ impl RetryPolicy {
 /// The seven fields whose changes are audited into `schedule_audit`
 /// (mirrors Python's `_AUDIT_FIELDS` exactly, so both servers' trails agree
 /// on what counts as an auditable mutation).
-pub const AUDIT_FIELDS: [&str; 9] = [
+pub const AUDIT_FIELDS: [&str; 10] = [
     "enabled",
     "pass_check",
     "when_check",
@@ -1076,6 +1076,7 @@ pub const AUDIT_FIELDS: [&str; 9] = [
     "done_action",
     "trigger_on",
     "kind",
+    "critical",
 ];
 
 /// A row of the live `schedules` table. DB-backed with history and audit —
@@ -1276,7 +1277,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 41] = [
+    const COLS: [&str; 42] = [
         "id",
         "title",
         "session",
@@ -1322,6 +1323,8 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         // 0160 proven creator (schedule_authority.rs).
         "created_by",
         "created_by_verified",
+        // 0173 fires through a critical host (shell only).
+        "critical",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -1341,7 +1344,7 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
 
 /// Full-row UPDATE with Python's PATCH column list.
 pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<usize> {
-    const COLS: [&str; 32] = [
+    const COLS: [&str; 33] = [
         "title",
         "session",
         "command",
@@ -1379,11 +1382,13 @@ pub fn update_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         // it keeps its stored value (COALESCE below).
         "when_check",
         "when_once",
+        // 0173. Kept, like when_once, when a row is built without it.
+        "critical",
     ];
     let sets: Vec<String> = COLS
         .iter()
         .enumerate()
-        .map(|(i, c)| if *c == "when_once" { format!("{c}=COALESCE(?{}, {c})", i + 1) } else { format!("{c}=?{}", i + 1) })
+        .map(|(i, c)| if matches!(*c, "when_once" | "critical") { format!("{c}=COALESCE(?{}, {c})", i + 1) } else { format!("{c}=?{}", i + 1) })
         .collect();
     let sql = format!(
         "UPDATE schedules SET {} WHERE id=?{}",
@@ -3013,6 +3018,15 @@ async fn scheduler_tick_inner(
             floor_used = true;
             tracing::warn!(schedule = %id, held_min = held_min.unwrap_or(0), floor_min = floor, measured = true, n_considered = 1,
                 verdict = "host_pressure_floor_fire", "host is critical, but this schedule has waited past the floor; it fires (one per tick)");
+        } else if sched.str_field("kind") == "shell" && sched.raw.get("critical").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            // CRITICAL: an opt-in for a finish-path watcher, a shell command
+            // with no model turn behind it (the API refuses the flag on any
+            // other kind). On a critical host it fires on time and says so;
+            // on a calm one there is nothing to skip and nothing is logged.
+            if let Some(why) = crate::runtime_jobs::host_guard::critical_now() {
+                tracing::warn!(schedule = %id, why = %why, measured = true, n_considered = 1,
+                    verdict = "host_pressure_critical_fire", "host is critical; this schedule is marked critical and fires anyway");
+            }
         } else if !crate::runtime_jobs::host_guard::admit_automation("schedules") {
             report.deferred += 1;
             continue;
@@ -6192,6 +6206,41 @@ mod tests {
         let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &StubDeliverer::confirmed()).await.unwrap();
         assert_eq!((r.fired, r.deferred), (1, 0));
         crate::runtime_jobs::host_guard::set_level_for_test(None);
+    }
+
+    /// mixpeek-dev, 2026-11-25: finish-path watchers held 25+ minutes behind
+    /// a critical host. A shell schedule marked critical fires on time; an
+    /// unmarked shell schedule, and a prompt schedule carrying the flag (the
+    /// API refuses it, a hand-edited row can still hold it), stay held.
+    #[tokio::test]
+    async fn a_critical_shell_schedule_fires_through_a_critical_host() {
+        let (store, _dir) = store();
+        let due = fmt_minute(Local::now() - chrono::Duration::minutes(1));
+        let due_w = due.clone();
+        store
+            .write_async(move |conn| {
+                for (id, kind, critical) in [("SCHED-1", "shell", 1), ("SCHED-2", "shell", 0), ("SCHED-3", "tmux", 1)] {
+                    let mut row = make_row(id, "alpha", Some("every 10m"), &due_w);
+                    row.set("kind", Value::from(kind));
+                    row.set("command", Value::from("true"));
+                    row.set("critical", Value::from(critical));
+                    insert_schedule(conn, &row)?;
+                }
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let mut seen = HashMap::new();
+        crate::runtime_jobs::host_guard::set_level_for_test(Some(crate::runtime_jobs::host_guard::Level::Critical));
+        let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &StubDeliverer::confirmed()).await.unwrap();
+        crate::runtime_jobs::host_guard::set_level_for_test(None);
+        assert_eq!((r.due, r.fired, r.deferred), (3, 1, 2), "{r:?}");
+        let conn = store.read().unwrap();
+        let ran: Vec<String> = conn.prepare("SELECT schedule_id FROM schedule_runs").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(ran, vec!["SCHED-1".to_string()], "only the critical shell schedule fires");
+        let held: String = conn.query_row("SELECT next_run FROM schedules WHERE id='SCHED-3'", [], |r| r.get(0)).unwrap();
+        assert_eq!(held, due, "a prompt schedule with the flag stays due");
     }
 
     /// mixpeek-dev, 2026-11-23: a host critical for hours starved every
