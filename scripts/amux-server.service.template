@@ -41,6 +41,13 @@ TimeoutStartSec=30
 # have silently reintroduced INIT-1 on any fresh install (found 2026-08-31,
 # see AMUX-49's investigation).
 KillMode=process
+# Outrank the lanes for CPU. Each worker pane runs in its own
+# tmux-spawn-*.scope at the default weight of 100, so at 100 the server got
+# one share among dozens and stalled on a loaded box (mixpeek-dev, 2026-11-25
+# 07:1xZ: cpu pressure some 37%, full 31%; at 1000 it read 18% and 12%, with
+# the server using about 1.25 cores against 18 lane scopes). The lanes keep
+# their shares among themselves, and an idle server takes nothing.
+CPUWeight=1000
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=amux-server
