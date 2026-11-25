@@ -42,7 +42,9 @@ lands in an agent's turn, so only addresses, counts, ports and process names are
 sent, each cleaned to a short safe charset.
 
 --dry-run prints what it would send and records nothing. --rebaseline accepts the
-current snapshot as normal.
+current snapshot as normal, adding its listeners and egress names to those
+already accepted (a backup or kubectl that is not running at that moment stays
+accepted). To forget an accepted name, delete baseline.json and rebaseline.
 """
 
 from __future__ import annotations
@@ -392,6 +394,18 @@ def baseline_of(snap: dict) -> dict:
     }
 
 
+def rebaselined(old: dict | None, snap: dict) -> dict:
+    # Adds to what was accepted. Replacing it forgot every name not running
+    # at that moment: restic, accepted at its 03:00 run on 11-24, alerted
+    # again on 11-25 after later rebaselines taken while it was idle.
+    new = baseline_of(snap)
+    if old:
+        new["listeners"] = sorted({tuple(x) for x in old.get("listeners", [])}
+                                  | set(new["listeners"]))
+        new["egress"] = sorted(set(old.get("egress", [])) | set(new["egress"]))
+    return new
+
+
 # An alerted key stays quiet this long after it was last present, so a dev
 # server restarted every few minutes on the same wide port alerts once a day
 # instead of on every return. Keys that carry a pid (file servers) still alert
@@ -425,7 +439,7 @@ def main() -> int:
         return 2
     first = base is None or "--rebaseline" in sys.argv
     if first:
-        base = baseline_of(snap)
+        base = rebaselined(base, snap)
     rows = evaluate(snap, base, reqs)
     fresh = [r for r in rows if r["key"] not in seen]
     if do_fix and not dry:

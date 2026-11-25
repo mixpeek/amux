@@ -139,6 +139,13 @@ check("a git-remote helper is judged per destination under any truncated name",
       all(nw.per_destination(n) for n in ["git-remot", "git-remote-http", "git-remote-https"])
       and not any(r["kind"] == "NEW-EGRESS" for r in nw.evaluate(
           {**snap, "egress": {"git-remote-http": {"140.82.114.4"}}}, base, reqs)))
+re_base = nw.rebaselined({"listeners": [["old", "9"]], "egress": ["restic"], "peers": ["gone"],
+                          "firewall": "off"}, snap)
+check("a rebaseline keeps names accepted earlier and adds the current ones",
+      "restic" in re_base["egress"] and "claude" in re_base["egress"]
+      and ("old", "9") in re_base["listeners"] and ("amux-serv", "8824") in re_base["listeners"]
+      and re_base["peers"] == nw.baseline_of(snap)["peers"], str(re_base))
+check("a first baseline is the snapshot", nw.rebaselined(None, snap) == nw.baseline_of(snap))
 now = 1_000_000.0
 kept = nw.remember({"listener:node:3931": now - 3600, "old": now - 25 * 3600}, ["new"], now)
 check("a key gone for an hour stays quiet, one gone a day alerts again",
@@ -207,6 +214,13 @@ try:
     repeated = [x for x in body.splitlines()[1:-1] if x and x in again]
     check("second run repeats nothing from the first", p.returncode == 0 and not repeated,
           str(repeated) or p.stderr)
+    b = json.loads((state / "baseline.json").read_text())
+    b["egress"] = sorted(set(b.get("egress", [])) | {"accepted-while-idle"})
+    (state / "baseline.json").write_text(json.dumps(b))
+    p = watch("--rebaseline")
+    kept_names = json.loads((state / "baseline.json").read_text()).get("egress", [])
+    check("e2e: --rebaseline keeps an accepted name that is not running now",
+          p.returncode == 0 and "accepted-while-idle" in kept_names, p.stderr + str(kept_names))
 finally:
     if srv.poll() is None:
         srv.kill()
