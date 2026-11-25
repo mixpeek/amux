@@ -2919,6 +2919,21 @@ impl FireDispatch {
     }
 }
 
+/// What lets a schedule marked `critical` past a critical host: `"shell"` for
+/// a shell command, `"when"` for a prompt schedule whose wake condition runs
+/// first. `None` for an unmarked row, and for a prompt schedule with no check
+/// (a hand-edited row can hold the flag; it stays held like any other).
+fn critical_gate(sched: &DurableSchedule) -> Option<&'static str> {
+    if sched.raw.get("critical").and_then(Value::as_i64).unwrap_or(0) == 0 {
+        return None;
+    }
+    if sched.str_field("kind") == "shell" {
+        Some("shell")
+    } else {
+        super::schedule_wake::when_check_of(sched).map(|_| "when")
+    }
+}
+
 async fn scheduler_tick_inner(
     store: &SharedStore,
     firing: bool,
@@ -3018,13 +3033,15 @@ async fn scheduler_tick_inner(
             floor_used = true;
             tracing::warn!(schedule = %id, held_min = held_min.unwrap_or(0), floor_min = floor, measured = true, n_considered = 1,
                 verdict = "host_pressure_floor_fire", "host is critical, but this schedule has waited past the floor; it fires (one per tick)");
-        } else if sched.str_field("kind") == "shell" && sched.raw.get("critical").and_then(Value::as_i64).unwrap_or(0) != 0 {
-            // CRITICAL: an opt-in for a finish-path watcher, a shell command
-            // with no model turn behind it (the API refuses the flag on any
-            // other kind). On a critical host it fires on time and says so;
-            // on a calm one there is nothing to skip and nothing is logged.
+        } else if let Some(gated_by) = critical_gate(&sched) {
+            // CRITICAL: an opt-in for a finish-path watcher or a rare-event
+            // trigger. A shell command has no model turn behind it; a prompt
+            // schedule qualifies only with a `when` check, which runs on time
+            // and lets the prompt through only when it passes (the API refuses
+            // the flag on a prompt schedule without one). On a critical host it
+            // fires on time and says so; on a calm one nothing is logged.
             if let Some(why) = crate::runtime_jobs::host_guard::critical_now() {
-                tracing::warn!(schedule = %id, why = %why, measured = true, n_considered = 1,
+                tracing::warn!(schedule = %id, why = %why, gated_by, measured = true, n_considered = 1,
                     verdict = "host_pressure_critical_fire", "host is critical; this schedule is marked critical and fires anyway");
             }
         } else if !crate::runtime_jobs::host_guard::admit_automation("schedules") {
@@ -6241,6 +6258,42 @@ mod tests {
         assert_eq!(ran, vec!["SCHED-1".to_string()], "only the critical shell schedule fires");
         let held: String = conn.query_row("SELECT next_run FROM schedules WHERE id='SCHED-3'", [], |r| r.get(0)).unwrap();
         assert_eq!(held, due, "a prompt schedule with the flag stays due");
+    }
+
+    /// mixpeek-meta-worker, 2026-11-25: rare-event triggers are prompt
+    /// schedules with a cheap `when` check, and on a box critical most of the
+    /// day they never looked (SCHED-2887 ran 0 times in 18 minutes). Marked
+    /// critical, the check runs on time: a passing one delivers, a failing one
+    /// is a skip that wakes nobody, and an unmarked twin stays held.
+    #[tokio::test]
+    async fn a_critical_prompt_schedule_with_a_when_check_looks_through_a_critical_host() {
+        let (store, _dir) = store();
+        let due = fmt_minute(Local::now() - chrono::Duration::minutes(1));
+        let due_w = due.clone();
+        store
+            .write_async(move |conn| {
+                for (id, check, critical) in [("SCHED-1", "true", 1), ("SCHED-2", "exit 3", 1), ("SCHED-3", "true", 0)] {
+                    let mut row = make_row(id, "alpha", Some("every 10m"), &due_w);
+                    row.set("when_check", Value::from(check));
+                    row.set("critical", Value::from(critical));
+                    insert_schedule(conn, &row)?;
+                }
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .await
+            .unwrap();
+        let mut seen = HashMap::new();
+        let ok = StubDeliverer::confirmed();
+        crate::runtime_jobs::host_guard::set_level_for_test(Some(crate::runtime_jobs::host_guard::Level::Critical));
+        let r = scheduler_tick(&store, true, MissedRunPolicy::Skip, &mut seen, &ok).await.unwrap();
+        crate::runtime_jobs::host_guard::set_level_for_test(None);
+        assert_eq!((r.due, r.deferred), (3, 1), "{r:?}");
+        assert_eq!(ok.calls(), 1, "only the passing check delivers its prompt");
+        assert_eq!(run_statuses(&store, "SCHED-1"), vec!["delivered"]);
+        assert_eq!(run_statuses(&store, "SCHED-2"), vec!["skipped"], "the failing check looked on time and woke nobody");
+        assert!(run_statuses(&store, "SCHED-3").is_empty(), "an unmarked prompt schedule stays held");
+        let held: String = store.read().unwrap().query_row("SELECT next_run FROM schedules WHERE id='SCHED-3'", [], |r| r.get(0)).unwrap();
+        assert_eq!(held, due);
     }
 
     /// mixpeek-dev, 2026-11-23: a host critical for hours starved every

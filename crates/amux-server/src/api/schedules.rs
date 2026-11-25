@@ -464,15 +464,16 @@ fn when_on_shell_refusal() -> Response {
     )
 }
 
-/// `critical` skips the host guard, so it is only for a shell command: on a
-/// prompt schedule it would carry a model turn past the guard.
+/// `critical` skips the host guard, so it is for a shell command, or a prompt
+/// schedule whose `when` check gates the turn. On a prompt schedule with no
+/// check it would carry a model turn past the guard on every fire.
 fn critical_not_shell_refusal() -> Response {
     tracing::info!(verdict = "schedule_critical_refused", reason = "not_shell", measured = true, n_considered = 1,
-        "critical was set on a schedule that is not kind 'shell'");
+        "critical was set on a prompt schedule with no when check");
     err(
         StatusCode::BAD_REQUEST,
         json!({
-            "error": "critical applies to kind 'shell' schedules only: it fires through a critical host, and a prompt schedule would carry a model turn past the host guard",
+            "error": "critical applies to kind 'shell' schedules, or a prompt schedule with a when check: it fires through a critical host, and a prompt schedule with no check would carry a model turn past the host guard on every fire",
             "code": "critical_not_shell",
         }),
     )
@@ -968,8 +969,9 @@ pub struct ScheduleBody {
     /// time the check passes.
     #[serde(default, deserialize_with = "de_flag")]
     pub when_once: Option<i64>,
-    /// Fire on time while the host guard reads critical (kind 'shell' only;
-    /// refused on any other kind). For a finish-path watcher on a loaded box.
+    /// Fire on time while the host guard reads critical: a shell schedule, or a
+    /// prompt schedule with `when` (its check runs on time; the prompt goes
+    /// only when it passes). Refused on a prompt schedule with no check.
     #[serde(default, deserialize_with = "de_flag")]
     pub critical: Option<i64>,
     /// When set, the scheduler creates an ephemeral worktree session for each
@@ -1205,7 +1207,7 @@ pub async fn create(
     if matches!(when_in, Some(Some(_))) && body.kind.as_deref() == Some("shell") {
         return when_on_shell_refusal();
     }
-    if body.critical.unwrap_or(0) != 0 && body.kind.as_deref() != Some("shell") {
+    if body.critical.unwrap_or(0) != 0 && body.kind.as_deref() != Some("shell") && !matches!(when_in, Some(Some(_))) {
         return critical_not_shell_refusal();
     }
     let by = mutation_by(&headers, body.by.as_deref());
@@ -1714,8 +1716,11 @@ pub async fn patch(
             if let Some(v) = body.critical {
                 s.set("critical", json!(v));
             }
-            // Also refuses a kind change away from shell on a critical row.
-            if s.str_field("kind") != "shell" && s.raw().get("critical").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            // Also refuses a kind change away from shell, or clearing `when`,
+            // on a critical row.
+            if s.str_field("kind") != "shell" && s.raw().get("critical").and_then(Value::as_i64).unwrap_or(0) != 0
+                && s.str_field("when_check").trim().is_empty()
+            {
                 return finish(&slot_w, Outcome::CriticalNotShell, no_write());
             }
             apply_bounds(&mut s, &bounds_in);
@@ -2844,8 +2849,9 @@ mod tests {
     }
 
     /// `critical` (0173) is accepted on a shell schedule and published, and
-    /// refused on a prompt schedule, on create, on PATCH, and on a PATCH that
-    /// moves a critical shell schedule to tmux.
+    /// refused on a prompt schedule with no when check, on create, on PATCH,
+    /// on a PATCH that moves a critical shell schedule to tmux, and on one that
+    /// clears the check. A prompt schedule with a check may carry it.
     #[tokio::test]
     async fn critical_is_for_shell_schedules_only() {
         let (app, _dir) = app();
@@ -2868,6 +2874,16 @@ mod tests {
         let id = c["id"].as_str().unwrap().to_string();
         let (st, p) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({ "critical": 1 })), &SES).await;
         assert_eq!((st, p["code"].clone()), (StatusCode::BAD_REQUEST, json!("critical_not_shell")), "{p}");
+
+        // A prompt schedule with a when check may carry it: the check gates the turn.
+        let (st, p) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({ "when": "test -e /tmp/x", "critical": 1 })), &SES).await;
+        assert_eq!((st, p["critical"].clone()), (StatusCode::OK, json!(1)), "{p}");
+        // Clearing the check on a critical row is refused.
+        let (st, p) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({ "when": null })), &SES).await;
+        assert_eq!((st, p["code"].clone()), (StatusCode::BAD_REQUEST, json!("critical_not_shell")), "{p}");
+        let gated = json!({ "title": "rare", "command": "look", "schedule_expr": "every 2m", "session": "lane", "when": "true", "critical": true });
+        let (st, c) = send(&app, "POST", "/api/schedules", Some(gated), &SES).await;
+        assert_eq!((st, c["critical"].clone()), (StatusCode::CREATED, json!(1)), "{c}");
     }
 
     /// `when` (0141): validated like a pass check, refused on a shell
