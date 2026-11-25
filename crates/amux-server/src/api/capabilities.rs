@@ -364,6 +364,13 @@ pub fn grant_hint(capability: &str, lane: &str, detail: &str) -> String {
     }
 }
 
+/// The open ask of `capability` for `lane`, if one is waiting on the owner:
+/// `{worker, capability, resource, asked_at}`.
+pub fn open_ask(home: &Path, lane: &str, capability: &str) -> Option<Value> {
+    let all: Map<String, Value> = serde_json::from_str(&std::fs::read_to_string(asks_file(home)).ok()?).ok()?;
+    all.get(&ask_key(lane, capability)).cloned()
+}
+
 fn asks_file(home: &Path) -> PathBuf {
     home.join("capability-asks.json")
 }

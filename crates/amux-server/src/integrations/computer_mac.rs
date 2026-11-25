@@ -786,6 +786,36 @@ pub async fn give_front_back(home: &Path, bundle: &str) -> bool {
 
 // ── Activity: what each worker did, for the owner to watch ──
 
+/// One line saying what a step did, for the owner's Computer tab: the text
+/// typed, the key pressed, the element or point clicked, the app launched.
+/// Typed text is the owner's own record of what was typed in their apps.
+pub fn step_detail(tool: &str, args: &Value) -> String {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let clip = |t: String| if t.chars().count() > 120 { t.chars().take(119).collect::<String>() + "…" } else { t };
+    let at = || match (args.get("x").and_then(Value::as_f64), args.get("y").and_then(Value::as_f64)) {
+        (Some(x), Some(y)) => format!("at {x:.0},{y:.0}"),
+        _ => String::new(),
+    };
+    let target = || {
+        let e = s("element_token");
+        if e.is_empty() { at() } else { format!("element {e}") }
+    };
+    match tool {
+        "type_text" | "type_text_chars" => format!("typed “{}”", clip(s("text"))),
+        "set_value" => format!("set {} to “{}”", target(), clip(s("value"))),
+        "press_key" | "hotkey" => {
+            let k = s("key");
+            let mods = args.get("modifiers").and_then(Value::as_array).map(|m| m.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("+")).unwrap_or_default();
+            format!("pressed {}{}", if mods.is_empty() { String::new() } else { mods + "+" }, if k.is_empty() { s("keys") } else { k })
+        }
+        "click" | "double_click" | "right_click" => format!("clicked {}", target()).trim().to_string(),
+        "scroll" => format!("scrolled {} {}", s("direction"), target()).trim().to_string(),
+        "launch_app" => format!("opened {}", if s("bundle_id").is_empty() { s("name") } else { s("bundle_id") }),
+        "run_steps" => format!("{} steps", args.get("steps").and_then(Value::as_array).map(Vec::len).unwrap_or(0)),
+        _ => String::new(),
+    }
+}
+
 pub fn activity_file(home: &Path) -> PathBuf {
     home.join("computer").join("mac-activity.jsonl")
 }
@@ -1025,6 +1055,20 @@ pub async fn call(tool: &str, args: &Value, shot: Option<&Path>) -> Result<Value
 #[cfg(test)]
 mod broker_tests {
     use super::*;
+
+    #[test]
+    fn a_step_says_what_it_did() {
+        assert_eq!(step_detail("type_text", &json!({"pid": 1, "text": "hello"})), "typed “hello”");
+        assert_eq!(step_detail("press_key", &json!({"key": "return", "modifiers": ["cmd"]})), "pressed cmd+return");
+        assert_eq!(step_detail("click", &json!({"element_token": "s1:9"})), "clicked element s1:9");
+        assert_eq!(step_detail("click", &json!({"x": 10.4, "y": 20})), "clicked at 10,20");
+        assert_eq!(step_detail("launch_app", &json!({"bundle_id": "com.tinyspeck.slackmacgap"})), "opened com.tinyspeck.slackmacgap");
+        assert_eq!(step_detail("list_apps", &json!({})), "");
+        let long = "x".repeat(300);
+        let d = step_detail("type_text", &json!({"text": long}));
+        assert!(d.ends_with("…”"), "{d}");
+        assert_eq!(d.chars().count(), "typed “".chars().count() + 119 + 2, "119 characters, an ellipsis and the closing quote");
+    }
 
     #[tokio::test]
     async fn with_no_app_polling_nothing_is_queued() {

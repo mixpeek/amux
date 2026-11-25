@@ -3471,6 +3471,28 @@
   .pcu-shot { padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: none; cursor: zoom-in; align-self: flex-start; max-width: 100%; min-height: 44px; }
   .pcu-shot img { display: block; max-width: min(100%, 560px); max-height: 320px; object-fit: contain; }
   .pcu-empty { color: var(--dim); padding: var(--space-3) 0; }
+  .pcu-head { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+  .pcu-head:empty { display: none; }
+  .pcu-status, .pcu-apps { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+  .pcu-state { font-weight: 600; padding: 0 var(--space-2); border-radius: var(--radius-sm); }
+  .pcu-state[data-up="1"] { color: var(--green, var(--accent)); }
+  .pcu-state[data-up="0"] { color: var(--orange); }
+  .pcu-perm { font-size: var(--fs-sm); color: var(--dim); }
+  .pcu-perm[data-on="0"] { color: var(--orange); }
+  .pcu-apps-label { color: var(--dim); }
+  .pcu-chip { display: inline-flex; align-items: center; gap: var(--space-1); border: 1px solid var(--border); border-radius: 999px; padding: 2px var(--space-1) 2px var(--space-2-5); font-size: var(--fs-sm); }
+  .pcu-chip-x { border: 0; background: none; color: var(--dim); cursor: pointer; min-width: 28px; min-height: 28px; font-size: var(--fs-md); }
+  .pcu-chip-x:hover { color: var(--red); }
+  .pcu-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2-5); border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .pcu-ask-what { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+  .pcu-ask-btns { display: flex; gap: var(--space-1-5); }
+  .pcu-detail { overflow-wrap: anywhere; min-width: 0; }
+  .pcu-ms { color: var(--dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+  .pcu-allow { margin-left: var(--space-1); }
+  .pcu-now { display: flex; flex-direction: column; gap: var(--space-1); }
+  .pcu-now-label { color: var(--dim); font-size: var(--fs-sm); }
+  .pcu-shot-big img { max-width: 100%; max-height: 420px; }
+  @media (max-width: 600px) { .pcu-head .btn, .pcu-allow { min-height: 44px; } .pcu-chip-x { min-width: 44px; min-height: 44px; } }
   #peek-notes-panel.active { display: flex; padding: 0; gap: 0; }
   #peek-notes-panel .notes-sidebar { min-width: 160px; width: 220px; }
   #peek-notes-panel.sidebar-collapsed .notes-expand-btn { display: flex; }

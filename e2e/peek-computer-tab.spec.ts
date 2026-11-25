@@ -125,3 +125,63 @@ test('on a phone the tab keeps one row of controls and the steps get the room', 
   const box = await shot.boundingBox();
   expect(box && box.height >= 44 ? 'ok' : JSON.stringify(box)).toBe('ok');
 });
+
+// Owner, 2026-11-25: "make sure any worker that has computer use, the stuff is
+// in the computer use tab, this needs to be richer". The head says whether
+// computer use is on, which apps this worker may use (add and remove them
+// there), and what it is waiting on you for, answered with one click; a
+// refused step offers Allow for its app; each step says what it did.
+test('the head shows status and apps; Allow on a refused step and the × on an app write the worker\'s scope', async ({ page, request }, info) => {
+  const { file, t } = await seed(request, page, info.project.name);
+  fs.appendFileSync(file, [
+    { ts: t + 6000, worker: NAME, tool: 'type_text', apps: 'Spotify (com.spotify.client)', verdict: 'called', screenshot: null, ms: 1500, detail: 'typed “hello”' },
+    { ts: t + 7000, worker: NAME, tool: 'get_window_state', apps: 'Slack (com.tinyspeck.slackmacgap)', verdict: 'refused', code: 'app_not_allowed', screenshot: null, ms: 0 },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  await openComputerTab(page);
+  const head = page.locator('#peek-computer-head');
+  // This test server runs no driver: the head says Off and why, not a blank.
+  await expect(head.locator('.pcu-state')).toHaveText('Off');
+  await expect(head).toContainText('None yet');
+  const rows = page.locator('#peek-computer-list .pcu-row');
+  await expect(rows.nth(1)).toContainText('typed “hello”');
+  await expect(rows.nth(1)).toContainText('1.5s');
+  const allow = rows.nth(0).locator('.pcu-allow');
+  await expect(allow).toHaveText('Allow Slack');
+
+  await allow.click();
+  await expect(head.locator('.pcu-chip')).toContainText('com.tinyspeck.slackmacgap', { timeout: 10_000 });
+  // The server has it, for this worker only.
+  const auth = fixture!.auth;
+  const st = await (await request.get('/api/computer/mac/status?session=' + encodeURIComponent(NAME), { headers: auth })).json();
+  expect(st.switches.apps).toEqual(['com.tinyspeck.slackmacgap']);
+  // Allowed now, so the step no longer offers it.
+  await expect(rows.nth(0).locator('.pcu-allow')).toHaveCount(0);
+
+  // A worker may not read another worker's switches.
+  const other = await request.get('/api/computer/mac/status?session=' + encodeURIComponent(NAME), { headers: { ...auth, 'X-Amux-Session': NAME + '-other' } });
+  expect(other.status()).toBe(403);
+
+  await head.locator('.pcu-chip-x').click();
+  await expect(head).toContainText('None yet', { timeout: 10_000 });
+  const after = await (await request.get('/api/computer/mac/status?session=' + encodeURIComponent(NAME), { headers: auth })).json();
+  expect(after.switches.apps).toEqual([]);
+});
+
+test('a request waiting on you shows in the head; Allow answers the same approval the Needs-you card does', async ({ page, request }, info) => {
+  await seed(request, page, info.project.name);
+  const decided: any[] = [];
+  await page.route(/\/api\/computer\/mac\/status\?session=/, async r => {
+    const real = await (await r.fetch()).json();
+    real.ask = decided.length ? null : { resource: 'Slack (com.tinyspeck.slackmacgap)', asked_at: Date.now() / 1000 - 300, approval_ref: 'capability:' + NAME + ':mac_apps' };
+    return r.fulfill({ json: real });
+  });
+  await page.route('**/api/approvals/decide', async r => { decided.push(JSON.parse(r.request().postData() || '{}')); return r.fulfill({ json: { ok: true, card: 'AMUX-1' } }); });
+  await openComputerTab(page);
+  const ask = page.locator('#peek-computer-head .pcu-ask');
+  await expect(ask).toContainText(NAME + ' asked to use Slack (com.tinyspeck.slackmacgap)');
+  await expect(ask).toContainText(/\d+m ago/);
+  await ask.getByRole('button', { name: 'Allow' }).click();
+  await expect.poll(() => decided).toEqual([{ approval_ref: 'capability:' + NAME + ':mac_apps', decision: 'approve' }]);
+  await expect(page.locator('#toast')).toContainText('Slack allowed for ' + NAME);
+  await expect(ask).toHaveCount(0);
+});

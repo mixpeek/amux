@@ -21270,14 +21270,143 @@ function _peekFileBrowser() {
 // call, refused or not. Polled every 2s while the tab is shown, never otherwise.
 let _peekComputerTimer = null;
 let _peekComputerSig = null;   // null: nothing rendered yet (an empty feed's signature is '')
+let _peekComputerTicks = 0;
+let _peekComputerStatus = null;   // GET /api/computer/mac/status?session= for peekSession
 function _peekComputerStart() {
   _peekComputerStop();
   _peekComputerSig = null;
+  _peekComputerTicks = 0;
+  _peekComputerHeadLoad();
   _peekComputerLoad();
   _peekComputerTimer = setInterval(() => {
     if (document.hidden || _peekTab !== 'computer') return;
     _peekComputerLoad();
+    // The status asks the driver for its permissions: every 16s is enough.
+    if (++_peekComputerTicks % 8 === 0) _peekComputerHeadLoad();
   }, 2000);
+}
+
+// ── The Computer tab's head: is computer use on, what macOS granted, which
+// apps this worker may use, and what it is waiting on you for, with the
+// buttons to answer it right here (owner, 2026-11-25: "the stuff is in the
+// computer use tab, this needs to be richer"). Allow goes through the same
+// approval the Needs-you card does; an app added by hand is a scope write.
+async function _peekComputerHeadLoad() {
+  const w = peekSession;
+  const host = document.getElementById('peek-computer-head');
+  if (!host || !w) return;
+  let d = null;
+  try {
+    const r = await fetch(API + '/api/computer/mac/status?session=' + encodeURIComponent(w), { headers: _authHeaders(), signal: AbortSignal.timeout(8000) });
+    d = await r.json().catch(() => null);
+    if (!r.ok) d = { error: (d && d.error) || ('HTTP ' + r.status) };
+  } catch (e) { d = { error: 'amux is unreachable' }; }
+  if (w !== peekSession) return;
+  _peekComputerStatus = d;
+  _peekComputerHeadRender();
+  // Refused rows offer Allow only while the app is still not allowed.
+  _peekComputerSig = null;
+  _peekComputerLoad();
+}
+function _pcuApps() {
+  const sw = (_peekComputerStatus && _peekComputerStatus.switches) || {};
+  return Array.isArray(sw.apps) ? sw.apps.filter(Boolean) : [];
+}
+function _pcuAllowed(app) {
+  const sw = (_peekComputerStatus && _peekComputerStatus.switches) || {};
+  if (sw.any_app) return true;
+  const want = String(app || '').toLowerCase();
+  return _pcuApps().some(a => a === '*' || want.includes('(' + a.toLowerCase() + ')') || want.split(' (')[0] === a.toLowerCase());
+}
+// "Slack (com.tinyspeck.slackmacgap)" -> "com.tinyspeck.slackmacgap"; a bare name stays a name.
+function _pcuAppId(label) {
+  const m = String(label || '').match(/\(([^)]+)\)\s*$/);
+  return m ? m[1] : String(label || '').trim();
+}
+function _pcuAppName(label) { return String(label || '').split(' (')[0] || label; }
+function _peekComputerHeadRender() {
+  const host = document.getElementById('peek-computer-head');
+  if (!host) return;
+  const d = _peekComputerStatus;
+  const w = peekSession;
+  if (!d) { host.innerHTML = '<p class="ui-help">Reading computer use…</p>'; return; }
+  if (d.error && !('up' in d)) { host.innerHTML = '<p class="ui-error" role="alert">Computer use status: ' + esc(d.error) + '</p>'; return; }
+  const perms = d.permissions || {};
+  const perm = (on, name) => '<span class="pcu-perm" data-on="' + (on ? '1' : '0') + '">' + (on ? '✓ ' : '✗ ') + esc(name) + '</span>';
+  const inApp = typeof _macSettingsBridge === 'function' && _macSettingsBridge();
+  const state = d.up
+    ? '<span class="pcu-state" data-up="1">On</span>' + perm(perms.accessibility, 'Accessibility') + perm(perms.screen_recording, 'Screen Recording')
+    : '<span class="pcu-state" data-up="0">Off</span><span class="ui-help">' + esc(d.why || 'the amux Mac app is not running computer use') + '</span>'
+      + (inApp ? '<button type="button" class="btn" id="pcu-turn-on" onclick="_macSettingsOpen()">Open This Mac settings</button>'
+               : '<span class="ui-help">Turn it on in the amux Mac app: Settings, This Mac, Computer use.</span>');
+  const sw = d.switches || {};
+  const apps = _pcuApps();
+  const chips = sw.any_app
+    ? '<span class="pcu-chip">Any app that is not blocked</span>'
+    : apps.length ? apps.map(a => '<span class="pcu-chip">' + esc(a)
+        + '<button type="button" class="pcu-chip-x" aria-label="Stop ' + esc(w) + ' using ' + esc(a) + '" title="Stop this worker using ' + esc(a) + '" onclick="_pcuRemoveApp(\'' + escJs(a) + '\')">×</button></span>').join('')
+    : '<span class="ui-help">None yet</span>';
+  const ask = d.ask;
+  const askRow = ask ? '<div class="pcu-ask" role="group" aria-label="Waiting on you"><span class="pcu-ask-what"><b>Waiting on you:</b> ' + esc(w) + ' asked to use '
+      + esc(ask.resource || 'an app') + (ask.asked_at ? ' · ' + esc(timeAgo(ask.asked_at)) : '') + '</span>'
+      + '<span class="pcu-ask-btns"><button type="button" class="btn primary" id="pcu-ask-allow" onclick="_pcuDecide(\'approve\')">Allow</button>'
+      + '<button type="button" class="btn" id="pcu-ask-keep" onclick="_pcuDecide(\'reject\')">Keep refused</button></span></div>' : '';
+  host.innerHTML = '<div class="pcu-status">' + state + '</div>'
+    + '<div class="pcu-apps"><span class="pcu-apps-label">Apps ' + esc(w) + ' may use:</span>' + chips
+    + (sw.any_app ? '' : '<button type="button" class="btn" id="pcu-add-app" onclick="_pcuAddApp()">Add an app…</button>') + '</div>'
+    + askRow;
+}
+// The worker's own apps, written at its worker scope (the owner's dashboard may; a worker may not).
+async function _pcuWriteApps(list, why) {
+  const w = peekSession;
+  const r = await fetch(API + '/api/scope', { method: 'PUT', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ level: 'worker', name: w, capability: 'env', value: { AMUX_MAC_APPS: list.join(',') } }), _skipOutbox: true });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { showToast('Not saved: ' + (d.error || ('HTTP ' + r.status))); return false; }
+  showToast(why);
+  await _peekComputerHeadLoad();
+  return true;
+}
+async function _pcuAllowApp(label) {
+  const id = _pcuAppId(label);
+  const d = _peekComputerStatus || {};
+  // The open ask for this same app: answer it, so its card closes and the worker is told.
+  if (d.ask && _pcuAppId(d.ask.resource) === id) return _pcuDecide('approve');
+  const apps = _pcuApps();
+  if (!apps.includes(id)) apps.push(id);
+  return _pcuWriteApps(apps, _pcuAppName(label) + ' allowed for ' + peekSession);
+}
+async function _pcuRemoveApp(app) {
+  return _pcuWriteApps(_pcuApps().filter(a => a !== app), peekSession + ' may no longer use ' + app);
+}
+async function _pcuAddApp() {
+  const v = await showPrompt('Let ' + peekSession + ' use an app (its name or bundle id). Terminals, password managers and System Settings stay off limits whatever you list.',
+    'e.g. Slack or com.tinyspeck.slackmacgap');
+  const id = (v || '').trim();
+  if (!id) return;
+  const apps = _pcuApps();
+  if (apps.includes(id)) { showToast(peekSession + ' may already use ' + id); return; }
+  apps.push(id);
+  return _pcuWriteApps(apps, id + ' allowed for ' + peekSession);
+}
+async function _pcuDecide(decision) {
+  const d = _peekComputerStatus || {};
+  if (!d.ask) return;
+  const w = peekSession;
+  const btns = document.querySelectorAll('#peek-computer-head .pcu-ask button');
+  btns.forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(API + '/api/approvals/decide', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ approval_ref: d.ask.approval_ref, decision }), _skipOutbox: true, signal: AbortSignal.timeout(15000) });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { showToast('Not saved: ' + (out.error || ('HTTP ' + r.status))); return; }
+    showToast(decision === 'approve' ? _pcuAppName(d.ask.resource) + ' allowed for ' + w + '; it was told to retry' : 'Kept refused: ' + w + ' still may not use ' + _pcuAppName(d.ask.resource));
+  } catch (e) {
+    showToast('Not saved: ' + (e && e.name === 'TimeoutError' ? 'amux did not answer in 15s' : 'amux is unreachable'));
+  } finally {
+    btns.forEach(b => b.disabled = false);
+    await _peekComputerHeadLoad();
+  }
 }
 function _peekComputerStop() {
   if (_peekComputerTimer) { clearInterval(_peekComputerTimer); _peekComputerTimer = null; }
@@ -21298,7 +21427,7 @@ async function _peekComputerLoad() {
     return;
   }
   const rows = d.rows || [];
-  const sig = rows.map(x => x.ts + x.verdict).join('|');
+  const sig = rows.map(x => x.ts + x.verdict).join('|') + '#' + _pcuApps().join(',') + (_peekComputerStatus ? '' : '?');
   if (sig === _peekComputerSig) return;
   _peekComputerSig = sig;
   count.textContent = rows.length ? rows.length + (rows.length >= 40 ? '+' : '') + ' steps' : '';
@@ -21308,16 +21437,25 @@ async function _peekComputerLoad() {
     list.innerHTML = '<li class="pcu-empty">No computer use yet. When this worker reads or acts in an app on this Mac (amux computer mac), each step shows here with what it saw.</li>';
     return;
   }
-  list.innerHTML = rows.map(x => {
+  // The newest screenshot is what the worker sees now: large, above the steps.
+  const latest = rows.find(x => x.screenshot);
+  list.innerHTML = (latest ? '<li class="pcu-now"><span class="pcu-now-label">Latest view · ' + esc(latest.apps || '') + ' · '
+      + esc(timeAgo(latest.ts / 1000)) + '</span><button type="button" class="pcu-shot pcu-shot-big" data-path="' + esc(latest.screenshot) + '" title="Open this screenshot"><img alt="What the worker saw last" src="'
+      + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(latest.screenshot))) + '"></button></li>' : '')
+    + rows.map(x => {
     const t = new Date(x.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const ok = x.verdict === 'called';
     const what = ok ? 'done' : (x.code || x.verdict || 'refused').replace(/_/g, ' ');
+    const allow = x.code === 'app_not_allowed' && x.apps && _peekComputerStatus && !_pcuAllowed(x.apps)
+      ? '<button type="button" class="btn primary pcu-allow" onclick="_pcuAllowApp(\'' + escJs(x.apps) + '\')">Allow ' + esc(_pcuAppName(x.apps)) + '</button>' : '';
+    const detail = x.detail ? '<span class="pcu-detail">' + esc(x.detail) + '</span>' : '';
+    const ms = ok && x.ms ? '<span class="pcu-ms">' + (x.ms >= 1000 ? (x.ms / 1000).toFixed(1) + 's' : x.ms + 'ms') + '</span>' : '';
     const shot = x.screenshot
       ? '<button type="button" class="pcu-shot" data-path="' + esc(x.screenshot) + '" title="Open this screenshot"><img loading="lazy" alt="What the worker saw" src="' + esc(_authUrl(API + '/api/file/raw?path=' + encodeURIComponent(x.screenshot))) + '"></button>'
       : '';
     return '<li class="pcu-row' + (ok ? '' : ' pcu-refused') + '" data-verdict="' + esc(x.verdict || '') + '">'
       + '<div class="pcu-line"><span class="pcu-time">' + esc(t) + '</span><code class="pcu-tool">' + esc(x.tool || '') + '</code>'
-      + '<span class="pcu-app">' + esc(x.apps || '') + '</span><span class="pcu-verdict">' + esc(what) + '</span></div>' + shot + '</li>';
+      + '<span class="pcu-app">' + esc(x.apps || '') + '</span>' + detail + ms + '<span class="pcu-verdict">' + esc(what) + '</span>' + allow + '</div>' + shot + '</li>';
   }).join('');
   list.querySelectorAll('.pcu-shot').forEach(b => { b.onclick = () => openFilePreview(b.dataset.path); });
 }

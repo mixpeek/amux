@@ -4320,6 +4320,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_pcuAddApp": {
+      "kind": "command._pcuAddApp",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pcuAllowApp": {
+      "kind": "command._pcuAllowApp",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pcuDecide": {
+      "kind": "command._pcuDecide",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pcuRemoveApp": {
+      "kind": "command._pcuRemoveApp",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_pcuWriteApps": {
+      "kind": "command._pcuWriteApps",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_peekAgentRefresh": {
       "kind": "command._peekAgentRefresh",
       "feedback_required": true,
@@ -4364,6 +4394,12 @@
     },
     "_peekClearInput": {
       "kind": "command._peekClearInput",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_peekComputerHeadLoad": {
+      "kind": "command._peekComputerHeadLoad",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -107,15 +107,43 @@ fn home() -> std::path::PathBuf {
     crate::integrations::browser::amux_home()
 }
 
-async fn status(headers: HeaderMap) -> Response {
+/// `?session=` names a worker for the owner (the dashboard's Computer tab);
+/// a worker reads only its own. The reply then carries that worker's switches
+/// and its open ask for a Mac app, if one waits on the owner.
+async fn status(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     let home = home();
-    let w = worker(&headers);
+    let named = q.get("session").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let w = match (worker(&headers), named) {
+        (Some(c), Some(n)) if c != n => {
+            return err(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "a worker reads its own status: drop `session` or name yourself", "code": "status_as_self" }),
+            );
+        }
+        (Some(c), _) => Some(c),
+        (None, Some(n)) => {
+            if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "computer_mac_status_refused", "read a worker's Mac switches") {
+                return *r;
+            }
+            Some(n)
+        }
+        (None, None) => None,
+    };
+    let ask = w.as_deref().and_then(|w| super::capabilities::open_ask(&home, w, "mac_apps")).map(|a| {
+        json!({ "resource": a.get("resource"), "asked_at": a.get("asked_at"),
+                "approval_ref": format!("capability:{}:mac_apps", w.as_deref().unwrap_or("")) })
+    });
     let policy = w.as_deref().map(|w| mac::Policy::for_worker(&home, w));
     let switches =
         policy.map(|p| json!({ "apps": p.apps, "any_app": p.any_app, "foreground": p.foreground }));
     match mac::endpoint(&home) {
         Err(e) => Json(
-            json!({ "up": false, "measured": true, "why": e, "worker": w, "switches": switches }),
+            json!({ "up": false, "measured": true, "why": e, "worker": w, "switches": switches, "ask": ask }),
         )
         .into_response(),
         Ok(ep) => {
@@ -124,7 +152,7 @@ async fn status(headers: HeaderMap) -> Response {
             Json(json!({
                 "up": connected, "measured": true, "app": ep.app, "driver_pid": ep.pid, "app_polling": connected,
                 "permissions": perms.as_ref().ok(), "permissions_error": perms.err(),
-                "worker": w, "switches": switches,
+                "worker": w, "switches": switches, "ask": ask,
                 "keys": { "apps": mac::APPS_KEY, "any_app": mac::ANY_APP_KEY, "foreground": mac::FOREGROUND_KEY },
             }))
             .into_response()
@@ -235,6 +263,7 @@ async fn call(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
             &home,
             &json!({ "ts": chrono::Utc::now().timestamp_millis(), "worker": w, "tool": tool,
                      "apps": label, "pid": pid, "window_id": window_id, "verdict": verdict,
+                     "detail": mac::step_detail(&tool, &args),
                      "code": code, "screenshot": shot, "ms": ms as u64 }),
         )
     };
