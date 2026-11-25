@@ -12279,13 +12279,29 @@ cmd_land() {
       }
     fi
   fi
+  # --sha THAT IS THIS CHECKOUT'S HEAD is gated like a plain land. Both checks
+  # below read HEAD, so they used to skip on any --sha, while the pre-push hook
+  # still refuses a commit with no receipt: `amux land --detach --sha HEAD`
+  # waited its turn in the queue and was then refused at the push, every time
+  # (2026-11-25, PR #493's land). A --sha naming another commit still skips
+  # them, and says so.
+  local _lg_at_head=1
+  if [ -n "$land_sha" ]; then
+    _lg_at_head=0
+    [ "$(git rev-parse -q --verify "$land_sha^{commit}" 2>/dev/null)" = "$(git rev-parse -q --verify HEAD 2>/dev/null)" ] \
+      && _lg_at_head=1
+    if [ "$_lg_at_head" = 0 ] && [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] \
+       && git cat-file -e "$remote/$branch:scripts/land_gate.py" 2>/dev/null; then
+      echo "amux land: --sha $land_sha is not this checkout's HEAD, so the land gate does not run on it here; the push hook refuses it without a passing receipt. Check it out and run scripts/land_gate.py first (verdict=land_gate_skipped_sha)" >&2
+    fi
+  fi
   # PRECHECK FIRST: the repository's land precheck takes seconds and the gate
   # takes minutes, so a range the precheck refuses comes back before the gate
   # builds anything. On 2026-11-12 PR #448 passed a full gate and was then
   # refused at push in 2 s by the slop ratchet. The queue path below skips it
   # once it has run here (AMUX_LAND_PRECHECKED); --detach runs it in the
   # detached process, as before.
-  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ -z "$land_sha" ] \
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ "$_lg_at_head" = 1 ] \
      && [ "$detach" != 1 ] && [ "${AMUX_LAND_PRECHECKED:-}" != 1 ]; then
     mkdir -p "$HOME/.amux/logs"
     _land_precheck "$remote" "$branch" HEAD "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" "$HOME/.amux/logs/land.log" || return 3
@@ -12306,7 +12322,7 @@ cmd_land() {
   # a red result comes back here instead of turning main red for every lane.
   # origin/main's copy runs, never this checkout's. --no-gate skips it; the
   # pre-push hook still refuses an agent's commits with no passing receipt.
-  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ -z "$land_sha" ] \
+  if [ "${AMUX_LAND_GUARDED:-0}" != 1 ] && [ "$land_gate" = 1 ] && [ "$_lg_at_head" = 1 ] \
      && git cat-file -e "$remote/$branch:scripts/land_gate.py" 2>/dev/null; then
     local _lg_dir _lg_rc=0
     _lg_dir="$(mktemp -d "${TMPDIR:-/tmp}/amux-land-gate.XXXXXX")"
