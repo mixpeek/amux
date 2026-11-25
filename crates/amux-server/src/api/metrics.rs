@@ -1250,9 +1250,6 @@ mod tests {
             .unwrap();
     }
 
-    /// RR-0044b metrics shape: /api/metrics/fleet reports per-provider
-    /// {state, reset_at, workers_parked, workers_total}, from the same
-    /// derivation the runtime parks with.
     /// RC-13: per-route request counters appear on the metrics endpoint.
     #[tokio::test]
     async fn metrics_endpoint_exposes_per_route_request_counters() {
@@ -1280,6 +1277,9 @@ mod tests {
         assert!(v["routes"]["total"].as_u64().unwrap_or(0) >= 3);
     }
 
+    /// RR-0044b metrics shape: /api/metrics/fleet reports per-provider
+    /// {state, reset_at, workers_parked, workers_total}, from the same
+    /// derivation the runtime parks with.
     #[tokio::test]
     async fn fleet_metrics_report_per_provider_state() {
         let (app, store, _dir) = app();
