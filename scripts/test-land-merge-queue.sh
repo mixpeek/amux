@@ -227,17 +227,38 @@ kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 
 # --- a red batch's bisect lets the other machine's waiter land between steps
+# while no step has run green; the first step here (h, w1) is red.
+handovers() { grep -c 'verdict=land_remote_lease_handover' "$H/out" "$H/.amux/logs/land.log" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}'; }
+other_waits() {
+  local wc; wc="$(printf 'amux land wait\n\nholder=othermac:4242\nlane=other-machine\nexpires_at=%s\n' $(( $(date +%s) + 900 )) | git commit-tree "$(git mktree </dev/null)")"
+  git push -q origin "$wc:refs/amux/land-wait/main/othermac-4242" 2>/dev/null
+}
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 bad; plant w2 w2; plant w3 w3
+other_waits
+AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && ! main_has bad; } \
+  && ok "bisect with a waiter on the other machine: the prefix still lands" || bad "bisect handover rc=$rc; $(grep -a 'merge queue\|lease' "$H/.amux/logs/land.log" | tail -6)"
+[ "$(handovers)" -ge 1 ] \
+  && ok "bisect: the lease is handed over between steps before any step ran green" || bad "no handover during the bisect: $(grep -a 'lease' "$H/out" | tail -4)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- once a bisect step ran green the lease is kept to the end (mixpeek-dev
+# 2026-11-25: a handover after the green step let main move, the green prefix
+# could not be carried, and 40 min of bisect landed nothing). (h, w1) is green.
 setup; queue_on; commit_file h x
 key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
 plant w1 w1; plant w2 bad; plant w3 w3
-wc="$(printf 'amux land wait\n\nholder=othermac:4242\nlane=other-machine\nexpires_at=%s\n' $(( $(date +%s) + 900 )) | git commit-tree "$(git mktree </dev/null)")"
-git push -q origin "$wc:refs/amux/land-wait/main/othermac-4242" 2>/dev/null
+other_waits
 AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
 { [ "$rc" = 0 ] && main_has h && main_has w1 && ! main_has bad; } \
-  && ok "bisect with a waiter on the other machine: the prefix still lands" || bad "bisect handover rc=$rc; $(grep -a 'merge queue\|lease' "$H/.amux/logs/land.log" | tail -6)"
-[ "$(grep -c 'verdict=land_remote_lease_handover' "$H/out" "$H/.amux/logs/land.log" 2>/dev/null | awk -F: '{s+=$2} END{print s}')" -ge 1 ] \
-  && ok "bisect: the lease is handed over between steps" || bad "no handover during the bisect: $(grep -a 'lease' "$H/out" | tail -4)"
+  && ok "bisect after a green step: the green prefix lands" || bad "green-step bisect rc=$rc; $(grep -a 'merge queue\|lease' "$H/.amux/logs/land.log" | tail -6)"
+{ grep -q 'verdict=mq_bisect_keeps_lease' "$H/.amux/logs/land.log" && [ "$(handovers)" = 0 ]; } \
+  && ok "bisect after a green step: no handover, and land.log says the lease is kept" || bad "handovers=$(handovers): $(grep -a 'lease\|keeps' "$H/.amux/logs/land.log" | tail -4)"
 kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 

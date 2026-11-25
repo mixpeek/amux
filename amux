@@ -12104,8 +12104,19 @@ _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit in
     # 2026-11-23: each VM turn was a red 7-batch bisecting under the lease
     # while the Mac queue grew to 36 and its oldest waiter passed 333 min).
     # If main moves meanwhile, the green prefix is carried onto it.
-    if [ $(( hi - lo )) -gt 1 ] && ! _land_rl_handover "$remote" "$branch" "$lock"; then
-      echo "unmeasured lease_lost_between_bisect_steps"; return 0
+    # ONCE A STEP RAN GREEN THE LEASE IS KEPT (mixpeek-dev, 2026-11-25): a
+    # handover lets the other machine land, main moves, and a green prefix that
+    # cannot be carried is dropped. decomp-platform's 7-landing bisect handed
+    # over after its green step, mixpeek-research landed, the 4-of-7 green
+    # prefix then could not be carried (mq_carry_changes_members), and 40 min
+    # of runs landed nothing while 14 lands queued behind it. The handover
+    # stays for a bisect with no green step yet, which has nothing to lose.
+    if [ $(( hi - lo )) -gt 1 ]; then
+      if [ "$gtip" != - ]; then
+        _land_log "merge queue: a prefix of $(( lo + 1 )) ran green; keeping the lease for the rest of the bisect so main cannot move under it (verdict=mq_bisect_keeps_lease)"
+      elif ! _land_rl_handover "$remote" "$branch" "$lock"; then
+        echo "unmeasured lease_lost_between_bisect_steps"; return 0
+      fi
     fi
   done
   [ "$lo" = $(( hi - 1 )) ] || gtip="-"
