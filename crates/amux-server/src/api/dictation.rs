@@ -492,8 +492,14 @@ pub async fn dictate(
         tracing::info!(engine, items = listed.lines().filter(|l| l.starts_with(|c: char| c.is_ascii_digit())).count(),
             measured = true, n_considered = 1, verdict = "dictation_list_formatted",
             "[dictation] a spoken list was formatted as a numbered list");
-        text = listed;
     }
+    // Then the meta-task model formats it (owner, 2026-11-25: "it should be run
+    // through the lightweight meta model that we've configured"), within a
+    // short limit: a slow or wrong answer keeps the rule-based formatting.
+    text = match format_with_helper(&text).await {
+        Some(formatted) => formatted,
+        None => listed,
+    };
     let words = text.split_whitespace().count() as i64;
     let ts = chrono::Utc::now().timestamp_millis();
     let slot: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
@@ -2390,6 +2396,98 @@ fn strip_core(chunk: &str) -> (String, String) {
 /// py:27558 `_dictation_fix_names` — map spoken session names back onto
 /// their exact spelling. Pure function over an explicit target list so
 /// tests can drive it hermetically; `dn_targets` supplies the live list.
+/// Seconds the meta-task model may take to format a dictation before the
+/// rule-based formatting is used (`AMUX_DICTATION_FORMAT_TIMEOUT_S`, 0 = off).
+fn format_timeout_s() -> u64 {
+    std::env::var("AMUX_DICTATION_FORMAT_TIMEOUT_S").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(8)
+}
+
+/// Dictations shorter than this go as they are: nothing to lay out, and the
+/// model's latency would be all cost.
+const FORMAT_MIN_WORDS: usize = 15;
+
+fn format_prompt(text: &str) -> String {
+    format!(
+        "You format dictated text. Return the SAME words, laid out: a spoken enumeration (\"number one is X, number two is Y\", \
+         \"first ... second ...\", \"one is ... two is ...\") becomes a numbered list with one item per line and the spoken markers \
+         dropped; a remark after the list is its own paragraph; separate paragraphs with a blank line. Fix only punctuation and \
+         capitalisation. Do not add, answer, summarise or rephrase anything, and do not wrap it in quotes or code fences. If it \
+         needs no layout, return it unchanged. Return only the text.\n\nText:\n{text}"
+    )
+}
+
+/// Words of `s`, lowercased, without punctuation or list numbers.
+fn bare_words(s: &str) -> Vec<String> {
+    s.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|w| !w.is_empty() && !w.chars().all(|c| c.is_ascii_digit()))
+        .collect()
+}
+
+/// Did the model lay the words out, or write something else? Kept only when
+/// nearly every word it returned was spoken and it dropped at most the
+/// markers it was asked to drop.
+pub(crate) fn formatting_kept_words(said: &str, got: &str) -> bool {
+    // The spoken scaffolding a list drops: "so number one is", "and second,".
+    const MARKERS: [&str; 33] = ["so", "and", "then", "okay", "ok", "alright", "now", "number", "is", "that", "one", "two", "three",
+        "four", "five", "six", "seven", "eight", "nine", "ten", "first", "second", "third", "fourth", "fifth", "firstly", "secondly",
+        "thirdly", "lastly", "finally", "next", "also", "the"];
+    let (a, b) = (bare_words(said), bare_words(got));
+    if b.is_empty() || b.len() > a.len() + 3 {
+        return false;
+    }
+    let mut left: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for w in &a {
+        *left.entry(w.as_str()).or_default() += 1;
+    }
+    let mut foreign = 0usize;
+    for w in &b {
+        match left.get_mut(w.as_str()) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => foreign += 1,
+        }
+    }
+    // Words spoken and not returned: only markers may go, plus a slip or two.
+    let dropped: usize = left.iter().filter(|(w, _)| !MARKERS.contains(w)).map(|(_, n)| (*n).max(0) as usize).sum();
+    foreign * 20 <= b.len() && dropped * 20 <= a.len()
+}
+
+/// The dictation formatted by the meta-task model (`lookup::helper_answer`,
+/// the `helper_model` setting or AMUX_HELPER_MODEL), or None to keep the
+/// rule-based formatting: too short, turned off, too slow, failed, or an answer
+/// that changed the words.
+async fn format_with_helper(text: &str) -> Option<String> {
+    let secs = format_timeout_s();
+    if secs == 0 || text.split_whitespace().count() < FORMAT_MIN_WORDS {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(secs), super::lookup::helper_answer(&format_prompt(text))).await;
+    let ms = started.elapsed().as_millis() as u64;
+    let (model, answer) = match got {
+        Ok(Ok(v)) => v,
+        Ok(Err((_, why))) => {
+            tracing::warn!(ms, error = %truncate_chars(&why, 200), measured = true, n_considered = 1, verdict = "dictation_format_helper_failed",
+                "[dictation] the meta-task model did not format this dictation; the rule-based formatting is used");
+            return None;
+        }
+        Err(_) => {
+            tracing::warn!(ms, limit_s = secs, measured = true, n_considered = 1, verdict = "dictation_format_helper_slow",
+                "[dictation] the meta-task model took longer than AMUX_DICTATION_FORMAT_TIMEOUT_S; the rule-based formatting is used");
+            return None;
+        }
+    };
+    let answer = answer.trim().trim_matches('`').trim().to_string();
+    if !formatting_kept_words(text, &answer) {
+        tracing::warn!(ms, model = %model, measured = true, n_considered = 1, verdict = "dictation_format_rejected",
+            "[dictation] the meta-task model's answer changed the words; the rule-based formatting is used");
+        return None;
+    }
+    tracing::info!(ms, model = %model, changed = answer != text, measured = true, n_considered = 1, verdict = "dictation_formatted_by_helper",
+        "[dictation] the meta-task model formatted this dictation");
+    Some(answer)
+}
+
 /// A spoken enumeration as a numbered list: "Two things. One is X. Two is
 /// that Y." becomes "Two things.\n1. X.\n2. Y.". A list needs at least two
 /// markers in order from one (one/first, two/second, ...), each opening a
@@ -2397,6 +2495,15 @@ fn strip_core(chunk: &str) -> (String, String) {
 /// before the first marker stays as the intro line; "is", "is that" and a
 /// comma or colon after a marker are dropped. Text with no such run is
 /// returned unchanged, so a transcript already formatted passes through.
+///
+/// Spoken lists also run inside one sentence (owner, 2026-11-25: "So number
+/// one is example one, number two is example two, and number three is example
+/// three." came out unformatted). A filler ("so", "and", "okay") may open the
+/// sentence before a marker, and a "number N" marker may follow a comma (", "
+/// or ", and "): "number" is what makes that a list rather than prose like
+/// "two cats, one is black". An item drops the comma and "and" that joined it
+/// to the next, and a closing remark after the last item ("Having said this,
+/// ...") becomes its own paragraph.
 pub(crate) fn format_spoken_list(text: &str) -> String {
     const WORDS: [(&str, usize); 30] = [
         ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5), ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10),
@@ -2405,13 +2512,32 @@ pub(crate) fn format_spoken_list(text: &str) -> String {
     ];
     static MARK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = MARK.get_or_init(|| {
-        regex::Regex::new(r"(?i)(?:^|[.!?]\s+)(?:number\s+)?([a-z]+)(?:\s+is\s+that|\s+is|\s*[,:])?\s+").expect("list marker regex")
+        regex::Regex::new(
+            r"(?i)(?:^|(?P<stop>[.!?])\s+|(?P<comma>,)\s+(?:and\s+)?)(?:(?:so|and|then|okay|ok|alright|now),?\s+)?(?P<num>number\s+)?(?P<w>[a-z]+)(?:\s+is\s+that|\s+is|\s*[,:])?\s+",
+        )
+        .expect("list marker regex")
     });
     // (number, where the sentence starts, where the item text starts)
     let mut marks: Vec<(usize, usize, usize)> = Vec::new();
-    for c in re.captures_iter(text) {
-        let (Some(all), Some(w)) = (c.get(0), c.get(1)) else { continue };
+    // Overlapping candidates: a comma marker can sit inside a match that
+    // started earlier, so scan from every boundary rather than once.
+    let mut caps = Vec::new();
+    let mut at = 0usize;
+    while let Some(c) = re.captures_at(text, at) {
+        let Some(all) = c.get(0) else { break };
+        at = (all.start() + 1).max(c.name("w").map(|w| w.start()).unwrap_or(all.end()));
+        caps.push(c);
+        if at >= text.len() {
+            break;
+        }
+    }
+    for c in caps {
+        let (Some(all), Some(w)) = (c.get(0), c.name("w")) else { continue };
         let Some(&(_, n)) = WORDS.iter().find(|(k, _)| k.eq_ignore_ascii_case(w.as_str())) else { continue };
+        // Mid-sentence, only "number N is" opens an item.
+        if c.name("comma").is_some() && (c.name("num").is_none() || !text[w.end()..all.end()].to_lowercase().contains("is")) {
+            continue;
+        }
         // Bare "Two things" opens no item: a marker needs "is", a comma or a
         // colon after it, or to be one of the -ly / "number" forms.
         let tail = &text[w.end()..all.end()];
@@ -2419,7 +2545,11 @@ pub(crate) fn format_spoken_list(text: &str) -> String {
         if bare && !w.as_str().to_lowercase().ends_with("ly") && !all.as_str().to_lowercase().contains("number") {
             continue;
         }
-        let start = if all.start() == 0 { 0 } else { all.start() + 1 };
+        // The previous text ends at the sentence's stop (kept) or before the comma.
+        let start = if all.start() == 0 { 0 } else if c.name("stop").is_some() { all.start() + 1 } else { all.start() };
+        if marks.last().is_some_and(|m: &(usize, usize, usize)| m.1 == start) {
+            continue;
+        }
         marks.push((n, start, all.end()));
     }
     // The run 1, 2, 3 ... in order, from the first "one".
@@ -2433,9 +2563,17 @@ pub(crate) fn format_spoken_list(text: &str) -> String {
         return text.to_string();
     }
     let mut out = text[..run[0].1].trim().to_string();
+    let mut closing = String::new();
     for (i, &(n, _, body)) in run.iter().enumerate() {
         let end = run.get(i + 1).map(|r| r.1).unwrap_or(text.len());
-        let item = text[body..end].trim();
+        let mut item = text[body..end].trim();
+        if i + 1 == run.len() {
+            let (last, rest) = split_closing(item);
+            item = last;
+            closing = rest.to_string();
+        }
+        let item = item.trim_end_matches(|c: char| c == ',' || c.is_whitespace());
+        let item = item.strip_suffix(" and").or_else(|| item.strip_suffix(", and")).unwrap_or(item).trim_end_matches(',');
         let mut cs = item.chars();
         let item = cs.next().map(|f| f.to_uppercase().collect::<String>() + cs.as_str()).unwrap_or_default();
         if !out.is_empty() {
@@ -2443,7 +2581,33 @@ pub(crate) fn format_spoken_list(text: &str) -> String {
         }
         out.push_str(&format!("{n}. {item}"));
     }
+    if !closing.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&closing);
+    }
     out
+}
+
+/// The last item and a closing remark after it: the first sentence after the
+/// item that opens like a wrap-up. Anything else stays in the item, since an
+/// item can run to several sentences.
+fn split_closing(item: &str) -> (&str, &str) {
+    const CLOSERS: [&str; 10] = ["having said", "that said", "with that", "anyway", "in summary", "to summarize", "overall",
+        "those are", "that's the list", "this is the list"];
+    let mut from = 0usize;
+    while let Some(off) = item[from..].find(['.', '!', '?']) {
+        let cut = from + off + 1;
+        let rest = item[cut..].trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let low = rest.to_lowercase();
+        if CLOSERS.iter().any(|k| low.starts_with(k)) {
+            return (item[..cut].trim(), rest);
+        }
+        from = cut;
+    }
+    (item, "")
 }
 
 pub(crate) fn fix_names_with_targets(
@@ -2766,15 +2930,37 @@ pub(crate) mod tests {
         );
         assert_eq!(super::format_spoken_list("First, buy milk. Second, call mom."), "1. Buy milk.\n2. Call mom.");
         assert_eq!(super::format_spoken_list("Firstly we ship. Secondly we test."), "1. We ship.\n2. We test.");
+        // Owner, 2026-11-25: one sentence, commas and "and", a filler first,
+        // and a closing remark after the list.
+        assert_eq!(
+            super::format_spoken_list("I'm doing a dictation test that has a list in formatting. Here's the list. So number one is example one, \
+                number two is example two, and number three is example three. Having said this, this is the list of elements that I want to test in dictation."),
+            "I'm doing a dictation test that has a list in formatting. Here's the list.\n1. Example one\n2. Example two\n3. Example three.\n\n\
+             Having said this, this is the list of elements that I want to test in dictation."
+        );
+        assert_eq!(super::format_spoken_list("So one is milk. And two is bread."), "1. Milk.\n2. Bread.");
         for prose in [
             "One of the workers is slow.",
             "First, check the log. Then restart it.",
             "Two things matter here. Three people agreed.",
+            "I have two cats, one is black, two is a lie.",
+            "Number one priority, number two pencil.",
             "1. Already a list.\n2. Second item.",
             "",
         ] {
             assert_eq!(super::format_spoken_list(prose), prose, "left alone: {prose}");
         }
+    }
+
+    /// The meta-task model's layout is kept only when it kept the words.
+    #[test]
+    fn a_model_answer_is_kept_only_when_it_lays_out_the_same_words() {
+        let said = "Here's the list. So number one is example one, number two is example two, and number three is example three. Having said this, that is all.";
+        let laid = "Here's the list.\n1. Example one\n2. Example two\n3. Example three\n\nHaving said this, that is all.";
+        assert!(super::formatting_kept_words(said, laid));
+        assert!(!super::formatting_kept_words(said, "Sure! Here is your formatted list of three examples, ready to paste anywhere you like today."));
+        assert!(!super::formatting_kept_words(said, "1. Example one"), "most of it dropped");
+        assert!(!super::formatting_kept_words(said, ""));
     }
 
     #[tokio::test]
