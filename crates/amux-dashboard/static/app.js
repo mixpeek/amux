@@ -31256,17 +31256,51 @@ function _dictSetMic(name) {
   _dictMicWarned = '';
   showToast(name ? 'This device dictates with ' + name : 'This device dictates with its default microphone');
 }
-// getUserMedia's audio constraint for the chosen microphone, matched by name. Not
-// connected here: the default microphone, said once rather than silently.
+// One microphone under two spellings: the Mac app's input name, Chrome's label
+// with its "(0909:001a)" USB id, or the "Default - " entry.
+function _dictMicSame(label, want) {
+  const n = s => String(s || '').toLowerCase().replace(/^default\s*-\s*/, '').replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/, '').trim();
+  return !!n(label) && n(label) === n(want);
+}
+async function _dictMicFind(want) {
+  try {
+    return (await navigator.mediaDevices.enumerateDevices()).find(d => d.kind === 'audioinput'
+      && d.deviceId !== 'default' && d.deviceId !== 'communications' && _dictMicSame(d.label, want)) || null;
+  } catch (e) { console.warn('dictation: could not list microphones', e); return null; }
+}
+// getUserMedia's audio constraint for the chosen microphone, matched by name. No
+// match yet is not "not connected": a page that has not opened the microphone
+// sees no names at all (the Mac app, 2026-11-25: the owner's connected
+// ATR2500x-USB was reported missing every take). _dictMicSettle decides once the
+// stream is open and the names can be read.
 async function _dictMicConstraint() {
   const want = _dictMic().trim();
   if (!want || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return {};
+  const dev = await _dictMicFind(want);
+  return dev ? { deviceId: { exact: dev.deviceId } } : {};
+}
+// After the default microphone opened: it may BE the chosen one; else the names
+// are readable now, so open the chosen one if it is here, and only when it is
+// not, say so once.
+async function _dictMicSettle(stream, audio) {
+  const want = _dictMic().trim();
+  if (!want || !stream || audio.deviceId) return stream;
+  const track = stream.getAudioTracks ? stream.getAudioTracks()[0] : null;
+  if (track && _dictMicSame(track.label, want)) return stream;
+  const dev = await _dictMicFind(want);
+  if (!dev) { _dictMicMissing(want); return stream; }
+  const on = track && track.getSettings ? track.getSettings().deviceId : '';
+  if (on && on === dev.deviceId) return stream;
   try {
-    const dev = (await navigator.mediaDevices.enumerateDevices()).find(d => d.kind === 'audioinput' && d.label === want);
-    if (dev) return { deviceId: { exact: dev.deviceId } };
-  } catch (e) { console.warn('dictation: could not list microphones', e); }
-  _dictMicMissing(want);
-  return {};
+    const chosen = await navigator.mediaDevices.getUserMedia({ audio: Object.assign({}, audio, { deviceId: { exact: dev.deviceId } }) });
+    stream.getTracks().forEach(t => t.stop());
+    _dictBeacon('dict_mic_reopened', { native: false });
+    return chosen;
+  } catch (e) {
+    console.warn('dictation: could not open the chosen microphone', e);
+    _dictMicMissing(want);
+    return stream;
+  }
 }
 function _dictMicMissing(name) {
   _dictBeacon('dict_mic_missing', { native: false });
@@ -31391,8 +31425,8 @@ async function _dictStartRec() {
     try {
       await _dictSettingsEnsure();
       const mic = await _dictMicConstraint();
-      _dictStream = await navigator.mediaDevices.getUserMedia({
-        audio: Object.assign({ echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } }, mic) });
+      const audio = Object.assign({ echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: { ideal: 16000 } }, mic);
+      _dictStream = await _dictMicSettle(await navigator.mediaDevices.getUserMedia({ audio }), audio);
     } catch(e) {
       showToast(mac ? 'The microphone is off for amux. Turn it on in System Settings → Privacy & Security → Microphone.' : 'Microphone access denied');
       _dictBeacon('mic_permission_refused', { mac, error: String(e && e.name || e).slice(0, 80) });

@@ -18,21 +18,23 @@ const DEVICES = [
   { kind: 'audioinput', deviceId: 'dev-shure', label: 'Shure MV7', groupId: 'g2' },
 ];
 
-async function settle(page: Page, opts: { native?: boolean } = {}): Promise<void> {
-  await page.addInitScript(({ devices, native }) => {
+async function settle(page: Page, opts: { native?: boolean; hiddenUntilAllowed?: boolean } = {}): Promise<void> {
+  await page.addInitScript(({ devices, native, hidden }) => {
     localStorage.setItem('amux_walkthrough_done', '1');
     (window as any)._gum = [];
     (window as any)._asked = [];
     if (native) {
       (window as any).webkit = { messageHandlers: { amuxDictation: { postMessage: (m: any) => (window as any)._asked.push(m) } } };
     }
-    Object.defineProperty(MediaDevices.prototype, 'enumerateDevices', { configurable: true, value: async () => devices });
+    // WebKit and Chrome hide names until the page has opened a microphone.
+    Object.defineProperty(MediaDevices.prototype, 'enumerateDevices', { configurable: true, value: async () =>
+      hidden && !(window as any)._gum.length ? devices.map((d: any) => ({ ...d, label: '' })) : devices });
     Object.defineProperty(MediaDevices.prototype, 'getUserMedia', { configurable: true, value: async (c: any) => {
       (window as any)._gum.push(c);
       const ctx = new AudioContext(); const osc = ctx.createOscillator(); const dest = ctx.createMediaStreamDestination();
       osc.connect(dest); osc.start(); return dest.stream;
     } });
-  }, { devices: DEVICES, native: !!opts.native });
+  }, { devices: DEVICES, native: !!opts.native, hidden: !!opts.hiddenUntilAllowed });
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).openPeek === 'function' && typeof (window as any)._dictSettingsSave === 'function');
   await page.addLocatorHandler(page.locator('#sw-fail-bar'), async (bar) => { await bar.locator('button').last().click(); });
@@ -117,6 +119,24 @@ test('dictating in a browser opens the chosen microphone, and says so when it is
 
   await openSettings(page);
   await expect(page.locator('#dict-mic option:checked')).toHaveText('Rode NT-USB (not connected here)');
+});
+
+// Owner, 2026-11-25: "ATR2500x-USB Microphone is not connected here" on every
+// take in the Mac app, with the microphone connected. Before the page has opened
+// a microphone it sees no names: the chosen one is opened once they show, with
+// no note, and a Chrome-style label with its USB id is the same microphone.
+test('a chosen microphone whose name is hidden until allowed is opened, not reported missing', async ({ page }) => {
+  await settle(page, { hiddenUntilAllowed: true });
+  await page.evaluate(() => (window as any)._dictSetMic('Shure MV7'));
+  await page.evaluate(() => (window as any)._dictStartRec());
+  await expect.poll(() => page.evaluate(() => (window as any)._gum.length)).toBe(2);
+  const [first, second] = await page.evaluate(() => (window as any)._gum);
+  expect(first.audio.deviceId).toBeUndefined();
+  expect(second.audio.deviceId).toEqual({ exact: 'dev-shure' });
+  await expect(page.locator('.toast, #toast').filter({ hasText: 'is not connected here' })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any)._dictMicSame('Shure MV7 (0909:001a)', 'Shure MV7'))).toBe(true);
+  expect(await page.evaluate(() => (window as any)._dictMicSame('MacBook Pro Microphone', 'Shure MV7'))).toBe(false);
+  await page.evaluate(() => (window as any)._dictClosePopup(true));
 });
 
 test('the Mac app is asked for the chosen microphone, and worker names stay out when switched off', async ({ page }) => {

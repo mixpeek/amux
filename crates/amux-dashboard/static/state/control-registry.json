@@ -1536,14 +1536,14 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_dictMicConstraint": {
-      "kind": "command._dictMicConstraint",
+    "_dictMicMissing": {
+      "kind": "command._dictMicMissing",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "_dictMicMissing": {
-      "kind": "command._dictMicMissing",
+    "_dictMicSettle": {
+      "kind": "command._dictMicSettle",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"
