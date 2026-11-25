@@ -776,7 +776,13 @@ fn accepts_gzip(headers: &HeaderMap) -> bool {
         .any(|t| {
             let mut parts = t.trim().split(';');
             parts.next().is_some_and(|n| n.trim().eq_ignore_ascii_case("gzip"))
-                && !parts.any(|q| q.trim().replace(' ', "") == "q=0")
+                && !parts.any(|p| {
+                    // q=0, q=0.0, Q=0.000: a weight of zero declines it.
+                    let p = p.trim();
+                    p.len() > 2
+                        && p[..2].eq_ignore_ascii_case("q=")
+                        && p[2..].trim().parse::<f32>().is_ok_and(|q| q == 0.0)
+                })
         })
 }
 
@@ -852,6 +858,10 @@ mod tests {
         assert!(!accepts_gzip(&h));
         h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("GZIP;q=0.5"));
         assert!(accepts_gzip(&h));
+        for declined in ["gzip;q=0.0", "gzip; Q=0", "gzip;q=0.000"] {
+            h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(declined));
+            assert!(!accepts_gzip(&h), "{declined}");
+        }
     }
 
     #[test]
