@@ -162,7 +162,7 @@ land; rc=$?
   && ok "enforce red batch: the culprit is bisected out and the prefix that passed lands" || bad "red batch rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -8)"
 # Mixpeek 2026-11-15: three red batches each re-ran a passing prefix and landed
 # none of it. The prefix is landed as the exact candidate that ran green.
-[ "$(dispatches)" = 3 ] && ok "enforce red batch: 3 runs (full, 2 bisect prefixes); the passing prefix is not run again" || bad "dispatches=$(dispatches)"
+[ "$(dispatches)" = 4 ] && ok "enforce red batch: 4 runs (full, then its 3 prefixes at once); the passing prefix is not run again" || bad "dispatches=$(dispatches)"
 [ "$(git --git-dir="$H/origin.git" rev-parse main)" = "$(grep -- '-b1 ' "$H/dispatched" | awk '{print $2}' | tail -1)" ] \
   && ok "enforce red batch: main is exactly the prefix candidate that ran green" || bad "main $(git --git-dir="$H/origin.git" rev-parse main) is not the b1 candidate: $(cat "$H/dispatched")"
 grep -q "landing the prefix that already passed (this lane and 1 waiter(s), verdict=mq_prefix_landed)" "$H/.amux/logs/land.log" && ok "enforce red batch: land.log says the prefix landed" || bad "no prefix line: $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -3)"
@@ -236,6 +236,7 @@ other_waits() {
 setup; queue_on; commit_file h x
 key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+git config amux.landMergeQueueBisectParallel 1
 plant w1 bad; plant w2 w2; plant w3 w3
 other_waits
 AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
@@ -252,6 +253,7 @@ done_case
 setup; queue_on; commit_file h x
 key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
 q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+git config amux.landMergeQueueBisectParallel 1
 plant w1 w1; plant w2 bad; plant w3 w3
 other_waits
 AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
@@ -259,6 +261,28 @@ AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
   && ok "bisect after a green step: the green prefix lands" || bad "green-step bisect rc=$rc; $(grep -a 'merge queue\|lease' "$H/.amux/logs/land.log" | tail -6)"
 { grep -q 'verdict=mq_bisect_keeps_lease' "$H/.amux/logs/land.log" && [ "$(handovers)" = 0 ]; } \
   && ok "bisect after a green step: no handover, and land.log says the lease is kept" || bad "handovers=$(handovers): $(grep -a 'lease\|keeps' "$H/.amux/logs/land.log" | tail -4)"
+kill $PIDS 2>/dev/null; wait 2>/dev/null
+done_case
+
+# --- a red batch's prefixes all run at once and the lease is held for one
+# round (mixpeek-meta-worker, 2026-11-26: a 6-landing binary bisect held main
+# over an hour, one full run per step). w2 is the culprit of h, w1..w4: the
+# prefix of 4 is cancelled once the prefix of 3 reads red.
+setup; queue_on; commit_file h x
+key="$(printf '%s %s' "$(git remote get-url origin)" main | shasum | cut -c1-16)"
+q="$H/.amux/locks/land-$key.q"; mkdir -p "$q"; PIDS=""
+plant w1 w1; plant w2 bad; plant w3 w3; plant w4 w4
+other_waits
+AMUX_LAND_REMOTE_LEASE_POLL_S=1 land; rc=$?
+{ [ "$rc" = 0 ] && main_has h && main_has w1 && ! main_has bad && ! main_has w3; } \
+  && ok "parallel bisect: the culprit is ejected and the green prefix lands" || bad "parallel rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6)"
+[ "$(dispatches)" = 5 ] && [ "$(grep -c -- '-b[0-9]* ' "$H/dispatched")" = 4 ] \
+  && ok "parallel bisect: the full run, then all 4 prefixes in one round" || bad "dispatches=$(dispatches): $(cat "$H/dispatched")"
+{ grep -q "dispatched 4 prefixes at once.*verdict=mq_bisect_parallel" "$H/.amux/logs/land.log" && grep -q "verdict=mq_bisect_cancel_rest" "$H/.amux/logs/land.log" && grep -q "^run cancel" "$H/gh.log"; } \
+  && ok "parallel bisect: land.log says so, and the run past the culprit is cancelled" || bad "no parallel/cancel lines: $(grep -a 'bisect' "$H/.amux/logs/land.log" | tail -4); $(grep cancel "$H/gh.log")"
+{ [ "$(handovers)" = 0 ] && ! grep -q "verdict=mq_bisect_keeps_lease" "$H/.amux/logs/land.log"; } \
+  && ok "parallel bisect: one round, so no step boundary to hand over or hold at" || bad "handovers=$(handovers)"
+[ "$(mq_refs)" = 0 ] && ok "parallel bisect: no candidate ref left" || bad "mq refs left: $(git --git-dir="$H/origin.git" for-each-ref refs/heads/mq/)"
 kill $PIDS 2>/dev/null; wait 2>/dev/null
 done_case
 
@@ -272,7 +296,7 @@ echo other.txt > "$H/move-main"
 land; rc=$?
 { [ "$rc" = 0 ] && main_has h && main_has w1 && main_has other.txt && ! main_has bad && ! main_has w3; } \
   && ok "red batch, main moved, no shared file: the passing prefix is carried onto the new main and lands" || bad "carried prefix rc=$rc; $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -6)"
-[ "$(dispatches)" = 3 ] && ok "red batch, main moved: no run after the bisect" || bad "dispatches=$(dispatches)"
+[ "$(dispatches)" = 4 ] && ok "red batch, main moved: no run after the bisect" || bad "dispatches=$(dispatches)"
 grep -q "verdict=mq_prefix_carried" "$H/.amux/logs/land.log" && grep -q "verdict=mq_prefix_landed" "$H/.amux/logs/land.log" \
   && ok "red batch, main moved: land.log says the prefix was carried and landed" || bad "no carried line: $(grep -a 'merge queue' "$H/.amux/logs/land.log" | tail -4)"
 ls "$q" | grep -q . && ok "red batch, main moved: the waiter after the culprit keeps its ticket" || bad "w3's ticket is gone"

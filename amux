@@ -12057,50 +12057,99 @@ _land_mq_wait() { # <batch id> <sha> -> "green|red|lost|unmeasured <run id> <url
   done
   echo "unmeasured $rid $url no_conclusion_in_${budget}s"
 }
-_land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <run id> <url> [why]"
-  local id="$1" v err try
+# A candidate is judged in two halves, so a bisect can start every prefix's run
+# before it waits on any of them. _land_mq_start prints nothing once the run is
+# dispatched, or an unmeasured verdict.
+_land_mq_start() { # <batch id> <base> <tip> [what]
+  local err
+  _land_mq_push_ref "$3" "$1" || { echo "unmeasured - - candidate_push_failed"; return 0; }
+  if ! err="$(_land_mq_dispatch "$1" "$2" 2>&1)"; then
+    _land_mq_drop_ref "$1" || _land_log "WARN merge queue: could not delete mq/$1 after its dispatch failed (verdict=mq_drop_failed); the sweep removes it after twice the budget"
+    echo "unmeasured - - dispatch_failed:$(printf '%s' "$err" | tr -s ' \n' '__' | cut -c1-160)"; return 0
+  fi
+  _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$1 (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
+}
+_land_mq_finish() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <run id> <url> [why]"
+  local id="$1" v s try
   for try in 1 2; do
-    _land_mq_push_ref "$3" "$id" || { echo "unmeasured - - candidate_push_failed"; return 0; }
-    if ! err="$(_land_mq_dispatch "$id" "$2" 2>&1)"; then
-      _land_mq_drop_ref "$id" || _land_log "WARN merge queue: could not delete mq/$id after its dispatch failed (verdict=mq_drop_failed); the sweep removes it after twice the budget"
-      echo "unmeasured - - dispatch_failed:$(printf '%s' "$err" | tr -s ' \n' '__' | cut -c1-160)"; return 0
+    if [ "$try" = 2 ]; then
+      _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
+      id="$id-r"
+      s="$(_land_mq_start "$id" "$2" "$3" "${4:-}")"; [ -z "$s" ] || { echo "$s"; return 0; }
     fi
-    _land_log "merge queue: candidate $(git rev-parse --short "$3") on mq/$id (base $(git rev-parse --short "$2")${4:+; $4}); waiting for $(_land_mq_cfg Workflow)"
     v="$(_land_mq_wait "$id" "$3")"
     if [ "${v%% *}" = green ]; then _land_mq_keep "$id"; elif ! _land_mq_drop_ref "$id"; then _land_log "WARN merge queue: could not delete mq/$id after its run (verdict=mq_drop_failed); the sweep removes it after twice the budget"; fi
     _land_mq_ledger phase=judge batch="$id" base="$2" candidate="$3" verdict="${v%% *}" run="$(printf '%s' "$v" | cut -d' ' -f3)" what="${4:-}"
     { [ "${v%% *}" = lost ] && [ "$try" = 1 ]; } || break
-    _land_log "merge queue: mq/$id was red on a lost runner only ($(printf '%s' "$v" | cut -d' ' -f3)); dispatching it once more"
-    id="$id-r"
   done
   [ "${v%% *}" != lost ] || v="red ${v#lost }"
   echo "$v"
 }
-# Binary search over the batch's prefixes on the same base, each regenerated as
-# the full stack was. Prefix 0 is the holder's own change, prefix k adds the
-# k-th waiter (line k of stack_map). The base is taken as green: in enforce mode
-# the branch only moves to green candidates. The third field is the candidate
-# that ran green for the longest passing prefix (prefix culprit-1), or - when
-# none did, so the caller can land what already passed instead of running it
-# again (mixpeek, 2026-11-15: three red batches in a row each bisected to a
-# passing prefix, landed none of it, and held main for 100 minutes).
+_land_mq_judge() { # <batch id> <base> <tip> [what] -> "green|red|unmeasured <run id> <url> [why]"
+  local s; s="$(_land_mq_start "$@")"
+  [ -z "$s" ] || { echo "$s"; return 0; }
+  _land_mq_finish "$@"
+}
+# A started step the bisect no longer needs: cancel its run and drop its ref.
+_land_mq_abandon() { # <batch id> <tip>
+  local rid; rid="$(_land_mq_run "$1" "$2" | awk '{print $1}')"
+  [ -z "$rid" ] || _land_mq_gh run cancel "$rid" --repo "$(_land_mq_slug)" >/dev/null 2>&1 || true
+  _land_mq_drop_ref "$1" || _land_log "WARN merge queue: could not delete mq/$1, an abandoned bisect step (verdict=mq_drop_failed); the sweep removes it after twice the budget"
+}
+# Search over the batch's prefixes on the same base, each regenerated as the
+# full stack was. Prefix 0 is the holder's own change, prefix k adds the k-th
+# waiter (line k of stack_map). The base is taken as green: in enforce mode the
+# branch only moves to green candidates. The third field is the candidate that
+# ran green for the longest passing prefix (prefix culprit-1), or - when none
+# did, so the caller can land what already passed instead of running it again
+# (mixpeek, 2026-11-15: three red batches in a row each bisected to a passing
+# prefix, landed none of it, and held main for 100 minutes).
+# EVERY PREFIX RUNS AT ONCE (mixpeek-meta-worker, 2026-11-26): a binary search
+# waits one full workflow run per step under main's lease, so decomp-platform's
+# red 6-landing batch held main over an hour with 16 lands behind it. Each round
+# now dispatches up to amux.landMergeQueueBisectParallel prefixes (default 8)
+# together and reads them in order: the first red one is the culprit and the one
+# before it the green prefix, so a batch up to that size holds the lease for one
+# run. Runs past the culprit are cancelled. 1 is the old binary search.
 _land_mq_bisect() { # <base> <batch id> <own tip> <full run url> -> "<culprit index> <url> <green tip|->" or "unmeasured <why>"
-  local lo=-1 hi n mid tip v url="$4" gtip="-"
+  local lo=-1 hi n cap c j m k tip v url="$4" gtip="-" mids tips ids
   n="$(printf '%s\n' "$stack_map" | grep -c .)"; hi="$n"
+  cap="$(_land_mq_cfg BisectParallel "${AMUX_LAND_MQ_BISECT_PARALLEL:-8}")"
+  case "$cap" in ''|*[!0-9]*|0) cap=1 ;; esac
   while [ $(( hi - lo )) -gt 1 ]; do
-    mid=$(( (lo + hi) / 2 ))
-    if [ "$mid" = 0 ]; then tip="$3"
-    else tip="$(printf '%s\n' "$stack_map" | grep . | sed -n "${mid}p" | awk '{print $(NF-1)}')"; fi
-    # A failing generator leaves the prefix unrendered, as the full stack would be.
-    v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
-    v="$(_land_mq_judge "$2-b$mid" "$1" "$tip" "bisect: prefix of $((mid + 1)) of $((n + 1)) landings")"
-    case "${v%% *}" in
-      green) lo="$mid"; gtip="$tip"; _land_mq_release_kept "$remote" "$lock" "a longer prefix ran green" last ;;
-      red) hi="$mid"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
-      *) echo "unmeasured prefix_$((mid + 1)):${v#* }"; return 0 ;;
-    esac
-    # Between steps, a land waiting on the other machine goes first, so one
-    # machine's bisect cannot hold the lease through every step (Mixpeek
+    c=$(( hi - lo - 1 )); [ "$c" -le "$cap" ] || c="$cap"
+    mids=(); tips=(); ids=()
+    for (( j = 1; j <= c; j++ )); do
+      m=$(( lo + j * (hi - lo) / (c + 1) ))
+      [ "${#mids[@]}" = 0 ] || [ "$m" != "${mids[${#mids[@]}-1]}" ] || continue
+      if [ "$m" = 0 ]; then tip="$3"
+      else tip="$(printf '%s\n' "$stack_map" | grep . | sed -n "${m}p" | awk '{print $(NF-1)}')"; fi
+      # A failing generator leaves the prefix unrendered, as the full stack would be.
+      v="$(_land_regenerate "$tip")" && [ -n "$v" ] && tip="$v"
+      v="$(_land_mq_start "$2-b$m" "$1" "$tip" "bisect: prefix of $((m + 1)) of $((n + 1)) landings")"
+      if [ -n "$v" ]; then
+        for (( k = 0; k < ${#ids[@]}; k++ )); do _land_mq_abandon "${ids[k]}" "${tips[k]}"; done
+        echo "unmeasured prefix_$((m + 1)):${v#* }"; return 0
+      fi
+      mids+=("$m"); tips+=("$tip"); ids+=("$2-b$m")
+    done
+    [ "${#mids[@]}" = 1 ] || _land_log "merge queue: bisect dispatched ${#mids[@]} prefixes at once (landings $(( mids[0] + 1 ))..$(( mids[${#mids[@]}-1] + 1 )) of $((n + 1))), so this round holds $branch for one run (verdict=mq_bisect_parallel)"
+    for (( k = 0; k < ${#mids[@]}; k++ )); do
+      v="$(_land_mq_finish "${ids[k]}" "$1" "${tips[k]}" "bisect: prefix of $(( mids[k] + 1 )) of $((n + 1)) landings")"
+      case "${v%% *}" in
+        green) lo="${mids[k]}"; gtip="${tips[k]}"; _land_mq_release_kept "$remote" "$lock" "a longer prefix ran green" last ;;
+        red) hi="${mids[k]}"; url="$(printf '%s' "$v" | cut -d' ' -f3)" ;;
+        *) for (( j = k + 1; j < ${#mids[@]}; j++ )); do _land_mq_abandon "${ids[j]}" "${tips[j]}"; done
+           echo "unmeasured prefix_$(( mids[k] + 1 )):${v#* }"; return 0 ;;
+      esac
+      if [ "${v%% *}" = red ]; then
+        [ $(( k + 1 )) -ge "${#mids[@]}" ] || _land_log "merge queue: prefix of $(( mids[k] + 1 )) is red; cancelling the $(( ${#mids[@]} - k - 1 )) longer prefix run(s) (verdict=mq_bisect_cancel_rest)"
+        for (( j = k + 1; j < ${#mids[@]}; j++ )); do _land_mq_abandon "${ids[j]}" "${tips[j]}"; done
+        break
+      fi
+    done
+    # Between rounds, a land waiting on the other machine goes first, so one
+    # machine's bisect cannot hold the lease through every round (Mixpeek
     # 2026-11-23: each VM turn was a red 7-batch bisecting under the lease
     # while the Mac queue grew to 36 and its oldest waiter passed 333 min).
     # If main moves meanwhile, the green prefix is carried onto it.
