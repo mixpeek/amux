@@ -235,13 +235,7 @@ pub enum Charged {
 /// Charge one nudge to the lane's card in doing. `None` when the lane has no
 /// card in doing (dispatch nudges are not charged) or the budget held.
 pub fn charge_card(conn: &Connection, lane: &str, hash: &str, now: f64, l: &Limits, owner_lane: &str) -> rusqlite::Result<Option<Charged>> {
-    // Created here, not by a numbered migration: the table is this module's
-    // own working state, and dense migration versions are contended by
-    // parallel contract work.
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS card_budgets (card TEXT PRIMARY KEY, lane TEXT NOT NULL, started_at REAL NOT NULL,
-         nudges INTEGER NOT NULL DEFAULT 0, last_hash TEXT, repeats INTEGER NOT NULL DEFAULT 0, exhausted_at REAL)",
-    )?;
+    // card_budgets is created by migration 0176.
     let card: Option<(String, f64)> = conn.query_row(
         "SELECT id, COALESCE(entered_state_at, updated, 0) FROM issues WHERE session = ?1 AND status = 'doing'
          AND deleted IS NULL AND COALESCE(archived, 0) = 0 ORDER BY updated DESC LIMIT 1",

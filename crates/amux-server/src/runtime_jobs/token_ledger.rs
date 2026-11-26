@@ -1570,7 +1570,6 @@ mod tests {
                  task TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', session TEXT NOT NULL DEFAULT '', \
                  entered_doing INTEGER NOT NULL, left_doing INTEGER);",
             )?;
-            crate::db::attempts::ensure_table(conn)?;
             // The two absorbing windows, never closed, exactly as measured.
             conn.execute(
                 "INSERT INTO task_windows (task, session, entered_doing, left_doing) \
@@ -1636,7 +1635,6 @@ mod tests {
         let st = store();
         let now = chrono::Utc::now().timestamp();
         st.write(move |conn| {
-            crate::db::attempts::ensure_table(conn)?;
             conn.execute(
                 "INSERT INTO task_attempts (card, attempt, worker, generation, started_at, ended_at) \
                  VALUES ('AMUX-9001', 1, 'lane-a', 1, ?1, NULL)",

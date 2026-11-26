@@ -1199,12 +1199,10 @@ mod tests {
     /// (task set) and the rest, from the ledger itself.
     #[test]
     fn load_splits_each_workers_spend_by_whether_a_card_holds_it() {
-        // issues and token_ledger from the migrations; task_episodes is made by
-        // the episodes job on its first tick, so the test makes it.
+        // issues, token_ledger and task_episodes all come from the migrations.
         let conn = crate::db::migrate::test_memdb();
         conn.execute_batch(
-            "CREATE TABLE task_episodes (card TEXT, worker TEXT, started_at TEXT, ended_at TEXT, outcome TEXT, reason TEXT, card_end TEXT);
-             INSERT INTO token_ledger (ts, session, conversation, task, input, output, cost_usd) VALUES
+            "INSERT INTO token_ledger (ts, session, conversation, task, input, output, cost_usd) VALUES
              (100,'w','c','C-1',1,1,3.0),(100,'w','c','',1,1,1.0),(100,'w','c','',1,1,1.0),(100,'iso','c','',1,1,4.0),(1,'w','c','C-1',1,1,99.0);",
         ).unwrap();
         let d = load(&conn, 50).unwrap();

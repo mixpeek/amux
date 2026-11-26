@@ -1498,6 +1498,20 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     // against a `now` of 1789414183.
     ("task_attempts", "ended_at", false),
     ("task_attempts", "started_at", false),
+    // Declared when 0176 moved these tables into migrations. SECONDS, MEASURED
+    // on the live database 2026-11-26: task_episodes MAX(started_at) 1795727552,
+    // card_budgets MAX(started_at) 1791495908.0, file_visits MAX(last_at)
+    // 1795726148.6. _amux_brex_spend has no live rows yet; api/brex.rs writes
+    // both columns with timestamp_millis(), so they are MILLISECONDS.
+    ("task_episodes", "started_at", false),
+    ("task_episodes", "start_captured_at", false),
+    ("task_episodes", "ended_at", false),
+    ("task_episodes", "end_captured_at", false),
+    ("card_budgets", "started_at", false),
+    ("card_budgets", "exhausted_at", false),
+    ("file_visits", "last_at", false),
+    ("_amux_brex_spend", "posted_at", true),
+    ("_amux_brex_spend", "created_at", true),
     ("token_ledger", "ts", false),
     ("skill_usage", "ts", false), // transcript timestamps, stored as unix seconds (AMUX-5340)
     ("trace_archive", "archived_at", false), // measured 2026-09-27: 1790517771..1790535244 over 5405 rows

@@ -9,16 +9,11 @@
 //! attempt log and the lease can only disagree when a path bypasses both.
 //! [`reconcile_orphans`] closes those.
 //!
-//! WHY THE TABLE IS ENSURED HERE AND NOT IN A NUMBERED MIGRATION. On
-//! 2026-09-14 the live database recorded migration 69 as
-//! `0069_worker_lifecycle`, applied by a dirty build from the shared checkout
-//! while origin/main registered only 68 (AMUX-4533). `migrate.rs` skips a
-//! version it has already applied without reading the name, so a
-//! `0069_task_attempts` landing on origin would boot green on that box and
-//! never create this table, and every lease change would then fail its write
-//! transaction. `CREATE TABLE IF NOT EXISTS` at the point of use cannot be
-//! skipped that way. Move it into a migration once the version collision is
-//! resolved on origin.
+//! The table is created by migration 0176. It used to be ensured here, at the
+//! point of use, because `migrate.rs` skipped a version it had already applied
+//! without reading the name (AMUX-4533: a dirty build recorded 69 as
+//! `0069_worker_lifecycle`). The runner now detects that mismatch and applies
+//! the registered migration, so the workaround is gone.
 //!
 //! Outcome vocabulary (NULL while the attempt runs):
 //! done | review | blocked | parked | needs_input | failed | discarded |
@@ -33,29 +28,6 @@ use std::collections::HashMap;
 
 /// The actor the lease reaper advances as. An attempt it ends is `abandoned`.
 pub const LEASE_REAPER_ACTOR: &str = "amux:lease-reaper";
-
-/// Create the table and its indexes if absent. Cheap (a no-op parse once the
-/// table exists) and only called on lease changes, which are rare next to reads.
-pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS task_attempts (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            card        TEXT    NOT NULL,
-            attempt     INTEGER NOT NULL,
-            worker      TEXT    NOT NULL,
-            generation  INTEGER NOT NULL,
-            started_at  INTEGER NOT NULL,
-            ended_at    INTEGER,
-            outcome     TEXT,
-            to_status   TEXT,
-            ended_by    TEXT,
-            reason      TEXT
-        );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_attempts_card_attempt ON task_attempts(card, attempt);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_attempts_running ON task_attempts(card) WHERE ended_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_task_attempts_worker ON task_attempts(worker, started_at);",
-    )
-}
 
 /// A read against a database where no lease has changed since this shipped has
 /// no table yet. That is "no attempts", not an error.
@@ -138,7 +110,6 @@ pub fn record_lease_change(
     if prev_holder == new_holder {
         return Ok(());
     }
-    ensure_table(conn)?;
     if prev_holder.is_some() {
         let outcome = outcome_for(to_status, actor, new_holder.is_some());
         close_running(conn, card, outcome, to_status, actor, reason, now)?;
@@ -270,7 +241,6 @@ pub fn open_holds_for_worker(conn: &Connection, worker: &str) -> rusqlite::Resul
 /// Returns how many were closed, which the reaper publishes: a steady nonzero
 /// count names a bypass path worth routing through `advance`.
 pub fn reconcile_orphans(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
-    ensure_table(conn)?;
     conn.execute(
         "UPDATE task_attempts SET ended_at = ?1, outcome = 'orphaned', ended_by = 'amux:attempt-reconcile', \
              to_status = (SELECT status FROM issues i WHERE i.id = task_attempts.card), \

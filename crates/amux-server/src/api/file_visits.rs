@@ -14,9 +14,6 @@
 
 use rusqlite::Connection;
 
-pub(crate) const CREATE: &str = "CREATE TABLE IF NOT EXISTS file_visits (
-    path TEXT PRIMARY KEY, visits INTEGER NOT NULL DEFAULT 0, last_at REAL NOT NULL)";
-
 pub(crate) fn exists(conn: &Connection) -> bool {
     conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_visits'", [], |_| Ok(()))
         .is_ok()
@@ -24,7 +21,6 @@ pub(crate) fn exists(conn: &Connection) -> bool {
 
 /// One owner view of `path`.
 pub(crate) fn record(conn: &Connection, path: &str, at: f64) -> rusqlite::Result<()> {
-    conn.execute_batch(CREATE)?;
     conn.execute(
         "INSERT INTO file_visits (path, visits, last_at) VALUES (?1, 1, ?2)
          ON CONFLICT(path) DO UPDATE SET visits = visits + 1, last_at = MAX(last_at, excluded.last_at)",
@@ -68,7 +64,6 @@ pub(crate) fn seed_counts(conn: &Connection) -> rusqlite::Result<Counts> {
 
 /// Add the counts and mark the seed done (the short part, on the writer).
 pub(crate) fn seed_write(conn: &Connection, counts: &Counts) -> rusqlite::Result<usize> {
-    conn.execute_batch(CREATE)?;
     if seeded(conn) {
         return Ok(0);
     }
@@ -151,15 +146,12 @@ mod tests {
         let todo = dir.path().join("To-Do.md");
         std::fs::write(&todo, "x").unwrap();
         let todo = todo.to_string_lossy().to_string();
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE _amux_request_log (id INTEGER PRIMARY KEY, ts REAL, method TEXT, path TEXT, amux_session TEXT, req_meta TEXT)",
-        )
-        .unwrap();
+        let conn = crate::db::migrate::test_memdb();
         let q = |p: &str| format!("{{\"query\":\"path={}\"}}", p.replace('/', "%2F"));
         for (ts, who) in [(10.0, ""), (20.0, ""), (30.0, "some-worker")] {
             conn.execute(
-                "INSERT INTO _amux_request_log (ts, method, path, amux_session, req_meta) VALUES (?1, 'GET', '/api/file', ?2, ?3)",
+                "INSERT INTO _amux_request_log (ts, method, path, family, status, latency_ms, amux_session, req_meta) \
+                 VALUES (?1, 'GET', '/api/file', '/api/file', 200, 1.0, ?2, ?3)",
                 rusqlite::params![ts, who, q(&todo)],
             )
             .unwrap();

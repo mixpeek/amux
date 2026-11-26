@@ -51475,7 +51475,6 @@ mod steer_boundary_tests {
         let (state, _d) = tstate();
         let claimed = now_f64() as i64 - 600;
         state.store.write(move |conn| {
-            crate::db::attempts::ensure_table(conn)?;
             for (id, owner) in
                 [("H-MINE", "probe"), ("H-THEIRS", "other"), ("H-SETTLED", "probe"), ("H-CLOSED", "probe")]
             {

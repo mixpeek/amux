@@ -53,10 +53,7 @@ pub(crate) fn ensure_columns(conn: &rusqlite::Connection) -> rusqlite::Result<()
             }
         }
     }
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS event_dispatch_cursor (name TEXT PRIMARY KEY, last_id INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
-        [],
-    )?;
+    // event_dispatch_cursor is created by migration 0157.
     Ok(())
 }
 

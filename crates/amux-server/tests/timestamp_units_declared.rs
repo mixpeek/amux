@@ -21,12 +21,10 @@
 #[test]
 fn every_timestamp_shaped_column_declares_its_unit() {
     let conn = amux_server::db::migrate::test_memdb_pub();
-    // Tables created at runtime rather than by a migration are in the live
-    // schema the invariant scans, so they belong in scope here too.
-    // `task_attempts` (RR-0052) is created by `ensure_table` on the first lease
-    // change; without this line its two columns shipped undeclared and only
-    // the runtime invariant noticed (2026-09-14).
-    amux_server::db::attempts::ensure_table(&conn).unwrap();
+    // `task_attempts` (RR-0052) and the other tables that used to be created
+    // at their point of use come from migration 0176 now, so the migrated
+    // schema above already covers them (2026-09-14: task_attempts' columns
+    // shipped undeclared while it was created outside migrations).
     let (undeclared, _n) = amux_server::invariants::monitor::undeclared_timestamp_columns(&conn);
     assert!(
         undeclared.is_empty(),

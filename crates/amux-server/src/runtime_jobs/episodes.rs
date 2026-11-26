@@ -76,50 +76,6 @@ pub fn tick_secs() -> u64 {
         .unwrap_or(TICK_SECS)
 }
 
-/// Created at the point of use for the same reason `task_attempts` is (see
-/// `db/attempts.rs`): a numbered migration can be skipped on a box whose
-/// version counter was advanced by a dirty build.
-pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS task_episodes (
-            attempt_id       INTEGER PRIMARY KEY,
-            card             TEXT    NOT NULL,
-            attempt          INTEGER NOT NULL,
-            worker           TEXT    NOT NULL,
-            started_at       INTEGER NOT NULL,
-            start_captured_at INTEGER NOT NULL,
-            start_lag_s      INTEGER NOT NULL,
-            start_after_end  INTEGER NOT NULL DEFAULT 0,
-            card_start       TEXT    NOT NULL,
-            work_dir         TEXT    NOT NULL DEFAULT '',
-            start_sha        TEXT    NOT NULL DEFAULT '',
-            start_branch     TEXT    NOT NULL DEFAULT '',
-            start_dirty      INTEGER,
-            conv_id          TEXT    NOT NULL DEFAULT '',
-            provider         TEXT    NOT NULL DEFAULT '',
-            model            TEXT    NOT NULL DEFAULT '',
-            env_layers       TEXT    NOT NULL DEFAULT '[]',
-            memory_sha256    TEXT    NOT NULL DEFAULT '',
-            amux_build       TEXT    NOT NULL DEFAULT '',
-            harness_version  TEXT    NOT NULL DEFAULT '',
-            ended_at         INTEGER,
-            end_captured_at  INTEGER,
-            outcome          TEXT,
-            to_status        TEXT,
-            ended_by         TEXT,
-            reason           TEXT,
-            end_sha          TEXT,
-            commits          INTEGER,
-            diff_stat        TEXT,
-            card_end         TEXT,
-            transcripts      TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_task_episodes_card ON task_episodes(card, attempt);
-        CREATE INDEX IF NOT EXISTS idx_task_episodes_worker ON task_episodes(worker, started_at);
-        CREATE INDEX IF NOT EXISTS idx_task_episodes_open ON task_episodes(attempt_id) WHERE ended_at IS NULL;",
-    )
-}
-
 /// An attempt that needs its start state captured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingStart {
@@ -237,7 +193,6 @@ pub(crate) fn insert_start(
     amux_build: &str,
     now: i64,
 ) -> rusqlite::Result<bool> {
-    ensure_table(conn)?;
     let harness = crate::db::harness_store::harness_version(conn).unwrap_or_default();
     let card_start = card_snapshot(conn, &p.card, false);
     let after_end = p.ended_at.is_some_and(|e| e <= now);
@@ -474,17 +429,6 @@ pub(crate) fn gather_end(dir: &str, start_sha: &str) -> EndWorld {
 /// One pass. Returns (starts written, ends written).
 pub(crate) fn tick(state: &AppState) -> (usize, usize) {
     let now = chrono::Utc::now().timestamp();
-    // FIRST, before any read: the pending query LEFT JOINs this table, so on a
-    // fresh database it would fail, read as "nothing pending", and the insert
-    // that creates the table would never run. Nothing would ever be recorded.
-    if let Err(e) = state.store.write(|c| {
-        ensure_table(c)?;
-        Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
-    }) {
-        tracing::warn!(target: "amux::episodes", error = %e, measured = false, n_considered = 0,
-            verdict = "episodes_unmeasured", "episode table could not be ensured; no episodes recorded this tick");
-        return (0, 0);
-    }
     let (starts, ends) = {
         let Ok(conn) = state.store.read() else {
             return (0, 0);
@@ -570,7 +514,6 @@ mod tests {
     }
 
     fn seed(c: &Connection, started: i64) -> i64 {
-        crate::db::attempts::ensure_table(c).unwrap();
         c.execute(
             "INSERT INTO issues (id, title, desc, status, session, creator, created, updated, type) \
              VALUES ('EP-1', 'Fix the widget', 'Make the widget stop wobbling', 'doing', 'lane', 'test', ?1, ?1, 'code')",
@@ -608,7 +551,6 @@ mod tests {
         store
             .write(move |c| {
                 let id = seed(c, t0);
-                ensure_table(c)?;
 
                 let pend = pending_starts(c, t0 + 10)?;
                 assert_eq!(pend.len(), 1);
@@ -679,7 +621,6 @@ mod tests {
         store
             .write(move |c| {
                 let id = seed(c, t0);
-                ensure_table(c)?;
                 c.execute("UPDATE task_attempts SET ended_at=?1, outcome='done' WHERE id=?2", params![t0 + 4, id])?;
                 let pend = pending_starts(c, t0 + 9)?;
                 assert_eq!(pend.len(), 1);

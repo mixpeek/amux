@@ -11,9 +11,8 @@
 //!
 //! Kept on the server so a phone and a Mac share one history; before this it
 //! lived in each browser's localStorage and counted Cmd-K opens only. Owner
-//! only: a worker or member reading or writing it is refused. Tables are
-//! created on first use, as `file_visits` is, and capped so they cannot grow
-//! without bound.
+//! only: a worker or member reading or writing it is refused. Tables come from
+//! migration 0176 and are capped so they cannot grow without bound.
 
 use super::AppState;
 use axum::extract::{OriginalUri, State};
@@ -29,13 +28,6 @@ pub fn routes() -> Router<AppState> {
         .route("/api/palette/visit", axum::routing::post(post_visit))
         .route("/api/palette/history/import", axum::routing::post(post_import))
 }
-
-const CREATE: &str = "CREATE TABLE IF NOT EXISTS nav_visits (
-        kind TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
-        visits INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL, PRIMARY KEY (kind, id));
-    CREATE TABLE IF NOT EXISTS nav_picks (
-        query TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL,
-        picks INTEGER NOT NULL DEFAULT 0, last_at INTEGER NOT NULL, PRIMARY KEY (query, kind, id));";
 
 /// What the palette can open; anything else is refused.
 const KINDS: &[&str] = &[
@@ -66,7 +58,6 @@ pub(crate) fn norm_query(q: &str) -> String {
 /// One open of `kind:id`, and, when `query` is set, that it was the result
 /// chosen for that query.
 pub(crate) fn record(conn: &Connection, kind: &str, id: &str, title: &str, query: &str, at: i64) -> rusqlite::Result<()> {
-    conn.execute_batch(CREATE)?;
     conn.execute(
         "INSERT INTO nav_visits (kind, id, title, visits, last_at) VALUES (?1, ?2, ?3, 1, ?4)
          ON CONFLICT(kind, id) DO UPDATE SET visits = visits + 1, last_at = MAX(last_at, excluded.last_at),
@@ -202,7 +193,6 @@ async fn post_import(State(state): State<AppState>, OriginalUri(uri): OriginalUr
     let res = state
         .store
         .write_async(move |c| {
-            c.execute_batch(CREATE)?;
             let have: i64 = c.query_row("SELECT COUNT(*) FROM nav_visits", [], |r| r.get(0))?;
             if have > 0 {
                 return Ok(crate::db::WriteOutcome { applied: false, events: vec![] });
@@ -232,8 +222,8 @@ mod tests {
 
     #[test]
     fn visits_count_up_and_picks_are_kept_per_query() {
-        let conn = Connection::open_in_memory().unwrap();
-        assert_eq!(history(&conn).unwrap(), (vec![], vec![]), "no table yet reads empty");
+        let conn = crate::db::migrate::test_memdb();
+        assert_eq!(history(&conn).unwrap(), (vec![], vec![]), "an empty history reads empty");
         record(&conn, "worker", "mxp-decomp", "mxp-decomp", "", 1000).unwrap();
         record(&conn, "worker", "mxp-decomp", "", "  Dec ", 2000).unwrap();
         record(&conn, "view", "board", "Board", "", 1500).unwrap();
@@ -246,7 +236,7 @@ mod tests {
 
     #[test]
     fn the_tables_stay_capped() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::db::migrate::test_memdb();
         for i in 0..(KEEP_VISITS + 20) {
             record(&conn, "file", &format!("/f/{i}"), "", "q", i).unwrap();
         }

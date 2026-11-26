@@ -939,6 +939,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0175_outbound_requests",
         sql: include_str!("../../migrations/0175_outbound_requests.sql"),
     },
+    Migration {
+        version: 176,
+        name: "0176_point_of_use_tables",
+        sql: include_str!("../../migrations/0176_point_of_use_tables.sql"),
+    },
 ];
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
@@ -947,20 +952,112 @@ const MIGRATIONS: &[Migration] = &[
 /// the `unwrap_or(false)` — if `_amux_migrations` does not exist yet the query
 /// fails and everything is pending, which is the truth for a fresh DB. A
 /// separate predicate here would be a second spelling that drifts.
+///
+/// A version recorded under a DIFFERENT name that has not been reconciled is
+/// pending too: `apply_all` will run that migration's SQL (see
+/// [`MismatchAction`]), so the live-DB guard must count it.
 pub fn pending(conn: &Connection) -> Vec<&'static str> {
     MIGRATIONS
         .iter()
-        .filter(|m| {
-            !conn
-                .query_row(
-                    "SELECT 1 FROM _amux_migrations WHERE version = ?1",
-                    [m.version],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false)
+        .filter(|m| match recorded_row(conn, m.version) {
+            Ok(Some(row)) => mismatch_action(m, &row) == MismatchAction::Apply,
+            Ok(None) | Err(_) => true,
         })
         .map(|m| m.name)
         .collect()
+}
+
+/// What `_amux_migrations` holds for one version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedRow {
+    name: String,
+    /// The registered name this version was reconciled to after a name
+    /// mismatch, if any. The recorded `name` is kept as evidence.
+    reconciled_name: Option<String>,
+    checksum: Option<String>,
+}
+
+/// Read one version's bookkeeping row. Tolerates a table that predates the
+/// `reconciled_name`/`checksum` columns (`pending` runs before `apply_all`
+/// adds them), reading those as NULL.
+fn recorded_row(conn: &Connection, version: i64) -> rusqlite::Result<Option<RecordedRow>> {
+    let full = conn
+        .query_row(
+            "SELECT name, reconciled_name, checksum FROM _amux_migrations WHERE version = ?1",
+            [version],
+            |r| {
+                Ok(RecordedRow {
+                    name: r.get(0)?,
+                    reconciled_name: r.get(1)?,
+                    checksum: r.get(2)?,
+                })
+            },
+        )
+        .optional();
+    match full {
+        Ok(row) => Ok(row),
+        Err(e) if e.to_string().contains("no such column") => conn
+            .query_row(
+                "SELECT name FROM _amux_migrations WHERE version = ?1",
+                [version],
+                |r| {
+                    Ok(RecordedRow {
+                        name: r.get(0)?,
+                        reconciled_name: None,
+                        checksum: None,
+                    })
+                },
+            )
+            .optional(),
+        Err(e) => Err(e),
+    }
+}
+
+/// What the runner does with a version that already has a bookkeeping row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MismatchAction {
+    /// The row is this migration (same name, a documented alias, or already
+    /// reconciled to it). Nothing to run.
+    AlreadyApplied,
+    /// The row names a DIFFERENT migration: this one's SQL never ran here.
+    Apply,
+}
+
+fn mismatch_action(m: &Migration, row: &RecordedRow) -> MismatchAction {
+    if row.name == m.name
+        || known_name_alias(m.version, &row.name, m.name)
+        || row.reconciled_name.as_deref() == Some(m.name)
+    {
+        MismatchAction::AlreadyApplied
+    } else {
+        MismatchAction::Apply
+    }
+}
+
+/// sha256 of a migration's embedded SQL, hex. Recorded on apply so an edit to
+/// an already-applied file is visible (`migration_checksum_changed`).
+fn checksum(sql: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(sql.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Add the bookkeeping columns this runner records. `ADD COLUMN` of a nullable
+/// column with no default is a schema-only change in SQLite (no table rewrite),
+/// and `_amux_migrations` is a couple of hundred rows regardless.
+fn ensure_bookkeeping_columns(conn: &Connection) -> anyhow::Result<()> {
+    for (column, decl) in [
+        ("checksum", "TEXT"),
+        ("reconciled_name", "TEXT"),
+        ("reconciled_at", "TEXT"),
+    ] {
+        if !column_exists(conn, "_amux_migrations", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE _amux_migrations ADD COLUMN {column} {decl};"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// True when this binary is a `cargo build` artifact run straight from a
@@ -1112,29 +1209,6 @@ fn truthy_env(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Pure so the collision itself is testable without a database: given what
-/// THIS binary's code expects at `version` (`expected_name`) and what the
-/// live DB actually has recorded there (`recorded_name`), returns a log
-/// message when they disagree, `None` when the recorded row is simply this
-/// same migration re-checked on a later boot (the ordinary, non-colliding
-/// case — every version this binary has ever successfully applied hits this
-/// path on every subsequent startup, and must stay silent).
-fn version_collision_warning(
-    version: i64,
-    expected_name: &str,
-    recorded_name: &str,
-) -> Option<String> {
-    if recorded_name == expected_name || known_name_alias(version, recorded_name, expected_name) {
-        return None;
-    }
-    Some(format!(
-        "migration VERSION COLLISION at {version}: this database recorded it as \
-         {recorded_name:?}, but this binary's code expects {expected_name:?} there. \
-         {expected_name}'s schema change will NEVER run against this database under \
-         version {version} — renumber it in db/migrate.rs."
-    ))
-}
-
 /// Guard + apply. `Store::open` calls this; the bare [`apply_all`] stays for
 /// tests, which run against temp and in-memory databases.
 pub fn apply_all_guarded(conn: &mut Connection, db_path: &std::path::Path) -> anyhow::Result<()> {
@@ -1188,32 +1262,22 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
             duration_ms INTEGER
         );",
     )?;
+    // checksum / reconciled_name / reconciled_at: added by ALTER on every
+    // database (fresh or not), for the same reason duration_ms needed two paths.
+    ensure_bookkeeping_columns(conn)?;
     for m in MIGRATIONS {
-        let recorded_name: Option<String> = conn
-            .query_row(
-                "SELECT name FROM _amux_migrations WHERE version = ?1",
-                [m.version],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(recorded) = recorded_name {
-            if let Some(msg) = version_collision_warning(m.version, m.name, &recorded) {
-                // VERSION COLLISION, not a benign re-run. On a box that
-                // builds arbitrary off-main branches (this one, and every
-                // dev box the freshness hook warns about), the SAME version
-                // number can get consumed by UNRELATED migrations from
-                // different branches' own dense-ordered sequences (this
-                // exact shape cost a live outage 2026-08-30, see
-                // frustrations.md — telegram_relay ran for ~15 minutes
-                // erroring "no such column" because version 38 here was
-                // already someone else's migration). `m`'s SQL will NEVER
-                // run against this database under this number — the only
-                // fix is renumbering `m` in code — so this must be LOUD at
-                // startup, not a downstream error the first time the
-                // missing schema is actually touched.
-                tracing::error!("{msg}");
+        let sum = checksum(m.sql);
+        if let Some(row) = recorded_row(conn, m.version)? {
+            match mismatch_action(m, &row) {
+                MismatchAction::AlreadyApplied => {
+                    note_checksum(conn, m, &row, &sum);
+                    continue;
+                }
+                MismatchAction::Apply => {
+                    reconcile_name_mismatch(conn, m, &row, &sum)?;
+                    continue;
+                }
             }
-            continue;
         }
         // TIME EVERY MIGRATION. This function used to log nothing, so 0031
         // holding the connection for 186 seconds on 2026-08-24 was
@@ -1226,8 +1290,8 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         apply_one(&tx, m.sql)?;
         let ms = started.elapsed().as_millis() as i64;
         tx.execute(
-            "INSERT INTO _amux_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![m.version, m.name, chrono::Utc::now().to_rfc3339()],
+            "INSERT INTO _amux_migrations (version, name, applied_at, checksum) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![m.version, m.name, chrono::Utc::now().to_rfc3339(), sum],
         )?;
         // Best-effort: the column arrives in 0032, so every migration before it
         // on an existing database has nowhere to put this. Failing to RECORD a
@@ -1253,56 +1317,146 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         }
     }
     report_renumbered_migrations(conn);
-    // Tables ensured at their point of use (not in a numbered migration) are
-    // ensured here too, so the schema is complete after the FIRST boot. Lazily,
-    // task_attempts appeared only once a runtime job first touched it, so a
-    // re-open changed the table set and the nightly "migrations apply to a
-    // populated database" gate failed (AMUX-5374). IF NOT EXISTS keeps the
-    // version-collision protection attempts.rs documents.
-    crate::db::attempts::ensure_table(conn)?;
     Ok(())
 }
 
-/// Versions whose RECORDED name differs from the name now registered for them,
-/// as `(version, recorded, registered)`.
+/// Record (first sight) or compare (later boots) an applied migration's
+/// checksum. Never fails the boot: this is bookkeeping, not schema.
+fn note_checksum(conn: &Connection, m: &Migration, row: &RecordedRow, sum: &str) {
+    match row.checksum.as_deref() {
+        Some(recorded) if recorded == sum => {}
+        Some(recorded) => {
+            // An applied migration's file was edited. Its new text will not
+            // run again here, so whatever the edit changed is not in this
+            // database. Logged once: the new checksum is then recorded.
+            tracing::warn!(
+                verdict = "migration_checksum_changed",
+                migration_version = m.version,
+                migration = m.name,
+                recorded_checksum = recorded,
+                file_checksum = sum,
+                "migration {} was edited after this database applied it; the edit will not run here",
+                m.name
+            );
+            let _ = conn.execute(
+                "UPDATE _amux_migrations SET checksum = ?1 WHERE version = ?2",
+                rusqlite::params![sum, m.version],
+            );
+        }
+        None => {
+            // Applied before checksums were recorded: adopt the file's.
+            let _ = conn.execute(
+                "UPDATE _amux_migrations SET checksum = ?1 WHERE version = ?2",
+                rusqlite::params![sum, m.version],
+            );
+        }
+    }
+}
+
+/// A version this database recorded under a DIFFERENT migration's name.
 ///
-/// AF-353. The runner dedupes on VERSION alone — `SELECT 1 FROM _amux_migrations
-/// WHERE version = ?1`, the name never consulted — so a version this database
-/// has already applied is skipped no matter WHICH migration now claims it. That
-/// is fine while a version keeps its meaning, and this repo routinely takes it
-/// away: renumbering an incoming migration is the DOCUMENTED fix for a
-/// contributor collision (see `versions_are_dense_and_match_their_filenames`
-/// below). Renumbering frees a number, the freed number gets handed to a
-/// different migration, and every database that recorded the old one at that
-/// version skips the new one forever, with a clean boot and a green `/health`.
+/// The runner used to skip it, because it deduped on version alone: a dirty
+/// build that consumed version N meant the real N never ran, with a clean boot
+/// (AMUX-4533; the reason nine tables were created at their point of use, see
+/// 0176). Now the registered migration runs in its own transaction and, when it
+/// succeeds, the row records `reconciled_name` so it runs once. The original
+/// `name` is left as found: it is the evidence of what consumed the number.
 ///
-/// `versions_are_dense_and_match_their_filenames` constrains the ARRAY, and
-/// nothing constrained the array against what a DATABASE already recorded.
-/// The benign case and the destructive case are byte-identical to the runner,
-/// which is why this reports rather than refuses: an old database legitimately
-/// carries an old name for a migration that was renumbered, and refusing to boot
-/// over that would be a gate with no truthful path (ethos rule 3).
+/// Failure never bricks the boot. A migration that cannot run against this
+/// database's shape (a plain CREATE TABLE of a table the other migration also
+/// made, say) is rolled back whole, logged at ERROR with
+/// `migration_name_mismatch_apply_failed`, and retried on the next boot; the
+/// server still starts, exactly as it did when the version was skipped.
+fn reconcile_name_mismatch(
+    conn: &mut Connection,
+    m: &Migration,
+    row: &RecordedRow,
+    sum: &str,
+) -> anyhow::Result<()> {
+    tracing::warn!(
+        verdict = "migration_name_mismatch",
+        migration_version = m.version,
+        recorded_name = %row.name,
+        file_name = m.name,
+        "migration version {} is recorded as {:?} but this binary registers {:?}; \
+         applying {:?} now rather than skipping it",
+        m.version,
+        row.name,
+        m.name,
+        m.name
+    );
+    let started = std::time::Instant::now();
+    let tx = conn.transaction()?;
+    match apply_one(&tx, m.sql) {
+        Ok(()) => {
+            tx.execute(
+                "UPDATE _amux_migrations SET reconciled_name = ?1, reconciled_at = ?2, checksum = ?3 \
+                 WHERE version = ?4",
+                rusqlite::params![m.name, chrono::Utc::now().to_rfc3339(), sum, m.version],
+            )?;
+            tx.commit()?;
+            tracing::warn!(
+                verdict = "migration_name_mismatch_applied",
+                migration_version = m.version,
+                recorded_name = %row.name,
+                file_name = m.name,
+                duration_ms = started.elapsed().as_millis() as i64,
+                "applied {} under version {} (recorded name {:?} kept)",
+                m.name,
+                m.version,
+                row.name
+            );
+        }
+        Err(e) => {
+            drop(tx); // rollback: nothing of the failed migration persists
+            tracing::error!(
+                verdict = "migration_name_mismatch_apply_failed",
+                migration_version = m.version,
+                recorded_name = %row.name,
+                file_name = m.name,
+                error = %e,
+                "could not apply {} over version {} (recorded as {:?}): {e}. Its schema is \
+                 missing from this database; renumber it or reconcile by hand. Retried next boot.",
+                m.name,
+                m.version,
+                row.name
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Versions whose RECORDED name differs from the name now registered for them
+/// AND that `apply_all` could not reconcile, as `(version, recorded, registered)`.
 ///
-/// Live on this box when written: v35 recorded as `0029_regenerable_samples`,
-/// registered as `0035_regenerable_samples`. Same migration, renamed, nothing
-/// skipped. That known alias is now excluded; every unknown mismatch remains a
-/// collision finding.
+/// AF-353. The runner used to dedupe on VERSION alone, so a version this
+/// database had already applied was skipped no matter WHICH migration now
+/// claimed it. Renumbering an incoming migration is the documented fix for a
+/// contributor collision (see `versions_are_dense_and_match_their_filenames`),
+/// which frees a number for a different migration, and every database that
+/// recorded the old one at that version skipped the new one forever.
+///
+/// `apply_all` now runs the registered migration over a mismatched row and
+/// records `reconciled_name` (see `reconcile_name_mismatch`). What is left here
+/// is the residue: mismatches whose apply failed, so the schema really lags.
+/// Documented same-migration renames (`MIGRATION_NAME_ALIASES`) are excluded.
 pub(crate) fn renumbered_migrations(conn: &Connection) -> Vec<(i64, String, String)> {
-    let mut stmt = match conn.prepare("SELECT version, name FROM _amux_migrations") {
+    let mut stmt = match conn.prepare("SELECT version FROM _amux_migrations") {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = match stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))) {
-        Ok(r) => r,
+    let versions: Vec<i64> = match stmt.query_map([], |r| r.get::<_, i64>(0)) {
+        Ok(r) => r.flatten().collect(),
         Err(_) => return Vec::new(),
     };
     let mut out = Vec::new();
-    for row in rows.flatten() {
-        let (version, recorded) = row;
-        if let Some(m) = MIGRATIONS.iter().find(|m| m.version == version) {
-            if m.name != recorded && !known_name_alias(version, &recorded, m.name) {
-                out.push((version, recorded, m.name.to_string()));
-            }
+    for version in versions {
+        let Some(m) = MIGRATIONS.iter().find(|m| m.version == version) else { continue };
+        let Ok(Some(row)) = recorded_row(conn, version) else { continue };
+        // A mismatch `apply_all` reconciled (ran the registered migration) is no
+        // longer a lagging schema; one whose apply failed still is.
+        if mismatch_action(m, &row) == MismatchAction::Apply {
+            out.push((version, row.name, m.name.to_string()));
         }
     }
     out.sort();
@@ -1327,10 +1481,10 @@ fn report_renumbered_migrations(conn: &Connection) {
             migration_version = version,
             recorded_name = %recorded,
             registered_name = %registered,
+            verdict = "migration_name_mismatch_unreconciled",
             "migration version {version} was applied as {recorded:?} but is now registered as \
-             {registered:?}. The runner skips a version it has already applied WITHOUT reading \
-             the name, so if these are different migrations rather than one renumbered, this \
-             database has silently skipped {registered:?} and its schema lags the code."
+             {registered:?}, and applying {registered:?} over it failed (see \
+             migration_name_mismatch_apply_failed above). This database's schema lags the code."
         );
     }
     tracing::warn!(
@@ -1608,62 +1762,223 @@ mod tests {
         );
     }
 
-    /// AF-353: a version whose recorded name is no longer the registered one
-    /// must be REPORTED, and a clean database must stay quiet.
-    ///
-    /// Both directions on purpose. A detector that reported every version would
-    /// pass the first half of this alone while being useless, and one that
-    /// reported nothing would pass the second half alone while being the bug.
-    ///
-    /// It drives the SHIPPED query against a real database built through
-    /// `apply_all`, not a hand-made fixture. The defect being guarded lives in
-    /// the disagreement between what a database RECORDED and what the code now
-    /// registers, so a fixture that writes both sides itself would be asserting
-    /// against its own construction.
+    /// The nine tables that used to be created at their point of use (audit
+    /// 2026-11-26 P1). Each must come from a migration now.
+    const POINT_OF_USE_TABLES: &[&str] = &[
+        "task_attempts",
+        "task_episodes",
+        "card_budgets",
+        "group_config",
+        "file_visits",
+        "nav_visits",
+        "nav_picks",
+        "event_dispatch_cursor",
+        "_amux_brex_spend",
+    ];
+
+    fn table_exists(conn: &Connection, table: &str) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
+    #[derive(Clone)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    struct CapturedLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedLogWriter(self.0.clone())
+        }
+    }
+    impl std::io::Write for CapturedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    fn with_captured_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(CapturedLogs(buf.clone()))
+            .finish();
+        let _scope = tracing::subscriber::set_default(subscriber);
+        let result = f();
+        let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        (result, logs)
+    }
+
     #[test]
-    fn a_version_applied_under_a_different_name_is_reported() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        apply_all(&mut conn).unwrap();
+    fn every_point_of_use_table_exists_after_a_fresh_migrate() {
+        let conn = test_memdb();
+        let missing: Vec<&str> =
+            POINT_OF_USE_TABLES.iter().copied().filter(|t| !table_exists(&conn, t)).collect();
+        assert!(missing.is_empty(), "tables a fresh migrate did not create: {missing:?}");
+        // The indexes the point-of-use DDL carried came with them.
+        for idx in [
+            "idx_task_attempts_card_attempt",
+            "idx_task_attempts_running",
+            "idx_task_attempts_worker",
+            "idx_task_episodes_card",
+            "idx_task_episodes_worker",
+            "idx_task_episodes_open",
+            "idx_brex_spend_card_time",
+        ] {
+            assert!(
+                conn.query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [idx],
+                    |_| Ok(())
+                )
+                .is_ok(),
+                "index {idx} missing after a fresh migrate"
+            );
+        }
+    }
 
-        // THE CONTROL, and it is load-bearing: a database the code agrees with
-        // reports nothing. Without it, `renumbered_migrations` returning
-        // everything would look like a pass below.
-        assert_eq!(
-            renumbered_migrations(&conn),
-            Vec::new(),
-            "a database in step with MIGRATIONS must report no renumbering"
+    /// A `CREATE TABLE IF NOT EXISTS` for one of the moved tables anywhere in
+    /// `src/` reintroduces the workaround (and a second spelling of the DDL
+    /// that drifts from the migration). Migrations live in `migrations/`.
+    #[test]
+    fn point_of_use_tables_are_created_only_in_migrations() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        walk(&root.join("tests"), &mut files);
+        // The control: the scan must actually see source, or it passes vacuously.
+        assert!(files.len() > 50, "scanned only {} .rs files; wrong root", files.len());
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_uppercase();
+        let mut offenders = Vec::new();
+        for f in &files {
+            let text = squash(&std::fs::read_to_string(f).unwrap());
+            for t in POINT_OF_USE_TABLES {
+                // api/brex.rs is owner-tier (review-tiers.txt), so its lazy
+                // CREATE is removed in its own commit for the owner's approval.
+                // Until then 0176 creates the table and this CREATE is a no-op.
+                if *t == "_amux_brex_spend" && f.ends_with("api/brex.rs") {
+                    continue;
+                }
+                // Built at runtime so this test's own source does not match.
+                let needle = format!("{} {}", ["CREATE TABLE IF NOT", "EXISTS"].join(" "), t.to_ascii_uppercase());
+                let hit = text.match_indices(&needle).any(|(i, _)| {
+                    // whole-identifier match: `nav_visits` must not hit `nav_visits_x`
+                    text[i + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                });
+                if hit {
+                    offenders.push(format!("{}: {t}", f.strip_prefix(root).unwrap().display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "point-of-use CREATE TABLE for a migrated table (put schema in a numbered \
+             migration; the runner no longer skips a mismatched version): {offenders:?}"
         );
+    }
 
-        // Now the real shape: version 1 was applied under the name it had
-        // before someone renumbered it. This is what every database that ran
-        // the pre-renumber code looks like, and the runner cannot tell it from
-        // the case where version 1 now means a DIFFERENT migration entirely.
-        let registered = MIGRATIONS[0].name;
-        conn.execute(
-            "UPDATE _amux_migrations SET name = ?1 WHERE version = ?2",
-            rusqlite::params!["0001_under_its_old_name", MIGRATIONS[0].version],
+    /// AF-353 / audit P1: a version whose recorded name is not the registered
+    /// one is DETECTED (logged with `migration_name_mismatch`), the registered
+    /// migration RUNS, and its tables exist afterwards. A clean database stays
+    /// quiet.
+    #[test]
+    fn a_name_mismatch_on_an_applied_version_is_logged_and_applied() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let ((), quiet) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        // THE CONTROL: a database in step with MIGRATIONS logs no mismatch.
+        assert!(!quiet.contains("migration_name_mismatch"), "clean db logged a mismatch: {quiet}");
+        assert_eq!(renumbered_migrations(&conn), Vec::new());
+
+        // The AMUX-4533 shape: a dirty build consumed 0176's number for some
+        // other migration, so 0176's tables were never made.
+        let m = MIGRATIONS.iter().find(|m| m.name == "0176_point_of_use_tables").unwrap();
+        conn.execute_batch(
+            "DROP TABLE task_attempts; DROP TABLE task_episodes; DROP TABLE card_budgets;
+             DROP TABLE file_visits; DROP TABLE nav_visits; DROP TABLE nav_picks;
+             DROP TABLE _amux_brex_spend;",
         )
         .unwrap();
+        conn.execute(
+            "UPDATE _amux_migrations SET name = '0176_some_dirty_build', checksum = NULL WHERE version = ?1",
+            [m.version],
+        )
+        .unwrap();
+        assert_eq!(renumbered_migrations(&conn).len(), 1, "detected before the boot");
+        assert_eq!(pending(&conn), vec![m.name], "the live-DB guard must count it as pending");
 
-        let found = renumbered_migrations(&conn);
-        assert_eq!(
-            found.len(),
-            1,
-            "expected exactly the one mismatch: {found:?}"
-        );
-        assert_eq!(found[0].0, MIGRATIONS[0].version);
-        assert_eq!(found[0].1, "0001_under_its_old_name", "the RECORDED name");
-        assert_eq!(found[0].2, registered, "the REGISTERED name");
+        let ((), logs) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(logs.contains("migration_name_mismatch"), "no mismatch WARN: {logs}");
+        assert!(logs.contains("0176_some_dirty_build") && logs.contains(m.name), "{logs}");
+        assert!(logs.contains("migration_name_mismatch_applied"), "{logs}");
+        for t in POINT_OF_USE_TABLES {
+            assert!(table_exists(&conn, t), "{t} must exist after the mismatch was reconciled");
+        }
+        let (name, reconciled): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, reconciled_name FROM _amux_migrations WHERE version = ?1",
+                [m.version],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "0176_some_dirty_build", "the recorded name is kept as evidence");
+        assert_eq!(reconciled.as_deref(), Some(m.name));
+        assert!(renumbered_migrations(&conn).is_empty(), "reconciled is no longer lagging");
+        assert!(pending(&conn).is_empty());
 
-        // And it survives a re-run. `apply_all` skips already-applied versions,
-        // so the mismatch must still be visible on the next boot rather than
-        // being a one-shot only the very first startup could have caught.
-        apply_all(&mut conn).unwrap();
-        assert_eq!(
-            renumbered_migrations(&conn).len(),
-            1,
-            "the mismatch must still be reported on a later boot"
-        );
+        // Once: a later boot neither re-runs nor re-logs it.
+        let ((), again) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(!again.contains("migration_name_mismatch"), "re-logged on a later boot: {again}");
+    }
+
+    /// A mismatched migration that CANNOT run against this database's shape
+    /// must not brick the boot: rolled back whole, logged, still reported, and
+    /// still pending for the live-DB guard.
+    #[test]
+    fn a_name_mismatch_whose_migration_fails_does_not_brick_the_boot() {
+        let mut conn = test_memdb();
+        // 0053 is a plain ALTER ADD COLUMN; on a db that already has the column
+        // it fails with "duplicate column", which is the failing shape.
+        let m = MIGRATIONS.iter().find(|m| m.name.contains("telegram_relay_dedup")).unwrap();
+        conn.execute(
+            "UPDATE _amux_migrations SET name = 'other_branch', checksum = NULL WHERE version = ?1",
+            [m.version],
+        )
+        .unwrap();
+        let (res, logs) = with_captured_logs(|| apply_all(&mut conn));
+        res.expect("a failed reconcile must not fail the boot");
+        assert!(logs.contains("migration_name_mismatch_apply_failed"), "{logs}");
+        assert!(logs.contains("migration_name_mismatch_unreconciled"), "{logs}");
+        let reconciled: Option<String> = conn
+            .query_row(
+                "SELECT reconciled_name FROM _amux_migrations WHERE version = ?1",
+                [m.version],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reconciled, None, "a failed apply must not be recorded as reconciled");
+        assert_eq!(renumbered_migrations(&conn).len(), 1);
+        assert_eq!(pending(&conn), vec![m.name]);
     }
 
     #[test]
@@ -1675,21 +1990,39 @@ mod tests {
             ["0029_regenerable_samples"],
         )
         .unwrap();
-
+        let m35 = MIGRATIONS.iter().find(|m| m.version == 35).unwrap();
+        let row = |name: &str| RecordedRow { name: name.into(), reconciled_name: None, checksum: None };
         assert_eq!(
-            version_collision_warning(35, "0035_regenerable_samples", "0029_regenerable_samples",),
-            None,
+            mismatch_action(m35, &row("0029_regenerable_samples")),
+            MismatchAction::AlreadyApplied,
             "the documented rename performed the same schema work"
         );
         assert!(
             renumbered_migrations(&conn).is_empty(),
             "known aliases must not keep every healthy startup in a false error state"
         );
-
-        assert!(
-            version_collision_warning(35, "0035_regenerable_samples", "0035_unrelated").is_some(),
+        assert_eq!(
+            mismatch_action(m35, &row("0035_unrelated")),
+            MismatchAction::Apply,
             "only the exact documented alias may be suppressed"
         );
+        // And a healthy boot over the alias does not re-run 0035.
+        let ((), logs) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(!logs.contains("migration_name_mismatch"), "{logs}");
+    }
+
+    #[test]
+    fn an_edited_applied_migration_is_logged_once() {
+        let mut conn = test_memdb();
+        conn.execute("UPDATE _amux_migrations SET checksum = 'stale' WHERE version = 1", []).unwrap();
+        let ((), logs) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(logs.contains("migration_checksum_changed"), "{logs}");
+        let ((), again) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(!again.contains("migration_checksum_changed"), "{again}");
+        let missing: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_migrations WHERE checksum IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(missing, 0, "every applied migration records a checksum");
     }
 
     /// A version RECORDED but no longer registered at all is NOT a renumber and
@@ -1737,18 +2070,15 @@ mod tests {
     /// The 2026-08-30 incident, reproduced directly: a version number this
     /// binary expects to mean one thing is already recorded in the DB under
     /// a completely different migration's name (an unrelated branch's
-    /// migration having consumed the same number first). `apply_all` must
-    /// neither error nor silently pretend everything is fine — it skips the
-    /// colliding version (its SQL genuinely cannot run there) and leaves
-    /// every OTHER migration to apply normally.
+    /// migration having consumed the same number first). It used to be
+    /// skipped forever; now `apply_all` runs the registered migration over it,
+    /// keeps the colliding row's name as evidence, and every OTHER migration
+    /// still applies normally.
     #[test]
-    fn a_version_recorded_under_a_different_name_is_skipped_not_reapplied_or_fatal() {
+    fn a_version_recorded_under_a_different_name_is_applied_not_skipped_or_fatal() {
         // Collide a NON-foundational migration (this crate's own telegram
         // relay dedup ALTER TABLE, found by name rather than a hardcoded
-        // number so this survives a future renumbering) — colliding version
-        // 1 would fake away the baseline schema every other migration here
-        // depends on, and this test wants to isolate ONE collision, not
-        // cascade-fail the whole suite.
+        // number so this survives a future renumbering).
         let target = super::MIGRATIONS
             .iter()
             .find(|m| m.name.contains("telegram_relay_dedup"))
@@ -1766,36 +2096,22 @@ mod tests {
         ))
         .unwrap();
 
-        // Must not error, must not touch the colliding row, and every
-        // migration whose version was NOT already taken still applies.
         apply_all(&mut conn).unwrap();
 
-        let (name, duration): (String, Option<i64>) = conn
+        let (name, reconciled): (String, Option<String>) = conn
             .query_row(
-                "SELECT name, duration_ms FROM _amux_migrations WHERE version = ?1",
+                "SELECT name, reconciled_name FROM _amux_migrations WHERE version = ?1",
                 [target],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(
-            name, "some_other_branchs_migration",
-            "the colliding row must be left exactly as found"
-        );
-        assert_eq!(
-            duration,
-            Some(1),
-            "not re-timed — it was never actually re-run"
-        );
+        assert_eq!(name, "some_other_branchs_migration", "the recorded name is kept as evidence");
+        assert_eq!(reconciled.as_deref(), Some("0053_telegram_relay_dedup"));
 
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
             .unwrap();
-        // Every real migration except the one whose version collided.
-        assert_eq!(
-            n as usize,
-            super::MIGRATIONS.len(),
-            "every non-colliding migration still applied"
-        );
+        assert_eq!(n as usize, super::MIGRATIONS.len(), "every migration has a row");
 
         let has_col: bool = conn
             .query_row("SELECT COUNT(*) FROM pragma_table_info('telegram_mappings') WHERE name = 'last_relayed_hash'", [], |r| {
@@ -1803,24 +2119,11 @@ mod tests {
             })
             .map(|n| n > 0)
             .unwrap();
-        assert!(
-            !has_col,
-            "the colliding migration's actual SQL must never have run"
-        );
-    }
-
-    #[test]
-    fn version_collision_warning_is_silent_on_a_genuine_rerun() {
-        assert_eq!(version_collision_warning(5, "0005_foo", "0005_foo"), None);
-    }
-
-    #[test]
-    fn version_collision_warning_names_both_sides_on_a_real_collision() {
-        let msg = version_collision_warning(38, "0038_telegram_relay_dedup", "0038_telegram")
-            .expect("names differ, must warn");
-        assert!(msg.contains("38"), "{msg:?}");
-        assert!(msg.contains("0038_telegram_relay_dedup"), "{msg:?}");
-        assert!(msg.contains("0038_telegram"), "{msg:?}");
+        assert!(has_col, "the colliding migration's SQL must have run");
+        // And not twice: a second boot over the plain ALTER would fail with
+        // "duplicate column" and log apply_failed.
+        let ((), logs) = with_captured_logs(|| apply_all(&mut conn).unwrap());
+        assert!(!logs.contains("migration_name_mismatch"), "{logs}");
     }
 
     /// AMUX-3609's backfill, driven through the SHIPPED migration body rather

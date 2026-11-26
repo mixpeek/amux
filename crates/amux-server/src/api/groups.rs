@@ -372,15 +372,6 @@ async fn list_groups(
 // GET/PATCH /api/groups/<name>/config (py:66119-66152)
 // ---------------------------------------------------------------------------
 
-const GROUP_CONFIG_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS group_config (
-    name       TEXT PRIMARY KEY,
-    department TEXT NOT NULL DEFAULT '',
-    goal       TEXT NOT NULL DEFAULT '',
-    kpis       TEXT NOT NULL DEFAULT '[]',
-    human_cost INTEGER NOT NULL DEFAULT 0,
-    updated    INTEGER NOT NULL DEFAULT 0
-)";
-
 /// A body field bound the way Python's sqlite3 binds `body.get(k, default)`:
 /// absent → the default; explicit null → SQL NULL (which then FAILS the
 /// NOT NULL constraint exactly as it does on the Python origin — see the
@@ -471,7 +462,6 @@ async fn group_config(state: AppState, name: String, req: Request) -> Response {
             let result = state
                 .store
                 .write_async(move |conn| {
-                    conn.execute(GROUP_CONFIG_SCHEMA, [])?;
                     // SQL identical to Python's upsert (py:66137-66146),
                     // dead COALESCE arms included — see the module doc for
                     // why NULL can never reach them.
