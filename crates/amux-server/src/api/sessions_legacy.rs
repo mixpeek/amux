@@ -4955,12 +4955,9 @@ fn chars_truncate(s: &str, n: usize) -> String {
 /// rather than real content: a status-bar hint ("bypass permissions",
 /// "plan mode"), a box-drawing/separator row, or too little alphanumeric
 /// content to be a genuine line of text. Extracted from `preview_of`'s
-/// "intelligible" pass (2026-08-30) so `telegram_relay`'s reply-extraction
-/// can share the SAME answer to "is this real content or terminal
-/// furniture" instead of drifting its own copy — both read the identical
-/// raw pane capture (`tmux capture-pane -e`) and hit the identical noise:
-/// the bottom status bar, box-drawing dividers, and the like are exactly
-/// what leaked into a Telegram relay before this existed (found live,
+/// "intelligible" pass (2026-08-30), when a Telegram screen relay (since
+/// deleted) shared it: the bottom status bar and box-drawing dividers are
+/// what leaked into that relay before this existed (found live,
 /// `@frontstage status` producing "[38;5;231m...bypass permissions on..."
 /// and walls of "─" instead of the model's actual reply).
 pub(crate) fn is_chrome_line(cl: &str) -> bool {

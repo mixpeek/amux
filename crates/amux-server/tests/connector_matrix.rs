@@ -719,34 +719,34 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
         .1["bot_token_set"],
         true
     );
-    assert_eq!(
-        rig.post(
-            "/api/telegram/mappings",
-            json!({"chat_id":-100,"session":"matrix-worker","chat_type":"group"})
-        )
-        .await
-        .0,
-        409,
-        "group requires a private link"
-    );
+    // A group /link before any private link is refused; the private one is
+    // a chat bridge link, read back from the bridge.
     fixture.lock().unwrap().updates = vec![
+        json!({"update_id":40,"message":{"chat":{"id":-100,"type":"group"},"text":"/link matrix-worker","from":{"username":"fixture"}}}),
         json!({"update_id":41,"message":{"chat":{"id":100,"type":"private"},"text":"/link matrix-worker","from":{"username":"fixture"}}}),
     ];
     assert_eq!(rig.post("/matrix/poll", json!({})).await.0, 200);
-    let mappings = rig
-        .call(
-            reqwest::Method::GET,
-            "/api/telegram/mappings",
-            json!({}),
-            false,
-        )
+    let links = rig
+        .call(reqwest::Method::GET, "/api/bridge", json!({}), false)
         .await
-        .1;
-    assert_eq!(mappings["mappings"][0]["session"], "matrix-worker");
+        .1["links"]
+        .clone();
+    let telegram: Vec<(String, String)> = links
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["platform"] == "telegram")
+        .map(|l| (l["conversation"].as_str().unwrap().to_string(), l["conv"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(
+        telegram,
+        vec![("100".to_string(), "w:matrix-worker".to_string())],
+        "group requires a private link; the private /link is a bridge link"
+    );
     assert_eq!(
         rig.post(
-            "/api/telegram/mappings",
-            json!({"chat_id":-100,"session":"matrix-worker","chat_type":"group"})
+            "/api/bridge/links",
+            json!({"platform":"telegram","conversation":"-100","target":"matrix-worker","is_group":true})
         )
         .await
         .0,
@@ -1127,13 +1127,13 @@ async fn every_builtin_connector_lifecycle_over_http_and_sigkill() {
     assert_eq!(
         rig.call(
             reqwest::Method::DELETE,
-            "/api/telegram/mappings/100",
+            "/api/bridge/links/telegram/100",
             json!({}),
             false
         )
         .await
         .0,
-        204
+        200
     );
     assert_eq!(
         rig.post(

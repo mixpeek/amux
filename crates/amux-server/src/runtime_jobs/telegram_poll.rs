@@ -6,27 +6,26 @@
 //! (works from anywhere with outbound HTTPS, which this box already has for
 //! every other connector). MVP takes the polling path; a webhook mode can be
 //! added later behind whatever tunnel/reverse-proxy setup exists then — the
-//! `telegram_poll_state` checkpoint and the mapping table underneath don't
-//! change either way.
+//! `telegram_poll_state` checkpoint and the chat links underneath (the
+//! bridge's `bridge_links`, read through `db::telegram`) don't change either
+//! way.
 //!
 //! # Message flow
 //!
 //! - `/link <session>` from a chat that has never linked: validate the
-//!   session exists (`session_verbs::all_lane_names`), store the mapping,
-//!   confirm. Re-linking (chat already mapped) just repoints it — no
+//!   session exists (`session_verbs::all_lane_names`), save the bridge link
+//!   (`bridge::save_link`), confirm. Re-linking (chat already mapped) just repoints it — no
 //!   separate unlink-then-link dance for the common "I meant a different
 //!   session" case.
-//! - Any other text from a LINKED chat: delivered into the mapped session
-//!   via `session_verbs::send_text`, stamped with the sender so the session
-//!   can tell a Telegram message from anything else arriving in its pane
-//!   (same reasoning as the `[amux-origin: ...]` stamp on cross-session
-//!   sends — attribution travels with the text, not out-of-band).
+//! - Any other text from a LINKED chat: posted in the linked worker's thread
+//!   through the bridge (`bridge::deliver_to_worker`), which delivers it, and
+//!   sends the worker's answer back to the chat.
 //! - Any other text from an UNLINKED chat: a one-line nudge back to
 //!   `/link <session>`, never silently dropped (ethos rule 3: the honest
 //!   refusal beats the quiet nothing) — UNLESS the chat is a group, in which
 //!   case it stays silent (see below).
 //!
-//! # Groups (migration 0054)
+//! # Groups
 //!
 //! Telegram hands a `chat_id` to a group exactly like a private chat, so the
 //! flow above technically already worked for one — with no gate and no
@@ -45,11 +44,9 @@
 //!
 //! # Outbound (session -> Telegram)
 //!
-//! `POST /api/telegram/send` (api/telegram.rs) is the outbound path for now —
-//! a session or a hook calls it explicitly. There is no automatic "every
-//! session message also goes to Telegram" wiring yet; that's a notification-
-//! routing decision (which events, which chats) that belongs to whoever is
-//! using this, not a default this job should assume (ethos rule 8).
+//! The bridge's outbound loop sends each post in the linked worker's thread
+//! back to the chat. `POST /api/telegram/send` (api/telegram.rs) is the
+//! explicit send a session or a hook makes on its own.
 
 use super::registry;
 use crate::api::session_verbs;
@@ -282,11 +279,6 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
         .unwrap_or("")
         .trim()
         .to_string();
-    let username = msg
-        .get("from")
-        .and_then(|f| f.get("username"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
     if text.is_empty() {
         return;
     }
@@ -310,23 +302,15 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
             tracing::warn!(chat_id, sender, verdict = "telegram_link_unverified_owner", measured = true, n_considered = 1,
                 "telegram_poll: a chat was linked with no owner id listed, so anyone who finds the bot can do this; set AMUX_BRIDGE_OWNERS=telegram:<your id>");
         }
-        link_chat(
-            client,
-            state,
-            chat_id,
-            session,
-            username.as_deref(),
-            chat_type,
-        )
-        .await;
+        link_chat(client, state, chat_id, session, chat_type).await;
         return;
     }
 
-    let mapping = {
+    let link = {
         let Ok(conn) = state.store.read() else { return };
         tg_db::by_chat(&conn, chat_id).ok().flatten()
     };
-    let Some(mapping) = mapping else {
+    let Some(link) = link else {
         // A linked GROUP is common ground (everyone in it can see this), but
         // an UNLINKED group replying "not linked, send /link" to every
         // stray message from every member would be its own noise problem —
@@ -348,19 +332,6 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
         return;
     };
 
-    let _ = state
-        .store
-        .write_async(move |conn| {
-            tg_db::touch_last_message(conn, chat_id)?;
-            Ok(crate::db::WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
-        .await;
-
-    let who = username.as_deref().unwrap_or("telegram");
-
     // Check for @lane mention at start of message: "@session_name remaining text"
     // If present, route to that lane; otherwise use the mapped session.
     let (target_session, message_text) = if text.starts_with('@') {
@@ -371,7 +342,7 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
             // Valid lane mention found
             let remaining = if parts.len() > 1 { parts[1] } else { "" };
             (mention.to_string(), remaining.to_string())
-        } else if mapping.is_group() {
+        } else if link.is_group {
             // A GROUP typo gets no fallback delivery and no reply — unlike
             // the private-chat arm below, guessing "deliver to the default
             // anyway" here means every mistyped @mention from anyone in the
@@ -403,17 +374,17 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
                 "telegram_poll: unknown lane mention '@{}' from chat {}, falling back to default session '{}'",
                 mention,
                 chat_id,
-                mapping.session
+                link.session
             );
             let reply = format!(
                 "Note: '@{mention}' isn't a known lane — delivered to '{}' instead. Known lanes: {}",
-                mapping.session,
+                link.session,
                 known.join(", ")
             );
             send_reply(client, chat_id, &reply).await;
-            (mapping.session.clone(), text.to_string())
+            (link.session.clone(), text.to_string())
         }
-    } else if mapping.is_group() {
+    } else if link.is_group {
         // GROUP, no @mention at all: a linked group must not forward every
         // message from every member, only ones deliberately addressed to a
         // lane. Silent, not a reply: a group's ordinary chatter is not a
@@ -421,34 +392,13 @@ async fn handle_update(client: &dyn HttpTransport, state: &AppState, update: &Va
         record_group_ignored();
         return;
     } else {
-        (mapping.session.clone(), text.to_string())
+        (link.session.clone(), text.to_string())
     };
-
-    // Stamp which session THIS message actually went to — default or @lane —
-    // BEFORE sending, so the relay job (which polls every 30s, independently
-    // of this handler) is never caught watching the previous message's pane.
-    // Without this, a reply typed by a lane reached only via @-mention sits
-    // in that lane's pane forever: the relay only ever watched the /link'd
-    // default (found 2026-08-30, `@frontstage status` producing no Telegram
-    // reply despite frontstage actually running the command).
-    {
-        let target_session = target_session.clone();
-        let _ = state
-            .store
-            .write_async(move |conn| {
-                tg_db::set_routed_session(conn, chat_id, &target_session)?;
-                Ok(crate::db::WriteOutcome {
-                    applied: true,
-                    events: vec![],
-                })
-            })
-            .await;
-    }
 
     // Through the chat bridge (bridge/mod.rs): a durable message with a reply
     // ref, so the worker's answer comes back by the bridge's outbound loop
-    // rather than by reading the worker's screen.
-    let _ = who;
+    // rather than by reading the worker's screen. An @mention moves the
+    // chat's answers to that worker and keeps its /link default.
     let mut inbound = crate::bridge::adapters::telegram_parse(update).unwrap_or_default();
     inbound.text = message_text.clone();
     let ok = crate::bridge::deliver_to_worker(state, inbound, &target_session).await;
@@ -476,7 +426,6 @@ async fn link_chat(
     state: &AppState,
     chat_id: i64,
     session: &str,
-    username: Option<&str>,
     chat_type: &str,
 ) {
     if session.is_empty() {
@@ -521,26 +470,15 @@ async fn link_chat(
             return;
         }
     }
-    let session_owned = session.to_string();
-    let username_owned = username.map(str::to_string);
-    let chat_type_owned = chat_type.to_string();
-    let stored = state
-        .store
-        .write_async(move |conn| {
-            tg_db::upsert(
-                conn,
-                chat_id,
-                &session_owned,
-                username_owned.as_deref(),
-                &chat_type_owned,
-            )?;
-            Ok(crate::db::WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
-        .await
-        .map_err(|e| e.to_string());
+    let stored = crate::bridge::save_link(
+        state,
+        tg_db::PLATFORM,
+        &chat_id.to_string(),
+        is_group,
+        &format!("w:{session}"),
+        crate::bridge::TELEGRAM_POLL_LINK,
+    )
+    .await;
     match stored {
         Ok(_) if is_group => {
             send_reply(
@@ -606,9 +544,9 @@ fn strip_html_tags(s: &str) -> String {
         .replace("&#39;", "'")
 }
 
-/// `POST {base}/sendMessage`. `pub(crate)` so `api::telegram`'s
-/// `POST /api/telegram/send` can reuse the exact same call rather than a
-/// second HTTP-shape spelling of it (D6).
+/// `POST {base}/sendMessage`, through the caller's transport. `pub(crate)` so
+/// `api::telegram`'s `POST /api/telegram/send` reuses the exact same call
+/// rather than a second HTTP-shape spelling of it (D6).
 ///
 /// `parse_mode: Some("HTML")` lets a caller send Telegram's HTML-subset
 /// markup (core.telegram.org/bots/api#formatting-options — bold/italic/
@@ -621,15 +559,6 @@ fn strip_html_tags(s: &str) -> String {
 /// dropping the message: a reply with visible `<b>` tags, or no reply at
 /// all, is worse than one that lost its formatting but still arrived
 /// (ethos rule 3 — the honest degradation, not a silent loss).
-pub(crate) async fn send_message(
-    token: &str,
-    chat_id: i64,
-    text: &str,
-    parse_mode: Option<&str>,
-) -> Result<(), String> {
-    send_message_with(&ReqwestTransport::with_timeout(Duration::from_secs(15)), token, chat_id, text, parse_mode).await
-}
-
 pub(crate) async fn send_message_with(
     client: &dyn HttpTransport,
     token: &str,

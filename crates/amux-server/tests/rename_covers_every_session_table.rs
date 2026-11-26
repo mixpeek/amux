@@ -10,7 +10,7 @@
 //! completed steps. Measured on the live database while renaming
 //! `leadership-coaching`: 12 of 21 session-keyed tables were uncovered,
 //! including `token_ledger` (the lane's entire cost history) and
-//! `telegram_mappings` (chat routing, so replies would address a name that no
+//! Telegram's chat-routing table (so replies would address a name that no
 //! longer resolves).
 //!
 //! A LIST NOBODY IS FORCED TO UPDATE IS THE BUG, not the symptom, which is why

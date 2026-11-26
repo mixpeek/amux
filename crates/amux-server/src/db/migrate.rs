@@ -949,6 +949,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0177_drop_amux_messages",
         sql: include_str!("../../migrations/0177_drop_amux_messages.sql"),
     },
+    Migration {
+        version: 178,
+        name: "0178_telegram_links_in_bridge",
+        sql: include_str!("../../migrations/0178_telegram_links_in_bridge.sql"),
+    },
 ];
 
 /// The migration that drops `_amux_messages`. Before it runs,
@@ -2234,12 +2239,12 @@ mod tests {
     /// still applies normally.
     #[test]
     fn a_version_recorded_under_a_different_name_is_applied_not_skipped_or_fatal() {
-        // Collide a NON-foundational migration (this crate's own telegram
-        // relay dedup ALTER TABLE, found by name rather than a hardcoded
-        // number so this survives a future renumbering).
+        // Collide a NON-foundational migration (a one-column ALTER TABLE on a
+        // table that stays, found by name rather than a hardcoded number so
+        // this survives a future renumbering).
         let target = super::MIGRATIONS
             .iter()
-            .find(|m| m.name.contains("telegram_relay_dedup"))
+            .find(|m| m.name.contains("schedule_critical"))
             .expect("the migration this test collides must still exist")
             .version;
 
@@ -2264,7 +2269,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(name, "some_other_branchs_migration", "the recorded name is kept as evidence");
-        assert_eq!(reconciled.as_deref(), Some("0053_telegram_relay_dedup"));
+        assert_eq!(reconciled.as_deref(), Some("0173_schedule_critical"));
 
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM _amux_migrations", [], |r| r.get(0))
@@ -2272,7 +2277,7 @@ mod tests {
         assert_eq!(n as usize, super::MIGRATIONS.len(), "every migration has a row");
 
         let has_col: bool = conn
-            .query_row("SELECT COUNT(*) FROM pragma_table_info('telegram_mappings') WHERE name = 'last_relayed_hash'", [], |r| {
+            .query_row("SELECT COUNT(*) FROM pragma_table_info('schedules') WHERE name = 'critical'", [], |r| {
                 r.get::<_, i64>(0)
             })
             .map(|n| n > 0)
@@ -2282,6 +2287,50 @@ mod tests {
         // "duplicate column" and log apply_failed.
         let ((), logs) = with_captured_logs(|| apply_all(&mut conn).unwrap());
         assert!(!logs.contains("migration_name_mismatch"), "{logs}");
+    }
+
+    /// 0178 folds Telegram's old link table into bridge_links and drops it.
+    /// Seeded on the schema 0177 leaves: one chat the bridge already linked
+    /// (its answers had moved to a mentioned worker), one only the old table
+    /// knew (a supergroup whose last message went to a mentioned worker), and
+    /// a link tagged with the old table's name.
+    #[test]
+    fn telegram_links_move_into_bridge_links_and_the_old_table_is_dropped() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, 177);
+        let old = concat!("telegram", "_mappings");
+        conn.execute_batch(&format!(
+            "INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts) VALUES (40, 'w:x', 'k', 'n', 'b', 0);
+             INSERT INTO {old} (chat_id, session, linked_at, chat_type, last_routed_session)
+               VALUES (111, 'amux', '2026-11-01 00:00:00', 'private', 'other'),
+                      (-222, 'ops', '2026-11-02 00:00:00', 'supergroup', 'sales');
+             INSERT INTO bridge_links (platform, conversation, kind, conv, last_post_id, linked_by, linked_at)
+               VALUES ('telegram', '111', 'dm', 'w:other', 7, '{old}', 5);"
+        ))
+        .unwrap();
+        let m = MIGRATIONS.iter().find(|m| m.version == 178).unwrap();
+        assert_eq!(m.name, "0178_telegram_links_in_bridge");
+        apply_one(&conn, m.sql).unwrap();
+
+        type Row = (String, String, String, Option<String>, i64, String, i64);
+        let rows: Vec<Row> = conn
+            .prepare("SELECT conversation, kind, conv, default_conv, last_post_id, linked_by, linked_at FROM bridge_links WHERE platform='telegram' ORDER BY conversation")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("-222".into(), "group".into(), "w:sales".into(), Some("w:ops".into()), 40, "telegram_poll".into(), 1_793_577_600_000),
+                ("111".into(), "dm".into(), "w:other".into(), Some("w:amux".into()), 7, "telegram_poll".into(), 5),
+            ]
+        );
+        let gone: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1", [old], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gone, 0, "the old table is dropped");
     }
 
     /// AMUX-3609's backfill, driven through the SHIPPED migration body rather

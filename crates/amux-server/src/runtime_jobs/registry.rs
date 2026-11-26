@@ -127,7 +127,6 @@ pub mod ids {
     pub const HEARTBEAT: &str = "heartbeat";
     pub const TAILNET_WATCH: &str = "tailnet-watch";
     pub const TELEGRAM_POLL: &str = "telegram-poll";
-    pub const TELEGRAM_RELAY: &str = "telegram-relay";
     pub const BRIDGE_OUTBOUND: &str = "bridge-outbound";
     pub const BRIDGE_DISCORD: &str = "bridge-discord";
     pub const BRIDGE_WHATSAPP_APP: &str = "bridge-whatsapp-app";
@@ -197,7 +196,6 @@ pub const ALL_IDS: &[&str] = &[
     ids::HEARTBEAT,
     ids::TAILNET_WATCH,
     ids::TELEGRAM_POLL,
-    ids::TELEGRAM_RELAY,
     ids::BRIDGE_OUTBOUND,
     ids::BRIDGE_DISCORD,
     ids::BRIDGE_WHATSAPP_APP,
@@ -660,18 +658,6 @@ pub const CATALOG: &[Doc] = &[
             // The loop remains spawned and instrumented while idle, so an
             // absent connector is not the same state as a disabled job.
             off: None,
-        }],
-        pref: None,
-        detail: Some("/api/telegram/status"),
-    },
-    Doc {
-        id: ids::TELEGRAM_RELAY,
-        name: "Telegram relay",
-        purpose: "Retired by the chat bridge, which sends replies from the worker's transcript; with AMUX_TELEGRAM_SCREEN_RELAY=1 it reads linked workers' screens and relays new text, the old way.",
-        env: &[EnvControl {
-            var: "TELEGRAM_BOT_TOKEN",
-            effect: "unset = relay idles; set = relays enabled",
-            off: Some(""),
         }],
         pref: None,
         detail: Some("/api/telegram/status"),

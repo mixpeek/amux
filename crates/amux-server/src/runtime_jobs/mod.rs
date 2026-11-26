@@ -115,7 +115,6 @@ pub mod trace_archive;
 pub mod ledger_checkpoint;
 pub mod tailnet_watch;
 pub mod telegram_poll;
-pub mod telegram_relay;
 pub mod token_ledger;
 pub mod tunnel;
 pub mod worker_resources;

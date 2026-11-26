@@ -274,7 +274,7 @@ const REGISTRY: &[Provider] = &[
         // `runtime_jobs::telegram_poll` long-poll loop (no public endpoint
         // needed, unlike a webhook) picks it up on the next server restart.
         // Chats link themselves to a session by sending `/link <session>` to
-        // the bot; `/api/telegram/mappings` is the operator-side view.
+        // the bot; `GET /api/bridge` lists the links.
         setup_note: "Message @BotFather on Telegram, /newbot, paste the token it gives you. No webhook/public URL needed — amux polls. After saving, amux discovers the token within five seconds. Send /link <session> to the bot from Telegram.",
         docs: "https://core.telegram.org/bots#how-do-i-create-a-bot",
         test_url: "",

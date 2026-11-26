@@ -4040,7 +4040,7 @@ pub enum RenameDisposition {
 /// rows just stopped being addressable. Measured 2026-09-02 while renaming
 /// `leadership-coaching`: 12 of 21 session-keyed tables were uncovered,
 /// including `token_ledger` (the lane's whole cost history) and
-/// `telegram_mappings` (chat routing, so messages would address a dead name).
+/// Telegram's chat links (chat routing, so messages would address a dead name).
 ///
 /// `tests/rename_covers_every_session_table.rs` enumerates the schema BUILT FROM
 /// MIGRATIONS and fails on any session-name field missing here, so the next one
@@ -4073,11 +4073,6 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("skill_usage", RenameDisposition::Migrate),
     ("tasks", RenameDisposition::Migrate),
     ("task_windows", RenameDisposition::Migrate),
-    ("telegram_mappings", RenameDisposition::Migrate),
-    (
-        "telegram_mappings.last_routed_session",
-        RenameDisposition::Migrate,
-    ),
     ("mdai_runs", RenameDisposition::Migrate),
     ("board_drive_nudge_state", RenameDisposition::Migrate),
     // The per-card budget is live state, not history: it records how many
@@ -4222,9 +4217,15 @@ pub const RENAME_MIGRATIONS: [(&str, &str); 12] = [
         "board_overlap_callbacks.target_session",
         "UPDATE board_overlap_callbacks SET target_session=?1 WHERE target_session=?2",
     ),
+    // A chat bridge link to a worker's thread (`w:<worker>`), in `conv` or
+    // its /link default `default_conv`: chat routing, so it follows the name.
+    // Not in SESSION_SCOPED_FIELDS, which lists columns holding a bare name.
     (
-        "telegram_mappings.last_routed_session",
-        "UPDATE telegram_mappings SET last_routed_session=?1 WHERE last_routed_session=?2",
+        "bridge_links.conv",
+        "UPDATE bridge_links
+            SET conv = CASE WHEN conv = 'w:' || ?2 THEN 'w:' || ?1 ELSE conv END,
+                default_conv = CASE WHEN default_conv = 'w:' || ?2 THEN 'w:' || ?1 ELSE default_conv END
+          WHERE conv = 'w:' || ?2 OR default_conv = 'w:' || ?2",
     ),
 ];
 
@@ -50310,8 +50311,9 @@ with open(sys.argv[1],'ab',buffering=0) as log:
                                 'rn-old', 'rn-old');
                      INSERT INTO schedules (id, title, session, command, created, updated)
                         VALUES ('S-1', 'sched', 'rn-old', 'noop', 1, 1);
-                     INSERT INTO telegram_mappings (chat_id, session, last_routed_session)
-                        VALUES (1, 'rn-old', 'rn-old');
+                     INSERT INTO bridge_links (platform, conversation, kind, conv, default_conv, linked_by, linked_at)
+                        VALUES ('telegram', '1', 'dm', 'w:rn-other', 'w:rn-old', 'telegram_poll', 1),
+                               ('telegram', '2', 'dm', 'w:rn-old', NULL, 'telegram_poll', 1);
                      INSERT INTO board_overlap_coordination
                         (coordination_id, semantic_key, concern, owner_card_id, owner_session,
                          resolution, resolution_note, resolved_by_card_id, resolved_by_session,
@@ -50401,7 +50403,7 @@ with open(sys.argv[1],'ab',buffering=0) as log:
         );
         assert!(steps.contains("db.schedules: 1 row(s)"), "{steps}");
         assert!(
-            steps.contains("db.telegram_mappings.last_routed_session: 1 row(s)"),
+            steps.contains("db.bridge_links.conv: 2 row(s)"),
             "{steps}"
         );
         assert!(steps.contains("db.steering_queue: 1 row(s)"), "{steps}");
@@ -50464,14 +50466,21 @@ with open(sys.argv[1],'ab',buffering=0) as log:
                 resolver, "rn-old",
                 "completed reconciliation attribution is historical"
             );
-            let telegram_route: String = conn
-                .query_row(
-                    "SELECT last_routed_session FROM telegram_mappings WHERE chat_id=1",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(telegram_route, "rn-new");
+            let links: Vec<(String, Option<String>)> = conn
+                .prepare("SELECT conv, default_conv FROM bridge_links WHERE platform='telegram' ORDER BY conversation")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(
+                links,
+                vec![
+                    ("w:rn-other".to_string(), Some("w:rn-new".to_string())),
+                    ("w:rn-new".to_string(), None),
+                ],
+                "a chat link follows the rename in conv and in its /link default, and leaves another worker's alone"
+            );
             // Journal: started + completed events both present (rule 4).
             let n: i64 = conn
                 .query_row(

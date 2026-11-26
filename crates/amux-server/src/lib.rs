@@ -755,9 +755,6 @@ async fn async_main() {
     // The owner's own iMessage thread and email to themselves (bridge/self_chat.rs).
     drop(bridge::imessage::spawn(state.clone()));
     drop(bridge::email::spawn(state.clone()));
-    // Auto-relay: send session replies back to Telegram when linked sessions respond
-    // to Telegram-routed messages. Works for all workers without per-session configuration.
-    drop(runtime_jobs::telegram_relay::spawn(state.clone()));
     // Compaction-generation watch (AMUX-3742): the reason "amux claude performs
     // worse than raw claude" was invisible for months is that nothing counted
     // how many times a lane's conversation had been summarized away.

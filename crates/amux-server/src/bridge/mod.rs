@@ -26,7 +26,7 @@
 //! is the owner's boundary. The owner's own posts from the dashboard go out.
 //!
 //! Verdicts: bridge_inbound_posted, bridge_inbound_duplicate,
-//! bridge_inbound_unlinked, bridge_linked, bridge_link_refused,
+//! bridge_inbound_unlinked, bridge_linked, bridge_link_followed, bridge_link_refused,
 //! bridge_outbound_sent, bridge_outbound_failed, bridge_outbound_held,
 //! bridge_outbound_approved.
 
@@ -141,7 +141,7 @@ pub async fn save_link(state: &AppState, platform: &str, conversation: &str, is_
         let top: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM conversation_posts", [], |r| r.get(0))?;
         conn.execute(
             "INSERT INTO bridge_links (platform, conversation, kind, conv, last_post_id, linked_by, linked_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(platform, conversation) DO UPDATE SET kind=excluded.kind, conv=excluded.conv,
+             ON CONFLICT(platform, conversation) DO UPDATE SET kind=excluded.kind, conv=excluded.conv, default_conv=NULL,
                last_post_id=excluded.last_post_id, linked_by=excluded.linked_by, linked_at=excluded.linked_at",
             params![p, c, kind, k, top, b, now_ms()],
         )?;
@@ -151,6 +151,34 @@ pub async fn save_link(state: &AppState, platform: &str, conversation: &str, is_
         "bridge: a chat was linked to a Messages conversation");
     Ok(())
 }
+
+/// Move where a linked chat's answers go to `conv`, keeping the conversation
+/// it was linked to as its default (`default_conv`). Telegram's poll uses this
+/// for an `@worker` mention: that worker's answer must reach the chat, and
+/// the next message with no mention still goes to the linked worker. Returns
+/// false when the chat has no link to move.
+pub async fn follow_link(state: &AppState, platform: &str, conversation: &str, conv: &str) -> Result<bool, String> {
+    let (p, c, k) = (platform.to_string(), conversation.to_string(), conv.to_string());
+    let moved = state.store.write_async(move |conn| {
+        let top: i64 = conn.query_row("SELECT COALESCE(MAX(id),0) FROM conversation_posts", [], |r| r.get(0))?;
+        let n = conn.execute(
+            "UPDATE bridge_links SET default_conv = COALESCE(default_conv, conv), conv = ?3, last_post_id = ?4
+             WHERE platform = ?1 AND conversation = ?2",
+            params![p, c, k, top],
+        )?;
+        Ok(crate::db::WriteOutcome { applied: n > 0, events: vec![] })
+    }).await.map_err(|e| e.to_string())?;
+    if moved.applied {
+        tracing::info!(platform, conversation, conv, measured = true, n_considered = 1, verdict = "bridge_link_followed",
+            "bridge: a linked chat's answers now come from the worker its last message addressed");
+    }
+    Ok(moved.applied)
+}
+
+/// `linked_by` for a link Telegram's poll made from a `/link` it accepted.
+/// The poll refuses `/link` from anyone but the owner once the owner's
+/// Telegram id is listed, so the bridge treats these as the owner's own.
+pub const TELEGRAM_POLL_LINK: &str = "telegram_poll";
 
 // ---------------------------------------------------------------------------
 // Inbound
@@ -318,12 +346,17 @@ pub async fn deliver_to_worker(state: &AppState, m: Inbound, worker: &str) -> bo
         return true;
     }
     let conv = format!("w:{worker}");
-    // Answers go back to the chat the message came from.
+    // Answers go back to the chat the message came from: an existing link
+    // follows this worker and keeps its default; a chat with none is linked.
     let linked = state.store.read().ok().and_then(|c| conv_of(&c, &m.platform, &m.conversation));
-    if linked.as_deref() != Some(conv.as_str())
-        && save_link(state, &m.platform, &m.conversation, m.is_group, &conv, "telegram_mappings").await.is_err()
-    {
-        return false;
+    if linked.as_deref() != Some(conv.as_str()) {
+        let ok = match linked {
+            Some(_) => follow_link(state, &m.platform, &m.conversation, &conv).await.unwrap_or(false),
+            None => save_link(state, &m.platform, &m.conversation, m.is_group, &conv, TELEGRAM_POLL_LINK).await.is_ok(),
+        };
+        if !ok {
+            return false;
+        }
     }
     matches!(post_inbound(state, &m, is_owner(&m.platform, &m.sender_id), &conv).await, Outcome::Posted { .. })
 }
@@ -397,7 +430,7 @@ fn outside(conn: &rusqlite::Connection, platform: &str, conversation: &str, is_g
     let by: String = conn
         .query_row("SELECT linked_by FROM bridge_links WHERE platform=?1 AND conversation=?2", params![platform, conversation], |r| r.get(0))
         .optional().ok().flatten().unwrap_or_default();
-    let linked_by_owner = by == "telegram_mappings"
+    let linked_by_owner = by == TELEGRAM_POLL_LINK
         || by.split_once(':').is_some_and(|(pl, id)| pl == platform && is_owner(platform, id));
     !linked_by_owner
 }
@@ -942,6 +975,40 @@ mod tests {
         let st: String = state.store.read().unwrap().query_row(
             "SELECT state FROM bridge_outbound WHERE id='2|slack|C9'", [], |r| r.get(0)).unwrap();
         assert_eq!(st, "rejected", "a rejected post stays rejected; the pass does not pick it up");
+    }
+
+    /// Audit 2026-11-26 P1: a Telegram chat's link is a `bridge_links` row and
+    /// nothing else. `/link` saves it, the poll reads its default worker back
+    /// through `db::telegram`, an @mention moves where answers go while the
+    /// default stays, the answer is pending for that chat, and a fresh link
+    /// resets the default.
+    #[tokio::test]
+    async fn a_telegram_chat_links_reads_back_and_follows_a_mention_through_bridge_links() {
+        let (home, state) = slack_home("http://127.0.0.1:9");
+        let _g = crate::api::settings::test_env::set_home(home.path());
+        save_link(&state, "telegram", "555", false, "w:amux", TELEGRAM_POLL_LINK).await.unwrap();
+        let read = |state: &crate::api::AppState| crate::db::telegram::by_chat(&state.store.read().unwrap(), 555).unwrap().unwrap();
+        let l = read(&state);
+        assert_eq!((l.session.as_str(), l.conv.as_str(), l.is_group), ("amux", "w:amux", false));
+        assert!(crate::db::telegram::has_private_link(&state.store.read().unwrap(), "amux").unwrap());
+        assert!(!outside(&state.store.read().unwrap(), "telegram", "555", false), "the poll's own /link is the owner's chat");
+
+        assert!(follow_link(&state, "telegram", "555", "w:other").await.unwrap());
+        let l = read(&state);
+        assert_eq!((l.session.as_str(), l.conv.as_str()), ("amux", "w:other"), "a mention moves answers, not the default");
+        state.store.write(|c| {
+            c.execute("INSERT INTO conversation_posts (id, conv, author_key, author_name, body, ts) VALUES (90, 'w:other', 'worker:other', 'other', 'done', 0)", [])?;
+            Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
+        }).unwrap();
+        let due: Vec<(i64, String)> = pending(&state.store.read().unwrap()).unwrap().into_iter()
+            .filter(|p| p.platform == "telegram").map(|p| (p.post_id, p.conversation)).collect();
+        assert_eq!(due, vec![(90, "555".to_string())], "the mentioned worker's answer goes back to the chat");
+
+        assert!(follow_link(&state, "telegram", "555", "w:amux").await.unwrap());
+        assert_eq!(read(&state).conv, "w:amux", "an unaddressed message moves answers back to the default");
+        save_link(&state, "telegram", "555", false, "w:third", TELEGRAM_POLL_LINK).await.unwrap();
+        assert_eq!(read(&state).session, "third", "a new /link replaces the default");
+        assert!(!follow_link(&state, "telegram", "404", "w:amux").await.unwrap(), "no link, nothing to move");
     }
 
     #[test]

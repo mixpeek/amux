@@ -327,14 +327,15 @@ last-poll time/error and routing counts), **outbound** via
 - From Telegram itself: send `/link <session-name>` to the bot in that chat.
   The bot validates the session exists (against the live lane list) and
   confirms in-chat.
-- From the API — e.g. pre-linking a `chat_id` found via Telegram's own
-  `getUpdates` before the bot has received anything from it:
-  `POST /api/telegram/mappings`.
+- From the API (owner only), e.g. pre-linking a `chat_id` found via
+  Telegram's own `getUpdates` before the bot has received anything from it:
+  `POST /api/bridge/links` with `{"platform":"telegram","conversation":"<chat_id>","target":"<worker>"}`.
 
-Once linked, any other text sent to the bot in that chat is routed into the
-mapped session, stamped `[from Telegram @username]: ...` so the session can
-tell a Telegram message apart from other input arriving in its pane. A chat
-that sends text before linking gets a one-line nudge back (`/link
+A link is a chat bridge link (`bridge_links`, the same table every chat
+platform uses; `GET /api/bridge` lists them). Once linked, any other text
+sent to the bot in that chat is posted in the worker's thread, which
+delivers it, and the worker's answer is sent back to the chat. A chat that
+sends text before linking gets a one-line nudge back (`/link
 <session-name>` first), never silently dropped.
 
 **Routing to a specific lane from Telegram** — start a message with `@lane_name` to
@@ -348,12 +349,12 @@ rather than silently landing in the wrong place with no signal (fixed 2026-08-30
 found via a real typo'd message during testing).
 
 ```bash
-curl -sk $AMUX_URL/api/telegram/status                          # bot_token_set, mapping_count, last_poll_at, last_error, messages_routed/unlinked
-curl -sk $AMUX_URL/api/telegram/mappings                        # list chat<->session links
+curl -sk $AMUX_URL/api/telegram/status                          # bot_token_set, mapping_count (Telegram links), last_poll_at, last_error, messages_routed/unlinked
+curl -sk $AMUX_URL/api/bridge                                   # every chat link, Telegram's included
 curl -sk -X POST -H 'Content-Type: application/json' \
-  -d '{"chat_id":123456,"session":"SESSION_NAME"}' \
-  $AMUX_URL/api/telegram/mappings                                # manually link a chat_id to a session
-curl -sk -X DELETE $AMUX_URL/api/telegram/mappings/CHAT_ID        # unlink
+  -d '{"platform":"telegram","conversation":"123456","target":"SESSION_NAME"}' \
+  $AMUX_URL/api/bridge/links                                     # manually link a chat_id to a session (owner only)
+curl -sk -X DELETE $AMUX_URL/api/bridge/links/telegram/CHAT_ID    # unlink (owner only)
 
 # Outbound: session -> Telegram. Exactly one of session (resolved to its
 # most-recently-linked chat) or chat_id.
@@ -368,10 +369,9 @@ if two chats `/link` the same session, the newer link wins for
 regardless). Pass `chat_id` directly in `/send` to disambiguate or to reach
 a chat that never linked a session at all.
 
-There is no automatic "every session message also goes to Telegram" wiring —
-`POST /api/telegram/send` is an explicit call a session or hook makes, not a
-background forwarder (ethos rule 8: which events go to which chat is the
-operator's call, not a default this connector should assume).
+The worker's answer to a message from a linked chat goes back by the chat
+bridge on its own. `POST /api/telegram/send` is for anything else a session
+or hook chooses to send.
 
 **Any worker can reply to Telegram** — the connector is available to all sessions
 equally. If you want your session to send replies back to Telegram (e.g., in response

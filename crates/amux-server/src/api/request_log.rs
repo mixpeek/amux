@@ -3648,14 +3648,6 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/telegram/mappings",
-        methods: &["GET", "POST"],
-    },
-    RouteEntry {
-        path: "/api/telegram/mappings/{chat_id}",
-        methods: &["DELETE"],
-    },
-    RouteEntry {
         path: "/api/telegram/send",
         methods: &["POST"],
     },
