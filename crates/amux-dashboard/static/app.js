@@ -27907,7 +27907,7 @@ async function _approvalsRefresh() {
       + 'transform:rotate(' + (collapsed ? '-90' : '0') + 'deg);">&#x25BE;</span>'
       + '<span>' + _apprHeadline(pending.length, grants.length) + '</span>'
       // Every channel's held messages, emails among them, in one tab.
-      + (pending.length ? '<button class="appr-btn-outline appr-open-outbound" style="margin-left:auto;" onclick="event.stopPropagation();switchView(\'outbound\')">Open in Outbound</button>' : '')
+      + (pending.length ? '<button class="appr-btn-outline appr-open-outbound" onclick="event.stopPropagation();switchView(\'outbound\')">Open in Outbound</button>' : '')
       + '</div>';
     if (collapsed) {
       el.innerHTML = html + '</div>';
