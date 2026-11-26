@@ -45685,7 +45685,7 @@ function setSortMode(mode) {
   // moves nothing; after that the saved arrangement comes back unchanged.
   if (sortMode === 'manual' && !cardOrder.length) {
     cardOrder = [...document.querySelectorAll('#cards .card[data-session]')].map(c => c.dataset.session);
-    try { localStorage.setItem('amux_card_order', JSON.stringify(cardOrder)); } catch (e) {}
+    try { localStorage.setItem('amux_card_order', JSON.stringify(cardOrder)); } catch (e) { console.warn('manual order: could not save the seeded card order', e); }
   }
   if (typeof showToast === 'function') showToast(sortMode === 'manual'
     ? 'Manual order: drag the grip to arrange' : 'Sorted by ' + _sortLabel(sortMode).toLowerCase());
@@ -45748,7 +45748,7 @@ function initSortable() {
       cardOrder = full.map(n => visible.has(n) ? shown[k++] : n);
       localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
       try { window._clientDebug && window._clientDebug('worker-manual-order', { verdict: 'manual-order-saved',
-        moved: evt.item?.dataset?.session || '', measured: true, n_considered: shown.length }); } catch (e) {}
+        moved: evt.item?.dataset?.session || '', measured: true, n_considered: shown.length }); } catch (e) { console.warn('manual order: debug beacon failed', e); }
     }
   });
 }
