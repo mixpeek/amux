@@ -597,6 +597,25 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
     }
 }
 
+/// The app's limits a person can change in Settings > This Mac > Memory and
+/// storage. Each was an environment variable only (owner, 2026-11-26: "all
+/// should be configurable in the ui"); the variable still wins when set.
+struct AppLimit { let key: String, label: String, help: String, unit: String, fallback: Double }
+
+extension AppDelegate {
+    var appLimits: [AppLimit] {
+        let ramMB = Double(ProcessInfo.processInfo.physicalMemory / 1_048_576)
+        return [
+            AppLimit(key: "AMUX_DESKTOP_WEB_BUDGET_MB", label: "Memory for all pages", help: "Past this, pages nobody has looked at for a while unload (they load again when shown).", unit: "MB", fallback: max(4096, ramMB / 8)),
+            AppLimit(key: "AMUX_DESKTOP_DISCARD_HIDDEN_S", label: "Unload a hidden page after", help: "Only while all pages together are over the memory above. 0 never unloads.", unit: "seconds", fallback: 1800),
+            AppLimit(key: "AMUX_DESKTOP_TAB_MB_LIMIT", label: "Refresh a hidden page over", help: "A page out of sight that grows past this reloads on the same view.", unit: "MB", fallback: 1536),
+            AppLimit(key: "AMUX_DESKTOP_TAB_HIDDEN_S", label: "after it has been hidden for", help: "", unit: "seconds", fallback: 120),
+            AppLimit(key: "AMUX_DESKTOP_SHOWN_TAB_MB_LIMIT", label: "Refresh a page on screen over", help: "Never while you are typing in it. 0 turns it off.", unit: "MB", fallback: 6144),
+            AppLimit(key: "AMUX_DESKTOP_STORAGE_AUTO_MB", label: "Compact saved page data past", help: "At launch, and hourly while amux is in the background.", unit: "MB", fallback: 1024),
+        ]
+    }
+}
+
 // ── One handler for every Settings surface ──
 // The dashboard's This Mac tab (app.js _macSettings*, through amuxSettings)
 // and the fallback window send the same {action, name, value}; after each,
@@ -654,6 +673,16 @@ extension AppDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { after() }
             return
         case "compactStorage": compactWebStorage(why: "settings"); return
+        case "limit":
+            // A number sets it; anything else (an emptied field) goes back to the default.
+            guard appLimits.contains(where: { $0.key == name }) else { dlog("verdict=settings_limit_unknown name=\(name)"); return }
+            var l = cfg.limits ?? [:]
+            let v = (m["value"] as? NSNumber)?.doubleValue ?? (m["value"] as? String).flatMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            if let v = v, v >= 0 { l[name] = v } else { l[name] = nil }
+            cfg.limits = l.isEmpty ? nil : l
+            saveConfig(cfg)
+            config = cfg
+            dlog("verdict=settings_limit_set name=\(name) value=\(v.map { String($0) } ?? "default")")
         case "update-check": Updater.shared.check(); return
         case "update-install": Updater.shared.install(); return
         default:
@@ -714,6 +743,11 @@ extension AppDelegate {
                        "busy": u.state == .checking || u.state == .installing],
             "server": serverURL?.absoluteString ?? "",
             "storage": webStorageState(),
+            "limits": appLimits.map { d -> [String: Any] in
+                let env = ProcessInfo.processInfo.environment[d.key].flatMap(Double.init)
+                return ["key": d.key, "label": d.label, "help": d.help, "unit": d.unit, "default": d.fallback,
+                        "value": appLimit(d.key, d.fallback), "set": c.limits?[d.key] != nil, "fromEnv": env != nil]
+            },
         ]
     }
 }

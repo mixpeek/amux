@@ -147,6 +147,20 @@ try:
     check("This Mac shows 'Saved page data' with a size", "Saved page data:" in shown.get("text", "") and shown.get("bytes", 0) > 0, shown)
     check("and a Compact button", shown.get("button") is True, shown)
 
+    # The app's limits are in the page too, and a number typed there reaches the config.
+    lim = js("const i = document.getElementById('mac-limit-AMUX_DESKTOP_TAB_MB_LIMIT'); if (!i) return 'missing';"
+             " i.value = '2048'; i.dispatchEvent(new Event('change')); return document.querySelectorAll('.mac-limit-input').length")
+    time.sleep(1.5)
+    check("This Mac lists the app's six limits", lim == "6", lim)
+    cfg = json.load(open(CFG))
+    check("a limit typed there is saved in the app's config", (cfg.get("limits") or {}).get("AMUX_DESKTOP_TAB_MB_LIMIT") == 2048, cfg.get("limits"))
+    lims = {l["key"]: l for l in state()["mac_settings"].get("limits", [])}
+    check("and the app now uses it", lims.get("AMUX_DESKTOP_TAB_MB_LIMIT", {}).get("value") == 2048, lims.get("AMUX_DESKTOP_TAB_MB_LIMIT"))
+    check("a limit set by the environment says so and cannot be edited", lims.get("AMUX_DESKTOP_STORAGE_AUTO_MB", {}).get("fromEnv") is True, lims.get("AMUX_DESKTOP_STORAGE_AUTO_MB"))
+    js("const i = document.getElementById('mac-limit-AMUX_DESKTOP_TAB_MB_LIMIT'); i.value = ''; i.dispatchEvent(new Event('change')); return 'ok'")
+    time.sleep(1.5)
+    check("emptying the field goes back to the default", "AMUX_DESKTOP_TAB_MB_LIMIT" not in (json.load(open(CFG)).get("limits") or {}), json.load(open(CFG)).get("limits"))
+
     mark = len(log())
     js("document.getElementById('mac-storage-compact').click(); return 'clicked'")
     check("Compact in the page runs a compaction", wait_log("verdict=web_storage_compacted why=settings", mark), log()[mark:][-600:])

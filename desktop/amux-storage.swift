@@ -19,10 +19,6 @@ import WebKit
 // bytes before and after. The copy is saved to disk before anything is deleted
 // and removed only once a page has the items back (verdict=web_storage_copy_*).
 
-let webStorageAutoBytes: Int64 = {
-    if let v = ProcessInfo.processInfo.environment["AMUX_DESKTOP_STORAGE_AUTO_MB"], let mb = Int64(v) { return mb * 1_048_576 }
-    return 1_073_741_824
-}()
 
 struct WebStorageUse {
     var bytes: Int64 = 0      // every localStorage file of this app
@@ -70,6 +66,9 @@ func storageSize(_ b: Int64) -> String {
 }
 
 extension AppDelegate {
+    /// Compact by itself past this much (Settings > This Mac, or the env).
+    var webStorageAutoBytes: Int64 { Int64(appLimit("AMUX_DESKTOP_STORAGE_AUTO_MB", 1024) * 1_048_576) }
+
     /// What the Storage row draws.
     func webStorageState() -> [String: Any] {
         let u = webStorageUse()

@@ -62568,6 +62568,7 @@ function _macSettingsRender() {
       + _macToggleRow('snapToGrid', 'Snap windows to a grid', 'While you drag, an outline shows where the window lands. Hold Option to place it freely.')
       + '<div class="settings-row mac-set-row"><label class="mac-set-label" for="mac-set-split"><b>Split opens the new pane</b></label><select class="input" id="mac-set-split" onchange="_macSettingsSend(\'splitDirection\',\'\',this.value)">' + split + '</select></div>')
     + _macStorageSection(s.storage, sec)
+    + _macLimitsSection(s.limits, sec)
     + sec('Updates', '<div class="settings-row mac-set-row mac-set-stack"><div class="mac-set-label"><b>This app: ' + esc(u.built || '') + '</b><span class="ui-help" id="mac-upd-status" data-state="' + esc(u.state || '') + '">'
       + esc(u.detail || 'Check whether a newer build is out.') + '</span></div><span class="mac-set-actions">'
       + (u.canInstall ? '<button class="btn primary" id="mac-upd-install" onclick="_macSettingsSend(\'update-install\')"' + (u.busy ? ' disabled' : '') + '>Update and Relaunch</button>' : '')
@@ -62582,6 +62583,22 @@ function _macSettingsRender() {
 // the server reached 23 GB in the owner's app (2026-11-26) and every outbox read
 // stalled on it. Compact keeps every saved item and drops the log; the app also
 // does it by itself past 1 GB, at launch or while in the background.
+// The app's limits (desktop/amux-settings.swift appLimits), each an
+// AMUX_DESKTOP_* variable until 2026-11-26 (owner: "all should be configurable
+// in the ui"). An emptied field goes back to the default; a variable set in the
+// app's environment still wins and is shown as such.
+function _macLimitsSection(limits, sec) {
+  if (!limits || !limits.length) return '';
+  const rows = limits.map(l => {
+    const id = 'mac-limit-' + esc(l.key);
+    const note = l.fromEnv ? ' Set by ' + l.key + ' in the environment, which wins.' : (l.set ? '' : ' Default.');
+    return '<div class="settings-row mac-set-row"><label class="mac-set-label" for="' + id + '"><b>' + esc(l.label) + '</b><span class="ui-help">'
+      + esc((l.help || '') + note) + '</span></label><span class="mac-set-actions"><input class="input mac-limit-input" type="number" min="0" step="1" inputmode="numeric" id="' + id + '"'
+      + ' data-key="' + esc(l.key) + '" value="' + esc(String(Math.round(l.value))) + '" placeholder="' + esc(String(Math.round(l.default))) + '"' + (l.fromEnv ? ' disabled' : '')
+      + ' onchange="_macSettingsSend(\'limit\',this.dataset.key,this.value)"><span class="ui-help">' + esc(l.unit) + '</span></span></div>';
+  }).join('');
+  return sec('Memory and storage', rows);
+}
 function _macStorageSection(st, sec) {
   if (!st) return '';
   const size = st.measured ? st.size : 'not measured';

@@ -2453,6 +2453,7 @@
     letter-spacing: .04em; white-space: nowrap;
   }
   .settings-tab-group-server { border-left: 1px solid var(--border); margin-left: var(--space-0-5); }
+  .mac-limit-input { width: 6.5em; }
   .settings-tab-btn:active { background: var(--border); }
   .settings-tab-btn.active { color: var(--text); background: var(--bg); }
   .settings-tab-panel { display: none; }

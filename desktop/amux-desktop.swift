@@ -139,6 +139,8 @@ struct Config: Codable {
     var cleanExit: Bool?
     // View > Zoom All Windows (2026-10-28). Unset means on.
     var zoomAllWindows: Bool?
+    /// Settings > This Mac > Memory and storage, by AMUX_DESKTOP_* name (appLimit).
+    var limits: [String: Double]?
     // Workspaces > Freeze Workspace (2026-11-03): the workspaces whose tabs,
     // names and workers are locked, by name; "" is the unsaved one open when no
     // workspace is (amux-workspace.swift).
@@ -1467,6 +1469,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         ProcessInfo.processInfo.environment[key].flatMap(Double.init) ?? fallback
     }
 
+    /// A limit the person can set in Settings > This Mac: the environment
+    /// (tests, a one-off) wins, then the saved setting, then the default.
+    func appLimit(_ key: String, _ fallback: Double) -> Double {
+        if let v = ProcessInfo.processInfo.environment[key].flatMap(Double.init) { return v }
+        return config.limits?[key] ?? fallback
+    }
+
     /// On screen: the selected tab of a visible window, or a pane of one.
     func isShown(_ c: DashboardWindowController) -> Bool {
         let host = c.rootHost.window
@@ -1484,15 +1493,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // and so is the footprint a minute later (verdict=tab_reload_freed, or
     // tab_reload_did_not_free when the page is still over the limit).
     func guardTabMemory() {
-        let limit = Int(envSeconds("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
+        let limit = Int(appLimit("AMUX_DESKTOP_TAB_MB_LIMIT", 1536))
         // A page on screen had no bound at all: the memory RCA of 2026-11-15
         // found two worker terminals shown side by side in a pane grid at 13.4
         // and 6.9 GB (one growing 0.9 GB in 10 minutes), never touched because
         // only hidden pages were reloaded. Over this much a shown page gets the
         // same fresh process, unless the person is typing in it. 0 turns it off.
-        let shownLimit = Int(envSeconds("AMUX_DESKTOP_SHOWN_TAB_MB_LIMIT", 6144))
+        let shownLimit = Int(appLimit("AMUX_DESKTOP_SHOWN_TAB_MB_LIMIT", 6144))
         let cooldown = envSeconds("AMUX_DESKTOP_TAB_RELOAD_COOLDOWN_S", 600)
-        let grace = envSeconds("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
+        let grace = appLimit("AMUX_DESKTOP_TAB_HIDDEN_S", 120)
         let now = Date()
         for c in controllers {
             // Until 2026-11-12 every reload here was a jump within the open page
@@ -1564,10 +1573,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // on the view it had, the moment it is shown (as a browser discards tabs).
     // AMUX_DESKTOP_DISCARD_HIDDEN_S=0 turns it off.
     func discardHiddenTabs() {
-        let minHidden = envSeconds("AMUX_DESKTOP_DISCARD_HIDDEN_S", 1800)
+        let minHidden = appLimit("AMUX_DESKTOP_DISCARD_HIDDEN_S", 1800)
         guard minHidden > 0 else { return }
         let ramMB = Int(ProcessInfo.processInfo.physicalMemory / 1_048_576)
-        let budget = Int(envSeconds("AMUX_DESKTOP_WEB_BUDGET_MB", Double(max(4096, ramMB / 8))))
+        let budget = Int(appLimit("AMUX_DESKTOP_WEB_BUDGET_MB", Double(max(4096, ramMB / 8))))
         let pidKey = NSSelectorFromString("_webProcessIdentifier")
         var pidOf: [ObjectIdentifier: pid_t] = [:], users: [pid_t: Int] = [:], mbOf: [pid_t: Int] = [:]
         for c in controllers where c.webView.responds(to: pidKey) {
