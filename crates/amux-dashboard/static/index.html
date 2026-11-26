@@ -319,12 +319,16 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
       <button class="settings-btn" id="settings-btn" onclick="event.stopPropagation();toggleSettings()" aria-label="Settings" title="Settings">&#x2699;&#xFE0F;</button>
       <div class="settings-menu" id="settings-menu">
         <div class="settings-tabs" id="settings-tabs">
-          <button class="settings-tab-btn active" data-stab="account" onclick="event.stopPropagation();_settingsTab('account')">Account</button>
-          <button class="settings-tab-btn" data-stab="integrations" onclick="event.stopPropagation();_settingsTab('integrations')">Connect</button>
-          <button class="settings-tab-btn" data-stab="device" onclick="event.stopPropagation();_settingsTab('device')">Device</button>
-          <button class="settings-tab-btn" data-stab="workers" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
-          <button class="settings-tab-btn" data-stab="notifications" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
-          <button class="settings-tab-btn" data-stab="mac" id="settings-tab-mac" hidden onclick="event.stopPropagation();_settingsTab('mac')">This Mac</button>
+          <!-- Two groups (owner, 2026-11-26: "a seperate settings from mac/client vs server"):
+               what this phone, browser or Mac keeps for itself (This device, This Mac), then, after
+               the Server label, what the server keeps for everyone. -->
+          <button class="settings-tab-btn" data-stab="device" data-group="device" onclick="event.stopPropagation();_settingsTab('device')">This device</button>
+          <button class="settings-tab-btn" data-stab="mac" data-group="device" id="settings-tab-mac" hidden onclick="event.stopPropagation();_settingsTab('mac')">This Mac</button>
+          <span class="settings-tab-group settings-tab-group-server" aria-hidden="true">Server</span>
+          <button class="settings-tab-btn active" data-stab="account" data-group="server" onclick="event.stopPropagation();_settingsTab('account')">Account</button>
+          <button class="settings-tab-btn" data-stab="workers" data-group="server" onclick="event.stopPropagation();_settingsTab('workers')">Workers</button>
+          <button class="settings-tab-btn" data-stab="notifications" data-group="server" onclick="event.stopPropagation();_settingsTab('notifications')">Alerts</button>
+          <button class="settings-tab-btn" data-stab="integrations" data-group="server" onclick="event.stopPropagation();_settingsTab('integrations')">Connect</button>
         </div>
         <div class="settings-tab-panel active" id="stab-account" data-stab="account">
         <div class="settings-section" id="settings-usage-section">
@@ -498,21 +502,14 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
           </label>
           <div id="settings-taskguard-status" style="font-size:var(--fs-xs);color:var(--dim);margin-top:var(--space-1);"></div>
         </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-server-env-section">
+          <div class="settings-section-label">Every other server setting</div>
+          <div class="ui-help" style="margin-bottom:var(--space-2);">The server's own settings (its environment, such as limits, models and switches) for every worker. A group or one worker can override them in its Scope tab.</div>
+          <button class="btn" id="settings-server-env-btn" onclick="event.stopPropagation();_scopeEditOpen('global','','env')">Edit server settings</button>
+        </div>
         </div>
         <div class="settings-tab-panel" id="stab-notifications" data-stab="notifications">
-        <div class="settings-section" id="settings-device-notifs-section">
-          <div class="settings-section-label">This device</div>
-          <div class="ui-help" style="margin-bottom:var(--space-2);">Each phone, browser and Mac app keeps its own switches. Off here means nothing reaches this device: no lock-screen or background push, no Messages notifications, and in the Mac app no needs-you notifications either.</div>
-          <div class="settings-row" style="justify-content:space-between;align-items:center;">
-            <span style="font-size:var(--fs-lg);">Notifications on this device</span>
-            <label class="theme-toggle"><input type="checkbox" id="notif-device-native-cb" aria-label="Notifications on this device" onchange="_notifToggleNative()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
-          </div>
-          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:var(--space-1);">
-            <span style="font-size:var(--fs-lg);">In-app pop-ups</span>
-            <label class="theme-toggle"><input type="checkbox" id="notif-device-banner-cb" aria-label="In-app pop-ups" onchange="_notifToggleBanners()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
-          </div>
-        </div>
-        <div class="settings-sep"></div>
         <div class="settings-section">
           <div class="settings-section-label">Alerts</div>
           <div style="font-size:var(--fs-2xs);color:var(--dim);margin-bottom:var(--space-2);line-height:1.4;">Routine notifications use in-app amux Alerts. <b>Urgent alerts</b> are reserved for things that need your attention immediately — workers are told to use them sparingly.</div>
@@ -658,6 +655,19 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
           <button onclick="_wtRestart();closeSettings();" style="width:100%;padding:var(--space-2) var(--space-3);border-radius:var(--radius-lg);border:1px solid var(--accent);background:var(--accent);color:var(--on-solid);font-size:var(--fs-md);font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:var(--space-1-5);">
             <span style="font-size:var(--fs-2xl);">?</span> Walkthrough
           </button>
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-section" id="settings-device-notifs-section">
+          <div class="settings-section-label">Notifications</div>
+          <div class="ui-help" style="margin-bottom:var(--space-2);">Each phone, browser and Mac app keeps its own switches. Off here means nothing reaches this device: no lock-screen or background push, no Messages notifications, and in the Mac app no needs-you notifications either.</div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;">
+            <span style="font-size:var(--fs-lg);">Notifications on this device</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-native-cb" aria-label="Notifications on this device" onchange="_notifToggleNative()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
+          <div class="settings-row" style="justify-content:space-between;align-items:center;margin-top:var(--space-1);">
+            <span style="font-size:var(--fs-lg);">In-app pop-ups</span>
+            <label class="theme-toggle"><input type="checkbox" id="notif-device-banner-cb" aria-label="In-app pop-ups" onchange="_notifToggleBanners()"><span class="theme-track"><span class="theme-thumb"></span></span></label>
+          </div>
         </div>
         <div class="settings-sep"></div>
         <div class="settings-section">

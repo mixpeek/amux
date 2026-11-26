@@ -2440,11 +2440,19 @@
   }
   .settings-tabs::-webkit-scrollbar { display: none; }
   .settings-tab-btn {
-    flex: 1 0 auto; min-height: 44px; padding: var(--space-1-5) var(--space-2-5);
+    flex: 1 0 auto; min-height: 44px; padding: var(--space-1-5) var(--space-2);
     border: none; background: none; color: var(--dim);
     font-size: var(--fs-base); font-weight: 600; cursor: pointer; border-radius: var(--radius-lg);
     white-space: nowrap; -webkit-tap-highlight-color: transparent;
   }
+  /* This device | Server (owner, 2026-11-26). The labels sit in the one tab row
+     and scroll with it on a phone. */
+  .settings-tab-group {
+    flex: 0 0 auto; align-self: center; padding: 0 var(--space-0-5) 0 var(--space-1);
+    font-size: var(--fs-xs); font-weight: 600; color: var(--dim); text-transform: uppercase;
+    letter-spacing: .04em; white-space: nowrap;
+  }
+  .settings-tab-group-server { border-left: 1px solid var(--border); margin-left: var(--space-0-5); }
   .settings-tab-btn:active { background: var(--border); }
   .settings-tab-btn.active { color: var(--text); background: var(--bg); }
   .settings-tab-panel { display: none; }

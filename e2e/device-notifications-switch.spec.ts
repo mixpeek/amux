@@ -1,5 +1,5 @@
 // The owner, 2026-11-13: "Make sure I can disable/enable notifications on the
-// amux ui and the device/client respects it". Settings > Alerts > This device
+// amux ui and the device/client respects it". Settings > Device > Notifications (moved from Alerts 2026-11-26)
 // and the bell panel's speaker button are one switch, and with it off nothing
 // reaches the device: no native notification for a Messages post, no
 // background push subscription left behind, and in the Mac app the app's own
@@ -12,8 +12,8 @@ const postsFor = (r: any) => {
   return r.fulfill({ json: { posts: [{ id, author_key: 'w:someone', author_name: 'Someone', body: 'hello', mentions: [] }] } });
 };
 
-async function openAlerts(page) {
-  await page.evaluate(() => { (window as any).toggleSettings(); (window as any)._settingsTab('notifications'); });
+async function openDeviceNotifs(page) {
+  await page.evaluate(() => { (window as any).toggleSettings(); (window as any)._settingsTab('device'); });
   await expect(page.locator('#notif-device-native-cb')).toBeAttached();
 }
 
@@ -31,7 +31,7 @@ test('the Settings switch and the bell button are one switch, and a Messages pos
   await page.route('**/api/conversations/*/posts*', postsFor);
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._cvMaybeNotify === 'function');
-  await openAlerts(page);
+  await openDeviceNotifs(page);
   const cb = page.locator('#notif-device-native-cb');
   await expect(cb).toBeChecked();
   await expect(page.locator('#notif-native-btn')).toHaveAttribute('aria-pressed', 'true');
@@ -58,7 +58,7 @@ test('the Settings switch and the bell button are one switch, and a Messages pos
   expect(await page.evaluate(() => (window as any).amuxNotifyAllowed('banner'))).toBe(false);
 
   await page.reload();
-  await openAlerts(page);
+  await openDeviceNotifs(page);
   await expect(page.locator('#notif-device-native-cb')).not.toBeChecked();
   await expect(page.locator('#notif-device-banner-cb')).not.toBeChecked();
 });
@@ -102,7 +102,7 @@ test('in the Mac app the page shows and sets the app\'s switch', async ({ page }
   await page.waitForFunction(() => typeof (window as any)._cvMaybeNotify === 'function');
   expect(await page.evaluate(() => (window as any)._prefs[0]), 'the page asks the app').toEqual({ op: 'get' });
   await page.evaluate(() => (window as any)._notifDesktopState(true));
-  await openAlerts(page);
+  await openDeviceNotifs(page);
   await expect(page.locator('#notif-device-native-cb')).toBeChecked();
   await page.evaluate(() => (window as any)._cvMaybeNotify({ id: 5, conv: 'd:someone' }));
   expect(await page.evaluate(() => (window as any)._posted.length), 'on: the app is asked to notify').toBe(1);
