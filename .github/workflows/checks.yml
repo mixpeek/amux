@@ -770,7 +770,7 @@ jobs:
       - name: land precheck verdict and attributed cancel (1/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-gate-capped.sh && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh
+          bash scripts/test-land-gate-capped.sh && python3 scripts/test-land-gate-rank.py && bash scripts/test-land-precheck-verdict.sh && bash scripts/test-land-cancel-for.sh && bash scripts/test-land-blame.sh && bash scripts/test-land-cancel-holder.sh
       - name: land precheck verdict and attributed cancel (2/8)
         run: |
           set -uo pipefail
