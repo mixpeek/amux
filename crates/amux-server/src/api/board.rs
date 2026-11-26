@@ -5943,7 +5943,12 @@ pub async fn create_item(
     // card is delivered into that lane's turn. A card for a lane with no
     // worker identity needs the owner's proof (is_owner_request); an
     // unassigned one reaches no lane and stays open to in-process writers.
+    // A verified local member is not headerless in this sense: the server
+    // installed its identity, and its scope is enforced on its own (a member
+    // scoped to one worker files on that worker's board and is refused
+    // elsewhere, e2e/local-multiplayer.spec.ts).
     if request_to.is_none() && hdr_session.is_empty() && !session.is_empty()
+        && super::org::local_member_scope(&headers).is_none()
         && !super::standing_approvals::is_owner_request(&headers)
     {
         tracing::warn!(requested_owner = %session, measured = true, n_considered = 1,
