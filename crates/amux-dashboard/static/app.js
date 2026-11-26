@@ -3857,7 +3857,7 @@ function _uiComponentCheck(root = document) {
 
 // AF-749: measure open dialogs against the keyboard-visible viewport. Keep
 // diagnostics free of dialog text (worker messages and credentials live here).
-const _dialogSelector = '#psf-body,.amux-dialog-backdrop,.amux-workspace-dialog,#cmd-history-modal,#filters-modal,#saved-messages-modal,#skill-edit-modal,#file-overlay,#mdai-overlay,#channel-drawer,#board-detail-overlay,#apikey-setup-modal,#upgrade-modal,#video-overlay,.modal-backdrop,.edit-overlay,.queue-overlay,.board-edit-overlay,.map-modal,.modal-overlay,#conn-hist-modal,#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,[data-ical-modal],.chip-picker-overlay,.tts-overlay,.focus-overlay,.conn-picker-overlay,.mdai-picker-overlay';
+const _dialogSelector = '#psf-body,.amux-dialog-backdrop,.amux-workspace-dialog,#cmd-history-modal,#filters-modal,#saved-messages-modal,#skill-edit-modal,#file-overlay,#mdai-overlay,#board-detail-overlay,#apikey-setup-modal,#upgrade-modal,#video-overlay,.modal-backdrop,.edit-overlay,.queue-overlay,.board-edit-overlay,.map-modal,.modal-overlay,#conn-hist-modal,#team-scope-modal,#jrnl-config-overlay,#peek-lookup-modal,[data-ical-modal],.chip-picker-overlay,.tts-overlay,.focus-overlay,.conn-picker-overlay,.mdai-picker-overlay';
 function _modalLayoutCheck() {
   const viewport = window.visualViewport;
   const top = viewport?.offsetTop || 0, height = viewport?.height || innerHeight;
@@ -27163,140 +27163,25 @@ async function peekShowTranscripts() {
   document.getElementById('modal-backdrop').classList.add('open');
 }
 
-// ── Channel drawer (session-to-session DM) ──
-let _channelMe = null;
-let _channelOther = null;
-let _channelPollTimer = null;
-let _channelLastTs = 0;
-
+// ── Two workers' direct message (was the channel drawer) ──
+// An @mention at the start of a worker's composer opens the Messages direct
+// message between that worker and the one named (`ww:<a>|<b>`), with the
+// drafted text in the composer, addressed to the worker named. The channel
+// drawer kept its own transcript files (api/channels.rs) beside Messages;
+// the primitive integrity audit (2026-11-26) folded it in.
+function _cvPairKey(a, b) { return 'ww:' + (a <= b ? a + '|' + b : b + '|' + a); }
 function channelOpen(me, other, prefillText) {
   if (!me || !other || me === other) {
-    showToast('Cannot open channel: ' + (!me?'no source':!other?'no target':'same worker'));
+    showToast('Cannot open a direct message: ' + (!me?'no source':!other?'no target':'same worker'));
     return;
   }
-  _channelMe = me;
-  _channelOther = other;
-  // Restore any offline-typed draft for this pair (AMUX-2209)
-  try {
-    const _cd = localStorage.getItem('amux_draft_channel_' + me + '_' + other);
-    const _ci = document.getElementById('channel-input');
-    if (_cd && _ci && !prefillText) setTimeout(() => { if (!_ci.value) _ci.value = _cd; }, 50);
-  } catch (e) {}
-  _channelLastTs = 0;
-  document.getElementById('channel-header-pair').textContent = me + ' ↔ ' + other;
-  document.getElementById('channel-thread').innerHTML =
-    '<div class="channel-empty">Loading…</div>';
-  const drawer = document.getElementById('channel-drawer');
-  drawer.classList.add('open');
-  // Suppress backdrop-close from the click that opened us — the original
-  // mousedown was on a card-input dropdown item, but the click event that
-  // follows may now land on this drawer's backdrop (since we're on top).
-  drawer.dataset.justOpened = '1';
-  drawer.dataset.bdMousedown = '';
-  setTimeout(() => { delete drawer.dataset.justOpened; }, 400);
-  const inp = document.getElementById('channel-input');
-  inp.value = prefillText || '';
-  setTimeout(() => inp.focus(), 100);
-  channelRefresh();
-  if (_channelPollTimer) clearInterval(_channelPollTimer);
-  _channelPollTimer = setInterval(channelRefresh, 2500);
-}
-
-function channelClose() {
-  const drawer = document.getElementById('channel-drawer');
-  drawer.classList.remove('open');
-  delete drawer.dataset.justOpened;
-  drawer.dataset.bdMousedown = '';
-  if (_channelPollTimer) { clearInterval(_channelPollTimer); _channelPollTimer = null; }
-  _channelMe = null; _channelOther = null;
-}
-
-async function channelRefresh() {
-  if (!_channelMe || !_channelOther) return;
-  try {
-    const r = await fetch(API + '/api/channels/' + encodeURIComponent(_channelMe) +
-      '/' + encodeURIComponent(_channelOther) + '/messages');
-    if (!r.ok) return;
-    const d = await r.json();
-    channelRender(d.messages || []);
-  } catch (e) { /* network blip — keep polling */ }
-}
-
-function channelRender(messages) {
-  const thread = document.getElementById('channel-thread');
-  if (!messages.length) {
-    thread.innerHTML =
-      '<div class="channel-empty">No messages yet.<br>Say hi to <b>@' +
-      esc(_channelOther) + '</b> — they will see your message in their terminal.</div>';
-    return;
-  }
-  // Skip re-render if nothing new
-  const newest = messages[messages.length - 1];
-  if (newest.ts === _channelLastTs && thread.children.length === messages.length) return;
-  _channelLastTs = newest.ts;
-  const html = messages.map(m => {
-    const mine = m.from === _channelMe;
-    const when = new Date((m.ts || 0) * 1000).toLocaleTimeString([],
-      { hour: 'numeric', minute: '2-digit' });
-    return '<div class="channel-msg ' + (mine ? 'mine' : 'theirs') + '">' +
-      '<div class="channel-msg-meta">' + esc(m.from) + ' · ' + when + '</div>' +
-      '<div class="channel-msg-bubble">' + esc(m.text || '') + '</div>' +
-      '</div>';
-  }).join('');
-  thread.innerHTML = html;
-  thread.scrollTop = thread.scrollHeight;
-}
-
-async function channelEnd() {
-  if (!_channelMe || !_channelOther) return;
-  const me = _channelMe, other = _channelOther;
-  const ok = await showConfirm(
-    `End channel with @${other}?\n\nThis clears the history and notifies @${other} that the conversation is over.`,
-    'End channel', true);
-  if (!ok) return;
-  try {
-    const r = await fetch(API + '/api/channels/' + encodeURIComponent(me) +
-      '/' + encodeURIComponent(other) + '/messages', { method: 'DELETE' });
-    const d = await r.json();
-    if (r.ok && d.ok) {
-      showToast('Channel with @' + other + ' ended');
-      channelClose();
-    } else {
-      showToast('End failed: ' + (d.error || r.status));
-    }
-  } catch (e) {
-    showToast('End error: ' + e.message);
-  }
-}
-
-async function channelSend() {
-  if (!_channelMe || !_channelOther) return;
-  const inp = document.getElementById('channel-input');
-  const text = inp.value.trim();
-  if (!text) return;
-  inp.value = '';
-  try { localStorage.removeItem('amux_draft_channel_' + (_channelMe||'') + '_' + (_channelOther||'')); } catch (e) {}
-  inp.style.height = 'auto';
-  const btn = document.getElementById('channel-send-btn');
-  btn.disabled = true;
-  try {
-    const r = await apiCall(API + '/api/channels/' + encodeURIComponent(_channelMe) +
-      '/' + encodeURIComponent(_channelOther) + '/messages',
-      { method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ text }) });
-    if (!r) { await channelRefresh(); return; }  // offline-queued (or error) — apiCall already toasted
-    const d = await r.json();
-    if (!d.ok) {
-      showToast('Send failed: ' + (d.error || r.status));
-    } else if (!d.delivered) {
-      showToast('Saved, but ' + _channelOther + ' is not running');
-    }
-    await channelRefresh();
-  } catch (e) {
-    showToast('Send error: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    inp.focus();
+  const conv = _cvPairKey(me, other);
+  if (!_cvViewOn()) switchView('messages');
+  _cvSelect(conv);
+  const inp = document.getElementById('cv-input');
+  if (inp) {
+    inp.value = '@' + other + ' ' + (prefillText || '');
+    setTimeout(() => { inp.focus(); try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} }, 60);
   }
 }
 
@@ -75895,6 +75780,8 @@ function _cvFindName(conv) {
   if (conv && conv.indexOf('w:') === 0) return conv.slice(2);
   // A worker's direct message with you (`d:<worker>|<you>`): the worker.
   if (conv && conv.indexOf('d:') === 0) return conv.slice(2).split('|')[0];
+  // Two workers' direct message (`ww:<a>|<b>`): both names.
+  if (conv && conv.indexOf('ww:') === 0) return conv.slice(3).split('|').join(' \u2194 ');
   // A direct message the list has not named (not loaded yet, or not in it):
   // the other person, never the raw id. "p:doron@z.com|ethan@x.com" was the
   // composer's placeholder on a phone and wrapped it to three rows.
@@ -75942,6 +75829,7 @@ function _cvNewCandidates() {
     ...(L.channels || []).map(c => ({ conv: c.conv, label: '#' + (c.title || c.name), kind: 'channel', ico: '<span class="cv-ico">#</span>' })),
     ...(L.people || []).filter(p => p.conv).map(p => ({ conv: p.conv, label: p.me ? p.name + ' (you)' : p.name, kind: 'person', ico: _cvAvatar(p.name, false, p.email) })),
     ...(L.direct || []).map(d => ({ conv: d.conv, label: d.worker, kind: 'direct message', ico: _cvAvatar(d.worker, true) })),
+    ...(L.pairs || []).map(d => ({ conv: d.conv, label: d.a + ' \u2194 ' + d.b, kind: 'workers\u2019 direct message', ico: _cvAvatar(d.a, true) })),
     ...(L.workers || []).map(w => ({ conv: w.conv, label: w.name, kind: 'worker', ico: _cvAvatar(w.name, true) })),
   ];
 }
@@ -75988,15 +75876,17 @@ function _cvRenderSide() {
     // Owners and admins manage channels from here (AA-52). The server refuses
     // everyone else, so this only hides a button nobody else could use.
     + (admin ? '<button type="button" class="cv-item" id="cv-manage-channels" onclick="_cvManageChannels()"><span class="cv-ico">+</span><span class="cv-lbl">Manage channels</span></button>' : '');
-  const ppl = (L.people || []), dms = (L.direct || []);
-  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length ? '' : 'none';
+  const ppl = (L.people || []), dms = (L.direct || []), pairs = (L.pairs || []);
+  document.getElementById('cv-people-sec').style.display = ppl.length || dms.length || pairs.length ? '' : 'none';
   // Your own entry opens your notes to yourself, as in Slack (Ethan,
   // 2026-11-06: "i should also be able to open my own"). A worker that wrote
   // to you directly is listed here too, as its 1:1 with you.
   document.getElementById('cv-people').innerHTML = ppl.map(p => p.me && !p.conv
     ? '<div class="cv-item" style="cursor:default">' + _cvAvatar(p.name, false, p.email) + '<span class="cv-lbl">' + esc(p.name) + ' (you)</span><span class="cv-dot on"></span></div>'
     : _cvItem(p.conv, _cvAvatar(p.name, false, p.email), p.me ? p.name + ' (you)' : p.name, p.unread, p.mentions, '<span class="cv-dot' + (p.me || p.online ? ' on' : '') + '" title="' + (p.me || p.online ? 'online' : 'away') + '"></span>')).join('')
-    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('');
+    + dms.map(d => _cvItem(d.conv, _cvAvatar(d.worker, true), d.worker, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message from this worker">DM</span>')).join('')
+    // Two workers' direct messages with each other (was the channel drawer).
+    + pairs.map(d => _cvItem(d.conv, _cvAvatar(d.a, true), d.a + ' \u2194 ' + d.b, d.unread, d.mentions, '<span class="cv-dm-tag" title="A direct message between two workers">DM</span>')).join('');
   const sess = (typeof sessions !== 'undefined' && Array.isArray(sessions)) ? sessions : [];
   document.getElementById('cv-workers').innerHTML = (L.workers || []).map(w => {
     const s = sess.find(x => x.name === w.name); const act = s && /active|working|running/i.test(String(s.status || ''));
@@ -76560,6 +76450,9 @@ function _cvRenderHead(sel, d) {
   } else if (sel.indexOf('d:') === 0) {
     const w = sel.slice(2).split('|')[0];
     meta.textContent = 'Direct message with ' + w + '. Only you and ' + w + ' can read this; messages here go to it.';
+  } else if (sel.indexOf('ww:') === 0) {
+    const ab = sel.slice(3).split('|');
+    meta.textContent = 'Direct message between ' + ab[0] + ' and ' + ab[1] + '. Each one\u2019s posts go to the other; yours go to the worker you @mention, or both.';
   } else {
     const ends = sel.slice(2).split('|');
     meta.textContent = ends.length === 2 && ends[0] === ends[1] ? 'Your notes to yourself. Only you can read this.' : 'Direct message';
@@ -76719,6 +76612,9 @@ function _cvDelivHtml(p) {
   const chips = want.map(w => {
     const d = got.find(x => x.worker === w);
     if (!d) return '<span>sending to ' + esc(w) + '…</span>';
+    // A post carried over from the retired worker channel files: what it
+    // reached then was never recorded, so say where it came from instead.
+    if (d.state === 'imported') return '<span title="' + esc(d.detail || '') + '">from the old channel with ' + esc(w) + '</span>';
     // Where its answer will be: here, its own thread (from a direct message), or its
     // terminal (an isolated worker gets the owner's words with no reply route).
     const where = d.reply === 'pane' ? '; it answers in its terminal' : d.reply === 'thread' ? '; it answers in its thread' : '';

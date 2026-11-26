@@ -13,6 +13,12 @@
 //!   deliver to the worker the way a post in `w:<worker>` does.
 //! - `w:<worker>`: the shared thread with one worker. Anyone who can reach the
 //!   worker can read it; posting there delivers to the worker.
+//! - `ww:<a>|<b>`: a direct message between two workers (sorted names). It
+//!   replaced the flat-file worker channels (`~/.amux/channels/<a>__<b>.jsonl`,
+//!   primitive integrity audit 2026-11-26): a post by one worker delivers to
+//!   the other under the poster's identity, and a person who can reach both
+//!   reads it and may write in it (delivered to the workers it @mentions, or
+//!   both). A worker opens one with `amux post 'ww:<other>'`.
 //!
 //! People are invited members (`org_members`) plus the owner. A post that
 //! @mentions a worker (or any post in a worker's thread) is delivered with the
@@ -53,6 +59,18 @@ pub fn routes() -> Router<AppState> {
         .route("/api/profiles", get(list_profiles))
         .route("/api/profiles/avatar/{name}", get(get_avatar))
         .route("/api/profiles/{key}/avatar", post(set_avatar))
+        // The worker channels moved into Messages (`ww:<a>|<b>`). A worker
+        // still holding the old instruction gets the new one, not a bare 404.
+        .route("/api/channels", get(channels_moved))
+        .route("/api/channels/{a}/{b}/messages", get(channels_moved).post(channels_moved).delete(channels_moved))
+}
+
+async fn channels_moved(uri: axum::http::Uri) -> Response {
+    tracing::warn!(path = %uri.path(), measured = true, n_considered = 1, verdict = "channels_route_moved",
+        "a client called the retired /api/channels route; worker channels are Messages direct messages now");
+    (StatusCode::GONE, Json(json!({"ok": false, "error":
+        "worker channels are Messages direct messages now: read and write `ww:<a>|<b>` at /api/conversations/ww:<a>|<b>/posts, \
+         or from a worker run: amux post 'ww:<other worker>' <<'EOF' ... EOF"}))).into_response()
 }
 
 const GENERAL: &str = "general";
@@ -484,6 +502,13 @@ pub(crate) enum Conv {
     /// `intent_store`'s registry when the key is parsed, so "Change" moving an
     /// outcome to another worker keeps one thread.
     Outcome(String, String),
+    /// (a, b), sorted: two workers' direct message with each other.
+    Pair(String, String),
+}
+
+/// The key of two workers' direct message, `ww:<a>|<b>` with the names sorted.
+pub(crate) fn pair_key(a: &str, b: &str) -> String {
+    if a <= b { format!("ww:{a}|{b}") } else { format!("ww:{b}|{a}") }
 }
 
 impl Conv {
@@ -505,6 +530,14 @@ impl Conv {
                 }
                 Some(if a <= b { Conv::People(a, b) } else { Conv::People(b, a) })
             }
+            "ww" => {
+                let (a, b) = rest.split_once('|')?;
+                let (a, b) = (a.trim().to_string(), b.trim().to_string());
+                if a == b || !super::session_verbs::valid_session_name(&a) || !super::session_verbs::valid_session_name(&b) {
+                    return None;
+                }
+                Some(if a <= b { Conv::Pair(a, b) } else { Conv::Pair(b, a) })
+            }
             "d" => {
                 let (w, p) = rest.split_once('|')?;
                 let (w, p) = (w.trim().to_string(), p.trim().to_ascii_lowercase());
@@ -523,6 +556,7 @@ impl Conv {
             Conv::Worker(w) => format!("w:{w}"),
             Conv::Direct(w, p) => format!("d:{w}|{p}"),
             Conv::Outcome(id, _) => format!("o:{id}"),
+            Conv::Pair(a, b) => format!("ww:{a}|{b}"),
         }
     }
 }
@@ -554,7 +588,7 @@ fn person_allows(scope: &MemberScope, worker: &str, lanes: &[Lane]) -> bool {
 /// its groups, may read and answer that one thread, and nothing else of the
 /// conversation. `root` is any post id; it is resolved to its thread's root.
 fn worker_invited(conn: &rusqlite::Connection, conv: &Conv, root: i64, worker: &str) -> bool {
-    if matches!(conv, Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..)) {
+    if matches!(conv, Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..) | Conv::Pair(..)) {
         return false;
     }
     conn.query_row(
@@ -602,6 +636,13 @@ fn may_read(who: &Who, conv: &Conv, lanes: &Fleet) -> bool {
         // access); its worker reads it while it is routed there.
         (Who::Person { email, scope }, Conv::Outcome(..)) => email == "owner" || scope.is_global(),
         (Who::Worker { name, .. }, Conv::Outcome(_, w)) => !w.is_empty() && name == w,
+        // Two workers' direct message: each of them, and a person whose access
+        // covers both (the owner always, so history with a retired worker
+        // stays readable).
+        (Who::Worker { name, .. }, Conv::Pair(a, b)) => name == a || name == b,
+        (Who::Person { email, scope }, Conv::Pair(a, b)) => {
+            email == "owner" || (person_allows(scope, a, lanes) && person_allows(scope, b, lanes))
+        }
     }
 }
 
@@ -634,6 +675,8 @@ fn mentionable_workers(who: &Who, conv: &Conv, lanes: &[Lane]) -> Vec<String> {
         },
         Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
         Conv::Outcome(_, w) => if w.is_empty() { Vec::new() } else { vec![w.clone()] },
+        // Two workers' direct message reaches those two, while they are lanes.
+        Conv::Pair(a, b) => [a, b].into_iter().filter(|w| lanes.iter().any(|l| &&l.name == w)).cloned().collect(),
         // A direct message is two people: either may hand a worker a task
         // from it, the same workers they could reach from #general.
         Conv::People(..) => match who {
@@ -656,7 +699,7 @@ fn mentionable_isolated(who: &Who, conv: &Conv, iso: &[Lane]) -> Vec<String> {
             // Any channel, as for other workers: a person brings in a worker
             // they can reach. An isolated one answers in its terminal.
             Conv::Group(_) | Conv::People(..) => person_allows(scope, &l.name, iso),
-            Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..) => false,
+            Conv::Worker(_) | Conv::Direct(..) | Conv::Outcome(..) | Conv::Pair(..) => false,
         })
         .map(|l| l.name.clone())
         .collect()
@@ -678,6 +721,7 @@ fn workers_in(conv: &Conv, lanes: &[Lane]) -> Vec<String> {
         Conv::Group(g) => lanes.iter().filter(|l| l.groups.contains(g)).map(|l| l.name.clone()).collect(),
         Conv::Worker(w) | Conv::Direct(w, _) => vec![w.clone()],
         Conv::Outcome(_, w) => if w.is_empty() { Vec::new() } else { vec![w.clone()] },
+        Conv::Pair(a, b) => vec![a.clone(), b.clone()],
         Conv::People(..) => Vec::new(),
     }
 }
@@ -887,11 +931,24 @@ async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
             direct.push(json!({"conv": key, "worker": worker, "unread": u, "mentions": m, "last_ts": ts}));
         }
     }
+    // Two workers' direct messages this reader can read, newest first.
+    let mut pairs = Vec::new();
+    for key in pair_convs(&conn) {
+        let Some(conv @ Conv::Pair(..)) = Conv::parse(&key) else { continue };
+        if !may_read(&me, &conv, &lanes) {
+            continue;
+        }
+        let Conv::Pair(a, b) = &conv else { continue };
+        let (u, m, ts) = stat(&key);
+        tu += u;
+        tm += m;
+        pairs.push(json!({"conv": key, "a": a, "b": b, "unread": u, "mentions": m, "last_ts": ts}));
+    }
     let mut me_v = me_json(&me, &all);
     // Shown so the Messages tab can offer channel settings; every settings
     // route checks again on its own.
     me_v["can_admin_channels"] = json!(channel_admin(&headers, &lanes).is_ok());
-    Json(json!({"me": me_v, "channels": channels, "people": ppl, "direct": direct, "workers": wks,
+    Json(json!({"me": me_v, "channels": channels, "people": ppl, "direct": direct, "pairs": pairs, "workers": wks,
         "totals": {"unread": tu, "mentions": tm},
         "measured": true, "n_considered": lanes.len()}))
     .into_response()
@@ -916,6 +973,120 @@ fn direct_convs(conn: &rusqlite::Connection, email: &str) -> Vec<(String, String
             _ => None,
         })
         .collect()
+}
+
+/// Every two-worker direct message (`ww:`) that has a post, newest first.
+fn pair_convs(conn: &rusqlite::Connection) -> Vec<String> {
+    let Ok(mut q) = conn.prepare("SELECT conv FROM conversation_posts WHERE conv LIKE 'ww:%' GROUP BY conv ORDER BY MAX(id) DESC") else {
+        return Vec::new();
+    };
+    q.query_map([], |r| r.get::<_, String>(0)).into_iter().flatten().flatten().collect()
+}
+
+// ---- the worker channels' files, imported once -------------------------------
+
+/// What one pass over `<home>/channels` did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChannelImport {
+    pub files: usize,
+    pub inserted: usize,
+    pub already_present: usize,
+    pub unparsed_lines: usize,
+    pub failed_files: usize,
+}
+
+/// One line of a channel file: `{"ts": <unix s>, "from", "to", "text"}`.
+fn channel_line(v: &Value) -> Option<(i64, String, String, String)> {
+    let from = v.get("from")?.as_str()?.trim().to_string();
+    let to = v.get("to").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let text = v.get("text")?.as_str()?.to_string();
+    let ts = v.get("ts").and_then(Value::as_i64).unwrap_or(0);
+    (!from.is_empty() && !text.trim().is_empty()).then_some((ts, from, to, text))
+}
+
+/// The worker channels (`<home>/channels/<a>__<b>.jsonl`, the retired
+/// `api/channels.rs`) become posts in the two workers' direct message
+/// (`ww:<a>|<b>`). Each file is renamed `<name>.jsonl.imported` once its posts
+/// are in, and never deleted. A line already present (same conversation,
+/// author, time and text) is not inserted twice, so a pass interrupted
+/// between the insert and the rename, or run again, adds nothing.
+pub(crate) async fn import_worker_channels(state: &AppState, home: &std::path::Path) -> ChannelImport {
+    let dir = home.join("channels");
+    let mut out = ChannelImport::default();
+    let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+        .map(|e| e.path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl")).collect();
+    names.sort();
+    for path in names {
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let stem = file.trim_end_matches(".jsonl");
+        let Some(conv) = stem.split_once("__").and_then(|(a, b)| Conv::parse(&pair_key(a, b))) else {
+            tracing::warn!(file = %file, verdict = "channel_import_unnamed",
+                "a channel file's name is not <worker>__<worker>.jsonl; left where it is");
+            out.failed_files += 1;
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            out.failed_files += 1;
+            continue;
+        };
+        let mut rows = Vec::new();
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            match serde_json::from_str::<Value>(line).ok().as_ref().and_then(channel_line) {
+                Some(r) => rows.push(r),
+                None => out.unparsed_lines += 1,
+            }
+        }
+        let key = conv.key();
+        let detail = format!("imported from ~/.amux/channels/{file}");
+        let counts = Arc::new(Mutex::new((0usize, 0usize)));
+        let c2 = counts.clone();
+        let wrote = state.store.write_async(move |c| {
+            let (mut ins, mut had) = (0usize, 0usize);
+            for (ts, from, to, body) in rows {
+                let (author, ms) = (format!("worker:{from}"), ts * 1000);
+                let exists = c.query_row(
+                    "SELECT 1 FROM conversation_posts WHERE conv=?1 AND author_key=?2 AND ts=?3 AND body=?4 LIMIT 1",
+                    rusqlite::params![key, author, ms, body], |_| Ok(())).is_ok();
+                if exists {
+                    had += 1;
+                    continue;
+                }
+                let mentions = if to.is_empty() { json!([]) } else { json!([format!("worker:{to}")]) };
+                let deliveries = if to.is_empty() { json!([]) } else {
+                    json!([{"worker": to, "ok": true, "state": "imported", "status": 0, "detail": detail, "reply": "here"}])
+                };
+                c.execute(
+                    "INSERT INTO conversation_posts (conv, author_key, author_name, body, mentions, ts, deliveries) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    rusqlite::params![key, author, from, body, mentions.to_string(), ms, deliveries.to_string()],
+                )?;
+                ins += 1;
+            }
+            if let Ok(mut g) = c2.lock() {
+                *g = (ins, had);
+            }
+            Ok(crate::db::WriteOutcome { applied: ins > 0, events: vec![] })
+        }).await;
+        if let Err(e) = wrote {
+            tracing::warn!(file = %file, error = %e, verdict = "channel_import_failed",
+                "a channel file's posts could not be stored; the file is left to import next start");
+            out.failed_files += 1;
+            continue;
+        }
+        let (ins, had) = *counts.lock().unwrap_or_else(|p| p.into_inner());
+        out.inserted += ins;
+        out.already_present += had;
+        out.files += 1;
+        let done = path.with_file_name(format!("{file}.imported"));
+        if let Err(e) = std::fs::rename(&path, &done) {
+            tracing::warn!(file = %file, error = %e, verdict = "channel_import_rename_failed",
+                "a channel file was imported but could not be renamed; the next start finds its posts already present");
+        }
+    }
+    tracing::info!(files = out.files, inserted = out.inserted, already_present = out.already_present,
+        unparsed_lines = out.unparsed_lines, failed_files = out.failed_files, measured = true,
+        n_considered = out.files + out.failed_files, verdict = "channel_import_pass",
+        "worker channel files imported into Messages direct messages (ww:)");
+    out
 }
 
 fn post_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
@@ -1280,10 +1451,14 @@ fn send_headers(who: &Who, req: &HeaderMap) -> HeaderMap {
 }
 
 const WORKER_CHAIN: usize = 4;
+/// Two workers' direct message is workers talking by design (it replaced the
+/// worker channels, which had no cap at all), so it holds deliveries only
+/// after this many worker posts in a row with no person between them.
+const PAIR_WORKER_CHAIN: usize = 12;
 
 /// True when the newest WORKER_CHAIN posts (newest first) are all workers'.
-fn worker_chain_capped(recent: &[String]) -> bool {
-    recent.len() >= WORKER_CHAIN && recent.iter().all(|a| a.starts_with("worker:"))
+fn worker_chain_capped(recent: &[String], cap: usize) -> bool {
+    recent.len() >= cap && recent.iter().all(|a| a.starts_with("worker:"))
 }
 
 /// Seconds to wait before each retry of a failed delivery.
@@ -1323,6 +1498,10 @@ fn delivery_text(conv: &Conv, author: &str, body: &str) -> String {
         // get them to do work ... and it does the thread shit inline").
         Conv::People(..) => (format!("{author} mentioned you in a direct message (amux Messages):"), "that message's thread".to_string()),
         Conv::Direct(..) => (format!("{author} wrote to you in your direct message with them (amux Messages):"), "that direct message".to_string()),
+        // Two workers: the message is from the other worker (or a person
+        // reading both), and the answer goes back in the same direct message.
+        Conv::Pair(a, b) => (format!("{author} wrote to you in the direct message between {a} and {b} (amux Messages):"),
+            "that direct message".to_string()),
         // An outcome: one request, followed by someone who never sees a
         // worker, a terminal or a card. The answer is the result itself.
         Conv::Outcome(id, _) => (
@@ -1404,6 +1583,17 @@ fn route_worker_dm(me: &Who, conv: String) -> (String, Option<String>) {
     }
 }
 
+/// A worker's `ww:<other>` (one name, no `|`) names the worker it is writing
+/// to: the post goes in the two workers' direct message, `ww:<a>|<b>`.
+fn route_worker_pair(me: &Who, conv: String) -> String {
+    match (me, conv.strip_prefix("ww:")) {
+        (Who::Worker { name, .. }, Some(rest)) if !rest.contains('|') && !rest.trim().is_empty() => {
+            pair_key(name, rest.trim().trim_start_matches('@'))
+        }
+        _ => conv,
+    }
+}
+
 /// A person by email, display name or the local part of their email.
 fn find_person<'a>(all: &'a [Person], to: &str) -> Option<&'a Person> {
     all.iter().find(|p| p.email == to)
@@ -1428,6 +1618,7 @@ async fn create_post(
     // which anyone who can reach the worker reads. A worker never writes into
     // two people's private DM.
     let (conv, mut dm_to) = route_worker_dm(&me, conv);
+    let conv = route_worker_pair(&me, conv);
     let Some(mut conv) = Conv::parse(&conv) else { return err(StatusCode::BAD_REQUEST, "unknown conversation key") };
     // `d:<self>|<handle>` written directly names the person the same way.
     if let (Who::Worker { name, .. }, Conv::Direct(w, to), None) = (&me, &conv, &dm_to) {
@@ -1589,6 +1780,22 @@ pub(crate) async fn post_inner(
             mentions.push(format!("worker:{w}"));
         }
     }
+    // Two workers' direct message: a worker's post goes to the other one; a
+    // person's goes to the workers it @mentions, or to both when it names
+    // neither. Only a worker that is a lane now is sent anything.
+    if let Conv::Pair(a, b) = &conv {
+        let to: Vec<&String> = match me {
+            Who::Worker { name, .. } => [a, b].into_iter().filter(|w| *w != name).collect(),
+            Who::Person { .. } if targets.is_empty() => vec![a, b],
+            Who::Person { .. } => Vec::new(),
+        };
+        for w in to {
+            if workers.contains(w) && !targets.contains(w) {
+                targets.push(w.clone());
+                mentions.push(format!("worker:{w}"));
+            }
+        }
+    }
     // A reply reaches every worker already in the thread (it was mentioned in
     // it, or posted in it), as a Slack thread does: no need to @ it again.
     if let Some(root) = parent {
@@ -1616,12 +1823,13 @@ pub(crate) async fn post_inner(
         // Two workers @mentioning each other would reply forever. A worker's
         // post still lands, but delivers nothing once WORKER_CHAIN posts in a
         // row have been workers'; a person posting resets it.
+        let cap = if matches!(conv, Conv::Pair(..)) { PAIR_WORKER_CHAIN } else { WORKER_CHAIN };
         let recent: Vec<String> = state.store.read().ok().and_then(|c| {
             let mut q = c.prepare("SELECT author_key FROM conversation_posts WHERE conv=?1 ORDER BY id DESC LIMIT ?2").ok()?;
-            let rows = q.query_map(rusqlite::params![conv.key(), WORKER_CHAIN as i64], |r| r.get::<_, String>(0)).ok()?;
+            let rows = q.query_map(rusqlite::params![conv.key(), cap as i64], |r| r.get::<_, String>(0)).ok()?;
             Some(rows.filter_map(Result::ok).collect())
         }).unwrap_or_default();
-        if !targets.is_empty() && worker_chain_capped(&recent) {
+        if !targets.is_empty() && worker_chain_capped(&recent, cap) {
             tracing::warn!(conv = %conv.key(), author = %name, held = targets.len(), measured = true, n_considered = recent.len(),
                 verdict = "conversation_worker_chain_capped", "worker-to-worker mentions held: no person has posted in this chain");
             targets.clear();
@@ -1908,6 +2116,14 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
         }
     };
     let Some(conv) = Conv::parse(&key) else { return };
+    // Two workers' direct message: each answers with `amux post` itself, as
+    // the worker channels it replaced did. Posting a turn's final text for
+    // them would bounce every turn between the two workers.
+    if matches!(conv, Conv::Pair(..)) {
+        tracing::info!(conv = %key, worker, measured = true, n_considered = 1, verdict = "conversation_relay_pair_skipped",
+            "turn-end: a worker-to-worker direct message is answered by the worker itself; nothing relayed");
+        return;
+    }
     // An outcome thread that is not routed to this worker here (a prompt read
     // back from an older transcript names one from another run) gets nothing.
     if let Conv::Outcome(_, w) = &conv {
@@ -1937,7 +2153,7 @@ pub(crate) async fn relay_turn(state: &AppState, worker: &str, prompt: &str, fin
 pub(crate) fn resolve_link_target(target: &str) -> Option<(String, String)> {
     let t = target.trim().trim_start_matches('@').trim_start_matches('#');
     if let Some(c) = Conv::parse(t) {
-        if !matches!(c, Conv::People(..) | Conv::Direct(..)) {
+        if !matches!(c, Conv::People(..) | Conv::Direct(..) | Conv::Pair(..)) {
             return Some((c.key(), c.key()));
         }
     }
@@ -2174,6 +2390,7 @@ async fn notify_owner(state: &AppState, conv: &Conv, author_key: &str, author_na
         Conv::People(..) => "a direct message".into(),
         Conv::Direct(w, _) => format!("a direct message from {w}"),
         Conv::Outcome(..) => "a request you made".into(),
+        Conv::Pair(a, b) => format!("{a} and {b}'s direct message"),
     };
     let title = if parent.is_some() { format!("{author_name} replied in {place}") } else { format!("{author_name} in {place}") };
     let snippet: String = body.chars().take(180).collect();
@@ -3366,9 +3583,10 @@ mod tests {
     #[test]
     fn a_worker_only_chain_stops_delivering() {
         let w = |n: &str| format!("worker:{n}");
-        assert!(worker_chain_capped(&[w("a"), w("b"), w("a"), w("b")]));
-        assert!(!worker_chain_capped(&[w("a"), w("b"), "person:owner".into(), w("b")]), "a person resets it");
-        assert!(!worker_chain_capped(&[w("a"), w("b")]), "short chains deliver");
+        assert!(worker_chain_capped(&[w("a"), w("b"), w("a"), w("b")], WORKER_CHAIN));
+        assert!(!worker_chain_capped(&[w("a"), w("b"), "person:owner".into(), w("b")], WORKER_CHAIN), "a person resets it");
+        assert!(!worker_chain_capped(&[w("a"), w("b")], WORKER_CHAIN), "short chains deliver");
+        assert!(!worker_chain_capped(&[w("a"), w("b"), w("a"), w("b")], PAIR_WORKER_CHAIN), "two workers' DM holds later");
     }
 
     #[test]
@@ -3408,5 +3626,120 @@ mod tests {
         // variables, so the reply recipe must not contain any.
         assert!(!t.contains('$'), "{t}");
     }
-}
 
+    // ---- two workers' direct messages (the retired worker channels) ----
+
+    fn test_state(dir: &std::path::Path) -> AppState {
+        AppState {
+            store: std::sync::Arc::new(crate::db::Store::open(&dir.join("t.db")).unwrap()),
+            started: std::time::Instant::now(),
+            build_hash: "test".into(),
+            auth_token: None,
+            reconciled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn a_two_worker_dm_is_one_key_and_only_its_workers_and_people_reaching_both_read_it() {
+        let c = Conv::parse("ww:zed|amy").unwrap();
+        assert_eq!(c.key(), "ww:amy|zed", "the names are sorted, so either order is one conversation");
+        assert_eq!(pair_key("zed", "amy"), "ww:amy|zed");
+        assert!(Conv::parse("ww:amy|amy").is_none(), "a worker has no direct message with itself");
+        assert!(Conv::parse("ww:amy").is_none(), "one name is only a worker's shorthand, routed before parsing");
+        assert!(Conv::parse("ww:a b|c").is_none(), "not a worker name");
+        let f = Fleet::of(vec![lane("amy", &["x"]), lane("zed", &["y"]), lane("bob", &["x"])]);
+        let w = |n: &str| Who::Worker { name: n.into(), groups: Default::default() };
+        assert!(may_read(&w("amy"), &c, &f) && may_read(&w("zed"), &c, &f));
+        assert!(!may_read(&w("bob"), &c, &f), "a third worker cannot read it");
+        assert!(may_read(&person("owner", MemberScope::Global), &c, &f));
+        assert!(!may_read(&person("ann@x.io", MemberScope::Group("x".into())), &c, &f), "group x reaches amy, not zed");
+        assert!(may_read(&person("ann@x.io", MemberScope::Global), &c, &f));
+        assert_eq!(mentionable_workers(&w("amy"), &c, &f), vec!["amy".to_string(), "zed".to_string()]);
+        let gone = Conv::parse("ww:amy|retired").unwrap();
+        assert_eq!(mentionable_workers(&w("amy"), &gone, &f), vec!["amy".to_string()], "a worker that is no lane is sent nothing");
+        assert_eq!(route_worker_pair(&w("zed"), "ww:amy".into()), "ww:amy|zed");
+        assert_eq!(route_worker_pair(&person("owner", MemberScope::Global), "ww:amy".into()), "ww:amy", "only a worker names itself");
+        let t = delivery_text(&c, "amy", "can you rebase?");
+        assert!(t.contains("direct message between amy and zed") && t.contains("amux post 'ww:amy|zed'"), "{t}");
+    }
+
+    /// A worker's post in `ww:<other>` lands in the pair's conversation, under
+    /// the worker, and is delivered to the other worker with the reply recipe.
+    #[tokio::test]
+    async fn a_worker_writes_to_another_worker_in_their_direct_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions/pair-amy.env"), "CC_TAGS=pairs\n").unwrap();
+        std::fs::write(dir.path().join("sessions/pair-zed.env"), "CC_PAUSED=1\nCC_TAGS=pairs\n").unwrap();
+        let state = test_state(dir.path());
+        let mut h = HeaderMap::new();
+        h.insert("x-amux-session", HeaderValue::from_static("pair-amy"));
+        let r = create_post(State(state.clone()), Path("ww:pair-zed".into()), h, Bytes::from_static(b"please rebase onto main")).await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(v["conv"], json!("ww:pair-amy|pair-zed"), "{v}");
+        assert_eq!(v["author"], json!("worker:pair-amy"), "attributed to the worker that wrote it: {v}");
+        assert_eq!(v["mentions"], json!(["worker:pair-zed"]), "{v}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let rows = loop {
+            let rows: Vec<String> = state.store.read().unwrap()
+                .prepare("SELECT text FROM cmd_history WHERE session='pair-zed'").unwrap()
+                .query_map([], |r| r.get(0)).unwrap().flatten().collect();
+            let deliveries: String = state.store.read().unwrap()
+                .query_row("SELECT deliveries FROM conversation_posts WHERE id=?1", [v["id"].as_i64().unwrap()], |r| r.get(0)).unwrap();
+            if (!rows.is_empty() && deliveries.contains("pair-zed")) || std::time::Instant::now() > deadline {
+                break (rows, deliveries);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        let (rows, deliveries) = rows;
+        assert_eq!(rows.len(), 1, "the other worker got it once: {rows:?}, deliveries {deliveries}");
+        assert!(deliveries.contains("\"ok\":true"), "the outcome is recorded on the post: {deliveries}");
+        assert!(rows[0].contains("please rebase onto main") && rows[0].contains("amux post 'ww:pair-amy|pair-zed'"), "{rows:?}");
+        let none: i64 = state.store.read().unwrap()
+            .query_row("SELECT COUNT(*) FROM cmd_history WHERE session='pair-amy'", [], |r| r.get(0)).unwrap();
+        assert_eq!(none, 0, "the writer is not sent its own post");
+        // The owner's Messages list carries it.
+        let r = list(State(state.clone()), HeaderMap::new()).await;
+        let v: Value = serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(v["pairs"][0]["conv"], json!("ww:pair-amy|pair-zed"), "{v}");
+    }
+
+    /// The worker channel files are imported once, every line, and renamed;
+    /// a second pass over a restored file inserts nothing.
+    #[tokio::test]
+    async fn channel_files_become_two_worker_direct_messages_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        let ch = dir.path().join("channels");
+        std::fs::create_dir_all(&ch).unwrap();
+        let lines = [
+            json!({"ts": 1_700_000_000, "from": "nissan", "to": "amux", "text": "can you look at the drive access?"}),
+            json!({"ts": 1_700_000_060, "from": "amux", "to": "nissan", "text": "yes, on it"}),
+        ];
+        let body = format!("{}\n{}\nnot json\n", lines[0], lines[1]);
+        std::fs::write(ch.join("amux__nissan.jsonl"), &body).unwrap();
+        std::fs::write(ch.join("README.txt"), "not a channel").unwrap();
+        let state = test_state(dir.path());
+        let first = import_worker_channels(&state, dir.path()).await;
+        assert_eq!(first, ChannelImport { files: 1, inserted: 2, already_present: 0, unparsed_lines: 1, failed_files: 0 });
+        assert!(!ch.join("amux__nissan.jsonl").exists(), "the file is renamed once imported");
+        assert_eq!(std::fs::read_to_string(ch.join("amux__nissan.jsonl.imported")).unwrap(), body, "and kept as it was");
+        let rows: Vec<(String, String, String, i64, String)> = state.store.read().unwrap()
+            .prepare("SELECT conv, author_key, body, ts, deliveries FROM conversation_posts ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap().flatten().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].0.as_str(), rows[0].1.as_str(), rows[0].2.as_str(), rows[0].3),
+            ("ww:amux|nissan", "worker:nissan", "can you look at the drive access?", 1_700_000_000_000));
+        assert!(rows[1].4.contains("\"state\":\"imported\"") && rows[1].4.contains("amux__nissan.jsonl"), "{rows:?}");
+        // Interrupted before the rename, or run again: nothing doubles.
+        std::fs::write(ch.join("amux__nissan.jsonl"), &body).unwrap();
+        let again = import_worker_channels(&state, dir.path()).await;
+        assert_eq!(again, ChannelImport { files: 1, inserted: 0, already_present: 2, unparsed_lines: 1, failed_files: 0 });
+        let n: i64 = state.store.read().unwrap().query_row("SELECT COUNT(*) FROM conversation_posts", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let none = import_worker_channels(&state, dir.path()).await;
+        assert_eq!(none.files, 0, "nothing left to import");
+    }
+}

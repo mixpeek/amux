@@ -4221,28 +4221,6 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
 </div>
 
 <!-- Channel drawer (session-to-session DM) -->
-<div id="channel-drawer" class="channel-drawer" onmousedown="this.dataset.bdMousedown=event.target===this?'1':''" onclick="if(event.target===this&&this.dataset.bdMousedown==='1'&&!this.dataset.justOpened)channelClose();this.dataset.bdMousedown=''">
-  <div class="channel-panel" role="dialog" aria-label="Worker channel">
-    <div class="channel-header">
-      <div class="channel-header-title">
-        <span class="channel-header-icon">#</span>
-        <span id="channel-header-pair">channel</span>
-      </div>
-      <div style="display:flex;gap:var(--space-1-5);">
-        <button class="btn" onclick="channelEnd()" aria-label="End channel" title="End channel and clear history" style="font-size:var(--fs-base);padding:var(--space-1) var(--space-2-5);color:var(--red);">End</button>
-        <button class="btn" onclick="channelClose()" aria-label="Close" style="font-size:var(--fs-2xl);padding:var(--space-1) var(--space-2-5);">&#x2715;</button>
-      </div>
-    </div>
-    <div id="channel-thread" class="channel-thread"></div>
-    <form class="channel-input-row" onsubmit="event.preventDefault(); channelSend();">
-      <textarea id="channel-input" class="channel-input" placeholder="Message..." rows="1"
-        oninput="try{localStorage.setItem('amux_draft_channel_'+(_channelMe||'')+'_'+(_channelOther||''),this.value)}catch(e){}"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();channelSend();}"></textarea>
-      <button type="submit" class="btn primary" id="channel-send-btn">Send</button>
-    </form>
-  </div>
-</div>
-
 <!-- Confirm / alert modal -->
 <!-- Configuration editor: one editor UX at global, group, and worker level (AMUX-2436).
      Same shape as the peek Memory panel — full-height textarea, Preview, Save —

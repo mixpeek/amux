@@ -663,6 +663,15 @@ async fn async_main() {
     drop(api::messages::accountability_spawn(state.clone()));
     // Outcome threads (o:<id>) resolve their worker from this registry.
     api::intent_store::load_registry(&state);
+    // The retired worker channels' files become Messages direct messages
+    // (ww:<a>|<b>), once: each imported file is renamed `.imported`.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let home = crate::config::amux_home();
+            api::conversations::import_worker_channels(&state, &home).await;
+        });
+    }
 
     // Pane-size restoration (AMUX-2634): a peek resizes the worker's tmux
     // window to the READER's viewport and tmux pins `window-size manual`, so

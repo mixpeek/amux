@@ -885,7 +885,6 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Switch to Opus  continue | `bulkSwitchModel` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Switch to Sonnet  continue | `bulkSwitchModel` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | index.html | button | `cacheFilesDir` | async (reads) | no busy state (request after an await); disables itself; failure only in Recent actions | yes | yes |
-| index.html | End channel | `channelEnd` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Clear all | `clearAllFilters` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Clear all | `clearAllFilters` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Clear done | `clearDone` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
@@ -1729,8 +1728,6 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Subtasks | `boardDetailTab` | onclick |
 | index.html | Worker actions | `boardDetailTab` | onclick |
 | app.js | button | `cancelNewBoardStatus` | onclick |
-| index.html | Close | `channelClose` | onclick |
-| index.html | channel-drawer | `channelClose` | onclick |
 | index.html | div | `closeAddMenu` | onclick |
 | index.html | Cancel | `closeBoardEdit` | onclick |
 | index.html | board-edit-overlay | `closeBoardEdit` | onclick |

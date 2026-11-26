@@ -108,7 +108,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     // PROXIED_FAMILIES is empty and Python is deleted, so there is no other
     // value these could take. Found in one pass rather than one per test run —
     // the assert reports only the first offender.
-    ("/api/channels", "per-session channels + message history"),
+    ("/api/channels", "retired worker channels: 410 naming the Messages ww: conversation"),
     ("/api/client-debug", "SPA debug beacons (write-only, logged)"),
     ("/api/log-search", "grep across session log files"),
     ("/api/memory", "global memory document"),

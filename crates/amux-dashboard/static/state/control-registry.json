@@ -6852,14 +6852,8 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
-    "channelEnd": {
-      "kind": "command.channelEnd",
-      "feedback_required": true,
-      "target": "control-or-request",
-      "queue_policy": "transport-declared"
-    },
-    "channelSend": {
-      "kind": "command.channelSend",
+    "channelOpen": {
+      "kind": "command.channelOpen",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

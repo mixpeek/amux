@@ -54,7 +54,6 @@ pub mod browser_routing;
 pub mod cdp_proxy;
 pub mod browser_scope;
 pub mod calendar;
-pub mod channels;
 pub mod chat_stream;
 pub mod chat_delegate;
 pub mod chat_context;
@@ -338,7 +337,6 @@ pub fn router_with_connector_transport(
         .nest("/api/usage", usage::routes())
         .nest("/api/velocity", velocity::routes())
         .nest("/api/review", review::routes())
-        .nest("/api/channels", channels::routes())
         .nest("/api/alert", alerts::routes())
         .route("/api/stats/daily", axum::routing::get(stats::daily))
         // The writer for the baseline `daily` already reads (AMUX-2871).
