@@ -38,8 +38,8 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path as AxPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{OriginalUri, Path as AxPath, Query, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension};
@@ -1245,8 +1245,46 @@ pub async fn learn_after_owner_approval(state: &AppState, card: &str, note: &str
 /// non-global) dashboard member. A lane that could write here would be
 /// granting itself standing permission, which is the one thing this table
 /// must never let it do.
-fn refuse_non_owner(headers: &HeaderMap) -> Option<Response> {
+///
+/// Leaving the worker header off is not proof of being the owner: while
+/// loopback trust runs in report mode a worker that drops its header is
+/// admitted, and here it would be writing its own standing approvals. So when
+/// an owner token is configured, a write with no worker identity must carry it
+/// (the dashboard and the owner's own `amux` CLI both send it).
+fn refuse_non_owner(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Option<Response> {
     if super::session_verbs::admin_origin(headers, "standing_approval").is_some() { return None; }
+    if let Some(r) = refuse_unproven(state, headers, uri) {
+        return Some(r);
+    }
+    refuse_worker(headers)
+}
+
+fn refuse_unproven(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Option<Response> {
+    let named = ["x-amux-session", "x-amux-worker"].iter().any(|h| {
+        headers.get(*h).and_then(|v| v.to_str().ok()).is_some_and(|s| !s.trim().is_empty())
+    });
+    if named || state.auth_token.is_none() || super::auth::has_owner_token(state, headers, uri) {
+        return None;
+    }
+    tracing::warn!(
+        verdict = "standing_approval_unproven_refused",
+        "a standing approval write with no worker identity did not carry the owner bearer"
+    );
+    Some(
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": "a standing approval write without a worker identity must carry the owner bearer",
+                "code": "standing_approval_owner_proof_required",
+                "how": "the owner runs `amux approvals add --stdin` from his own shell (no AMUX_SESSION), or uses the dashboard",
+            })),
+        )
+            .into_response(),
+    )
+}
+
+fn refuse_worker(headers: &HeaderMap) -> Option<Response> {
     let worker = ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
             .get(*h)
@@ -1365,9 +1403,10 @@ fn terms_field(b: &Value) -> String {
 async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     body: Option<Json<Value>>,
 ) -> Response {
-    if let Some(r) = refuse_non_owner(&headers) {
+    if let Some(r) = refuse_non_owner(&state, &headers, &uri) {
         return r;
     }
     let b = body.map(|Json(v)| v).unwrap_or(Value::Null);
@@ -1497,10 +1536,11 @@ async fn create(
 async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     AxPath(id): AxPath<String>,
     body: Option<Json<Value>>,
 ) -> Response {
-    if let Some(r) = refuse_non_owner(&headers) {
+    if let Some(r) = refuse_non_owner(&state, &headers, &uri) {
         return r;
     }
     let Some(n) = parse_id(&id) else {
@@ -1530,9 +1570,10 @@ async fn patch(
 async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     AxPath(id): AxPath<String>,
 ) -> Response {
-    if let Some(r) = refuse_non_owner(&headers) {
+    if let Some(r) = refuse_non_owner(&state, &headers, &uri) {
         return r;
     }
     let Some(n) = parse_id(&id) else {
@@ -2147,15 +2188,15 @@ pub(crate) mod tests {
     #[test]
     fn owner_only_writes() {
         let mut h = HeaderMap::new();
-        assert!(refuse_non_owner(&h).is_none(), "no identity = the owner's dashboard/shell");
+        assert!(refuse_worker(&h).is_none(), "no identity = the owner's dashboard/shell");
         h.insert("x-amux-session", "mixpeek-cicd".parse().unwrap());
-        assert!(refuse_non_owner(&h).is_some());
+        assert!(refuse_worker(&h).is_some());
         let mut h2 = HeaderMap::new();
         h2.insert("x-amux-worker", "gs-4".parse().unwrap());
-        assert!(refuse_non_owner(&h2).is_some());
+        assert!(refuse_worker(&h2).is_some());
         let mut h3 = HeaderMap::new();
         h3.insert("x-amux-session", "  ".parse().unwrap());
-        assert!(refuse_non_owner(&h3).is_none(), "blank is absent");
+        assert!(refuse_worker(&h3).is_none(), "blank is absent");
     }
 
     // ---- through the router, against a hermetic store --------------------
@@ -2207,6 +2248,37 @@ pub(crate) mod tests {
             let (st, v) = call(app, "POST", "/api/approvals/standing", &[], Some(b)).await;
             assert_eq!(st, StatusCode::CREATED, "{v}");
         }
+    }
+
+    // Red-team run 7: with loopback trust in report mode a worker that drops
+    // its header is admitted, so "no worker header" must not be enough to
+    // write the table that pre-answers the owner's escalations.
+    #[tokio::test]
+    async fn a_write_without_identity_needs_the_owner_bearer() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::env::remove_var(KILL_SWITCH_KEY);
+        let mut st = test_state();
+        st.auth_token = Some("owner-secret".into());
+        let app = routes().with_state(st);
+        let body = seed_bodies()[0].clone();
+        let (code, v) = call(&app, "POST", "/api/approvals/standing", &[], Some(body.clone())).await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{v}");
+        assert_eq!(v["code"], "standing_approval_owner_proof_required");
+        let (code, v) = call(&app, "POST", "/api/approvals/standing",
+                             &[("authorization", "Bearer wrong")], Some(body.clone())).await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{v}");
+        let (code, v) = call(&app, "POST", "/api/approvals/standing",
+                             &[("authorization", "Bearer owner-secret")], Some(body)).await;
+        assert_eq!(code, StatusCode::CREATED, "{v}");
+        let id = v["approval"]["id"].as_str().expect("created approval has an id").to_string();
+        let (code, _) = call(&app, "DELETE", &format!("/api/approvals/standing/{id}"), &[], None).await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "an unproven revoke is refused too");
+        let (code, _) = call(&app, "PATCH", &format!("/api/approvals/standing/{id}"), &[], Some(json!({"enabled": false}))).await;
+        assert_eq!(code, StatusCode::FORBIDDEN, "an unproven patch is refused too");
+        let (code, _) = call(&app, "DELETE", &format!("/api/approvals/standing/{id}"),
+                             &[("authorization", "Bearer owner-secret")], None).await;
+        assert_eq!(code, StatusCode::OK, "the owner bearer revokes");
     }
 
     #[tokio::test]
