@@ -3573,12 +3573,14 @@ mod tests {
         let live = {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let a = l.local_addr().unwrap();
+            crate::api::email_links::allow_in_test(a);
             tokio::spawn(async move { axum::serve(l, Router::new().fallback(|| async { "ok" })).await.ok() });
             format!("http://{a}/demo")
         };
         let dead = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let p = l.local_addr().unwrap().port();
+            crate::api::email_links::allow_in_test(l.local_addr().unwrap());
             drop(l);
             format!("http://127.0.0.1:{p}/book")
         };

@@ -14,6 +14,13 @@
 //! fine (zenodo returns 403). The result rides the approval's preview and
 //! its card, so the owner sees "links: N checked, all live" or the warnings
 //! before Approve. `AMUX_EMAIL_LINK_CHECK=0` turns it off.
+//!
+//! The fetch comes from this machine, and the worker learns the verdict, so a
+//! link (or a redirect it takes) to a loopback, private, link-local or
+//! tailnet address is never fetched: it is a warning, "not a public
+//! address", and the connection is pinned to the address that was checked
+//! so a second DNS answer cannot swap one in. Otherwise a held send could
+//! make the server GET its own loopback routes or the LAN and report back.
 
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -61,25 +68,106 @@ pub(crate) fn status_verdict(code: u16) -> &'static str {
     }
 }
 
-async fn check_one(client: &reqwest::Client, url: String) -> Link {
-    match client.get(&url).send().await {
-        Ok(r) => {
-            let code = r.status().as_u16();
-            Link { verdict: status_verdict(code), why: format!("HTTP {code}"), url }
-        }
-        Err(e) if e.is_timeout() => Link { url, verdict: "warn", why: "no answer in 8s".into() },
-        Err(e) => {
-            // reqwest's Display hides the cause ("error sending request");
-            // the source chain carries "dns error" / "Connection refused".
-            let mut why = e.to_string();
-            let mut src = std::error::Error::source(&e);
-            while let Some(s) = src {
-                why = s.to_string();
-                src = s.source();
-            }
-            Link { url, verdict: "dead", why }
+const MAX_HOPS: usize = 5;
+
+/// Where one hop may connect, decided before any byte is sent.
+enum Target {
+    Addr(std::net::SocketAddr),
+    NoDns(String),
+    NotPublic,
+}
+
+#[cfg(test)]
+static TEST_ALLOW: std::sync::Mutex<Vec<std::net::SocketAddr>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests serve their links on loopback. Only an address a test registers here
+/// is let through; every other non-public address stays refused in tests too.
+#[cfg(test)]
+pub(crate) fn allow_in_test(a: std::net::SocketAddr) {
+    TEST_ALLOW.lock().unwrap().push(a);
+}
+
+fn target(host: &str, port: u16) -> Target {
+    use std::net::ToSocketAddrs;
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    #[cfg(test)]
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        let a = std::net::SocketAddr::new(ip, port);
+        if TEST_ALLOW.lock().unwrap().contains(&a) {
+            return Target::Addr(a);
         }
     }
+    match (h, port).to_socket_addrs() {
+        Err(e) => Target::NoDns(format!("dns error: {e}")),
+        Ok(it) => {
+            let addrs: Vec<_> = it.collect();
+            if addrs.is_empty() {
+                Target::NoDns("dns error: no address".into())
+            } else if addrs.iter().all(|a| super::conversations::public_ip(a.ip())) {
+                Target::Addr(addrs[0])
+            } else {
+                Target::NotPublic
+            }
+        }
+    }
+}
+
+async fn check_one(url: String) -> Link {
+    let Ok(mut at) = reqwest::Url::parse(&url) else {
+        return Link { url, verdict: "dead", why: "not a URL".into() };
+    };
+    for _ in 0..=MAX_HOPS {
+        let host = at.host_str().unwrap_or("").to_string();
+        let port = at.port_or_known_default().unwrap_or(443);
+        let h2 = host.clone();
+        let addr = match tokio::task::spawn_blocking(move || target(&h2, port)).await {
+            Ok(Target::Addr(a)) => a,
+            Ok(Target::NoDns(why)) => return Link { url, verdict: "dead", why },
+            Ok(Target::NotPublic) | Err(_) => {
+                tracing::warn!(host = %host, verdict = "email_link_not_public",
+                    "[email-links] a held send's link (or a redirect it took) names a non-public address; not fetched");
+                return Link { url, verdict: "warn", why: "not a public address, not fetched".into() };
+            }
+        };
+        let client = match reqwest::Client::builder()
+            .user_agent(UA)
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(host.trim_start_matches('[').trim_end_matches(']'), addr)
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return Link { url, verdict: "warn", why: format!("http client: {e}") },
+        };
+        match client.get(at.clone()).send().await {
+            Ok(r) if r.status().is_redirection() => {
+                match r.headers().get("location").and_then(|v| v.to_str().ok()).and_then(|l| at.join(l).ok()) {
+                    Some(n) if matches!(n.scheme(), "http" | "https") => at = n,
+                    _ => {
+                        let code = r.status().as_u16();
+                        return Link { verdict: status_verdict(code), why: format!("HTTP {code}"), url };
+                    }
+                }
+            }
+            Ok(r) => {
+                let code = r.status().as_u16();
+                return Link { verdict: status_verdict(code), why: format!("HTTP {code}"), url };
+            }
+            Err(e) if e.is_timeout() => return Link { url, verdict: "warn", why: "no answer in 8s".into() },
+            Err(e) => {
+                // reqwest's Display hides the cause ("error sending request");
+                // the source chain carries "dns error" / "Connection refused".
+                let mut why = e.to_string();
+                let mut src = std::error::Error::source(&e);
+                while let Some(s) = src {
+                    why = s.to_string();
+                    src = s.source();
+                }
+                return Link { url, verdict: "dead", why };
+            }
+        }
+    }
+    Link { url, verdict: "warn", why: format!("more than {MAX_HOPS} redirects") }
 }
 
 /// Check every URL in `body`. `measured` is false when the check is off or
@@ -91,16 +179,7 @@ pub(crate) async fn check(body: &str) -> Value {
     let all = urls(body);
     let skipped = all.len().saturating_sub(MAX_URLS);
     let list: Vec<String> = all.into_iter().take(MAX_URLS).collect();
-    let client = match reqwest::Client::builder()
-        .user_agent(UA)
-        .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return json!({"measured": false, "why_unmeasured": format!("http client: {e}"), "checked": 0}),
-    };
-    let links = futures::future::join_all(list.into_iter().map(|u| check_one(&client, u))).await;
+    let links = futures::future::join_all(list.into_iter().map(check_one)).await;
     report(&links, skipped)
 }
 
@@ -175,8 +254,45 @@ mod tests {
             .route("/moved", get(|| async { axum::response::Redirect::temporary("/ok") }));
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a = l.local_addr().unwrap();
+        allow_in_test(a);
         tokio::spawn(async move { axum::serve(l, app).await.ok() });
         format!("http://{a}")
+    }
+
+    // Red-team run 7: the check is a fetch from this machine whose verdict the
+    // worker reads back, so a loopback or private link is never requested,
+    // whether named directly or reached through a public-looking redirect.
+    #[tokio::test]
+    async fn a_link_to_a_non_public_address_is_never_fetched() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = axum::Router::new().fallback(move || {
+            let h = h.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                "inside"
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let inside = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.ok() });
+        // A registered server that redirects to the unregistered one.
+        let hop = axum::Router::new().fallback(move || async move {
+            axum::response::Redirect::temporary(&format!("http://{inside}/admin"))
+        });
+        let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hop_at = l2.local_addr().unwrap();
+        allow_in_test(hop_at);
+        tokio::spawn(async move { axum::serve(l2, hop).await.ok() });
+
+        let r = check(&format!("a http://{inside}/api/x b http://localhost:{}/y c http://{hop_at}/go",
+                               inside.port())).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "a non-public address was requested: {r}");
+        let warns: Vec<&str> = r["warn"].as_array().unwrap().iter().map(|w| w["why"].as_str().unwrap()).collect();
+        assert_eq!(warns, vec!["not a public address, not fetched"; 3], "{r}");
+        assert!(refusal(&r).is_none(), "a private link warns, it does not refuse the park");
     }
 
     #[tokio::test]
@@ -186,6 +302,7 @@ mod tests {
         let closed = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let p = l.local_addr().unwrap().port();
+            allow_in_test(l.local_addr().unwrap());
             drop(l);
             format!("http://127.0.0.1:{p}/x")
         };

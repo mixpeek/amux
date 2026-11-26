@@ -2370,7 +2370,7 @@ fn fts_query(q: &str) -> String {
 /// An address on the public internet. Loopback, private, link-local, CGNAT,
 /// multicast and reserved are not, and neither is an IPv6 address that only
 /// wraps one of those (::ffff:127.0.0.1, ::10.0.0.1, 64:ff9b::a9fe:a9fe).
-fn public_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
     use std::net::{IpAddr, Ipv4Addr};
     let v4 = |v: Ipv4Addr| {
         let o = v.octets();
