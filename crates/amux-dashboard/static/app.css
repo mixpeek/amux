@@ -3480,7 +3480,7 @@
   .pcu-perm { font-size: var(--fs-sm); color: var(--dim); }
   .pcu-perm[data-on="0"] { color: var(--orange); }
   .pcu-apps-label { color: var(--dim); }
-  .pcu-chip { display: inline-flex; align-items: center; gap: var(--space-1); border: 1px solid var(--border); border-radius: 999px; padding: 2px var(--space-1) 2px var(--space-2-5); font-size: var(--fs-sm); }
+  .pcu-chip { display: inline-flex; align-items: center; gap: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-2-5); font-size: var(--fs-sm); }
   .pcu-chip-x { border: 0; background: none; color: var(--dim); cursor: pointer; min-width: 28px; min-height: 28px; font-size: var(--fs-md); }
   .pcu-chip-x:hover { color: var(--red); }
   .pcu-ask { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2-5); border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -11705,7 +11705,7 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 /* Settings > This Mac (app.js _macSettingsRender) */
 #settings-tab-mac[hidden] { display: none; }
 .mac-set-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) 0; }
-.mac-set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-md); cursor: pointer; }
+.mac-set-label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-0-5); font-size: var(--fs-md); cursor: pointer; }
 .mac-set-label .ui-help { font-weight: normal; overflow-wrap: anywhere; }
 .mac-set-actions { display: flex; gap: var(--space-1); flex-wrap: nowrap; max-width: 100%; overflow-x: auto; }
 /* A row with several buttons: its text on top, the buttons in one row below. */
