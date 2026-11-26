@@ -11,6 +11,9 @@ const amux = await startAmux({binary: process.env.AMUX_CHAOS_BINARY, env: {
   AMUX_MODEL_CATALOG_REFRESH_SECS:'0', FAKE_CLAUDE_ENV_KEYS:'AMUX_WORKER_TOKEN',
   AMUX_NEEDS_INPUT_AUTO:'0',
 }});
+// A card on a lane's board needs a worker identity or the owner's proof
+// (cross_board_create_unproven); these fixtures are the owner's.
+const OWNER_BOARD = b => amux.req('POST', '/api/board', b, 30000, {Authorization: 'Bearer ' + fs.readFileSync(path.join(amux.home, 'auth_token'), 'utf8').trim()});
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw Error(name+': '+JSON.stringify(detail));};
 // node:sqlite, not the container's python3: Debian bookworm's SQLite 3.40
@@ -60,7 +63,7 @@ try {
   const before=db('select count(*) n from issues')[0].n;
   const request=await amux.req('POST','/api/board',{title:'out-of-group automatic request',type:'chore',status:'backlog',request_to:outside},10000,headers);
   check('routed board request cannot cross the same boundary',request.status===403&&db('select count(*) n from issues')[0].n===before,request.body);
-  const ownerCard=await amux.req('POST','/api/board',{title:'owner-created target card',session:outside,type:'chore',status:'backlog'});
+  const ownerCard=await OWNER_BOARD({title:'owner-created target card',session:outside,type:'chore',status:'backlog'});
   check('owner can create outside-group card',ownerCard.status===201,ownerCard.body);
   const id=ownerCard.body.id||ownerCard.body.item?.id;
   const progress=await amux.req('PATCH',`/api/board/${id}`,{desc_append:'peer progress cannot become outside-group input'},10000,headers);
@@ -71,7 +74,7 @@ try {
   const own=await amux.req('POST',`/api/workers/${hub}/send`,{text:'actual-own-group-input'},30000,headers);
   check('overlapping group membership allows actual hub input',own.status<300,own.body);
   await waitFor('hub actual provider receipt',()=>received('actual-own-group-input')===1,30000);
-  const reviewCard=await amux.req('POST','/api/board',{title:'Exhausted independent proof review',session:peer,type:'ops',status:'backlog'});
+  const reviewCard=await OWNER_BOARD({title:'Exhausted independent proof review',session:peer,type:'ops',status:'backlog'});
   check('private review proof card created',reviewCard.status===201,reviewCard.body);
   const reviewId=reviewCard.body.id;
   // Persist unfinished work only with this private controller down. These are

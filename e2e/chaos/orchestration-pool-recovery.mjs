@@ -10,14 +10,17 @@ import { startAmux, waitFor } from './harness.mjs';
 const checks=[];
 const check=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});if(!ok)throw new Error(name+': '+JSON.stringify(detail));};
 const amux=await startAmux({binary:process.env.AMUX_CHAOS_BINARY,env:{AMUX_ISOLATED:'0',AMUX_BOARD_DRIVE_SECS:'3600',AMUX_AUTOFIX_SECS:'0',AMUX_GHOST_RESCUE_SECS:'0',AMUX_MODEL_CATALOG_REFRESH_SECS:'0',ANTHROPIC_API_KEY:'',OPENAI_API_KEY:'',GEMINI_API_KEY:'',GOOGLE_API_KEY:''}});
+// A card on a lane's board needs a worker identity or the owner's proof
+// (cross_board_create_unproven); these fixtures are the owner's.
+const OWNER_BOARD=b=>amux.req('POST','/api/board',b,30000,{Authorization:'Bearer '+fs.readFileSync(path.join(amux.home,'auth_token'),'utf8').trim()});
 try{
  for(const name of ['pool-hub','pool-worker']){
   const r=await amux.req('POST','/api/sessions',{name,dir:amux.root,start:false});check('worker created '+name,r.status===201,r.body);
   fs.appendFileSync(path.join(amux.home,'sessions',name+'.env'),`\nCC_ISOLATED=0\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=pool-hub\nAMUX_CONTRACT_RULES_OFF=1,2,4,5,6,7,10,A1\n${name==='pool-worker'?'CC_STANDING_ORDERS=1\nCC_AUTO_PICKUP=1\nAMUX_BOARD_STEERS=1\nCC_AUTO_CONTINUE=0\nAMUX_BOARD_FORCE_ADHERENCE=1\nAMUX_A2_POOL_TITLE_REGEX=^GS12 proof\n':''}`);
  }
- const root=await amux.req('POST','/api/board',{title:'Measure the root readiness',desc:'Run echo readiness-proved and record its output. This concrete prerequisite unblocks the proof population.',next_action:'Run echo readiness-proved',type:'chore',status:'backlog',session:'pool-hub'});check('root created',root.status<300,root.body);
+ const root=await OWNER_BOARD({title:'Measure the root readiness',desc:'Run echo readiness-proved and record its output. This concrete prerequisite unblocks the proof population.',next_action:'Run echo readiness-proved',type:'chore',status:'backlog',session:'pool-hub'});check('root created',root.status<300,root.body);
  const parents=[];
- for(let i=0;i<12;i++){const r=await amux.req('POST','/api/board',{title:'GS12 proof real pool '+i,type:'ops',status:'backlog',session:'pool-hub',depends_on:[root.body.id]});check('dependent created '+i,r.status<300,r.body);parents.push(r.body.id);}
+ for(let i=0;i<12;i++){const r=await OWNER_BOARD({title:'GS12 proof real pool '+i,type:'ops',status:'backlog',session:'pool-hub',depends_on:[root.body.id]});check('dependent created '+i,r.status<300,r.body);parents.push(r.body.id);}
  const started=await amux.req('POST','/api/sessions/pool-worker/start');check('real terminal starts',started.status<300,started.body);
  await waitFor('fake agent launch',()=>amux.fakeLog().find(r=>r.event==='launch'),30000);
  await waitFor('worker ready',async()=>{const s=(await amux.req('GET','/api/sessions')).body;const w=s.find(w=>w.name==='pool-worker');return w?.running&&w.status==='idle';},60000);

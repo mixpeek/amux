@@ -9,7 +9,10 @@ import { startAmux, waitFor, git } from './harness.mjs';
 const checks = [];
 const check = (name, ok, detail) => { checks.push({ name, ok: !!ok, detail }); if (!ok) throw new Error(name + ': ' + JSON.stringify(detail)); };
 const amux = await startAmux({ binary: process.env.AMUX_CHAOS_BINARY, env: { AMUX_ISOLATED:'0', AMUX_BOARD_DRIVE_SECS:'0', AMUX_AUTOFIX_SECS:'0', AMUX_GHOST_RESCUE_SECS:'0', AMUX_MODEL_CATALOG_REFRESH_SECS:'0', AMUX_CONTRACT_REVIEW_CONCURRENCY:'1', ANTHROPIC_API_KEY:'', OPENAI_API_KEY:'', GEMINI_API_KEY:'', GOOGLE_API_KEY:'' } });
-const db = path.join(amux.home, 'amux.db');
+// A card on a lane's board needs a worker identity or the owner's proof
+// (cross_board_create_unproven); these fixtures are the owner's.
+const OWNER_BOARD = b => amux.req('POST', '/api/board', b, 30000, {Authorization: 'Bearer ' + fs.readFileSync(path.join(amux.home, 'auth_token'), 'utf8').trim()});
+const db =path.join(amux.home, 'amux.db');
 const sql = (statement, args = []) => JSON.parse(execFileSync('python3', ['-c', 'import sqlite3,json,sys;c=sqlite3.connect(sys.argv[1]);c.row_factory=sqlite3.Row;r=c.execute(sys.argv[2],json.loads(sys.argv[3]));o=[dict(x) for x in r] if r.description else [];c.commit();print(json.dumps(o))', db, statement, JSON.stringify(args)], { encoding:'utf8' }));
 const clock = async () => { const r = await amux.req('POST','/api/system-jobs/contract-watch/run',{}); check('normal contract clock accepted',r.status===200,r.body); };
 const attempts = () => fs.existsSync(path.join(amux.root,'attempts')) ? fs.readFileSync(path.join(amux.root,'attempts'),'utf8').trim().split('\n') : [];
@@ -21,8 +24,8 @@ try {
   fs.writeFileSync(path.join(amux.root,'mode'),'quota');
   const worker = await amux.req('POST','/api/sessions',{name:'capacity-lane',dir:repo,start:false}); check('private stopped lane created',worker.status===201,worker.body);
   fs.appendFileSync(path.join(amux.home,'sessions','capacity-lane.env'), `\nAMUX_CONTRACT_DONE=1\nAMUX_REVIEW_UNCONTRACTED=1\nAMUX_CONTRACT_REVIEW_CLI="${cli}"\nAMUX_CONTRACT_REVIEW_MODEL=claude-opus-5-5\n`);
-  for(let i=0;i<3;i++) { const r=await amux.req('POST','/api/board',{title:`GS12 proof advisory fixture ${i}`,type:'ops',session:'capacity-lane',status:'doing',acceptance_criteria:['measure the workload']});check('advisory plan fixture created '+i,r.status<300,r.body); }
-  const card = await amux.req('POST','/api/board',{title:'GS12 proof completed workload',type:'ops',session:'capacity-lane',status:'done',acceptance_criteria:['record measured workload'],evidence:`fixture workload command -> 100 measured requests at ${git(repo,'rev-parse','HEAD')}`}); check('done fixture created through API',card.status<300,card.body);
+  for(let i=0;i<3;i++) { const r=await OWNER_BOARD({title:`GS12 proof advisory fixture ${i}`,type:'ops',session:'capacity-lane',status:'doing',acceptance_criteria:['measure the workload']});check('advisory plan fixture created '+i,r.status<300,r.body); }
+  const card = await OWNER_BOARD({title:'GS12 proof completed workload',type:'ops',session:'capacity-lane',status:'done',acceptance_criteria:['record measured workload'],evidence:`fixture workload command -> 100 measured requests at ${git(repo,'rev-parse','HEAD')}`}); check('done fixture created through API',card.status<300,card.body);
   const id = card.body.id;
   await clock();
   const held = await waitFor('capacity hold from real reviewer exit',()=>sql('SELECT * FROM card_contracts WHERE card=?',[id]).find(r=>r.review_state==='capacity_wait'),30000);

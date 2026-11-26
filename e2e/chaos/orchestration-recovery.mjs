@@ -10,7 +10,10 @@ const checks = [];
 const check = (name, ok, detail) => { checks.push({ name, ok: !!ok, detail }); if (!ok) throw new Error(name + ': ' + JSON.stringify(detail)); };
 const quote = s => "'" + s.replaceAll("'", "'\\''") + "'";
 const amux = await startAmux({ binary: process.env.AMUX_CHAOS_BINARY, env: { AMUX_RS_SCHEDULER: '1', AMUX_ISOLATED: '0', AMUX_BOARD_DRIVE_SECS: '0', AMUX_AUTOFIX_SECS: '0', AMUX_GHOST_RESCUE_SECS: '0', AMUX_MODEL_CATALOG_REFRESH_SECS: '0', ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '', GEMINI_API_KEY: '', GOOGLE_API_KEY: '' } });
-const runs = async id => { const r = await amux.req('GET', `/api/schedules/runs?schedule_id=${id}&limit=50`); return Array.isArray(r.body) ? r.body : r.body.runs || r.body.rows || []; };
+// A card on a lane's board needs a worker identity or the owner's proof
+// (cross_board_create_unproven); these fixtures are the owner's.
+const OWNER_BOARD = b => amux.req('POST', '/api/board', b, 30000, {Authorization: 'Bearer ' + fs.readFileSync(path.join(amux.home, 'auth_token'), 'utf8').trim()});
+const runs =async id => { const r = await amux.req('GET', `/api/schedules/runs?schedule_id=${id}&limit=50`); return Array.isArray(r.body) ? r.body : r.body.runs || r.body.rows || []; };
 const run = async id => { const r = await amux.req('POST', `/api/schedules/${id}/run`, {}); check('run accepted ' + id, r.status < 300, r.body); return waitFor('recorded shell result', async () => (await runs(id)).find(r => ['ok', 'error'].includes(r.status)), 20000); };
 try {
   const health = (await amux.req('GET', '/health')).body;
@@ -19,11 +22,11 @@ try {
     check('stopped worker configured ' + lane, r.status === 201, r.body);
     fs.appendFileSync(path.join(amux.home, 'sessions', lane + '.env'), `\nAMUX_CONTRACT_DONE=1\nAMUX_CONTRACT_HUB=${lane === 'foreign' ? 'foreign' : 'hub'}\n${lane === 'isolated' ? 'CC_ISOLATED=1\n' : 'CC_ISOLATED=0\n'}`);
   }
-  const root = await amux.req('POST', '/api/board', { title: 'Root dependency', type: 'chore', status: 'backlog', session: 'hub' });
+  const root = await OWNER_BOARD({ title: 'Root dependency', type: 'chore', status: 'backlog', session: 'hub' });
   check('root dependency created', root.status < 300 && root.body.id, root.body);
   const parents = [];
   for (let i = 0; i < 12; i++) {
-    const p = await amux.req('POST', '/api/board', { title: `GS12 proof fixture ${i}`, type: 'ops', status: 'backlog', session: 'hub', depends_on: [root.body.id] });
+    const p = await OWNER_BOARD({ title: `GS12 proof fixture ${i}`, type: 'ops', status: 'backlog', session: 'hub', depends_on: [root.body.id] });
     check('dependent created ' + i, p.status < 300 && p.body.id, p.body); parents.push(p.body.id);
   }
   const moved = await amux.req('PATCH', `/api/board/${root.body.id}`, { session: 'lane-a' });
@@ -39,7 +42,7 @@ try {
   fs.unlinkSync(scratch);
   const prepared = [];
   for (const type of ['code', 'ops']) {
-    const card = await amux.req('POST', '/api/board', {title: 'Prepared '+type+' proof', type, status:'todo', session:'lane-a', acceptance_criteria:['committed proof passes']});
+    const card = await OWNER_BOARD({title: 'Prepared '+type+' proof', type, status:'todo', session:'lane-a', acceptance_criteria:['committed proof passes']});
     check('prepared proof card created '+type, card.status === 201, card.body);
     const contract = await amux.req('PATCH', `/api/board/${card.body.id}`, {verify_cmd:'test -f README', reason:'prepare before claiming work'});
     check('explicit verification command stored without claiming '+type,
