@@ -976,6 +976,37 @@ fn f64_roundtrip_probes() -> Vec<(f64, f64)> {
 }
 
 #[cfg(test)]
+mod boot_arrival_window_tests {
+    use super::BootArrivalWindow;
+
+    fn log() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE _amux_request_log (ts REAL, boot_at REAL);").unwrap();
+        c
+    }
+
+    #[test]
+    fn later_passes_read_only_new_rows_and_old_rows_age_out() {
+        let c = log();
+        let mut w = BootArrivalWindow::default();
+        c.execute_batch("INSERT INTO _amux_request_log VALUES (100, 50), (110, 120), (120, NULL);")
+            .unwrap();
+        assert_eq!(w.advance(&c, 130.0, 100.0).unwrap(), (2, 1));
+        let seen = w.last_rowid;
+        c.execute_batch("INSERT INTO _amux_request_log VALUES (200, 50);").unwrap();
+        // A row the window already counted is never read again: rewriting
+        // one behind the rowid mark changes nothing.
+        c.execute_batch("UPDATE _amux_request_log SET boot_at = 999 WHERE rowid = 1;").unwrap();
+        assert_eq!(w.advance(&c, 205.0, 100.0).unwrap(), (3, 1));
+        assert!(w.last_rowid > seen);
+        // At now=299 the first bucket (newest ts 120) is older than 199 and
+        // leaves; the bucket holding ts 200 is still inside.
+        assert_eq!(w.advance(&c, 299.0, 100.0).unwrap(), (1, 0));
+        assert_eq!(w.advance(&c, 301.0, 100.0).unwrap(), (0, 0));
+    }
+}
+
+#[cfg(test)]
 mod f64_roundtrip_wiring_tests {
     /// AF-595's check is REGISTERED, not merely written. Deleting its call
     /// site in `evaluate_all` reddens nothing else: the section/mark counter
@@ -2272,23 +2303,36 @@ async fn lsof_holder(path: &std::path::Path) -> checks::LockHolder {
 
 /// Gather what [`checks::request_arrival_follows_boot`] needs (AMUX-3647).
 ///
-/// ONE query, both numbers, over the indexed `ts` range. Counting the rows that
-/// CARRY a boot_at in the same pass is what lets the check distinguish "the
-/// invariant holds" from "the column stopped being written", which are the two
-/// states a bare violation count cannot tell apart.
+/// Both numbers come from one pass. Counting the rows that CARRY a boot_at
+/// beside the violations is what lets the check distinguish "the invariant
+/// holds" from "the column stopped being written", which are the two states a
+/// bare violation count cannot tell apart.
+///
+/// The pass is incremental (2026-11-26 cpu RCA). `boot_at` is not in the `ts`
+/// index, so the 24h query read the table page of every row: 1.2M rows, about
+/// 10s of pread, every TICK_SECS. That was the largest single consumer in a
+/// 2.3-core server on a 28-core Mac at 136% load. Now the first pass per
+/// process scans the window once and every later pass reads only the rows with
+/// a rowid above the last one seen, keeping 30s buckets that age out of the
+/// window. A bucket leaves when its newest row is older than 24h, so the window
+/// is 24h plus at most one tick.
 fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
     const ID: &str = "reqlog.arrival_follows_boot";
     const WINDOW_H: f64 = 24.0;
     let Ok(conn) = state.store.read() else {
         return vec![InvariantResult::unknown(ID, "store unreadable")];
     };
-    let cutoff = crate::runtime_jobs::registry::unix_now() - WINDOW_H * 3600.0;
-    match conn.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(ts < boot_at), 0) FROM _amux_request_log \
-         WHERE ts >= ?1 AND boot_at IS NOT NULL",
-        [cutoff],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
-    ) {
+    let now = crate::runtime_jobs::registry::unix_now();
+    static WINDOWS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, BootArrivalWindow>>,
+    > = std::sync::OnceLock::new();
+    let key = conn.path().unwrap_or("").to_string();
+    let mut windows = WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let window = windows.entry(key).or_default();
+    match window.advance(&conn, now, WINDOW_H * 3600.0) {
         Ok((with_boot, before)) => {
             checks::request_arrival_follows_boot(with_boot, before, WINDOW_H)
         }
@@ -2296,6 +2340,55 @@ fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
             ID,
             format!("request log unreadable: {e}"),
         )],
+    }
+}
+
+/// Rolling 24h counts for [`arrival_follows_boot_check`], fed by rowid.
+#[derive(Default)]
+struct BootArrivalWindow {
+    last_rowid: i64,
+    /// (newest ts in the bucket, rows with a boot_at, rows with ts < boot_at)
+    buckets: std::collections::VecDeque<(f64, i64, i64)>,
+}
+
+impl BootArrivalWindow {
+    fn advance(
+        &mut self,
+        conn: &rusqlite::Connection,
+        now: f64,
+        window_s: f64,
+    ) -> rusqlite::Result<(i64, i64)> {
+        let cutoff = now - window_s;
+        let t0 = std::time::Instant::now();
+        let first = self.last_rowid == 0;
+        let (max_rowid, max_ts, with_boot, before): (Option<i64>, Option<f64>, i64, i64) = conn
+            .query_row(
+                "SELECT MAX(rowid), MAX(ts), COUNT(boot_at), \
+                 COALESCE(SUM(boot_at IS NOT NULL AND ts < boot_at), 0) \
+                 FROM _amux_request_log WHERE rowid > ?1 AND ts >= ?2",
+                rusqlite::params![self.last_rowid, cutoff],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        if let (Some(rowid), Some(ts)) = (max_rowid, max_ts) {
+            self.last_rowid = rowid;
+            self.buckets.push_back((ts, with_boot, before));
+        }
+        while self.buckets.front().is_some_and(|b| b.0 < cutoff) {
+            self.buckets.pop_front();
+        }
+        let ms = t0.elapsed().as_millis();
+        if first || ms > 1000 {
+            tracing::info!(
+                verdict = if first { "reqlog_boot_window_seeded" } else { "reqlog_boot_window_slow" },
+                ms = ms as u64,
+                rows = with_boot,
+                "reqlog.arrival_follows_boot: scanned request rows after rowid"
+            );
+        }
+        Ok(self
+            .buckets
+            .iter()
+            .fold((0, 0), |(w, b), x| (w + x.1, b + x.2)))
     }
 }
 
