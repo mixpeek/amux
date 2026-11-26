@@ -486,6 +486,40 @@ def affected(tree, base):
         return None
 
 
+def rank_specs(tree, base, specs, min_score=0):
+    """Order specs by how many of the change's own identifiers they name.
+
+    The local run keeps only MAX_LOCAL_SPECS, and the rest first run on main
+    after the push. Selection order put the spec that would have failed past
+    the cut twice on 2026-11-25 (49fbf33b3: settings-layout 17th of 23;
+    25b70cf05: local-multiplayer outside a smoke-only run of 45 route matches).
+    Tokens are string literals and identifiers of six or more characters from
+    the diff's changed lines; a token found in more than a quarter of the
+    candidates says nothing about any one of them and is not counted. With
+    min_score, a spec that names fewer of them is dropped."""
+    diff = git(tree, "diff", base, "HEAD", "--", "crates", "e2e")
+    toks = set()
+    for ln in diff.splitlines():
+        if ln[:1] not in "+-" or ln.startswith(("+++", "---")):
+            continue
+        ln = ln[1:]
+        if re.match(r"\s*(//|#|\*|/\*)", ln):
+            continue
+        toks.update(re.findall(r"[\"'`]([^\"'`\s]{4,80})[\"'`]", ln))
+        toks.update(re.findall(r"[#.]?[A-Za-z_][\w-]{5,}", ln))
+    texts = {}
+    for sp in specs:
+        try:
+            with open(os.path.join(tree, "e2e", sp)) as f:
+                texts[sp] = f.read()
+        except OSError:
+            texts[sp] = ""
+    common = max(3, len(specs) // 4)
+    hits = {t: sum(1 for sp in specs if t in texts[sp]) for t in toks}
+    score = {sp: sum(1 for t in toks if hits[t] <= common and t in texts[sp]) for sp in specs}
+    return sorted((sp for sp in specs if score[sp] >= min_score), key=lambda sp: -score[sp])
+
+
 def playwright(tree, specs, timeout=E2E_TIMEOUT_S):
     nm = os.path.join(tree, "node_modules")
     if not os.path.isdir(nm):
@@ -553,15 +587,26 @@ def e2e_leg(repo, tree, base, base_tree_fn):
     changed += [f[len("e2e/"):] for f in git(tree, "diff", "--name-only", base, "HEAD").splitlines()
                 if f.startswith("e2e/") and f.endswith(".spec.ts") and os.path.exists(os.path.join(tree, f))]
     changed = list(dict.fromkeys(changed))
+    # A full CI run still names the specs that touch the change (a route of the
+    # changed API module, a changed file); run the closest of those here
+    # rather than only the smoke set.
+    matched = [sp for sp, why in (e.get("selected") or {}).items() if why != "smoke"]
+    n_selected = len(specs) if specs else len(matched)
     if e.get("full") or not specs:
-        specs = list(dict.fromkeys(changed + SMOKE_FALLBACK))
-        note = "CI runs every spec for this change; this runs its changed specs and the smoke set"
+        ranked = rank_specs(tree, base, [sp for sp in matched if sp not in changed], min_score=1)
+        keep = max(MAX_LOCAL_SPECS, len(changed) + len(SMOKE_FALLBACK))
+        specs = list(dict.fromkeys(changed + SMOKE_FALLBACK + ranked))[:keep]
+        note = ("CI runs every spec for this change; this runs its changed specs, the smoke set "
+                "and the %d of %d matched specs that name the most of the change"
+                % (len([sp for sp in specs if sp in ranked]), len(ranked)))
     elif len(specs) > MAX_LOCAL_SPECS:
-        specs = (changed + [s for s in specs if s not in changed])[:max(MAX_LOCAL_SPECS, len(changed))]
-        note = "%d specs selected; the first %d run here (changed specs first), CI runs the rest" % (
-            len(e.get("specs")), MAX_LOCAL_SPECS)
+        ranked = rank_specs(tree, base, [sp for sp in specs if sp not in changed])
+        specs = (changed + ranked)[:max(MAX_LOCAL_SPECS, len(changed))]
+        note = "%d specs selected; the %d that name the most of the change run here (changed specs first), CI runs the rest" % (
+            n_selected, len(specs))
     res, stats, secs = playwright(tree, specs)
-    out = {"specs": specs, "secs": round(secs), "note": note}
+    out = {"specs": specs, "secs": round(secs), "note": note,
+           "n_selected": n_selected, "n_run": len(specs)}
     if res is None:
         return dict(out, verdict="e2e_unmeasured", detail=stats)
     out.update(passed=res["expected"], flaky=res["flaky"])
