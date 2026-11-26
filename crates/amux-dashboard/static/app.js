@@ -13502,14 +13502,14 @@ async function openOutcome() {
   const d = _outcomeBaseDefaults();
   const draft = localStorage.getItem('amux_outcome_draft') || '';
   const chk = (id, on, label, extra) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}${extra || ''}> ${label}</label>`;
-  const html = `<div class="outcome-form">
+  const html = `<div class="outcome-form" onpaste="_outcomePaste(event)">
     <textarea id="outcome-text" class="input outcome-text" rows="4"
       placeholder="e.g. Add a dark mode toggle to settings and ship it"
       onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
     <div class="outcome-files">
-      <button type="button" class="btn" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
+      <button type="button" class="btn" title="Or paste an image (Ctrl/Cmd+V)" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
       <input type="file" id="outcome-file" multiple hidden onchange="_outcomeAttach(this.files);this.value=''">
-      <div id="outcome-file-list" class="ui-help" aria-live="polite"></div>
+      <div id="outcome-file-list" class="peek-attach-bar oc-file-list" aria-live="polite"></div>
     </div>
     <details class="outcome-settings">
       <summary>Defaults and constraints${last ? '<span class="oc-summary-preset">· ' + esc(last) + '</span>' : ''}</summary>
@@ -13550,6 +13550,7 @@ async function openOutcome() {
       <label class="outcome-field" id="outcome-preset-name-field" hidden>Preset name (optional)<input id="outcome-preset-name" class="input" placeholder="Named from the folder and group"></label>
     </details>
   </div>`;
+  _outcomeFiles.forEach(_outcomeForget);
   _outcomeFiles = [];
   const shown = showFormModal('Describe what you want', html, 'Start');
   document.querySelectorAll('#modal-msg .oc-combo-list').forEach(l => l.addEventListener('mousedown', _ocComboMouse));
@@ -13583,22 +13584,93 @@ async function openOutcome() {
   await _outcomeStart(text, cfg, files);
 }
 // Attachments upload as soon as they are picked (the same upload API voice
-// notes use), so Start only waits for the ones still in flight.
+// notes use), so Start only waits for the ones still in flight. Each shows as
+// the composer's attachment chip (.peek-attach-chip): an image shows itself, a
+// video its first frame under a play mark, anything else its file icon, and
+// the thumbnail opens the shared preview (_attachPreviewOpen).
 let _outcomeFiles = [];
 function _outcomeAttach(list) {
   for (const file of list || []) {
-    const it = { name: file.name, path: '', failed: false };
+    const kind = _attachKind(file.name, file.type);
+    const it = { name: file.name, file, kind, path: '', failed: false, thumb: '' };
+    if (kind === 'image' && file.size < 10 * 1024 * 1024) it.thumb = URL.createObjectURL(file);
+    if (kind === 'video') _videoFirstFrame(file).then(src => { it.thumb = src; it.frame = src ? 'captured' : 'none'; _outcomeRenderFiles(); });
     it.done = _cvUploadVoice(file).then(p => { it.path = p; it.failed = !p; _outcomeRenderFiles(); return p; });
     _outcomeFiles.push(it);
   }
   _outcomeRenderFiles();
 }
+// The first frame of a local video as a small JPEG data URL, or '' when the
+// browser cannot decode it (the chip then shows the play mark alone).
+function _videoFirstFrame(file) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file), v = document.createElement('video');
+    let settled = false;
+    const done = src => {
+      if (settled) return; settled = true;
+      clearTimeout(timer); v.removeAttribute('src'); v.load(); URL.revokeObjectURL(url);
+      if (window._clientDebug) window._clientDebug('outcome-video-frame', { verdict: src ? 'captured' : 'no_frame', measured: true, n_considered: 1 });
+      resolve(src);
+    };
+    const timer = setTimeout(() => done(''), 8000);
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.onloadeddata = () => { v.currentTime = Math.min(0.1, (v.duration || 0) / 2); };
+    v.onseeked = () => {
+      try {
+        const w = 160, h = Math.round(w * (v.videoHeight || 9) / (v.videoWidth || 16)) || 90;
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        c.getContext('2d').drawImage(v, 0, 0, w, h);
+        done(c.toDataURL('image/jpeg', 0.75));
+      } catch (_) { done(''); }
+    };
+    v.onerror = () => done('');
+    v.src = url;
+  });
+}
+// Ctrl/Cmd-V of an image (a screenshot) anywhere in the dialog attaches it
+// like a picked file. Clipboard images all arrive as "image.png", so each
+// gets a unique name. A text paste is left to the field.
+function _outcomePaste(e) {
+  const files = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file')
+    .map(i => i.getAsFile()).filter(Boolean)
+    .map(f => /^image\//.test(f.type) ? new File([f], _pasteImageName(f), { type: f.type }) : f);
+  if (!files.length) return;
+  e.preventDefault();
+  _outcomeAttach(files);
+  if (window._clientDebug) window._clientDebug('outcome-paste-attach', { verdict: 'attached', measured: true, n_considered: files.length });
+}
+function _outcomeThumb(f) {
+  if (f.kind === 'video') return '<span class="oc-video-thumb">' + (f.thumb ? '<img src="' + esc(f.thumb) + '" alt="">' : '')
+    + '<span class="oc-play" aria-hidden="true">&#x25B6;</span></span>';
+  if (f.kind === 'image' && f.thumb) return '<img src="' + esc(f.thumb) + '" alt="">';
+  return '<span class="chip-icon">' + (f.kind === 'audio' ? '&#x1F3B5;' : _fileIcon(f.name)) + '</span>';
+}
+// The preview shows the device's copy. It is given no path, because its
+// "Open in the file viewer" would open beneath this dialog.
+function _outcomePreview(i, opener) {
+  const f = _outcomeFiles[i];
+  if (f) _attachPreviewOpen({ name: f.name, file: f.file, path: '', state: f.failed ? 'upload failed' : f.path ? 'uploaded' : 'uploading' }, opener);
+}
+function _outcomeForget(f) {
+  if (f && f.thumb && f.thumb.startsWith('blob:')) URL.revokeObjectURL(f.thumb);
+}
+function _outcomeRemoveFile(i) {
+  _outcomeForget(_outcomeFiles[i]);
+  _outcomeFiles.splice(i, 1);
+  _outcomeRenderFiles();
+}
 function _outcomeRenderFiles() {
   const el = document.getElementById('outcome-file-list');
   if (!el) return;
-  el.innerHTML = _outcomeFiles.map((f, i) => '<span class="outcome-file">' + esc(f.name)
-    + (f.failed ? ' (did not upload)' : f.path ? '' : ' (uploading)')
-    + ' <button type="button" class="btn" aria-label="Remove ' + esc(f.name) + '" onclick="_outcomeFiles.splice(' + i + ',1);_outcomeRenderFiles()">&times;</button></span>').join(' ');
+  el.classList.toggle('has-files', _outcomeFiles.length > 0);
+  el.innerHTML = _outcomeFiles.map((f, i) => {
+    const status = f.failed ? '<span class="chip-err" title="did not upload">!</span><span class="oc-file-state">did not upload</span>'
+      : f.path ? '<span class="oc-file-ok" aria-label="uploaded">&#x2713;</span>' : '<span class="oc-file-state">uploading</span>';
+    return '<div class="peek-attach-chip outcome-file oc-kind-' + f.kind + (f.failed ? ' failed' : f.path ? '' : ' uploading') + '">'
+      + _attachThumbButton(_outcomeThumb(f), f.name, '_outcomePreview(' + i + ', this)')
+      + '<span class="chip-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>' + status
+      + '<button type="button" class="chip-remove" aria-label="Remove ' + esc(f.name) + '" title="Remove" onclick="_outcomeRemoveFile(' + i + ')">&times;</button></div>';
+  }).join('');
 }
 async function _outcomeFilesReady() {
   const paths = await Promise.all(_outcomeFiles.map(f => f.done));

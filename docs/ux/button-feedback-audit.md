@@ -1525,7 +1525,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | index.html | Toggle in-app banner pop-ups | `_notifToggleBanners` | onclick |
 | app.js | Close | `_ocBrowseClose` | onclick |
 | app.js | Use this folder | `_ocBrowseUse` | onclick |
-| app.js | Remove  | `_outcomeRenderFiles` | onclick |
+| app.js | Remove  | `_outcomeRemoveFile` | onclick |
 | app.js | ${parts.join( · )} | `_ownerReqShow` | onclick |
 | index.html | Ask | `_peekAskToggle` | onclick |
 | index.html | Ask about these messages | `_peekAskToggle` | onclick |

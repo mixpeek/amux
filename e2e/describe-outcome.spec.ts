@@ -270,3 +270,194 @@ test('Defaults remembered the old way come back as a preset named "My defaults"'
   expect(fit.right).toBeLessThanOrEqual(fit.vw);
   await page.screenshot({ path: test.info().outputPath('outcome-presets.png') });
 });
+
+// Owner, 2026-11-25: "control-V paste an image from the clipboard in the
+// 'Describe what you want' dialog to be added as an attachment". A pasted
+// screenshot uploads like a picked file, under its own name (every clipboard
+// image is "image.png"), and the worker is told to read it. A text paste is
+// left to the box.
+test('Pasting an image into Describe what you want attaches it to the new worker', async ({ page }) => {
+  const creates: any[] = [];
+  const plans: any[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.removeItem('amux_outcome_draft');
+  });
+  await page.route('**/api/sessions', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    creates.push(route.request().postDataJSON());
+    return route.fulfill({ status: 201, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route('**/api/outcome/plan', async route => {
+    plans.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ measured: true, n_considered: 1, name: 'fix-the-button', dir: '/srv/app', groups: [], desc: 'Fixes the button.', attachments: [] }) });
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openOutcome === 'function');
+  await page.locator('#add-btn').click();
+  await page.locator('#add-menu .card-menu-item', { hasText: 'Describe what you want' }).click();
+  await expect(page.locator('#outcome-text')).toBeVisible();
+  await page.locator('#outcome-text').fill('Fix the button in this screenshot');
+
+  // The paste a browser fires for Ctrl/Cmd+V with an image on the clipboard.
+  const paste = (withImage: boolean) => page.locator('#outcome-text').evaluate((ta, withImage) => {
+    const dt = new DataTransfer();
+    if (withImage) {
+      const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='), c => c.charCodeAt(0));
+      dt.items.add(new File([png], 'image.png', { type: 'image/png' }));
+    } else dt.setData('text/plain', ' (urgent)');
+    const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  }, withImage);
+  // Text is not taken over: the box handles it as usual.
+  expect(await paste(false)).toBe(false);
+  await expect(page.locator('#outcome-file-list .outcome-file')).toHaveCount(0);
+  expect(await paste(true)).toBe(true);
+  expect(await paste(true)).toBe(true);
+  const chips = page.locator('#outcome-file-list .outcome-file');
+  await expect(chips).toHaveCount(2);
+  await expect(chips.first()).toContainText(/pasted-.*\.png/);
+  // The pasted image shows itself.
+  await expect(chips.first().locator('.chip-thumb img')).toHaveAttribute('src', /^blob:/);
+  await expect(page.locator('#outcome-file-list')).not.toContainText('uploading');
+  await expect(page.locator('#outcome-file-list')).not.toContainText('did not upload');
+  const names = await chips.allInnerTexts();
+  expect(names[0]).not.toBe(names[1]);
+  await expect(page.locator('#outcome-text')).toHaveValue('Fix the button in this screenshot');
+  // Removing one leaves the other.
+  await chips.nth(1).locator('.chip-remove').click();
+  await expect(chips).toHaveCount(1);
+  await page.screenshot({ path: test.info().outputPath('outcome-paste.png') });
+
+  await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
+  await expect.poll(() => creates.length).toBe(1);
+  expect(plans[0].files).toHaveLength(1);
+  expect(plans[0].files[0]).toMatch(/pasted-.*\.png$/);
+  expect(creates[0].prompt).toContain(plans[0].files[0]);
+});
+
+// Owner, 2026-11-26: "add a little image preview to the pasted content ... a
+// play symbol to symbolize it's a video file and then just take the first
+// frame". Each kind of attachment gets its own thumbnail, and the thumbnail
+// opens the shared preview on top of the dialog without closing it.
+test('Attachments in Describe what you want preview by kind: image, video first frame, audio, PDF, text, other', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.removeItem('amux_outcome_draft');
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openOutcome === 'function');
+  await page.locator('#add-btn').click();
+  await page.locator('#add-menu .card-menu-item', { hasText: 'Describe what you want' }).click();
+  await expect(page.locator('#outcome-text')).toBeVisible();
+  await page.locator('#outcome-text').fill('Make the onboarding match this recording and the spec');
+
+  // A screenshot on the clipboard, pasted.
+  await page.locator('#outcome-text').evaluate(ta => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 200;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#f4f6fb'; g.fillRect(0, 0, 320, 200);
+    g.fillStyle = '#3b6cf6'; g.fillRect(0, 0, 320, 36);
+    g.fillStyle = '#e5484d'; g.fillRect(24, 60, 120, 40);
+    g.fillStyle = '#30a46c'; g.fillRect(170, 60, 120, 110);
+    return new Promise<void>(res => c.toBlob(b => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([b!], 'image.png', { type: 'image/png' }));
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      res();
+    }, 'image/png'));
+  });
+  // A short screen recording, picked: drawn on a canvas and recorded by the
+  // browser, so its first frame is a known colour.
+  const recorded = await page.evaluate(async () => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 180;
+    const g = c.getContext('2d')!;
+    const paint = (t: number) => { g.fillStyle = '#7c3aed'; g.fillRect(0, 0, 320, 180); g.fillStyle = '#fbbf24'; g.fillRect(20 + t * 4, 50, 80, 80); };
+    paint(0);
+    const types = ['video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+    const mime = types.find(t => (window as any).MediaRecorder?.isTypeSupported?.(t));
+    if (!mime) return '';
+    const rec = new MediaRecorder((c as any).captureStream(30), { mimeType: mime });
+    const parts: Blob[] = [];
+    rec.ondataavailable = e => parts.push(e.data);
+    const stopped = new Promise(r => { rec.onstop = r; });
+    rec.start();
+    for (let i = 0; i < 20; i++) { paint(i); await new Promise(r => setTimeout(r, 40)); }
+    rec.stop(); await stopped;
+    const type = mime.split(';')[0];
+    const dt = new DataTransfer();
+    dt.items.add(new File(parts, 'walkthrough.' + (type === 'video/mp4' ? 'mp4' : 'webm'), { type }));
+    const input = document.getElementById('outcome-file') as HTMLInputElement;
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return type;
+  });
+  // The rest, picked from disk.
+  await page.locator('#outcome-file').setInputFiles([
+    { name: 'voice-memo.m4a', mimeType: 'audio/mp4', buffer: Buffer.from('not really audio') },
+    { name: 'onboarding-spec.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n') },
+    { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('Step 1: sign in\nStep 2: pick a plan\n') },
+    { name: 'design-export.zip', mimeType: 'application/zip', buffer: Buffer.from('PK') },
+  ]);
+  const chips = page.locator('#outcome-file-list .outcome-file');
+  await expect(chips).toHaveCount(recorded ? 6 : 5);
+  await expect(page.locator('#outcome-file-list')).not.toContainText('uploading');
+  await expect(page.locator('#outcome-file-list')).not.toContainText('did not upload');
+
+  const chip = (name: RegExp | string) => chips.filter({ hasText: name });
+  await expect(chip(/pasted-.*\.png/).locator('.chip-thumb img')).toHaveAttribute('src', /^blob:/);
+  await expect(chip('voice-memo.m4a').locator('.chip-icon')).toHaveText('\u{1F3B5}');
+  await expect(chip('onboarding-spec.pdf').locator('.chip-icon')).toHaveText('\u{1F4C4}');
+  await expect(chip('notes.txt').locator('.chip-icon')).toHaveText('\u{1F4DD}');
+  await expect(chip('design-export.zip').locator('.chip-icon')).toHaveText('\u{1F4CE}');
+  // Chromium records and decodes webm here, so the frame must be captured;
+  // every engine shows the play mark either way.
+  const chromium = test.info().project.name !== 'ios-safari';
+  if (chromium) expect(recorded).toBe('video/webm');
+  if (recorded) {
+    const video = chip(/walkthrough\./);
+    await expect(video.locator('.oc-video-thumb .oc-play')).toBeVisible();
+    if (chromium) {
+      await expect(video.locator('.oc-video-thumb img')).toHaveAttribute('src', /^data:image\/jpeg/);
+      // The frame is the recording's purple, not a blank.
+      const px = await video.locator('.oc-video-thumb img').evaluate(async (img: HTMLImageElement) => {
+        await img.decode();
+        const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const g = c.getContext('2d')!; g.drawImage(img, 0, 0);
+        return Array.from(g.getImageData(2, 2, 1, 1).data);
+      });
+      expect(px[2]).toBeGreaterThan(150);   // blue channel of #7c3aed
+      expect(px[1]).toBeLessThan(110);
+    }
+  }
+  await page.evaluate(() => (window as any)._applyTheme(true));
+  await page.screenshot({ path: test.info().outputPath('outcome-attachments-light.png') });
+  await page.evaluate(() => (window as any)._applyTheme(false));
+  await page.screenshot({ path: test.info().outputPath('outcome-attachments-dark.png') });
+
+  // The thumbnail opens the preview over the dialog; closing it keeps the dialog.
+  await chip(/pasted-.*\.png/).locator('.chip-thumb').click();
+  await expect(page.locator('#attach-preview .attach-preview-img')).toBeVisible();
+  // On top of the dialog, not behind it: the preview's own close is the
+  // element at its centre.
+  expect(await page.locator('#attach-preview .modal-close').evaluate(b => {
+    const r = b.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === b;
+  })).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('outcome-attachments-preview.png') });
+  // Its file-viewer button would open beneath this dialog, so it is not offered.
+  await expect(page.locator('#attach-preview [data-open-file]')).toHaveCount(0);
+  await expect(page.locator('#attach-preview')).toContainText('uploaded');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#attach-preview')).toHaveCount(0);
+  await expect(page.locator('#outcome-text')).toHaveValue('Make the onboarding match this recording and the spec');
+  if (recorded) {
+    await chip(/walkthrough\./).locator('.chip-thumb').click();
+    await expect(page.locator('#attach-preview video.attach-preview-media')).toBeVisible();
+    await page.locator('#attach-preview .modal-close').click();
+  }
+  await expect(page.locator('#outcome-text')).toBeVisible();
+});
