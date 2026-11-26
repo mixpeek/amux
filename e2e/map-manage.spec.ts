@@ -6,6 +6,7 @@
 // The server is shared with other specs: every name carries this run's id and
 // every pin made here is deleted afterwards.
 import { test, expect, Page } from './fixtures';
+import { autoAcceptAppDialogs } from './app-dialogs';
 
 const RUN = 'e2e' + Math.random().toString(36).slice(2, 8);
 // Far out in the South Pacific, so nothing real is nearby.
@@ -30,7 +31,7 @@ async function api(page: Page): Promise<Api> {
 
 async function boot(page: Page) {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
-  page.on('dialog', d => d.accept());
+  await autoAcceptAppDialogs(page);
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any)._mapRenderStatus === 'function');
   await page.evaluate(() => (window as any).switchView('map'));

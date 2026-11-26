@@ -2,6 +2,7 @@
 // shared row builder, a bar of commands, and Delete acting on exactly the
 // selection. Real files in a temp dir; the Files tab drives it.
 import { test, expect } from './fixtures';
+import { autoAcceptAppDialogs } from './app-dialogs';
 import { cleanup } from './teardown';
 import { mkdtemp, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ test('click, Cmd-click, Shift-click and Cmd+A select; Delete removes exactly the
   try {
     await mkdir(join(dir, 'sub'));
     for (const f of ['a', 'b', 'c', 'd', 'e']) await writeFile(join(dir, f + '.txt'), f);
-    page.on('dialog', d => d.accept());
+    await autoAcceptAppDialogs(page);
     await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
     await page.goto('/');
     await page.waitForFunction(() => typeof (window as any)._fselClick === 'function');

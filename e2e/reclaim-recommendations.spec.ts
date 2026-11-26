@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures';
+import { autoAcceptAppDialogs } from './app-dialogs';
 
 // The Disk tab's recommendations (owner ask, 2026-10-18): findings grouped by
 // the tool that owns them, a safe / review split, and a script you copy and run
@@ -151,7 +152,7 @@ test('"Purge batches older than 7 days" purges only old staged batches, each wit
     }
     return route.fulfill({ status: 400, json: { error: 'purge requires ?confirm=<batch_id>' } });
   });
-  page.on('dialog', (d: any) => d.type() === 'prompt' ? d.accept('PURGE') : d.accept());
+  await autoAcceptAppDialogs(page, { prompt: 'PURGE' });
   const btn = page.locator('#reclaim-purge-old');
   await expect(btn).toContainText('Purge 2 batches older than 7 days');
   await btn.click();

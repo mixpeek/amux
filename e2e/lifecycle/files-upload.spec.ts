@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures';
+import { answerConfirm, answerPrompt } from '../app-dialogs';
 import { boot, auth, checkpoint } from './evidence';
 import { cleanup } from '../teardown';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -40,8 +41,8 @@ test('LC-FILES-UPLOAD: upload, preview, rename, download exact bytes, and delete
     await checkpoint(page, info, 'uploaded-csv-preview');
     await page.locator('[onclick="dismissFilePreview()"]').click();
     await row(filename).getByTitle('Options', { exact: true }).click();
-    page.once('dialog', dialog => dialog.accept(renamed));
     await page.locator('.explore-menu-popup').getByRole('button', { name: 'Rename', exact: true }).click();
+    await answerPrompt(page, renamed);
     await expect(row(renamed)).toBeVisible();
     await expect(row(filename)).toHaveCount(0);
     await row(renamed).getByTitle('Options', { exact: true }).click();
@@ -52,8 +53,8 @@ test('LC-FILES-UPLOAD: upload, preview, rename, download exact bytes, and delete
     expect(await readFile((await downloaded.path())!)).toEqual(bytes);
     await checkpoint(page, info, 'uploaded-csv-renamed');
     await row(renamed).getByTitle('Options', { exact: true }).click();
-    page.once('dialog', dialog => dialog.accept());
     await page.locator('.explore-menu-popup').getByRole('button', { name: 'Delete file', exact: true }).click();
+    await answerConfirm(page, true);
     await expect(row(renamed)).toHaveCount(0);
     await expect(readFile(path.join(dir, renamed))).rejects.toThrow(/ENOENT/);
   } finally {

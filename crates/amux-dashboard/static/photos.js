@@ -718,9 +718,9 @@
   }
   async function addToAlbum(ids) {
     const names = Object.entries(S.albums);
-    const ask = typeof window.showPrompt === 'function'
-      ? window.showPrompt('Add to album' + (names.length ? ' (existing: ' + names.map(([, a]) => a.name).join(', ') + ')' : ''), names.length ? names[0][1].name : 'New album')
-      : Promise.resolve(window.prompt('Album name', 'New album'));
+    // photos.js is loaded by app.js, so the shared showPrompt is always
+    // there; a native prompt() is blocked in the installed PWA.
+    const ask = window.showPrompt('Add to album' + (names.length ? ' (existing: ' + names.map(([, a]) => a.name).join(', ') + ')' : ''), names.length ? names[0][1].name : 'New album');
     const name = ((await ask) || '').trim();
     if (!name) return;
     let entry = names.find(([, a]) => a.name.toLowerCase() === name.toLowerCase());

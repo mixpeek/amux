@@ -2429,3 +2429,123 @@ fn no_model_leads_to_the_window_with_the_subscription_sign_in() {
         "a Cloud server's owner (account_url) gets the first-run window on load"
     );
 }
+
+/// Every dashboard dialog goes through the shared `showConfirm` / `showPrompt`
+/// / `showAlert`. A native `confirm()`, `prompt()` or `alert()` is blocked in
+/// the installed PWA: the iOS app's web view returns from it with no box
+/// shown, so the control silently does nothing there. The primitive integrity
+/// audit (2026-11-26, P2) found 30 native confirms, 16 prompts and 16 alerts
+/// beside 53 `showConfirm` calls.
+///
+/// The scan drops comments and keeps string contents, so an inline handler
+/// written into markup (`onclick="if(confirm(...))"`) is still caught. A
+/// method on another object (`x.confirm(`) and a longer name (`showConfirm(`)
+/// are not native calls and are not flagged; `window.confirm(` is.
+#[test]
+fn dashboard_dialogs_never_use_the_native_confirm_prompt_or_alert() {
+    fn files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display())) {
+            let p = e.unwrap().path();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            if p.is_dir() {
+                // Third-party and prebuilt bundles are not ours to rewrite.
+                if name != "vendor" && name != "assets" {
+                    files(&p, out);
+                }
+            } else if name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".html") {
+                out.push(p);
+            }
+        }
+    }
+    /// The source with comments blanked out, line by line (so line numbers
+    /// hold). Quotes are tracked within a line only, so a `//` inside a string
+    /// is not a comment; a template literal spanning lines, or one nesting
+    /// another, cannot desynchronise the rest of the file. A mistake here can
+    /// only keep too much, which shows up as an offender, never hide one.
+    fn strip_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut in_block = false;
+        for line in src.lines() {
+            let b: Vec<char> = line.chars().collect();
+            let (mut i, mut quote) = (0usize, None::<char>);
+            while i < b.len() {
+                let c = b[i];
+                let next = b.get(i + 1).copied();
+                if in_block {
+                    if c == '*' && next == Some('/') {
+                        in_block = false;
+                        i += 1;
+                    }
+                } else if let Some(q) = quote {
+                    out.push(c);
+                    if c == '\\' {
+                        if let Some(n) = next {
+                            out.push(n);
+                        }
+                        i += 1;
+                    } else if c == q {
+                        quote = None;
+                    }
+                } else if c == '/' && next == Some('/') {
+                    break;
+                } else if c == '/' && next == Some('*') {
+                    in_block = true;
+                    i += 1;
+                } else {
+                    if c == '\'' || c == '"' || c == '`' {
+                        quote = Some(c);
+                    }
+                    out.push(c);
+                }
+                i += 1;
+            }
+            out.push('\n');
+        }
+        out
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../amux-dashboard/static");
+    let mut all = Vec::new();
+    files(&root, &mut all);
+    all.sort();
+    let mut scanned = 0usize;
+    let mut offenders = Vec::new();
+    for p in &all {
+        let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
+        // HTML comments are not JS comments; only scan JS files through the
+        // stripper, and HTML as-is (its inline handlers are what matter).
+        let code = if p.extension().is_some_and(|x| x == "html") { src.clone() } else { strip_comments(&src) };
+        scanned += 1;
+        for (n, line) in code.lines().enumerate() {
+            for name in ["confirm", "prompt", "alert"] {
+                let mut from = 0;
+                while let Some(k) = line[from..].find(name) {
+                    let at = from + k;
+                    from = at + name.len();
+                    let rest = line[from..].trim_start();
+                    if !rest.starts_with('(') {
+                        continue;
+                    }
+                    let before = line[..at].chars().next_back();
+                    let native = match before {
+                        None => true,
+                        Some(ch) if ch.is_alphanumeric() || ch == '_' || ch == '$' => false,
+                        Some('.') => ["window.", "self.", "globalThis."].iter().any(|g| line[..at].ends_with(g)),
+                        Some(_) => true,
+                    };
+                    // `function confirm(` would be a definition, not a call.
+                    if native && !line[..at].trim_end().ends_with("function") {
+                        let rel = p.strip_prefix(&root).unwrap_or(p).display().to_string();
+                        offenders.push(format!("  static/{rel}:{}: native {name}(): {}", n + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(scanned >= 5, "scanned only {scanned} dashboard files; the walk is broken");
+    assert!(
+        offenders.is_empty(),
+        "native dialog call in the dashboard; use await showConfirm / showPrompt / showAlert \
+         (a native one is blocked in the installed PWA):\n{}",
+        offenders.join("\n")
+    );
+}

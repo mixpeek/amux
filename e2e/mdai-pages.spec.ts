@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+import { autoAcceptAppDialogs } from './app-dialogs';
 import { cleanup } from './teardown';
 
 type Mode = { delayMs: number; fail?: string };
@@ -95,7 +96,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
   const dir = await mkdtemp(join(tmpdir(), 'amux-mdai-pages-'));
   await mkdir(join(dir, 'team'), { recursive: true });
   await writeFile(join(dir, 'team', 'notes.md'), 'Ship the MDAI pages.\n');
-  page.on('dialog', d => d.accept());
+  await autoAcceptAppDialogs(page);
   await page.goto('/');
   const headers = await page.evaluate(() => ({ Authorization: 'Bearer ' + (window as any)._AMUX_AUTH_TOKEN }));
   const pref = (key: string, value: string) => request.post('/api/prefs', { headers, data: { key, value } });
@@ -571,7 +572,7 @@ test('MDAI chat: the page shows the exchange and the changed lines, runs again, 
   test.setTimeout(120_000);
   const narrow = page.viewportSize()!.width <= 600;
   const s = await setup(page, request, 'amux-mdai-chat-ui-');
-  page.on('dialog', d => d.accept());
+  await autoAcceptAppDialogs(page);
   const posts: any[] = [];
   let runs = 0;
   let refuse = false;

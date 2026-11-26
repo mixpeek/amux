@@ -40,7 +40,11 @@
     --shadow-md: 0 8px 24px color-mix(in srgb, var(--shade) 40%, transparent);
     --shadow-lg: 0 12px 40px color-mix(in srgb, var(--shade) 45%, transparent);
     --shadow-xl: 0 24px 64px color-mix(in srgb, var(--shade) 55%, transparent);
-    --layer-dialog: 1100; --layer-confirmation: 1200;
+    --layer-dialog: 1100;
+    /* Above every fixed overlay a confirm can be raised from (the map modal is
+       9100, the event modal 8002, full-screen sheets 9999), so a showConfirm
+       from inside one is not drawn behind it. */
+    --layer-confirmation: 10000;
     --control-height: 40px; --control-font: var(--fs-xl);
   }
   body { --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
@@ -3983,6 +3987,8 @@
     #dictm-pair input { flex: 1 1 100px; width: 0; }
   }
   .modal-msg { font-size: var(--fs-2xl); color: var(--text); margin-bottom: var(--space-5); line-height: 1.5; }
+  /* showConfirm / showAlert text keeps the line breaks the native dialogs showed. */
+  .modal-msg.modal-text { white-space: pre-line; }
   .modal-btns { display: flex; gap: var(--space-2-5); justify-content: center; }
   .modal-btns .btn { min-width: 80px; }
   @media (max-width: 600px) { .modal-msg { margin-bottom: var(--space-3-5); } }

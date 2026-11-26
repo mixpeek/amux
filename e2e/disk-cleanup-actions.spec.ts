@@ -3,6 +3,7 @@
 // safe ways". The reclaim API is stubbed: a real scan or quarantine here would
 // walk and move the developer's own home directory.
 import {test, expect, allowUnusedRoute} from './fixtures';
+import { autoAcceptAppDialogs } from './app-dialogs';
 
 const GB = 1024 ** 3;
 
@@ -51,7 +52,7 @@ async function stub(page: any, opts: {staged: number}) {
 
 async function openDisk(page: any) {
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
-  page.on('dialog', (d: any) => d.type() === 'prompt' ? d.accept('PURGE') : d.accept());
+  await autoAcceptAppDialogs(page, { prompt: 'PURGE' });
   await page.goto('/#view=disk', {waitUntil: 'domcontentloaded'});
   await expect(page.locator('#reclaim-actions')).toBeVisible();
 }

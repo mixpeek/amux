@@ -4083,18 +4083,23 @@ function _dialogReachCheck(root) {
   refresh();
 })();
 
-// Modal: replaces confirm() / alert() — both blocked in PWA standalone mode
+// Modal: replaces confirm() / alert() / prompt(), all blocked in PWA standalone
+// mode (the iOS app's web view returns from them with no box shown). Every
+// dashboard dialog goes through these; tests/dashboard_assets.rs fails on a
+// native call.
 let _modalResolve = null;
 function _modalBgClick(e) { if (e.target === document.getElementById('modal-backdrop')) _modalClose(false); }
 function _modalClose(val) {
   document.getElementById('modal-backdrop').classList.remove('open');
   document.querySelector('#modal-backdrop .modal-box')?.classList.remove('modal-form');
+  document.getElementById('modal-msg')?.classList.remove('modal-text');
   if (_modalResolve) { _modalResolve(val); _modalResolve = null; }
 }
 function showConfirm(msg, confirmLabel = 'Confirm', danger = false) {
   return new Promise(resolve => {
     _modalResolve = resolve;
-    document.getElementById('modal-msg').textContent = msg;
+    const m = document.getElementById('modal-msg');
+    m.textContent = msg; m.classList.add('modal-text');
     const btns = document.getElementById('modal-btns');
     btns.innerHTML = `
       <button class="btn ${danger ? 'danger' : 'primary'}" onclick="_modalClose(true)">${confirmLabel}</button>
@@ -4105,7 +4110,8 @@ function showConfirm(msg, confirmLabel = 'Confirm', danger = false) {
 function showAlert(msg) {
   return new Promise(resolve => {
     _modalResolve = resolve;
-    document.getElementById('modal-msg').textContent = msg;
+    const m = document.getElementById('modal-msg');
+    m.textContent = msg; m.classList.add('modal-text');
     const btns = document.getElementById('modal-btns');
     btns.innerHTML = `<button class="btn primary" onclick="_modalClose(true)">OK</button>`;
     document.getElementById('modal-backdrop').classList.add('open');
@@ -4127,7 +4133,7 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
   return new Promise(resolve => {
     _modalResolve = resolve;
     document.getElementById('modal-msg').innerHTML =
-      '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-3);">' + esc(title) + '</div>' + innerHTML;
+      '<div style="font-weight:700;font-size:var(--fs-2xl);margin-bottom:var(--space-3);white-space:pre-line;">' + esc(title) + '</div>' + innerHTML;
     document.getElementById('modal-btns').innerHTML =
       `<button class="btn primary" onclick="_modalClose(true)">${esc(confirmLabel)}</button>` +
       `<button class="btn" onclick="_modalClose(false)">Cancel</button>`;
@@ -4138,8 +4144,10 @@ function showFormModal(title, innerHTML, confirmLabel = 'Save') {
     document.getElementById('modal-backdrop').classList.add('open');
   });
 }
-// Single-line prompt on the same chrome. Resolves the string, or null if cancelled.
-async function showPrompt(msg, placeholder = '', value = '') {
+// Single-line prompt on the same chrome. Resolves the string, or null if
+// cancelled. `value` is the prefilled default. The answer is trimmed unless
+// opts.trim is false, which returns exactly what was typed, as prompt() did.
+async function showPrompt(msg, placeholder = '', value = '', opts = {}) {
   // Focused, and Enter submits: a prompt you must click into and then click
   // OK on invited pressing OK on an empty box (the bulk-delete "Delete
   // cancelled" report, 2026-09-24).
@@ -4150,7 +4158,8 @@ async function showPrompt(msg, placeholder = '', value = '') {
   setTimeout(() => { const i = document.getElementById('modal-prompt-input'); if (i) { i.focus(); if (value) i.select(); } }, 30);
   const ok = await shown;
   if (!ok) return null;
-  return (document.getElementById('modal-prompt-input')?.value || '').trim();
+  const typed = document.getElementById('modal-prompt-input')?.value || '';
+  return opts.trim === false ? typed : typed.trim();
 }
 
 // ── Bulk actions modal ──
@@ -6948,14 +6957,15 @@ async function _pushReconcile() {
 }
 setTimeout(_pushReconcile, 6000);
 
-// Step-by-step on-device diagnostic. Uses alert() so the full report is
-// readable on a phone (toasts truncate). Leads with the iOS Home-Screen fix,
+// Step-by-step on-device diagnostic. Uses showAlert so the full report is
+// readable on a phone (toasts truncate) and shows in the installed PWA, where
+// a native alert() is blocked. Leads with the iOS Home-Screen fix,
 // which is the usual cause of "this browser has no Notification API".
 async function _notifSendTest() {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   const standalone = window.navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
   const steps = [];
-  const report = (extra) => alert('amux push test\n\n' + steps.join('\n') + (extra ? '\n\n' + extra : ''));
+  const report = (extra) => showAlert('amux push test\n\n' + steps.join('\n') + (extra ? '\n\n' + extra : ''));
 
   // 1. Notification API present? On iOS it only exists in an installed PWA.
   if (typeof Notification === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -8364,7 +8374,7 @@ async function _niAutoToggle() {
 async function _niAutoSet(level, name, field, value) {
   if (field === 'money_cap_usd' && value !== null && !(value >= 0 && value <= 100000)) { showToast('Cap must be 0 to 100000 dollars'); return; }
   if (field === 'outbound' && value === true
-      && !confirm('Outbound on: real emails and posts to outside people will go out without you seeing them first. Sends cannot be undone. Turn it on?')) return;
+      && !(await showConfirm('Outbound on: real emails and posts to outside people will go out without you seeing them first. Sends cannot be undone. Turn it on?', 'Turn on', true))) return;
   try {
     // _skipOutbox: a policy change must land or say it did not; a queued
     // write would show the old policy as saved.
@@ -8380,7 +8390,7 @@ async function _niAutoSet(level, name, field, value) {
 }
 async function _niAutoSweep(btn) {
   const n = (_niAuto && _niAuto.already_waiting_unapproved) || 0;
-  if (!confirm('Apply the current policy to the ' + n + ' asks already waiting? Each is approved only if its worker’s policy covers it.')) return;
+  if (!(await showConfirm('Apply the current policy to the ' + n + ' asks already waiting? Each is approved only if its worker’s policy covers it.'))) return;
   if (btn) btn.disabled = true;
   try {
     const r = await fetch(API + '/api/needs-input/auto/sweep', { method: 'POST', _skipOutbox: true, headers: _authHeaders({ 'Content-Type': 'application/json' }) });
@@ -15015,7 +15025,7 @@ async function shareSession(session) {
     }
     return;
   }
-  const perms = prompt('Share permissions:\n  output — terminal output only\n  output+files — output + working directory\n  output+files+notes — output + files + notes', 'output');
+  const perms = (await showPrompt('Share permissions:\n  output — terminal output only\n  output+files — output + working directory\n  output+files+notes — output + files + notes', '', 'output', { trim: false }));
   if (!perms) return;
   const r = await apiCall(API + '/api/sessions/' + session + '/share', {
     method: 'POST', headers: {'Content-Type':'application/json'},
@@ -27101,7 +27111,7 @@ async function peekLoadLogIntoSession() {
       if (d && typeof d.size === 'number') {
         const mb = d.size / (1024 * 1024);
         sizeNote = mb >= 1 ? ` (~${mb.toFixed(1)} MB)` : ` (~${Math.round(d.size/1024)} KB)`;
-        if (mb > 5 && !confirm('Your worker log is ' + mb.toFixed(1) + ' MB. Loading it will eat a lot of context. Continue?')) return;
+        if (mb > 5 && !(await showConfirm('Your worker log is ' + mb.toFixed(1) + ' MB. Loading it will eat a lot of context. Continue?'))) return;
       }
     }
   } catch(e) {}
@@ -37975,7 +37985,7 @@ async function _fileDownload() {
     setTimeout(() => { dlBtn.textContent = '⬇ Download'; }, 2000);
   } catch(e) {
     dlBtn.textContent = '⬇ Download';
-    alert('Download failed: ' + e.message);
+    await showAlert('Download failed: ' + e.message);
   }
 }
 
@@ -39333,7 +39343,7 @@ async function _fselDownload() {
 async function _fselMove() {
   const items = _fselSelected();
   const here = items.length ? items[0].path.slice(0, items[0].path.lastIndexOf('/')) || '/' : '/';
-  const dest = (prompt('Move ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' to folder:', here) || '').trim();
+  const dest = ((await showPrompt('Move ' + items.length + ' item' + (items.length === 1 ? '' : 's') + ' to folder:', '', here, { trim: false })) || '').trim();
   if (!dest || dest === here) return;
   const res = await _fselEach(items, async it => {
     const r = await fetch(API + '/api/fs/rename', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
@@ -39347,7 +39357,7 @@ async function _fselMove() {
 async function _fselDelete() {
   const items = _fselSelected();
   const names = items.slice(0, 5).map(e => e.path.split('/').pop() + (e.type === 'dir' ? '/' : '')).join('\n');
-  if (!confirm('Delete ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '? This cannot be undone.\n\n' + names + (items.length > 5 ? '\n\u2026and ' + (items.length - 5) + ' more' : ''))) return;
+  if (!(await showConfirm('Delete ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '? This cannot be undone.\n\n' + names + (items.length > 5 ? '\n\u2026and ' + (items.length - 5) + ' more' : ''), 'Delete', true))) return;
   const res = await _fselEach(items, async it => {
     const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: it.path }) });
     const d = await r.json().catch(() => ({}));
@@ -41195,7 +41205,7 @@ async function _connReconnect(family, account) {
       // The server live-probed Google and the grant WILL dead-end at the
       // mismatch wall (AMUX-3427) — surface the one console fix instead of
       // opening a tab that cannot succeed.
-      alert('Google rejects this app\'s redirect URI, so the grant cannot succeed yet.\n\nOne-time fix: ' + (d.fix_if_unregistered || 'register ' + d.redirect_uri + ' on the OAuth client'));
+      await showAlert('Google rejects this app\'s redirect URI, so the grant cannot succeed yet.\n\nOne-time fix: ' + (d.fix_if_unregistered || 'register ' + d.redirect_uri + ' on the OAuth client'));
       return;
     }
     if (d && d.authorize_url) {
@@ -41257,7 +41267,7 @@ async function _gmailReconnect(email) {
   if (email) _connReconnect('google', email);
 }
 async function _gmailAddAccount() {
-  const email = (prompt('Google account to connect:') || '').trim();
+  const email = ((await showPrompt('Google account to connect:', '', '', { trim: false })) || '').trim();
   // The full Google grant (mail + calendar + drive + docs). The gmail-only
   // grant left calendar unauthorized on every account added this way.
   if (email) _connReconnect('google', email);
@@ -41797,7 +41807,7 @@ async function _mdaiNewFile(dirOrOpts) {
   else if (dirOrOpts) { dir = dirOrOpts.dir || null; silent = !!dirOrOpts.silent; noOpen = !!dirOrOpts.noOpen; }
   if (!noOpen) { _mdaiCreatePage({ dir: dir || ((activeView === 'files' && _filesPath && !_exploreSession) ? _filesPath : null) }); return null; }
   if (!dir) dir = _mdaiRoot();
-  const raw = prompt('New .mdai node name (e.g. weekly-brief.mdai):', 'node.mdai');
+  const raw = (await showPrompt('New .mdai node name (e.g. weekly-brief.mdai):', '', 'node.mdai', { trim: false }));
   if (!raw || !raw.trim()) return null;
   let fname = raw.trim();
   if (!/\.mdai$/i.test(fname)) fname += '.mdai';
@@ -41867,8 +41877,8 @@ function _mdaiApplyDoc(d) {
   if (!c.doc && _mdaiEditMode !== 'raw') _mdaiEditMode = 'raw';
 }
 function _mdaiApplyContent(text) { if (_mdaiCur) _mdaiCur.content = text; }
-function closeMdaiNode() {
-  if (_mdaiDirty() && !confirm('Discard unsaved changes to this node?')) return;
+async function closeMdaiNode() {
+  if (_mdaiDirty() && !(await showConfirm('Discard unsaved changes to this node?', 'Discard', true))) return;
   _mdaiStopPoll();
   document.getElementById('mdai-overlay').classList.remove('active');
   _mdaiCur = null; _mdaiHist = []; _mdaiLastRun = null; _mdaiShown = null; _mdaiDraft = null; _mdaiBodyDraft = null; _mdaiActive = null;
@@ -42000,7 +42010,7 @@ async function _mdaiPoll(node) {
 let _mdaiCancelPending = false;
 async function _mdaiCancel() {
   if (!_mdaiCur || !_mdaiRunning) return;
-  if (!confirm('Stop this run? The model call in progress is stopped and the run is recorded as cancelled.')) return;
+  if (!(await showConfirm('Stop this run? The model call in progress is stopped and the run is recorded as cancelled.', 'Stop run', true))) return;
   // Stop shows the moment Run is clicked, before the server has the run. A
   // cancel sent then found "nothing is running" and the run went ahead, so
   // it waits for the start to land and is sent from there.
@@ -42214,7 +42224,7 @@ async function _mdaiDelete() {
   if (!_mdaiCur) return;
   const name = _mdaiCur.abs.split('/').pop();
   const users = (_mdaiGraph && _mdaiGraph.used_by) || [];
-  if (!confirm('Delete ' + name + '?' + (_mdaiRunning ? ' Its run in progress is stopped first.' : '') + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.')) return;
+  if (!(await showConfirm('Delete ' + name + '?' + (_mdaiRunning ? ' Its run in progress is stopped first.' : '') + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.', 'Delete', true))) return;
   try {
     if (_mdaiRunning) await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => null);
     const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiCur.abs }) });
@@ -42502,7 +42512,7 @@ async function _mdaiChatSend(text) {
 async function _mdaiChatUndo(i) {
   const t = _mdaiChat[i];
   if (!_mdaiCur || !t || !t.changed || t.truncated || t.undone) return;
-  if (!confirm('Put the node back to how it was before this change?')) return;
+  if (!(await showConfirm('Put the node back to how it was before this change?'))) return;
   const ok = await _mdaiSerial(() => _mdaiPutDoc({ path: _mdaiCur.abs, raw: t.before, base_mtime_ms: _mdaiCur.mtime }));
   if (!ok) return;
   t.undone = true;
@@ -42871,8 +42881,9 @@ function _mdaiDownload(text) {
 function _mdaiOpenRaw() {
   if (!_mdaiCur) return;
   const abs = _mdaiCur.abs;
-  closeMdaiNode();
-  return openFilePreview(abs, {raw:true}).then(() => {
+  // closeMdaiNode asks first when the node has unsaved edits; open the raw
+  // view after that answer, as the native confirm() it replaced did.
+  return Promise.resolve(closeMdaiNode()).then(() => openFilePreview(abs, {raw:true})).then(() => {
     fetch('/api/client-debug', {method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({kind:'mdai-raw-view',verdict:_fileData?.content != null && _fileViewMode === 'raw' ? 'opened' : 'unavailable',measured:true,n:1,ver:APP_VER})}).catch(() => {});
   });
@@ -43096,10 +43107,10 @@ async function setFilesSessionDir() {
     const lbl = document.getElementById('files-set-session-label');
     const olbl = document.getElementById('files-session-oitem-label');
     const sess = _exploreSession;
-    const confirm = () => setTimeout(() => { if (lbl) lbl.textContent = 'Set dir for ' + sess; if (olbl) olbl.textContent = 'Set dir for ' + sess; }, 2000);
+    const restoreLabel = () => setTimeout(() => { if (lbl) lbl.textContent = 'Set dir for ' + sess; if (olbl) olbl.textContent = 'Set dir for ' + sess; }, 2000);
     if (lbl) lbl.textContent = '✓ Set!';
     if (olbl) olbl.textContent = '✓ Set!';
-    confirm();
+    restoreLabel();
     await fetchSessions();
   } catch(e) { console.error('setFilesSessionDir:', e); }
 }
@@ -43138,7 +43149,7 @@ function _fmtSize(bytes) {
 }
 async function _fsRename(path, refresh) {
   const oldName = path.split('/').pop();
-  const entered = prompt('Rename "' + oldName + '" to:', oldName);
+  const entered = (await showPrompt('Rename "' + oldName + '" to:', '', oldName, { trim: false }));
   if (!entered || !entered.trim() || entered.trim() === oldName) return;
   const newName = entered.trim();
   if (/[\/\0]/.test(newName) || newName === '.' || newName === '..') { showToast('Invalid name'); return; }
@@ -43176,7 +43187,7 @@ function _showExploreMenu(path, btn, type) {
   delItem.onclick = async () => {
     popup.remove();
     const name = path.split('/').pop();
-    if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+    if (!(await showConfirm('Delete "' + name + '"? This cannot be undone.', 'Delete', true))) return;
     try {
       const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path }) });
       const d = await r.json();
@@ -43278,7 +43289,7 @@ function _showFilesMenu(path, btn, type) {
   delItem.onclick = async () => {
     popup.remove();
     const name = path.split('/').pop();
-    if (!confirm('Delete "' + name + '"? This cannot be undone.')) return;
+    if (!(await showConfirm('Delete "' + name + '"? This cannot be undone.', 'Delete', true))) return;
     try {
       const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path }) });
       const d = await r.json();
@@ -48068,7 +48079,7 @@ async function _habitsToggle(idx, btn) {
 }
 
 async function _habitsAdd() {
-  const name = prompt('Habit name:');
+  const name = (await showPrompt('Habit name:', '', '', { trim: false }));
   if (!name || !name.trim()) return;
   _habits.push({ name: name.trim(), log: [], created: _habitsTodayKey() });
   _habitsRender();
@@ -48078,7 +48089,7 @@ async function _habitsAdd() {
 async function _habitsEdit(idx) {
   const h = _habits[idx];
   if (!h) return;
-  const name = prompt('Edit habit name:', h.name);
+  const name = (await showPrompt('Edit habit name:', '', h.name, { trim: false }));
   if (name === null) return;
   if (!name.trim()) return;
   h.name = name.trim();
@@ -48089,7 +48100,7 @@ async function _habitsEdit(idx) {
 async function _habitsDelete(idx) {
   const h = _habits[idx];
   if (!h) return;
-  if (!confirm('Delete "' + h.name + '"?')) return;
+  if (!(await showConfirm('Delete "' + h.name + '"?', 'Delete', true))) return;
   _habits.splice(idx, 1);
   _habitsRender();
   await _habitsSave();
@@ -49067,7 +49078,7 @@ function _mapSavePin() {
   const lat = parseFloat(document.getElementById('map-pin-lat').value);
   const lng = parseFloat(document.getElementById('map-pin-lng').value);
   if (!name) { document.getElementById('map-pin-name').focus(); return; }
-  if (isNaN(lat) || isNaN(lng)) { alert('Please enter valid coordinates.'); return; }
+  if (isNaN(lat) || isNaN(lng)) { showAlert('Please enter valid coordinates.'); return; }
   const tags = Array.from(document.querySelectorAll('#map-pin-tags-row input[type=checkbox]:checked')).map(function(cb) { return cb.value; });
   const status = document.getElementById('map-pin-status').value;
   const ratingV = document.getElementById('map-pin-rating').value;
@@ -49090,8 +49101,8 @@ function _mapSavePin() {
   _mapPutPin(pin);
 }
 
-function _mapDeletePin() {
-  if (!_mapEditingPin || !confirm('Delete this pin?')) return;
+async function _mapDeletePin() {
+  if (!_mapEditingPin || !(await showConfirm('Delete this pin?', 'Delete', true))) return;
   const id = _mapEditingPin;
   _mapClosePinModal();
   _mapRemovePin(id);
@@ -49141,8 +49152,8 @@ function _mapSaveTag() {
   _mapSave(); _mapCloseTagModal(); _mapRenderTags(); _mapRenderPins(); _mapRenderMarkers();
 }
 
-function _mapDeleteTag() {
-  if (!_mapEditingTag || !confirm('Delete this group? It will be removed from all pins.')) return;
+async function _mapDeleteTag() {
+  if (!_mapEditingTag || !(await showConfirm('Delete this group? It will be removed from all pins.', 'Delete', true))) return;
   const tagId = _mapEditingTag;
   const ids = _mapPins.filter(function(p) { return (p.tags||[]).indexOf(tagId) !== -1; }).map(function(p) { return p.id; });
   _mapTags = _mapTags.filter(function(t) { return t.id !== tagId; });
@@ -49236,9 +49247,9 @@ function _mapSaveList() {
   showToast('Saved list “' + name + '”');
 }
 
-function _mapDeleteList() {
+async function _mapDeleteList() {
   const l = _mapLists.find(function(x) { return x.id === _mapActiveList; });
-  if (!l || !confirm('Delete the list “' + l.name + '”? Its pins stay.')) return;
+  if (!l || !(await showConfirm('Delete the list “' + l.name + '”? Its pins stay.', 'Delete', true))) return;
   apiCall(API + '/api/map/lists/' + encodeURIComponent(l.id) + '/share', { method: 'DELETE' });
   _mapLists = _mapLists.filter(function(x) { return x.id !== l.id; });
   _mapActiveList = '';
@@ -49271,7 +49282,7 @@ async function _mapShareToggle() {
     await apiCall(API + '/api/map/lists/' + encodeURIComponent(id) + '/share', { method: 'DELETE' });
     showToast('Link turned off');
   } else {
-    if (!confirm('Anyone with the link will see this list’s pins: names, descriptions, groups, status and rating. Notes and visits stay private. Create the link?')) return;
+    if (!(await showConfirm('Anyone with the link will see this list’s pins: names, descriptions, groups, status and rating. Notes and visits stay private. Create the link?'))) return;
     // A list saved a moment ago may still be on its way to the server; sharing
     // before it lands answers "no saved list" (CI, 2026-10-24).
     if (_mapMetaSaving) await Promise.resolve(_mapMetaSaving).catch(function() {});
@@ -49343,9 +49354,9 @@ function _mapRenderBulkBar() {
 }
 
 function _mapBulkApply(op, value) { _mapBulk(Array.from(_mapSelected), op, value); }
-function _mapBulkDelete() {
+async function _mapBulkDelete() {
   const n = _mapSelected.size;
-  if (!n || !confirm('Delete ' + n + ' pin' + (n === 1 ? '' : 's') + '? Each one stays in the pin history.')) return;
+  if (!n || !(await showConfirm('Delete ' + n + ' pin' + (n === 1 ? '' : 's') + '? Each one stays in the pin history.', 'Delete', true))) return;
   _mapBulk(Array.from(_mapSelected), 'delete');
 }
 
@@ -49357,11 +49368,11 @@ async function _mapMerge(keep, drop) {
   return !!r;
 }
 
-function _mapMergeSelected() {
+async function _mapMergeSelected() {
   const ids = Array.from(_mapSelected);
   if (ids.length !== 2) return;
   const a = _mapPins.find(function(p) { return p.id === ids[0]; }), b = _mapPins.find(function(p) { return p.id === ids[1]; });
-  if (!a || !b || !confirm('Merge “' + b.name + '” into “' + a.name + '”? Groups and notes are combined.')) return;
+  if (!a || !b || !(await showConfirm('Merge “' + b.name + '” into “' + a.name + '”? Groups and notes are combined.', 'Merge', false))) return;
   _mapMerge(a.id, b.id);
 }
 
@@ -49459,7 +49470,7 @@ async function _mapPinHistory() {
 async function _mapLinkAllPlaces() {
   const n = _mapPins.filter(function(p) { return !p.placeId && !(p.placeLink && p.placeLink.status === 'no_match'); }).length;
   if (!n) { showToast('Every pin is already linked or checked'); return; }
-  if (!confirm('Look up ' + n + ' pin' + (n === 1 ? '' : 's') + ' on Google? Each is one Google Places request on your API key.')) return;
+  if (!(await showConfirm('Look up ' + n + ' pin' + (n === 1 ? '' : 's') + ' on Google? Each is one Google Places request on your API key.'))) return;
   const r = await apiCall(API + '/api/map/places/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: n }) });
   const d = r ? await r.json().catch(function() { return null; }) : null;
   if (d) showToast('Linked ' + d.linked + ', no match ' + d.no_match + (d.failed ? ', failed ' + d.failed : ''));
@@ -54433,10 +54444,10 @@ async function _colMigrateAll(from, to, lane) {
   if (!n) { showToast('"' + fl + '" has no cards to migrate'); return; }
   // SAY HOW MANY, and say it is not undoable in one action — the same rule
   // AMUX-2491 set for the column delete dialog. The count is the decision.
-  if (!confirm('Migrate all ' + n + ' card' + (n === 1 ? '' : 's')
+  if (!(await showConfirm('Migrate all ' + n + ' card' + (n === 1 ? '' : 's')
       + (lane ? ' belonging to ' + lane : ' across ALL workers')
       + ' from "' + fl + '" to "' + tl + '"?\n\nEach move is recorded on the card, but there '
-      + 'is no single undo; reversing this means migrating them back.')) return;
+      + 'is no single undo; reversing this means migrating them back.'))) return;
   try {
     const r = await fetch(API + '/api/board/bulk-migrate', {
       method: 'POST',
@@ -58533,13 +58544,13 @@ async function _saveEventOnce(id) {
   try {
     const url = API + '/api/cal-events' + (id ? '/' + id : '');
     const r = await fetch(url, { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Save failed'); return; }
-  } catch (e) { alert('Save failed: ' + e.message); return; }
+    if (!r.ok) { const e = await r.json().catch(() => ({})); await showAlert(e.error || 'Save failed'); return; }
+  } catch (e) { await showAlert('Save failed: ' + e.message); return; }
   closeEventModal();
   await fetchCalEvents();
 }
 async function deleteEvent(id) {
-  if (!confirm('Delete this event?')) return;
+  if (!(await showConfirm('Delete this event?', 'Delete', true))) return;
   try { await fetch(API + '/api/cal-events/' + id, { method: 'DELETE' }); showToast('Event deleted'); } catch (e) { showToast('Delete failed'); }
   closeEventModal();
   await fetchCalEvents();
@@ -63083,7 +63094,7 @@ async function _standingApprovalsLoad() {
   } catch (e) { usesEl.textContent = 'Could not load the FYI feed'; }
 }
 async function _standingApprovalRevoke(id, btn) {
-  if (!confirm('Revoke ' + id + '? Workers will escalate these asks to you again.')) return;
+  if (!(await showConfirm('Revoke ' + id + '? Workers will escalate these asks to you again.', 'Revoke', true))) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Revoking…'; }
   try {
     const r = await fetch(API + '/api/approvals/standing/' + encodeURIComponent(id), { method: 'DELETE' });
@@ -63934,8 +63945,8 @@ async function startCheckout(billing) {
     });
     const d = await r.json();
     if (d.url) location.href = d.url;
-    else alert(d.error || 'Failed to start checkout');
-  } catch(e) { alert('Connection error'); }
+    else await showAlert(d.error || 'Failed to start checkout');
+  } catch(e) { await showAlert('Connection error'); }
 }
 
 async function openBillingPortal() {
@@ -63943,8 +63954,8 @@ async function openBillingPortal() {
     const r = await fetch('/api/stripe/portal', { method: 'POST' });
     const d = await r.json();
     if (d.url) location.href = d.url;
-    else alert(d.error || 'No billing account');
-  } catch(e) { alert('Connection error'); }
+    else await showAlert(d.error || 'No billing account');
+  } catch(e) { await showAlert('Connection error'); }
 }
 
 // Load team + billing whenever settings opens
@@ -66898,7 +66909,7 @@ async function _reclaimQuarantineSelected() {
     + 'Nothing is deleted. Files move to ~/.amux/quarantine and can be restored '
     + 'with one click. Space is NOT returned until you purge the batch.\n\n'
     + paths.slice(0, 12).join('\n') + (paths.length > 12 ? '\n…and ' + (paths.length - 12) + ' more' : '');
-  if (!confirm(msg)) return;
+  if (!(await showConfirm(msg))) return;
   const r = await fetch(API + '/api/reclaim/quarantine', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -66906,7 +66917,7 @@ async function _reclaimQuarantineSelected() {
   });
   const d = await r.json().catch(() => ({}));
   if (d.refused && d.refused.length) {
-    alert('Staged ' + (d.moved || 0) + ' item(s).\n\nRefused ' + d.refused.length + ':\n'
+    await showAlert('Staged ' + (d.moved || 0) + ' item(s).\n\nRefused ' + d.refused.length + ':\n'
       + d.refused.map(x => x.path + ': ' + x.reason).join('\n'));
   } else {
     showToast('Staged ' + (d.moved || 0) + ' item(s) · ' + _fmtBytes(d.bytes || 0));
@@ -66916,11 +66927,11 @@ async function _reclaimQuarantineSelected() {
 }
 
 async function _reclaimRestore(batchId) {
-  if (!confirm('Restore every file in this batch to its original location?')) return;
+  if (!(await showConfirm('Restore every file in this batch to its original location?', 'Restore', false))) return;
   const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(batchId) + '/restore', { method: 'POST' });
   const d = await r.json().catch(() => ({}));
   showToast('Restored ' + (d.restored || 0) + ' item(s)');
-  if (d.failed && d.failed.length) alert('Failed:\n' + d.failed.map(x => x.path + ' — ' + x.reason).join('\n'));
+  if (d.failed && d.failed.length) await showAlert('Failed:\n' + d.failed.map(x => x.path + ' — ' + x.reason).join('\n'));
   _reclaimLoad();
 }
 
@@ -66939,14 +66950,14 @@ async function _reclaimPurge(batchId, bytes) {
   const msg = 'PERMANENTLY DELETE this quarantine batch?\n\n'
     + 'Size: ' + _fmtBytes(bytes) + '\n\n'
     + 'This cannot be undone. Restore will no longer be possible.';
-  if (!confirm(msg)) return;
-  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  if (!(await showConfirm(msg, 'Delete', true))) return;
+  if ((await showPrompt('Type PURGE to confirm permanent deletion:', '', '', { trim: false })) !== 'PURGE') { showToast('Cancelled'); return; }
   const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(batchId)
     + '?confirm=' + encodeURIComponent(batchId), { method: 'DELETE' });
   const d = await r.json().catch(() => ({}));
   // Report the REAL delta, and say so when it disappoints.
   showToast('Purged · free space +' + _fmtBytes(d.actually_freed || 0));
-  if (d.note) alert(d.note);
+  if (d.note) await showAlert(d.note);
   _reclaimLoad();
 }
 
@@ -66967,8 +66978,8 @@ async function _reclaimPurgeOld() {
     + ' staged more than ' + _RECLAIM_PURGE_AGE_DAYS + ' days ago?\n\n'
     + 'Staged size: ' + _fmtBytes(est) + '\n\n'
     + 'This cannot be undone. Restore will no longer be possible for these batches.';
-  if (!confirm(msg)) return;
-  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  if (!(await showConfirm(msg, 'Delete', true))) return;
+  if ((await showPrompt('Type PURGE to confirm permanent deletion:', '', '', { trim: false })) !== 'PURGE') { showToast('Cancelled'); return; }
   let freed = 0, ok = 0;
   const failed = [], notes = new Set();
   for (const b of old) {
@@ -66984,7 +66995,7 @@ async function _reclaimPurgeOld() {
   }
   showToast('Purged ' + ok + ' of ' + old.length + ' batches · free space +' + _fmtBytes(freed));
   if (failed.length || notes.size) {
-    alert((failed.length ? 'Not purged (' + failed.length + '):\n' + failed.join('\n') + '\n\n' : '')
+    await showAlert((failed.length ? 'Not purged (' + failed.length + '):\n' + failed.join('\n') + '\n\n' : '')
       + [...notes].join('\n'));
   }
   _reclaimLoad();
@@ -67470,9 +67481,9 @@ async function _reclaimPurgeAllStaged() {
   const batches = (_reclaimQuarantine?.batches || []).filter(b => b.status === 'staged' && b.item_count > 0);
   const total = batches.reduce((a, b) => a + (b.bytes || 0), 0);
   if (!batches.length) { showToast('Nothing is staged'); return; }
-  if (!confirm('PERMANENTLY DELETE every quarantined file?\n\n' + batches.length + ' batch(es), ' + _fmtBytes(total)
-    + '\n\nThis cannot be undone. Use "Review or restore" first if anything in there is still needed.')) return;
-  if (prompt('Type PURGE to confirm permanent deletion:') !== 'PURGE') { showToast('Cancelled'); return; }
+  if (!(await showConfirm('PERMANENTLY DELETE every quarantined file?\n\n' + batches.length + ' batch(es), ' + _fmtBytes(total)
+    + '\n\nThis cannot be undone. Use "Review or restore" first if anything in there is still needed.', 'Delete', true))) return;
+  if ((await showPrompt('Type PURGE to confirm permanent deletion:', '', '', { trim: false })) !== 'PURGE') { showToast('Cancelled'); return; }
   let freed = 0, failed = 0;
   for (const b of batches) {
     const r = await fetch(API + '/api/reclaim/quarantine/' + encodeURIComponent(b.id)
@@ -67493,9 +67504,9 @@ async function _reclaimCleanSafe() {
   const paths = [...new Set(safe.flatMap(r => r.paths))].filter(p => !_reclaimIsProtectedPath(p));
   if (!paths.length) { showToast('Nothing rebuildable to clean'); return; }
   const est = safe.reduce((a, r) => a + (r.bytes || 0), 0);
-  if (!confirm('Delete ' + paths.length + ' rebuildable item(s), about ' + _fmtBytes(est) + '?\n\n'
+  if (!(await showConfirm('Delete ' + paths.length + ' rebuildable item(s), about ' + _fmtBytes(est) + '?\n\n'
     + 'Build output and caches only; they come back on the next build or download.\n\n'
-    + safe.slice(0, 10).map(r => '· ' + r.label + ' (' + _fmtBytes(r.bytes) + ')').join('\n'))) return;
+    + safe.slice(0, 10).map(r => '· ' + r.label + ' (' + _fmtBytes(r.bytes) + ')').join('\n'), 'Delete', true))) return;
   const btn = document.getElementById('reclaim-clean-safe');
   if (btn) { btn.disabled = true; btn.textContent = 'Cleaning…'; }
   const r = await fetch(API + '/api/reclaim/quarantine', {
@@ -71552,7 +71563,7 @@ function _gmailToggleSidebar() {
 }
 
 async function _gmailConnectAccount() {
-  const account = prompt('Enter Gmail address to connect:');
+  const account = (await showPrompt('Enter Gmail address to connect:', '', '', { trim: false }));
   if (!account || !account.includes('@')) return;
   // Get auth URL
   const r = await fetch(API + '/api/gmail/auth?account=' + encodeURIComponent(account)).catch(()=>null);
@@ -73125,7 +73136,7 @@ async function _bwImportProfile() {
 
 async function _bwSaveProfile() {
   const suggested = _bwActiveProfile || '';
-  const name = prompt('Register the current site to which profile?\n(Logging in under this profile persists automatically.)', suggested);
+  const name = (await showPrompt('Register the current site to which profile?\n(Logging in under this profile persists automatically.)', '', suggested, { trim: false }));
   if (name === null) return;
   _bwStatus('Saving profile…');
   try {
@@ -73421,7 +73432,7 @@ async function _jrnlSave() {
 }
 
 async function _jrnlDelete(id) {
-  if (!confirm('Delete this journal entry?')) return;
+  if (!(await showConfirm('Delete this journal entry?', 'Delete', true))) return;
   await fetch('/api/journal/' + id, { method: 'DELETE' });
   showToast('Journal entry deleted');
   _jrnlActiveId = null;
@@ -73461,7 +73472,7 @@ function _jrnlViewMedia(url) {
 }
 
 function _jrnlGetLocation() {
-  if (!navigator.geolocation) { alert('Geolocation not supported'); return; }
+  if (!navigator.geolocation) { showAlert('Geolocation not supported'); return; }
   navigator.geolocation.getCurrentPosition(async (pos) => {
     document.getElementById('jrnl-ed-lat').value = pos.coords.latitude;
     document.getElementById('jrnl-ed-lng').value = pos.coords.longitude;
@@ -73472,7 +73483,7 @@ function _jrnlGetLocation() {
       const place = d.address ? [d.address.city || d.address.town || d.address.village || '', d.address.state || '', d.address.country || ''].filter(Boolean).join(', ') : '';
       if (place) document.getElementById('jrnl-ed-place').value = place;
     } catch(e) {}
-  }, (err) => { alert('Location error: ' + err.message); }, { enableHighAccuracy: true });
+  }, (err) => { showAlert('Location error: ' + err.message); }, { enableHighAccuracy: true });
 }
 
 // Calendar view
