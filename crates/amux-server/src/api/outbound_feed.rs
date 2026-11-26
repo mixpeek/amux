@@ -538,6 +538,17 @@ mod tests {
         assert_eq!(route_of("outbound", "x").0, "browser");
     }
 
+    /// The route census (`GET /api/debug/routes`) and the request log read
+    /// ROUTE_TABLE, and tests/route_table.rs only scans mod.rs, so a route
+    /// declared in this merged sub-router would be unlogged without this.
+    #[test]
+    fn the_feed_route_is_in_the_route_table() {
+        assert!(
+            crate::api::request_log::ROUTE_TABLE.iter().any(|r| r.path == "/api/outbound/feed" && r.methods.contains(&"GET")),
+            "GET /api/outbound/feed must be in request_log::ROUTE_TABLE"
+        );
+    }
+
     #[test]
     fn the_first_address_is_read_from_a_named_list() {
         assert_eq!(first_email("Max <Max@EGYM.com>, d@egym.com").as_deref(), Some("max@egym.com"));

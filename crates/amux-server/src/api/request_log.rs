@@ -4526,6 +4526,10 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "POST"],
     },
     RouteEntry {
+        path: "/api/outbound/feed",
+        methods: &["GET"],
+    },
+    RouteEntry {
         path: "/api/outbound/{id}",
         methods: &["GET"],
     },
