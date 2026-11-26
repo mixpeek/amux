@@ -49,8 +49,12 @@ for (const cached of [false, true]) {
     await expect.poll(() => freshRequests).toBe(1); // no reload or recovery storm
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({path:info.outputPath(`access-required-${cached ? 'cached' : 'empty'}.png`)});
+    // Hold the button before reads may succeed: the notice re-renders on every
+    // failed read, and a background retry that succeeds once `allowed` flips
+    // removes the button before a locator click can land.
+    const retry = await notice.getByRole('button', {name:'Retry connection'}).elementHandle();
     allowed = true;
-    await notice.getByRole('button', {name:'Retry connection'}).click();
+    await retry!.evaluate((b: HTMLElement) => b.click());
     await expect(notice).toBeEmpty();
     await expect(page.locator('#cards')).toContainText('No workers yet');
     await expect.poll(() => recovered.length).toBe(1);
