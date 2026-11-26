@@ -19286,6 +19286,14 @@ try {
   if (asked && asked !== APP_VER && asked.indexOf('__') !== 0)
     window._clientDebug('asset-version-mismatch', { verdict: 'html_and_app_js_builds_differ', measured: true, n_considered: 1, html_ver: asked });
 } catch (e) {}
+// The same for app.css (index.html: /app.css?v=<ver>): a sheet from another
+// build styles the new markup with old rules and nothing errors. The sheet
+// stamps its build into --amux-asset-ver.
+try {
+  const cssVer = getComputedStyle(document.documentElement).getPropertyValue('--amux-asset-ver').trim().replace(/^["']|["']$/g, '');
+  if (APP_VER.indexOf('__') !== 0 && cssVer.indexOf('__') !== 0 && cssVer !== APP_VER)
+    window._clientDebug('asset-version-mismatch', { verdict: 'app_css_and_app_js_builds_differ', measured: true, n_considered: 1, css_ver: cssVer || 'none' });
+} catch (e) { console.warn('asset version check: could not read the stylesheet build', e); }
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}

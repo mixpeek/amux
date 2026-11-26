@@ -1,4 +1,8 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* The build this sheet came from, stamped at serve time like APP_VER. app.js
+     compares the two: unversioned, /app.css once stayed a build behind app.js
+     in a cache, so the new code ran with the old grip rules (2026-11-26). */
+  :root { --amux-asset-ver: "__AMUX_ASSET_VER__"; }
   /* ── Design tokens ──
      The ONLY place a color, type size, radius or shadow value is written.
      Everything else reads var(--token). A theme (Settings > Appearance >
