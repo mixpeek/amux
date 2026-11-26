@@ -35,6 +35,7 @@ From source: `git clone https://github.com/mixpeek/amux && cd amux && ./install.
 - Self-host: free on your own Mac or Linux machine; no account needed.
 - amux Cloud: your own dedicated, always-on amux server at yourname.amux.io. Solo $39/mo (4 vCPU, 8 GB), Team $69/mo (8 vCPU, 16 GB), Max $129/mo (16 vCPU, 32 GB). Bring your Claude, ChatGPT or Gemini account, or an API key. Start: https://amux.io/start/
 - amux Concierge: done for you. We set amux up on a computer the business owns and build and run its automations: $5,000 onboarding, $5,000/mo, AI usage at cost (about $200/mo). https://amux.io/concierge/ and, by industry, https://amux.io/solutions/
+- Problems we fix (Concierge): https://amux.io/problems/ lists each problem in the owner's words, what fixed looks like, the steps, how long (usually 2 to 4 weeks to run on its own) and what it costs, with a measured result: weekly receivables reconciliation, about 8 hours by hand, ran unattended in 19 minutes 42 seconds.
 - Move a local setup to Cloud: `amux export`, then `amux import <file> --to https://<you>.amux.io`.
 - Model costs are paid to your model provider and depend on your provider plan.
 
