@@ -71,6 +71,7 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
     await page.waitForFunction("typeof switchView === 'function' && typeof _obEnter === 'function'");
     const t0 = Date.now();
     await page.evaluate("switchView('outbound')");
+    const phone = page.viewportSize()!.width <= 600;
     const row = (ref: string) => page.locator(`#ob-list .ob-row[data-ref="${ref}"]`);
     // A phone shows one message at a time; its back button returns to the list.
     const toList = async () => { if (await page.locator('.ob-back').isVisible()) await page.locator('.ob-back').click(); };
@@ -78,16 +79,19 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
     testInfo.annotations.push({ type: 'latency', description: `tab to first row ${Date.now() - t0} ms` });
     await expect(row('outbound:' + liComment)).toBeVisible();
     await expect(row(emailRef)).toBeVisible();
-    // The view's count matches what the server counts.
+    // Projects and repeats share a server, so other runs' items are listed
+    // too: count this run's own through the worker filter.
     const feed = await (await request.get('/api/outbound/feed', { headers: auth })).json();
     expect(feed.measured).toBe(true);
-    await expect(page.locator('.ob-view[data-v="needs"] .ob-count')).toHaveText(String(feed.counts.needs + 1));
+    expect(Number(await page.locator('.ob-view[data-v="needs"] .ob-count').textContent())).toBeGreaterThanOrEqual(3);
+    await page.locator('#ob-worker').selectOption(worker);
+    await expect(page.locator('#ob-list .ob-row')).toHaveCount(3);
+    await expect(page.locator('#ob-list-head .ob-list-n')).toHaveText(phone ? /.*/ : '3 to review');
     await expect(page.locator('#tab-outbound .ob-tab-count')).toBeVisible();
     // Channels name how each goes out: X and LinkedIn through the browser.
     await expect(page.locator('#ob-channels .ob-chip[data-c="x"] .ob-dot-browser')).toHaveCount(1);
     await expect(page.locator('#ob-channels .ob-chip[data-c="linkedin"]')).toBeVisible();
 
-    const phone = page.viewportSize()!.width <= 600;
     if (phone) {
       // One row of controls above the list, and the list keeps most of the screen.
       const bar = (await page.locator('.ob-bar').boundingBox())!;
@@ -132,6 +136,8 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
     const card = cards.items.find((c: any) => c.approval_ref === 'outbound:' + xDm);
     expect(card?.decision, 'the Needs-you card was decided by the same click').toBe('approved');
     await expect(row('outbound:' + xDm)).toHaveCount(0);
+    // The double click decided one message: the next one is still waiting.
+    expect((await (await request.get(`/api/outbound/${liComment}`, { headers: auth })).json()).state).toBe('held');
     if (phone) {
       // A phone moves straight to the next waiting message after a decision.
       await expect(detail.locator('.ob-detail-title')).toBeVisible();
@@ -159,6 +165,7 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
     await page.reload();
     await page.waitForFunction("typeof _obEnter === 'function'");
     await page.evaluate("switchView('outbound')");
+    await page.locator('#ob-worker').selectOption(worker);
     await page.locator('.ob-view[data-v="all"]').click();
     await expect(row('outbound:' + xDm)).toBeVisible();
 

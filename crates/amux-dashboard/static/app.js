@@ -82367,14 +82367,16 @@ function _obRenderDetail() {
   }
   const [ico, chName] = _obChan(it.channel);
   const st = _OB_STATE_PILL[it.state] || ['cx-idle', it.state];
-  const busy = _obBusy.has(it.ref);
+  // Disabled while a decision is in flight, and for a moment after the last
+  // one opened this message (see _obSettleUntil).
+  const busy = _obBusy.has(it.ref) || Date.now() < _obSettleUntil;
   const editing = _obEditing === it.ref;
   const waited = it.state === 'needs' ? 'waiting ' + timeAgo(Math.floor(it.created)).replace(' ago', '') : '';
   const q = esc(it.ref);
   let actions = '';
   if (it.decidable) {
     actions = '<button class="btn primary ob-approve" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obDecide(this.dataset.ref,\'approve\')">'
-        + (busy ? 'Working…' : (editing ? 'Approve edited' : 'Approve')) + '</button>'
+        + (_obBusy.has(it.ref) ? 'Working…' : (editing ? 'Approve edited' : 'Approve')) + '</button>'
       + (it.kind === 'email' ? '<button class="btn ob-schedule" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obSchedule(this.dataset.ref)">Schedule</button>'
         + '<button class="btn ob-edit-btn" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obEdit(this.dataset.ref)">' + (editing ? 'Cancel edit' : 'Edit') + '</button>' : '')
       + '<button class="btn ob-discard" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obDecide(this.dataset.ref,\'reject\')">Discard</button>';
@@ -82541,9 +82543,16 @@ async function _obDecideOne(it, verb, reason) {
   return r.ok && d.ok !== false ? '' : (d.error || d.code || ('HTTP ' + r.status));
 }
 
+// After a decision the next message opens with its Approve button where the
+// last one was. A double tap must not decide that one too, so decisions are
+// ignored for a moment after an advance.
+let _obSettleUntil = 0;
+const _OB_SETTLE_MS = 700;
+
 async function _obDecide(ref, verb) {
   const it = _obItem(ref);
   if (!it || _obBusy.has(ref)) return;
+  if (Date.now() < _obSettleUntil) { _interactionDiagnostic({ verdict: 'outbound_decide_ignored_after_advance', action: verb, measured: true, n_considered: 1 }); return; }
   let reason = '';
   if (verb === 'reject') {
     const r = await showPrompt('Discard this ' + _obChan(it.channel)[1] + ' message? Nothing is sent. A note for ' + (it.worker || 'the worker') + ' (optional):', 'Why not');
@@ -82561,6 +82570,8 @@ async function _obDecide(ref, verb) {
     const rows = _obVisible(); const i = rows.findIndex(r => r.ref === ref);
     const next = rows[i + 1] || rows[i - 1];
     _obOpen = next ? next.ref : '';
+    _obSettleUntil = Date.now() + _OB_SETTLE_MS;
+    setTimeout(() => { if (activeView === 'outbound' && !_obEditing) _obRenderDetail(); }, _OB_SETTLE_MS + 30);
   }
   await _obLoad();
 }
