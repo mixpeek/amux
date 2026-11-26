@@ -11775,7 +11775,7 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .ob-chip { display: inline-flex; align-items: center; gap: var(--space-1-5); white-space: nowrap; flex: 0 0 auto; }
 .ob-chip-ico { font-weight: 700; }
 .ob-chip-n { font-size: var(--fs-xs); font-weight: 700; color: var(--yellow); }
-.ob-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.ob-dot { width: 7px; height: 7px; border-radius: var(--radius-pill); display: inline-block; }
 .ob-dot-ok { background: var(--green); }
 .ob-dot-browser { background: var(--accent); }
 .ob-dot-bad { background: var(--red); }
@@ -11794,15 +11794,15 @@ body.intent-simple .tab-bar-outer { padding-top: env(safe-area-inset-top); }
 .ob-check { margin-top: var(--space-1); flex: 0 0 auto; }
 .ob-check-gap { width: 13px; flex: 0 0 auto; }
 .ob-ico { flex: 0 0 auto; width: 28px; height: 28px; border-radius: var(--radius-control); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; background: color-mix(in srgb, var(--dim) 16%, transparent); color: var(--text); }
-.ob-ch-linkedin { background: #0a66c2; color: #fff; }
+.ob-ch-linkedin { background: var(--accent); color: var(--on-accent); }
 .ob-ch-x, .ob-ch-twitter { background: var(--text); color: var(--bg); }
-.ob-ch-slack { background: #4a154b; color: #fff; }
+.ob-ch-slack { background: var(--purple); color: var(--on-accent); }
 .ob-ch-email { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
 .ob-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-0-5); }
 .ob-row-top { display: flex; align-items: baseline; gap: var(--space-2); }
 .ob-row-worker { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ob-row-when { color: var(--dim); font-size: var(--fs-xs); flex: 0 0 auto; }
-.ob-row.waiting .ob-row-when::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); margin-left: var(--space-1-5); vertical-align: middle; }
+.ob-row.waiting .ob-row-when::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-pill); background: var(--yellow); margin-left: var(--space-1-5); vertical-align: middle; }
 .ob-row-title { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ob-row-to { color: var(--dim); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ob-warn { color: var(--red); font-weight: 600; }
