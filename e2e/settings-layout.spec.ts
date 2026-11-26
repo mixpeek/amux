@@ -10,7 +10,9 @@ test('settings tabs, folds and the style guide sit where the owner put them', as
   await page.waitForFunction(() => typeof (window as any)._settingsTab === 'function');
   await page.locator('#settings-btn').click();
   const menu = page.locator('#settings-menu');
-  await expect(menu.locator('.settings-tab-btn')).toHaveText(['Account', 'Connect', 'Device', 'Workers', 'Alerts']);
+  // This Mac (#settings-tab-mac) is in the markup but hidden outside the Mac app.
+  await expect(menu.locator('.settings-tab-btn:visible')).toHaveText(['Account', 'Connect', 'Device', 'Workers', 'Alerts']);
+  await expect(page.locator('#settings-tab-mac')).toBeHidden();
 
   // Account: no style guide here.
   await expect(page.locator('#style-guide-btn')).toBeHidden();
