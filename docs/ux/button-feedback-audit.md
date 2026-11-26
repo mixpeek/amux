@@ -1116,6 +1116,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Open CRM | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Open in Outbound | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | openBoardDetail(\…\), 250); style=color:var(--ac | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | openPeek(\…\),150)&gt;… | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |

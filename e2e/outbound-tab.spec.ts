@@ -23,8 +23,11 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
   await page.goto('/');
   const token = await page.evaluate(() => (window as any)._AMUX_AUTH_TOKEN as string);
   const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  const worker = `ob-e2e-${testInfo.project.name}-${Date.now() % 100000}`;
-  const stamp = Date.now();
+  // Unique per run: projects and repeats share a server, and the server
+  // treats the same worker asking the same text again as the same request.
+  const run = `${testInfo.repeatEachIndex}-${Math.random().toString(36).slice(2, 8)}`;
+  const worker = `ob-e2e-${testInfo.project.name}-${run}`;
+  const stamp = `${Date.now()}-${run}`;
   const ids: string[] = [];
   try {
     const file = async (data: Record<string, unknown>) => {
@@ -52,7 +55,7 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
       const real = await (await route.fetch()).json();
       if (!released) {
         real.items.unshift({
-          ref: emailRef, kind: 'email', id: emailId, channel: 'email', state: 'needs', worker, created: stamp / 1000 - 3 * 86400,
+          ref: emailRef, kind: 'email', id: emailId, channel: 'email', state: 'needs', worker, created: Date.now() / 1000 - 3 * 86400,
           text: 'Max, the metadata of all 96 files is below.', action: 'reply all', account: 'ethan@example.com',
           to: 'max@example.org, denise@example.org', subject: 'Re: where each asset is live', reason: 'Max asked before the call',
           parent: { author: 'Max', text: 'Where is each asset live?' }, via: 'api', connector: 'google-gmail', connector_label: 'Gmail',
@@ -112,6 +115,9 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
       const doc = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
       expect(doc, 'nothing overflows a phone sideways').toBe(true);
     }
+    // The approvals banner would repeat the held emails above the tab.
+    const banner = page.locator('#email-approvals-banner');
+    if (await banner.count()) await expect(banner).toBeHidden();
     await page.screenshot({ path: testInfo.outputPath('outbound-list.png') });
 
     // Open the X DM: the full text, why, and what it answers.
@@ -204,4 +210,33 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
       await cleanup('reject a seeded outbound request', () => request.post(`/api/outbound/${id}/reject`, { headers: auth, data: {} }), testInfo);
     }
   }
+});
+
+// The approvals banner and the Outbound tab show the same held emails, so the
+// banner steps aside on the tab and offers a way into it from everywhere else.
+// The held email is mocked in this page only (see the header).
+test('the approvals banner links to the Outbound tab and hides on it', async ({ page }) => {
+  const held = {
+    id: 'apr_0c0c0c0c0c0c0c0c', session: 'gtm-engine', age_s: 120, expires: false, expires_in_s: null, requests: 1,
+    preview: { endpoint: 'send', from: 'info@example.com', to: 'buyer@example.org', subject: 'Pricing follow-up' },
+    review: { body: 'Hello from the banner test.', body_complete: true, attachment_count: 0, complete: true },
+  };
+  await page.addInitScript(() => { localStorage.setItem('amux_walkthrough_done', '1'); localStorage.removeItem('amuxApprCollapsed'); });
+  await page.route(/\/api\/email\/approvals(?:\?.*)?$/, (r) => r.fulfill({ json: { pending: [held], scheduled: [] } }));
+  await page.route(/\/api\/grants(?:\?.*)?$/, (r) => r.fulfill({ json: { pending: [] } }));
+  await page.goto('/');
+  await page.waitForFunction("typeof _approvalsRefresh === 'function' && typeof switchView === 'function'");
+  await page.evaluate("switchView('board')");
+  await page.evaluate('_approvalsRefresh()');
+  const banner = page.locator('#email-approvals-banner');
+  await expect(banner).toBeVisible();
+  const open = banner.locator('.appr-open-outbound');
+  await expect(open).toBeVisible();
+  await open.click();
+  await expect(page.locator('#tab-outbound')).toHaveClass(/active/);
+  await expect(page.locator('#outbound-view')).toBeVisible();
+  await expect(banner).toBeHidden();
+  // Leaving the tab brings the banner back.
+  await page.evaluate("switchView('board')");
+  await expect(banner).toBeVisible();
 });

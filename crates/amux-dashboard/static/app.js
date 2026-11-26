@@ -27905,7 +27905,10 @@ async function _approvalsRefresh() {
       + 'title="' + (collapsed ? 'Show the drafts' : 'Collapse') + '">'
       + '<span style="display:inline-block;width:1em;transition:transform .12s;'
       + 'transform:rotate(' + (collapsed ? '-90' : '0') + 'deg);">&#x25BE;</span>'
-      + '<span>' + _apprHeadline(pending.length, grants.length) + '</span></div>';
+      + '<span>' + _apprHeadline(pending.length, grants.length) + '</span>'
+      // Every channel's held messages, emails among them, in one tab.
+      + (pending.length ? '<button class="appr-btn-outline appr-open-outbound" style="margin-left:auto;" onclick="event.stopPropagation();switchView(\'outbound\')">Open in Outbound</button>' : '')
+      + '</div>';
     if (collapsed) {
       el.innerHTML = html + '</div>';
       el.style.display = 'block';
@@ -47240,6 +47243,9 @@ function switchView(view) {
   if (view === 'email') _emailLoad();
   if (view === 'calls') _callsLoad(); else if (typeof _callsClose === 'function' && _callsOpenId) _callsClose();
   if (view === 'outbound') _obEnter(); else if (typeof _obLeave === 'function') _obLeave();
+  // The Outbound tab shows every held message itself; the approvals banner
+  // above it would show the same emails a second time.
+  document.body.classList.toggle('view-outbound', view === 'outbound');
   if (view === 'crm') _crmLoad(); else if (typeof _crmClose === 'function' && _crm.open) _crmClose();
   if (view === 'connectors') _connectorsTabLoad();
   if (view === 'photos') _photosEnter(); else if (typeof _photosLeave === 'function') _photosLeave();

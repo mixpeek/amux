@@ -11845,6 +11845,7 @@ details.ob-section > summary { cursor: pointer; }
 .ob-route { font-size: var(--fs-sm); }
 .ob-route.bad { color: var(--red); font-weight: 600; }
 .ob-card-btn { align-self: flex-start; }
+body.view-outbound #email-approvals-banner { display: none !important; }
 .ob-tab-count { margin-left: var(--space-1); font-size: var(--fs-xs); font-weight: 700; padding: 0 var(--space-1-5); border-radius: var(--radius-pill); background: color-mix(in srgb, var(--yellow) 25%, transparent); color: var(--yellow); }
 @media (max-width: 1100px) {
   .ob-panes { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); }
@@ -11870,4 +11871,5 @@ details.ob-section > summary { cursor: pointer; }
   .ob-view-root.ob-detail-open .ob-panes { overflow-y: auto; }
   .ob-back { display: inline-flex; min-width: 44px; min-height: 44px; justify-content: center; }
   .ob-actions .btn { flex: 1; min-height: 44px; }
+  .ob-actions .ob-approve { flex: 1 0 100%; }
 }
