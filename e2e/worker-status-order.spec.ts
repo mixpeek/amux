@@ -44,16 +44,13 @@ test('default status order keeps mixpeek-general with idle workers and updates o
   expect((await names(page)).slice(0, 5)).toEqual(['pinned-idle', 'stopped', 'mixpeek-general', 'worker-a', 'worker-b']);
 });
 
-test('grouped order, a single remaining group, and freeze use the same status buckets', async ({ page }) => {
+test('grouped order and a single remaining group use the same status buckets', async ({ page }) => {
   await prepare(page, 'obsolete-sort');
   await page.evaluate(() => {
     eval("_tagGroupCollapsed.stopped = false; setLayoutMode('group');");
   });
   expect(await names(page)).toEqual(ordered);
-  await page.evaluate(() => (window as any).toggleFreeze());
-  expect(await names(page)).toEqual(ordered);
   await page.evaluate(() => {
-    (window as any).toggleFreeze();
     eval("sessions = sessions.filter(s => s.status === 'idle'); render();");
   });
   expect(await names(page)).toEqual(['pinned-idle', 'mixpeek-general']);

@@ -6918,18 +6918,22 @@ pub async fn create_session_legacy(
             }
         });
     let prompt = s("prompt");
+    // The prompt is the owner's message, so it is RECORDED as well as queued
+    // (queue_owner_start_prompt). Queued alone, it left no Messages row and
+    // `last_human_ts` 0, so "Last message from me" sank the worker just started.
+    let author = crate::api::session_verbs::owner_message_author(&headers);
     if autostart {
         let st = _state.clone();
         let n = name.clone();
         let p = prompt.clone();
+        let a = author.clone();
         tokio::spawn(async move {
             if !p.is_empty() {
                 // The owner's first instruction. Queued durably before the
                 // start, so a failed start keeps it; a failed QUEUE was
                 // discarded silently until AMUX-5371 and now says so.
-                let (queued, why) = crate::api::session_verbs::queue_boot_prompt_pub(
-                    &st, &n, &p,
-                    crate::api::session_verbs::SendOrigin::Owner,
+                let (queued, why) = crate::api::session_verbs::queue_owner_start_prompt(
+                    &st, &n, &p, &a, "create",
                 ).await;
                 if !queued {
                     tracing::warn!(session = %n, error = %why, measured = true, n_considered = 1,
@@ -6956,8 +6960,8 @@ pub async fn create_session_legacy(
         let n = name.clone();
         let p = prompt.clone();
         tokio::spawn(async move {
-            let (queued, why) = crate::api::session_verbs::queue_boot_prompt_pub(
-                &st, &n, &p, crate::api::session_verbs::SendOrigin::Owner,
+            let (queued, why) = crate::api::session_verbs::queue_owner_start_prompt(
+                &st, &n, &p, &author, "create-held",
             ).await;
             if queued {
                 tracing::info!(session = %n, measured = true, n_considered = 1,
@@ -7065,12 +7069,18 @@ pub(crate) fn fleet_suppressed() -> bool {
     SUPPRESS_FLEET_DEPTH.load(std::sync::atomic::Ordering::SeqCst) > 0
 }
 
+/// The owner's messages, oldest first: the source of `last_human_ts` (and of
+/// `task_markers`). A const so a test runs the same predicate the list does.
+pub(crate) const USER_MESSAGES_SQL: &str = "SELECT session, text, card_id, ts FROM cmd_history \
+     WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
+     ORDER BY ts ASC, id ASC";
+
 /// AMUX-2820 / last_human_ts. The rows are already ordered `ts ASC` by the
 /// caller's own query (they double as the source for `task_markers`), so an
 /// unconditional overwrite per session is the max: the LAST row seen for a
 /// session is its most recent human message. Pure and DB-free specifically so
 /// this property is unit-testable without standing up a connection.
-fn last_human_ts_from_user_messages(
+pub(crate) fn last_human_ts_from_user_messages(
     rows: &[(String, String, Option<String>, i64)],
 ) -> BTreeMap<String, i64> {
     let mut out = BTreeMap::new();
@@ -7750,11 +7760,7 @@ fn build_array(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<serde_json::
         // hour ago from one you have never messaged; a hardcoded 0 made every
         // session read as the latter.
         let user_msgs: Vec<(String, String, Option<String>, i64)> = if let Ok(mut messages) = conn
-            .prepare(
-                "SELECT session, text, card_id, ts FROM cmd_history \
-                 WHERE type='user' AND COALESCE(submit_verdict,'') <> 'stuck' \
-                 ORDER BY ts ASC, id ASC",
-            ) {
+            .prepare(USER_MESSAGES_SQL) {
             let rows = messages.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,

@@ -10426,6 +10426,10 @@ function render() {
   // DOM clobbering.
   if (openMenu || editState || document.getElementById('edit-overlay').classList.contains('active')) return;
   if (_cardsPressActive()) { _cardsRenderDefer(); return; }
+  // A card drag can outlast the 3s press window above; a redraw mid-drag
+  // rebuilt the list under the held card and the drop was lost. Wait for the
+  // drag to end, as the board and tab-menu drags do.
+  if (_deferForSortableDrag(render, 'worker-cards-render')) return;
   const el = document.getElementById('cards');
   // Skip re-render while user has focus inside any card input/textarea — prevents cursor reset and value loss
   const _active = document.activeElement;
@@ -10590,20 +10594,6 @@ function render() {
   });
 
 
-  // Freeze mode: flat list locked to captured order — bypasses status grouping and activity re-sort
-  if (_frozen && cardOrder.length) {
-    const frozenList = _sortByCardOrder(filtered);
-    _setCardsHtml(el, draftCards + frozenList.map(_renderSessionCard).join(''));
-    for (const [id, d] of Object.entries(savedInputs)) { const inp = document.getElementById(id); if (inp) { inp.value = d.value; autoGrow(inp); } }
-    _restoreCardFocus(focusedId, savedInputs);
-    _renderPausedSection();
-    _renderExpiredSection();
-    _renderArchivedSection();
-    requestAnimationFrame(initSortable);
-    requestAnimationFrame(() => { document.querySelectorAll('.chips[id^="card-chips-"]').forEach(el => { const name = el.id.replace('card-chips-', ''); if (name) renderChips(el, name, false); }); });
-    return;
-  }
-
   // Grid mode: flat list sorted by activity or alpha, no grouping (desktop only)
   if (layoutMode === 'grid' && window.innerWidth >= 900) {
     let sortedFiltered;
@@ -10679,8 +10669,9 @@ function render() {
     // list mode (flat) or group mode with active filter: flat list
     let flatList = [...filtered].sort(_sortFnFor(sortMode));
     _setCardsHtml(el, staleWorkerPrefix + draftCards + flatList.map(_renderSessionCard).join(''));
-    if (layoutMode === 'list') requestAnimationFrame(initSortable);
   }
+  // Every layout, so the grip and drag follow the sort (initSortable decides).
+  requestAnimationFrame(initSortable);
   _checkWorkerStatusOrder();
   _updateResetBtn();
 
@@ -19403,6 +19394,14 @@ try {
   if (asked && asked !== APP_VER && asked.indexOf('__') !== 0)
     window._clientDebug('asset-version-mismatch', { verdict: 'html_and_app_js_builds_differ', measured: true, n_considered: 1, html_ver: asked });
 } catch (e) {}
+// The same for app.css (index.html: /app.css?v=<ver>): a sheet from another
+// build styles the new markup with old rules and nothing errors. The sheet
+// stamps its build into --amux-asset-ver.
+try {
+  const cssVer = getComputedStyle(document.documentElement).getPropertyValue('--amux-asset-ver').trim().replace(/^["']|["']$/g, '');
+  if (APP_VER.indexOf('__') !== 0 && cssVer.indexOf('__') !== 0 && cssVer !== APP_VER)
+    window._clientDebug('asset-version-mismatch', { verdict: 'app_css_and_app_js_builds_differ', measured: true, n_considered: 1, css_ver: cssVer || 'none' });
+} catch (e) { console.warn('asset version check: could not read the stylesheet build', e); }
 // The dashboard's code ran, so a cache-clear pass reached it: reset the landing
 // page's loop guard (api/static_files.rs clear_sw_landing, AMUX-5385).
 try { sessionStorage.removeItem('amux_clear_sw_n'); } catch (e) {}
@@ -45555,18 +45554,23 @@ let _workersPerRow = localStorage.getItem('amux_workers_per_row') || 'auto';
 let sortMode = localStorage.getItem('amux_sort_mode') || 'status';
 // A mode persisted by an older build (or hand-edited) must not leave the
 // list sorting by a comparator that no longer exists.
-if (!['natural','human','alpha','status'].includes(sortMode)) sortMode = 'status';
+if (!['natural','human','alpha','status','manual'].includes(sortMode)) sortMode = 'status';
 if (document.body) setTimeout(() => _sortBtnSync(), 0);
 else document.addEventListener('DOMContentLoaded', () => _sortBtnSync());
 let cardOrder = JSON.parse(localStorage.getItem('amux_card_order') || '[]');
-let _frozen = localStorage.getItem('amux_frozen') === '1';
+// Freeze was a manual order behind a snowflake button; the Manual sort replaced
+// it. A device that had frozen its list keeps that order as its Manual order.
+if (localStorage.getItem('amux_frozen') === '1') {
+  localStorage.removeItem('amux_frozen');
+  if (cardOrder.length) { sortMode = 'manual'; localStorage.setItem('amux_sort_mode', 'manual'); }
+}
 let _sortable = null;
 let _tileJustDragged = false; // keep for toggle() guard
 
-// Natural sort: pinned first, then most recently active
-// Sort that matches the server's list_sessions() order:
-// pinned > running > status priority (active/waiting=0, idle/none=1) > last_activity desc
-const _STATUS_PRI = {active: 0, waiting: 0, idle: 1, '': 1};
+// "Recent activity": pinned > running > last_activity desc. No status tier:
+// ranking working/waiting above idle first meant a worker you had just started
+// and that went idle sat below every busy lane, under a label that promises
+// recency (ha-bed-lights, 2026-11-24). Status order is the 'status' sort's job.
 // Status sorting and grouping share the same keys as the displayed filters.
 // Pins cannot move an idle worker into the working group (AMUX-4237).
 const _WORKER_STATUS_GROUPS = [
@@ -45585,16 +45589,30 @@ const _WORKER_STATUS_PRI = Object.fromEntries(_WORKER_STATUS_GROUPS.map((g, i) =
 let _workerStatusOrderVerdict = '';
 function _naturalSortSessions(a, b) {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  if (a.running !== b.running) return a.running ? -1 : 1;
-  const ap = _STATUS_PRI[a.status] ?? 1, bp = _STATUS_PRI[b.status] ?? 1;
-  if (ap !== bp) return ap - bp;
-  return (b.last_activity || 0) - (a.last_activity || 0);
+  if (!!a.running !== !!b.running) return a.running ? -1 : 1;
+  return (b.last_activity || 0) - (a.last_activity || 0)
+    || (a.name || '').localeCompare(b.name || '');
 }
 
 // Alphabetical sort: pinned first, then by name — stable across activity changes
 function _alphaSortSessions(a, b) {
   if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
   return (a.name || '').localeCompare(b.name || '');
+}
+
+// Manual: the owner's dragged order (cardOrder). Pins stay above the rest, and
+// a worker the owner has not placed yet (a new one) joins at the bottom, oldest
+// first, so it never pushes an arranged card out of its spot.
+function _manualSortSessions(a, b) {
+  if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+  const ia = cardOrder.indexOf(a.name), ib = cardOrder.indexOf(b.name);
+  if (ia !== ib) {
+    if (ia < 0) return 1;
+    if (ib < 0) return -1;
+    return ia - ib;
+  }
+  return (a.session_created || 0) - (b.session_created || 0)
+    || (a.name || '').localeCompare(b.name || '');
 }
 
 // Last message a PERSON sent, newest first. Schedulers and inter-session
@@ -45627,7 +45645,7 @@ function _statusSortSessions(a, b) {
 }
 
 function _checkWorkerStatusOrder() {
-  if (sortMode !== 'status' || _frozen) return;
+  if (sortMode !== 'status') return;
   // Read the rendered snapshot, not a newer SSE payload while a menu/input
   // intentionally holds the previous cards on screen.
   // Pinned cards are hoisted above the status ordering ON PURPOSE, so they are
@@ -45652,45 +45670,10 @@ function _checkWorkerStatusOrder() {
 
 function _sortFnFor(mode) {
   return mode === 'alpha'  ? _alphaSortSessions
+       : mode === 'manual' ? _manualSortSessions
        : mode === 'human'  ? _humanSortSessions
        : mode === 'status' ? _statusSortSessions
        : _naturalSortSessions;
-}
-
-// Sort by frozen cardOrder; sessions not in the list go to the end in natural order
-function _sortByCardOrder(arr) {
-  const idx = Object.fromEntries(cardOrder.map((n, i) => [n, i]));
-  return [...arr].sort((a, b) => {
-    const ia = idx[a.name] ?? Infinity;
-    const ib = idx[b.name] ?? Infinity;
-    if (ia !== ib) return ia - ib;
-    return _naturalSortSessions(a, b);
-  });
-}
-
-function toggleFreeze() {
-  if (_frozen) {
-    _frozen = false;
-    localStorage.removeItem('amux_frozen');
-    cardOrder = [];
-    localStorage.removeItem('amux_card_order');
-  } else {
-    // Freeze what the user actually sees. Rebuilding status buckets here put
-    // pinned workers back below active workers in group view on the same tap.
-    const rendered = [...document.querySelectorAll('#cards .card[data-session]')]
-      .map(card => card.dataset.session);
-    const remaining = sessions.filter(s => !s.archived && !_workerLifecycleInactive(s) && !rendered.includes(s.name))
-      .sort(_sortFnFor(sortMode)).map(s => s.name);
-    cardOrder = [...new Set([...rendered, ...remaining])];
-    fetch(API + '/api/client-debug', { method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ kind: 'worker-freeze-order', verdict: 'captured-rendered-order',
-        measured: true, n_considered: rendered.length, layout: layoutMode, ver: APP_VER }) }).catch(() => {});
-    localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
-    _frozen = true;
-    localStorage.setItem('amux_frozen', '1');
-  }
-  _updateResetBtn();
-  render();
 }
 
 function _resetPillHtml() {
@@ -45711,8 +45694,6 @@ function _updateResetBtn() {
   _syncResetPill();
   const eb = document.getElementById('tile-expand-btn');
   if (eb) eb.classList.toggle('active', expanded.size > 0);
-  const fb = document.getElementById('tile-freeze-btn');
-  if (fb) fb.classList.toggle('active', _frozen);
 }
 
 function setLayoutMode(mode) {
@@ -45776,8 +45757,9 @@ const _SORT_OPTS = [
   { id: 'human',   label: 'Last message from me', hint: 'Ignores schedulers and session-to-session' },
   { id: 'alpha',   label: 'Name (A–Z)',      hint: 'Stable — the order stops shifting under you' },
   { id: 'status',  label: 'Status',               hint: 'Working, needs input, errors, rate limited, idle, stopped' },
+  { id: 'manual',  label: 'Manual',               hint: 'Drag the grip to arrange; new workers join at the bottom' },
 ];
-const _SORT_GLYPH = { natural: '⇅', human: '●', alpha: 'A↓', status: '☷' };
+const _SORT_GLYPH = { natural: '⇅', human: '●', alpha: 'A↓', status: '☷', manual: '⠿' };
 
 function _sortLabel(id) {
   const o = _SORT_OPTS.find(x => x.id === id);
@@ -45815,33 +45797,47 @@ function setSortMode(mode) {
   localStorage.setItem('amux_sort_mode', sortMode);
   closeSortMenu();
   _sortBtnSync();
-  // Sorting is an explicit act, so it must beat the frozen card order that
-  // otherwise pins the list to whatever it looked like when you froze it.
-  _frozen = false;
-  try { localStorage.removeItem('amux_frozen'); localStorage.removeItem('amux_card_order'); } catch (e) {}
-  cardOrder = [];
-  if (typeof showToast === 'function') showToast('Sorted by ' + _sortLabel(sortMode).toLowerCase());
+  // The first switch to Manual starts from the order on screen, so choosing it
+  // moves nothing; after that the saved arrangement comes back unchanged.
+  if (sortMode === 'manual' && !cardOrder.length) {
+    cardOrder = [...document.querySelectorAll('#cards .card[data-session]')].map(c => c.dataset.session);
+    try { localStorage.setItem('amux_card_order', JSON.stringify(cardOrder)); } catch (e) { console.warn('manual order: could not save the seeded card order', e); }
+  }
+  if (typeof showToast === 'function') showToast(sortMode === 'manual'
+    ? 'Manual order: drag the grip to arrange' : 'Sorted by ' + _sortLabel(sortMode).toLowerCase());
   render();
 }
 
 function toggleSortMode() {   // legacy entry point; cycles through the options
   const i = _SORT_OPTS.findIndex(o => o.id === sortMode);
   setSortMode(_SORT_OPTS[(i + 1) % _SORT_OPTS.length].id);
-  const btn = document.getElementById('tile-sort-btn');
-  if (btn) btn.classList.toggle('active', sortMode !== 'natural');
-  if (sortMode !== 'natural') destroySortable();   // computed order — manual drag would fight it
-  render();
 }
 
+// Dragging exists only under the Manual sort, where the order IS what you drag;
+// under a computed sort a drop would be undone by the next render. Grouped
+// layout buckets by status, where a manual position has no meaning.
+function _manualDragOn() {
+  return sortMode === 'manual' && layoutMode !== 'group';
+}
 function initSortable() {
-  if (typeof Sortable === 'undefined') return;
   if (_deferForSortableDrag(initSortable, 'worker-cards')) return;
-  if (sortMode !== 'natural') { destroySortable(); return; }
-  destroySortable();
   const cards = document.querySelector('.cards');
-  if (!cards) return;
+  if (cards) cards.classList.toggle('manual-order', _manualDragOn());
+  destroySortable();
+  if (typeof Sortable === 'undefined' || !cards || !_manualDragOn()) return;
   _sortable = Sortable.create(cards, {
     handle: '.card-drag-handle',
+    draggable: '.card[data-session]',
+    // Pointer events, not the browser's native drag and drop: the same choice
+    // and reason as the tab menu (_tabMenuSortableCreate). Native DnD is an
+    // AppKit drag session in the Mac app, and a touch drag on a phone takes
+    // this path anyway, so every engine now drags the same way. Scrolls the
+    // page near its edges so a card can travel past the fold.
+    forceFallback: true, fallbackTolerance: 4,
+    scroll: true, scrollSensitivity: 56, scrollSpeed: 14, bubbleScroll: true,
+    // A drop never pins or unpins: pinned cards reorder among themselves only.
+    onMove: evt => !!evt.related?.dataset?.session
+      && evt.related.dataset.pinned === evt.dragged.dataset.pinned,
     animation: 120,
     easing: 'cubic-bezier(0.2, 0, 0, 1)',
     ghostClass: 'sortable-ghost',
@@ -45858,10 +45854,17 @@ function initSortable() {
     onEnd: function(evt) {
       document.body.classList.remove('session-dragging');
       _tileJustDragged = evt.oldIndex !== evt.newIndex;
-      const allCards = cards.querySelectorAll('.card[data-session]');
-      cardOrder = Array.from(allCards).map(c => c.dataset.session);
+      if (!_tileJustDragged) return;
+      // The visible cards take the slots the visible names held, so a worker
+      // hidden by a search or group filter keeps its place in the order.
+      const shown = Array.from(cards.querySelectorAll('.card[data-session]')).map(c => c.dataset.session);
+      const visible = new Set(shown);
+      const full = [...cardOrder, ...shown.filter(n => !cardOrder.includes(n))];
+      let k = 0;
+      cardOrder = full.map(n => visible.has(n) ? shown[k++] : n);
       localStorage.setItem('amux_card_order', JSON.stringify(cardOrder));
-      _updateResetBtn();
+      try { window._clientDebug && window._clientDebug('worker-manual-order', { verdict: 'manual-order-saved',
+        moved: evt.item?.dataset?.session || '', measured: true, n_considered: shown.length }); } catch (e) { console.warn('manual order: debug beacon failed', e); }
     }
   });
 }
@@ -45896,8 +45899,6 @@ document.addEventListener('DOMContentLoaded', function() {
   _applyWorkersPerRow();
   const sortBtn = document.getElementById('tile-sort-btn');
   if (sortBtn) sortBtn.classList.toggle('active', sortMode !== 'natural');
-  const freezeBtn = document.getElementById('tile-freeze-btn');
-  if (freezeBtn) freezeBtn.classList.toggle('active', _frozen);
 });
 
 // ═══════ REPORTS ═══════

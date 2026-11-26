@@ -173,8 +173,8 @@ test('a board re-render while a tab is held does not strand the drag, and runs a
     const d = w.Sortable.prototype.destroy;
     w.Sortable.prototype.destroy = function () { w.__destroys.push(!!w.Sortable.dragged); return d.apply(this, arguments); };
   });
-  // The worker cards carry their own Sortable in the natural (hand) order.
-  await page.evaluate("sortMode = 'natural'; initSortable()");
+  // The worker cards carry their own Sortable only in the Manual sort.
+  await page.evaluate("sortMode = 'manual'; initSortable()");
   expect(await page.evaluate('!!_sortable'), 'the worker cards have a Sortable to destroy').toBe(true);
   await dragTab(page, three, two, () => page.evaluate('renderBoard(), initSortable()'));
   await expect.poll(() => page.evaluate(STRIP)).toEqual([one, three, two]);
