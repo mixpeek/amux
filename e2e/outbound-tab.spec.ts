@@ -86,6 +86,10 @@ test('Outbound tab: list every channel, approve one, discard one, edit and sched
     // too: count this run's own through the worker filter.
     const feed = await (await request.get('/api/outbound/feed', { headers: auth })).json();
     expect(feed.measured).toBe(true);
+    // All counts every message on record (the feed's n_considered), not the
+    // capped list. Read from the page's own feed: other runs file meanwhile.
+    const shown = await page.evaluate(`({ n: _obData.n_considered, all: document.querySelector('.ob-view[data-v="all"] .ob-count').textContent })`) as { n: number; all: string };
+    expect(Number(shown.all)).toBe(shown.n);
     expect(Number(await page.locator('.ob-view[data-v="needs"] .ob-count').textContent())).toBeGreaterThanOrEqual(3);
     await page.locator('#ob-worker').selectOption(worker);
     await expect(page.locator('#ob-list .ob-row')).toHaveCount(3);

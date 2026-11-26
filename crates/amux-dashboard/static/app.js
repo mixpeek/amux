@@ -82272,7 +82272,8 @@ function _obRender() {
   if (!view || view.style.display === 'none') return;
   const d = _obData || { items: [], counts: {}, channels: {} };
   const counts = d.counts || {};
-  const total = (d.items || []).length;
+  // Every message on record; the list itself is capped per source.
+  const total = d.n_considered || (d.items || []).length;
   // Row 1: the views. One row; it scrolls sideways on a phone. An empty
   // view other than the one open is left out, so the row stays short.
   document.getElementById('ob-views').innerHTML = _OB_VIEWS.map(([k, label]) => {
