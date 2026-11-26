@@ -487,3 +487,32 @@ test('Notifications exposes scrollable receipts without adding a header control 
   expect(beacons.filter(b => b.verdict === 'interaction_inspector_clipped'), 'a dismissed panel is not a clipped inspector').toEqual([]);
   expect(writes, 'opening, inspecting and dismissing receipts must not resend their commands').toBe(0);
 });
+
+test('a receipt control that loses focus to the page, with no press behind it, names where focus went', async ({page}) => {
+  const beacons: any[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/client-debug' && request.method() === 'POST') beacons.push(request.postDataJSON());
+  });
+  const taken = () => beacons.filter(b => b.verdict === 'interaction_focus_taken');
+  await seedReviewReceipts(page, ['int_taken_0', 'int_taken_1']);
+  await boot(page);
+  await openRecentActions(page);
+  const summary = page.locator('#notif-panel .interaction-list article').first().locator('details > summary');
+  // A re-render replaces the focused control and restores it: not a thief.
+  await summary.focus();
+  await page.waitForTimeout(600);
+  await page.evaluate(() => (window as any)._interactionReconcile('int_taken_0'));
+  await expect.poll(() => beacons.some(b => b.verdict === 'interaction_focus_restored')).toBe(true);
+  expect(taken(), 'a render is not a focus thief').toEqual([]);
+  // The page moving focus on its own is named.
+  await summary.focus();
+  await page.waitForTimeout(600);
+  await page.evaluate(() => (document.getElementById('settings-btn') as HTMLElement).focus());
+  await expect.poll(() => taken().length).toBe(1);
+  expect(taken()[0]).toMatchObject({measured:true, n_considered:1, to:expect.stringMatching(/^button#settings-btn/)});
+  // A key the person pressed moved it: no report.
+  await summary.focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.waitForTimeout(300);
+  expect(taken().length, 'focus a person moved is not reported').toBe(1);
+});

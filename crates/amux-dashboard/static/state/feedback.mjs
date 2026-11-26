@@ -74,6 +74,21 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
   if (panel) new MutationObserver(reportVisibility).observe(panel, {attributes:true, attributeFilter:['class']});
   hub.addEventListener('toggle', () => { ui.setState({activityOpen:hub.open}); reportVisibility(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') hub.open = false; });
+  // A receipt's Details control that loses focus with no press or key behind
+  // it was moved by the page. Name where focus went: on WebKit under load the
+  // render restores it (interaction_focus_restored) and it is gone by the next
+  // read, and nothing recorded what took it (AF-1427).
+  let lastInput = 0, rendering = false;
+  for (const eventName of ['pointerdown','keydown']) document.addEventListener(eventName, () => { lastInput = performance.now(); }, true);
+  list.addEventListener('focusout', event => {
+    if (rendering || !event.target.matches?.('article > details > summary')) return;
+    const to = event.relatedTarget;
+    if ((to && list.contains(to)) || performance.now() - lastInput < 500) return;
+    diagnostic({verdict:'interaction_focus_taken', measured:true, n_considered:1,
+      interaction_id:event.target.closest('article')?.dataset.interactionId,
+      to:to ? to.tagName.toLowerCase() + (to.id ? '#' + to.id : '') + (to.className && typeof to.className === 'string' ? '.' + to.className.trim().split(/\s+/).join('.') : '') : 'none',
+      panel_active:!!panel?.classList.contains('active')});
+  });
   const selectors = 'button, [role="button"], input, select, textarea, a[href], [onclick], [onchange]';
   function declare(element) {
     if (element.closest('#interaction-feedback')) return;
@@ -207,7 +222,8 @@ export function installFeedback(interactions, ui, diagnostic = () => {}, registr
       && focused.matches('article > details > summary') ? focused.closest('article').dataset.interactionId : null;
     const expanded = new Set([...list.querySelectorAll('article > details[open]')]
       .map(details => details.parentElement.dataset.interactionId));
-    list.replaceChildren();
+    // Removing the focused summary may fire focusout; that is the render, not a thief.
+    rendering = true; list.replaceChildren(); rendering = false;
     if (!visible.length) { const empty = document.createElement('p'); empty.textContent = 'No recent actions'; list.append(empty); }
     for (const item of visible) {
       const row = document.createElement('article');
