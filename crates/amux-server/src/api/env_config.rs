@@ -60,9 +60,9 @@ struct EnvSpec {
     #[serde(default)]
     cards: Vec<CardSpec>,
     // `messages` (seeded inbox — a vertical's kickoff/coordination messages) is
-    // APPLIED (AC-352, Ethan's "entirely via YAML"): resolved + delivered through
-    // the SAME create-message path POST /api/messages uses (ethos D6), so group
-    // fan-out and AtTurnBoundary delivery match exactly. Was silently dropped.
+    // APPLIED (AC-352, Ethan's "entirely via YAML"): each is a Messages post
+    // where its recipient reads it, delivered by the ordinary Messages path
+    // (conversations::seed_post); a group fans out to each member.
     #[serde(default)]
     messages: Vec<MessageSpec>,
     // Still phase-2, parsed-and-reported so a full spec is not rejected.
@@ -93,9 +93,9 @@ struct CardSpec {
 
 #[derive(Debug, Deserialize)]
 struct MessageSpec {
-    /// Recipient: a worker name/id, a group name/id, or the literal "human".
+    /// Recipient: a worker name, a group name, or the literal "human".
     to: String,
-    /// Sender: a worker name/id, or "human"/"owner". Defaults to the owner — an
+    /// Sender: a worker name, or "human"/"owner". Defaults to the owner — an
     /// env is applied by the owner, so an unspecified sender is honestly them.
     #[serde(default)]
     from: String,
@@ -165,7 +165,7 @@ async fn schema() -> Response {
         "files_shape": [{"path": "/abs/path/doc.md", "content": "literal file content"}],
         "schedules_shape": [{"worker": "backend-dev", "title": "nightly", "expr": "daily at 02:00", "enabled": false, "command": "the prompt"}],
         "cards_shape": [{"worker": "backend-dev", "title": "First issue", "desc": "...", "status": "backlog", "type": "code", "epic": ""}],
-        "messages_shape": [{"to": "backend-dev (worker name/id, group, or \"human\")", "from": "(worker or \"human\"/\"owner\", default owner)", "text": "the message body"}],
+        "messages_shape": [{"to": "backend-dev (worker name, group, or \"human\")", "from": "(worker name or \"human\"/\"owner\", default owner)", "text": "the message body"}],
         "worker_prompt": "a `prompt` string on each worker — steered as the first task, on create only",
         "example": {
             "groups": [{"name": "engineering", "department": "Engineering", "goal": "Ship the platform"}],
@@ -436,34 +436,28 @@ async fn apply(
         }
     }
 
-    // ---- messages: seeded inbox — reported here, delivered in the write phase
-    // through the SAME create-message path (ethos D6). Idempotent by
-    // (recipient, text), so a re-applied env does not re-send.
+    // ---- messages: seeded inbox — reported here, posted in the write phase.
+    // A seeded message is a Messages post where its recipient reads it
+    // (conversations::seed_post): owner to a worker in its thread, worker to
+    // worker in their direct message, worker to the owner in its direct message
+    // with them. Idempotent by (conversation, text), so a re-applied env does
+    // not re-send. (It went through `_amux_messages` and the orchestrator's
+    // command queue until the primitive integrity audit, 2026-11-26.)
     //
-    // Recipients are RESOLVED up-front (read pass) so the report is HONEST — a
-    // message the durable worker registry (`_amux_workers`) can't resolve is
-    // reported "skipped", never a phantom "create" (ethos rule 4: a dropped
-    // stanza must not look like it worked). This is the worker-model duality
-    // (D6): env-apply writes `.env` workers, and a `.env` worker becomes
-    // message-addressable only once STARTED and registered in `_amux_workers`.
-    // So a kickoff to a not-yet-started worker is surfaced here — the write
-    // phase's `continue` on the same None is now visible, not silent. "human",
-    // a group, or an already-running worker resolve immediately.
-    let msg_resolves: Vec<bool> = state
-        .store
-        .read()
-        .ok()
-        .map(|conn| {
-            spec.messages
-                .iter()
-                .map(|m| {
-                    let to = m.to.trim();
-                    !to.is_empty()
-                        && matches!(super::messages::resolve_recipient(&conn, to), Ok(Some(_)))
-                })
-                .collect()
+    // Recipients are RESOLVED up-front (read pass) so the report is HONEST: a
+    // name that is neither "human", a lane nor a group is reported "skipped",
+    // never a phantom "create" (ethos rule 4). Resolution reads the lanes
+    // that exist before this apply writes any, and the write phase posts only
+    // what the report said it would, so the two always agree.
+    let msg_targets: Vec<Option<super::conversations::SeedTo>> = spec
+        .messages
+        .iter()
+        .map(|m| {
+            let to = m.to.trim();
+            if to.is_empty() { None } else { super::conversations::seed_recipient(to) }
         })
-        .unwrap_or_else(|| vec![false; spec.messages.len()]);
+        .collect();
+    let msg_resolves: Vec<bool> = msg_targets.iter().map(Option::is_some).collect();
     // Workers THIS apply is creating (sanitized names). A message skipped
     // because its recipient is one of these is not a mystery — it is the
     // worker-model duality (D6, AC-353): the worker exists as a `.env` but is
@@ -493,9 +487,9 @@ async fn apply(
         } else {
             let own_new_worker = spec_worker_names.contains(&sanitize(to));
             let detail = if own_new_worker {
-                "recipient is a worker THIS env creates but has not started, so it is not message-addressable yet (worker-model duality D6). For a new worker's kickoff task, set its `prompt:` field — it is steered on create and delivered when the lane starts. The `messages` stanza seeds inboxes for recipients that exist now (\"human\", a group, or a running worker)."
+                "recipient is a worker THIS env creates, which does not exist yet when messages are resolved. For a new worker's kickoff task, set its `prompt:` field — it is steered on create and delivered when the lane starts. The `messages` stanza writes to recipients that exist now (\"human\", a group, or a worker)."
             } else {
-                "recipient not found in worker registry — a .env worker is message-addressable only once started; \"human\", a group, or a running worker resolve"
+                "recipient not found: \"human\", a worker, or a group resolve"
             };
             report.push(
                 json!({"kind": "message", "to": to, "action": "skipped", "detail": detail,
@@ -509,10 +503,10 @@ async fn apply(
             if !dry {
                 if own_new_worker {
                     tracing::warn!(target: "env_apply", to = %to,
-                        "env-apply message skipped: recipient is a worker this env creates but has not started — use its `prompt:` field for the kickoff (worker-model duality D6, AC-353)");
+                        "env-apply message skipped: recipient is a worker this env creates, not yet a lane — use its `prompt:` field for the kickoff (AC-353)");
                 } else {
                     tracing::warn!(target: "env_apply", to = %to,
-                        "env-apply message skipped: recipient not in _amux_workers (worker-model duality D6)");
+                        "env-apply message skipped: recipient is no worker, group or \"human\"");
                 }
             }
         }
@@ -746,88 +740,18 @@ async fn apply(
         }
     }
 
-    // ---- messages: resolve recipients + deliver, idempotent by (target, body)
-    // Reuses messages::resolve_recipient + insert_message_and_deliver — the ONE
-    // create-message path, so group fan-out and AtTurnBoundary delivery match
-    // POST /api/messages exactly (ethos D6, Invariant 9 no-double-queue).
-    if !spec.messages.is_empty() {
-        let msgs: Vec<(String, String, String)> = spec
-            .messages
-            .iter()
-            .filter(|m| !m.to.trim().is_empty() && !m.text.trim().is_empty())
-            .map(|m| {
-                (
-                    m.to.trim().to_string(),
-                    m.from.trim().to_string(),
-                    m.text.trim().to_string(),
-                )
-            })
-            .collect();
-        let res = state
-            .store
-            .write_async(move |conn| {
-                let now = chrono::Utc::now();
-                let mut events = vec![];
-                for (to, from, text) in &msgs {
-                    // Unknown worker name -> skip (a message to nobody is a no-op).
-                    let target = match super::messages::resolve_recipient(conn, to)? {
-                        Some(t) => t,
-                        None => continue,
-                    };
-                    // Sender: a worker name/id -> that worker; else the owner (an
-                    // env is applied by the owner, so an empty from is honestly them).
-                    let is_owner = from.is_empty()
-                        || from.eq_ignore_ascii_case("human")
-                        || from.eq_ignore_ascii_case("owner");
-                    let from_actor = if is_owner {
-                        amux_core::events::Actor::Human {
-                            name: if from.is_empty() {
-                                "owner".into()
-                            } else {
-                                from.clone()
-                            },
-                        }
-                    } else {
-                        match super::messages::resolve_recipient(conn, from)? {
-                            Some(amux_core::message::MessageTarget::Worker(w)) => {
-                                amux_core::events::Actor::Worker { id: w }
-                            }
-                            _ => amux_core::events::Actor::Human {
-                                name: "owner".into(),
-                            },
-                        }
-                    };
-                    // Idempotency: skip an identical (recipient, body) already sent.
-                    let target_json = serde_json::to_string(&target).unwrap_or_default();
-                    let exists: bool = conn
-                        .query_row(
-                            "SELECT 1 FROM _amux_messages WHERE target = ?1 AND body = ?2 LIMIT 1",
-                            rusqlite::params![target_json, text],
-                            |_| Ok(true),
-                        )
-                        .optional()?
-                        .unwrap_or(false);
-                    if exists {
-                        continue;
-                    }
-                    let (_p, _c, _n, evs) = super::messages::insert_message_and_deliver(
-                        conn,
-                        from_actor,
-                        target,
-                        text.clone(),
-                        None,
-                        now,
-                    )?;
-                    events.extend(evs);
-                }
-                Ok(WriteOutcome {
-                    applied: true,
-                    events,
-                })
-            })
-            .await;
-        if let Err(e) = res {
-            errors.push(json!({"kind": "message", "error": e.to_string()}));
+    // ---- messages: posted in Messages, idempotent by (conversation, text)
+    for (m, target) in spec.messages.iter().zip(msg_targets) {
+        let (Some(target), text) = (target, m.text.trim()) else { continue };
+        if text.is_empty() {
+            continue;
+        }
+        for (conv, outcome) in super::conversations::seed_post(&state, &m.from, &target, text).await {
+            if let Err(e) = outcome {
+                tracing::warn!(target: "env_apply", conv = %conv, error = %e, verdict = "env_apply_message_refused",
+                    "env-apply message was not posted");
+                errors.push(json!({"kind": "message", "conv": conv, "error": e}));
+            }
         }
     }
 

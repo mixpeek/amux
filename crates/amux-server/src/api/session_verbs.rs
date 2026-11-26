@@ -8334,7 +8334,7 @@ const DUP_DELIVERY_WINDOW_MS: i64 = 120_000;
 /// WHY THIS EXISTS (AMUX-3071): the Python server's `_autotask_from_command`
 /// carded every human command and stamped `cmd_history.card_id`. That path was
 /// NOT ported to the Rust send/steer flow at the 792ce1f cutover (2026-08-09) —
-/// only the orchestrator's `_amux_messages` DeliverMessage path got
+/// only the orchestrator's DeliverMessage path got
 /// `capture_prompt_card`, which the tmux fleet's send path never touches. Result:
 /// 330 human prompts from 2026-08-09 onward were recorded with `card_id=NULL` and
 /// left no board trace at all — the "no silent work" ledger discipline silently

@@ -57,6 +57,25 @@ macro_rules! entity_id {
     };
 }
 
+/// A `cmd_history` row id: the durable record of a message to a worker (the
+/// `MSG-<n>` a person sees). `WorkerCommand::DeliverMessage` carries one; the
+/// text is read from that row at delivery.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HistoryId(pub i64);
+
+impl fmt::Display for HistoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MSG-{}", self.0)
+    }
+}
+
+impl fmt::Debug for HistoryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MSG-{}", self.0)
+    }
+}
+
 entity_id!(
     /// Durable worker identity (Invariant 1). Survives sessions, renames, crashes.
     WorkerId, "wrk"

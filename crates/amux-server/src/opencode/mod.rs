@@ -46,7 +46,7 @@ pub fn default_model() -> String {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
-use amux_core::ids::{MessageId, TurnId, WorkerId};
+use amux_core::ids::{HistoryId, TurnId, WorkerId};
 use amux_core::protocol::{ProgressReport, RateLimit, WorkerEvent};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ pub type Result<T> = std::result::Result<T, ProtocolError>;
 #[async_trait]
 pub trait AgentProtocol: Send + Sync {
     async fn send_prompt(&self, worker: &WorkerId, prompt: Prompt) -> Result<()>;
-    async fn deliver_message(&self, worker: &WorkerId, msg: MessageId, body: String) -> Result<()>;
+    async fn deliver_message(&self, worker: &WorkerId, msg: HistoryId, body: String) -> Result<()>;
     async fn cancel(&self, worker: &WorkerId) -> Result<()>;
     async fn pause(&self, worker: &WorkerId) -> Result<()>;
     async fn resume(&self, worker: &WorkerId) -> Result<()>;

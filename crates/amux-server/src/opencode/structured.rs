@@ -23,7 +23,7 @@
 //! - `deliver_message` mid-turn returns `Rejected`: there is no stdin
 //!   session to inject into. The command queue's `AtTurnBoundary` timing is
 //!   the sanctioned retry path (Invariant 34). When idle, a message delivery
-//!   IS a new turn, keyed by the durable `MessageId` (Invariant 29), so a
+//!   IS a new turn, keyed by the durable `HistoryId` (Invariant 29), so a
 //!   redelivered message never double-runs.
 //! - `cancel` sends a real SIGINT via `/bin/kill` (graceful — the CLIs
 //!   checkpoint on SIGINT per the spike), falling back to
@@ -67,7 +67,7 @@
 use super::{
     acp, boundary_policy, events, serve, AgentProtocol, AgentState, Prompt, ProtocolError, Result,
 };
-use amux_core::ids::{MessageId, TurnId, WorkerId};
+use amux_core::ids::{HistoryId, TurnId, WorkerId};
 use amux_core::protocol::{ExitStatus, Failure, TurnTrace, TurnTraceKind, WorkerEvent};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -1973,13 +1973,13 @@ impl AgentProtocol for StructuredCliProtocol {
 
     /// Deliver a durable message. Headless CLIs have no mid-turn stdin, so on
     /// `run`/`acp` an idle worker gets the message as a new turn (keyed by the
-    /// durable `MessageId`, so redelivery is idempotent) and a busy worker
+    /// durable `HistoryId`, so redelivery is idempotent) and a busy worker
     /// rejects — the queue's `AtTurnBoundary` timing retries at the boundary.
     /// On **serve** a busy worker takes it mid-turn instead (`delivery:
     /// "steer"`, plan D4) — that difference is the whole point of M3, and it
     /// is scoped to durable messages only.
-    async fn deliver_message(&self, worker: &WorkerId, msg: MessageId, body: String) -> Result<()> {
-        self.prompt_with(worker, &body, msg.as_str().to_string(), true)
+    async fn deliver_message(&self, worker: &WorkerId, msg: HistoryId, body: String) -> Result<()> {
+        self.prompt_with(worker, &body, msg.to_string(), true)
             .await
     }
 
@@ -3638,7 +3638,7 @@ mod tests {
         // The turn is running (the fixture will not report it ended until we
         // release it), so a durable message must STEER, not queue.
         proto
-            .deliver_message(&w, MessageId::from_ulid(ulid::Ulid::new()), "steer me".into())
+            .deliver_message(&w, HistoryId(7), "steer me".into())
             .await
             .unwrap();
         assert_eq!(
@@ -4347,7 +4347,7 @@ reason = "The vault holds card and secret data."
         proto
             .deliver_message(
                 &w,
-                MessageId::from_ulid(ulid::Ulid::new()),
+                HistoryId(7),
                 marker.to_string(),
             )
             .await

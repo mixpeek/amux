@@ -411,9 +411,10 @@ async fn message_reply(
 ///
 /// Ethan 2026-08-13: "msg api isn't obvious to workers" — a worker told to look
 /// at MSG-28003 had NO endpoint to fetch it. The `MSG-<n>` id it sees is a
-/// `cmd_history` ROW id with a display prefix, but `/api/messages/{id}` is a
-/// DIFFERENT table (`_amux_messages`, ULID ids), so the obvious guess 404s. This
-/// is the lookup that matches what the id actually is.
+/// `cmd_history` ROW id with a display prefix, and this is the lookup that
+/// matches what the id actually is. (`/api/messages/{id}` read a different
+/// table with ULID ids; both were removed by the primitive integrity audit,
+/// 2026-11-26.)
 async fn get_history_item(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,

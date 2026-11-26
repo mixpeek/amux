@@ -24,7 +24,6 @@ pub(super) fn reference_texts(
     for sql in [
         "SELECT COALESCE(title,'') || ' ' || COALESCE(desc,'') || ' ' || COALESCE(evidence,'') || ' ' || COALESCE(log,'') || ' ' || COALESCE(next_action,'') || ' ' || COALESCE(last_result,'') || ' ' || COALESCE(unresolved,'') || ' ' || COALESCE(ask_question,'') || ' ' || COALESCE(ask_unblocks,'') AS text FROM issues WHERE COALESCE(archived,0)=0 AND COALESCE(status,'')!='discarded'",
         "SELECT ref_value AS text FROM _amux_task_artifacts",
-        "SELECT body AS text FROM _amux_messages",
         "SELECT text FROM saved_messages",
         "SELECT text FROM steering_queue",
         "SELECT text FROM steering_history",
@@ -393,7 +392,7 @@ mod tests {
         let conn = crate::db::migrate::test_memdb();
         conn.execute("INSERT INTO _amux_task_artifacts(id,task_id,kind,ref_value,created_at,updated_at) VALUES('a','t','verification',?1,0,0)",
             [linked.join("nested/proof.json").to_string_lossy().replace('/', "%2F")]).unwrap();
-        conn.execute("INSERT INTO _amux_messages(id,from_actor,target,body,created_at,delivery) VALUES('m','{}','{}',?1,'2026-09-01','{}')",
+        conn.execute("INSERT INTO cmd_history(text,ts) VALUES(?1,0)",
             [saved.join("nested/proof.json").to_string_lossy().replace('/', "\\/")]).unwrap();
         let refs = reference_texts(&conn, "/logs/").unwrap();
         assert_eq!(refs.len(), 2);

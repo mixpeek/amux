@@ -48,8 +48,10 @@ async fn wait_idle(c: &reqwest::Client, worker: &str, timeout: Duration) -> bool
 }
 
 async fn send_message(c: &reqwest::Client, worker: &str, body: &str) -> serde_json::Value {
-    c.post(format!("{API}/api/messages"))
-        .json(&serde_json::json!({"to": worker, "body": body}))
+    // `/api/messages` was removed (primitive integrity audit 2026-11-26): a
+    // message to a worker is the ordinary send.
+    c.post(format!("{API}/api/sessions/{worker}/send"))
+        .json(&serde_json::json!({"text": body}))
         .send()
         .await
         .unwrap()

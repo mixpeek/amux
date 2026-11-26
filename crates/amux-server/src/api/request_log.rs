@@ -1824,24 +1824,8 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "PATCH", "DELETE"],
     },
     RouteEntry {
-        path: "/api/messages",
-        methods: &["GET", "POST"],
-    },
-    RouteEntry {
         path: "/api/messages/accountability",
         methods: &["GET"],
-    },
-    RouteEntry {
-        path: "/api/messages/{id}",
-        methods: &["GET"],
-    },
-    RouteEntry {
-        path: "/api/messages/{id}/ack",
-        methods: &["POST"],
-    },
-    RouteEntry {
-        path: "/api/messages/{id}/acted",
-        methods: &["POST"],
     },
     RouteEntry {
         path: "/api/schedules",

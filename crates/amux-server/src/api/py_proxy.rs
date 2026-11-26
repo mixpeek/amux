@@ -128,7 +128,7 @@ pub const NATIVE_FAMILIES: &[(&str, &str)] = &[
     ("/api/git", "POST /api/git/staged-guard — the shared-checkout staged-state guard the installed .git/hooks/amux-staged-guard calls on every commit. UNROUTED from the cutover until 2026-08-09 (405 x ~1,147/hr, swallowed by the hook's fail-open), so the guard was silently off fleet-wide (api/git_guard.rs, AMUX-1730)"),
     ("/api/telegram", "Telegram bot connector — chat/session link+mappings, outbound send, poll+relay status (api/telegram.rs, db/telegram.rs, runtime_jobs/telegram_poll.rs + telegram_relay.rs). Net-new: python never had this route"),
     ("/api/memories", "memories CRUD"),
-    ("/api/messages", "inter-worker messages"),
+    ("/api/messages", "human-message accountability rollup (/api/messages/accountability)"),
     ("/api/schedules", "scheduler CRUD + runs"),
     ("/api/search", "universal FTS5 search over cards (incl. their log lines), messages, memories, workers, journal, schedules + the index's own drift status/reindex (api/search.rs, migration 0013, RR-0110). Net-new: python never had this route"),
     ("/api/why", "provenance explainer — correlates the state-event journal, request log, card log, schedule runs/audit and turn ledger for one entity or a time window; every line cites its table (api/why.rs, RR-0109). Net-new"),

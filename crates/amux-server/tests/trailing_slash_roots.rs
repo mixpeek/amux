@@ -32,7 +32,6 @@ const NESTED_ROOTS: &[&str] = &[
     "/api/schedules",
     "/api/memories",
     "/api/groups",
-    "/api/messages",
     "/api/search",
     "/api/why",
     "/api/policy",

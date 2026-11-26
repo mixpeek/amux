@@ -96,7 +96,6 @@ pub const ALLOWLIST: &[MoveTable] = &[
     MoveTable { name: "skills", key: &["name"], drop_on_import: &[] },
     MoveTable { name: "cal_events", key: &["id"], drop_on_import: &[] },
     MoveTable { name: "journal_entries", key: &["id"], drop_on_import: &[] },
-    MoveTable { name: "_amux_messages", key: &["id"], drop_on_import: &[] },
     // Messages tab posts: integer id is local, so merge on who/where/when.
     MoveTable {
         name: "conversation_posts",

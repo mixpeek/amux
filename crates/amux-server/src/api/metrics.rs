@@ -789,7 +789,9 @@ async fn metrics(State(state): State<AppState>) -> Response {
             "commands_queued": count(&conn, "SELECT COUNT(*) FROM _amux_commands WHERE state LIKE '%queued%'"),
             "commands_in_flight": count(&conn, "SELECT COUNT(*) FROM _amux_commands WHERE state LIKE '%dispatched%' OR state LIKE '%delivered%'"),
             "dead_letters": count(&conn, "SELECT COUNT(*) FROM _amux_commands WHERE state LIKE '%dead_lettered%'"),
-            "messages_undelivered": count(&conn, "SELECT COUNT(*) FROM _amux_messages WHERE delivery LIKE '%queued%'"),
+            // A message to a worker is its cmd_history row (`_amux_messages` was
+            // removed, primitive integrity audit 2026-11-26).
+            "messages_undelivered": count(&conn, "SELECT COUNT(*) FROM cmd_history WHERE delivery = 'queued' AND delivered_at IS NULL"),
         },
         "board": {
             "open": count(&conn, "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 AND status NOT IN ('done','verified','discarded')"),

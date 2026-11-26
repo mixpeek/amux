@@ -417,19 +417,6 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     let sched_id = sched["id"].as_str().expect("sched id").to_string();
     let next_run_before = sched["next_run"].clone();
 
-    let (c, msg) = rig
-        .post(
-            "/api/messages",
-            json!({"to": "human", "body": "rr0150 message body"}),
-        )
-        .await;
-    assert!((200..300).contains(&c), "message create: {msg}");
-    let msg_id = msg["message"]["id"]
-        .as_str()
-        .or_else(|| msg["id"].as_str())
-        .expect("message id")
-        .to_string();
-
     let (c, _) = rig
         .post(
             &format!("/api/sessions/{lane}/steer"),
@@ -608,21 +595,9 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
         ),
     );
 
-    // 4. messages — the row, and the delivery state machine still advancing.
-    let (c, v) = rig.get(&format!("/api/messages/{msg_id}")).await;
-    let survived = (200..300).contains(&c) && v["body"] == "rr0150 message body";
-    let (ac, av) = rig
-        .post(&format!("/api/messages/{msg_id}/ack"), json!({}))
-        .await;
-    rep.add(
-        "messages",
-        survived && (200..300).contains(&ac),
-        format!(
-            "read-back {c} body_ok={} · ack {ac} delivery={}",
-            v["body"] == "rr0150 message body",
-            av["delivery"].clone()
-        ),
-    );
+    // 4. messages: `_amux_messages` and /api/messages were removed (primitive
+    //    integrity audit 2026-11-26); a message to a worker is its cmd_history
+    //    row, covered by the history and steering sections.
 
     // 5. steering queue — rows survive AND keep their queued_at ordering,
     //    which is what makes "oldest first, one per tick" mean anything.

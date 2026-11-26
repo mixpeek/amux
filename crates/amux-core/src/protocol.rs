@@ -5,9 +5,9 @@
 //! plane. The orchestrator speaks [`WorkerCommand`] down and [`WorkerEvent`]
 //! up; whether an event came from a structured hook or a terminal scrape is
 //! the adapter's secret, and the consumer never knows. Note
-//! `DeliverMessage(MessageId)`, NOT `Steer(String)`: messages are durable
+//! `DeliverMessage(HistoryId)`, NOT `Steer(String)`: messages are durable
 //! entities (Invariant 29), so the command carries a reference to the durable
-//! row, never the payload — the Python system lost pending steering text on
+//! `cmd_history` row, never the payload — the Python system lost pending steering text on
 //! every restart precisely because the text lived in the command.
 //!
 //! Invariant 34: every queue has an explicit delivery contract. Everything
@@ -24,7 +24,7 @@
 //! the transport wraps events in its own envelope. Core defines what
 //! happened, not how it travelled.
 
-use crate::ids::{CommandId, MessageId, TaskId, TurnId, WorkerId};
+use crate::ids::{CommandId, HistoryId, TaskId, TurnId, WorkerId};
 use crate::provider::ProviderId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -44,8 +44,8 @@ pub enum WorkerCommand {
     /// Resume/continue whatever the worker was doing.
     Continue,
     /// Deliver a durable message by reference (Invariant 29 — never the
-    /// text itself; the text survives restarts in the message store).
-    DeliverMessage(MessageId),
+    /// text itself; the text survives restarts in its `cmd_history` row).
+    DeliverMessage(HistoryId),
     /// Run verification for a task (Invariant 7: done != verified).
     Verify(TaskId),
     /// Review a task (peer review, distinct from verification).
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn command_and_event_serialize_tagged() {
         let cmd =
-            WorkerCommand::DeliverMessage(MessageId::from_ulid(ulid("01JGXV0000000000000000TEST")));
+            WorkerCommand::DeliverMessage(HistoryId(42));
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains("\"kind\":\"deliver_message\""), "{json}");
         let back: WorkerCommand = serde_json::from_str(&json).unwrap();

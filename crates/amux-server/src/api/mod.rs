@@ -138,7 +138,7 @@ pub mod directive;
 pub mod needs_input;
 pub mod needs_input_auto;
 pub mod memories;
-pub mod messages;
+pub mod accountability;
 pub(crate) mod native_status;
 pub(crate) mod claude_config;
 pub(crate) mod cross_site;
@@ -302,7 +302,7 @@ pub fn router_with_connector_transport(
         .route("/api/scratchpad/config", axum::routing::get(scratchpad::get_config).put(scratchpad::put_config))
         .nest("/api/memories", memories::routes())
         .nest("/api/traces", traces::routes())
-        .nest("/api/messages", messages::routes())
+        .merge(accountability::routes())
         .nest("/api/schedules", schedules::routes())
         // AMUX-5237: named clearance signals. A card waits with
         // blocked_on="signal:<name>"; POST /api/signals/<name> raises it,

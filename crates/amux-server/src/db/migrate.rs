@@ -944,7 +944,87 @@ const MIGRATIONS: &[Migration] = &[
         name: "0176_point_of_use_tables",
         sql: include_str!("../../migrations/0176_point_of_use_tables.sql"),
     },
+    Migration {
+        version: DROP_AMUX_MESSAGES,
+        name: "0177_drop_amux_messages",
+        sql: include_str!("../../migrations/0177_drop_amux_messages.sql"),
+    },
 ];
+
+/// The migration that drops `_amux_messages`. Before it runs,
+/// [`archive_before_drop`] copies the rows it removes.
+const DROP_AMUX_MESSAGES: i64 = 177;
+
+/// Where the primitive integrity audit's dropped rows are kept, under the amux
+/// home (the database's directory).
+pub(crate) const AUDIT_ARCHIVE_DIR: &str = "archive/primitive-audit-2026-11-26";
+
+/// Rows a query returns, as JSON objects keyed by column name.
+fn rows_json(conn: &Connection, sql: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+    use rusqlite::types::ValueRef;
+    let mut stmt = conn.prepare(sql)?;
+    let cols: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let mut o = serde_json::Map::new();
+        for (i, c) in cols.iter().enumerate() {
+            let v = match r.get_ref(i)? {
+                ValueRef::Null => serde_json::Value::Null,
+                ValueRef::Integer(n) => serde_json::json!(n),
+                ValueRef::Real(f) => serde_json::json!(f),
+                ValueRef::Text(t) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
+                ValueRef::Blob(b) => serde_json::Value::String(String::from_utf8_lossy(b).into_owned()),
+            };
+            o.insert(c.clone(), v);
+        }
+        out.push(serde_json::Value::Object(o));
+    }
+    Ok(out)
+}
+
+/// Before 0177 drops `_amux_messages` (and rewrites the orchestrator commands
+/// that named its rows), write both sets of rows to
+/// `<home>/archive/primitive-audit-2026-11-26/` as JSON. A file already there
+/// is kept as it is (a re-run never overwrites the first copy). With rows to
+/// keep and no home to keep them in, the migration is refused rather than
+/// run: the drop must never be the only copy's end.
+fn archive_before_drop(conn: &Connection, home: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let table_exists = conn
+        .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_amux_messages'", [], |_| Ok(()))
+        .optional()?
+        .is_some();
+    let sets = [
+        ("_amux_messages.json", if table_exists { rows_json(conn, "SELECT * FROM _amux_messages ORDER BY created_at, id")? } else { Vec::new() }),
+        ("_amux_commands.deliver_message.json", rows_json(conn,
+            "SELECT * FROM _amux_commands WHERE json_extract(command, '$.kind') = 'deliver_message' \
+             AND json_type(command, '$.data') = 'text' ORDER BY queued_at, id")?),
+    ];
+    for (file, rows) in sets {
+        if rows.is_empty() {
+            tracing::info!(file, rows = 0, measured = true, n_considered = 0, verdict = "audit_archive_nothing_to_keep",
+                "0177: no rows to archive for this file");
+            continue;
+        }
+        let Some(home) = home else {
+            anyhow::bail!("0177 would drop {} row(s) archived as {file} but this database has no home to archive them in", rows.len());
+        };
+        let dir = home.join(AUDIT_ARCHIVE_DIR);
+        let path = dir.join(file);
+        if path.exists() {
+            tracing::info!(path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
+                verdict = "audit_archive_kept_existing", "0177: an archive is already there; left as it is");
+            continue;
+        }
+        std::fs::create_dir_all(&dir)?;
+        let tmp = dir.join(format!(".{file}.tmp"));
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&rows)?)?;
+        std::fs::rename(&tmp, &path)?;
+        tracing::warn!(path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
+            verdict = "audit_archive_written", "0177: rows archived before _amux_messages is dropped");
+    }
+    Ok(())
+}
 
 /// Migrations embedded in THIS binary that the DB has not recorded yet.
 ///
@@ -1213,7 +1293,7 @@ fn truthy_env(key: &str) -> bool {
 /// tests, which run against temp and in-memory databases.
 pub fn apply_all_guarded(conn: &mut Connection, db_path: &std::path::Path) -> anyhow::Result<()> {
     guard_live_db(db_path, &pending(conn))?;
-    apply_all(conn)
+    apply_all_with_home(conn, db_path.parent())
 }
 
 /// An in-memory DB carrying the REAL schema, for tests (AF-328).
@@ -1250,6 +1330,12 @@ pub(crate) fn test_memdb() -> Connection {
 }
 
 pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
+    apply_all_with_home(conn, None)
+}
+
+/// [`apply_all`], with the amux home a migration may archive rows into before
+/// it drops them (the database's directory; None for an in-memory database).
+pub fn apply_all_with_home(conn: &mut Connection, home: Option<&std::path::Path>) -> anyhow::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _amux_migrations (
             version    INTEGER PRIMARY KEY,
@@ -1286,6 +1372,9 @@ pub fn apply_all(conn: &mut Connection) -> anyhow::Result<()> {
         // migration is the one startup step that can take arbitrarily long
         // while looking exactly like a dead process.
         let started = std::time::Instant::now();
+        if m.version == DROP_AMUX_MESSAGES {
+            archive_before_drop(conn, home)?;
+        }
         let tx = conn.transaction()?;
         apply_one(&tx, m.sql)?;
         let ms = started.elapsed().as_millis() as i64;
@@ -1667,6 +1756,75 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    /// A database at 0175 holding `_amux_messages` rows and a queued command
+    /// that names one.
+    fn messages_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, DROP_AMUX_MESSAGES - 1);
+        conn.execute_batch(
+            "INSERT INTO _amux_messages (id, from_actor, target, body, thread, created_at, delivery) VALUES
+               ('msg_01A', '{\"kind\":\"human\",\"name\":\"owner\"}', '{\"kind\":\"worker\",\"id\":\"wrk_1\"}', 'first kept body', NULL, '2026-09-01T00:00:00Z', '{\"state\":\"queued\"}'),
+               ('msg_01B', '{\"kind\":\"human\",\"name\":\"owner\"}', '{\"kind\":\"worker\",\"id\":\"wrk_1\"}', 'second kept body', NULL, '2026-09-02T00:00:00Z', '{\"state\":\"delivered\"}');
+             INSERT INTO _amux_commands (id, worker_id, command, state, idempotency_key, queued_at, attempts, timing) VALUES
+               ('cmd_1', 'wrk_1', '{\"kind\":\"deliver_message\",\"data\":\"msg_01A\"}', '{\"state\":\"queued\"}', 'deliver-msg_01A', '2026-09-01T00:00:00Z', 0, '{\"kind\":\"at_turn_boundary\"}'),
+               ('cmd_2', 'wrk_1', '{\"kind\":\"deliver_message\",\"data\":\"msg_01B\"}', '{\"state\":\"confirmed\"}', 'deliver-msg_01B', '2026-09-02T00:00:00Z', 1, '{\"kind\":\"at_turn_boundary\"}');",
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn dropping_amux_messages_archives_its_rows_first_and_never_overwrites_the_archive() {
+        let mut conn = messages_fixture();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM search_docs WHERE entity_type='message'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "premise: the old search trigger indexed both messages");
+        let home = tempfile::tempdir().unwrap();
+        apply_all_with_home(&mut conn, Some(home.path())).unwrap();
+        let path = home.path().join(AUDIT_ARCHIVE_DIR).join("_amux_messages.json");
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2, "every row is kept");
+        assert_eq!(rows[0]["id"], "msg_01A");
+        assert_eq!(rows[1]["body"], "second kept body");
+        assert_eq!(rows[0]["delivery"], "{\"state\":\"queued\"}", "columns are kept as stored");
+        let cmds: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(
+            home.path().join(AUDIT_ARCHIVE_DIR).join("_amux_commands.deliver_message.json")).unwrap()).unwrap();
+        assert_eq!(cmds.len(), 2, "the commands that named them are kept too");
+        let gone = conn.query_row("SELECT 1 FROM sqlite_master WHERE name='_amux_messages'", [], |_| Ok(())).optional().unwrap();
+        assert!(gone.is_none(), "the table is dropped");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM search_docs WHERE entity_type='message'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0, "and its search documents");
+        // Both commands read again as WorkerCommand; the unfinished one is dead-lettered with its old id.
+        for id in ["cmd_1", "cmd_2"] {
+            let (command, state): (String, String) = conn.query_row(
+                "SELECT command, state FROM _amux_commands WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            let parsed: amux_core::protocol::WorkerCommand = serde_json::from_str(&command).unwrap();
+            assert_eq!(parsed, amux_core::protocol::WorkerCommand::DeliverMessage(amux_core::ids::HistoryId(0)), "{id}");
+            let st: amux_core::protocol::CommandState = serde_json::from_str(&state).unwrap();
+            if id == "cmd_1" {
+                assert!(matches!(&st, amux_core::protocol::CommandState::DeadLettered { reason } if reason.contains("msg_01A")), "{state}");
+            } else {
+                assert_eq!(st, amux_core::protocol::CommandState::Confirmed, "a finished command keeps its state");
+            }
+        }
+        // Another database dropping its table later never overwrites the first archive.
+        let mut again = messages_fixture();
+        again.execute("UPDATE _amux_messages SET body='changed'", []).unwrap();
+        apply_all_with_home(&mut again, Some(home.path())).unwrap();
+        let kept: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(kept[0]["body"], "first kept body");
+    }
+
+    #[test]
+    fn rows_with_nowhere_to_archive_them_refuse_the_drop() {
+        let mut conn = messages_fixture();
+        let e = apply_all(&mut conn).unwrap_err().to_string();
+        assert!(e.contains("no home to archive"), "{e}");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM _amux_messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "nothing was dropped");
+        // An empty table needs no archive.
+        conn.execute_batch("DELETE FROM _amux_messages; DELETE FROM _amux_commands;").unwrap();
+        apply_all(&mut conn).unwrap();
     }
 
     /// Either 0082/0083 history converges, and 0139 then removes the project

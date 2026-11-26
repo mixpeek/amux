@@ -381,10 +381,12 @@ fn run(cmd: &Cmd, c: &Client) -> anyhow::Result<i32> {
                     buf
                 }
             };
+            // The ordinary send, the same route the bash `amux send` uses
+            // (`/api/messages` was removed, primitive integrity audit 2026-11-26).
             let (status, v) = c.send_json(
                 reqwest::Method::POST,
-                "/api/messages",
-                json!({"target": {"worker_name": worker}, "body": body_text}),
+                &format!("/api/sessions/{worker}/send"),
+                json!({"text": body_text}),
             )?;
             if (200..300).contains(&status) {
                 println!("sent to {worker}");

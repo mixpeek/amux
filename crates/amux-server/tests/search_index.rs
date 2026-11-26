@@ -399,7 +399,7 @@ async fn status_reports_drift_and_reindex_repairs_it() {
 }
 
 #[tokio::test]
-async fn memories_messages_and_workers_are_indexed_too() {
+async fn memories_and_workers_are_indexed_too() {
     let (app, store, _d) = app();
     store
         .write(|conn| {
@@ -407,12 +407,6 @@ async fn memories_messages_and_workers_are_indexed_too() {
                 "INSERT INTO _amux_memories (id, scope, name, content, memory_type, created_at, updated_at, provenance)
                  VALUES ('mem_1', '{\"level\":\"global\"}', 'pangolin-note', 'remember the pangolin', 'user',
                          '2026-08-09T00:00:00+00:00', '2026-08-09T00:00:00+00:00', '{}')",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO _amux_messages (id, from_actor, target, body, created_at, delivery)
-                 VALUES ('msg_1', '{\"id\":\"lane-a\"}', '{\"id\":\"lane-b\"}', 'ping about the pangolin',
-                         '2026-08-09T00:00:00+00:00', '{}')",
                 [],
             )?;
             conn.execute(
@@ -433,7 +427,7 @@ async fn memories_messages_and_workers_are_indexed_too() {
         .map(|h| h["type"].as_str().unwrap())
         .collect();
     types.sort_unstable();
-    assert_eq!(types, vec!["memory", "message", "worker"], "{v}");
+    assert_eq!(types, vec!["memory", "worker"], "{v}");
     // Provenance chips the plan asks a SearchHit to carry.
     for h in v["hits"].as_array().unwrap() {
         assert!(

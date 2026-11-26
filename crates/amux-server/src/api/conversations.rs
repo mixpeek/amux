@@ -2204,6 +2204,83 @@ pub(crate) async fn owner_post_to_worker(state: &AppState, worker: &str, body: &
         .map_err(|_| format!("the post into {worker}'s thread was refused"))
 }
 
+/// Who an env's `messages` stanza writes to (`env_config.rs`): the owner, or
+/// workers (one named, or every worker in a named group). None when the name
+/// is neither a non-isolated lane nor a group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SeedTo {
+    Owner,
+    Workers(Vec<String>),
+}
+
+pub(crate) fn seed_recipient(to: &str) -> Option<SeedTo> {
+    let to = to.trim();
+    if to.eq_ignore_ascii_case("human") || to.eq_ignore_ascii_case("owner") {
+        return Some(SeedTo::Owner);
+    }
+    let lanes = lanes();
+    if lanes.iter().any(|l| l.name == to) {
+        return Some(SeedTo::Workers(vec![to.to_string()]));
+    }
+    let g = to.to_lowercase();
+    let members: Vec<String> = lanes.iter().filter(|l| l.groups.contains(&g)).map(|l| l.name.clone()).collect();
+    (!members.is_empty()).then_some(SeedTo::Workers(members))
+}
+
+/// An env's seeded message, posted in Messages where the recipient reads it:
+/// owner to a worker in its thread (`w:`), worker to worker in their direct
+/// message (`ww:`), worker to the owner in the worker's direct message with
+/// them (`d:`), and the owner to themselves in their notes. `from` is a lane
+/// name or empty/"human"/"owner". A conversation already holding the same
+/// text is skipped, so a re-applied env sends nothing twice. Returns one
+/// `(conv, outcome)` per conversation.
+pub(crate) async fn seed_post(state: &AppState, from: &str, to: &SeedTo, body: &str) -> Vec<(String, Result<&'static str, String>)> {
+    let lanes = lanes();
+    let from = from.trim();
+    let sender = lanes.iter().find(|l| l.name == from)
+        .map(|l| Who::Worker { name: l.name.clone(), groups: l.groups.clone() });
+    let owner = Who::Person { email: "owner".into(), scope: MemberScope::Global };
+    let body: String = body.chars().take(MAX_BODY).collect();
+    let mut plan: Vec<(Conv, Option<String>)> = Vec::new();
+    match (to, &sender) {
+        (SeedTo::Owner, Some(Who::Worker { name, .. })) => plan.push((Conv::Direct(name.clone(), "owner".into()), Some("owner".into()))),
+        (SeedTo::Owner, _) => plan.push((Conv::People("owner".into(), "owner".into()), None)),
+        (SeedTo::Workers(ws), Some(Who::Worker { name, .. })) => {
+            for w in ws.iter().filter(|w| *w != name) {
+                if let Some(c) = Conv::parse(&pair_key(name, w)) {
+                    plan.push((c, None));
+                }
+            }
+        }
+        (SeedTo::Workers(ws), _) => plan.extend(ws.iter().map(|w| (Conv::Worker(w.clone()), None))),
+    }
+    let mut out = Vec::new();
+    for (conv, dm_to) in plan {
+        let key = conv.key();
+        let dup = state.store.read().ok().is_some_and(|c| c.query_row(
+            "SELECT 1 FROM conversation_posts WHERE conv=?1 AND body=?2 AND deleted_at IS NULL LIMIT 1",
+            rusqlite::params![key, body], |_| Ok(())).is_ok());
+        if dup {
+            out.push((key, Ok("already_posted")));
+            continue;
+        }
+        let me = sender.clone().unwrap_or_else(|| owner.clone());
+        let (author_key, name, hdrs) = match &me {
+            Who::Worker { name, .. } => {
+                let mut h = HeaderMap::new();
+                if let Ok(v) = HeaderValue::from_str(name) {
+                    h.insert("x-amux-session", v);
+                }
+                (me.key(), name.clone(), h)
+            }
+            Who::Person { .. } => (me.key(), display_for("owner", ""), HeaderMap::new()),
+        };
+        let r = post_inner(state, conv, &me, author_key, name, body.clone(), hdrs, None, None, json!([]), dm_to, None).await;
+        out.push((key, r.map(|_| "posted").map_err(|e| format!("refused ({})", e.status().as_u16()))));
+    }
+    out
+}
+
 /// The owner's post into an outcome thread (`o:<id>`): delivered to the
 /// outcome's worker, which answers in the same thread. Returns the post.
 pub(crate) async fn owner_post_to_outcome(state: &AppState, id: &str, body: &str) -> Result<Value, String> {
@@ -3741,5 +3818,39 @@ mod tests {
         assert_eq!(n, 2);
         let none = import_worker_channels(&state, dir.path()).await;
         assert_eq!(none.files, 0, "nothing left to import");
+    }
+
+    /// An env's seeded message (env_config `messages`) is a Messages post:
+    /// owner to a worker in its thread, worker to worker in their direct
+    /// message, a group fanned out per member, and a re-apply posts nothing
+    /// twice.
+    #[tokio::test]
+    async fn an_env_seeded_message_is_a_messages_post_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let _g = crate::api::settings::test_env::set_home(dir.path());
+        std::fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        for n in ["seed-a", "seed-b", "seed-c"] {
+            std::fs::write(dir.path().join(format!("sessions/{n}.env")), "CC_PAUSED=1\nCC_TAGS=crew\n").unwrap();
+        }
+        std::fs::write(dir.path().join("sessions/seed-lead.env"), "CC_TAGS=crew\n").unwrap();
+        let state = test_state(dir.path());
+        assert_eq!(seed_recipient("human"), Some(SeedTo::Owner));
+        assert_eq!(seed_recipient("seed-a"), Some(SeedTo::Workers(vec!["seed-a".into()])));
+        assert_eq!(seed_recipient("nobody"), None);
+        let Some(SeedTo::Workers(crew)) = seed_recipient("CREW") else { panic!("a group resolves to its members") };
+        assert_eq!(crew.len(), 4);
+        let to_a = seed_post(&state, "", &SeedTo::Workers(vec!["seed-a".into()]), "kick off the import").await;
+        assert_eq!(to_a, vec![("w:seed-a".to_string(), Ok("posted"))]);
+        let group = seed_post(&state, "seed-lead", &SeedTo::Workers(crew.clone()), "standup at nine").await;
+        let convs: Vec<&str> = group.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(convs, vec!["ww:seed-a|seed-lead", "ww:seed-b|seed-lead", "ww:seed-c|seed-lead"], "the sender is left out");
+        assert!(group.iter().all(|(_, r)| r == &Ok("posted")), "{group:?}");
+        let again = seed_post(&state, "", &SeedTo::Workers(vec!["seed-a".into()]), "kick off the import").await;
+        assert_eq!(again, vec![("w:seed-a".to_string(), Ok("already_posted"))], "a re-applied env sends nothing twice");
+        let n: i64 = state.store.read().unwrap().query_row("SELECT COUNT(*) FROM conversation_posts", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 4);
+        let author: String = state.store.read().unwrap()
+            .query_row("SELECT author_key FROM conversation_posts WHERE conv='ww:seed-b|seed-lead'", [], |r| r.get(0)).unwrap();
+        assert_eq!(author, "worker:seed-lead", "attributed to the sender the env names");
     }
 }

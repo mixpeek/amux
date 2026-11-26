@@ -660,7 +660,7 @@ async fn async_main() {
     // to be automatic"). Sweeps for lanes with human messages but no board card
     // and steers each to open one — server-side, so it reaches any group. One
     // nudge per lane per 24h. Held like board-drive so the loop is not dropped.
-    drop(api::messages::accountability_spawn(state.clone()));
+    drop(api::accountability::accountability_spawn(state.clone()));
     // Outcome threads (o:<id>) resolve their worker from this registry.
     api::intent_store::load_registry(&state);
     // The retired worker channels' files become Messages direct messages

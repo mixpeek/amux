@@ -80,7 +80,6 @@ const FAMILIES: &[(&str, &str, &str)] = &[
     ("schedule", "schedules", "deleted IS NULL"),
     ("journal", "journal_entries", "deleted IS NULL"),
     ("memory", "_amux_memories", "deleted_at IS NULL"),
-    ("message", "_amux_messages", "1=1"),
     ("worker", "_amux_workers", "1=1"),
     // AF-499. Only type='user': the rest of cmd_history is machine traffic
     // (auto-pickup dispatches, peer relays, scheduler commands) and indexing it
@@ -862,15 +861,6 @@ pub const BACKFILL_SQL: &[(&str, &str)] = &[
                 json_object('memory_type', memory_type, 'version', version),
                 COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0)
          FROM _amux_memories WHERE deleted_at IS NULL",
-    ),
-    (
-        "message",
-        "INSERT OR IGNORE INTO search_docs (doc_id, entity_type, entity_id, title, body, scope, task_id, worker_id, link, meta, updated_at)
-         SELECT 'message:'||id, 'message', id, substr(body, 1, 80), body,
-                json_extract(from_actor, '$.id'), NULL, json_extract(target, '$.id'), '#messages',
-                json_object('thread', thread, 'from', from_actor, 'target', target),
-                COALESCE(CAST(strftime('%s', created_at) AS INTEGER), 0)
-         FROM _amux_messages",
     ),
     (
         "prompt",

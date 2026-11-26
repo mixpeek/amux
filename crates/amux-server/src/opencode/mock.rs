@@ -6,7 +6,7 @@
 //! call so tests assert on WHAT WAS ASKED, not on side effects.
 
 use super::{AgentProtocol, AgentState, Prompt, ProtocolError, Result};
-use amux_core::ids::{MessageId, WorkerId};
+use amux_core::ids::{HistoryId, WorkerId};
 use amux_core::protocol::WorkerEvent;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -20,12 +20,12 @@ pub enum RecordedCall {
         prompt: Prompt,
     },
     /// `body` is recorded so tests can assert the REAL message text reached
-    /// the agent — delivering the right MessageId with an empty body is
+    /// the agent — delivering the right HistoryId with an empty body is
     /// exactly the bug RR-0066 fixes, and a recorder blind to the body
     /// could not fail on it (ethos rule 7).
     DeliverMessage {
         worker: WorkerId,
-        msg: MessageId,
+        msg: HistoryId,
         body: String,
     },
     Cancel(WorkerId),
@@ -107,7 +107,7 @@ impl AgentProtocol for MockProtocol {
         Ok(())
     }
 
-    async fn deliver_message(&self, worker: &WorkerId, msg: MessageId, body: String) -> Result<()> {
+    async fn deliver_message(&self, worker: &WorkerId, msg: HistoryId, body: String) -> Result<()> {
         self.ensure(worker)?;
         self.record(RecordedCall::DeliverMessage {
             worker: worker.clone(),

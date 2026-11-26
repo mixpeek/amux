@@ -4,8 +4,8 @@
 //! commands are all the same thing: a Message. Making it a durable entity —
 //! not command plumbing — gives threads, delivery tracking, search, and
 //! audit history without building each separately, and it is why
-//! `WorkerCommand::DeliverMessage(MessageId)` carries a REFERENCE: the text
-//! lives here, in a store that survives restarts. The Python system lost
+//! `WorkerCommand::DeliverMessage(HistoryId)` carries a REFERENCE: the text
+//! lives in a durable `cmd_history` row that survives restarts. The Python system lost
 //! pending steering text on every restart because the text lived in the
 //! delivery pipe.
 //!

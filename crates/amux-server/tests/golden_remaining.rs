@@ -32,7 +32,7 @@
 
 use amux_core::board::TaskStatus;
 use amux_core::circuit::{FleetCircuitBreaker, FleetState};
-use amux_core::ids::{MessageId, TurnId, WorkerId};
+use amux_core::ids::{HistoryId, TurnId, WorkerId};
 use amux_core::protocol::{Failure, RateLimit, RateLimitKind, TurnResult, WorkerEvent};
 use amux_core::provider::ProviderId;
 use amux_core::revision::{EntityType, MutationKind, StateEvent};
@@ -936,7 +936,7 @@ impl AgentProtocol for FleetProtocol {
     async fn deliver_message(
         &self,
         worker: &WorkerId,
-        msg: MessageId,
+        msg: HistoryId,
         body: String,
     ) -> amux_server::opencode::Result<()> {
         self.route(worker)?.deliver_message(worker, msg, body).await
