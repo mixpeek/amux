@@ -6297,3 +6297,15 @@ CARD: AF-1408
 SYMPTOM: decomp-platform's `amux land` on mixpeek-dev (pid 3822027) held the main lock 19:52Z to 20:47Z. After merge-queue run 45693595861 refused its batch, the process tree was only `sleep 20`, `--status` read "current attempt 0 min" on every read, and 14 lands queued behind it until the owner cancelled it. The holder's log shows the mechanism. Its bisect handed the lease to the Mac after a green step, the Mac landed, the 4-of-7 green prefix could not be carried onto the moved main (mq_carry_changes_members) and was dropped, and the holder handed over again and waited on the Mac's land.
 COST: about 55 min of main for every mixpeek-dev lane, 40 min of candidate runs that landed nothing, and a manual cancel by the owner.
 FIX: c45cdf3e5 (a bisect keeps the lease once a step ran green). The misleading --status is AF-1409.
+
+## amux land from a --shared scratch clone checks and pushes against the local checkout it was cloned from
+AREA: land
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-11-26
+SESSION: mxp-mongo-migration
+CARD: AF-1426
+SYMPTOM: `amux land --detach --sha` from a `git clone --shared ~/Dev/mixpeek` scratch clone refused with "conflicts with origin/main on: <files>" on commits built on GitHub's main. Three refusals on mixpeek-dev in one evening (mongo-harness ab2543c0f4 and 1f435aa413, mongo-store twice).
+COST: about 15 to 30 minutes per refusal on a critical-path harness fix, each spent rebasing and retrying.
+MECHANISM: the clone's origin is the local checkout, whose main lags GitHub's. The guards, the conflict check, the lease and the push all read $remote, and land_gate.py reads origin, so every step compared against the stale main. A land that passed the check would have pushed into the local checkout (git refuses that for a checked-out branch), never reaching GitHub.
+FIX: cmd_land points a clone's remote at the URL its local source uses for that remote (up to three hops) and logs verdict=land_remote_canonicalized; a bare local origin is left alone. AMUX_LAND_KEEP_LOCAL_REMOTE=1 opts out. scripts/test-land-shared-clone-remote.sh reproduces the false conflict before the fix and lands on the canonical remote after it.

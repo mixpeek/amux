@@ -12360,6 +12360,32 @@ cmd_land() {
       *) die "usage: amux land [--remote origin] [--branch main] [--tries 8] [--max-hold 3600] [--no-batch] [--no-gate] [--batch-max N] [--priority --reason <text>] [--detach] [--sha <commit>] [--json] | amux land --cancel [pid|--all] | --cancel-for <lane> <pid> --reason <text> | --to-head <waiter pid> --reason <text> | --status | --demote <lane> | --adopt [pid|--all] | --lease-check <remote> (pre-push stdin)" ;;
     esac
   done
+  # CANONICAL REMOTE (mxp-mongo-migration, 2026-11-26): in a `git clone
+  # --shared` scratch clone, origin is the local checkout it was cloned from,
+  # whose main lags GitHub's. Every step reads $remote (the guards, the
+  # conflict check, the lease, the push) and land_gate.py reads origin, so all
+  # of them compared against a stale main: three false "conflicts on" refusals
+  # in one evening. When $remote is a local repository that has its own remote
+  # of that name, point this clone's remote at that URL (following up to three
+  # hops) and say so. A local bare repository with no such remote, as the land
+  # tests use, is left alone. AMUX_LAND_KEEP_LOCAL_REMOTE=1 opts out.
+  if [ "${AMUX_LAND_KEEP_LOCAL_REMOTE:-0}" != 1 ] && git rev-parse --git-dir >/dev/null 2>&1; then
+    local _cr_url _cr_next _cr_from _cr_hops=0
+    _cr_url="$(git remote get-url "$remote" 2>/dev/null || true)"
+    _cr_from="$_cr_url"
+    while [ "$_cr_hops" -lt 3 ] && [ -n "$_cr_url" ] && [ -d "${_cr_url#file://}" ]; do
+      _cr_next="$(git -C "${_cr_url#file://}" remote get-url "$remote" 2>/dev/null || true)"
+      [ -n "$_cr_next" ] || break
+      _cr_url="$_cr_next"; _cr_hops=$((_cr_hops + 1))
+    done
+    if [ "$_cr_hops" -gt 0 ] && [ "$_cr_url" != "$_cr_from" ]; then
+      git remote set-url "$remote" "$_cr_url"
+      mkdir -p "$HOME/.amux/logs"
+      printf '%s %s %s\n' "$(date -u +%FT%TZ)" "${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" \
+        "verdict=land_remote_canonicalized: $remote pointed at the local repository $_cr_from; it now points at $_cr_url, where $branch is landed" >> "$HOME/.amux/logs/land.log"
+      echo "amux land: $remote pointed at the local repository $_cr_from, whose $branch can lag; this clone's $remote now points at $_cr_url (verdict=land_remote_canonicalized; AMUX_LAND_KEEP_LOCAL_REMOTE=1 keeps it)" >&2
+    fi
+  fi
   # LAND GUARDS before anything queues, on either path (the server queue below
   # or the client queue): a path freeze and a reused message, see _land_guards.
   # Seconds, so a --detach caller runs them here too and the child skips them.
