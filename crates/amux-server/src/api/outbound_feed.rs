@@ -128,15 +128,72 @@ fn item(kind: &str, id: &str, channel: &str, state: &str, worker: &str, created:
     m
 }
 
+// ── States: one mapping per source, used by the list and the totals ──────
+
+/// Every state's total over each source's whole record, which the list (capped
+/// at HISTORY per source) cannot give.
+type Totals = HashMap<&'static str, u64>;
+
+fn add(t: &mut Totals, state: &'static str, n: u64) {
+    *t.entry(state).or_insert(0) += n;
+}
+
+fn browser_state(st: &str) -> &'static str {
+    match st {
+        "held" => "needs",
+        "approved" => "approved",
+        "sent" | "posted" | "done" => "sent",
+        "rejected" | "cancelled" => "declined",
+        _ => "failed",
+    }
+}
+
+fn social_state(status: &str, future: bool) -> &'static str {
+    match status {
+        "held" => "needs",
+        "queued" if future => "scheduled",
+        "queued" | "claimed" | "publishing" => "approved",
+        "posted" => "sent",
+        "cancelled" | "rejected" => "declined",
+        _ => "failed",
+    }
+}
+
+fn chat_state(st: &str) -> &'static str {
+    match st {
+        "held" => "needs",
+        "approved" | "sending" => "approved",
+        "sent" => "sent",
+        "rejected" => "declined",
+        _ => "failed",
+    }
+}
+
+/// The table sources' totals, grouped in SQL.
+fn table_totals(conn: &Connection, t: &mut Totals) {
+    let mut group = |sql: &str, map: &dyn Fn(&str, i64) -> &'static str| {
+        let Ok(mut st) = conn.prepare(sql) else { return };
+        let now = now() as i64;
+        let Ok(rows) = st.query_map([now], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))) else { return };
+        for (state, flag, n) in rows.flatten() {
+            add(t, map(&state, flag), n as u64);
+        }
+    };
+    group("SELECT state, 0, COUNT(*) FROM outbound_requests WHERE ?1 IS NOT NULL GROUP BY state", &|s, _| browser_state(s));
+    group("SELECT status, scheduled_at > ?1, COUNT(*) FROM social_queue GROUP BY 1, 2", &|s, f| social_state(s, f != 0));
+    group("SELECT state, 0, COUNT(*) FROM bridge_outbound WHERE ?1 IS NOT NULL GROUP BY state", &|s, _| chat_state(s));
+}
+
 // ── Email ──────────────────────────────────────────────────────────────────
 
-fn email_items(home: &Path, links: &HashMap<String, Value>, out: &mut Vec<Value>) {
+fn email_items(home: &Path, links: &HashMap<String, Value>, out: &mut Vec<Value>, totals: &mut Totals) {
     for doc in crate::api::email_approval::list_pending(home) {
         let id = s(&doc, "id");
         if id.is_empty() {
             continue;
         }
         let state = if crate::api::email_approval::is_scheduled(&doc) { "scheduled" } else { "needs" };
+        add(totals, state, 1);
         out.push(email_item(&doc, &id, state, None, links, true));
     }
     // Decided drafts: renamed in place to .approved / .rejected / .expired.
@@ -154,6 +211,7 @@ fn email_items(home: &Path, links: &HashMap<String, Value>, out: &mut Vec<Value>
             };
             let at = e.metadata().and_then(|m| m.modified()).ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            add(totals, state, 1);
             done.push((at, e.path(), state));
         }
     }
@@ -250,13 +308,7 @@ fn browser_items(conn: &Connection, links: &HashMap<String, Value>, out: &mut Ve
     let Ok(rows) = rows else { return };
     for (id, worker, channel, action, account, to, target, host, body, st_, created, decided, done, url, note, window, dnote) in rows.flatten() {
         let label = crate::api::outbound::id_label(id);
-        let state = match st_.as_str() {
-            "held" => "needs",
-            "approved" => "approved",
-            "sent" | "posted" | "done" => "sent",
-            "rejected" | "cancelled" => "declined",
-            _ => "failed",
-        };
+        let state = browser_state(&st_);
         let mut m = item("outbound", &label, &channel, state, &worker, created as f64, &body, links);
         m.insert("action".into(), json!(action));
         m.insert("account".into(), json!(account));
@@ -301,14 +353,7 @@ fn social_items(conn: &Connection, links: &HashMap<String, Value>, out: &mut Vec
     let t = now() as i64;
     for (id, platform, account, draft, when, status, error, url, session, created, updated) in rows.flatten() {
         let d: Value = serde_json::from_str(&draft).unwrap_or_else(|_| json!({}));
-        let state = match status.as_str() {
-            "held" => "needs",
-            "queued" if when > t => "scheduled",
-            "queued" | "claimed" | "publishing" => "approved",
-            "posted" => "sent",
-            "cancelled" | "rejected" => "declined",
-            _ => "failed",
-        };
+        let state = social_state(&status, when > t);
         let mut m = item("social", &id.to_string(), &platform, state, &session, created as f64, &s(&d, "caption"), links);
         m.insert("action".into(), json!("post"));
         m.insert("account".into(), json!(account));
@@ -350,13 +395,7 @@ fn chat_items(conn: &Connection, links: &HashMap<String, Value>, out: &mut Vec<V
     });
     let Ok(rows) = rows else { return };
     for (id, platform, conversation, st_, error, created, sent, body, author, conv) in rows.flatten() {
-        let state = match st_.as_str() {
-            "held" => "needs",
-            "approved" | "sending" => "approved",
-            "sent" => "sent",
-            "rejected" => "declined",
-            _ => "failed",
-        };
+        let state = chat_state(&st_);
         // created_at is milliseconds in this table.
         let created_s = if created > 100_000_000_000 { created as f64 / 1000.0 } else { created as f64 };
         let worker = author.trim_start_matches("worker:").to_string();
@@ -454,18 +493,20 @@ pub struct FeedQuery {
 pub fn build(conn: &Connection, home: &Path, q: &FeedQuery) -> Value {
     let links = links_in(conn);
     let mut items = Vec::new();
-    email_items(home, &links, &mut items);
+    let mut totals = Totals::new();
+    email_items(home, &links, &mut items, &mut totals);
+    table_totals(conn, &mut totals);
     browser_items(conn, &links, &mut items);
     social_items(conn, &links, &mut items);
     chat_items(conn, &links, &mut items);
-    let n_considered = items.len();
-    let mut counts: Map<String, Value> = STATES.iter().map(|s| (s.to_string(), json!(0))).collect();
+    // Counts are over each source's whole record; the list keeps the
+    // waiting items and the latest HISTORY decided ones per source.
+    let counts: Map<String, Value> = STATES.iter().map(|s| (s.to_string(), json!(totals.get(s).copied().unwrap_or(0)))).collect();
+    let n_considered: u64 = totals.values().sum();
+    let listed = items.len();
     let mut channels: Map<String, Value> = Map::new();
     for it in &items {
         let st = it["state"].as_str().unwrap_or("");
-        if let Some(n) = counts.get_mut(st) {
-            *n = json!(n.as_u64().unwrap_or(0) + 1);
-        }
         let ch = it["channel"].as_str().unwrap_or("").to_string();
         let e = channels.entry(ch).or_insert_with(|| json!({"total": 0, "needs": 0, "via": it["via"], "connector": it["connector"], "connector_label": it["connector_label"]}));
         e["total"] = json!(e["total"].as_u64().unwrap_or(0) + 1);
@@ -488,7 +529,7 @@ pub fn build(conn: &Connection, home: &Path, q: &FeedQuery) -> Value {
     }
     json!({
         "items": items, "counts": counts, "channels": channels, "states": STATES,
-        "measured": true, "n_considered": n_considered,
+        "measured": true, "n_considered": n_considered, "listed": listed,
         "sources": ["email", "chat", "social", "outbound"],
         "history_per_source": HISTORY,
     })
@@ -591,6 +632,22 @@ mod tests {
         assert_eq!(only["items"].as_array().unwrap().len(), 1);
         assert_eq!(only["items"][0]["result_url"], "https://linkedin.com/p/1");
         assert_eq!(only["counts"]["needs"], 1, "counts cover every state whatever the filter");
+    }
+
+    #[test]
+    fn counts_cover_the_whole_record_while_the_list_is_capped() {
+        let c = conn();
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..(HISTORY + 250) {
+            c.execute(
+                "INSERT INTO outbound_requests (worker, channel, action, recipient, host, body, state, created_at) VALUES ('w', 'x', 'dm', '@a', 'x.com', ?1, 'sent', ?2)",
+                rusqlite::params![format!("m{i}"), i as i64],
+            ).unwrap();
+        }
+        let v = build(&c, tmp.path(), &FeedQuery { state: Some("sent".into()) });
+        assert_eq!(v["counts"]["sent"], (HISTORY + 250) as u64, "the count is every sent message");
+        assert!(v["items"].as_array().unwrap().len() < HISTORY + 250, "the list is capped");
+        assert_eq!(v["n_considered"], (HISTORY + 250) as u64);
     }
 
     #[test]

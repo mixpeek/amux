@@ -82310,7 +82310,8 @@ function _obRenderList() {
   const allOn = decidable.length && decidable.every(r => _obSelected.has(r.ref));
   head.innerHTML = (decidable.length ? '<input type="checkbox" class="ob-check" aria-label="Select all" ' + (allOn ? 'checked' : '')
       + ' onchange="_obSelectAll(this.checked)">' : '')
-    + '<span class="ob-list-n">' + rows.length + ' ' + (_obState === 'needs' ? 'to review' : (rows.length === 1 ? 'message' : 'messages')) + '</span>'
+    + '<span class="ob-list-n">' + rows.length + ' ' + (_obState === 'needs' ? 'to review' : (rows.length === 1 ? 'message' : 'messages'))
+      + (_obCapped(rows.length) ? ' <span class="ob-dim">(the latest of ' + _obCapped(rows.length) + ')</span>' : '') + '</span>'
     + (_obSelected.size ? '<span class="ob-bulk"><button class="btn primary" onclick="_obBulk(\'approve\')">Approve ' + _obSelected.size + '</button>'
       + '<button class="btn" onclick="_obBulk(\'reject\')">Discard ' + _obSelected.size + '</button></span>' : '');
   if (!rows.length) {
@@ -82337,6 +82338,15 @@ function _obRenderList() {
       + (it.state !== 'needs' && _obState === 'all' ? ' <span class="cx-pill ' + pill[0] + '">' + esc(pill[1]) + '</span>' : '')
       + '</div></div></div>';
   }).join('');
+}
+
+// The view's total when the list holds fewer (history is capped per source);
+// 0 when the list is the whole view or a filter narrows it.
+function _obCapped(shown) {
+  const d = _obData || {};
+  if (_obChannel || _obWorker || _obQuery) return 0;
+  const total = _obState === 'all' ? (d.n_considered || 0) : ((d.counts || {})[_obState] || 0);
+  return total > shown ? total : 0;
 }
 
 function _obSelect(ref, on) { if (on) _obSelected.add(ref); else _obSelected.delete(ref); _obRenderList(); }
