@@ -12,7 +12,7 @@
 //! the owner.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -238,8 +238,18 @@ fn may_ack(caller: &str, session: &str) -> bool {
     caller.is_empty() || caller == session
 }
 
-async fn ack_route(State(state): State<AppState>, Path(id): Path<String>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+async fn ack_route(State(state): State<AppState>, Path(id): Path<String>, OriginalUri(uri): OriginalUri,
+                   headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let caller = super::alerts::hdr_worker(&headers);
+    // An empty caller is answered as the owner, so it has to prove it: with
+    // loopback trust in report mode a worker that drops its header is
+    // admitted, and could close another worker's directive in the owner's name.
+    if caller.is_empty() && state.auth_token.is_some() && !super::auth::has_owner_token(&state, &headers, &uri) {
+        tracing::warn!(directive = %id, verdict = "directive_ack_unproven_refused", measured = true, n_considered = 1,
+            "a directive answer with no worker identity did not carry the owner bearer");
+        return fail(StatusCode::FORBIDDEN, "an answer with no worker identity must carry the owner bearer",
+            "directive_ack_owner_proof_required");
+    }
     let note = body["note"].as_str().unwrap_or("").trim().to_string();
     if note.is_empty() {
         return fail(StatusCode::BAD_REQUEST, "say what you stopped, what is still running and your first action", "directive_ack_note_required");
@@ -306,6 +316,36 @@ mod tests {
                 assert!(!delivering("other", "w"));
             },
         ));
+    }
+
+    // Red-team run 7: "no worker header" is the owner only with the owner bearer.
+    #[tokio::test]
+    async fn an_answer_without_identity_needs_the_owner_bearer() {
+        use tower::ServiceExt;
+        let mut st = crate::api::standing_approvals::tests::test_state();
+        st.auth_token = Some("owner-secret".into());
+        st.store.write(|c| {
+            c.execute("INSERT INTO directives (id, session, sender, text, issued_at) VALUES ('d1','w','meta','stop',1.0)", [])?;
+            Ok(written())
+        }).unwrap();
+        let app = routes().with_state(st.clone());
+        let ack = |auth: Option<&str>| {
+            let mut b = axum::http::Request::builder().method("POST").uri("/api/directives/d1/ack")
+                .header("content-type", "application/json");
+            if let Some(a) = auth {
+                b = b.header("authorization", a);
+            }
+            b.body(axum::body::Body::from(r#"{"note":"stopped x, nothing running, next y"}"#)).unwrap()
+        };
+        let r = app.clone().oneshot(ack(None)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let r = app.clone().oneshot(ack(Some("Bearer wrong"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let acked: Option<f64> = st.store.read().unwrap()
+            .query_row("SELECT acked_at FROM directives WHERE id='d1'", [], |r| r.get(0)).unwrap();
+        assert!(acked.is_none(), "an unproven answer closed the directive");
+        let r = app.clone().oneshot(ack(Some("Bearer owner-secret"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
     }
 
     #[test]
