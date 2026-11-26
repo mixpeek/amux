@@ -13502,12 +13502,12 @@ async function openOutcome() {
   const d = _outcomeBaseDefaults();
   const draft = localStorage.getItem('amux_outcome_draft') || '';
   const chk = (id, on, label, extra) => `<label class="outcome-check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}${extra || ''}> ${label}</label>`;
-  const html = `<div class="outcome-form">
+  const html = `<div class="outcome-form" onpaste="_outcomePaste(event)">
     <textarea id="outcome-text" class="input outcome-text" rows="4"
       placeholder="e.g. Add a dark mode toggle to settings and ship it"
       onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)){event.preventDefault();_modalClose(true)}">${esc(draft)}</textarea>
     <div class="outcome-files">
-      <button type="button" class="btn" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
+      <button type="button" class="btn" title="Or paste an image (Ctrl/Cmd+V)" onclick="document.getElementById('outcome-file').click()">&#x1F4CE; Attach a recording or files</button>
       <input type="file" id="outcome-file" multiple hidden onchange="_outcomeAttach(this.files);this.value=''">
       <div id="outcome-file-list" class="ui-help" aria-live="polite"></div>
     </div>
@@ -13592,6 +13592,18 @@ function _outcomeAttach(list) {
     _outcomeFiles.push(it);
   }
   _outcomeRenderFiles();
+}
+// Ctrl/Cmd-V of an image (a screenshot) anywhere in the dialog attaches it
+// like a picked file. Clipboard images all arrive as "image.png", so each
+// gets a unique name. A text paste is left to the field.
+function _outcomePaste(e) {
+  const files = [...(e.clipboardData?.items || [])].filter(i => i.kind === 'file')
+    .map(i => i.getAsFile()).filter(Boolean)
+    .map(f => /^image\//.test(f.type) ? new File([f], _pasteImageName(f), { type: f.type }) : f);
+  if (!files.length) return;
+  e.preventDefault();
+  _outcomeAttach(files);
+  if (window._clientDebug) window._clientDebug('outcome-paste-attach', { verdict: 'attached', measured: true, n_considered: files.length });
 }
 function _outcomeRenderFiles() {
   const el = document.getElementById('outcome-file-list');

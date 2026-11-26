@@ -4230,6 +4230,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomePaste": {
+      "kind": "command._outcomePaste",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomePlan": {
       "kind": "command._outcomePlan",
       "feedback_required": true,

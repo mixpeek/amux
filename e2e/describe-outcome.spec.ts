@@ -270,3 +270,68 @@ test('Defaults remembered the old way come back as a preset named "My defaults"'
   expect(fit.right).toBeLessThanOrEqual(fit.vw);
   await page.screenshot({ path: test.info().outputPath('outcome-presets.png') });
 });
+
+// Owner, 2026-11-25: "control-V paste an image from the clipboard in the
+// 'Describe what you want' dialog to be added as an attachment". A pasted
+// screenshot uploads like a picked file, under its own name (every clipboard
+// image is "image.png"), and the worker is told to read it. A text paste is
+// left to the box.
+test('Pasting an image into Describe what you want attaches it to the new worker', async ({ page }) => {
+  const creates: any[] = [];
+  const plans: any[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem('amux_walkthrough_done', '1');
+    localStorage.removeItem('amux_outcome_draft');
+  });
+  await page.route('**/api/sessions', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    creates.push(route.request().postDataJSON());
+    return route.fulfill({ status: 201, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  await page.route('**/api/outcome/plan', async route => {
+    plans.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ measured: true, n_considered: 1, name: 'fix-the-button', dir: '/srv/app', groups: [], desc: 'Fixes the button.', attachments: [] }) });
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => typeof (window as any).openOutcome === 'function');
+  await page.locator('#add-btn').click();
+  await page.locator('#add-menu .card-menu-item', { hasText: 'Describe what you want' }).click();
+  await expect(page.locator('#outcome-text')).toBeVisible();
+  await page.locator('#outcome-text').fill('Fix the button in this screenshot');
+
+  // The paste a browser fires for Ctrl/Cmd+V with an image on the clipboard.
+  const paste = (withImage: boolean) => page.locator('#outcome-text').evaluate((ta, withImage) => {
+    const dt = new DataTransfer();
+    if (withImage) {
+      const png = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=='), c => c.charCodeAt(0));
+      dt.items.add(new File([png], 'image.png', { type: 'image/png' }));
+    } else dt.setData('text/plain', ' (urgent)');
+    const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+    ta.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  }, withImage);
+  // Text is not taken over: the box handles it as usual.
+  expect(await paste(false)).toBe(false);
+  await expect(page.locator('#outcome-file-list .outcome-file')).toHaveCount(0);
+  expect(await paste(true)).toBe(true);
+  expect(await paste(true)).toBe(true);
+  const chips = page.locator('#outcome-file-list .outcome-file');
+  await expect(chips).toHaveCount(2);
+  await expect(chips.first()).toContainText(/pasted-.*\.png/);
+  await expect(page.locator('#outcome-file-list')).not.toContainText('uploading');
+  await expect(page.locator('#outcome-file-list')).not.toContainText('did not upload');
+  const names = await chips.allInnerTexts();
+  expect(names[0]).not.toBe(names[1]);
+  await expect(page.locator('#outcome-text')).toHaveValue('Fix the button in this screenshot');
+  // Removing one leaves the other.
+  await chips.nth(1).locator('button').click();
+  await expect(chips).toHaveCount(1);
+  await page.screenshot({ path: test.info().outputPath('outcome-paste.png') });
+
+  await page.locator('#modal-btns .btn.primary', { hasText: 'Start' }).click();
+  await expect.poll(() => creates.length).toBe(1);
+  expect(plans[0].files).toHaveLength(1);
+  expect(plans[0].files[0]).toMatch(/pasted-.*\.png$/);
+  expect(creates[0].prompt).toContain(plans[0].files[0]);
+});
