@@ -11750,9 +11750,20 @@ const PEEK_TABS = (function _discoverPeekTabs() {
   });
   return out.length ? out : [{ id: 'simple', label: 'Translate' }];
 })();
-const PEEK_REQUIRED_TABS = new Set(['issues']);
+// Terminal is the only worker tab that cannot be hidden (PINNED above). Board
+// was required from 2026-09-24; the owner made it hideable again on
+// 2026-11-26 ("The only tab that should not be able to be hidden is
+// terminal"). As on the global bar, a stale saved list may still carry
+// 'issues' from before it became required, so only a list that also has the
+// 'issues!' marker, written by an explicit uncheck, hides it.
+const PEEK_REQUIRED_TABS = new Set();
+function _honourPeekBoardHide(set) {
+  if (set.has('issues') && !set.has('issues!')) set.delete('issues');
+  if (!set.has('issues')) set.delete('issues!');
+  return set;
+}
 let peekHiddenTabs = (function() {
-  try { const v = localStorage.getItem('amux_peek_hidden_tabs'); if (v !== null) return new Set(JSON.parse(v)); } catch(e) {}
+  try { const v = localStorage.getItem('amux_peek_hidden_tabs'); if (v !== null) return _honourPeekBoardHide(new Set(JSON.parse(v))); } catch(e) {}
   return new Set(['dictation', 'commits', 'git']);   // sensible default
 })();
 let peekTabOrder = (function() {
@@ -11788,7 +11799,7 @@ async function _loadPeekTabPrefs() {
     const saved = JSON.parse(value);
     const all = PEEK_TABS.map(t => t.id);
     if (!saved || !Array.isArray(saved.hidden) || !Array.isArray(saved.tab_order)) return;
-    peekHiddenTabs = new Set(saved.hidden.filter(id => all.includes(id)));
+    peekHiddenTabs = _honourPeekBoardHide(new Set(saved.hidden.filter(id => all.includes(id) || id === 'issues!')));
     peekTabOrder = [...new Set([
       ...saved.tab_order.filter(id => all.includes(id)),
       ...all.filter(id => !saved.tab_order.includes(id)),
@@ -11831,8 +11842,8 @@ function _applyPeekTabVisibility() {
   PEEK_TABS.forEach(t => {
     const el = document.getElementById('peek-tab-' + t.id);
     if (el) {
-      // Board is always shown, isolated workers included: it only views the
-      // worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
+      // Board shows for isolated workers too unless the owner hides it: it only
+      // views the worker's cards, it adds nothing to the raw CLI (Ethan, 2026-09-24).
       const alwaysShown = PEEK_REQUIRED_TABS.has(t.id);
       // A type with no worktree has no Worktree tab to show.
       // A chat worker's first tab is already its chat, so the companion Chat tab
@@ -12066,8 +12077,12 @@ function _renderPeekTabCustomizer() {
 }
 function togglePeekTabVisibility(id, show) {
   if (PEEK_REQUIRED_TABS.has(id)) show = true;
-  if (show) peekHiddenTabs.delete(id);
-  else { if (_peekTab === id) setPeekTab('terminal'); peekHiddenTabs.add(id); }
+  if (show) { peekHiddenTabs.delete(id); if (id === 'issues') peekHiddenTabs.delete('issues!'); }
+  else {
+    if (_peekTab === id) setPeekTab('terminal');
+    peekHiddenTabs.add(id);
+    if (id === 'issues') peekHiddenTabs.add('issues!');   // explicit owner hide (_honourPeekBoardHide)
+  }
   _savePeekTabPrefs(); _applyPeekTabVisibility();
 }
 
@@ -12146,7 +12161,7 @@ async function loadLayoutPreset(name, scope = 'global') {
     const all = PEEK_TABS.map(t => t.id);
     const saved = (p.tab_order || []).filter(id => all.includes(id));
     peekTabOrder = [...new Set([...saved, ...all.filter(id => !saved.includes(id))])];
-    peekHiddenTabs = new Set((p.hidden || []).filter(id => !PEEK_REQUIRED_TABS.has(id)));
+    peekHiddenTabs = _honourPeekBoardHide(new Set((p.hidden || []).filter(id => !PEEK_REQUIRED_TABS.has(id))));
     if (peekHiddenTabs.has(_peekTab)) setPeekTab('terminal');
     _savePeekTabPrefs();
     _applyPeekTabVisibility();

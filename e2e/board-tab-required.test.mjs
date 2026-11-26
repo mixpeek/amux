@@ -10,9 +10,15 @@ test('the global Board tab exists and the Workers tab cannot be hidden by a save
  assert.match(app,/const REQUIRED = new Set\(\['sessions'\]\);/);
  assert.match(app,/hiddenTabs\.has\(t\.id\) && !t\.required \? 'none' : ''/);
 });
-test('the worker-details Board tab shows for every worker, isolated included',()=>{
+// 2026-11-26 (owner): "The only tab that should not be able to be hidden is
+// terminal", so the worker-details Board tab is hideable by an explicit uncheck.
+test('the worker-details Board tab shows for isolated workers and only an explicit uncheck hides it',()=>{
  assert.match(html,/id="peek-tab-issues"/);
- assert.match(app,/const PEEK_REQUIRED_TABS = new Set\(\['issues'\]\);/);
+ assert.match(app,/const PEEK_REQUIRED_TABS = new Set\(\);/);
  assert.doesNotMatch(app,/raw && \['issues', 'schedules'\]\.includes/);
- assert.match(app,/if \(PEEK_REQUIRED_TABS\.has\(id\)\) show = true;/);
+ assert.match(app,/if \(id === 'issues'\) peekHiddenTabs\.add\('issues!'\);/);
+ const fn=app.match(/function _honourPeekBoardHide\(set\) \{[\s\S]*?\n\}/)[0];
+ const honour=(0,eval)('('+fn+')');
+ assert.deepEqual([...honour(new Set(['issues','git']))],['git']);
+ assert.deepEqual([...honour(new Set(['issues','issues!']))].sort(),['issues','issues!']);
 });
