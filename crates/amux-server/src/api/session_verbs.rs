@@ -10616,21 +10616,16 @@ async fn steer_enqueue_precond_with_id(
                         rusqlite::params![session, text_s],
                     )?;
                 }
-                conn.execute(
-                    "INSERT INTO steering_queue\
-                     (id, session, text, queued_at, guard, sender, precond_card, precond_rev) \
-                     VALUES(?,?,?,?,?,?,?,?)",
-                    rusqlite::params![
-                        id,
-                        session,
-                        text_s,
-                        now_f64(),
-                        if guard_s.is_empty() { None } else { Some(guard_s.clone()) },
-                        sender_s,
-                        precond_w.as_ref().map(|(c, _)| c.clone()),
-                        precond_w.as_ref().map(|(_, r)| *r),
-                    ],
-                )?;
+                // The queue's one writer (api/steering_store.rs).
+                super::steering_store::insert(conn, &super::steering_store::NewSteer {
+                    id: &id,
+                    session: &session,
+                    text: &text_s,
+                    queued_at: now_f64(),
+                    guard: &guard_s,
+                    sender: &sender_s,
+                    precond: precond_w.as_ref().map(|(c, r)| (c.as_str(), *r)),
+                })?;
             }
             Ok(crate::db::WriteOutcome { applied: true, events: vec![] })
         })

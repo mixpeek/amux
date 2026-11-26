@@ -195,6 +195,8 @@ pub mod sse;
 pub mod typing;
 pub mod rt;
 pub mod conversations;
+/// The one writer of `steering_queue` rows (primitive integrity audit 2026-11-26).
+pub(crate) mod steering_store;
 pub mod converse;
 pub mod static_files;
 pub mod stats;
