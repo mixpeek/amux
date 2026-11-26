@@ -558,6 +558,13 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | On | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_nudgesRowClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Nudges | `_nudgesTogglePanel` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open | `_obAttachment` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Approve … | `_obBulk` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Discard … | `_obBulk` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Discard | `_obDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | … | `_obDecide` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| index.html | Refresh outbound | `_obLoad` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Schedule send | `_obScheduleConfirm` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Browse | `_ocBrowseToggle` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Known groups | `_ocGroupsClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | outcome-groups | `_ocGroupsClick` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -994,6 +1001,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Open worker | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Worker: … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `openPeek` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1103,6 +1112,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Create | `submitCreate` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | index.html | Save | `submitEdit` | async (writes) | outline pulse while running; no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | + | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Connect it | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| app.js | Open CRM | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Open Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | div | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1115,6 +1126,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | index.html | Dictation: the dictionary and settings every wor | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Disk Cleanup | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | Intent: ask for anything, and see what is coming | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
+| index.html | Outbound: every message a worker wants to send o | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-board | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-browser | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | index.html | tab-calendar | `switchView` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
@@ -1229,6 +1241,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Preview ${esc(name)} | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
 | app.js | Review or restore | `` | onclick |
+| app.js | Select | `` | onclick |
 | app.js | Select  | `` | onclick |
 | app.js | Select row | `` | onclick |
 | app.js | View on Google Maps ↗ | `` | onclick |
@@ -1524,6 +1537,13 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | ni-older-toggle | `_niToggleOlder` | onclick |
 | index.html | Clear | `_notifClearAll` | onclick |
 | index.html | Toggle in-app banner pop-ups | `_notifToggleBanners` | onclick |
+| app.js | Back to the list | `_obBack` | onclick |
+| app.js | … | `_obEdit` | onclick |
+| app.js | + (it.decidable ? | `_obOpenItem` | onclick |
+| app.js | Schedule | `_obSchedule` | onclick |
+| app.js | All channels | `_obSetChannel` | onclick |
+| app.js | button | `_obSetChannel` | onclick |
+| app.js | … | `_obSetView` | onclick |
 | app.js | Close | `_ocBrowseClose` | onclick |
 | app.js | Use this folder | `_ocBrowseUse` | onclick |
 | app.js | Remove  | `_outcomeRemoveFile` | onclick |

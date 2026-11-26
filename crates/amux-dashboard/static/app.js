@@ -47192,7 +47192,7 @@ function switchView(view) {
     ['browser', 'browser', 'flex'], ['graph', 'graph', 'flex'],
     ['email', 'email', 'flex'], ['connectors', 'connectors', 'flex'], ['draw', 'draw', 'flex'], ['vault', 'vault', 'flex'], ['tasks', 'tasks', 'flex'],
     ['pages', 'pages', 'flex'], ['hotkeys', 'hotkeys', 'flex'], ['photos', 'photos', 'flex'],
-    ['calls', 'calls', 'flex'], ['dictation', 'dictation', 'flex'], ['crm', 'crm', 'flex'],
+    ['calls', 'calls', 'flex'], ['outbound', 'outbound', 'flex'], ['dictation', 'dictation', 'flex'], ['crm', 'crm', 'flex'],
     ['home', 'home', 'flex'],
   ];
   for (const [domId, name, display] of _svViews) {
@@ -47239,6 +47239,7 @@ function switchView(view) {
   if (view === 'mdai') _mdaiTabLoad();
   if (view === 'email') _emailLoad();
   if (view === 'calls') _callsLoad(); else if (typeof _callsClose === 'function' && _callsOpenId) _callsClose();
+  if (view === 'outbound') _obEnter(); else if (typeof _obLeave === 'function') _obLeave();
   if (view === 'crm') _crmLoad(); else if (typeof _crmClose === 'function' && _crm.open) _crmClose();
   if (view === 'connectors') _connectorsTabLoad();
   if (view === 'photos') _photosEnter(); else if (typeof _photosLeave === 'function') _photosLeave();
@@ -82138,3 +82139,448 @@ async function _hkDelete() {
   showToast('Removed ' + _HK_ACTIONS[e.action].label + ' ' + e.trigger);
 }
 _hkLoad();
+
+// ── Outbound tab (api/outbound_feed.rs) ──────────────────────────────────────
+// Every message a worker wants to send to someone outside, on every channel,
+// in one place: held email drafts, chat-bridge replies, social posts and
+// browser-typed messages (an X or LinkedIn DM). The feed is a projection of
+// each kind's own record; deciding goes through each kind's own path
+// (/api/approvals/decide, or the email approve route for an edit or a
+// schedule), so this tab and the Needs-you cards can never disagree.
+let _obData = null;          // the last feed
+let _obConnectors = {};      // connector id -> connector, for "how it goes out"
+let _obState = 'needs';      // the view: needs | scheduled | approved | sent | declined | failed | all
+let _obChannel = '';         // channel filter, '' = all
+let _obWorker = '';          // worker filter, '' = all
+let _obQuery = '';           // search text
+let _obOpen = '';            // ref of the open item
+const _obSelected = new Set();   // refs ticked for a bulk decision
+const _obBusy = new Set();       // refs with a decision in flight
+let _obEditing = '';         // ref whose text is in an edit box (the poll does not repaint under it)
+let _obTimer = null;
+
+const _OB_VIEWS = [
+  ['needs', 'Needs approval'], ['scheduled', 'Scheduled'], ['approved', 'Approved'],
+  ['sent', 'Sent'], ['declined', 'Declined'], ['failed', 'Failed'], ['all', 'All'],
+];
+const _OB_CHANNEL = {
+  email: ['✉', 'Email'], x: ['𝕏', 'X'], twitter: ['𝕏', 'X'], linkedin: ['in', 'LinkedIn'], slack: ['#', 'Slack'],
+  telegram: ['✈', 'Telegram'], discord: ['◎', 'Discord'], whatsapp: ['◔', 'WhatsApp'], whatsapp_app: ['◔', 'WhatsApp'],
+  imessage: ['◌', 'iMessage'], reddit: ['◉', 'Reddit'], hn: ['Y', 'Hacker News'], devto: ['D', 'DEV'], youtube: ['▶', 'YouTube'],
+};
+function _obChan(c) { return _OB_CHANNEL[c] || ['↗', c ? c.charAt(0).toUpperCase() + c.slice(1) : 'Other']; }
+const _OB_STATE_PILL = {
+  needs: ['cx-warn', 'needs approval'], scheduled: ['cx-idle', 'scheduled'], approved: ['cx-ok', 'approved'],
+  sent: ['cx-ok', 'sent'], declined: ['cx-idle', 'declined'], failed: ['cx-bad', 'failed'],
+};
+const _OB_EMAIL_ROUTE = '/api/email/' + 'approve/';
+
+function _obFit() {
+  const view = document.getElementById('outbound-view');
+  if (!view || view.style.display === 'none') return;
+  requestAnimationFrame(() => view.style.setProperty('--ob-top', Math.max(0, view.getBoundingClientRect().top) + 'px'));
+}
+window.addEventListener('resize', _obFit);
+
+function _obEnter() {
+  _obFit();
+  _obLoad();
+  if (!_obTimer) _obTimer = setInterval(() => { if (activeView === 'outbound' && !document.hidden) _obLoad(true); }, 30_000);
+}
+function _obLeave() { if (_obTimer) { clearInterval(_obTimer); _obTimer = null; } }
+
+async function _obLoad(quiet) {
+  try {
+    const [r, rc] = await Promise.all([
+      fetch(API + '/api/outbound/feed', { headers: _authHeaders() }),
+      quiet && Object.keys(_obConnectors).length ? null : fetch(API + '/api/connectors', { headers: _authHeaders() }),
+    ]);
+    const d = await r.json().catch(() => ({}));
+    _obData = r.ok ? d : { items: [], counts: {}, channels: {}, error: d.why_unmeasured || d.error || ('HTTP ' + r.status) };
+    if (rc && rc.ok) {
+      const c = await rc.json().catch(() => ({}));
+      _obConnectors = {};
+      (c.connectors || []).forEach(x => { _obConnectors[x.id] = x; });
+    }
+  } catch (e) {
+    _obData = { items: [], counts: {}, channels: {}, error: e.message };
+  }
+  _obBadge();
+  // Never repaint under an edit: the box holds what the owner is changing.
+  if (_obEditing) return;
+  _obRender();
+}
+
+// The count of waiting items on the tab's own label.
+function _obBadge() {
+  const lbl = document.querySelector('#tab-outbound .tab-lbl');
+  if (!lbl) return;
+  const n = (_obData && _obData.counts && _obData.counts.needs) || 0;
+  let b = lbl.querySelector('.ob-tab-count');
+  if (!n) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('span'); b.className = 'ob-tab-count'; lbl.appendChild(b); }
+  b.textContent = n > 99 ? '99+' : String(n);
+}
+
+function _obSetView(v) { _obState = v; _obSelected.clear(); _obOpen = ''; _obRender(); }
+function _obSetChannel(c) { _obChannel = _obChannel === c ? '' : c; _obRender(); }
+function _obSetWorker(w) { _obWorker = w; _obRender(); }
+function _obSearch(q) { _obQuery = (q || '').trim().toLowerCase(); _obRender(); }
+
+function _obVisible() {
+  const all = (_obData && _obData.items) || [];
+  return all.filter(it => (_obState === 'all' || it.state === _obState)
+    && (!_obChannel || it.channel === _obChannel)
+    && (!_obWorker || it.worker === _obWorker)
+    && (!_obQuery || [it.worker, it.to, it.subject, it.text, it.account, it.channel, it.reason, it.target]
+      .some(f => (f || '').toLowerCase().includes(_obQuery))));
+}
+
+function _obWho(it) {
+  if (it.crm && it.crm.name) return it.crm.name;
+  return it.to || it.target || it.account || (it.channel === 'email' ? '' : _obChan(it.channel)[1]);
+}
+function _obTitle(it) {
+  const t = it.subject || (it.text || '').split('\n').find(l => l.trim()) || '';
+  return t.length > 140 ? t.slice(0, 140) + '…' : t;
+}
+function _obWhen(it) {
+  if (it.state === 'scheduled' && it.scheduled_at) return 'sends ' + _apprWhenText(it.scheduled_at);
+  return timeAgo(Math.floor(it.sent_at || it.decided_at || it.created || 0));
+}
+
+// How this item goes out, and whether that route can send right now.
+function _obRoute(it) {
+  if (it.via === 'browser') return { ok: true, text: 'Typed by ' + (it.worker || 'the worker') + ' in the amux browser after you approve (the site has no API)', kind: 'browser' };
+  if (it.via === 'mac_app') return { ok: true, text: 'Sent through ' + (it.connector_label || 'the app on this Mac'), kind: 'mac_app' };
+  if (!it.connector) return { ok: true, text: 'Sent by API', kind: 'api' };
+  const c = _obConnectors[it.connector];
+  if (!c) return { ok: null, text: 'Sent with the ' + (it.connector_label || it.connector) + ' connector', kind: 'api' };
+  const ok = c.status === 'connected' || c.usable === true;
+  return { ok, text: (ok ? 'Sent with the ' : 'Needs the ') + (c.label || it.connector_label || it.connector) + ' connector'
+    + (ok ? '' : ' (' + String(c.status || 'not connected').replace(/_/g, ' ') + ')'), kind: 'api', connector: it.connector };
+}
+
+function _obRender() {
+  const view = document.getElementById('outbound-view');
+  if (!view || view.style.display === 'none') return;
+  const d = _obData || { items: [], counts: {}, channels: {} };
+  const counts = d.counts || {};
+  const total = (d.items || []).length;
+  // Row 1: the views. One row; it scrolls sideways on a phone. An empty
+  // view other than the one open is left out, so the row stays short.
+  document.getElementById('ob-views').innerHTML = _OB_VIEWS.map(([k, label]) => {
+    const n = k === 'all' ? total : (counts[k] || 0);
+    if (k !== 'needs' && k !== 'all' && k !== _obState && !n) return '';
+    return '<button class="ob-view' + (_obState === k ? ' on' : '') + '" role="tab" aria-selected="' + (_obState === k) + '" data-v="' + k
+      + '" onclick="_obSetView(this.dataset.v)">' + esc(label) + '<span class="ob-count' + (k === 'needs' && n ? ' hot' : '') + '">' + n + '</span></button>';
+  }).join('');
+  // Row 2: channels (with how each goes out) and workers.
+  const chans = Object.entries(d.channels || {}).sort((a, b) => (b[1].needs - a[1].needs) || (b[1].total - a[1].total));
+  const workers = [...new Set((d.items || []).map(i => i.worker).filter(Boolean))].sort();
+  const chip = (c, info) => {
+    const [ico, name] = _obChan(c);
+    const r = _obRoute({ via: info.via, connector: info.connector, connector_label: info.connector_label });
+    const dot = r.ok === false ? ' ob-dot-bad' : (info.via === 'browser' ? ' ob-dot-browser' : ' ob-dot-ok');
+    return '<button class="cx-filter ob-chip' + (_obChannel === c ? ' on' : '') + '" data-c="' + esc(c) + '" title="' + esc(r.text) + '"'
+      + ' onclick="_obSetChannel(this.dataset.c)"><span class="ob-chip-ico">' + esc(ico) + '</span>' + esc(name)
+      + (info.needs ? ' <span class="ob-chip-n">' + info.needs + '</span>' : '') + '<span class="ob-dot' + dot + '" aria-hidden="true"></span></button>';
+  };
+  document.getElementById('ob-channels').innerHTML =
+    '<button class="cx-filter ob-chip' + (!_obChannel ? ' on' : '') + '" onclick="_obSetChannel(\'\')">All channels</button>'
+    + chans.map(([c, info]) => chip(c, info)).join('');
+  const ws = document.getElementById('ob-worker');
+  ws.innerHTML = '<option value="">All workers</option>' + workers.map(w => '<option value="' + esc(w) + '"' + (w === _obWorker ? ' selected' : '') + '>' + esc(w) + '</option>').join('');
+  const note = document.getElementById('ob-note');
+  note.textContent = d.error ? 'Could not load outbound: ' + d.error : '';
+  note.hidden = !d.error;
+  _obRenderList();
+  _obRenderDetail();
+}
+
+function _obRenderList() {
+  const list = document.getElementById('ob-list');
+  const rows = _obVisible();
+  if (_obOpen && !rows.some(r => r.ref === _obOpen)) _obOpen = '';
+  // Desktop opens the first item; a phone shows the list until one is tapped.
+  if (!_obOpen && rows.length && !window.matchMedia('(max-width: 600px)').matches) _obOpen = rows[0].ref;
+  for (const ref of [..._obSelected]) if (!rows.some(r => r.ref === ref && r.decidable)) _obSelected.delete(ref);
+  const decidable = rows.filter(r => r.decidable);
+  const head = document.getElementById('ob-list-head');
+  const allOn = decidable.length && decidable.every(r => _obSelected.has(r.ref));
+  head.innerHTML = (decidable.length ? '<input type="checkbox" class="ob-check" aria-label="Select all" ' + (allOn ? 'checked' : '')
+      + ' onchange="_obSelectAll(this.checked)">' : '')
+    + '<span class="ob-list-n">' + rows.length + ' ' + (_obState === 'needs' ? 'to review' : (rows.length === 1 ? 'message' : 'messages')) + '</span>'
+    + (_obSelected.size ? '<span class="ob-bulk"><button class="btn primary" onclick="_obBulk(\'approve\')">Approve ' + _obSelected.size + '</button>'
+      + '<button class="btn" onclick="_obBulk(\'reject\')">Discard ' + _obSelected.size + '</button></span>' : '');
+  if (!rows.length) {
+    const empty = { needs: 'Nothing is waiting for you. When a worker wants to message someone outside, it shows up here first.',
+      scheduled: 'Nothing is scheduled.', approved: 'Nothing approved is still on its way.', sent: 'Nothing sent yet.' }[_obState] || 'Nothing here.';
+    list.innerHTML = '<div class="ob-empty">' + esc(_obQuery || _obChannel || _obWorker ? 'No messages match these filters.' : empty) + '</div>';
+    return;
+  }
+  list.innerHTML = rows.map(it => {
+    const [ico] = _obChan(it.channel);
+    const route = _obRoute(it);
+    const pill = _OB_STATE_PILL[it.state] || ['cx-idle', it.state];
+    return '<div class="ob-row' + (it.ref === _obOpen ? ' open' : '') + (it.state === 'needs' ? ' waiting' : '') + '" role="button" tabindex="0"'
+      + ' data-ref="' + esc(it.ref) + '" onclick="_obOpenItem(this.dataset.ref)" onkeydown="if(event.key===\'Enter\')_obOpenItem(this.dataset.ref)">'
+      + (it.decidable ? '<input type="checkbox" class="ob-check" aria-label="Select" ' + (_obSelected.has(it.ref) ? 'checked' : '')
+        + ' data-ref="' + esc(it.ref) + '" onclick="event.stopPropagation()" onchange="_obSelect(this.dataset.ref,this.checked)">' : '<span class="ob-check-gap"></span>')
+      + '<span class="ob-ico ob-ch-' + esc(it.channel) + '" aria-label="' + esc(_obChan(it.channel)[1]) + '">' + esc(ico) + '</span>'
+      + '<div class="ob-row-main">'
+      + '<div class="ob-row-top"><span class="ob-row-worker">' + esc(it.worker || 'unknown worker') + '</span>'
+      + '<span class="ob-row-when">' + esc(_obWhen(it)) + '</span></div>'
+      + '<div class="ob-row-title">' + esc((it.action ? it.action.charAt(0).toUpperCase() + it.action.slice(1) + ': ' : '') + _obTitle(it)) + '</div>'
+      + '<div class="ob-row-to">' + esc((it.account ? it.account + ' → ' : '') + _obWho(it))
+      + (route.ok === false ? ' <span class="ob-warn" title="' + esc(route.text) + '">connector missing</span>' : '')
+      + (it.state !== 'needs' && _obState === 'all' ? ' <span class="cx-pill ' + pill[0] + '">' + esc(pill[1]) + '</span>' : '')
+      + '</div></div></div>';
+  }).join('');
+}
+
+function _obSelect(ref, on) { if (on) _obSelected.add(ref); else _obSelected.delete(ref); _obRenderList(); }
+function _obSelectAll(on) { _obVisible().filter(r => r.decidable).forEach(r => on ? _obSelected.add(r.ref) : _obSelected.delete(r.ref)); _obRenderList(); }
+function _obOpenItem(ref) {
+  if (_obEditing && _obEditing !== ref) _obEditing = '';
+  _obOpen = ref;
+  document.getElementById('outbound-view').classList.add('ob-detail-open');
+  _obRenderList(); _obRenderDetail();
+  const d = document.getElementById('ob-detail'); if (d) d.scrollTop = 0;
+}
+function _obBack() { _obOpen = ''; _obEditing = ''; document.getElementById('outbound-view').classList.remove('ob-detail-open'); _obRender(); }
+function _obItem(ref) { return ((_obData && _obData.items) || []).find(i => i.ref === ref); }
+
+function _obField(label, value) {
+  return label && value ? '<div class="ob-field"><span class="ob-field-k">' + esc(label) + '</span><span class="ob-field-v">' + esc(value) + '</span></div>' : '';
+}
+
+function _obRenderDetail() {
+  const pane = document.getElementById('ob-detail');
+  const side = document.getElementById('ob-side');
+  const it = _obItem(_obOpen);
+  if (!it) {
+    pane.innerHTML = '<div class="ob-empty">Pick a message to see everything about it before it goes out.</div>';
+    side.innerHTML = '';
+    document.getElementById('outbound-view').classList.remove('ob-detail-open');
+    return;
+  }
+  const [ico, chName] = _obChan(it.channel);
+  const st = _OB_STATE_PILL[it.state] || ['cx-idle', it.state];
+  const busy = _obBusy.has(it.ref);
+  const editing = _obEditing === it.ref;
+  const waited = it.state === 'needs' ? 'waiting ' + timeAgo(Math.floor(it.created)).replace(' ago', '') : '';
+  const q = esc(it.ref);
+  let actions = '';
+  if (it.decidable) {
+    actions = '<button class="btn primary ob-approve" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obDecide(this.dataset.ref,\'approve\')">'
+        + (busy ? 'Working…' : (editing ? 'Approve edited' : 'Approve')) + '</button>'
+      + (it.kind === 'email' ? '<button class="btn ob-schedule" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obSchedule(this.dataset.ref)">Schedule</button>'
+        + '<button class="btn ob-edit-btn" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obEdit(this.dataset.ref)">' + (editing ? 'Cancel edit' : 'Edit') + '</button>' : '')
+      + '<button class="btn ob-discard" ' + (busy ? 'disabled' : '') + ' data-ref="' + q + '" onclick="_obDecide(this.dataset.ref,\'reject\')">Discard</button>';
+  }
+  const parent = it.parent && (it.parent.text || it.parent.author) ? it.parent : null;
+  const thread = Array.isArray(it.thread) ? it.thread : [];
+  const atts = Array.isArray(it.attachments) ? it.attachments : [];
+  const pendingEmail = it.kind === 'email' && (it.state === 'needs' || it.state === 'scheduled');
+  const body = editing
+    ? '<textarea id="ob-edit-box" class="input ob-edit" aria-label="Message text">' + esc(it.text || '') + '</textarea>'
+      + '<div class="ob-hint">Approve sends what is in this box. The edit is recorded in the send ledger.</div>'
+    : '<div class="ob-body">' + esc(it.text || '(no text)') + '</div>';
+  const replying = it.kind === 'email' && it.action === 'reply all' ? 'to everyone on the thread'
+    : (it.kind === 'email' && it.action === 'reply' ? 'to the sender' : '');
+  pane.innerHTML = '<div class="ob-detail-head">'
+      + '<button class="btn ob-back" onclick="_obBack()" aria-label="Back to the list">‹</button>'
+      + '<span class="ob-ico ob-ch-' + esc(it.channel) + '">' + esc(ico) + '</span>'
+      + '<span class="ob-detail-title">' + esc(it.worker || 'unknown worker') + ' <span class="ob-dim">· ' + esc(it.action || 'message') + '</span></span>'
+      + (waited ? '<span class="ob-dim ob-waited">' + esc(waited) + '</span>' : '<span class="cx-pill ' + st[0] + '">' + esc(st[1]) + '</span>')
+      + '</div>'
+    + (actions ? '<div class="ob-actions">' + actions + '</div>' : '')
+    + '<div id="ob-sched-row" class="ob-sched" hidden></div>'
+    + '<div class="ob-fields">'
+      + _obField('From', it.account) + _obField('To', it.to || it.target) + _obField('Cc', it.cc)
+      + _obField('Subject', it.subject) + _obField('Where', it.target && it.to ? it.target : '')
+      + _obField('Replying', replying)
+      + _obField('Sends', it.state === 'scheduled' && it.scheduled_at ? _apprWhenText(it.scheduled_at) : '')
+    + '</div>'
+    + body
+    + '<div class="ob-tags"><span class="ob-tag">' + esc(ico + ' ' + chName) + '</span>'
+      + (it.worker ? '<button class="ob-tag ob-tag-link" data-w="' + esc(it.worker) + '" onclick="openPeek(this.dataset.w)">Worker: ' + esc(it.worker) + '</button>' : '')
+      + (it.card ? '<span class="ob-tag">Card ' + esc(it.card) + '</span>' : '') + '</div>'
+    + (it.reason ? '<div class="ob-section"><div class="ob-section-h">Why ' + esc(it.worker || 'the worker') + ' is sending it</div><div class="ob-section-b">' + esc(it.reason) + '</div></div>' : '')
+    + (parent ? '<div class="ob-section"><div class="ob-section-h">What it answers</div><div class="ob-quote">'
+        + (parent.author ? '<div class="ob-quote-who">' + esc(parent.author) + (parent.subject ? ' · ' + esc(parent.subject) : '') + '</div>' : '')
+        + esc(String(parent.text || '').slice(0, 4000)) + '</div></div>' : '')
+    + (thread.length ? '<details class="ob-section"><summary class="ob-section-h">Recent thread (' + thread.length + ')</summary>'
+        + thread.map(m => '<div class="ob-quote"><div class="ob-quote-who">' + esc(m.author || m.who || '') + '</div>' + esc(String(m.text || m.body || '').slice(0, 2000)) + '</div>').join('') + '</details>' : '')
+    + (atts.length ? '<div class="ob-section"><div class="ob-section-h">Attachments (' + atts.length + ')</div>'
+        + atts.map(a => '<div class="ob-att"><span class="ob-att-name">' + esc(a.filename || 'attachment') + '</span>'
+            + (a.size ? '<span class="ob-dim">' + esc(_apprSize(a.size)) + '</span>' : '')
+            + (pendingEmail ? '<button class="btn" data-id="' + esc(it.id) + '" data-i="' + Number(a.index) + '" onclick="_obAttachment(this.dataset.id,this.dataset.i)">Open</button>' : '')
+            + '</div>').join('') + '</div>' : '')
+    + (it.result_url ? '<div class="ob-section"><div class="ob-section-h">Posted</div><a href="' + esc(it.result_url) + '" target="_blank" rel="noopener">' + esc(it.result_url) + '</a></div>' : '')
+    + (it.error ? '<div class="ob-section ob-error"><div class="ob-section-h">Error</div>' + esc(it.error) + '</div>' : '')
+    + (it.decision_reason ? '<div class="ob-section"><div class="ob-section-h">Decision note</div>' + esc(it.decision_reason) + '</div>' : '');
+  _obRenderSide(it);
+  if (editing) { const ta = document.getElementById('ob-edit-box'); if (ta && document.activeElement !== ta) ta.focus(); }
+}
+
+function _obRenderSide(it) {
+  const side = document.getElementById('ob-side');
+  const c = it.crm;
+  const route = _obRoute(it);
+  let html = '<div class="ob-card"><div class="ob-card-h">Recipient</div>';
+  if (c) {
+    html += '<div class="ob-person"><div class="ob-person-name">' + esc(c.name || '') + '</div>'
+      + (c.role ? '<div class="ob-dim">' + esc(c.role) + '</div>' : '')
+      + (c.email ? '<div class="ob-dim">' + esc(c.email) + '</div>' : '') + '</div>';
+  } else {
+    // A post or a thread has a URL, not a person: name the site, link the URL.
+    const url = /^https?:\/\//.test(it.target || '') ? it.target : '';
+    const name = it.to || (url ? _obChan(it.channel)[1] + ' ' + (it.action === 'comment' ? 'post' : 'page') : '') || 'unknown';
+    html += '<div class="ob-person"><div class="ob-person-name">' + esc(name) + '</div>'
+      + (url ? '<a class="ob-person-link" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>' : '')
+      + '<div class="ob-dim">Not in the CRM</div></div>';
+  }
+  html += '</div>';
+  if (c) {
+    const a = c.account || {};
+    html += '<div class="ob-card"><div class="ob-card-h">CRM</div>'
+      + '<div class="ob-kv"><span>Company</span><span>' + esc(a.name || c.company || '-') + '</span></div>'
+      + (a.status || c.status ? '<div class="ob-kv"><span>Status</span><span>' + esc(a.status || c.status) + '</span></div>' : '')
+      + (a.industry ? '<div class="ob-kv"><span>Industry</span><span>' + esc(a.industry) + '</span></div>' : '')
+      + (c.last_touch ? '<div class="ob-kv"><span>Last touch</span><span>' + esc(String(c.last_touch).slice(0, 10)) + '</span></div>' : '')
+      + '<button class="btn ob-card-btn" onclick="switchView(\'crm\')">Open CRM</button></div>';
+  }
+  html += '<div class="ob-card"><div class="ob-card-h">How it goes out</div>'
+    + '<div class="ob-route' + (route.ok === false ? ' bad' : '') + '">' + esc(route.text) + '</div>'
+    + (route.ok === false ? '<button class="btn ob-card-btn" onclick="switchView(\'connectors\')">Connect it</button>' : '')
+    + (it.via === 'browser' && it.state === 'approved' && it.window_until ? '<div class="ob-dim">The worker may post until ' + esc(new Date(it.window_until * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) + '</div>' : '')
+    + '</div>';
+  html += '<div class="ob-card"><div class="ob-card-h">Worker</div>'
+    + '<div class="ob-kv"><span>Worker</span><span>' + esc(it.worker || '-') + '</span></div>'
+    + '<div class="ob-kv"><span>Asked</span><span>' + esc(new Date(it.created * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</span></div>'
+    + (it.card ? '<div class="ob-kv"><span>Card</span><span>' + esc(it.card) + '</span></div>' : '')
+    + (it.worker ? '<button class="btn ob-card-btn" data-w="' + esc(it.worker) + '" onclick="openPeek(this.dataset.w)">Open worker</button>' : '') + '</div>';
+  html += '<div class="ob-card"><div class="ob-card-h">Scheduling</div><div class="ob-dim">'
+    + esc(it.scheduled_at ? (it.state === 'sent' ? 'Was due ' : 'Sends ') + _apprWhenText(it.scheduled_at)
+      : (it.sent_at ? 'Sent ' + new Date(it.sent_at * 1000).toLocaleString() : 'Not scheduled')) + '</div></div>';
+  side.innerHTML = html;
+}
+
+function _obEdit(ref) {
+  _obEditing = _obEditing === ref ? '' : ref;
+  _obRenderDetail();
+}
+
+async function _obAttachment(id, index) {
+  try {
+    const r = await fetch(API + '/api/email/approvals/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(index), { headers: _authHeaders() });
+    if (!r.ok) { showToast('Could not open the attachment: HTTP ' + r.status); return; }
+    const url = URL.createObjectURL(await r.blob());
+    window.open(url, '_blank', 'noopener');
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) { showToast('Could not open the attachment: ' + e.message); }
+}
+
+function _obSchedule(ref) {
+  const row = document.getElementById('ob-sched-row');
+  if (!row) return;
+  if (!row.hidden) { row.hidden = true; row.innerHTML = ''; return; }
+  const when = new Date(); when.setDate(when.getDate() + 1); when.setHours(9, 0, 0, 0);
+  row.innerHTML = '<label class="ob-sched-form"><span>Send at</span>'
+    + '<input type="datetime-local" class="input" id="ob-sched-at" value="' + _apprLocalInput(when) + '" min="' + _apprLocalInput(new Date()) + '">'
+    + '<button class="btn primary" data-ref="' + esc(ref) + '" onclick="_obScheduleConfirm(this.dataset.ref,this)">Schedule send</button></label>';
+  row.hidden = false;
+}
+
+async function _obScheduleConfirm(ref, btn) {
+  const it = _obItem(ref);
+  const inp = document.getElementById('ob-sched-at');
+  const when = inp && inp.value ? new Date(inp.value) : null;
+  if (!it || !when || isNaN(when) || when.getTime() <= Date.now()) { showToast('Pick a time in the future'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Scheduling…'; }
+  const body = { send_at: when.getTime() / 1000 };
+  const ta = document.getElementById('ob-edit-box');
+  if (ta) body.body = ta.value;
+  const r = await _obEmailRelease(it.id, body);
+  if (r.ok && r.d.scheduled) { _obEditing = ''; showToast('Scheduled: sends ' + _apprWhenText(r.d.send_at)); }
+  else showToast('Not scheduled: ' + (r.d.error || ('HTTP ' + r.status)));
+  await _obLoad();
+}
+
+// The owner's release of a held email, the same request the approvals strip
+// makes: the X-Amux-Approver marker names the dashboard as the approver.
+async function _obEmailRelease(id, body) {
+  const headers = { ..._authHeaders(), 'X-Amux-Approver': 'dashboard' };
+  if (body) headers['Content-Type'] = 'application/json';
+  const r = await fetch(API + _OB_EMAIL_ROUTE + encodeURIComponent(id), { method: 'POST', headers, body: body ? JSON.stringify(body) : undefined });
+  return { ok: r.ok, status: r.status, d: await r.json().catch(() => ({})) };
+}
+
+// One decision through the item's own path. Returns '' on success, else why not.
+async function _obDecideOne(it, verb, reason) {
+  if (it.kind === 'email') {
+    if (verb === 'approve') {
+      const ta = _obEditing === it.ref ? document.getElementById('ob-edit-box') : null;
+      const r = await _obEmailRelease(it.id, ta ? { body: ta.value } : null);
+      return r.ok ? '' : (r.d.error || ('HTTP ' + r.status));
+    }
+    const r = await fetch(API + '/api/email/reject/' + encodeURIComponent(it.id), {
+      method: 'POST', headers: { ..._authHeaders(), 'X-Amux-Approver': 'dashboard', 'Content-Type': 'application/json' },
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+    const d = await r.json().catch(() => ({}));
+    return r.ok ? '' : (d.error || ('HTTP ' + r.status));
+  }
+  const r = await fetch(API + '/api/approvals/decide', {
+    method: 'POST', headers: { ..._authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approval_ref: it.ref, decision: verb, reason: reason || undefined }),
+  });
+  const d = await r.json().catch(() => ({}));
+  return r.ok && d.ok !== false ? '' : (d.error || d.code || ('HTTP ' + r.status));
+}
+
+async function _obDecide(ref, verb) {
+  const it = _obItem(ref);
+  if (!it || _obBusy.has(ref)) return;
+  let reason = '';
+  if (verb === 'reject') {
+    const r = await showPrompt('Discard this ' + _obChan(it.channel)[1] + ' message? Nothing is sent. A note for ' + (it.worker || 'the worker') + ' (optional):', 'Why not');
+    if (r === null) return;
+    reason = String(r).trim();
+  }
+  _obBusy.add(ref); _obRenderDetail();
+  const err = await _obDecideOne(it, verb, reason);
+  _obBusy.delete(ref);
+  if (err) showToast((verb === 'approve' ? 'Not approved: ' : 'Not discarded: ') + err);
+  else {
+    showToast(verb === 'approve' ? (it.via === 'browser' ? 'Approved. ' + (it.worker || 'The worker') + ' may post it now.' : 'Approved') : 'Discarded. Nothing was sent.');
+    if (_obEditing === ref) _obEditing = '';
+    // Move to the next item, so a run of approvals is one click each.
+    const rows = _obVisible(); const i = rows.findIndex(r => r.ref === ref);
+    const next = rows[i + 1] || rows[i - 1];
+    _obOpen = next ? next.ref : '';
+  }
+  await _obLoad();
+}
+
+async function _obBulk(verb) {
+  const refs = [..._obSelected];
+  if (!refs.length) return;
+  const ok = await showConfirm((verb === 'approve' ? 'Approve and send ' : 'Discard ') + refs.length + ' message' + (refs.length === 1 ? '' : 's') + '?',
+    verb === 'approve' ? 'Approve ' + refs.length : 'Discard ' + refs.length, verb !== 'approve');
+  if (!ok) return;
+  let failed = 0;
+  for (const ref of refs) {
+    const it = _obItem(ref);
+    if (!it) continue;
+    _obBusy.add(ref);
+    const err = await _obDecideOne(it, verb, '');
+    _obBusy.delete(ref);
+    if (err) failed++;
+    else _obSelected.delete(ref);
+  }
+  showToast((refs.length - failed) + ' ' + (verb === 'approve' ? 'approved' : 'discarded') + (failed ? ', ' + failed + ' failed (still selected)' : ''));
+  await _obLoad();
+}

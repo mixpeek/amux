@@ -777,6 +777,7 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
   <button id="tab-sessions" class="active" onclick="switchView('sessions')"><span class="tab-ico">▦</span><span class="tab-lbl">Workers</span></button>
   <button id="tab-board" onclick="switchView('board')"><span class="tab-ico">☷</span><span class="tab-lbl">Board</span></button>
   <button id="tab-crm" title="CRM: people, companies, deals and follow-ups, for Mixpeek, amux and personal" onclick="switchView('crm')"><span class="tab-ico">&#x1F465;</span><span class="tab-lbl">CRM</span></button>
+  <button id="tab-outbound" title="Outbound: every message a worker wants to send outside, on every channel, waiting for your approval" onclick="switchView('outbound')"><span class="tab-ico">&#x27A4;</span><span class="tab-lbl">Outbound</span></button>
   <button id="tab-usage" title="Usage & Optimization: where the spend goes, what it produces, what to change" onclick="openUsage()"><span class="tab-ico">$</span><span class="tab-lbl">Usage</span></button>
   <button id="tab-tasks" onclick="switchView('tasks')"><span class="tab-ico">&#x2611;</span><span class="tab-lbl">Tasks</span></button>
   <button id="tab-groups" onclick="switchView('groups')"><span class="tab-ico">&#x2756;</span><span class="tab-lbl">Groups</span></button>
@@ -1536,6 +1537,24 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
   </div>
   <div id="crm-note" class="crm-note"></div>
   <div id="crm-list" class="crm-list"></div>
+</div>
+<div id="outbound-view" class="ob-view-root">
+  <div class="ob-bar" role="toolbar" aria-label="Outbound views and filters">
+    <div id="ob-views" class="ob-views" role="tablist" aria-label="Outbound by state"></div>
+    <input class="input ob-search" type="search" placeholder="Search outbound" aria-label="Search outbound" oninput="_obSearch(this.value)">
+    <div id="ob-channels" class="ob-channels"></div>
+    <select id="ob-worker" class="input ob-worker" aria-label="Worker" onchange="_obSetWorker(this.value)"></select>
+    <button class="btn ob-refresh" onclick="_obLoad()" aria-label="Refresh outbound">&#x21BB;</button>
+  </div>
+  <div id="ob-note" class="ob-note" hidden></div>
+  <div class="ob-panes">
+    <div class="ob-list-pane">
+      <div id="ob-list-head" class="ob-list-head"></div>
+      <div id="ob-list" class="ob-list"></div>
+    </div>
+    <div id="ob-detail" class="ob-detail"></div>
+    <div id="ob-side" class="ob-side"></div>
+  </div>
 </div>
 <div id="calls-view" class="calls-view">
   <div id="calls-bar" class="calls-bar" role="toolbar" aria-label="Filter calls">

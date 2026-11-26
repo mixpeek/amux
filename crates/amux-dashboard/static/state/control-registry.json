@@ -3948,6 +3948,36 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_obBulk": {
+      "kind": "command._obBulk",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_obDecide": {
+      "kind": "command._obDecide",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_obDecideOne": {
+      "kind": "command._obDecideOne",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_obEmailRelease": {
+      "kind": "command._obEmailRelease",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_obScheduleConfirm": {
+      "kind": "command._obScheduleConfirm",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_ocComboMouse": {
       "kind": "command._ocComboMouse",
       "feedback_required": true,

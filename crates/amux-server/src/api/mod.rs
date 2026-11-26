@@ -31,6 +31,7 @@ pub mod customer_isolation;
 pub mod at_rest;
 pub mod approval_cards;
 pub mod outbound;
+pub mod outbound_feed;
 pub mod schedule_authority;
 pub mod connector_scope;
 pub mod email_scope;
@@ -495,6 +496,7 @@ pub fn router_with_connector_transport(
         .merge(calls::routes())
         .merge(approval_cards::routes())
         .merge(outbound::routes())
+        .merge(outbound_feed::routes())
         .merge(schedule_authority::routes())
         .merge(mfa::routes())
         .merge(sso::routes())
