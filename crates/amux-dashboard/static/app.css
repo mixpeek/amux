@@ -2932,6 +2932,10 @@
     border: 0; background: none; color: inherit; cursor: zoom-in; flex-shrink: 0; border-radius: var(--radius-sm); }
   .peek-attach-chip .chip-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   @media (max-width: 600px) { .peek-attach-chip .chip-thumb { min-width: 44px; min-height: 44px; } }
+  /* A preview opens from a chip the person just clicked, so it sits above the
+     dialog that chip is in (the Describe what you want form is a confirmation-
+     layer modal, and a dialog-layer preview opened behind it). */
+  .modal-overlay#attach-preview { z-index: calc(var(--layer-confirmation) + 10); }
   .modal.attach-preview { width: min(920px, 94vw); }
   .attach-preview-img, .attach-preview-media { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: var(--radius-sm); }
   .attach-preview-audio { width: 100%; }
@@ -10480,6 +10484,18 @@ details.settings-fold[open] > summary::before { transform: rotate(90deg); }
 .modal-box:has(.outcome-form) { max-width: min(720px, calc(100vw - 24px)); min-width: min(320px, calc(100vw - 24px)); }
 @media (max-width: 600px) { .modal-box:has(.outcome-form) { max-width: calc(100vw - 16px); min-width: 0; } }
 .outcome-field > label { color: var(--dim); }
+/* Attachments: the composer's chips, with a bigger thumbnail so a pasted
+   screenshot or a video's first frame reads at a glance. */
+.oc-file-list .peek-attach-chip { max-width: min(260px, 100%); padding-left: var(--space-0-5); }
+.oc-file-list .peek-attach-chip img { width: 40px; height: 40px; }
+.oc-file-list .chip-icon { width: 40px; text-align: center; }
+.oc-video-thumb { position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: var(--radius-sm); overflow: hidden; background: var(--shade); }
+.oc-video-thumb img { position: absolute; inset: 0; }
+.oc-play { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+  border-radius: var(--radius-round); background: color-mix(in srgb, var(--shade) 60%, transparent); color: var(--on-solid); font-size: var(--fs-4xs); }
+.oc-file-state { color: var(--dim); font-size: var(--fs-4xs); flex-shrink: 0; }
+.oc-file-ok { color: var(--green); font-size: var(--fs-sm); flex-shrink: 0; }
 .oc-summary-preset { color: var(--text); margin-left: var(--space-1); }
 .outcome-row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--space-2); }
 /* Combobox (working directory, model): type, or pick from the list below. */

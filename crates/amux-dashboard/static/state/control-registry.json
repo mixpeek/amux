@@ -4266,6 +4266,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_outcomePreview": {
+      "kind": "command._outcomePreview",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_outcomeSavePresets": {
       "kind": "command._outcomeSavePresets",
       "feedback_required": true,
