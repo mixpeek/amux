@@ -1200,6 +1200,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             self?.guardTabMemory()
             self?.discardHiddenTabs()
         }
+        startWebStorageWatch()
         // A discarded page loads again the moment it is on screen: a tab picked
         // in the tab bar, a window brought forward, a pane's tab selected.
         for n in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification, NSWindow.didChangeOcclusionStateNotification] {
@@ -1453,6 +1454,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // verdict of memory_pressure says the tabs are pushing this Mac into swap.
     var resourcesTimer: Timer?
     var memoryGuardTimer: Timer?
+    // Saved page data (amux-storage.swift).
+    var storageTimer: Timer?
+    var storageCompacting = false
+    var storageLastResult = ""
     var tabMenuMonitor: Any?
     var lastDuplicateWarned = Set<String>()
     weak var tabMenuTarget: DashboardWindowController?

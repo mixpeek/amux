@@ -62566,6 +62566,7 @@ function _macSettingsRender() {
       + _macToggleRow('zoomAllWindows', 'Zoom all windows together', 'Zooming one window zooms every amux window.')
       + _macToggleRow('snapToGrid', 'Snap windows to a grid', 'While you drag, an outline shows where the window lands. Hold Option to place it freely.')
       + '<div class="settings-row mac-set-row"><label class="mac-set-label" for="mac-set-split"><b>Split opens the new pane</b></label><select class="input" id="mac-set-split" onchange="_macSettingsSend(\'splitDirection\',\'\',this.value)">' + split + '</select></div>')
+    + _macStorageSection(s.storage, sec)
     + sec('Updates', '<div class="settings-row mac-set-row mac-set-stack"><div class="mac-set-label"><b>This app: ' + esc(u.built || '') + '</b><span class="ui-help" id="mac-upd-status" data-state="' + esc(u.state || '') + '">'
       + esc(u.detail || 'Check whether a newer build is out.') + '</span></div><span class="mac-set-actions">'
       + (u.canInstall ? '<button class="btn primary" id="mac-upd-install" onclick="_macSettingsSend(\'update-install\')"' + (u.busy ? ' disabled' : '') + '>Update and Relaunch</button>' : '')
@@ -62575,6 +62576,20 @@ function _macSettingsRender() {
   const again = document.getElementById('mac-ws-name');
   if (again && typed) again.value = typed;
   if (again && hadFocus) again.focus();
+}
+// Saved page data (desktop/amux-storage.swift). WebKit's localStorage log for
+// the server reached 23 GB in the owner's app (2026-11-26) and every outbox read
+// stalled on it. Compact keeps every saved item and drops the log; the app also
+// does it by itself past 1 GB, at launch or while in the background.
+function _macStorageSection(st, sec) {
+  if (!st) return '';
+  const size = st.measured ? st.size : 'not measured';
+  const help = st.large ? 'This is more than it should be and can slow amux down. Compacting keeps your queued messages, drafts and preferences, and every amux page reloads.'
+    : 'Queued messages, drafts and preferences this app keeps for the server. Compacting keeps all of them and every amux page reloads.';
+  return sec('Storage', '<div class="settings-row mac-set-row mac-set-stack"><div class="mac-set-label"><b id="mac-storage-size" data-bytes="' + esc(String(st.bytes || 0))
+    + '" data-large="' + (st.large ? '1' : '0') + '">Saved page data: ' + esc(size) + '</b><span class="ui-help" id="mac-storage-status">'
+    + esc(st.busy ? 'Compacting…' : (st.last || help)) + '</span></div><span class="mac-set-actions"><button class="btn' + (st.large ? ' primary' : '')
+    + '" id="mac-storage-compact" onclick="_macSettingsSend(\'compactStorage\')"' + (st.busy ? ' disabled' : '') + '>Compact</button></span></div>');
 }
 function _macSettingsSaveWs() {
   const i = document.getElementById('mac-ws-name');

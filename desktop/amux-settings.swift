@@ -653,6 +653,7 @@ extension AppDelegate {
             MacPermissions.turnOn(name)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { after() }
             return
+        case "compactStorage": compactWebStorage(why: "settings"); return
         case "update-check": Updater.shared.check(); return
         case "update-install": Updater.shared.install(); return
         default:
@@ -712,6 +713,7 @@ extension AppDelegate {
                        "canInstall": u.state == .available || (u.state == .failed && !u.latest.isEmpty),
                        "busy": u.state == .checking || u.state == .installing],
             "server": serverURL?.absoluteString ?? "",
+            "storage": webStorageState(),
         ]
     }
 }

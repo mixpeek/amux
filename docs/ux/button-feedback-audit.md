@@ -1428,6 +1428,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Save current windows | `_macSettingsSaveWs` | onclick |
 | app.js | Change… | `_macSettingsSend` | onclick |
 | app.js | Check for Updates | `_macSettingsSend` | onclick |
+| app.js | Compact | `_macSettingsSend` | onclick |
 | app.js | Delete | `_macSettingsSend` | onclick |
 | app.js | Open | `_macSettingsSend` | onclick |
 | app.js | Rename | `_macSettingsSend` | onclick |
