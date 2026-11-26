@@ -334,9 +334,14 @@ pub(crate) async fn accountability_tick(state: &AppState) {
              no board card created or moved — the work isn't tracked yet. Please open a board card \
              for the ask (owned by you) and pursue it. Most recent: \"{snippet}\"",
         );
-        let _ =
+        if let Err(e) =
             crate::api::session_verbs::steer_enqueue(state, &worker, &text, "accountability", "")
-                .await;
+                .await
+        {
+            tracing::warn!(worker=%worker, error=?e, verdict="accountability_nudge_failed",
+                "[accountability] nudge could not be queued; the lane retries next sweep");
+            continue;
+        }
         nudged.insert(worker.clone(), now);
         sent += 1;
         tracing::info!(worker=%worker, human_messages=msgs, "[accountability] nudged unaccounted lane");
@@ -347,7 +352,7 @@ pub(crate) async fn accountability_tick(state: &AppState) {
 
     // Persist the updated stamps so the next sweep respects the cooldown.
     let body = serde_json::to_string(&nudged).unwrap_or_else(|_| "{}".into());
-    let _ = state
+    if let Err(e) = state
         .store
         .write_async(move |conn| {
             conn.execute(
@@ -360,7 +365,11 @@ pub(crate) async fn accountability_tick(state: &AppState) {
                 events: vec![],
             })
         })
-        .await;
+        .await
+    {
+        tracing::warn!(error=?e, verdict="accountability_cooldown_write_failed",
+            "[accountability] nudge cooldown stamps were not saved; a lane may be nudged again early");
+    }
     tracing::info!(
         nudged = sent,
         "[accountability] sweep nudged unaccounted lanes"
