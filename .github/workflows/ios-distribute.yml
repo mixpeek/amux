@@ -15,7 +15,7 @@ jobs:
         working-directory: ios
     steps:
       - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@145243922b4465b78e04dd66294782c7de45901f # v1.345.0
         with:
           ruby-version: '3.2'
           bundler-cache: true

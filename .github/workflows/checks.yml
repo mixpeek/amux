@@ -111,6 +111,10 @@ jobs:
       # runner (docs/design/cicd-two-minutes.md, Z9).
       - name: no self-hosted job is reachable from a pull request
         run: python3 scripts/ci-self-hosted-guard.py --self-test && python3 scripts/ci-self-hosted-guard.py
+      # A tag is a pointer its owner can move; a workflow holding a real secret
+      # pins third-party actions to a commit sha (red-team run 7, class g).
+      - name: a secret-bearing workflow pins third-party actions to a sha
+        run: python3 scripts/ci-action-pin-guard.py --self-test && python3 scripts/ci-action-pin-guard.py
       - name: a land's push keeps its connection alive through a long hook
         run: bash scripts/test-land-ssh-keepalive.sh
       - name: Rust-input cache key (scripts/ci-rust-key.mjs)
