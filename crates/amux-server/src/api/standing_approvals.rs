@@ -1044,9 +1044,30 @@ pub const LEARNED_TTL_DAYS: i64 = 90;
 /// main kill switch stops everything).
 pub const LEARN_KEY: &str = "AMUX_STANDING_APPROVALS_LEARN";
 
-/// The same predicate `refuse_non_owner` refuses on, stated positively: no
-/// worker header and not a scoped org member.
+/// The owner, or an admin worker acting with the owner's reach: no worker
+/// header, not a scoped org member, and, when this server has an owner
+/// credential, proof the server itself verified (the owner bearer, the sign-in
+/// door's owner mark, a global member, or an owner-configured policy;
+/// `human_proof::proven`).
+///
+/// LEAVING THE HEADER OFF IS NOT PROOF (amux-security, red-team run 7). This
+/// used to stop at the headers, and while loopback trust runs in report mode
+/// a worker that drops its header is admitted, so every caller below was a
+/// decision a worker could make by sending less: board owner moves, archive
+/// and delete past a frozen done line, the CRM voice override, calendar
+/// invitations, history rewrites, schedule locks and the tailnet. The
+/// dashboard and the owner's own `amux` CLI send the bearer already. A host
+/// with no owner credential keeps the header rule, since there the owner's
+/// own requests carry nothing to check (human_proof.rs).
 pub fn is_owner_request(headers: &HeaderMap) -> bool {
+    #[cfg(test)]
+    if let Some((_, credential)) = super::human_proof::test_override::get() {
+        return owner_request_with(headers, credential);
+    }
+    owner_request_with(headers, super::human_proof::owner_credential_configured())
+}
+
+fn owner_request_with(headers: &HeaderMap, credential: bool) -> bool {
     if super::session_verbs::admin_origin(headers, "owner_request").is_some() { return true; }
     let worker = ["x-amux-session", "x-amux-worker"].iter().any(|h| {
         headers
@@ -1056,7 +1077,15 @@ pub fn is_owner_request(headers: &HeaderMap) -> bool {
     });
     let scoped_member =
         super::org::local_member_scope(headers).is_some_and(|scope| !scope.is_global());
-    !worker && !scoped_member
+    if worker || scoped_member {
+        return false;
+    }
+    if credential && super::human_proof::proven(headers).is_none() {
+        tracing::warn!(measured = true, n_considered = 1, verdict = "owner_request_unproven",
+            "a request with no worker header and no owner proof was not taken as the owner");
+        return false;
+    }
+    true
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2183,6 +2212,25 @@ pub(crate) mod tests {
         assert!(memory_section_from(None, "x", &[], true, 0).contains("UNMEASURED"));
         assert!(memory_section_from(Some(&a), "x", &[], false, 0).contains("Switched off"));
         assert!(memory_section_from(Some(&[]), "x", &[], true, 0).contains("None recorded"));
+    }
+
+    /// amux-security, red-team run 7: with an owner credential, no worker
+    /// header is not enough to be the owner; the server's own proof is.
+    #[test]
+    fn an_owner_request_needs_proof_when_the_server_has_a_credential() {
+        use crate::api::human_proof::OWNER_PROOF_HEADER;
+        let none = HeaderMap::new();
+        assert!(owner_request_with(&none, false), "no credential configured: the header rule");
+        assert!(!owner_request_with(&none, true), "a dropped header is not the owner");
+        let mut owner = HeaderMap::new();
+        owner.insert(OWNER_PROOF_HEADER, "1".parse().unwrap());
+        assert!(owner_request_with(&owner, true));
+        let mut policy = crate::api::org::policy_headers("needs-input-auto");
+        assert!(owner_request_with(&policy, true), "an owner-configured policy is proven");
+        policy.insert("x-amux-session", "lane-x".parse().unwrap());
+        assert!(!owner_request_with(&policy, true), "a worker header is never the owner");
+        owner.insert("x-amux-session", "lane-x".parse().unwrap());
+        assert!(!owner_request_with(&owner, true), "nor with the proof beside it");
     }
 
     #[test]

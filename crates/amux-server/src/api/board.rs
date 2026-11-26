@@ -5937,6 +5937,28 @@ pub async fn create_item(
             );
         }
     }
+    // A HEADERLESS CALLER IS NOT THE OWNER BY ABSENCE (amux-security, red-team
+    // run 7). The cross-board guard below keys on the caller's header, so a
+    // worker that dropped it could file a card on any lane's board, and the
+    // card is delivered into that lane's turn. A card for a lane with no
+    // worker identity needs the owner's proof (is_owner_request); an
+    // unassigned one reaches no lane and stays open to in-process writers.
+    if request_to.is_none() && hdr_session.is_empty() && !session.is_empty()
+        && !super::standing_approvals::is_owner_request(&headers)
+    {
+        tracing::warn!(requested_owner = %session, measured = true, n_considered = 1,
+            verdict = "board_create_unproven_refused",
+            "a card for a lane's board with no worker identity and no owner proof was refused");
+        return err(
+            StatusCode::FORBIDDEN,
+            json!({
+                "error": "a card on a lane's board needs a worker identity or the owner's proof",
+                "code": "cross_board_create_unproven",
+                "requested_owner": session,
+                "how_to_fix": "a worker sends X-Amux-Session (amux board add does); the owner uses the dashboard or the amux CLI outside a worker, which send the owner bearer",
+            }),
+        );
+    }
     if request_to.is_none() && !hdr_session.is_empty() && session != hdr_session
         && !super::session_verbs::speaks_for_owner(&hdr_session)
     {
@@ -16337,6 +16359,32 @@ mod af701_archive_guard_tests {
         assert_eq!(current(&store, &id).status, "doing");
         assert_eq!(route(&state, &id, me(), done("`pytest server/tests/unit/test_budget.py` -> 3 passed at 3054da0b8a1")).await, StatusCode::OK);
         assert_eq!(current(&store, &id).status, "done");
+    }
+
+    /// amux-security, red-team run 7: a worker that drops its header could
+    /// file a card on any lane's board. With an owner credential configured, a
+    /// headerless card for a lane needs the owner's proof; an unassigned card,
+    /// and every card on a host with no credential, are created as before.
+    #[tokio::test]
+    async fn a_headerless_card_on_a_lanes_board_needs_the_owners_proof() {
+        use crate::api::human_proof::{test_override, Mode, OWNER_PROOF_HEADER};
+        let (state, _store) = fixture();
+        let card = |t: &str, s: &str| Json(json!({"title": t, "session": s}));
+        let g = test_override::set(Mode::Report, true);
+        let r = create_item(State(state.clone()), HeaderMap::new(), card("headerless card for lane x", "lane-x")).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        let b = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        assert!(String::from_utf8_lossy(&b).contains("cross_board_create_unproven"));
+        let mut owner = HeaderMap::new();
+        owner.insert(OWNER_PROOF_HEADER, axum::http::HeaderValue::from_static("1"));
+        let r = create_item(State(state.clone()), owner, card("owner card for lane x", "lane-x")).await;
+        assert!(r.status().is_success(), "the owner's proven request files it: {}", r.status());
+        let r = create_item(State(state.clone()), HeaderMap::new(), card("unassigned headerless card", "")).await;
+        assert!(r.status().is_success(), "an unassigned card reaches no lane: {}", r.status());
+        drop(g);
+        let _g = test_override::set(Mode::Report, false);
+        let r = create_item(State(state.clone()), HeaderMap::new(), card("card on a host with no credential", "lane-x")).await;
+        assert!(r.status().is_success(), "no owner credential, so nothing to prove: {}", r.status());
     }
 
     /// Contract A3 (AH-389): once an epic's done line is frozen, a worker
