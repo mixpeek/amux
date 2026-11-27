@@ -1,0 +1,11 @@
+-- 0185: the signal behind each enrollment.
+--
+-- ADDITIVE ONLY (shared live DB).
+--
+-- WHY (owner, 2026-11-27, on Databricks' signal-led outbound: "if there's
+-- anything from this we should bake into the crm do so"): outbound that runs
+-- on signals (a hire, a funding round, a new location, a missing role on the
+-- org chart) is judged by contacts per lead, split by signal, because one or
+-- two signals carry most of the leads and an average hides which. A person is
+-- enrolled with the signal that put them on the list.
+ALTER TABLE crm_enrollments ADD COLUMN signal TEXT NOT NULL DEFAULT '';

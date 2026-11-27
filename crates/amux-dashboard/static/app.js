@@ -47611,7 +47611,7 @@ function _crmRender() {
   }
   if (_crm.view === 'funnel') {
     const by = _crm.funnelBy || 'campaign';
-    h += chip('funnel', 'campaign', 'By campaign', by === 'campaign') + chip('funnel', 'sequence', 'By sequence', by === 'sequence') + chip('funnel', 'cohort', 'By cohort', by === 'cohort');
+    h += chip('funnel', 'campaign', 'By campaign', by === 'campaign') + chip('funnel', 'signal', 'By signal', by === 'signal') + chip('funnel', 'sequence', 'By sequence', by === 'sequence') + chip('funnel', 'cohort', 'By cohort', by === 'cohort');
   }
   if (_crm.view === 'activity') {
     const types = Object.entries((_crm.data.activity || {}).types || {}).sort((a, b) => b[1] - a[1]);
@@ -48262,11 +48262,11 @@ function _crmFunnelHtml(d) {
   const groups = (d && d.groups) || [];
   if (!groups.length) return '<div class="crm-empty">Nobody enrolled yet. Enroll people in a sequence and the funnel fills as they move.</div>';
   const steps = [['enrolled', 'Enrolled', ''], ['contacted', 'Contacted', 'contacted_per_enrolled'], ['replied', 'Replied', 'replied_per_contacted'],
-    ['booked', 'Booked', 'booked_per_replied'], ['demoed', 'Demoed', 'demoed_per_booked'], ['won', 'Won', 'won_per_demoed']];
+    ['interested', 'Interested', 'interested_per_replied'], ['booked', 'Booked', 'booked_per_replied'], ['demoed', 'Demoed', 'demoed_per_booked'], ['won', 'Won', 'won_per_demoed']];
   const pct = (v) => v == null ? '' : Math.round(v * 100) + '%';
   return groups.map(g => {
     const top = Math.max(1, g.enrolled || 0), conv = g.conversion || {};
-    const title = g.key === '(none)' ? (g.group === 'campaign' ? 'No campaign' : 'No cohort') : (g.name || g.key);
+    const title = g.key === '(none)' ? ({ campaign: 'No campaign', signal: 'No signal' }[g.group] || 'No cohort') : (g.name || g.key);
     return '<section class="crm-card crm-funnel" data-key="' + esc(g.key) + '"><div class="crm-line"><span class="crm-name">' + esc(title) + '</span>'
       + (g.won_amount_usd ? '<span class="cx-pill cx-ok">' + esc('$' + Number(g.won_amount_usd).toLocaleString() + ' signed') + '</span>' : '')
       + (g.mrr_usd ? '<span class="cx-pill cx-idle">' + esc('$' + Number(g.mrr_usd).toLocaleString() + '/mo recurring') + '</span>' : '')
@@ -48275,7 +48275,8 @@ function _crmFunnelHtml(d) {
         + '<span class="crm-step-l">' + esc(label) + '</span>'
         + '<span class="crm-step-track"><span class="crm-step-bar" data-w="' + Math.round(((g[k] || 0) / top) * 100) + '"></span></span>'
         + '<span class="crm-step-n">' + esc(g[k] || 0) + '</span><span class="crm-step-c">' + esc(c ? pct(conv[c]) : '') + '</span></div>').join('') + '</div>'
-      + '<div class="crm-meta crm-wrap">' + esc('won ' + (pct(conv.won_per_enrolled) || '0%') + ' of enrolled') + '</div></section>';
+      + '<div class="crm-meta crm-wrap">' + esc(['won ' + (pct(conv.won_per_enrolled) || '0%') + ' of enrolled',
+        g.contacts_per_lead != null ? Number(g.contacts_per_lead).toLocaleString() + ' contacted per lead' : 'no lead yet'].join(' · ')) + '</div></section>';
   }).join('') + '<div class="crm-meta crm-capnote">Each person counts once per step · ' + esc(d.n_considered) + ' enrollments · ' + esc(d.contract || '') + '</div>';
 }
 

@@ -984,6 +984,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0184_crm_mailboxes",
         sql: include_str!("../../migrations/0184_crm_mailboxes.sql"),
     },
+    Migration {
+        version: 185,
+        name: "0185_crm_enrollment_signal",
+        sql: include_str!("../../migrations/0185_crm_enrollment_signal.sql"),
+    },
 ];
 
 /// The migration that drops `interaction_log`. Before it runs,

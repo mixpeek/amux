@@ -104,8 +104,9 @@ Statuses:
 | 59 | The LinkedIn accept rate, the first check of a list ("under 1 in 5 accepting means the list is wrong") | `POST /api/crm/touches/{id}/accepted` (the checking worker), or a LinkedIn message from them; `crm.touch.accepted`; the funnel's `connects`, `accepted` and `accepted_per_connect` | Pass | `crm_mailboxes.rs` test `a_linkedin_connect_reads_accepted_...` |
 | 60 | Cold email copy: under 65 words, no links, a 1 to 4 word subject | the voice's channel rules: `max_words`, `links: false`, and `subject_max_words` (new) | Pass | `crm_voice` test `a_cold_subject_over_its_word_limit_is_named`; set the numbers on the voice |
 | 61 | Call every positive reply | an `interested` intent plans a `phone` `call` touch for today, for whoever worked them; it waits for the owner like any touch | Pass | `crm_close` test |
+| 62 | Outbound that runs on signals, judged by contacts per lead and split by signal (Databricks: "1 or 2 signals will carry most of the leads, and the average hides which ones") | an enrollment carries the `signal` that put the person on the list; `GET /api/crm/funnel?group=signal`; each group's `interested` (replies read as interested) and `contacts_per_lead` (contacted per interested reply; under 500 is good, 2,000 to 3,000 means the offer or segment needs work) | Pass | `crm_close` test; `e2e/crm-tab.spec.ts` "closing" reads the signal's card |
 
-**Count, over the 61 rows: 41 Pass, 10 Built, 8 Partial, 2 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
+**Count, over the 62 rows: 42 Pass, 10 Built, 8 Partial, 2 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
 
 ## 2. The test companies
 
@@ -329,6 +330,8 @@ Definitions, each counted once per person (a person is the unit):
 | `demoed` | has a deal that reached `demo` or later in the stage history, even if it later moved on or was lost |
 | `won` | has a deal that reached `won` |
 | `lost` | has a deal whose latest stage is `lost` |
+| `interested` | has a reply a worker read as interested (a lead) |
+| `contacts_per_lead` | per group: contacted over interested, rounded to one decimal; null until there is a lead |
 | `won_amount_usd` | the sum of `amount` (the contract value) over the group's won deals, in USD: the revenue measure for contracts |
 | `mrr_usd` | the sum of `mrr_usd` over the group's won deals that are subscriptions; 0 when none are |
 

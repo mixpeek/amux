@@ -23,7 +23,7 @@
 //! server stores it on the interaction, makes the move it implies (section 11
 //! of the plan) and emits `crm.reply.classified`.
 //!
-//! Measurement. GET /api/crm/funnel serves the `crm.funnel.v1` contract that
+//! Measurement. GET /api/crm/funnel (group=sequence, cohort, campaign or signal) serves the `crm.funnel.v1` contract that
 //! mixpeek's gtm-engine report reads: enrolled, contacted, replied, booked,
 //! demoed, won and lost per sequence or cohort, each counted once per person,
 //! with conversion per step and MRR. The names and their meanings stay fixed;
@@ -415,35 +415,38 @@ pub(crate) async fn emit_funnel_changed(state: &AppState, reason: &str, contact:
 #[derive(Default)]
 struct Group {
     name: String,
-    people: BTreeMap<String, [bool; 9]>,
+    people: BTreeMap<String, [bool; 10]>,
     won_deals: HashSet<String>,
 }
 
 const STEPS: [&str; 7] = ["enrolled", "contacted", "replied", "booked", "demoed", "won", "lost"];
 /// LinkedIn, beside the main steps: people sent a connect, and those who accepted it.
 const LINKEDIN_STEPS: [&str; 2] = ["connects", "accepted"];
+/// Leads: people whose reply a worker read as interested.
+const LEAD_STEPS: [&str; 1] = ["interested"];
 
 pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -> rusqlite::Result<Value> {
     let group = q.get("group").map(String::as_str).unwrap_or("sequence");
-    let (by_cohort, by_campaign) = (group == "cohort", group == "campaign");
+    let (by_cohort, by_campaign, by_signal) = (group == "cohort", group == "campaign", group == "signal");
     let since_day = q.get("since").cloned().unwrap_or_default();
     let since_ts = chrono::NaiveDate::parse_from_str(&since_day, "%Y-%m-%d").ok()
         .and_then(|d| d.and_hms_opt(0, 0, 0)).map(|t| t.and_utc().timestamp()).unwrap_or(0);
     let seq_f = q.get("sequence").cloned().unwrap_or_default();
     let cohort_f = q.get("cohort").cloned().unwrap_or_default();
     let campaign_f = q.get("campaign").cloned().unwrap_or_default();
-    type Row = (String, String, String, String, i64, String, String, String);
+    let signal_f = q.get("signal").cloned().unwrap_or_default();
+    type Row = (String, String, String, String, i64, String, String, String, String);
     let rows: Vec<Row> = conn
         .prepare(
-            "SELECT e.sequence_id, COALESCE(s.name,''), e.contact_id, e.cohort, e.created, e.status, COALESCE(s.campaign_id,''), COALESCE(cp.name,'') \
+            "SELECT e.sequence_id, COALESCE(s.name,''), e.contact_id, e.cohort, e.created, e.status, COALESCE(s.campaign_id,''), COALESCE(cp.name,''), e.signal \
              FROM crm_enrollments e LEFT JOIN crm_sequences s ON s.id=e.sequence_id LEFT JOIN crm_campaigns cp ON cp.id=s.campaign_id AND cp.deleted IS NULL \
-             WHERE e.created>=?1 AND (?2='' OR e.sequence_id=?2) AND (?3='' OR e.cohort=?3) AND (?4='' OR s.campaign_id=?4)",
+             WHERE e.created>=?1 AND (?2='' OR e.sequence_id=?2) AND (?3='' OR e.cohort=?3) AND (?4='' OR s.campaign_id=?4) AND (?5='' OR e.signal=?5)",
         )?
-        .query_map(rusqlite::params![since_ts, &seq_f, &cohort_f, &campaign_f], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
+        .query_map(rusqlite::params![since_ts, &seq_f, &cohort_f, &campaign_f, &signal_f], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let silent = SILENT_ACTIONS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
-    for (seq, seq_name, contact, cohort, at, status, campaign, campaign_name) in &rows {
+    for (seq, seq_name, contact, cohort, at, status, campaign, campaign_name, signal) in &rows {
         let one = |sql: &str| -> bool { conn.query_row(sql, rusqlite::params![contact, at], |_| Ok(true)).unwrap_or(false) };
         let contacted = one(&format!("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status='done' AND COALESCE(done_at,updated)>=?2 AND action NOT IN ({silent}) LIMIT 1"));
         let replied = status == "replied" || one("SELECT 1 FROM crm_interactions WHERE contact_id=?1 AND direction='in' AND created>=?2 LIMIT 1");
@@ -462,7 +465,10 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         let lost = deals.iter().any(|(d, st)| st == "lost" && reached(d, "'lost'"));
         let connects = one("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND action='connect' AND status='done' AND COALESCE(done_at,updated)>=?2 LIMIT 1");
         let accepted = one("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND action='connect' AND accepted_at>=?2 LIMIT 1");
-        let key = if by_cohort { if cohort.is_empty() { "(none)".to_string() } else { cohort.clone() } }
+        // A lead: a reply a worker read as interested (crm.reply.classified).
+        let interested = one("SELECT 1 FROM crm_interactions WHERE contact_id=?1 AND intent='interested' AND created>=?2 LIMIT 1");
+        let key = if by_signal { if signal.is_empty() { "(none)".to_string() } else { signal.clone() } }
+            else if by_cohort { if cohort.is_empty() { "(none)".to_string() } else { cohort.clone() } }
             else if by_campaign { if campaign.is_empty() { "(none)".to_string() } else { campaign.clone() } }
             else { seq.clone() };
         let g = groups.entry(key).or_default();
@@ -471,8 +477,8 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         } else if !by_cohort {
             g.name = seq_name.clone();
         }
-        let flags = [true, contacted, replied, booked, demoed, !won.is_empty(), lost, connects, accepted];
-        let cur = g.people.entry(contact.clone()).or_insert([false; 9]);
+        let flags = [true, contacted, replied, booked, demoed, !won.is_empty(), lost, connects, accepted, interested];
+        let cur = g.people.entry(contact.clone()).or_insert([false; 10]);
         for (i, f) in flags.iter().enumerate() {
             cur[i] |= *f;
         }
@@ -481,7 +487,7 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
     let mut out = Vec::new();
     for (key, g) in &groups {
         let count = |i: usize| g.people.values().filter(|f| f[i]).count() as i64;
-        let c: Vec<i64> = (0..9).map(count).collect();
+        let c: Vec<i64> = (0..10).map(count).collect();
         let ratio = |a: i64, b: i64| if b == 0 { Value::Null } else { json!(((a as f64 / b as f64) * 10_000.0).round() / 10_000.0) };
         let (mut mrr, mut amount) = (0.0f64, 0.0f64);
         for d in &g.won_deals {
@@ -493,17 +499,21 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
                 amount += a.unwrap_or(0.0);
             }
         }
-        let mut row = json!({ "group": if by_cohort { "cohort" } else if by_campaign { "campaign" } else { "sequence" }, "key": key,
-            "name": if by_cohort { key.clone() } else { g.name.clone() } });
-        for (i, step) in STEPS.iter().chain(LINKEDIN_STEPS.iter()).enumerate() {
+        let mut row = json!({ "group": if by_signal { "signal" } else if by_cohort { "cohort" } else if by_campaign { "campaign" } else { "sequence" }, "key": key,
+            "name": if by_cohort || by_signal { key.clone() } else { g.name.clone() } });
+        for (i, step) in STEPS.iter().chain(LINKEDIN_STEPS.iter()).chain(LEAD_STEPS.iter()).enumerate() {
             row[*step] = json!(c[i]);
         }
         row["conversion"] = json!({
             "contacted_per_enrolled": ratio(c[1], c[0]), "replied_per_contacted": ratio(c[2], c[1]), "booked_per_replied": ratio(c[3], c[2]),
             "demoed_per_booked": ratio(c[4], c[3]), "won_per_demoed": ratio(c[5], c[4]), "won_per_enrolled": ratio(c[5], c[0]),
-            "accepted_per_connect": ratio(c[8], c[7]),
+            "accepted_per_connect": ratio(c[8], c[7]), "interested_per_replied": ratio(c[9], c[2]),
         });
         row["mrr_usd"] = json!(mrr);
+        // Contacts per lead: people contacted per interested reply (lower is
+        // better; under 500 is good, 2,000 to 3,000 means the offer or the
+        // segment needs work). Null until there is a lead.
+        row["contacts_per_lead"] = if c[9] > 0 { json!(((c[1] as f64 / c[9] as f64) * 10.0).round() / 10.0) } else { Value::Null };
         row["won_amount_usd"] = json!(amount);
         out.push(row);
     }
@@ -764,7 +774,7 @@ mod tests {
         let (_, s) = call(&app, "POST", "/sequences", &W, Some(json!({"name": "IP check", "steps": [
             {"channel": "email", "action": "email", "template": "Hi {first_name}, the app: {asset_url}"}, {"day": 3, "channel": "linkedin", "action": "dm"}]}))).await;
         let seq = s["id"].as_str().unwrap().to_string();
-        let (_, e) = call(&app, "POST", &format!("/sequences/{seq}/enroll"), &W, Some(json!({"contact_ids": [nina.clone()], "cohort": "ip-check-2026-12"}))).await;
+        let (_, e) = call(&app, "POST", &format!("/sequences/{seq}/enroll"), &W, Some(json!({"contact_ids": [nina.clone()], "cohort": "ip-check-2026-12", "signal": "Hiring"}))).await;
         let t1 = e["enrolled"][0]["touch_id"].as_str().unwrap().to_string();
         call(&app, "POST", &format!("/touches/{t1}/approve"), &OWNER, None).await;
         call(&app, "POST", &format!("/touches/{t1}/done"), &W, Some(json!({"result": "sent"}))).await;
@@ -821,6 +831,10 @@ mod tests {
         assert_eq!(g["conversion"]["won_per_enrolled"].as_f64(), Some(1.0));
         let (_, f) = call(&app, "GET", "/funnel?group=cohort", &OWNER, None).await;
         assert_eq!(f["groups"][0]["key"], "ip-check-2026-12");
+        // Split by the signal that put her on the list; her interested reply is a lead.
+        let (_, f) = call(&app, "GET", "/funnel?group=signal", &OWNER, None).await;
+        let g = &f["groups"][0];
+        assert_eq!((g["key"].as_str(), g["interested"].as_i64(), g["contacts_per_lead"].as_f64()), (Some("hiring"), Some(1), Some(1.0)), "{g}");
 
         // Lost later: still demoed and won in the history, now counted lost.
         call(&app, "PATCH", &format!("/deals/{deal}"), &OWNER, Some(json!({"stage": "lost", "lost_reason": "no_budget"}))).await;

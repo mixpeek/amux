@@ -490,7 +490,7 @@ test('closing: a reply read as interested, a booking to demo, won only with its 
   const acct = (await api(page, 'POST', '/accounts', { name: 'Closeco ' + R, domain: `closeco-${R}.io` })).body.id;
   const nina = (await api(page, 'POST', '/contacts', { name: 'Nina Close ' + R, email: `nina.${R}@closeco.io`, linkedin: 'linkedin.com/in/nina-' + R, account_id: acct })).body.id;
   const seq = (await asWorker('POST', '/sequences', { name: 'Close ' + R, steps: [{ channel: 'linkedin', action: 'dm', template: 'Hi {first_name}' }, { day: 3, channel: 'linkedin', action: 'comment' }] })).body.id;
-  const en = await asWorker('POST', '/sequences/' + seq + '/enroll', { contact_ids: [nina], cohort: 'cohort-' + R });
+  const en = await asWorker('POST', '/sequences/' + seq + '/enroll', { contact_ids: [nina], cohort: 'cohort-' + R, signal: 'hiring-' + R });
   const t1 = en.body.enrolled[0].touch_id;
   expect((await api(page, 'POST', '/touches/' + t1 + '/approve')).status).toBe(200);
   expect((await asWorker('POST', '/touches/' + t1 + '/done', { result: 'sent' })).status).toBe(200);
@@ -538,6 +538,10 @@ test('closing: a reply read as interested, a booking to demo, won only with its 
   const card = page.locator('#crm-list .crm-funnel[data-key="cohort-' + R + '"]');
   for (const step of ['enrolled', 'contacted', 'replied', 'booked', 'demoed', 'won']) await expect(card.locator('.crm-step[data-step="' + step + '"] .crm-step-n')).toHaveText('1');
   await expect(card).toContainText('$12,000 signed');
+  await expect(card.locator('.crm-step[data-step="interested"] .crm-step-n')).toHaveText('1');
+  // By the signal that put her on the list: one contacted, one lead.
+  await page.locator('#crm-chips .cx-filter', { hasText: 'By signal' }).click();
+  await expect(page.locator('#crm-list .crm-funnel[data-key="hiring-' + R + '"]')).toContainText('1 contacted per lead');
   const f = await api(page, 'GET', '/funnel?group=cohort&cohort=cohort-' + R);
   expect([f.body.contract, f.body.groups[0].won, f.body.groups[0].won_amount_usd, f.body.groups[0].mrr_usd]).toEqual(['crm.funnel.v1', 1, 12000, 0]);
   await page.screenshot({ path: test.info().outputPath('crm-funnel.png') });

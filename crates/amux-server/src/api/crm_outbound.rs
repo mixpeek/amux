@@ -7,7 +7,7 @@
 //!   GET  /api/crm/sequences, POST {name, goal?, steps, stop_on_reply?, assignee?}
 //!   GET  /api/crm/sequences/{id}       the sequence, its enrollments and per-step results
 //!   PATCH /api/crm/sequences/{id}, DELETE (soft)
-//!   POST /api/crm/sequences/{id}/enroll  {contact_ids} or {filter: {grade, tag, status, source, limit}}, cohort?
+//!   POST /api/crm/sequences/{id}/enroll  {contact_ids} or {filter: {grade, tag, status, source, limit}}, cohort?, signal?
 //!   POST /api/crm/sequences/{id}/stop    {contact_id}
 //!   GET  /api/crm/contacts/{id}/brief    everything a drafter needs to make a touch personal, and the voice to write it in
 //!
@@ -681,7 +681,7 @@ async fn delete_sequence(State(state): State<AppState>, Path(id): Path<String>) 
 
 /// Enrolls people and plans step 1 for each. Who cannot be reached, or is
 /// already in it, is listed with the reason rather than enrolled.
-pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[String], by: &str, cohort: &str) -> rusqlite::Result<Option<Value>> {
+pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[String], by: &str, cohort: &str, signal: &str) -> rusqlite::Result<Option<Value>> {
     let Some((steps, _)) = steps_of(conn, seq) else { return Ok(None) };
     let first_day = steps.first().and_then(|s| s.get("day")).and_then(Value::as_i64).unwrap_or(0);
     let channels: Vec<String> = steps.iter().map(|s| s["channel"].as_str().unwrap_or("").to_string()).collect();
@@ -713,7 +713,7 @@ pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[Strin
             continue;
         }
         let now = now_secs();
-        conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated,cohort) VALUES (?1,?2,?3,?4,?4,?5)", rusqlite::params![seq, cid, by, now, cohort])?;
+        conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated,cohort,signal) VALUES (?1,?2,?3,?4,?4,?5,?6)", rusqlite::params![seq, cid, by, now, cohort, signal])?;
         let touch = plan_step_due(conn, seq, cid, k + 1, Some(first_day), worker, &format!("sequence:{seq}"))?;
         if k > 0 {
             tracing::info!(target: "amux::crm", sequence = %seq, contact = %cid, step = k + 1, unreachable = %channels[..k].join(","), measured = true, n_considered = 1,
@@ -754,12 +754,15 @@ async fn enroll(State(state): State<AppState>, headers: HeaderMap, Path(id): Pat
             }
             // A cohort tags this batch for the funnel (GET /api/crm/funnel?group=cohort).
             let cohort = body.get("cohort").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            // The signal that put them on the list (a hire, a funding round, a new
+            // location, a missing role): the funnel splits by it (group=signal).
+            let signal = body.get("signal").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
             if let Some(why) = super::crm_campaigns::enroll_refusal(conn, &id) {
                 tracing::info!(target: "amux::crm", sequence = %id, measured = true, n_considered = ids.len(), verdict = "crm_campaign_not_active", "an enrollment was refused: {why}");
                 *slot(&w) = Some(json!({ "error": why, "code": "crm_campaign_not_active" }));
                 return Ok(WriteOutcome { applied: false, events: vec![] });
             }
-            let v = enroll_people(conn, &id, &ids, &by, &cohort)?;
+            let v = enroll_people(conn, &id, &ids, &by, &cohort, &signal)?;
             let applied = v.as_ref().and_then(|v| v["enrolled"].as_array()).is_some_and(|a| !a.is_empty());
             *slot(&w) = Some(v.unwrap_or(json!({ "error": "not found", "code": "not_found" })));
             Ok(WriteOutcome { applied, events: if applied { vec![ev("crm_sequence", &id, MutationKind::Updated), ev("crm_touch", "", MutationKind::Created)] } else { vec![] } })
