@@ -1229,8 +1229,12 @@ fn collect_schedule_audit(conn: &Connection, w: &mut Why, id: &str) -> rusqlite:
         )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
-        "SELECT id, ts, field, old_value, new_value, source, by_who FROM schedule_audit
-         WHERE schedule_id = ?1 ORDER BY ts ASC LIMIT ?2",
+        &format!(
+            "SELECT a.id, a.ts, a.field, a.old_value, a.new_value, a.source, a.by_who, l.seq, l.actor
+             FROM schedule_audit a LEFT JOIN _amux_ledger l ON l.event_id = '{}' || a.id
+             WHERE a.schedule_id = ?1 ORDER BY a.ts ASC LIMIT ?2",
+            crate::runtime_jobs::scheduler::SCHEDULE_AUDIT_EVENT_PREFIX
+        ),
     )?;
     let rows: Vec<WhyEvent> = stmt
         .query_map(rusqlite::params![id, PER_SOURCE_CAP as i64], |r| {
@@ -1241,17 +1245,23 @@ fn collect_schedule_audit(conn: &Connection, w: &mut Why, id: &str) -> rusqlite:
             let new: Option<String> = r.get(4)?;
             let source: Option<String> = r.get(5)?;
             let by_who: Option<String> = r.get(6)?;
+            let ledger_seq: Option<i64> = r.get(7)?;
+            let ledger_actor: Option<String> = r.get(8)?;
+            // The ledger's proven actor outranks the claimed `by_who`; an
+            // anonymous ledger row proves nothing, so the claim is shown.
+            let proven = ledger_actor.clone().filter(|a| a != "anonymous");
             Ok(WhyEvent {
                 at: Some(epoch_to_rfc3339(ts)),
                 at_epoch: Some(ts),
                 kind: "schedule_audit".into(),
-                actor: by_who.clone().filter(|s| !s.is_empty()),
+                actor: proven.or_else(|| by_who.clone().filter(|s| !s.is_empty())),
                 summary: format!(
                     "{field}: {} -> {}",
                     old.as_deref().unwrap_or("(unset)"),
                     new.as_deref().unwrap_or("(unset)")
                 ),
-                detail: Some(json!({"source": source, "by_who": by_who})),
+                detail: Some(json!({"source": source, "by_who": by_who,
+                    "ledger": ledger_seq.map(|seq| json!({"seq": seq, "actor": ledger_actor}))})),
                 source: json!({"table": "schedule_audit", "rowid": rowid}),
                 ordering: "timestamped",
             })

@@ -1421,9 +1421,11 @@ pub fn resurrect_schedule(conn: &Connection, id: &str) -> rusqlite::Result<usize
     )
 }
 
-/// Audit a schedule mutation into `schedule_audit` (AMUX-1735/1812: every
-/// create/update/delete leaves a `by_who` trail; an unattributed write on
-/// this table is a forensics gap by definition).
+/// Audit a schedule mutation (AMUX-1735/1812: every create/update/delete
+/// leaves a `by_who` trail; an unattributed write on this table is a
+/// forensics gap by definition). A harness write: the ledger row's actor is
+/// `policy:scheduler`. API writes use [`insert_audit_as`] with the principal
+/// the server proved.
 pub fn insert_audit(
     conn: &Connection,
     schedule_id: &str,
@@ -1433,6 +1435,30 @@ pub fn insert_audit(
     source: &str,
     by_who: &str,
 ) -> rusqlite::Result<()> {
+    insert_audit_as(conn, schedule_id, field, old, new, source, by_who, None)
+}
+
+/// One schedule mutation, written twice in the same transaction (primitive
+/// integrity audit 2026-11-26, P2: schedule_audit folds into the ledger):
+///
+/// - `schedule_audit` keeps the redacted old and new VALUES, the working view
+///   the Schedules tab diffs. The ledger keeps hashes, never payloads, so the
+///   values cannot live there.
+/// - `_amux_ledger` keeps the RECORD: kind `schedule_audit`, resource
+///   `schedule:<id>`, action the field, the proven principal, SHA-256 of both
+///   redacted values, and `event_id = schedaudit:<schedule_audit.id>`, which
+///   is how readers join the two.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_audit_as(
+    conn: &Connection,
+    schedule_id: &str,
+    field: &str,
+    old: &str,
+    new: &str,
+    source: &str,
+    by_who: &str,
+    principal: Option<&crate::api::ledger::Principal>,
+) -> rusqlite::Result<()> {
     // SEC-104: a schedule command that inlined a secret (e.g. CLERK_SECRET_KEY=sk_live_…)
     // left the raw key in old_value/new_value here. cmd_history is redacted at ingestion
     // but this audit table was NOT, so the value persisted in cleartext in a
@@ -1440,12 +1466,13 @@ pub fn insert_audit(
     // one choke point every schedule_audit write passes through.
     let (old_r, _) = crate::api::history::redact_secrets(old);
     let (new_r, _) = crate::api::history::redact_secrets(new);
+    let now = chrono::Utc::now();
     conn.execute(
         "INSERT INTO schedule_audit (schedule_id, ts, field, old_value, new_value, source, by_who)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             schedule_id,
-            chrono::Utc::now().timestamp(),
+            now.timestamp(),
             field,
             old_r,
             new_r,
@@ -1453,8 +1480,57 @@ pub fn insert_audit(
             by_who
         ],
     )?;
+    let rowid = conn.last_insert_rowid();
+    crate::api::ledger::append(
+        conn,
+        &schedule_audit_event(rowid, now.timestamp_millis(), schedule_id, field, &old_r, &new_r, source, by_who, principal),
+    );
     Ok(())
 }
+
+/// The ledger row for one `schedule_audit` row. Pure, for tests.
+#[allow(clippy::too_many_arguments)]
+pub fn schedule_audit_event(
+    rowid: i64,
+    ts_ms: i64,
+    schedule_id: &str,
+    field: &str,
+    old_redacted: &str,
+    new_redacted: &str,
+    source: &str,
+    by_who: &str,
+    principal: Option<&crate::api::ledger::Principal>,
+) -> crate::api::ledger::Event {
+    use crate::api::ledger::{sha256_hex, Event};
+    let ev = Event {
+        event_id: format!("{SCHEDULE_AUDIT_EVENT_PREFIX}{rowid}"),
+        ts_ms,
+        kind: "schedule_audit".into(),
+        action: Some(field.to_string()),
+        resource: Some(format!("schedule:{schedule_id}")),
+        input_hash: Some(sha256_hex(old_redacted.as_bytes())),
+        output_hash: Some(sha256_hex(new_redacted.as_bytes())),
+        decision: Some("applied".into()),
+        outcome: Some(source.to_string()),
+        source_table: Some("schedule_audit".into()),
+        source_id: Some(rowid.to_string()),
+        ..Default::default()
+    };
+    let claimed = Some(by_who.trim()).filter(|s| !s.is_empty()).map(str::to_string);
+    match principal {
+        Some(p) => ev.with_principal(p),
+        None => Event {
+            actor: "policy:scheduler".into(),
+            authority: Some(format!("harness:{source}")),
+            claimed,
+            ..ev
+        },
+    }
+}
+
+/// `_amux_ledger.event_id` of a `schedule_audit` row is this prefix plus the
+/// row's id: the join key between the record and the working view.
+pub const SCHEDULE_AUDIT_EVENT_PREFIX: &str = "schedaudit:";
 
 /// Record a run into `schedule_runs` WITH its source (ethos rule 4: a
 /// manual tap and a cron fire must never be byte-identical rows) and its
@@ -3935,6 +4011,61 @@ mod shell_output_tests {
 
 #[cfg(test)]
 mod tests {
+    /// The schedule_audit fold (primitive integrity audit 2026-11-26, P2):
+    /// every audited change has a ledger record keyed by its row id, a harness
+    /// change is the scheduler's, an API change is the proven principal's, and
+    /// the ledger holds hashes of the REDACTED values, never the values.
+    #[test]
+    fn every_schedule_audit_row_has_a_ledger_record_with_hashes_not_values() {
+        use crate::api::ledger::{sha256_hex, Principal};
+        let conn = crate::db::migrate::test_memdb();
+        super::insert_audit(&conn, "SCHED-7", "enabled", "1", "0", "wake-condition-rs", "").unwrap();
+        let owner = Principal { actor: "owner".into(), claimed: None, on_behalf_of: None, authority: "owner_credential".into() };
+        // Assembled at runtime so the source holds no key-shaped literal.
+        let secret = format!("export CLERK_SECRET_KEY={}{}", "sk_li", "ve_abcdefghijklmnop1234567890");
+        super::insert_audit_as(&conn, "SCHED-7", "command", "old cmd", &secret, "api-patch", "ethan", Some(&owner)).unwrap();
+
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, field, COALESCE(new_value,'') FROM schedule_audit WHERE schedule_id='SCHED-7' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "the working view keeps both values");
+        for (id, field, new_redacted) in &rows {
+            let (kind, actor, authority, claimed, resource, action, out_hash, src): (String, String, String, Option<String>, String, String, String, String) = conn
+                .query_row(
+                    "SELECT kind, actor, authority, claimed, resource, action, output_hash, source_id FROM _amux_ledger WHERE event_id = ?1",
+                    [format!("{}{id}", super::SCHEDULE_AUDIT_EVENT_PREFIX)],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+                )
+                .unwrap_or_else(|e| panic!("schedule_audit row {id} has no ledger record: {e}"));
+            assert_eq!(kind, "schedule_audit");
+            assert_eq!(resource, "schedule:SCHED-7");
+            assert_eq!(&action, field);
+            assert_eq!(src, id.to_string());
+            assert_eq!(out_hash, sha256_hex(new_redacted.as_bytes()), "the hash is of the redacted value");
+            if field == "enabled" {
+                assert_eq!(actor, "policy:scheduler");
+                assert_eq!(authority, "harness:wake-condition-rs");
+                assert_eq!(claimed, None);
+            } else {
+                assert_eq!(actor, "owner", "an API change is the proven principal's");
+                assert_eq!(authority, "owner_credential");
+            }
+        }
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _amux_ledger WHERE (COALESCE(action,'')||COALESCE(outcome,'')||COALESCE(decision,'')||COALESCE(resource,'')) GLOB '*old cmd*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0, "no value reaches the ledger, only its hash");
+        assert!(!rows[1].2.contains("sk_live_abcdefghijklmnop"), "premise: the working view is redacted too");
+    }
+
     /// AF-1082: the startup reconcile's three status='running' statements run
     /// inside the single writer; on the migrated schema they use the partial
     /// index instead of scanning every run (149,741 rows, held up to 42 s).

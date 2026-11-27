@@ -25,7 +25,7 @@
 use super::AppState;
 use crate::db::{PendingEvent, WriteOutcome};
 use crate::runtime_jobs::scheduler::{
-    self, fmt_minute, get_schedule, insert_audit, insert_schedule, legacy_next_run, list_schedules,
+    self, fmt_minute, get_schedule, insert_schedule, legacy_next_run, list_schedules,
     mint_schedule_id, record_run, skip_next_run, soft_delete_schedule, update_schedule, Deliverer,
     DurableSchedule, LiveDeliverer, RunOutcome, ScheduleExpr, AUDIT_FIELDS,
 };
@@ -1213,6 +1213,7 @@ pub async fn create(
         return critical_not_shell_refusal();
     }
     let by = mutation_by(&headers, body.by.as_deref());
+    let principal = super::ledger::principal(&crate::config::amux_home(), &headers);
     // Governance PR 13: the creator the server PROVED, kept on the row so every
     // firing can re-check that this principal still has authority (the audit's
     // `by_who` above stays what it was: a name, which may only be claimed).
@@ -1402,7 +1403,7 @@ pub async fn create(
                 "until": row.raw().get("until").cloned().unwrap_or(Value::Null),
                 "max_runs": row.raw().get("max_runs").cloned().unwrap_or(Value::Null),
             });
-            insert_audit(
+            scheduler::insert_audit_as(
                 conn,
                 &id,
                 "created",
@@ -1410,6 +1411,7 @@ pub async fn create(
                 &summary.to_string(),
                 "api-create",
                 &by_w,
+                Some(&principal),
             )?;
             let events = vec![ev(&id, MutationKind::Created)];
             finish(
@@ -1557,6 +1559,7 @@ pub async fn patch(
         Err(r) => return *r,
     };
     let by = mutation_by(&headers, body.by.as_deref());
+    let principal = super::ledger::principal(&crate::config::amux_home(), &headers);
     let now = Local::now();
     let bounds_in = match parse_bounds(&body, now) {
         Ok(b) => b,
@@ -1615,7 +1618,7 @@ pub async fn patch(
                 // clear is its own explicit statement, like the delete.
                 scheduler::resurrect_schedule(conn, s.id())?;
                 s.set("deleted", Value::Null);
-                insert_audit(conn, s.id(), "deleted", &old, "", "api-resurrect", &by)?;
+                scheduler::insert_audit_as(conn, s.id(), "deleted", &old, "", "api-resurrect", &by, Some(&principal))?;
             }
             // THE OWNER LOCK (GS-12 finding 5: the owner's disable of SCHED-173
             // was undone by a worker 70 minutes later, and the worker had no
@@ -1833,7 +1836,7 @@ pub async fn patch(
                 let old = audit_str(old_vals.get(k));
                 let new = audit_str(s.raw().get(k));
                 if old != new {
-                    insert_audit(conn, s.id(), k, &old, &new, "api-patch", &by)?;
+                    scheduler::insert_audit_as(conn, s.id(), k, &old, &new, "api-patch", &by, Some(&principal))?;
                 }
             }
             if old_lock != s.str_field("locked_by") {
@@ -1842,7 +1845,7 @@ pub async fn patch(
                 } else {
                     format!("{} ({})", s.str_field("locked_by"), s.str_field("lock_reason"))
                 };
-                insert_audit(conn, s.id(), "locked_by", &old_lock, &new_lock, "api-patch", &by)?;
+                scheduler::insert_audit_as(conn, s.id(), "locked_by", &old_lock, &new_lock, "api-patch", &by, Some(&principal))?;
             }
             let events = vec![ev(s.id(), MutationKind::Updated)];
             let mut out = s.to_json();
@@ -1930,6 +1933,7 @@ pub async fn delete_schedule(
     headers: HeaderMap,
 ) -> Response {
     let by = mutation_by(&headers, p.by.as_deref());
+    let principal = super::ledger::principal(&crate::config::amux_home(), &headers);
     enum Outcome {
         NotFound,
         Already,
@@ -1958,7 +1962,7 @@ pub async fn delete_schedule(
                 "enabled": s.i64_field("enabled", 0),
                 "expr": s.schedule_expr().unwrap_or(s.str_field("run_at")),
             });
-            insert_audit(
+            scheduler::insert_audit_as(
                 conn,
                 s.id(),
                 "deleted",
@@ -1966,6 +1970,7 @@ pub async fn delete_schedule(
                 &now_ts.to_string(),
                 "api-delete",
                 &by,
+                Some(&principal),
             )?;
             let events = vec![ev(s.id(), MutationKind::Deleted)];
             finish(
@@ -2017,6 +2022,7 @@ pub async fn skip_next(
     headers: HeaderMap,
 ) -> Response {
     let by = mutation_by(&headers, None);
+    let principal = super::ledger::principal(&crate::config::amux_home(), &headers);
 
     enum Outcome {
         NotFound,
@@ -2069,7 +2075,7 @@ pub async fn skip_next(
             // Python skipped unattributed. Moving a fire time is exactly the
             // mutation AMUX-1812 was about ("why did this not run at 9?"), so
             // it leaves the same by_who trail as a PATCH.
-            insert_audit(
+            scheduler::insert_audit_as(
                 conn,
                 s.id(),
                 "next_run",
@@ -2077,6 +2083,7 @@ pub async fn skip_next(
                 &new_next,
                 "api-skip",
                 &by,
+                Some(&principal),
             )?;
             let ms = |v: &str| scheduler::parse_minute(v).map(|t| t.timestamp_millis());
             let body = json!({
@@ -2504,7 +2511,10 @@ pub async fn recent_runs(
 // ---- GET /api/schedules/audit ---------------------------------------------
 
 /// The attribution trail, reachable from the API (AMUX-2416: an audit
-/// nobody can find is the same failure as no audit). Unknown query params
+/// nobody can find is the same failure as no audit). Each row carries its
+/// `ledger` record (seq, proven actor, authority, sealed), joined by
+/// `event_id = schedaudit:<id>`; the values come from `schedule_audit`, the
+/// working view, because the ledger keeps only their hashes. Unknown query params
 /// are REJECTED, not ignored (AC-228: a filter that silently matches
 /// everything returns a confident wrong answer).
 pub async fn audit_trail(
@@ -2555,9 +2565,12 @@ pub async fn audit_trail(
         }
         params.push(rusqlite::types::Value::Integer(limit));
         let sql = format!(
-            "SELECT a.id, a.schedule_id, a.ts, a.field, a.old_value, a.new_value, a.source, a.by_who, s.title
+            "SELECT a.id, a.schedule_id, a.ts, a.field, a.old_value, a.new_value, a.source, a.by_who, s.title,
+                    l.seq, l.actor, l.claimed, l.authority, l.hash IS NOT NULL
              FROM schedule_audit a LEFT JOIN schedules s ON s.id = a.schedule_id
+             LEFT JOIN _amux_ledger l ON l.event_id = '{}' || a.id
              {} ORDER BY a.ts DESC LIMIT ?",
+            scheduler::SCHEDULE_AUDIT_EVENT_PREFIX,
             if wheres.is_empty() { String::new() } else { format!("WHERE {}", wheres.join(" AND ")) }
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -2583,6 +2596,20 @@ pub async fn audit_trail(
                 "source": r.get::<_, Option<String>>(6)?,
                 "by_who": r.get::<_, Option<String>>(7)?,
                 "title": r.get::<_, Option<String>>(8)?,
+                // The ledger record of this change (the fold, P2): who the
+                // server PROVED made it, beside `by_who`, which was only
+                // claimed. Null for a change recorded before the fold
+                // (2026-11-26) or while AMUX_LEDGER=off.
+                "ledger": match r.get::<_, Option<i64>>(9)? {
+                    Some(seq) => json!({
+                        "seq": seq,
+                        "actor": r.get::<_, Option<String>>(10)?,
+                        "claimed": r.get::<_, Option<String>>(11)?,
+                        "authority": r.get::<_, Option<String>>(12)?,
+                        "sealed": r.get::<_, Option<bool>>(13)?.unwrap_or(false),
+                    }),
+                    None => Value::Null,
+                },
             });
             if t1 || t2 {
                 v["truncated"] = json!(true);
@@ -2809,6 +2836,21 @@ mod tests {
         assert_eq!(row["by_who"], json!("tester-session"));
         assert_eq!(row["source"], json!("api-create"));
         assert!(row["new_value"].as_str().unwrap().contains("\"enabled\":1"));
+        // And it is in the ledger, joined to the row: the claimed session is
+        // kept as `claimed`, never promoted to the actor without proof.
+        let ledger = &row["ledger"];
+        assert!(ledger["seq"].as_i64().is_some(), "the change has a ledger record: {row}");
+        assert_eq!(ledger["actor"], json!("anonymous"), "{row}");
+        assert_eq!(ledger["claimed"], json!("worker:tester-session"), "{row}");
+
+        // A PATCH is recorded the same way, one ledger row per changed field.
+        let (st, _) = send(&app, "PATCH", "/api/schedules/SCHED-1", Some(json!({"enabled": 0})), &SES).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, audit) = send(&app, "GET", "/api/schedules/audit?id=SCHED-1&field=enabled", None, &[]).await;
+        let row = &audit.as_array().unwrap()[0];
+        assert_eq!(row["old_value"], json!("1"));
+        assert_eq!(row["new_value"], json!("0"));
+        assert!(row["ledger"]["seq"].as_i64().is_some(), "{row}");
     }
 
     /// Pass/fail cannot be on without a condition, the condition must parse,

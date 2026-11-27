@@ -50676,6 +50676,12 @@ function _schedAuditRow(r, live) {
     const gonePill = gone
       ? ' <span style="font-size:var(--fs-4xs);color:var(--red);border:1px solid var(--red);border-radius:var(--radius-sm);padding:0 var(--space-1);" title="This schedule no longer exists — visible only here">gone</span>'
       : '';
+    // The ledger record (P2 fold): who the server PROVED made the change.
+    // `by_who` is only what the write claimed; an anonymous record proves nothing.
+    const proven = r.ledger && r.ledger.actor && r.ledger.actor !== 'anonymous' ? r.ledger.actor : '';
+    const provenHtml = proven
+      ? ' <span class="sx-audit-proven" style="color:var(--dim);font-size:var(--fs-3xs);" title="Ledger record #' + esc(String(r.ledger.seq)) + ': the actor the server verified">(proven: ' + esc(proven) + ')</span>'
+      : '';
     const diff = (r.old_value || r.new_value)
       ? '<div style="color:var(--dim);font-size:var(--fs-3xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
         + (r.old_value ? esc(String(r.old_value).slice(0, 60)) + ' \u2192 ' : '')
@@ -50684,7 +50690,7 @@ function _schedAuditRow(r, live) {
     return '<div style="padding:var(--space-1) 0;border-bottom:1px solid var(--border);font-size:var(--fs-xs);">'
       + '<div style="display:flex;gap:var(--space-1-5);align-items:baseline;flex-wrap:wrap;">'
       + '<span style="font-weight:600;">' + esc(r.title || r.schedule_id || '?') + '</span>' + gonePill
-      + '<span style="color:var(--dim);">' + label + ' by </span>' + whoHtml
+      + '<span style="color:var(--dim);">' + label + ' by </span>' + whoHtml + provenHtml
       + '<span style="color:var(--dim);margin-left:auto;">' + timeAgo(Number(r.ts) || 0) + '</span>'
       + '</div>' + diff + '</div>';
 }
