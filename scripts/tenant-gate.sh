@@ -19,8 +19,13 @@
 # mvs-primary-scale-to-zero, deactivates mvs-primary when no app=api pods
 # exist, so the shard was killed mid index rebuild.
 #
-# A failed read, or a namespace with no workloads at all, writes NO receipt and
-# exits nonzero. A cluster without the KEDA CRD is read without ScaledObjects,
+# A failed read writes NO receipt and exits nonzero. An empty read (no
+# Deployments, StatefulSets, ScaledObjects or HPAs) is usually the wrong
+# namespace or context, so it is checked against the namespace itself: one that
+# does not exist in that context, or cannot be read, still writes no receipt and
+# exits 2. One that exists gets a receipt saying nothing in it scales (2026-11-27:
+# the retired mixpeek-acceptance plane held 37 leftover objects and no
+# workloads, and without a receipt the boundary refused their cleanup). A cluster without the KEDA CRD is read without ScaledObjects,
 # and the summary says so.
 #
 # Env: AMUX_HOME (default ~/.amux); the worker is AMUX_SESSION, else
@@ -63,10 +68,16 @@ if ! "$KUBECTL" ${ctx_args[@]+"${ctx_args[@]}"} -n "$NS" get hpa,pdb,deploy,stat
   exit 1
 fi
 
-python3 -I - "$work/so.json" "$work/rest.json" "$HOME_DIR" "$WORKER" "$CTX" "$NS" "$REASON" "$keda_state" <<'PY'
+# Whether the namespace exists in this context; only an empty read consults it.
+ns_state="exists"
+if ! "$KUBECTL" ${ctx_args[@]+"${ctx_args[@]}"} get namespace "$NS" -o name >/dev/null 2>"$work/ns.err"; then
+  if grep -qiE "NotFound|not found" "$work/ns.err"; then ns_state="missing"; else ns_state="unread: $(head -c 300 "$work/ns.err" | tr '\n' ' ')"; fi
+fi
+
+python3 -I - "$work/so.json" "$work/rest.json" "$HOME_DIR" "$WORKER" "$CTX" "$NS" "$REASON" "$keda_state" "$ns_state" <<'PY'
 import hashlib, json, os, re, sys, time
 
-so_path, rest_path, home, worker, ctx, ns, reason, keda_state = sys.argv[1:9]
+so_path, rest_path, home, worker, ctx, ns, reason, keda_state, ns_state = sys.argv[1:10]
 raw = open(so_path, "rb").read() + b"\n" + open(rest_path, "rb").read()
 try:
     so = json.loads(open(so_path).read() or "{}").get("items") or []
@@ -79,9 +90,11 @@ by_kind = {}
 for it in rest:
     by_kind.setdefault(it.get("kind", "?"), []).append(it)
 workloads = by_kind.get("Deployment", []) + by_kind.get("StatefulSet", [])
-if not workloads and not so and not by_kind.get("HorizontalPodAutoscaler"):
+empty = not workloads and not so and not by_kind.get("HorizontalPodAutoscaler")
+if empty and ns_state != "exists":
+    why = f"namespace {ns} does not exist in context {ctx}" if ns_state == "missing" else f"namespace {ns} could not be read ({ns_state[8:].strip()})"
     sys.stderr.write(f"tenant-gate: {ns} has no Deployments, StatefulSets, ScaledObjects or HPAs (empty read, "
-                     "wrong namespace or context?); no receipt written.\n")
+                     f"wrong namespace or context?) and {why}; no receipt written (verdict=tenant_gate_empty_refused).\n")
     sys.exit(2)
 
 
@@ -122,7 +135,7 @@ def label_selector(ls: dict) -> str:
 
 
 lines = []
-summary = {"scaledobjects": [], "hpas": [], "pdbs": [], "workloads": [], "watches": [], "keda": keda_state}
+summary = {"scaledobjects": [], "hpas": [], "pdbs": [], "workloads": [], "watches": [], "keda": keda_state, "empty": empty}
 lines.append(f"Namespace {ns} (context {ctx}), read {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
 lines.append(f"Workloads ({len(workloads)}):")
 for w in workloads:
@@ -179,6 +192,9 @@ for p in pdbs:
     summary["pdbs"].append(rec)
     lines.append(f"  {rec['name']} [{sel}] minAvailable {rec['minAvailable']} maxUnavailable {rec['maxUnavailable']}: covers {', '.join(rec['covers']) or '-'}")
 
+if empty:
+    lines.append(f"Nothing in {ns} scales: the namespace exists and has no Deployments, StatefulSets, "
+                 "ScaledObjects or HPAs (verdict=tenant_gate_empty_namespace).")
 if summary["watches"]:
     lines.append("DEPENDENCIES: a change to a watched workload above moves the ScaledObject's target too.")
 print("\n".join(lines))

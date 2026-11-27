@@ -152,7 +152,13 @@ FAKE_KUBECTL = r"""#!/usr/bin/env bash
 echo "$*" >> "$FAKE_KUBE_DIR/argv.log"
 case " $* " in *" get "*) ;; *) echo "fake kubectl: refusing non-get: $*" >&2; exit 9 ;; esac
 [[ -n "${FAKE_KUBE_FAIL:-}" ]] && { echo "The connection to the server was refused" >&2; exit 1; }
-if [[ "$*" == *scaledobjects.keda.sh* ]]; then
+if [[ " $* " == *" get namespace "* ]]; then
+  case "${FAKE_KUBE_NS:-exists}" in
+    missing) echo 'Error from server (NotFound): namespaces "x" not found' >&2; exit 1 ;;
+    forbidden) echo 'Error from server (Forbidden): namespaces "x" is forbidden' >&2; exit 1 ;;
+    *) echo "namespace/x"; exit 0 ;;
+  esac
+elif [[ "$*" == *scaledobjects.keda.sh* ]]; then
   [[ -n "${FAKE_KUBE_NO_KEDA:-}" ]] && { echo 'error: the server doesn'"'"'t have a resource type "scaledobjects"' >&2; exit 1; }
   cat "$FAKE_KUBE_DIR/${FAKE_KUBE_SET:-incident}.so.json"
 else
@@ -342,9 +348,26 @@ def tenant_gate_cases(home: str, boundaries: list[dict]) -> None:
     os.remove(receipt)
     p = gate("default", INCIDENT_NS, {"FAKE_KUBE_FAIL": "1"})
     expect("tenant gate script: a failed read exits nonzero and writes no receipt", p.returncode != 0 and not os.path.exists(receipt), f"exit {p.returncode}")
+    # An empty read is the wrong namespace or context unless the namespace
+    # exists there (2026-11-27: the retired mixpeek-acceptance plane's leftovers).
+    p = gate("default", INCIDENT_NS, {"FAKE_KUBE_SET": "empty", "FAKE_KUBE_NS": "missing"})
+    expect("tenant gate script: an empty read of a namespace that does not exist exits 2 and writes no receipt",
+           p.returncode == 2 and not os.path.exists(receipt) and "empty read" in p.stderr and "does not exist" in p.stderr
+           and "verdict=tenant_gate_empty_refused" in p.stderr, f"exit {p.returncode} {p.stderr}")
+    p = gate("default", INCIDENT_NS, {"FAKE_KUBE_SET": "empty", "FAKE_KUBE_NS": "forbidden"})
+    expect("tenant gate script: an empty read whose namespace cannot be read exits 2 and writes no receipt",
+           p.returncode == 2 and not os.path.exists(receipt) and "could not be read" in p.stderr, f"exit {p.returncode} {p.stderr}")
     p = gate("default", INCIDENT_NS, {"FAKE_KUBE_SET": "empty"})
-    expect("tenant gate script: an empty namespace exits nonzero and writes no receipt",
-           p.returncode != 0 and not os.path.exists(receipt) and "empty read" in p.stderr, f"exit {p.returncode} {p.stderr}")
+    erec = json.load(open(receipt)) if os.path.exists(receipt) else {}
+    expect("tenant gate script: an existing namespace with no workloads gets a receipt that says nothing in it scales",
+           p.returncode == 0 and (erec.get("summary") or {}).get("empty") is True
+           and f"Nothing in {INCIDENT_NS} scales" in p.stdout and "verdict=tenant_gate_empty_namespace" in erec.get("text", ""),
+           f"exit {p.returncode} {p.stdout} {p.stderr}")
+    p = gate("default", INCIDENT_NS)
+    expect("tenant gate script: a namespace with workloads is not marked empty",
+           p.returncode == 0 and (json.load(open(receipt)).get("summary") or {}).get("empty") is False and "Nothing in" not in p.stdout,
+           p.stdout)
+    os.remove(receipt)
     p = gate("default", INCIDENT_NS, {"AMUX_SESSION": None})
     expect("tenant gate script: no worker identity writes no receipt", p.returncode != 0 and not os.path.exists(receipt), f"exit {p.returncode}")
     p = gate("default", INCIDENT_NS, {"FAKE_KUBE_NO_KEDA": "1"})

@@ -170,7 +170,9 @@ ScaledObjects, HPAs, PDBs, Deployments and StatefulSets, prints what scales
 what (including `kubernetes-workload` triggers whose `podSelector` watches
 another workload, and paused annotations), and writes a receipt to
 `$AMUX_HOME/tenant-gates/<worker>/<context>__<namespace>.json` with the
-reason and a sha256 of the raw read. A failed or empty read writes none.
+reason and a sha256 of the raw read. A failed read writes none. An empty read
+(no Deployments, StatefulSets, ScaledObjects or HPAs) writes none unless the
+namespace exists in that context; then the receipt says nothing in it scales.
 Context `default` means kubectl's current context, and is what the guard uses
 for a command that names no `--context`.
 
