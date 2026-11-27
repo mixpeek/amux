@@ -20,7 +20,7 @@ pub const RETIRED_POINTER: &str = "goals, planning nodes and task budgets were r
      Plan with board cards instead: POST /api/board (or `amux board add`) for each unit of work.";
 
 /// The retired paths, mounted under `/api/harness` with the methods they had.
-pub fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
+pub fn routes() -> Router<super::AppState> {
     Router::new()
         .route("/goals", post(retired))
         .route("/goals/{id}", get(retired).put(retired))
@@ -43,7 +43,9 @@ mod tests {
     #[tokio::test]
     async fn every_retired_route_answers_410_with_the_pointer() {
         use tower::ServiceExt;
-        let app: Router = Router::new().nest("/api/harness", routes::<()>());
+        let app: Router = Router::new()
+            .nest("/api/harness", routes())
+            .with_state(crate::api::standing_approvals::tests::test_state());
         for (method, path) in [
             ("POST", "/api/harness/goals"),
             ("GET", "/api/harness/goals/g1"),
