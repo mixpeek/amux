@@ -726,11 +726,40 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
     };
     let present = rig.count("SELECT COUNT(*) FROM _amux_leases WHERE task_id='tsk_rr0150_expired'");
     let (_, m) = rig.get("/api/metrics").await;
+    // The board half: the seeded expired card must never read live again,
+    // and the metric must agree with the board's own lease rows. After the
+    // restart the dispatcher may claim this rig's ordinary board row, which
+    // is a real lease, so an absolute count (live=1 total=2) is the wrong
+    // assertion: it went red on CI the day /api/metrics started counting
+    // board leases (AF-1432), with the code correct.
+    let now_s = chrono::Utc::now().timestamp();
+    let gone_live = rig.count(&format!(
+        "SELECT COUNT(*) FROM issues WHERE id='RR-GONE' AND lease_expires_at >= {now_s}"
+    ));
+    let held_live = rig.count(&format!(
+        "SELECT COUNT(*) FROM issues WHERE id='RR-LIVE' AND lease_expires_at >= {now_s}"
+    ));
+    let board = |cond: &str| {
+        rig.count(&format!(
+            "SELECT COUNT(*) FROM issues WHERE status = 'doing' AND lease_owner IS NOT NULL \
+             AND TRIM(lease_owner) != '' AND lease_expires_at IS NOT NULL AND deleted IS NULL \
+             AND COALESCE(archived, 0) = 0 AND {cond}"
+        ))
+    };
+    let (db_live, db_total) = (board(&format!("lease_expires_at >= {now_s}")), board("1"));
     rep.add(
         "leases",
-        present == 1 && unexpired == 0 && m["leases"]["live"] == 1 && m["leases"]["total"] == 2,
-        format!("expired_row_present={present} still_expired={} · live={} total={} (one future lease)",
-            unexpired == 0, m["leases"]["live"], m["leases"]["total"]),
+        present == 1
+            && unexpired == 0
+            && gone_live == 0
+            && held_live == 1
+            && m["leases"]["live"] == db_live
+            && m["leases"]["total"] == db_total,
+        format!(
+            "expired_row_present={present} still_expired={} · RR-GONE live={gone_live} RR-LIVE live={held_live} · \
+             metric live={} total={} vs board live={db_live} total={db_total}",
+            unexpired == 0, m["leases"]["live"], m["leases"]["total"]
+        ),
     );
 
     // 11. media jobs (seeded) — the stale 'running' row survives, so the next
