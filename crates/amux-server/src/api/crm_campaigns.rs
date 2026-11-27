@@ -221,6 +221,7 @@ async fn create_route(State(state): State<AppState>, headers: HeaderMap, Json(bo
         .store
         .write_async(move |conn| {
             let id = next_issue_id(conn, "CMP")?;
+            super::crm_mailboxes::ensure(conn, &serde_json::from_str::<Vec<String>>(&mailboxes).unwrap_or_default())?;
             conn.execute(
                 "INSERT INTO crm_campaigns (id,name,goal,use_case,icp,asset_url,mailboxes,starts,ends,status,owner,notes,source,created,updated) \
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",
@@ -268,6 +269,12 @@ async fn patch_route(State(state): State<AppState>, Path(id): Path<String>, Json
     let res = state
         .store
         .write_async(move |conn| {
+            // Mailboxes named here join the sending pool (warming from today).
+            for (f, v) in &sets {
+                if let (&"mailboxes", SqlValue::Text(m)) = (f, v) {
+                    super::crm_mailboxes::ensure(conn, &serde_json::from_str::<Vec<String>>(m).unwrap_or_default())?;
+                }
+            }
             let mut params: Vec<SqlValue> = sets.iter().map(|(_, v)| v.clone()).collect();
             let cols: Vec<String> = sets.iter().enumerate().map(|(i, (f, _))| format!("{f}=?{}", i + 1)).collect();
             params.push(SqlValue::Integer(now_secs()));

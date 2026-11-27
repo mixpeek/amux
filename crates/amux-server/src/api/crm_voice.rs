@@ -13,7 +13,7 @@
 //!
 //! rules = {core: [line], banned: [phrase], no_dashes, no_sign_off, no_reframe
 //! (default true), booking_url, wrong_booking: [substring], channels:
-//! {"email/email": {max_words?, max_chars?, links?, opens?, ask?, never: [phrase]}}}
+//! {"email/email": {max_words?, max_chars?, subject_max_words?, links?, opens?, ask?, never: [phrase]}}}
 //!
 //! Every touch text is checked when it is written (crm_agent.rs): a worker's
 //! draft that breaks a rule is refused with the problems (422
@@ -117,6 +117,15 @@ pub(crate) fn lint(rules: &Value, key: &str, text: &str) -> (Vec<String>, String
         }
         if let Some(m) = c.get("max_chars").and_then(Value::as_u64).filter(|m| chars as u64 > *m) {
             p.push(format!("{chars} characters; {k} is at most {m}"));
+        }
+        // A cold email's subject: "1 to 4 word subject line". Read from a "Subject:" line.
+        if let Some(m) = c.get("subject_max_words").and_then(Value::as_u64) {
+            if let Some(subj) = text.lines().find_map(|l| l.trim().strip_prefix("Subject:").or_else(|| l.trim().strip_prefix("subject:"))) {
+                let n = subj.split_whitespace().count() as u64;
+                if n > m {
+                    p.push(format!("a {n}-word subject; {k} subjects are at most {m} words"));
+                }
+            }
         }
         let urls = super::email_links::urls(text);
         if c.get("links").and_then(Value::as_bool) == Some(false) && !urls.is_empty() {
@@ -571,5 +580,15 @@ mod tests {
     fn hard_rules_can_be_turned_off() {
         let r = json!({"no_dashes": false, "no_sign_off": false});
         assert!(lint(&r, "email/email", "a \u{2014} b\n\nThanks,\nEthan").0.is_empty());
+    }
+
+    #[test]
+    fn a_cold_subject_over_its_word_limit_is_named() {
+        let rules = json!({"channels": {"email/email": {"subject_max_words": 4, "max_words": 65, "links": false}}});
+        let (p, k) = lint(&rules, "email/email", "Subject: a quick question about your media library\n\nHi Ann, one line.");
+        assert_eq!(k, "email/email");
+        assert!(p.iter().any(|x| x.contains("7-word subject")), "{p:?}");
+        let (p, _) = lint(&rules, "email/email", "Subject: your licensing\n\nHi Ann, one line.");
+        assert!(p.is_empty(), "{p:?}");
     }
 }

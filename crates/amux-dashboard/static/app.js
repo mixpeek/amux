@@ -47938,7 +47938,8 @@ async function _crmTouchHtml(t) {
     + (editing ? '<textarea id="crm-edit-body" class="input crm-ta crm-ta-tall" aria-label="Draft text">' + esc(t.body || '') + '</textarea>'
       : '<div class="crm-ix-text crm-msg">' + esc(t.body || '(no text yet: its worker drafts it)') + '</div>')
     + (t.target_url ? '<div class="crm-meta">Goes to <a class="crm-link" target="_blank" rel="noopener" href="' + esc(/^https?:\/\//i.test(t.target_url) ? t.target_url : '#') + '">' + esc(t.target_url) + '</a></div>' : '')
-    + (t.result ? '<div class="crm-meta">' + esc(t.result) + '</div>' : '') + '</section>';
+    + (t.result ? '<div class="crm-meta">' + esc(t.result) + '</div>' : '')
+    + (t.mailbox ? '<div class="crm-meta crm-wrap">Goes out from ' + esc(t.mailbox) + '</div>' : '') + '</section>';
   // Who it is for.
   const tags = [person.icp_grade ? 'ICP ' + person.icp_grade : (company.icp_grade ? 'ICP ' + company.icp_grade : ''), person.status ? _crmLabel(person.status) : '', person.role, person.source ? 'from ' + person.source : ''].filter(Boolean);
   const last = brief && brief.last_inbound && brief.last_inbound.date ? brief.last_inbound : null;
@@ -48270,7 +48271,7 @@ function _crmFunnelHtml(d) {
       + (g.won_amount_usd ? '<span class="cx-pill cx-ok">' + esc('$' + Number(g.won_amount_usd).toLocaleString() + ' signed') + '</span>' : '')
       + (g.mrr_usd ? '<span class="cx-pill cx-idle">' + esc('$' + Number(g.mrr_usd).toLocaleString() + '/mo recurring') + '</span>' : '')
       + (g.lost ? '<span class="cx-pill cx-idle">' + esc(g.lost) + ' lost</span>' : '') + '</div>'
-      + '<div class="crm-steps">' + steps.map(([k, label, c]) => '<div class="crm-step" data-step="' + k + '">'
+      + '<div class="crm-steps">' + steps.concat(g.connects ? [['connects', 'LinkedIn connects', ''], ['accepted', 'Accepted', 'accepted_per_connect']] : []).map(([k, label, c]) => '<div class="crm-step" data-step="' + k + '">'
         + '<span class="crm-step-l">' + esc(label) + '</span>'
         + '<span class="crm-step-track"><span class="crm-step-bar" data-w="' + Math.round(((g[k] || 0) / top) * 100) + '"></span></span>'
         + '<span class="crm-step-n">' + esc(g[k] || 0) + '</span><span class="crm-step-c">' + esc(c ? pct(conv[c]) : '') + '</span></div>').join('') + '</div>'
@@ -48324,7 +48325,7 @@ const _CRM_CAMPAIGN_PILL = { active: 'cx-ok', draft: 'cx-idle', paused: 'cx-warn
 
 // A campaign: what it is for, its sequences (add or take one out), its funnel
 // per sequence, and its deals. Fields save on change, like a person's.
-function _crmCampaignHtml(c, allSeqs) {
+function _crmCampaignHtml(c, allSeqs, pool) {
   const p = '/campaigns/' + encodeURIComponent(c.id);
   const mine = c.sequence_list || [];
   const free = allSeqs.filter(s => !s.campaign_id);
@@ -48342,7 +48343,8 @@ function _crmCampaignHtml(c, allSeqs) {
     + _crmField('Starts', 'starts', c.starts, p, 'date') + _crmField('Ends', 'ends', c.ends, p, 'date') + _crmField('Owner', 'owner', c.owner, p)
     + '<dt><label for="crmf-cstatus">Status</label></dt><dd><select id="crmf-cstatus" class="input" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'status\',this.value)">'
     + ['draft', 'active', 'paused', 'done'].map(st => '<option' + (c.status === st ? ' selected' : '') + '>' + st + '</option>').join('') + '</select></dd></dl>';
-  h += '<div class="crm-meta crm-wrap">Its drafts fill {campaign} with its name and {asset_url} with its app when the deal has none. The mailboxes are kept here for the sending pool.</div>';
+  h += '<div class="crm-meta crm-wrap">Its drafts fill {campaign} with its name and {asset_url} with its app when the deal has none. Its cold email goes out from its mailboxes, the ready one with the fewest sends today.</div>';
+  h += _crmMailboxesHtml(c.mailboxes || [], pool);
   h += '<div class="cx-sec">Sequences</div><div class="crm-stack">' + (mine.map(q => '<div class="crm-row crm-seq" data-id="' + esc(q.id) + '"><div class="crm-main">'
       + '<span class="crm-name">' + esc(q.name) + '</span><span class="crm-meta">' + esc([_crmSteps(q.steps), q.enrolled + ' enrolled', q.assignee ? 'drafted by ' + q.assignee : ''].filter(Boolean).join(' · ')) + '</span></div>'
       + '<button class="btn" data-id="' + esc(q.id) + '" onclick="_crmSeqCampaign(this.dataset.id,\'\')">Take out</button></div>').join('') || '<div class="crm-meta">No sequences in it yet.</div>')
@@ -48353,6 +48355,37 @@ function _crmCampaignHtml(c, allSeqs) {
     + '<span class="crm-name">' + esc(d.title) + '</span><span class="crm-meta">' + esc([d.stage, d.account_name, d.next_step].filter(Boolean).join(' · ')) + '</span></div></div>').join('') + '</div>';
   h += '<div class="cx-sec">Notes</div><textarea class="input crm-ta" aria-label="Campaign notes" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'notes\',this.value)">' + esc(c.notes || '') + '</textarea>';
   return h + '</div></div>';
+}
+
+// A campaign's sending inboxes from the pool (api/crm_mailboxes.rs): each
+// one's status, today's sends against its cap, its warm-up, and its rates.
+const _CRM_MAILBOX_PILL = { active: 'cx-ok', warming: 'cx-warn', reserve: 'cx-idle', paused: 'cx-bad' };
+function _crmMailboxesHtml(addrs, pool) {
+  if (!addrs.length) return '<div class="cx-sec">Mailboxes</div><div class="crm-meta crm-wrap">None yet: add the addresses its email goes out from (two per domain, Google inboxes).</div>';
+  const rows = (pool && pool.mailboxes) || [];
+  const pct = (v) => v == null ? '' : Math.round(v * 1000) / 10 + '%';
+  const health = (pool && pool.health) || {};
+  return '<div class="cx-sec">Mailboxes</div><div class="crm-stack">' + addrs.map(a => {
+    const m = rows.find(r => r.address === a);
+    if (!m) return '<div class="crm-meta">' + esc(a) + ': not in the pool</div>';
+    return '<div class="crm-row crm-mbox" data-address="' + esc(a) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(a) + '</span>'
+      + '<span class="cx-pill ' + (_CRM_MAILBOX_PILL[m.status] || 'cx-idle') + '">' + esc(m.status) + '</span></div>'
+      + '<div class="crm-meta crm-wrap">' + esc([m.sent_today + ' of ' + m.daily_cap + ' today', m.sent_7d + ' this week', m.status === 'warming' && m.warmup_ends ? 'warm until ' + m.warmup_ends : '',
+        m.bounce_rate != null ? 'bounces ' + pct(m.bounce_rate) : '', m.reply_rate != null ? 'replies ' + pct(m.reply_rate) : ''].filter(Boolean).join(' · ')) + '</div>'
+      + (m.why_not_ready ? '<div class="crm-meta crm-wrap">Not sending: ' + esc(m.why_not_ready) + '</div>' : '') + '</div>'
+      + '<select class="input crm-mbox-status" aria-label="Status of ' + esc(a) + '" data-address="' + esc(a) + '" onchange="_crmMailboxStatus(this.dataset.address,this.value)">'
+      + ['warming', 'active', 'reserve', 'paused'].map(st => '<option' + (m.status === st ? ' selected' : '') + '>' + st + '</option>').join('') + '</select></div>';
+  }).join('') + '</div>'
+    + '<div class="crm-meta crm-wrap">' + esc(['Pool: ' + (health.ready || 0) + ' ready', (health.sends_left_today || 0) + ' sends left today', health.reserve_short ? health.reserve_short + ' more to hold in reserve' : '']
+      .concat(health.crowded_domains || []).filter(Boolean).join(' · ')) + '</div>';
+}
+
+async function _crmMailboxStatus(address, status) {
+  try {
+    await _crmApi('/mailboxes/' + encodeURIComponent(address), { method: 'PATCH', body: JSON.stringify({ status }) });
+    showToast(address + ' is ' + status);
+    _crmDrawerRender();
+  } catch (e) { showToast('Not changed: ' + e.message, true); }
 }
 
 async function _crmSeqCampaign(seqId, campaignId) {
@@ -48403,12 +48436,13 @@ async function _crmDrawerRender() {
   if (o.kind === 'new') { _crm.shown = 'new'; el.innerHTML = _crmNewHtml(o.id); return; }
   if (o.kind === 'campaign') {
     let c = null, seqs = [];
-    try { [c, seqs] = await Promise.all([_crmApi('/campaigns/' + encodeURIComponent(o.id)), _crmApi('/sequences')]); } catch (e) { console.warn('[crm] campaign load failed', e); }
+    let pool = null;
+    try { [c, seqs, pool] = await Promise.all([_crmApi('/campaigns/' + encodeURIComponent(o.id)), _crmApi('/sequences'), _crmApi('/mailboxes').catch(() => null)]); } catch (e) { console.warn('[crm] campaign load failed', e); }
     if (!_crm.open || _crm.open.id !== o.id || gen !== _crm.drawerGen) return;
     const key = 'campaign:' + o.id;
     if (_crm.shown === key && _crmEditing()) return;
     _crm.shown = key;
-    el.innerHTML = c ? _crmCampaignHtml(c, seqs || []) : '<div class="cx-drawer" role="dialog"><div class="cx-dhead"><span class="crm-name">Not found</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div></div>';
+    el.innerHTML = c ? _crmCampaignHtml(c, seqs || [], pool) : '<div class="cx-drawer" role="dialog"><div class="cx-dhead"><span class="crm-name">Not found</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div></div>';
     _crmFunnelBars();
     return;
   }

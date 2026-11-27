@@ -3516,6 +3516,18 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET", "PATCH", "DELETE"],
     },
     RouteEntry {
+        path: "/api/crm/mailboxes",
+        methods: &["GET", "POST"],
+    },
+    RouteEntry {
+        path: "/api/crm/mailboxes/{address}",
+        methods: &["PATCH", "DELETE"],
+    },
+    RouteEntry {
+        path: "/api/crm/touches/{id}/accepted",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/crm/replies/{id}/intent",
         methods: &["POST"],
     },

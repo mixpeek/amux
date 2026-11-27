@@ -213,6 +213,7 @@ const MEANINGS: &[(&str, &str)] = &[
     ("crm.signup", "an amux Cloud order reached the CRM or changed status: the person, their company and a deal \"amux Cloud <slug>\" are made or updated from it: fields contact_id, name, email, account_id, account_name, deal_id, stage (lead, trial, won, lost), previous_stage, change (new or status), status (the Stripe subscription status), slug, url, plan, amount_usd, mode (live or test), source, ready, activation. Plan the welcome touch with eq on change new; skip test orders with eq on mode live"),
     ("crm.contact.booked", "a person in the CRM booked a meeting (a /demo booking logged as a meeting): their sequences stop, their deal moves to demo and a prep touch is planned for whoever worked them: fields contact_id, name, interaction_id, type, date, notes, stopped_sequences, skipped_touches, deal (the stage move, or null), prep_touch_id. Prepare the demo with eq on contact_id"),
     ("crm.deal.stage", "a CRM deal moved stage (lead, qualification, demo, trial, proposal, won, lost), kept in its stage history: fields deal_id, title, account_id, account_name, from, to, by, why, next_step. Watch closes with eq on to won; the owner's hand-offs with eq on to demo"),
+    ("crm.touch.accepted", "a LinkedIn connection request from a CRM touch was accepted (recorded by the checking worker, or seen from a message they sent): fields id, contact_id, contact_name, channel, by. Send the follow-up DM with eq on contact_id"),
     ("crm.reply.classified", "a worker read a reply and recorded its intent, and the CRM made the move it implies: fields interaction_id, contact_id, name, intent (interested, book_later, objection, not_interested, referral), why, deal (the stage move, or null), referral_contact_id, note. Draft the booking push with eq on intent interested"),
     ("crm.funnel.changed", "a number in the CRM funnel (GET /api/crm/funnel, contract crm.funnel.v1) may have moved: fields contract, reason (deal_stage, booked, reply_classified), contact_id, sequences. Re-read the funnel instead of polling it"),
     ("board.card.created", "a board card was created (id, title, lane, status)"),
@@ -337,7 +338,8 @@ pub(crate) const DECLARED_FIELDS: &[(&str, &[&str])] = &[
     ("crm.signup", &["contact_id", "name", "email", "account_id", "account_name", "deal_id", "stage", "previous_stage", "change", "status", "slug", "url", "plan", "amount_usd", "mode", "source", "ready", "activation"]),
     ("crm.contact.booked", &["contact_id", "name", "interaction_id", "type", "date", "notes", "stopped_sequences", "skipped_touches", "deal", "prep_touch_id"]),
     ("crm.deal.stage", &["deal_id", "title", "account_id", "account_name", "from", "to", "by", "why", "next_step"]),
-    ("crm.reply.classified", &["interaction_id", "contact_id", "name", "intent", "why", "deal", "referral_contact_id", "note"]),
+    ("crm.touch.accepted", &["id", "contact_id", "contact_name", "channel", "by"]),
+    ("crm.reply.classified", &["interaction_id", "contact_id", "name", "intent", "why", "deal", "referral_contact_id", "call_touch_id", "note"]),
     ("crm.funnel.changed", &["contract", "reason", "contact_id", "sequences"]),
 ];
 

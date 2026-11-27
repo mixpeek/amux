@@ -60,10 +60,10 @@ Statuses:
 | 26 | A worker subscribes to a person or a company | `amux subscribe` over the `crm.*` events; the Activity view lists them | Pass | `e2e/crm-tab.spec.ts` checks the event in Activity |
 | 27 | Replies captured into the timeline | `crm.contact.replied` from mail and LinkedIn messages | Built | For connected Gmail accounts only |
 | **Sending, to replace Instantly** | | | | |
-| 28 | Send from several domains and mailboxes (trymixpeek.com, getmixpeek.com, ...) | `/api/email/send` sends `from` any connected Google Workspace or Gmail account (`/api/gmail/auth?account=`) | Partial | A sequence cannot choose the mailbox per step or per person |
-| 29 | Rotate across mailboxes with a daily cap per mailbox | none | Missing | Needs a mailbox pool per sequence and a cap the send path enforces |
-| 30 | Warm-up | none | Missing | Needs a warm-up schedule per new mailbox (send and reply among the pool, ramping volume) |
-| 31 | Deliverability: bounce and reply rate per mailbox, spam placement | `bounced_at` per person | Partial | No per-mailbox rates and no placement test |
+| 28 | Send from several domains and mailboxes (trymixpeek.com, getmixpeek.com, ...) | a campaign names its mailboxes (any connected Google account, on any domain); an approved cold email in it is given one, and its worker sends `from` it | Pass | `crm_mailboxes.rs` tests |
+| 29 | Rotate across mailboxes with a daily cap per mailbox | `crm_mailboxes`: each inbox's `daily_cap` (default 15); an approval goes to the ready inbox with the fewest sends today, and none past its cap (`crm_mailbox_cap`, saying why); 2 live inboxes per domain (`crm_mailbox_domain_full`); a reserve share (default 20%) the pool's health reports | Pass | `crm_mailboxes.rs` tests |
+| 30 | Warm-up | the warm-up clock: a mailbox joins warming for `warmup_days` (default 14) and carries no cold email until it ends | Partial | The warm-up traffic itself (mail exchanged with other inboxes to build reputation) needs a warm-up network or service: the owner's decision |
+| 31 | Deliverability: bounce and reply rate per mailbox, spam placement | per mailbox: sends today and this week, bounce rate and reply rate (`GET /api/crm/mailboxes`), shown on the campaign | Partial | No inbox placement (spam folder) test |
 | 32 | An unsubscribe link in every cold email, honoured on the spot | a reply asking to stop marks them unsubscribed | Missing | No unsubscribe link or footer. Cold email needs one (CAN-SPAM, and Gmail's bulk sender rules) |
 | **The owner's view** | | | | |
 | 33 | One review queue with full context, on desktop and phone | the CRM's Outbound: message, brief, sequence step, checks; Approve, Edit, Decline, Redraft | Pass | `e2e/crm-tab.spec.ts`, `e2e/crm-layout.spec.ts` (every section at 375 to 1920 px, both themes) |
@@ -100,8 +100,12 @@ Statuses:
 | 56 | The funnel adds up across a campaign's sequences | `GET /api/crm/funnel?group=campaign` (the tab's default) and `?campaign=<id>`; a campaign's record shows its funnel per sequence | Pass | same tests |
 | 57 | Pausing a campaign holds it | paused or done: new enrollments refused (`crm_campaign_not_active`), approvals refused (`crm_campaign_paused`), due days not announced until active again | Pass | `crm_campaigns.rs` test |
 | 58 | A campaign's drafts carry its app and name | `{campaign}` and `{asset_url}` (the campaign's app when the deal has none of its own); the brief lists the person's campaigns | Pass | same tests |
+| **From the playbooks (2026-11-27)** | | | | |
+| 59 | The LinkedIn accept rate, the first check of a list ("under 1 in 5 accepting means the list is wrong") | `POST /api/crm/touches/{id}/accepted` (the checking worker), or a LinkedIn message from them; `crm.touch.accepted`; the funnel's `connects`, `accepted` and `accepted_per_connect` | Pass | `crm_mailboxes.rs` test `a_linkedin_connect_reads_accepted_...` |
+| 60 | Cold email copy: under 65 words, no links, a 1 to 4 word subject | the voice's channel rules: `max_words`, `links: false`, and `subject_max_words` (new) | Pass | `crm_voice` test `a_cold_subject_over_its_word_limit_is_named`; set the numbers on the voice |
+| 61 | Call every positive reply | an `interested` intent plans a `phone` `call` touch for today, for whoever worked them; it waits for the owner like any touch | Pass | `crm_close` test |
 
-**Count, over the 58 rows: 36 Pass, 10 Built, 8 Partial, 4 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
+**Count, over the 61 rows: 41 Pass, 10 Built, 8 Partial, 2 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
 
 ## 2. The test companies
 
@@ -432,13 +436,7 @@ Still to build, with no key or decision needed (in this order):
 1. **The rest of closing (rows 37, 53).**
    - A demo-done verb that a worker calls after the call notes land.
    - A Needs-you hand-off card at `demo` for the owner.
-2. **The mailbox pool's software (rows 28 to 32).**
-   - A sequence names mailboxes.
-   - The send path rotates them under a daily cap.
-   - There is a warm-up schedule per mailbox.
-   - There are per-mailbox bounce and reply rates.
-
-   The unsubscribe link also needs a public address for amux, which is the owner's call (amux Cloud or a tunnel). This is what retires Instantly.
+2. **The rest of sending (rows 30 to 32).** The pool, rotation, caps and per-mailbox rates landed on 2026-11-27. Left: warm-up traffic (a warm-up network, the owner's call), an inbox placement test, and the unsubscribe link (it needs a public address for amux: amux Cloud or a tunnel, the owner's call).
 3. **Comment targeting and press (rows 12, 25).**
    - A comment step picks the person's latest post from their watched channel.
    - A press feed is added beside the page watch.

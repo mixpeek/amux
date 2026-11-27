@@ -16,6 +16,7 @@
 //!   PATCH  /api/crm/touches/{id}        body, due date, assignee, result, status (not approved)
 //!   POST   /api/crm/touches/{id}/approve   owner only
 //!   POST   /api/crm/touches/{id}/done      {result?, result_url?, failed?}
+//!   POST   /api/crm/touches/{id}/accepted  a sent LinkedIn connect was accepted
 //!
 //! Activity: the CRM events themselves, newest first, as a worker's subscription sees them.
 //!   GET    /api/crm/activity[?limit=&type=]
@@ -65,6 +66,7 @@ pub fn routes() -> Router<AppState> {
         .route("/touches/{id}", axum::routing::patch(patch_touch))
         .route("/touches/{id}/approve", post(approve_touch))
         .route("/touches/{id}/done", post(done_touch))
+        .route("/touches/{id}/accepted", post(accepted_touch))
         .route("/activity", get(activity))
 }
 
@@ -580,6 +582,16 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
                 *slot(&wr) = Some(("crm_campaign_paused", why, String::new()));
                 return Ok(WriteOutcome { applied: false, events: vec![] });
             }
+            // A cold email in a campaign with mailboxes goes out from the
+            // ready inbox with the fewest sends today (crm_mailboxes.rs).
+            match super::crm_mailboxes::pick(conn, &id) {
+                Ok(Some(m)) => { conn.execute("UPDATE crm_touches SET mailbox=?2 WHERE id=?1", rusqlite::params![&id, &m])?; }
+                Ok(None) => {}
+                Err(why) => {
+                    *slot(&wr) = Some(("crm_mailbox_cap", why, String::new()));
+                    return Ok(WriteOutcome { applied: false, events: vec![] });
+                }
+            }
             // The person may have opted out since the draft was written.
             let who: Option<(String, String, String)> = conn
                 .query_row("SELECT contact_id, channel, action FROM crm_touches WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -622,6 +634,56 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
         }
         None => err(StatusCode::CONFLICT, json!({ "error": "no planned or drafted touch with that id", "code": "not_approvable" })),
     }
+}
+
+/// A LinkedIn connection request was accepted (plan: the accept rate is the
+/// first check of a list; "under 1 in 5 accepting ur request means the list is
+/// wrong"). The worker that checks the profile records it; a LinkedIn message
+/// from the person records it too (see [`mark_accepted`]). Emits crm.touch.accepted.
+/// The touch after an accept, and whether this call was the first to record it; or why not.
+type AcceptOutcome = Result<(Value, bool), &'static str>;
+
+async fn accepted_touch(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let out: Arc<Mutex<Option<AcceptOutcome>>> = Arc::new(Mutex::new(None));
+    let w = out.clone();
+    let res = state
+        .store
+        .write_async(move |conn| {
+            let row: Option<(String, String)> = conn.query_row("SELECT action, status FROM crm_touches WHERE id=?1 AND deleted IS NULL", [&id], |r| Ok((r.get(0)?, r.get(1)?))).ok();
+            match row {
+                None => { *slot(&w) = Some(Err("not_found")); return Ok(WriteOutcome { applied: false, events: vec![] }); }
+                Some((a, st)) if a != "connect" || st != "done" => { *slot(&w) = Some(Err("not_a_sent_connect")); return Ok(WriteOutcome { applied: false, events: vec![] }); }
+                _ => {}
+            }
+            let n = conn.execute("UPDATE crm_touches SET accepted_at=?2, updated=?2 WHERE id=?1 AND accepted_at IS NULL", rusqlite::params![&id, now_secs()])?;
+            // Only the first record is news: a repeat reads back the same touch and emits nothing.
+            *slot(&w) = Some(Ok((touch_row(conn, &id)?.unwrap_or(Value::Null), n > 0)));
+            Ok(WriteOutcome { applied: n > 0, events: if n > 0 { vec![ev("crm_touch", &id, MutationKind::Updated)] } else { vec![] } })
+        })
+        .await;
+    if let Err(e) = res {
+        return internal(e);
+    }
+    let taken = slot(&out).take();
+    match taken {
+        Some(Ok((t, false))) => Json(json!({ "ok": true, "already": true, "touch": t })).into_response(),
+        Some(Ok((t, true))) => {
+            emit(&state, "crm.touch.accepted", json!({ "id": t["id"], "contact_id": t["contact_id"], "contact_name": t["contact_name"], "channel": t["channel"], "by": "worker" })).await;
+            super::crm_close::emit_funnel_changed(&state, "accepted", t["contact_id"].as_str().unwrap_or("")).await;
+            Json(json!({ "ok": true, "touch": t })).into_response()
+        }
+        Some(Err("not_found")) => err(StatusCode::NOT_FOUND, json!({ "error": "no touch with that id", "code": "not_found" })),
+        _ => err(StatusCode::CONFLICT, json!({ "error": "only a sent LinkedIn connect can be accepted: record the connect done first", "code": "crm_touch_not_a_sent_connect" })),
+    }
+}
+
+/// A message from the person means they are connected: their sent connects
+/// read accepted. Returns how many were marked.
+pub(crate) fn mark_accepted(conn: &rusqlite::Connection, contact: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE crm_touches SET accepted_at=?2 WHERE contact_id=?1 AND action='connect' AND status='done' AND accepted_at IS NULL AND deleted IS NULL",
+        rusqlite::params![contact, now_secs()],
+    )
 }
 
 async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
@@ -872,6 +934,9 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
         )?;
         if added > 0 {
             n += 1;
+            if channel == "linkedin" {
+                mark_accepted(conn, &contact)?;
+            }
             // A reply stops the sequences that stop on one, and a request to stop is honoured.
             let stopped = super::crm_outbound::on_reply(conn, &contact, &format!("{subject}\n{snippet}"))?;
             let open: i64 = conn.query_row("SELECT COUNT(*) FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status IN ('planned','drafted','approved')", [&contact], |r| r.get(0))?;

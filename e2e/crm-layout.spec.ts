@@ -91,7 +91,9 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
   expect((await api(page, 'POST', '/sequences/' + seq.body.id + '/enroll', { contact_ids: people.slice(6, 12), cohort: 'layout-' + R }, 'amux-gtm')).status).toBe(200);
   const owner = (m: string, p: string, b?: any) => api(page, m, p, b);
   const drafts = (await owner('GET', '/touches?status=drafted&limit=1000')).body.filter((t: any) => (t.contact_name || '').includes(R));
-  await owner('POST', '/touches/' + drafts[0].id + '/approve');
+  // A LinkedIn draft: a cold email in the campaign waits for a warmed inbox (the sending pool).
+  const approved = await owner('POST', '/touches/' + drafts.find((t: any) => t.channel !== 'email').id + '/approve');
+  expect(approved.status).toBe(200);
   await owner('PATCH', '/touches/' + drafts[1].id, { status: 'skipped', result: 'declined by the owner: too generic' });
   await owner('PATCH', '/contacts/' + drafts[2].contact_id, { unsubscribed: true });
   const acct = accounts[0];

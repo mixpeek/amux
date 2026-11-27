@@ -609,6 +609,13 @@ test('a campaign is made in the tab, gathers its sequences, fills its app into d
     await rec.locator('button', { hasText: 'Add sequence' }).click();
     await expect(rec.locator('.crm-seq[data-id="' + s + '"]')).toBeVisible();
   }
+  // Its mailboxes join the sending pool warming, and a warm one is switched on from the record.
+  await rec.locator('#crmf-mailboxes').fill(`a.${R}@try-${R}.io, b.${R}@try-${R}.io`);
+  await rec.locator('#crmf-mailboxes').blur();
+  await expect(rec.locator('.crm-mbox')).toHaveCount(2);
+  await expect(rec.locator('.crm-mbox').first().locator('.cx-pill')).toHaveText('warming');
+  await rec.locator('.crm-mbox').first().locator('.crm-mbox-status').selectOption('active');
+  await expect.poll(async () => (await api(page, 'GET', '/mailboxes')).body.mailboxes.find((m: any) => m.address === `a.${R}@try-${R}.io`).status).toBe('active');
   await rec.locator('#crmf-cstatus').selectOption('active');
   await expect.poll(async () => (await api(page, 'GET', '/campaigns/' + camp.id)).body.status).toBe('active');
 

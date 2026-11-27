@@ -220,6 +220,29 @@ pub(crate) fn on_booking_deal(conn: &rusqlite::Connection, contact: &str) -> rus
     Ok((stage, prep))
 }
 
+/// A call touch for today, for whoever last worked the person, unless one is
+/// already open. A call reaches someone outside, so it waits for the owner's
+/// approve like any touch; with no phone number on file the worker finds one.
+fn plan_call(conn: &rusqlite::Connection, contact: &str) -> rusqlite::Result<Option<String>> {
+    let open: bool = conn
+        .query_row("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND action='call' AND status IN ('planned','drafted','approved') AND deleted IS NULL", [contact], |_| Ok(true))
+        .unwrap_or(false);
+    if open {
+        return Ok(None);
+    }
+    let assignee: String = conn
+        .query_row("SELECT assignee FROM crm_touches WHERE contact_id=?1 AND assignee<>'' AND deleted IS NULL ORDER BY updated DESC LIMIT 1", [contact], |r| r.get(0))
+        .unwrap_or_default();
+    let id = next_issue_id(conn, "TCH")?;
+    let now = now_secs();
+    conn.execute(
+        "INSERT INTO crm_touches (id,contact_id,channel,action,body,due_date,assignee,status,sequence,step,source,created,updated) \
+         VALUES (?1,?2,'phone','call','',?3,?4,'planned','',0,'reply:interested',?5,?5)",
+        rusqlite::params![&id, contact, chrono::Local::now().format("%Y-%m-%d").to_string(), assignee, now],
+    )?;
+    Ok(Some(id))
+}
+
 // ---- stage history ---------------------------------------------------------------------
 
 async fn stages_route(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -271,6 +294,7 @@ async fn intent_route(State(state): State<AppState>, headers: HeaderMap, Path(ix
             let name: String = conn.query_row("SELECT name FROM crm_contacts WHERE id=?1", [&contact], |r| r.get(0)).unwrap_or_default();
             let mut stage_ev: Option<Value> = None;
             let mut referral_id: Option<String> = None;
+            let mut call_touch: Option<String> = None;
             let mut note = String::new();
             let forward = |conn: &rusqlite::Connection, next: &str| -> rusqlite::Result<Option<Value>> {
                 match open_deal_for(conn, &contact) {
@@ -289,6 +313,8 @@ async fn intent_route(State(state): State<AppState>, headers: HeaderMap, Path(ix
                 "interested" => {
                     let next = if booking_url.is_empty() { "push for a booked meeting".to_string() } else { format!("push for a booked meeting: {booking_url}") };
                     stage_ev = forward(conn, &next)?;
+                    // Call every positive reply: a call planned for today, for whoever worked them.
+                    call_touch = plan_call(conn, &contact)?;
                 }
                 "book_later" => {
                     let date = if follow.is_empty() { (chrono::Local::now().date_naive() + chrono::Duration::days(14)).format("%Y-%m-%d").to_string() } else { follow.clone() };
@@ -344,7 +370,7 @@ async fn intent_route(State(state): State<AppState>, headers: HeaderMap, Path(ix
             }
             *slot(&w) = Some(Ok(json!({
                 "interaction_id": ix, "contact_id": contact, "name": name, "intent": intent, "why": why,
-                "deal": stage_ev, "referral_contact_id": referral_id, "note": note,
+                "deal": stage_ev, "referral_contact_id": referral_id, "call_touch_id": call_touch, "note": note,
             })));
             Ok(WriteOutcome { applied: true, events })
         })
@@ -389,11 +415,13 @@ pub(crate) async fn emit_funnel_changed(state: &AppState, reason: &str, contact:
 #[derive(Default)]
 struct Group {
     name: String,
-    people: BTreeMap<String, [bool; 7]>,
+    people: BTreeMap<String, [bool; 9]>,
     won_deals: HashSet<String>,
 }
 
 const STEPS: [&str; 7] = ["enrolled", "contacted", "replied", "booked", "demoed", "won", "lost"];
+/// LinkedIn, beside the main steps: people sent a connect, and those who accepted it.
+const LINKEDIN_STEPS: [&str; 2] = ["connects", "accepted"];
 
 pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -> rusqlite::Result<Value> {
     let group = q.get("group").map(String::as_str).unwrap_or("sequence");
@@ -432,6 +460,8 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         let demoed = deals.iter().any(|(d, _)| reached(d, "'demo','trial','proposal','won'"));
         let won: Vec<&String> = deals.iter().filter(|(d, _)| reached(d, "'won'")).map(|(d, _)| d).collect();
         let lost = deals.iter().any(|(d, st)| st == "lost" && reached(d, "'lost'"));
+        let connects = one("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND action='connect' AND status='done' AND COALESCE(done_at,updated)>=?2 LIMIT 1");
+        let accepted = one("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND action='connect' AND accepted_at>=?2 LIMIT 1");
         let key = if by_cohort { if cohort.is_empty() { "(none)".to_string() } else { cohort.clone() } }
             else if by_campaign { if campaign.is_empty() { "(none)".to_string() } else { campaign.clone() } }
             else { seq.clone() };
@@ -441,8 +471,8 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         } else if !by_cohort {
             g.name = seq_name.clone();
         }
-        let flags = [true, contacted, replied, booked, demoed, !won.is_empty(), lost];
-        let cur = g.people.entry(contact.clone()).or_insert([false; 7]);
+        let flags = [true, contacted, replied, booked, demoed, !won.is_empty(), lost, connects, accepted];
+        let cur = g.people.entry(contact.clone()).or_insert([false; 9]);
         for (i, f) in flags.iter().enumerate() {
             cur[i] |= *f;
         }
@@ -451,7 +481,7 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
     let mut out = Vec::new();
     for (key, g) in &groups {
         let count = |i: usize| g.people.values().filter(|f| f[i]).count() as i64;
-        let c: Vec<i64> = (0..7).map(count).collect();
+        let c: Vec<i64> = (0..9).map(count).collect();
         let ratio = |a: i64, b: i64| if b == 0 { Value::Null } else { json!(((a as f64 / b as f64) * 10_000.0).round() / 10_000.0) };
         let (mut mrr, mut amount) = (0.0f64, 0.0f64);
         for d in &g.won_deals {
@@ -465,12 +495,13 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         }
         let mut row = json!({ "group": if by_cohort { "cohort" } else if by_campaign { "campaign" } else { "sequence" }, "key": key,
             "name": if by_cohort { key.clone() } else { g.name.clone() } });
-        for (i, step) in STEPS.iter().enumerate() {
+        for (i, step) in STEPS.iter().chain(LINKEDIN_STEPS.iter()).enumerate() {
             row[*step] = json!(c[i]);
         }
         row["conversion"] = json!({
             "contacted_per_enrolled": ratio(c[1], c[0]), "replied_per_contacted": ratio(c[2], c[1]), "booked_per_replied": ratio(c[3], c[2]),
             "demoed_per_booked": ratio(c[4], c[3]), "won_per_demoed": ratio(c[5], c[4]), "won_per_enrolled": ratio(c[5], c[0]),
+            "accepted_per_connect": ratio(c[8], c[7]),
         });
         row["mrr_usd"] = json!(mrr);
         row["won_amount_usd"] = json!(amount);
@@ -745,6 +776,9 @@ mod tests {
         assert_eq!(deals[0]["stage"], "lead", "a reply alone does not say yes");
         let (st, v) = call(&app, "POST", &format!("/replies/{ix}/intent"), &W, Some(json!({"intent": "interested", "why": "asked for more"}))).await;
         assert_eq!((st, v["deal"]["to"].as_str()), (StatusCode::OK, Some("qualification")), "{v}");
+        let call_id = v["call_touch_id"].as_str().expect("an interested reply plans a call").to_string();
+        let (_, ct) = call(&app, "GET", &format!("/touches?contact_id={nina}"), &OWNER, None).await;
+        assert!(ct.as_array().unwrap().iter().any(|t| t["id"] == call_id.as_str() && t["action"] == "call" && t["status"] == "planned" && t["assignee"] == "amux-gtm"), "{ct}");
         let (st, _) = call(&app, "POST", &format!("/replies/{ix}/intent"), &W, Some(json!({"intent": "maybe"}))).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "an intent outside the five is refused");
 

@@ -11511,6 +11511,8 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 /* Bulk decisions on Pending (desktop). */
 .crm-bulk { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-1) var(--space-1-5); flex-shrink: 0; }
 .crm-bulk-all { display: inline-flex; align-items: center; gap: var(--space-1-5); font-size: var(--fs-md); color: var(--dim); margin-right: auto; cursor: pointer; }
+.crm-mbox { cursor: default; align-items: flex-start; }
+.crm-mbox-status { flex: 0 0 auto; width: auto; }
 .crm-pick { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; cursor: pointer; }
 .crm-brief { margin: var(--space-2) 0 var(--space-1); }
 @media (min-width: 1000px) {
@@ -11581,7 +11583,7 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 @media (max-width: 600px) {
   .crm-bar { padding: var(--space-2) var(--space-3); }
   .crm-q { flex-basis: 140px; }
-  .crm-chips .cx-filter, .crm-new, .crm-grades .cx-filter, .crm-status { min-height: 44px; }
+  .crm-chips .cx-filter, .crm-new, .crm-grades .cx-filter, .crm-status, .crm-mbox-status { min-height: 44px; }
   .crm-list { padding: 0 var(--space-3) var(--space-10); }
   .crm-actions .btn { min-height: 44px; }
   /* One row of controls on a phone: the section title and summary give way to the list. */
