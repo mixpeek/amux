@@ -24,7 +24,7 @@ static MODEL_SLOTS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 fn setting(session: &str, key: &str) -> Option<String> {
     session_verbs::scoped_setting_in(&session_verbs::home(), session, key)
-        .or_else(|| std::env::var(key).ok())
+        .or_else(|| crate::environment::process(key))
 }
 pub(crate) fn enabled(session: &str) -> bool {
     !no_board(session)
@@ -81,7 +81,7 @@ pub(crate) fn board_steers(session: &str) -> bool {
 /// board instruction is composed into its context. Reads the same keys the Board tab writes, so the view and this gate
 /// cannot disagree.
 pub(crate) fn board_unused(session: &str) -> bool {
-    let drain = std::env::var(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY).ok();
+    let drain = crate::environment::process(crate::runtime_jobs::board_drive::DISPATCH_BACKLOG_KEY);
     board_unused_in(&session_verbs::home(), session, drain.as_deref())
 }
 
@@ -120,7 +120,7 @@ pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_proce
     // an older key says. Before this, seven switched-off workers kept their
     // board through a legacy CC_AUTO_CONTINUE=1 or CC_STANDING_ORDERS=1 the
     // switch never wrote, and the background planner kept filing their cards.
-    let steering = scoped_setting_in(home, session, FORCE_ADHERENCE_KEY).or_else(|| std::env::var(FORCE_ADHERENCE_KEY).ok());
+    let steering = scoped_setting_in(home, session, FORCE_ADHERENCE_KEY).or_else(|| crate::environment::process(FORCE_ADHERENCE_KEY));
     if steering.as_deref().is_some_and(|v| !auto_continue_on(Some(v))) {
         return true;
     }
@@ -142,12 +142,12 @@ pub(crate) fn board_unused_in(home: &std::path::Path, session: &str, drain_proce
         return false;
     }
     let default_on = scoped_setting_in(home, session, BOARD_DEFAULT_KEY)
-        .or_else(|| std::env::var(BOARD_DEFAULT_KEY).ok())
+        .or_else(|| crate::environment::process(BOARD_DEFAULT_KEY))
         .is_some_and(|v| auto_continue_on(Some(&v)));
     if !default_on {
         return true;
     }
-    let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| std::env::var(k).ok()).as_deref());
+    let on = |k: &str| auto_continue_on(scoped_setting_in(home, session, k).or_else(|| crate::environment::process(k)).as_deref());
     let cont = scoped_setting_in(home, session, BOARD_CONTINUE_KEY)
         .or_else(|| scoped_setting_in(home, session, "CC_AUTO_CONTINUE"));
     // Under AMUX_BOARD_DEFAULT=on, someone has to have turned the board off:

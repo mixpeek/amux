@@ -64,28 +64,24 @@ pub(crate) use crate::config::amux_home;
 /// `pub(crate)`: the alert-config endpoints (api/alerts.rs) read the same
 /// keys the same way — one resolver, not two spellings of it.
 pub(crate) fn effective_env(home: &Path, key: &str) -> Option<String> {
-    let file_env = crate::config::parse_env_file(&home.join("server.env"));
     // PRESENT-BUT-EMPTY MEANS CLEARED, and it is not the same as ABSENT.
     //
     // This used to fall through to the process env whenever the file value was
     // empty, which made clearing a key impossible: config.rs exports server.env
     // into the PROCESS env at startup (setdefault), so a key that was ever saved
     // and survived one restart is in std::env for the life of the process. The
-    // clear then wrote `ANTHROPIC_API_KEY=` to the file — correctly — and the
-    // GET kept serving the old key from the process env.
-    //
-    // Reproduced end to end on a scratch home 2026-08-11: seed a key, GET masks
-    // it, PATCH {"ANTHROPIC_API_KEY":""} returns {"ok":true}, the file is
-    // emptied, and the very next GET still returns *******************wxyz.
-    // Nothing anywhere reported a failure — the write succeeded, the read lied.
-    //
-    // That is a security defect, not a papercut: rotating or revoking a key is
-    // the one operation you must be able to trust, and amux would keep using the
-    // old value while telling you it was gone.
-    if let Some(v) = file_env.get(key) {
-        return (!v.is_empty()).then(|| v.clone());
-    }
-    std::env::var(key).ok().filter(|v| !v.is_empty())
+    // clear then wrote `ANTHROPIC_API_KEY=` to the file, correctly, and the
+    // GET kept serving the old key from the process env (reproduced on a
+    // scratch home 2026-08-11). Rotating or revoking a key is the one operation
+    // you must be able to trust. The rule now lives in
+    // `environment::resolve_in(Scope::Global, ..)`, the one resolver.
+    crate::environment::resolve_in(
+        home,
+        crate::environment::Scope::Global,
+        key,
+        std::env::var(key).ok().as_deref(),
+    )
+    .map(|r| r.value)
 }
 
 /// Python's server.env line-replace: rewrite the first `KEY=`/`KEY =` line,

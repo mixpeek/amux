@@ -144,8 +144,8 @@ pub(crate) fn groomable(lane: &str) -> Result<(), &'static str> {
     if super::board_lifecycle::no_board(lane) {
         return Err("board_off");
     }
-    let off = super::session_verbs::scoped_setting_in(&super::session_verbs::home(), lane, "AMUX_BOARD_GROOM")
-        .or_else(|| std::env::var("AMUX_BOARD_GROOM").ok())
+    // Worker > group > global, then the process env (environment::REGISTRY).
+    let off = crate::environment::resolve(crate::environment::Scope::Lane(lane), "AMUX_BOARD_GROOM")
         .is_some_and(|v| matches!(v.trim().trim_matches('"'), "0" | "false" | "off" | "no"));
     if off {
         return Err("switched_off");

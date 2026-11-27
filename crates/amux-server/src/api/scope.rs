@@ -313,6 +313,12 @@ fn scope_read(conn: Option<&rusqlite::Connection>, home: &Path, level: &str, nam
         row.insert("supported".into(), json!(supported));
         row.insert("value".into(), Value::Null);
         row.insert("set_here".into(), json!(false));
+        if cap.key == "env" {
+            // Which keys a scope file can set, and how each one resolves: the
+            // environment registry, so the Scope tab shows the resolver's own
+            // table rather than a copy of it.
+            row.insert("registry".into(), crate::environment::registry_json());
+        }
         if supported {
             match read_cap_value(conn, home, level, name, cap.key) {
                 Ok((value, set_here)) => {

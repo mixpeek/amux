@@ -103,13 +103,8 @@ fn is_off(v: &str) -> bool {
 /// (`~/.amux/server.env`, the operator switch) wins, then worker > group >
 /// global scope files.
 pub fn scoped(home: &Path, lane: &str, key: &str) -> Option<String> {
-    if let Some(v) = env_nonempty(key) {
-        return Some(v);
-    }
-    if lane.is_empty() {
-        return None;
-    }
-    crate::api::session_verbs::scoped_setting_in(home, lane, key)
+    crate::environment::resolve_in(home, crate::environment::Scope::Lane(lane), key, crate::environment::process(key).as_deref())
+        .map(|r| r.value.trim().to_string())
 }
 
 /// Fleet-wide knobs. Read on every call, so an edit to server.env or a scope

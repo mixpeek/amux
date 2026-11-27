@@ -84,7 +84,7 @@ fn switch_on(env: Option<&str>, scoped: Option<&str>) -> bool {
 }
 
 pub(crate) fn enabled(lane: &str, key: &str) -> bool {
-    let env = std::env::var(key).ok();
+    let env = crate::environment::process(key);
     let scoped = sv::scoped_setting_in(&sv::home(), lane, key);
     switch_on(env.as_deref(), scoped.as_deref())
 }

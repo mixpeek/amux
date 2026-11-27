@@ -74,12 +74,8 @@ pub struct State {
 }
 
 fn setting(home: &Path, name: &str, key: &str) -> Option<String> {
-    if let Ok(v) = std::env::var(key) {
-        if !v.trim().is_empty() {
-            return Some(v.trim().to_string());
-        }
-    }
-    crate::api::session_verbs::scoped_setting_in(home, name, key)
+    crate::environment::resolve_in(home, crate::environment::Scope::Lane(name), key, crate::environment::process(key).as_deref())
+        .map(|r| r.value.trim().to_string())
 }
 
 fn setting_f64(home: &Path, name: &str, key: &str, d: f64) -> f64 {

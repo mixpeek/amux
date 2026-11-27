@@ -261,20 +261,8 @@ pub fn done_link_required(session: Option<&str>) -> bool {
     // is also how the test rigs turn the gate off for the mechanics/lifecycle
     // suites that are not testing it. Unset falls through to the per-worker /
     // group / global scope FILES below.
-    if let Ok(v) = std::env::var(DONE_LINK_REQUIRED_KEY) {
-        if !v.trim().is_empty() {
-            return !is_off(&v);
-        }
-    }
-    let lane = match session.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return true,
-    };
-    match crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        DONE_LINK_REQUIRED_KEY,
-    ) {
+    // Process env, then worker > group > global (environment::REGISTRY).
+    match crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), DONE_LINK_REQUIRED_KEY) {
         Some(v) => !is_off(&v),
         None => true,
     }
@@ -297,20 +285,8 @@ pub fn done_evidence_required(session: Option<&str>) -> bool {
             "0" | "false" | "off" | "no"
         )
     }
-    if let Ok(v) = std::env::var(DONE_EVIDENCE_REQUIRED_KEY) {
-        if !v.trim().is_empty() {
-            return !is_off(&v);
-        }
-    }
-    let lane = match session.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return true,
-    };
-    match crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        DONE_EVIDENCE_REQUIRED_KEY,
-    ) {
+    // Process env, then worker > group > global (environment::REGISTRY).
+    match crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), DONE_EVIDENCE_REQUIRED_KEY) {
         Some(v) => !is_off(&v),
         None => true,
     }
@@ -446,20 +422,8 @@ pub fn needsyou_ask_required(session: Option<&str>) -> bool {
             "0" | "false" | "off" | "no"
         )
     }
-    if let Ok(v) = std::env::var(NEEDSYOU_ASK_REQUIRED_KEY) {
-        if !v.trim().is_empty() {
-            return !is_off(&v);
-        }
-    }
-    let lane = match session.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return true,
-    };
-    match crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        NEEDSYOU_ASK_REQUIRED_KEY,
-    ) {
+    // Process env, then worker > group > global (environment::REGISTRY).
+    match crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), NEEDSYOU_ASK_REQUIRED_KEY) {
         Some(v) => !is_off(&v),
         None => true,
     }
@@ -470,18 +434,7 @@ pub fn needsyou_ask_required(session: Option<&str>) -> bool {
 /// the owner selects a global/group/worker policy; no worker can silently infer
 /// a budget grant from the absence of a typed question.
 pub fn approval_types(session: Option<&str>) -> Vec<String> {
-    let configured = std::env::var("AMUX_APPROVAL_TYPES")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| {
-            session.and_then(|s| {
-                crate::api::session_verbs::scoped_setting_in(
-                    &crate::api::session_verbs::home(),
-                    s,
-                    "AMUX_APPROVAL_TYPES",
-                )
-            })
-        })
+    let configured = crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), "AMUX_APPROVAL_TYPES")
         .unwrap_or_else(|| "*".into());
     configured
         .split(',')
@@ -499,15 +452,7 @@ pub fn approval_type_allowed(session: Option<&str>, kind: &str) -> bool {
 /// Boards are self-contained by default. Legacy cooperative workspaces can
 /// explicitly opt in through the same worker/group/global setting resolver.
 pub fn board_delegation_allowed(session: Option<&str>) -> bool {
-    let value = std::env::var("AMUX_BOARD_DELEGATION").ok().or_else(|| {
-        session.and_then(|s| {
-            crate::api::session_verbs::scoped_setting_in(
-                &crate::api::session_verbs::home(),
-                s,
-                "AMUX_BOARD_DELEGATION",
-            )
-        })
-    });
+    let value = crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), "AMUX_BOARD_DELEGATION");
     value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on"))
 }
 
@@ -790,20 +735,8 @@ pub fn continuation_required(session: Option<&str>) -> bool {
             "1" | "true" | "on" | "yes"
         )
     }
-    if let Ok(v) = std::env::var(CONTINUATION_REQUIRED_KEY) {
-        if !v.trim().is_empty() {
-            return is_on(&v);
-        }
-    }
-    let lane = match session.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return false,
-    };
-    match crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        CONTINUATION_REQUIRED_KEY,
-    ) {
+    // Process env, then worker > group > global (environment::REGISTRY).
+    match crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), CONTINUATION_REQUIRED_KEY) {
         Some(v) => is_on(&v),
         None => false,
     }
@@ -955,7 +888,9 @@ pub const TODO_WIP_LIMIT_KEY: &str = "AMUX_TODO_WIP_LIMIT";
 /// purpose and is where a card that is real but not next belongs.
 pub fn todo_wip_limit(session: Option<&str>) -> i64 {
     let read = |v: String| v.trim().parse::<i64>().ok().filter(|n| *n >= 0);
-    if let Ok(v) = std::env::var(TODO_WIP_LIMIT_KEY) {
+    // An unparseable process value falls through to the scope files, so this
+    // keeps its own ladder over the process value environment::process hands it.
+    if let Some(v) = crate::environment::process(TODO_WIP_LIMIT_KEY) {
         if let Some(n) = read(v) {
             return n;
         }
@@ -1058,20 +993,8 @@ pub fn blocked_needs_watch(session: Option<&str>) -> bool {
             "0" | "false" | "off" | "no"
         )
     }
-    if let Ok(v) = std::env::var(BLOCKED_NEEDS_WATCH_KEY) {
-        if !v.trim().is_empty() {
-            return !is_off(&v);
-        }
-    }
-    let lane = match session.filter(|s| !s.is_empty()) {
-        Some(s) => s,
-        None => return true,
-    };
-    match crate::api::session_verbs::scoped_setting_in(
-        &crate::api::session_verbs::home(),
-        lane,
-        BLOCKED_NEEDS_WATCH_KEY,
-    ) {
+    // Process env, then worker > group > global (environment::REGISTRY).
+    match crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), BLOCKED_NEEDS_WATCH_KEY) {
         Some(v) => !is_off(&v),
         None => true,
     }
@@ -1142,13 +1065,7 @@ pub fn default_revisit_days(target: TaskStatus, session: Option<&str>) -> Option
 /// same resolution order [`done_link_required`] uses, shared rather than
 /// re-derived so the two cannot drift.
 fn scoped_or_process_env(key: &str, session: Option<&str>) -> Option<String> {
-    if let Ok(v) = std::env::var(key) {
-        if !v.trim().is_empty() {
-            return Some(v);
-        }
-    }
-    let lane = session.filter(|s| !s.is_empty())?;
-    crate::api::session_verbs::scoped_setting_in(&crate::api::session_verbs::home(), lane, key)
+    crate::environment::resolve(crate::environment::Scope::Lane(session.unwrap_or("")), key)
 }
 
 /// `YYYY-MM-DD`, `days` from now in LOCAL time — the format every existing
@@ -6395,7 +6312,7 @@ mod tests {
                 }
             }
         }
-        let _r = Restore(std::env::var(CONTINUATION_REQUIRED_KEY).ok());
+        let _r = Restore(std::env::var(CONTINUATION_REQUIRED_KEY).ok()); // env-raw-ok: test restores the process value
 
         std::env::remove_var(CONTINUATION_REQUIRED_KEY);
         assert!(!continuation_required(Some("some-lane")), "default is OFF");

@@ -384,10 +384,8 @@ impl Policy {
     /// Process env first, then the worker > group > global scope files.
     pub fn for_worker(home: &Path, worker: &str) -> Policy {
         let get = |k: &str| {
-            std::env::var(k)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| crate::api::session_verbs::scoped_setting_in(home, worker, k))
+            crate::environment::resolve_in(home, crate::environment::Scope::Lane(worker), k, crate::environment::process(k).as_deref())
+                .map(|r| r.value)
         };
         Policy {
             apps: get(APPS_KEY)

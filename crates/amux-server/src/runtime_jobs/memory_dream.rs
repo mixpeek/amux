@@ -71,7 +71,7 @@ pub(crate) fn enabled_in(home: &Path, lane: &str, process_value: Option<&str>) -
 }
 
 fn min_kb() -> u64 {
-    std::env::var(KB_KEY).ok().and_then(|v| v.trim().parse().ok()).filter(|&k| k > 0).unwrap_or(DEFAULT_KB)
+    crate::environment::process(KB_KEY).and_then(|v| v.trim().parse().ok()).filter(|&k| k > 0).unwrap_or(DEFAULT_KB)
 }
 
 /// The ask. It names the size, what to keep, and the one write verb.
@@ -118,7 +118,7 @@ pub async fn run_once(state: &AppState, home: &Path) -> Vec<String> {
             return vec![];
         }
     };
-    let process_value = std::env::var(ENABLE_KEY).ok();
+    let process_value = crate::environment::process(ENABLE_KEY);
     let mut considered = 0usize;
     let mut asked = Vec::new();
     let Ok(entries) = std::fs::read_dir(&mem_dir) else {

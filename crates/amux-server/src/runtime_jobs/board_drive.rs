@@ -622,7 +622,7 @@ pub const WIP_CAP_KEY: &str = "AMUX_MAX_DOING_PER_SESSION";
 /// `doing` card was its own hour-long background job while todo cards waited
 /// (MSG-99658: "skipped wip-cap holding 1/1 in doing: TP-140").
 pub(crate) fn wip_cap_for(session: &str) -> i64 {
-    wip_cap_in(&crate::api::session_verbs::home(), session, std::env::var(WIP_CAP_KEY).ok().as_deref())
+    wip_cap_in(&crate::api::session_verbs::home(), session, crate::environment::process(WIP_CAP_KEY).as_deref())
 }
 
 pub(crate) fn wip_cap_in(home: &std::path::Path, session: &str, process_value: Option<&str>) -> i64 {
@@ -1019,7 +1019,7 @@ impl Fleet for LiveFleet {
         done_wip_cap_in(
             &crate::api::session_verbs::home(),
             lane,
-            std::env::var(DISPATCH_DONE_WIP_KEY).ok().as_deref(),
+            crate::environment::process(DISPATCH_DONE_WIP_KEY).as_deref(),
         )
     }
     fn turn_ended(&self, lane: &str) -> bool {
@@ -2364,7 +2364,7 @@ pub(crate) fn blocker_recovery_lane_interval_in(home: &std::path::Path, session:
 }
 
 fn blocker_recovery_lane_interval(session: &str) -> f64 {
-    let process_value = std::env::var(BLOCKER_RECOVERY_LANE_INTERVAL_KEY).ok();
+    let process_value = crate::environment::process(BLOCKER_RECOVERY_LANE_INTERVAL_KEY);
     blocker_recovery_lane_interval_in(&crate::api::session_verbs::home(), session, process_value.as_deref())
 }
 
@@ -2396,7 +2396,7 @@ pub(crate) fn blocker_recovery_lane_hold(conn: &Connection, lane: &str, interval
 }
 
 pub fn dispatch_backlog_when_idle(session: &str) -> bool {
-    let process_value = std::env::var(DISPATCH_BACKLOG_KEY).ok();
+    let process_value = crate::environment::process(DISPATCH_BACKLOG_KEY);
     dispatch_backlog_when_idle_in(
         &crate::api::session_verbs::home(),
         session,

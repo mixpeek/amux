@@ -91,8 +91,8 @@ fn unreconciled_after_s() -> i64 {
 /// The scoped kill switch, default ON. Same spelling rules as
 /// `board_lifecycle::policy_enabled`: only an explicit off value disables.
 pub(crate) fn enabled(session: &str) -> bool {
-    let v = session_verbs::scoped_setting_in(&session_verbs::home(), session, POLICY_KEY)
-        .or_else(|| std::env::var(POLICY_KEY).ok());
+    // Worker > group > global, then the process env (environment::REGISTRY).
+    let v = crate::environment::resolve(crate::environment::Scope::Lane(session), POLICY_KEY);
     policy_on(v.as_deref())
 }
 

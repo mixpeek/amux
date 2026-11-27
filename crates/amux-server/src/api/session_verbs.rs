@@ -147,9 +147,9 @@ const MAX_LOG_BYTES: usize = 10 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn home() -> PathBuf {
-    std::env::var("AMUX_HOME")
+    crate::environment::process("AMUX_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"))
+        .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".amux"))
 }
 /// Shell prelude for a HEADLESS provider turn (worker types whose adapter
 /// runs turns outside a terminal, ACW-4). Same environment a tmux launch
@@ -1094,31 +1094,7 @@ pub(crate) fn with_env_memo<T>(f: impl FnOnce() -> T) -> T {
 /// Groups come from CC_TAGS in the worker's own file — the same source
 /// `lane_groups` reads, not a second spelling.
 pub(crate) fn scope_env_layers(home: &std::path::Path, lane: &str) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let global = home.join("amux.env");
-    if global.exists() {
-        out.push(global);
-    }
-    let worker_file = home.join("sessions").join(format!("{lane}.env"));
-    let groups: std::collections::BTreeSet<String> = EnvFile::load(&worker_file)
-        .get("CC_TAGS")
-        .map(|v| {
-            v.split(',')
-                .map(|t| t.trim().trim_matches('"').to_lowercase())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    for g in groups {
-        let gp = home.join("env").join(format!("{g}.env"));
-        if gp.exists() {
-            out.push(gp);
-        }
-    }
-    if worker_file.exists() {
-        out.push(worker_file);
-    }
-    out
+    crate::environment::scope_env_layers(home, lane)
 }
 
 /// A DEFAULT-ON kill switch for an automatic behaviour, resolved the way the
@@ -1127,7 +1103,7 @@ pub(crate) fn scope_env_layers(home: &std::path::Path, lane: &str) -> Vec<std::p
 /// `off` or `no` turns it off; an absent or unreadable value leaves it on, so a
 /// typo cannot silently disable a guard.
 pub(crate) fn scoped_gate_on(lane: &str, key: &str) -> bool {
-    scoped_gate_on_in(&home(), lane, key, std::env::var(key).ok().as_deref())
+    scoped_gate_on_in(&home(), lane, key, crate::environment::process(key).as_deref())
 }
 
 pub(crate) fn scoped_gate_on_in(
@@ -1153,44 +1129,18 @@ pub(crate) fn scoped_gate_on_in(
         .is_some_and(is_off)
 }
 
+/// Worker > group > global scope files for one key, the resolution the long
+/// note above `scope_env_layers` explains. The body is
+/// `environment::scope_files_in`, the one resolver.
 pub(crate) fn scoped_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
-    lane_setting_in(home, lane, key).or_else(|| {
-        EnvFile::load(&home.join("amux.env"))
-            .get(key)
-            .and_then(|v| { let t = v.trim(); (!t.is_empty()).then(|| t.to_string()) })
-    })
+    crate::environment::scope_files_in(home, lane, key).map(|r| r.value)
 }
 
 /// The worker and group layers of `scoped_setting_in`, without the global one.
 /// For a switch that only means something when somebody chose it for this
 /// worker or its group, such as whether the worker uses the board at all.
 pub(crate) fn lane_setting_in(home: &std::path::Path, lane: &str, key: &str) -> Option<String> {
-    fn nonempty(v: &str) -> Option<String> {
-        let t = v.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    }
-    let worker = EnvFile::load(&home.join("sessions").join(format!("{lane}.env")));
-    if let Some(v) = worker.get(key).and_then(nonempty) {
-        return Some(v);
-    }
-    // Groups come from the worker's own CC_TAGS — the same source
-    // `lane_groups` uses, not a second spelling of "which groups is this in".
-    let groups: Vec<String> = worker
-        .get("CC_TAGS")
-        .map(|v| {
-            v.split(',')
-                .map(|t| t.trim().trim_matches('"').to_lowercase())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    for g in groups {
-        let path = home.join("env").join(format!("{g}.env"));
-        if let Some(v) = EnvFile::load(&path).get(key).and_then(nonempty) {
-            return Some(v);
-        }
-    }
-    None
+    crate::environment::lane_layers_in(home, lane, key).map(|r| r.value)
 }
 
 /// The effective cross-group sender policy and the explanation shown beside it.
@@ -1748,7 +1698,7 @@ pub(crate) fn backend_from(cc_backend: Option<&str>) -> String {
     if b == "herdr" || b == "tmux" {
         return b;
     }
-    let ab = std::env::var("AMUX_BACKEND")
+    let ab = crate::environment::process("AMUX_BACKEND")
         .unwrap_or_default()
         .trim()
         .to_lowercase();
@@ -1802,8 +1752,8 @@ fn iterm2_id(cfg: &EnvFile) -> String {
 /// it. (`home()` and `dirs_home()` in this file still predate it and skip
 /// `CC_HOME` — untouched here, but they are the same hazard.)
 fn store_db_path() -> PathBuf {
-    match std::env::var("AMUX_DB") {
-        Ok(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
+    match crate::environment::process("AMUX_DB") {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
         _ => crate::config::amux_home().join("amux.db"),
     }
 }
@@ -2863,8 +2813,7 @@ fn parse_month_day(s: &str) -> Option<(u32, u32, &str)> {
 /// Deliberately a POLICY set once, not a prompt per occurrence: a human pressing
 /// 1 on sixty lanes is not a workflow, and the answer is the same every time.
 pub(crate) fn rate_limit_action() -> String {
-    std::env::var("AMUX_RATE_LIMIT_ACTION")
-        .ok()
+    crate::environment::process("AMUX_RATE_LIMIT_ACTION")
         .map(|v| v.trim().to_lowercase())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "wait".into())
@@ -2914,7 +2863,7 @@ pub(crate) fn auto_resume_enabled_in(
 }
 
 pub(crate) fn auto_resume_enabled(session: &str) -> bool {
-    let process_value = std::env::var(AUTO_RESUME_KEY).ok();
+    let process_value = crate::environment::process(AUTO_RESUME_KEY);
     auto_resume_enabled_in(&home(), session, process_value.as_deref())
 }
 
@@ -3219,8 +3168,7 @@ pub(crate) fn is_resume_mode_prompt(raw: &str) -> bool {
 /// prompts amux auto-answers (yolo's own permission flags aside). Do not
 /// generalize this mechanism to other selectors.
 pub(crate) fn resume_mode_action() -> String {
-    std::env::var("AMUX_RESUME_MODE_ACTION")
-        .ok()
+    crate::environment::process("AMUX_RESUME_MODE_ACTION")
         .map(|v| v.trim().to_lowercase())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "summary".into())
@@ -3747,7 +3695,7 @@ fn claude_session_flag(name: &str, conv_id: &str, resumable: bool) -> String {
 /// repo with the owner's gh login and ssh-agent. This stops accidents only: the
 /// keychain and any key file stay readable to the same macOS user.
 fn private_server_git_rc(amux_home: &Path, user_claude_home: &Path) -> Option<String> {
-    if std::env::var("AMUX_WORKER_GIT_CREDENTIALS").as_deref() == Ok("1") {
+    if crate::environment::process("AMUX_WORKER_GIT_CREDENTIALS").as_deref() == Some("1") {
         return None;
     }
     let primary = user_claude_home.parent()?.join(".amux");
@@ -4580,8 +4528,7 @@ fn transcript_evidence_cache() -> &'static std::sync::Mutex<TranscriptEvidenceCa
 }
 
 fn transcript_evidence_ttl() -> f64 {
-    std::env::var("AMUX_TRANSCRIPT_EVIDENCE_TTL_S")
-        .ok()
+    crate::environment::process("AMUX_TRANSCRIPT_EVIDENCE_TTL_S")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or(15.0)
@@ -6010,7 +5957,7 @@ mod peek_history_is_verbatim {
     #[test]
     #[ignore]
     fn bench_render_real_transcript() {
-        let Ok(p) = std::env::var("AMUX_BENCH_JSONL") else { return };
+        let Some(p) = crate::environment::process("AMUX_BENCH_JSONL") else { return };
         let path = std::path::PathBuf::from(p);
         for pass in 0..3 {
             let t = std::time::Instant::now();
@@ -8536,8 +8483,7 @@ pub(crate) fn mint_capture_card(
     // capture claims Doing; follow-ups use triggered Backlog until the worker
     // explicitly switches. Neither state redispatches already-delivered work
     // (AMUX-2613); capture and execution attribution remain separate.
-    let window_s: i64 = std::env::var("AMUX_CAPTURE_DEDUP_WINDOW_S")
-        .ok()
+    let window_s: i64 = crate::environment::process("AMUX_CAPTURE_DEDUP_WINDOW_S")
         .and_then(|v| v.parse().ok())
         .unwrap_or(45);
     let cutoff = (now_ms / 1000) - window_s;
@@ -10824,8 +10770,7 @@ const STRANDED_TEXT_MAX: usize = 800;
 /// Expired is terminal and says delivery is unknown; it never authorizes a
 /// resend. `AMUX_SEND_RESERVATION_EXPIRE_S` overrides the default of one day.
 fn stranded_expire_secs() -> i64 {
-    std::env::var("AMUX_SEND_RESERVATION_EXPIRE_S")
-        .ok()
+    crate::environment::process("AMUX_SEND_RESERVATION_EXPIRE_S")
         .and_then(|v| v.trim().parse::<i64>().ok())
         .filter(|v| *v > 120)
         .unwrap_or(86_400)
@@ -12498,7 +12443,7 @@ pub(crate) const BG_VIEW_REFUSAL_PREFIX: &str = "session is in the background-co
 /// rule 1 is about; anything unrecognised means the default.
 fn bg_view_collapse_enabled() -> bool {
     !matches!(
-        std::env::var("AMUX_BG_VIEW_ACTION")
+        crate::environment::process("AMUX_BG_VIEW_ACTION")
             .unwrap_or_default()
             .trim(),
         "refuse" | "off" | "0"
@@ -15960,14 +15905,12 @@ fn user_shell() -> String {
 }
 
 fn tmux_cols() -> String {
-    std::env::var("AMUX_TMUX_COLS")
-        .ok()
+    crate::environment::process("AMUX_TMUX_COLS")
         .filter(|v| v.parse::<u32>().is_ok())
         .unwrap_or_else(|| "220".into())
 }
 fn tmux_rows() -> String {
-    std::env::var("AMUX_TMUX_ROWS")
-        .ok()
+    crate::environment::process("AMUX_TMUX_ROWS")
         .filter(|v| v.parse::<u32>().is_ok())
         .unwrap_or_else(|| "50".into())
 }
@@ -16094,8 +16037,7 @@ if buf: emit(buf,True)
 /// specimen was an 11MB file with no rotation at all, and two generations at
 /// 32MB is a bounded 64MB per session.
 fn log_rotate_bytes() -> u64 {
-    std::env::var("AMUX_LOG_MAX_MB")
-        .ok()
+    crate::environment::process("AMUX_LOG_MAX_MB")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(32)
         * 1024
@@ -16106,7 +16048,7 @@ fn log_rotate_bytes() -> u64 {
 /// instead of readable text. Worker output is never content-redacted.
 fn log_raw_capture() -> bool {
     matches!(
-        std::env::var("AMUX_LOG_RAW").unwrap_or_default().trim(),
+        crate::environment::process("AMUX_LOG_RAW").unwrap_or_default().trim(),
         "1" | "true" | "yes"
     )
 }
@@ -16115,8 +16057,7 @@ fn log_raw_capture() -> bool {
 /// is written out. Deliberately a quiet-detector rather than a periodic
 /// timer: a periodic flush cuts live spinner frames in half mid-word.
 fn log_flush_ms() -> u64 {
-    std::env::var("AMUX_LOG_FLUSH_MS")
-        .ok()
+    crate::environment::process("AMUX_LOG_FLUSH_MS")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|v| *v >= 100)
         .unwrap_or(2000)
@@ -16291,7 +16232,7 @@ fn build_claude_cmd(
     session_flag: &str,
     extra_flags: &str,
 ) -> String {
-    let custom = std::env::var("AMUX_CLAUDE_CMD")
+    let custom = crate::environment::process("AMUX_CLAUDE_CMD")
         .unwrap_or_default()
         .trim()
         .to_string();
@@ -20996,8 +20937,7 @@ fn get_claude_stats(work_dir: &str) -> Value {
 }
 
 fn plan_stale_hide_secs() -> f64 {
-    std::env::var("AMUX_PLAN_STALE_HIDE_HOURS")
-        .ok()
+    crate::environment::process("AMUX_PLAN_STALE_HIDE_HOURS")
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(24.0)
         * 3600.0
@@ -22498,8 +22438,8 @@ fn memory_shared_with(name: &str) -> Vec<String> {
 }
 
 fn mem_inherit_files() -> Vec<String> {
-    std::env::var("AMUX_MEMORY_INHERIT_FILES")
-        .unwrap_or_else(|_| "CLAUDE.md".into())
+    crate::environment::process("AMUX_MEMORY_INHERIT_FILES")
+        .unwrap_or_else(|| "CLAUDE.md".into())
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -22714,8 +22654,8 @@ pub(crate) fn ui_token_of(auth: Option<&str>) -> String {
 /// py:804 _session_destructive_allowed.
 fn session_destructive_allowed(state: &AppState, headers: &HeaderMap) -> bool {
     if matches!(
-        std::env::var("AMUX_ALLOW_AGENT_SESSION_DELETE").as_deref(),
-        Ok("1") | Ok("true") | Ok("yes")
+        crate::environment::process("AMUX_ALLOW_AGENT_SESSION_DELETE").as_deref(),
+        Some("1") | Some("true") | Some("yes")
     ) {
         return true;
     }
@@ -23418,8 +23358,7 @@ pub(crate) fn block_reason_explain(reason: &str, name: &str) -> String {
 /// How long a queued message may wait for an idle boundary before it is
 /// delivered mid-turn anyway. `AMUX_STEER_MAX_AGE_S`, default 10 minutes.
 pub(crate) fn steer_max_age_s() -> f64 {
-    std::env::var("AMUX_STEER_MAX_AGE_S")
-        .ok()
+    crate::environment::process("AMUX_STEER_MAX_AGE_S")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| *v > 0.0)
         .unwrap_or(600.0)
@@ -23431,8 +23370,7 @@ pub(crate) fn steer_max_age_s() -> f64 {
 /// TARGET that does not exist — the grace only covers the recreate/rename
 /// race, after which no amount of waiting changes the verdict.
 pub(crate) fn steer_dead_letter_s() -> f64 {
-    std::env::var("AMUX_STEER_DEAD_LETTER_S")
-        .ok()
+    crate::environment::process("AMUX_STEER_DEAD_LETTER_S")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| *v >= 60.0)
         .unwrap_or(3600.0)
@@ -23844,8 +23782,7 @@ pub(crate) fn pane_is_at_boundary(raw: &str) -> bool {
 /// every transient outage measured has resolved, and short enough that a
 /// message cannot sit for a day.
 pub(crate) fn steer_no_signal_max_age_s() -> f64 {
-    std::env::var("AMUX_STEER_NO_SIGNAL_MAX_AGE_S")
-        .ok()
+    crate::environment::process("AMUX_STEER_NO_SIGNAL_MAX_AGE_S")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| *v > 0.0)
         .unwrap_or(3600.0)
@@ -24383,8 +24320,7 @@ async fn capture_delivered_steering(
             .write_async(move |conn| {
                 // Already carded (enqueue-time direct mint)? Never double-card.
                 let retry_cutoff_ms = now_ms
-                    - std::env::var("AMUX_CAPTURE_DEDUP_WINDOW_S")
-                        .ok()
+                    - crate::environment::process("AMUX_CAPTURE_DEDUP_WINDOW_S")
                         .and_then(|v| v.parse::<i64>().ok())
                         .unwrap_or(45)
                         * 1000;
@@ -26432,8 +26368,7 @@ pub async fn pipe_reconcile_loop() {
 /// ~22 captures/second forever, paid on the resource the fleet is already
 /// contending for.
 fn rate_limit_sweep_secs() -> f64 {
-    std::env::var("AMUX_RATE_LIMIT_SWEEP_S")
-        .ok()
+    crate::environment::process("AMUX_RATE_LIMIT_SWEEP_S")
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| *v >= 10.0)
         .unwrap_or(60.0)
@@ -27662,8 +27597,7 @@ const SUBAGENT_STATE_WINDOW_S: i64 = 7 * 86_400;
 /// How long an unfinished subagent may go without writing before it reads as
 /// silent. `AMUX_SUBAGENT_SILENT_S` overrides the 30-minute default.
 fn subagent_silent_after_s() -> i64 {
-    std::env::var("AMUX_SUBAGENT_SILENT_S")
-        .ok()
+    crate::environment::process("AMUX_SUBAGENT_SILENT_S")
         .and_then(|v| v.parse().ok())
         .filter(|v: &i64| *v > 0)
         .unwrap_or(1800)
@@ -28959,8 +28893,7 @@ impl ConvAdopt {
 /// A live lane's hooks report their conversation id every few seconds, so this
 /// window is hundreds of missed reports, not a couple.
 fn conv_claim_stale_s() -> i64 {
-    std::env::var("AMUX_CONV_CLAIM_STALE_S")
-        .ok()
+    crate::environment::process("AMUX_CONV_CLAIM_STALE_S")
         .and_then(|v| v.trim().parse::<i64>().ok())
         .unwrap_or(1800)
 }
@@ -29930,7 +29863,7 @@ async fn post_dispatch(
 /// `software-project` and a bogus `zzz-does-not-exist` returned byte-identical
 /// 404s.
 pub(crate) fn templates_dir() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("AMUX_TEMPLATES_DIR") {
+    if let Some(v) = crate::environment::process("AMUX_TEMPLATES_DIR") {
         let p = PathBuf::from(v);
         if p.is_dir() {
             return Some(p);
@@ -30845,7 +30778,7 @@ async fn lifecycle_peer_gate(
     let queue_enabled = paused_send_queue_enabled_in(
         &home(),
         name,
-        std::env::var(PAUSED_SEND_QUEUE_KEY).ok().as_deref(),
+        crate::environment::process(PAUSED_SEND_QUEUE_KEY).as_deref(),
     );
     match peer_lifecycle_verdict(origin_lc, target_lc, running, queue_enabled) {
         PeerLifecycle::Pass => Ok(None),
@@ -32149,7 +32082,7 @@ pub(crate) fn apply_template_verb(body: &Value) -> Response {
             StatusCode::NOT_FOUND,
             json!({"error": "no templates directory on this machine",
                    "hint": "set AMUX_TEMPLATES_DIR, or install templates/ to ~/.amux/templates (install.sh does this)",
-                   "tried": [std::env::var("AMUX_TEMPLATES_DIR").unwrap_or_default(),
+                   "tried": [crate::environment::process("AMUX_TEMPLATES_DIR").unwrap_or_default(),
                              home().join("templates").display().to_string()]}),
         );
     };
@@ -32979,8 +32912,8 @@ pub(crate) fn commit_guard_verb(name: &str) -> Response {
         .trim()
         .to_lowercase();
     let global = !matches!(
-        std::env::var("AMUX_COMMIT_GUARD")
-            .unwrap_or_else(|_| "1".into())
+        crate::environment::process("AMUX_COMMIT_GUARD")
+            .unwrap_or_else(|| "1".into())
             .trim()
             .to_lowercase()
             .as_str(),
@@ -33018,8 +32951,8 @@ pub(crate) async fn dirty_verb(name: &str) -> Response {
 /// The mutating half of `commit-guard`, for the grouped git surface (AF-291).
 pub(crate) fn commit_guard_patch_verb(name: &str, body: &Value) -> Response {
     let global = !matches!(
-        std::env::var("AMUX_COMMIT_GUARD")
-            .unwrap_or_else(|_| "1".into())
+        crate::environment::process("AMUX_COMMIT_GUARD")
+            .unwrap_or_else(|| "1".into())
             .trim()
             .to_lowercase()
             .as_str(),
@@ -34186,8 +34119,7 @@ async fn delete_post_inner(state: &AppState, name: &str, headers: &HeaderMap) ->
 /// compact; wrong in the HIGH direction means the lane hits the wall, which is
 /// the failure this whole card exists to stop, so the default errs low.
 pub(crate) fn context_window() -> u64 {
-    std::env::var("AMUX_CONTEXT_WINDOW")
-        .ok()
+    crate::environment::process("AMUX_CONTEXT_WINDOW")
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(1_000_000)
@@ -38163,7 +38095,7 @@ pub(crate) async fn share_handler(
             // canonical port moved.
             let is_own_port = [
                 Some(crate::config::canonical_port().to_string()),
-                std::env::var("AMUX_RS_LEGACY_PORT").ok(),
+                crate::environment::process("AMUX_RS_LEGACY_PORT"),
             ]
             .into_iter()
             .flatten()
@@ -38407,7 +38339,7 @@ mod tests {
         };
         assert_eq!(probe(bare), "1", "the fixture must reproduce tmux's inherited translation");
         let script = super::provider_command_in_workspace("/", bare, None);
-        let expected = if std::env::var("AMUX_NATIVE_ARCH").ok().as_deref() == Some("0") { "1" } else { "0" };
+        let expected = if crate::environment::process("AMUX_NATIVE_ARCH").as_deref() == Some("0") { "1" } else { "0" };
         assert_eq!(probe(&script), expected, "the actual worker launcher must reset the preference seen by provider children");
     }
 

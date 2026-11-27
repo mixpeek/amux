@@ -221,7 +221,7 @@ pub(crate) fn wake_enabled_in(home: &std::path::Path, lane: &str, process: Optio
 }
 
 fn wake_enabled(lane: &str) -> bool {
-    let process = std::env::var(WAKE_KEY).ok();
+    let process = crate::environment::process(WAKE_KEY);
     wake_enabled_in(&crate::api::session_verbs::home(), lane, process.as_deref())
 }
 

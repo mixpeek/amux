@@ -16218,6 +16218,32 @@ const _SCOPE_EDIT_HINT = {
   connectors: 'JSON object keyed by connector. Each value can set enabled, account, and mcp; omitted connectors inherit.',
 };
 
+// The environment registry (GET /api/scope, env capability `registry`): the
+// keys a scope file can set and the order each one resolves in. Collapsed
+// inside the hint line, so the dialog gains no row on a phone.
+function _scopeEnvRegistryRender(reg) {
+  const hint = document.getElementById('scope-edit-hint');
+  if (!hint || !Array.isArray(reg)) return;
+  const scoped = reg.filter(r => r && r.scopable);
+  if (!scoped.length) return;
+  const det = document.createElement('details');
+  det.id = 'scope-env-registry';
+  const sum = document.createElement('summary');
+  sum.textContent = scoped.length + ' keys can be set per worker or group';
+  det.appendChild(sum);
+  const list = document.createElement('div');
+  list.className = 'scope-env-registry-list';
+  scoped.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'scope-env-registry-row';
+    row.dataset.key = r.key;
+    row.textContent = r.key + '  (' + (r.order || []).join(' > ') + ')  ' + (r.doc || '');
+    list.appendChild(row);
+  });
+  det.appendChild(list);
+  hint.appendChild(det);
+}
+
 async function _scopeEditOpen(lvl, name, key) {
   const bd = document.getElementById('scope-edit-backdrop');
   const ta = document.getElementById('scope-edit-input');
@@ -16271,6 +16297,7 @@ async function _scopeEditOpen(lvl, name, key) {
       document.getElementById('scope-edit-msg').textContent = keys.length
         ? 'Values are hidden. Re-enter a value to change it, leave KEY= to preserve it, or remove the line to delete it.'
         : '';
+      _scopeEnvRegistryRender(cap.registry);
     } else {
       text = JSON.stringify(v && Object.keys(v).length ? v : (Array.isArray(v) ? v : {}), null, 2);
     }

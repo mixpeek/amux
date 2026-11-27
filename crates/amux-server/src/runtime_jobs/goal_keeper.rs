@@ -82,12 +82,8 @@ fn env_f64(k: &str, d: f64) -> f64 {
 
 fn enabled(name: &str) -> bool {
     let off = |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off" | "no");
-    if let Ok(v) = std::env::var("AMUX_GOAL_CONTINUE") {
-        if !v.trim().is_empty() {
-            return !off(&v);
-        }
-    }
-    crate::api::session_verbs::scoped_setting_in(&crate::api::session_verbs::home(), name, "AMUX_GOAL_CONTINUE")
+    // Process env, then worker > group > global (environment::REGISTRY).
+    crate::environment::resolve(crate::environment::Scope::Lane(name), "AMUX_GOAL_CONTINUE")
         .map(|v| !off(&v))
         .unwrap_or(true)
 }

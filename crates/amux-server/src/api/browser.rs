@@ -2567,15 +2567,7 @@ pub(crate) fn profile_jar(dir: &std::path::Path) -> Option<crate::integrations::
 /// AMUX_BROWSER_DEFAULT_PROFILE (process env, then worker > group > global),
 /// else the registry's primary profile, else `default`.
 pub(crate) fn default_browser_profile(worker: &str) -> (String, &'static str) {
-    let scoped = std::env::var("AMUX_BROWSER_DEFAULT_PROFILE").ok().filter(|v| !v.trim().is_empty()).or_else(|| {
-        (!worker.is_empty()).then(|| {
-            crate::api::session_verbs::scoped_setting_in(
-                &crate::api::session_verbs::home(),
-                worker,
-                "AMUX_BROWSER_DEFAULT_PROFILE",
-            )
-        }).flatten()
-    });
+    let scoped = crate::environment::resolve(crate::environment::Scope::Lane(worker), "AMUX_BROWSER_DEFAULT_PROFILE");
     let reg = chrome::registry_load(&chrome::amux_home());
     crate::integrations::browser_logins::default_profile_for(scoped, &reg)
 }

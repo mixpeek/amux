@@ -11,6 +11,7 @@ pub mod backend;
 pub mod bridge;
 mod cargo_target_guard;
 pub mod config;
+pub mod environment;
 mod fanout_retirement;
 mod boot_watch;
 mod parent_watch;

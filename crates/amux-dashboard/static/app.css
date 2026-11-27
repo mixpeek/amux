@@ -11806,3 +11806,6 @@ body.view-outbound #email-approvals-banner { display: none !important; }
   .ob-actions .btn { flex: 1; min-height: 44px; }
   .ob-actions .ob-approve { flex: 1 0 100%; }
 }
+
+/* Scope tab: the scopable env keys listed under the editor hint (environment registry). */
+.scope-env-registry-list { max-height: 30vh; overflow: auto; font-family: var(--font-mono); }

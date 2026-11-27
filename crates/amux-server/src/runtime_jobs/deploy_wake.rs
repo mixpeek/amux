@@ -82,7 +82,7 @@ pub(crate) fn deploy_wake_enabled_in(home: &Path, lane: &str, process_value: Opt
 }
 
 fn deploy_wake_enabled(lane: &str) -> bool {
-    let process_value = std::env::var(DEPLOY_WAKE_KEY).ok();
+    let process_value = crate::environment::process(DEPLOY_WAKE_KEY);
     deploy_wake_enabled_in(
         &crate::api::session_verbs::home(),
         lane,

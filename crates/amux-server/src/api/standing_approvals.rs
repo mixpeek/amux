@@ -713,7 +713,7 @@ pub fn enabled_from(process_value: Option<&str>, scoped: Option<&str>) -> bool {
 }
 
 pub fn enabled(session: &str) -> bool {
-    let process_value = std::env::var(KILL_SWITCH_KEY).ok();
+    let process_value = crate::environment::process(KILL_SWITCH_KEY);
     let scoped = if session.trim().is_empty() {
         None
     } else {
