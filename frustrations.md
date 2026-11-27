@@ -6309,3 +6309,15 @@ SYMPTOM: `amux land --detach --sha` from a `git clone --shared ~/Dev/mixpeek` sc
 COST: about 15 to 30 minutes per refusal on a critical-path harness fix, each spent rebasing and retrying.
 MECHANISM: the clone's origin is the local checkout, whose main lags GitHub's. The guards, the conflict check, the lease and the push all read $remote, and land_gate.py reads origin, so every step compared against the stale main. A land that passed the check would have pushed into the local checkout (git refuses that for a checked-out branch), never reaching GitHub.
 FIX: cmd_land points a clone's remote at the URL its local source uses for that remote (up to three hops) and logs verdict=land_remote_canonicalized; a bare local origin is left alone. AMUX_LAND_KEEP_LOCAL_REMOTE=1 opts out. scripts/test-land-shared-clone-remote.sh reproduces the false conflict before the fix and lands on the canonical remote after it.
+
+## amux land --cancel reports "cancelled" for a waiter whose commits a holder already put in its batch
+AREA: land
+SEVERITY: slows
+STATUS: fixed
+DATE: 2026-11-27
+SESSION: mxp-gs12
+CARD: AF-1435
+SYMPTOM: `amux land --cancel 3109689` printed "cancelled detached land pid 3109689 (process group)" at 17:55:22Z. mixpeek-cicd-lag's holder had composed its batch at 17:54:31Z with that ticket in it, and the five commits landed in 9accd0304a before 18:05:07Z. Neither the cancel nor `amux land --status` said the commits were in a batch in flight.
+COST: main red on ci/tests/test_nothing_reads_zb.py from the push until a fix landed, and a wrong "pulled before it landed" note to mixpeek-meta-worker.
+MECHANISM: the holder kept the tickets it batched only in a local variable (stack_in). The cancel kills the waiter's process group and removes its ticket. The holder never reads the ticket again before pushing, so nothing outside the holder knew the commits were committed to a push.
+FIX: the holder writes `<queue>/.inbatch-<ticket>` (holder lane, pid, composed time, sha) on every stack build and removes it when it tells the waiter. Every cancel path (`--cancel` detached, by waiter pid, unrecorded, and `--cancel-for`) reads it before the kill and prints and logs `WARN verdict=land_cancel_in_batch` naming the holder's batch and how to stop it. `--cancel-for`'s message to the lane no longer says "Nothing was pushed" in that case. `--status` lists "in <holder>'s batch in flight" tickets. The cancel still does not take commits out of a composed batch; it says they land unless the batch fails. scripts/test-land-cancel-in-batch.sh drives a real three-lane batch.

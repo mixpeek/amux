@@ -9887,6 +9887,13 @@ _land_status() {
     [ "$who" = "$me" ] && [ -z "$mine" ] && mine=$n
   done
   [ "$n" -gt 0 ] || echo "queue: empty"
+  # A ticket the holder already composed into its batch lands with it even if
+  # its waiter is cancelled now (mxp-gs12, 2026-11-27).
+  local _ibt _ibw _ibhl _ibhp _ibage _ibsha
+  while read -r _ibt _ibw _ibhl _ibhp _ibage _ibsha; do
+    [ -n "$_ibt" ] || continue
+    echo "in $_ibhl's batch in flight: $_ibw (pid ${_ibt##*-}, ${_ibsha}), composed ${_ibage}s ago; a cancel now does not take it out"
+  done <<< "$(_land_inbatch "" "$q")"
   local df dp
   for df in "$HOME/.amux/locks/detached"/*; do
     [ -f "$df" ] || continue
@@ -9946,6 +9953,12 @@ _land_cancel_for() {
       echo "amux land: ticket ${tk##*/} belongs to $tkwho, not $lane; not cancelled" >&2; return 1
     fi
     pg="$(ps -o pgid= -p "$want" 2>/dev/null | tr -d ' ' || true)"
+    local _ibf _ibfhl _pushed="Nothing was pushed for it"
+    _ibf="$(_land_inbatch "$want")"
+    if [ -n "$_ibf" ]; then
+      _ibfhl="$(printf '%s\n' "$_ibf" | awk 'NR==1{print $3}')"
+      _pushed="Its commits were already in ${_ibfhl}'s batch in flight, so they land unless that batch fails"
+    fi
     if [ -n "$pg" ] && [ "$pg" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
       kill -TERM -- "-$pg" 2>/dev/null || kill -TERM "$want" 2>/dev/null || true
     else
@@ -9956,7 +9969,8 @@ _land_cancel_for() {
     [ -n "$pg" ] && rm -f -- "$HOME/.amux/locks/detached/$pg"
     printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "cancelled $lane's queued land (waiter pid $want, pgid ${pg:-?}, ticket ${tk##*/}); reason: $reason" >> "$HOME/.amux/logs/land.log"
     echo "amux land: cancelled $lane's queued land (waiter pid $want, ticket ${tk##*/}); $lane is told"
-    command -v amux >/dev/null 2>&1 && printf '%s\n' "Your queued land (waiter pid $want, ticket ${tk##*/}) was cancelled by $me: $reason. Nothing was pushed for it; run amux land again when it is ready." \
+    _land_cancel_in_batch "$want" "$me" "$_ibf"
+    command -v amux >/dev/null 2>&1 && printf '%s\n' "Your queued land (waiter pid $want, ticket ${tk##*/}) was cancelled by $me: $reason. $_pushed; run amux land again when it is ready." \
       | amux send "$lane" --stdin >/dev/null 2>&1 || true
     n=$((n + 1))
   done
@@ -10123,6 +10137,40 @@ _land_lease_check() {
   return "$rc"
 }
 
+# _land_inbatch [pid]: tickets a live holder has put in a batch in flight, one
+# line each: "<ticket> <waiter lane> <holder lane> <holder pid> <age s> <sha>".
+# With a pid, only the tickets whose waiter is that pid or in its process
+# group (a detached land's record names the group leader, not the waiter).
+# A second argument limits it to one queue directory.
+_land_inbatch() {
+  local want="${1:-}" qd="${2:-}" f tk wp hl hp at sha now files
+  now="$(date +%s)"
+  if [ -n "$qd" ]; then files=("$qd"/.inbatch-*); else files=("$HOME"/.amux/locks/land-*.q/.inbatch-*); fi
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    tk="${f##*/.inbatch-}"; wp="${tk##*-}"
+    { read -r hl; read -r hp; read -r at; read -r sha; } < "$f" 2>/dev/null || continue
+    kill -0 "$hp" 2>/dev/null || continue
+    if [ -n "$want" ] && [ "$wp" != "$want" ]; then
+      [ "$(ps -o pgid= -p "$wp" 2>/dev/null | tr -d ' ')" = "$want" ] || continue
+    fi
+    printf '%s %s %s %s %s %s\n' "$tk" "$(head -1 "${f%/*}/$tk" 2>/dev/null || echo ?)" "$hl" "$hp" "$(( now - ${at:-$now} ))" "${sha:0:10}"
+  done
+  return 0
+}
+
+# _land_cancel_in_batch <pid> <lane> <_land_inbatch lines>: say, after a
+# cancel, that the stopped waiter's commits ride a batch in flight anyway.
+_land_cancel_in_batch() {
+  local pid="$1" me="$2" tk w hl hp age sha
+  while read -r tk w hl hp age sha; do
+    [ -n "$tk" ] || continue
+    echo "amux land: WARN verdict=land_cancel_in_batch: its commits (${sha}) are already in $hl's batch in flight (holder pid $hp, composed ${age}s ago); stopping the waiter does not take them out, and they land unless that batch fails. Revert after it lands, or amux land --cancel-for $hl $hp --reason <why> to stop the whole batch" >&2
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "WARN verdict=land_cancel_in_batch: cancelled waiter pid $pid's ticket $tk (${sha}) is in $hl's batch in flight (holder pid $hp, composed ${age}s ago)" >> "$HOME/.amux/logs/land.log"
+  done <<< "$3"
+  return 0
+}
+
 _land_cancel() {
   local want="${1:-}" me="${AMUX_WORKER:-${AMUX_SESSION:-$(whoami)}}" d="$HOME/.amux/locks/detached" f pid who where here n=0 all=0
   # --all: every detached land of this session, whatever checkout it came from
@@ -10149,9 +10197,12 @@ _land_cancel() {
       [ "$where" = "$here" ] || continue
     fi
     if kill -0 "$pid" 2>/dev/null; then
+      # Read before the kill: the waiter's process group is gone after it.
+      local _ib; _ib="$(_land_inbatch "$pid")"
       kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
       echo "amux land: cancelled detached land pid $pid (process group) for $me in ${where:-unknown checkout}"
       printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "cancelled detached land (pid $pid, ${where:-unknown checkout})" >> "$HOME/.amux/logs/land.log"
+      _land_cancel_in_batch "$pid" "$me" "$_ib"
       n=$((n + 1))
     fi
     rm -f -- "${f:?}"
@@ -10183,7 +10234,9 @@ _land_cancel() {
         printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$me" "left land pid $pid (pgid $pgid, $here) alone: owner ${powner:-unrecorded}, not $me" >> "$HOME/.amux/logs/land.log"
         continue
       fi
+      local _ibu; _ibu="$(_land_inbatch "$pgid")"
       kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      _land_cancel_in_batch "$pid" "$me" "$_ibu"
       sleep 3
       kill -0 "$pid" 2>/dev/null && { kill -KILL -- "-$pgid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; }
       echo "amux land: cancelled unrecorded land pid $pid (process group $pgid) in $here"
@@ -10203,7 +10256,9 @@ _land_cancel() {
         [ -f "$_t" ] || continue
         [ "$(sed -n 1p "$_t")" = "$me" ] || { echo "amux land: ticket ${_t##*/} belongs to $(sed -n 1p "$_t"), not $me; not cancelled" >&2; return 1; }
         _pg="$(ps -o pgid= -p "$want" 2>/dev/null | tr -d ' ' || true)"
+        local _ibw; _ibw="$(_land_inbatch "$want")"
         kill -TERM -- "-${_pg:-$want}" 2>/dev/null || kill -TERM "$want" 2>/dev/null || true
+        _land_cancel_in_batch "$want" "$me" "$_ibw"
         sleep 2; kill -0 "$want" 2>/dev/null && { kill -KILL -- "-${_pg:-$want}" 2>/dev/null || kill -KILL "$want" 2>/dev/null || true; }
         rm -f -- "${_t:?}"
         [ -n "$_pg" ] && rm -f -- "$d/$_pg"
@@ -13722,8 +13777,19 @@ p.communicate(msg.encode())
 "
       n=$((n + 1))
     done
+    # Which tickets this holder carries, for `--cancel` and `--status`: a
+    # waiter cancelled after this point is still pushed with the batch, and
+    # its cancel used to say only "cancelled" (mxp-gs12, 2026-11-27: pid
+    # 3109689's five commits landed in 9accd0304a ten minutes after it).
+    # Rewritten on every build; a stale one names a holder that is gone.
+    rm -f -- "$q"/.inbatch-* 2>/dev/null || true
     if [ -n "$stack_in" ]; then
       _land_log "stack built in $(( $(date +%s) - _st0 ))s ($(printf '%s' "$stack_in" | grep -c .) waiter(s))"
+      local _ib _ibw
+      while read -r _ib _ibw; do
+        [ -n "$_ib" ] || continue
+        printf '%s\n%s\n%s\n%s\n' "$me" "$$" "$(date +%s)" "$(sed -n 2p "$q/$_ib" 2>/dev/null)" > "$q/.inbatch-$_ib"
+      done <<< "$stack_in"
     fi
     if [ -n "$_left" ]; then
       local _la; read -r -a _la <<< "$_left"
@@ -13829,6 +13895,7 @@ $f"
     while read -r tk rest; do
       [ -n "$tk" ] || continue
       echo "$1" > "$rdir/$tk"
+      rm -f -- "${q:?}/.inbatch-${tk:?}"
       case "$1" in landed\ *) rm -f -- "${q:?}/${tk:?}" ;; esac
     done <<< "$stack_in"
   }
