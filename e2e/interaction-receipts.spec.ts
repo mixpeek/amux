@@ -252,10 +252,10 @@ test('nonqueueable command reports server failure and sends a diagnostic', async
     if(route.request().postDataJSON()?.verdict==='failed') failed=true;
     return route.fulfill({json:{ok:true}});
   });
-  await page.route('**/api/files/mdai/run',route=>route.fulfill({status:500,json:{error:'Execution failed'}}));
+  await page.route('**/api/mdai/run',route=>route.fulfill({status:500,json:{error:'Execution failed'}}));
   const receipt=await page.evaluate(async()=>{
-    await fetch('/api/files/mdai/run',{method:'POST',body:'{}'});
-    return (window as any).__amuxInteractions.recent(200).find((r:any)=>r.request.path==='/api/files/mdai/run');
+    await fetch('/api/mdai/run',{method:'POST',body:'{}'});
+    return (window as any).__amuxInteractions.recent(200).find((r:any)=>r.request.path==='/api/mdai/run');
   });
   expect(receipt.phase).toBe('failed');
   await expect.poll(()=>failed).toBe(true);

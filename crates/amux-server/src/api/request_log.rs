@@ -2853,44 +2853,44 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["POST"],
     },
     RouteEntry {
-        path: "/api/files/mdai",
+        path: "/api/debug/legacy-routes",
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/files/mdai/run",
+        path: "/api/mdai",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/mdai/run",
         methods: &["POST"],
     },
     RouteEntry {
-        path: "/api/files/mdai/history",
+        path: "/api/mdai/history",
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/files/mdai/graph",
+        path: "/api/mdai/graph",
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/files/mdai/chat",
+        path: "/api/mdai/chat",
         methods: &["GET", "POST"],
     },
     RouteEntry {
-        path: "/api/files/mdai/connect",
+        path: "/api/mdai/connect",
         methods: &["POST"],
     },
     RouteEntry {
-        path: "/api/files/mdai/active",
+        path: "/api/mdai/active",
         methods: &["GET"],
     },
     RouteEntry {
-        path: "/api/files/mdai/cancel",
+        path: "/api/mdai/cancel",
         methods: &["POST"],
     },
     RouteEntry {
-        path: "/api/files/mdai/doc",
+        path: "/api/mdai/doc",
         methods: &["GET", "PUT"],
-    },
-    RouteEntry {
-        path: "/api/files/mdai/chat",
-        methods: &["GET", "POST"],
     },
     RouteEntry {
         path: "/api/fs/mkdir",

@@ -163,7 +163,7 @@ fn latency_min_samples() -> i64 {
     env_i64("AMUX_AUTOFIX_LATENCY_MIN_SAMPLES", 30).max(5)
 }
 /// Endpoints whose DESIGN includes a long blocking call, with their design
-/// budget (AMUX-3485). POST /api/files/mdai/run is a model synthesis whose
+/// budget (AMUX-3485). POST /api/mdai/run is a model synthesis whose
 /// accepted duration is ~100s for a large node (AF-142 — measured, judged,
 /// and recommended for acceptance); its per-node budget is MODEL_TIMEOUT_S
 /// (150s). A 10s outlier threshold under a 150s design budget files a card
@@ -173,6 +173,9 @@ fn latency_min_samples() -> i64 {
 /// endpoint's own timeout failed to bound the call — the one latency story
 /// on these routes that IS wrong.
 const LONG_BY_DESIGN: &[(&str, f64)] = &[
+    ("/api/mdai/run", 150_000.0),
+    // The legacy spelling (aliases.rs) reaches the same handler, and the
+    // request log records the RAW path, so it keeps the same budget.
     ("/api/files/mdai/run", 150_000.0),
     // GET /api/sessions/{name}/peek (AF-1167). The full peek (history) reads
     // the pane with a 10s capture-pane bound, then geometry and the transcript,
@@ -15682,8 +15685,8 @@ mod tests {
             Row {
                 ts: now - 500.0,
                 method: "POST",
-                path: "/api/files/mdai/run",
-                family: "/api/files",
+                path: "/api/mdai/run",
+                family: "/api/mdai",
                 status: 200,
                 body: "",
                 worker: "",
@@ -15694,7 +15697,7 @@ mod tests {
         let (f, _) = detect_latency(&st.store.read().unwrap(), now);
         assert!(
             !f.iter()
-                .any(|x| x.signature.contains("/api/files/mdai/run")),
+                .any(|x| x.signature.contains("/api/mdai/run")),
             "a synthesis inside its 150s design budget is designed behavior: {f:?}"
         );
         log_row(
@@ -15702,8 +15705,8 @@ mod tests {
             Row {
                 ts: now - 100.0,
                 method: "POST",
-                path: "/api/files/mdai/run",
-                family: "/api/files",
+                path: "/api/mdai/run",
+                family: "/api/mdai",
                 status: 200,
                 body: "",
                 worker: "",
@@ -15714,7 +15717,7 @@ mod tests {
         let (f2, _) = detect_latency(&st.store.read().unwrap(), now + 1.0);
         assert!(
             f2.iter()
-                .any(|x| x.signature.contains("/api/files/mdai/run")),
+                .any(|x| x.signature.contains("/api/mdai/run")),
             "past the design budget the endpoint's own timeout failed — that must file: {f2:?}"
         );
     }

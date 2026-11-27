@@ -2614,7 +2614,7 @@ fn run_dag_inner(
 /// Wall-clock budget for the scan. AF-129: the $HOME default root makes this
 /// walk's size unknowable (the comment on `mdai_root` already records it
 /// timing out the live list request, AMUX-3310), and with NO time bound one
-/// slow or kernel-blocking directory turned `GET /api/files/mdai` into the
+/// slow or kernel-blocking directory turned `GET /api/mdai` into the
 /// route that silently wedged the whole pre-push gate — three orphaned test
 /// processes, the oldest 23h. A budget makes the walk answer with what it
 /// found; the `truncated` flag and the WARN below make the cut visible
@@ -2691,7 +2691,7 @@ fn header_session(headers: &HeaderMap) -> Option<String> {
 /// (ts, status, dur_ms, cached, error) of a node's newest run.
 type LastRunRow = (i64, String, Option<i64>, bool, Option<String>);
 
-/// `GET /api/files/mdai` - every `.mdai` file under the root with metadata.
+/// `GET /api/mdai` - every `.mdai` file under the root with metadata.
 async fn list(State(state): State<AppState>) -> Response {
     let store = state.store.clone();
     let res = crate::db::interactions::spawn_blocking(move || {
@@ -2869,7 +2869,7 @@ pub(crate) fn resume_interrupted(store: std::sync::Arc<Store>) {
     }
 }
 
-/// `POST /api/files/mdai/run {path, wait?}` - run the DAG and record history.
+/// `POST /api/mdai/run {path, wait?}` - run the DAG and record history.
 ///
 /// One run per node: a request for a node that is already running JOINS it
 /// (`joined: true`) rather than starting a second chain. The run is computed on
@@ -2927,7 +2927,7 @@ async fn run(
     }
 }
 
-/// `GET /api/files/mdai/active[?path=]` - the run in flight for one node
+/// `GET /api/mdai/active[?path=]` - the run in flight for one node
 /// (progress, elapsed, cancel state) or the last outcome this process saw; with
 /// no `path`, every run in flight. A dashboard that reloads mid-run reads its
 /// state from here instead of guessing.
@@ -2951,7 +2951,7 @@ async fn active_runs(Query(q): Query<HashMap<String, String>>) -> Response {
     }
 }
 
-/// `POST /api/files/mdai/cancel {path}` - stop the node's run in flight. The
+/// `POST /api/mdai/cancel {path}` - stop the node's run in flight. The
 /// model helper's process group is killed and the node records a `cancelled`
 /// row; a waiting caller gets 409 with that message.
 async fn cancel_run(Json(body): Json<Value>) -> Response {
@@ -3025,7 +3025,7 @@ fn used_by_index(root_canon: &Path, files: &[PathBuf]) -> HashMap<String, Vec<St
     idx
 }
 
-/// `GET /api/files/mdai/graph?path=...` - a node's sources and the nodes that
+/// `GET /api/mdai/graph?path=...` - a node's sources and the nodes that
 /// use it. "Used by" needs every file read, so it carries the scan's
 /// `truncated` flag: a partial scan cannot read as "nothing uses this".
 async fn graph(Query(q): Query<HashMap<String, String>>) -> Response {
@@ -3059,7 +3059,7 @@ async fn graph(Query(q): Query<HashMap<String, String>>) -> Response {
     }
 }
 
-/// `GET /api/files/mdai/history?path=...` - newest-first run history for a node.
+/// `GET /api/mdai/history?path=...` - newest-first run history for a node.
 async fn history(
     State(state): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
@@ -3143,7 +3143,7 @@ async fn history(
     }
 }
 
-/// `POST /api/files/mdai/connect {source, target, prompt?}` - add an edge from
+/// `POST /api/mdai/connect {source, target, prompt?}` - add an edge from
 /// `source` into `target`, writing the (default or given) edge prompt into the
 /// target's frontmatter.
 async fn connect(State(_state): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -3257,7 +3257,7 @@ mod tests {
     /// AMUX-3765: a model TIMEOUT is a 504, a model FAULT is a 502, and the two
     /// send a reader to different places.
     ///
-    /// The filed card was `POST /api/files/mdai/run -> HTTP 502` with the body
+    /// The filed card was `POST /api/mdai/run -> HTTP 502` with the body
     /// "claude did not answer within 150s". 502 says the upstream answered with
     /// something unusable, so it points at the model or the parse. The evidence
     /// said otherwise: three sibling calls the same minute finished at 105-125s
@@ -4339,7 +4339,7 @@ mod tests {
         )
         .expect("dashboard app.js not found");
         let at = app_js
-            .find("'/api/files/mdai/run'")
+            .find("'/api/mdai/run'")
             .expect("no mdai run call found in app.js — did it move?");
         let call = &app_js[at..(at + 400).min(app_js.len())];
         assert!(

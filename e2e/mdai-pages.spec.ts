@@ -208,7 +208,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     let srcHeld = 0;
     let releaseSrc: () => void = () => {};
     const srcGate = new Promise<void>((r) => { releaseSrc = r; });
-    await page.route('**/api/files/mdai/doc', async (route) => {
+    await page.route('**/api/mdai/doc', async (route) => {
       if (route.request().method() !== 'PUT' || srcHeld++) return route.continue();
       const res = await route.fetch();
       await srcGate;
@@ -221,7 +221,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     releaseSrc();
     await expect(page.getByText('Sources saved')).toBeVisible();
     await expect(page.locator('#mdai-fetch-url')).toHaveValue('');
-    await page.unroute('**/api/files/mdai/doc');
+    await page.unroute('**/api/mdai/doc');
     await page.locator('#mdai-fetch-url').fill(api.url + '/data');
     text = await fileText(file);
     expect(text).toContain('amux:messages?days=30&limit=150&offset=10&kb=200');
@@ -242,7 +242,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     // Hold the response so this always happens: the late response must not
     // wipe what was typed after it was sent.
     let held = 0;
-    await page.route('**/api/files/mdai/doc', async (route) => {
+    await page.route('**/api/mdai/doc', async (route) => {
       if (route.request().method() !== 'PUT' || held++) return route.continue();
       const res = await route.fetch();
       await new Promise((r) => setTimeout(r, 1500));
@@ -255,7 +255,7 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-save-btn')).toHaveText('Save');
     await page.locator('#mdai-save-btn').click();
     await expect.poll(() => fileText(file)).toContain('Keep it short.');
-    await page.unroute('**/api/files/mdai/doc');
+    await page.unroute('**/api/mdai/doc');
     // Raw file mode edits the whole text; the server refuses a file that does not parse.
     await page.locator('#mdai-body .mdai-seg button[data-mode=raw]').click();
     await expect(page.locator('#mdai-body-ta')).toHaveValue(await fileText(file));
@@ -281,8 +281,8 @@ test('MDAI: create and configure a node entirely in the UI, every field round-tr
     await expect(page.locator('#mdai-runbanner.mdai-runbanner')).toBeVisible();
     await expect(page.locator('#mdai-run-btn')).toBeDisabled();
     // A second client asking for the same node joins the run in flight.
-    await expect.poll(async () => (await (await request.get('/api/files/mdai/active?path=' + encodeURIComponent(file), { headers })).json()).running).toBe(true);
-    const second = await request.post('/api/files/mdai/run', { headers, data: { path: file, wait: false } });
+    await expect.poll(async () => (await (await request.get('/api/mdai/active?path=' + encodeURIComponent(file), { headers })).json()).running).toBe(true);
+    const second = await request.post('/api/mdai/run', { headers, data: { path: file, wait: false } });
     expect(second.status()).toBe(202);
     expect((await second.json()).joined).toBe(true);
     await tab(page, 'runs');
@@ -534,7 +534,7 @@ test('MDAI: last opened sorts the list, shows in Files, and Escape goes back', a
 //
 // 1. The page, against a stubbed chat endpoint: the composer, the exchange, the
 //    changed-lines view, the run that follows, undo, a refused edit, and the
-//    phone layout. Only /api/files/mdai/chat and /run are stubbed; the doc API
+//    phone layout. Only /api/mdai/chat and /run are stubbed; the doc API
 //    is the real server's.
 // 2. The whole path on a real server: POST /chat calls the server's model
 //    client, which the `mdai_api_base` pref points at a loopback stand-in for
@@ -577,9 +577,9 @@ test('MDAI chat: the page shows the exchange and the changed lines, runs again, 
   let runs = 0;
   let refuse = false;
   try {
-    await page.route('**/api/files/mdai/chat?**', r => r.fulfill({ json: { path: 'Workstream Resumption.mdai', turns: [], unreadable: 0, measured: true, n_considered: 0 } }));
-    await page.route('**/api/files/mdai/run', r => { runs++; return r.fulfill({ status: 503, json: { error: 'no model in this test' } }); });
-    await page.route('**/api/files/mdai/chat', async r => {
+    await page.route('**/api/mdai/chat?**', r => r.fulfill({ json: { path: 'Workstream Resumption.mdai', turns: [], unreadable: 0, measured: true, n_considered: 0 } }));
+    await page.route('**/api/mdai/run', r => { runs++; return r.fulfill({ status: 503, json: { error: 'no model in this test' } }); });
+    await page.route('**/api/mdai/chat', async r => {
       const body = r.request().postDataJSON();
       posts.push(body);
       if (refuse) {
@@ -590,7 +590,7 @@ test('MDAI chat: the page shows the exchange and the changed lines, runs again, 
       const after = NODE.replace('  prompt: My Amux message history.\n', '  prompt: My Amux message history.\n- path: ' + NEW_SOURCE + '\n  prompt: Messages about lifecycle work.\n')
         .replace(/# Workstream Resumption\n\n[\s\S]*$/, NEW_BODY);
       await writeFile(s.file, after);
-      const doc = await (await request.get('/api/files/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
+      const doc = await (await request.get('/api/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
       return r.fulfill({ json: { ok: true, changed: true, doc,
         turn: { ts: Date.now(), message: body.message, reply: 'Added a Lifecycle column and a source for lifecycle messages.', changed: true, body_changed: true, sources_changed: true,
           before: NODE, after, truncated: false, model: 'sonnet', dur_ms: 4200, error: null } } });
@@ -672,12 +672,12 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
   const s = await setup(page, request, 'amux-mdai-chat-slow-');
   let posts = 0;
   try {
-    await page.route('**/api/files/mdai/chat?**', r => r.fulfill({ json: { path: 'Workstream Resumption.mdai', turns: [], unreadable: 0, measured: true, n_considered: 0 } }));
-    await page.route('**/api/files/mdai/chat', async r => {
+    await page.route('**/api/mdai/chat?**', r => r.fulfill({ json: { path: 'Workstream Resumption.mdai', turns: [], unreadable: 0, measured: true, n_considered: 0 } }));
+    await page.route('**/api/mdai/chat', async r => {
       posts++;
       const body = r.request().postDataJSON();
       await new Promise(res => setTimeout(res, 17_000));
-      const doc = await (await request.get('/api/files/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
+      const doc = await (await request.get('/api/mdai/doc?path=' + encodeURIComponent(s.file), { headers: s.headers })).json();
       return r.fulfill({ json: { ok: true, changed: false, doc,
         turn: { ts: Date.now() - 7_200_000, message: body.message, reply: 'The table already covers lifecycle work.', changed: false, model: 'sonnet', dur_ms: 17000, error: null } } }).catch(() => {});
     });
@@ -690,7 +690,7 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
     // Turn times are milliseconds; read as seconds every turn said "just now".
     await expect(page.locator('#mdai-chat-log .mdai-msg.me .mdai-msg-meta').first()).toHaveText('2h ago');
     const queued = await page.evaluate(() => JSON.parse(localStorage.getItem('amux_offline_queue') || '[]')
-      .filter((q: any) => String(q.url || '').includes('/api/files/mdai/chat')).length);
+      .filter((q: any) => String(q.url || '').includes('/api/mdai/chat')).length);
     expect(queued, 'no chat left in the offline outbox').toBe(0);
     expect(posts, 'the message went to the server once').toBe(1);
     await page.screenshot({ path: info.outputPath('mdai-chat-slow.png') });
@@ -701,12 +701,12 @@ test('MDAI chat: a reply slower than the 15s write bound still lands, once, with
 });
 
 // A chat queued before the fix stays in the outbox, and its replay is refused
-// 409 forever (Ethan's screenshot: "POST /api/files/mdai/chat 409: This node
+// 409 forever (Ethan's screenshot: "POST /api/mdai/chat 409: This node
 // changed on disk"). The page drops such entries at load and keeps the rest.
 test('MDAI chat: a stuck chat in the offline outbox is dropped at load, other pending work is kept', async ({ page }) => {
   await page.goto('/');
   await page.evaluate(() => localStorage.setItem('amux_offline_queue', JSON.stringify([
-    { id: 'stuck-chat', url: '/api/files/mdai/chat', options: { method: 'POST', body: '{"path":"/x.mdai","message":"m"}' }, timestamp: Date.now() - 660_000,
+    { id: 'stuck-chat', url: '/api/mdai/chat', options: { method: 'POST', body: '{"path":"/x.mdai","message":"m"}' }, timestamp: Date.now() - 660_000,
       state: 'pending', error: '409: This node changed on disk since you opened it. Reload, then send your message again.' },
     { id: 'keep-blocked', url: '/api/board', options: { method: 'POST', body: '{"title":"held"}' }, timestamp: Date.now(), state: 'blocked' },
   ])));
@@ -749,8 +749,8 @@ test('MDAI chat: a real server edits the file through the model and the next run
   const s = await setup(page, request, 'amux-mdai-chat-real-');
   const api = await chatMessagesApi();
   try {
-    const probe = await request.get('/api/files/mdai/chat?path=' + encodeURIComponent(s.file), { headers: s.headers });
-    test.skip(probe.status() === 404 || probe.status() === 405, 'this server was built without POST /api/files/mdai/chat (run with AMUX_E2E_WORKING_TREE=1 to test uncommitted server code)');
+    const probe = await request.get('/api/mdai/chat?path=' + encodeURIComponent(s.file), { headers: s.headers });
+    test.skip(probe.status() === 404 || probe.status() === 405, 'this server was built without POST /api/mdai/chat (run with AMUX_E2E_WORKING_TREE=1 to test uncommitted server code)');
     expect(probe.ok()).toBeTruthy();
     expect((await s.pref('mdai_api_base', api.url)).ok()).toBeTruthy();
     await openNode(page, s.file);

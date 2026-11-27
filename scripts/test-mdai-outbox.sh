@@ -63,7 +63,7 @@ geval(grabFn("_isLocallyQueued"));
 
 const fails = [];
 const t = (n, c) => { if (!c) fails.push(n); };
-const RUN = "/api/files/mdai/run";
+const RUN = "/api/mdai/run";
 const post = { method: "POST", body: "{}" };
 
 // 1. THE BUG: an mdai run must be refused by the outbox.
@@ -72,7 +72,11 @@ t("the absolute-url form is refused too",
   _outboxQueueable("https://localhost:8824" + RUN, post) === false);
 // 1b. A chat edit is a model call past the 15s mutation bound: it must go out
 //     unbounded and never be replayed from the outbox.
-t("an mdai chat is not queueable", _outboxQueueable("/api/files/mdai/chat", post) === false);
+t("an mdai chat is not queueable", _outboxQueueable("/api/mdai/chat", post) === false);
+// 1c. The legacy spelling still rewrites to the same handler (aliases.rs), and
+//     an old tab may still send it: it must be refused the same way.
+t("the legacy mdai run spelling is not queueable", _outboxQueueable("/api/files/mdai/run", post) === false);
+t("the legacy mdai chat spelling is not queueable", _outboxQueueable("/api/files/mdai/chat", post) === false);
 t("_mdaiChatSend consults _isLocallyQueued", /_isLocallyQueued\(\s*r\s*\)/.test(grabFn("_mdaiChatSend")));
 
 // 2. THE CONTROL, load-bearing: the outbox must still ACCEPT ordinary mutations.
@@ -87,7 +91,7 @@ t("an ordinary session send is still queueable",
 //    answer-now; history and connect are ordinary writes. A regex of
 //    `files/mdai` would over-skip and this is what catches that.
 t("mdai connect is still queueable",
-  _outboxQueueable("/api/files/mdai/connect", post) === true);
+  _outboxQueueable("/api/mdai/connect", post) === true);
 
 // 4. THE CALLER-SIDE GUARD. A synthetic 202 must be recognised as NOT a run.
 const queued = new Response(JSON.stringify({ ok: true, queued: true, offline: true }),
@@ -114,6 +118,8 @@ if [ "$out" = "ALLOK" ]; then
   for c in "an mdai run is not queueable" \
            "the absolute-url form is refused too" \
            "an mdai chat is not queueable" \
+           "the legacy mdai run spelling is not queueable" \
+           "the legacy mdai chat spelling is not queueable" \
            "_mdaiChatSend consults _isLocallyQueued" \
            "an ordinary board POST is still queueable" \
            "an ordinary session send is still queueable" \

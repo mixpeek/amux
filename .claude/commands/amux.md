@@ -499,26 +499,30 @@ curl -sk -X DELETE $AMUX_URL/api/journal/media/MEDIA_ID     # hard delete (file 
 
 ---
 
-## Files — two DIFFERENT contracts, both intentionally mounted
+## Files — one browse API, one upload path
 
-`/api/fs/*` and `/api/files/*` are NOT duplicates — different roots,
-different upload shapes, kept side by side on purpose
-(`docs/rust-migration/server-boundary.md`). Pick by shape, not habit.
+Browse with `/api/fs` (absolute paths, deny-set checked) and fetch bytes with
+`/api/file/raw`. Upload with the chunked `/api/upload` protocol, which streams,
+resumes and never overwrites. The `.mdai` engine lives at `/api/mdai`.
 
 ```bash
-# /api/fs — Python-parity, path-containment-checked, MULTIPART upload
-curl -sk "$AMUX_URL/api/fs/list?path=."
+curl -sk "$AMUX_URL/api/fs/list?path=$HOME/some/dir"
+curl -sk "$AMUX_URL/api/file/raw?path=$HOME/some/file&download=1" -o out
 curl -sk -X POST -H 'Content-Type: application/json' -d '{"path":"..."}' $AMUX_URL/api/fs/mkdir
-curl -sk -X POST -F "file=@local.txt" -F "dir=/some/dir" $AMUX_URL/api/fs/upload
-curl -sk -X POST -H 'Content-Type: application/json' -d '{"path":"..."}' $AMUX_URL/api/fs/open
 curl -sk -X POST -H 'Content-Type: application/json' -d '{"from":"a","to":"b"}' $AMUX_URL/api/fs/rename
 
-# /api/files — rooted at $HOME (override AMUX_FILES_ROOT), RAW BODY upload,
-# 50MB cap both ways (413 beyond)
-curl -sk "$AMUX_URL/api/files?path=some/dir"                       # listing
-curl -sk "$AMUX_URL/api/files/download?path=some/file" -o out      # raw bytes
-curl -sk -X POST --data-binary @local.txt "$AMUX_URL/api/files/upload?path=dir/file"
+# Upload: start, PUT each 5 MB chunk, finish into a folder
+id=$(curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"local.txt","size":'"$(wc -c < local.txt)"',"chunks":1}' $AMUX_URL/api/upload/start | jq -r .id)
+curl -sk -X PUT --data-binary @local.txt "$AMUX_URL/api/upload/$id/chunk/0"
+curl -sk -X POST "$AMUX_URL/api/upload/$id/finish?dir=$HOME/some/dir&name=local.txt"   # -> {path, name, url}
 ```
+
+Retired spellings still answer and are counted (`GET /api/debug/legacy-routes`
+says who still calls them): `/api/files?path=` (= `/api/fs/list`),
+`/api/files/download` (= `/api/file/raw?download=1`), `/api/files/upload` and
+`/api/fs/upload` (written by the chunked path's writer), `/api/files/mdai/*`
+(= `/api/mdai/*`). Do not write new callers against them.
 
 ---
 
@@ -701,7 +705,7 @@ Parse the arguments to determine what the user wants:
 - **`calendar`** or **`cal`** → list/create/update/delete a standalone event via `/api/cal-events`
 - **`telegram`** → Telegram bot status / link a chat to a session / send a message via `/api/telegram`
 - **`journal`** → journal entries via `/api/journal`
-- **`files`** → browse/upload/download via `/api/fs` or `/api/files` (see Files section for which)
+- **`files`** → browse via `/api/fs`, download via `/api/file/raw`, upload via chunked `/api/upload` (see Files section)
 - **`org`** → org/team/members/invites via `/api/org`
 - **`groups`** → fleet group list/config via `/api/groups`
 - **`torrents`** → torrent status/add/control via `/api/torrents` (needs aria2c running)

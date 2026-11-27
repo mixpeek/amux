@@ -1,4 +1,4 @@
-//! `POST`/`GET /api/files/mdai/chat`: change a node by talking to it.
+//! `POST`/`GET /api/mdai/chat`: change a node by talking to it.
 //!
 //! The owner types an instruction about the document ("look at the messages
 //! about lifecycle work and include that in the table"). The server hands the
@@ -440,7 +440,7 @@ pub(crate) fn chat_edit(
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `POST /api/files/mdai/chat {path, message, base_mtime_ms?}`
+/// `POST /api/mdai/chat {path, message, base_mtime_ms?}`
 pub(crate) async fn chat_post(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let store = state.store.clone();
     let session = header_session(&headers);
@@ -467,7 +467,7 @@ pub(crate) async fn chat_post(State(state): State<AppState>, headers: HeaderMap,
     }
 }
 
-/// `GET /api/files/mdai/chat?path=` - the node's conversation, oldest first.
+/// `GET /api/mdai/chat?path=` - the node's conversation, oldest first.
 pub(crate) async fn chat_get(Query(q): Query<HashMap<String, String>>) -> Response {
     let path = q.get("path").cloned().unwrap_or_default();
     let res = crate::db::interactions::spawn_blocking(move || -> Result<Value, ChatError> {

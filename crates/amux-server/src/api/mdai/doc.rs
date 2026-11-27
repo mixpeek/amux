@@ -1,4 +1,4 @@
-//! `GET`/`PUT /api/files/mdai/doc`: a `.mdai` file as structured fields, so the
+//! `GET`/`PUT /api/mdai/doc`: a `.mdai` file as structured fields, so the
 //! dashboard can show and edit every part of a node without a YAML editor.
 //!
 //! WHY THE SERVER OWNS THIS. The dashboard used to parse and rewrite frontmatter
@@ -374,7 +374,7 @@ pub(crate) fn write_atomic(file: &Path, text: &str) -> Result<(), FieldError> {
     })
 }
 
-/// `GET /api/files/mdai/doc?path=`
+/// `GET /api/mdai/doc?path=`
 pub(crate) async fn get_doc(Query(q): Query<HashMap<String, String>>) -> Response {
     let path = q.get("path").cloned().unwrap_or_default();
     let res = crate::db::interactions::spawn_blocking(move || -> Result<Value, FieldError> {
@@ -408,7 +408,7 @@ pub(crate) async fn get_doc(Query(q): Query<HashMap<String, String>>) -> Respons
     }
 }
 
-/// `PUT /api/files/mdai/doc {path, doc | raw, create?, base_mtime_ms?, rename_to?}`
+/// `PUT /api/mdai/doc {path, doc | raw, create?, base_mtime_ms?, rename_to?}`
 ///
 /// - `doc` is the structured view (as GET returns it); `raw` is the whole file
 ///   text, accepted only if the engine parses it.

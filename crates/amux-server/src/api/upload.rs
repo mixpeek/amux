@@ -189,6 +189,59 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
+/// What [`publish`] does when the destination name is taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnExisting {
+    /// Keep the existing file and publish as `name_1.ext`, `name_2.ext`, ...
+    /// (the chunked path, and `/api/fs/upload` without `overwrite`).
+    Suffix,
+    /// Replace it atomically (`/api/fs/upload` with `overwrite=1`, and the
+    /// legacy `/api/files/upload`, whose contract always replaced).
+    Replace,
+}
+
+/// The one writer every upload route ends in (primitive integrity audit P1).
+///
+/// The bytes go to a temporary file beside the destination, are synced, then
+/// renamed into place, so a failed write never leaves a half-file and a reader
+/// never sees one. `fill` writes the content (the chunked path copies its
+/// chunks; the single-request legacy routes write their body). Returns the
+/// path actually published, which differs from `dest_dir/name` when
+/// [`OnExisting::Suffix`] had to pick a free name.
+pub(crate) fn publish(
+    dest_dir: &std::path::Path,
+    name: &str,
+    on_existing: OnExisting,
+    fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
+    let mut out = tempfile::NamedTempFile::new_in(dest_dir)?;
+    fill(out.as_file_mut())?;
+    out.as_file().sync_all()?;
+    let target = dest_dir.join(name);
+    if on_existing == OnExisting::Replace {
+        out.persist(&target).map_err(|e| e.error)?;
+        return Ok(target);
+    }
+    let mut candidate = target.clone();
+    let mut suffix = 0;
+    loop {
+        match out.persist_noclobber(&candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                out = error.file;
+                suffix += 1;
+                let stem = target.file_stem().unwrap_or_default().to_string_lossy();
+                let ext = target
+                    .extension()
+                    .map(|e| format!(".{}", e.to_string_lossy()))
+                    .unwrap_or_default();
+                candidate = dest_dir.join(format!("{stem}_{suffix}{ext}"));
+            }
+            Err(error) => return Err(error.error),
+        }
+    }
+}
+
 /// Serve uploaded files at `/api/uploads/:filename`.
 pub fn serve_routes() -> Router<AppState> {
     Router::new().route("/{filename}", get(serve_uploaded))
@@ -481,36 +534,16 @@ async fn finish(state: UploadState, Path(id): Path<String>, RawQuery(query): Raw
     let assemble = tokio::task::spawn_blocking({
         let tmpdir = entry.tmpdir.clone();
         let chunks = entry.chunks;
-        let target = dest_dir.join(&save_name);
         move || -> std::io::Result<PathBuf> {
-            // A temporary file beside the destination supports atomic publication
-            // across disks and leaves no half-file when a write fails.
-            let mut out = tempfile::NamedTempFile::new_in(&dest_dir)?;
-            for i in 0..chunks {
-                let mut inp = std::fs::File::open(tmpdir.join(format!("{i:06}")))?;
-                std::io::copy(&mut inp, &mut out)?;
-            }
-            out.as_file().sync_all()?;
-            let mut candidate = target.clone();
-            let mut suffix = 0;
-            loop {
-                match out.persist_noclobber(&candidate) {
-                    Ok(_) => break,
-                    Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        out = error.file;
-                        suffix += 1;
-                        let stem = target.file_stem().unwrap_or_default().to_string_lossy();
-                        let ext = target
-                            .extension()
-                            .map(|e| format!(".{}", e.to_string_lossy()))
-                            .unwrap_or_default();
-                        candidate = dest_dir.join(format!("{stem}_{suffix}{ext}"));
-                    }
-                    Err(error) => return Err(error.error),
+            let path = publish(&dest_dir, &save_name, OnExisting::Suffix, |out| {
+                for i in 0..chunks {
+                    let mut inp = std::fs::File::open(tmpdir.join(format!("{i:06}")))?;
+                    std::io::copy(&mut inp, out)?;
                 }
-            }
+                Ok(())
+            })?;
             let _ = std::fs::remove_dir_all(&tmpdir);
-            Ok(candidate)
+            Ok(path)
         }
     });
     let save_path = match assemble.await {

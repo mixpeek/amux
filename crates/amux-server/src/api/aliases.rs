@@ -30,7 +30,16 @@ use serde_json::{Map, Value};
 const ROUTE_ALIASES: &[(&str, &str)] = &[
     ("/api/sessions", "/api/workers"),
     ("/api/issues", "/api/tasks"),
+    // The .mdai engine moved out from under the Files namespace (primitive
+    // integrity audit P1): it is its own family, and `/api/files` is now only
+    // the legacy browse adapter onto `/api/fs`.
+    ("/api/files/mdai", "/api/mdai"),
 ];
+
+/// The alias table, for the legacy-route counter's drift test.
+pub fn route_aliases() -> &'static [(&'static str, &'static str)] {
+    ROUTE_ALIASES
+}
 
 /// Field alias registry: (modern, legacy). Exact key names only — the plan's
 /// contract is about these specific fields (board cards carry `session`,
@@ -73,7 +82,14 @@ pub fn alias_layer(router: Router) -> Router {
 /// Rewrite a legacy URI to its canonical twin, preserving any sub-path and
 /// query. `None` = not a legacy path (also for a prefix-shaped near-miss
 /// like `/api/sessionsfoo`, which must NOT rewrite).
+#[cfg(test)]
 fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
+    rewrite_legacy_uri_row(uri).map(|(u, _, _)| u)
+}
+
+/// The legacy rewrite plus the table row that matched, so the middleware
+/// can count the hit against its legacy spelling.
+fn rewrite_legacy_uri_row(uri: &Uri) -> Option<(Uri, &'static str, &'static str)> {
     let path = uri.path();
     // /api/sessions/* never rewrites: the bare list has a dedicated
     // Python-SHAPE handler, and per-session VERBS proxy to the Python
@@ -97,7 +113,7 @@ fn rewrite_legacy_uri(uri: &Uri) -> Option<Uri> {
         };
         let mut parts = uri.clone().into_parts();
         parts.path_and_query = Some(new_pq.parse().ok()?);
-        return Uri::from_parts(parts).ok();
+        return Uri::from_parts(parts).ok().map(|u| (u, *legacy, *canonical));
     }
     None
 }
@@ -166,9 +182,17 @@ fn trim_trailing_slash(uri: &Uri) -> Option<Uri> {
 }
 
 async fn alias_middleware(mut req: Request, next: Next) -> Response {
-    let rewritten = rewrite_legacy_uri(req.uri());
+    let rewritten = rewrite_legacy_uri_row(req.uri());
     let was_legacy = rewritten.is_some();
-    if let Some(uri) = rewritten {
+    if let Some((uri, legacy, canonical)) = rewritten {
+        // The two-fix signal for a retired spelling: every hit is a log line
+        // with a verdict, and /api/debug/legacy-routes counts them.
+        super::legacy_routes::record(
+            legacy,
+            canonical,
+            req.uri().path(),
+            &super::legacy_routes::caller_of(req.headers()),
+        );
         *req.uri_mut() = uri;
     }
     // AFTER the legacy rewrite, not before: `/api/issues/5/` has to become

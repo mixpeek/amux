@@ -143,15 +143,15 @@ Rooted at the same files root as the Files browser (`AMUX_FILES_ROOT`, else `$HO
 
 | Method + path | What |
 |---|---|
-| `POST /api/files/mdai/run {path}` | Resolve and run the DAG, record a history entry, return the entry node's latest output plus the upstream-first node order |
-| `GET /api/files/mdai` | List every `.mdai` file under the files root with metadata (source count, model, title, mtime, last run time) |
-| `GET /api/files/mdai/history?path=<rel>` | The node's run history, newest first |
-| `POST /api/files/mdai/connect {source, target, prompt?}` | Append a source connection to the target's frontmatter, writing a sensible default edge prompt when none is given |
+| `POST /api/mdai/run {path}` | Resolve and run the DAG, record a history entry, return the entry node's latest output plus the upstream-first node order |
+| `GET /api/mdai` | List every `.mdai` file under the files root with metadata (source count, model, title, mtime, last run time) |
+| `GET /api/mdai/history?path=<rel>` | The node's run history, newest first |
+| `POST /api/mdai/connect {source, target, prompt?}` | Append a source connection to the target's frontmatter, writing a sensible default edge prompt when none is given |
 
 Run a node (path is relative to the files root):
 
 ```bash
-curl -sk -X POST https://localhost:8824/api/files/mdai/run \
+curl -sk -X POST https://localhost:8824/api/mdai/run \
   -H 'Content-Type: application/json' \
   -d '{"path":"weekly.mdai"}'
 ```
@@ -159,7 +159,7 @@ curl -sk -X POST https://localhost:8824/api/files/mdai/run \
 Connect a source into a target (writes the edge into `weekly.mdai`'s frontmatter):
 
 ```bash
-curl -sk -X POST https://localhost:8824/api/files/mdai/connect \
+curl -sk -X POST https://localhost:8824/api/mdai/connect \
   -H 'Content-Type: application/json' \
   -d '{"source":"notes/meeting.md","target":"weekly.mdai","prompt":"Extract the decisions."}'
 ```

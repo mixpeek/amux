@@ -17,9 +17,9 @@ test('phone header is one row, tabs fit, the preview is one card, a run is one l
   const vw = page.viewportSize()!.width;
   test.skip(vw > 600, 'phone layout only');
   await page.addInitScript(() => localStorage.setItem('amux_walkthrough_done', '1'));
-  await page.route('**/api/files/mdai/history**', r => r.fulfill({ json: { runs, total: 90 } }));
-  await page.route('**/api/files/mdai/run', r => r.fulfill({ status: 503, json: { error: 'no model in this test' } }));
-  allowUnusedRoute(page, '**/api/files/mdai/run'); // expected zero: autorun is off
+  await page.route('**/api/mdai/history**', r => r.fulfill({ json: { runs, total: 90 } }));
+  await page.route('**/api/mdai/run', r => r.fulfill({ status: 503, json: { error: 'no model in this test' } }));
+  allowUnusedRoute(page, '**/api/mdai/run'); // expected zero: autorun is off
   const dir = await mkdtemp(join(tmpdir(), 'mdai-mobile-'));
   const file = join(dir, 'Priorities.mdai');
   await writeFile(file, '---\nmodel: "opus"\nsources: []\n---\n# Priorities\n\nBody.\n');

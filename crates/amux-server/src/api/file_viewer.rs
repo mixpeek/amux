@@ -1271,7 +1271,7 @@ pub(crate) async fn serve_file(path: &Path, headers: &axum::http::HeaderMap) -> 
     }
 }
 
-async fn raw(req: Request) -> Response {
+pub(crate) async fn raw(req: Request) -> Response {
     if req.method() != Method::GET {
         return not_found().await;
     }

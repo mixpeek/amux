@@ -4846,13 +4846,19 @@ async function _syncOneUpload(item, onProgress) {
       if (!f.path || !f.url) await _runUpload(f, {render:() => { if (onProgress) onProgress(f); }});
       if (!f.path || !f.url) throw new Error(f.error || 'Server has not confirmed this file');
     } else {
-      const fd = new FormData();
-      fd.append('dir', current.dir);
-      fd.append('file', current.blob, current.name);
-      const response = await fetch(API + '/api/fs/upload', {
-        method:'POST', body:fd, _skipOutbox:true, signal:AbortSignal.timeout(30000)});
-      const result = await response.json();
-      if (!response.ok || !(result.saved || []).length) throw new Error('Server has not confirmed this file');
+      // A row queued before the IDB chunk store (kept under upload_queue, the
+      // whole file as one Blob). It goes through the same chunked upload as
+      // every other file now, the one upload path (primitive integrity audit
+      // P1), rather than a single multipart POST to /api/fs/upload. The bytes
+      // are already on this device, so the row is not copied again
+      // (noLocalCopy); it leaves the old store only once finish confirms it.
+      const blob = current.blob;
+      if (!blob) throw new Error('This queued file has no bytes left on this device');
+      const f = {id:current.id, surface:'directory', dir:current.dir || '', name:current.name || 'upload.bin',
+        file:new File([blob], current.name || 'upload.bin', {type:current.mime || blob.type || ''}),
+        noLocalCopy:true, chunk:0};
+      await _runUpload(f, {render:() => { if (onProgress) onProgress(f); }});
+      if (!f.path || !f.url) throw new Error(f.error || 'Server has not confirmed this file');
     }
     await _upqRemove(item.id);
   };
@@ -6182,7 +6188,8 @@ const _origFetch = window.fetch.bind(window);
 // Never queue interactive/ephemeral endpoints: telemetry, speed tests, live
 // terminal keystrokes, uploads (bodies too big for localStorage), login and
 // tunnel flows, and request/response helpers whose answer the UI needs NOW.
-// `files/mdai/run` joined this list for BOTH of the reasons the comment above
+// `mdai/run` (spelled `files/mdai/run` until the engine moved to /api/mdai;
+// both spellings stay listed) joined this list for BOTH of the reasons the comment above
 // gives, and it is the clearest case of each (AF-371).
 //
 // ANSWER NEEDED NOW: an mdai run's whole product is the output the panel is
@@ -6228,7 +6235,7 @@ const _origFetch = window.fetch.bind(window);
 // it is dropped, not queued. Queued, three visits sat in the outbox beside a
 // person's real edits and sends, and LC-OFFLINE-ROUNDTRIP counted 8 held
 // operations where it made 5 (AF-1392, red on every scheduled run since 278d16114).
-const _OUTBOX_SKIP = /\/api\/(palette\/(?:visit|history\/import)(?:[?#]|$)|sessions\/[^/?#]+\/delete(?:[?#]|$)|email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|files\/mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
+const _OUTBOX_SKIP = /\/api\/(palette\/(?:visit|history\/import)(?:[?#]|$)|sessions\/[^/?#]+\/delete(?:[?#]|$)|email\/(?:approve|reject)\/|connectors\/[^/]+\/(?:auth|token|test)(?:[?#]|$)|connection\/|client-debug|speedtest|tts|lookup|sql|suggest-branch|terminal\/|upload|fs\/upload|sessions\/login\/|tunnel\/|push\/test|browser|(?:files\/)?mdai\/(?:run|chat)(?:[?#]|$)|history\/ask|config\/cross-group|gateway\/switch-org)/;
 const _OUTBOX_METHODS = { POST: 1, PATCH: 1, PUT: 1, DELETE: 1 };
 function _outboxQueueable(url, init) {
   if (!url || typeof url !== 'string') return false;
@@ -6258,7 +6265,7 @@ function _outboxAccepted() {
 // A worker delete queued before it joined the skip list is dropped the same
 // way: replayed days later it would remove a worker nobody is looking at, and
 // the person who pressed it has already seen the worker come back.
-const _OUTBOX_ANSWER_NOW = /\/api\/(?:files\/mdai\/(?:run|chat)(?:[?#]|$)|email\/(?:approve|reject)\/|sessions\/[^/?#]+\/delete(?:[?#]|$))/;
+const _OUTBOX_ANSWER_NOW = /\/api\/(?:(?:files\/)?mdai\/(?:run|chat)(?:[?#]|$)|email\/(?:approve|reject)\/|sessions\/[^/?#]+\/delete(?:[?#]|$))/;
 function _outboxDropAnswerNow() {
   let dropped = 0, considered = 0;
   return _mutateQueue(current => {
@@ -40178,7 +40185,7 @@ let _mdaiRunCycle = null; // cycle chain array from a cycle error, or null
 let _mdaiLastRun = null;  // last successful RunResult (for the upstream-node chain note)
 
 // Resolve an mdai path to the absolute filesystem path the Files API expects. The
-// /api/files/mdai list returns root-relative paths (relative to AMUX_FILES_ROOT,
+// /api/mdai list returns root-relative paths (relative to AMUX_FILES_ROOT,
 // i.e. $HOME); the Files browser hands us absolute paths. Both are accepted by the
 // mdai run/history/connect endpoints, but /api/file needs the absolute form.
 function _mdaiAbs(p) {
@@ -41330,7 +41337,7 @@ async function _connectorTest(id, btn) {
 // keeps every run, including failures, with tokens and cost when the provider
 // reported them (mdai_runs). GET /graph says what a node reads and which nodes
 // read it.
-let _mdaiListData = null;      // last GET /api/files/mdai payload
+let _mdaiListData = null;      // last GET /api/mdai payload
 let _mdaiTab = 'preview';      // details tab: edit | preview | sources | runs | settings
 let _mdaiGraph = null;         // GET /graph for the open node
 let _mdaiShown = null;         // the run whose output Preview shows {id, ts, output, model, cached, status, error}
@@ -41356,7 +41363,7 @@ function _mdaiRunNo(run) {
 }
 
 // ---- Shared helpers -----------------------------------------------------------
-// The server owns the .mdai format (GET/PUT /api/files/mdai/doc): it parses with
+// The server owns the .mdai format (GET/PUT /api/mdai/doc): it parses with
 // the engine's own parser and writes one canonical layout, keeping keys this
 // page does not know. So every field below is a form control, and nothing here
 // parses YAML.
@@ -41519,7 +41526,7 @@ async function _mdaiTabLoad() {
   _mdaiShowPage('list');
   if (!_mdaiListData) body.innerHTML = '<div class="mdai-empty">Loading…</div>';
   try {
-    const r = await fetch(API + '/api/files/mdai', { signal: AbortSignal.timeout(15000) });
+    const r = await fetch(API + '/api/mdai', { signal: AbortSignal.timeout(15000) });
     const d = await r.json();
     if (!r.ok || d.error) { body.innerHTML = '<div class="mdai-empty">' + esc(d.error || ('HTTP ' + r.status)) + '</div>'; return; }
     _mdaiListData = d;
@@ -41640,7 +41647,7 @@ function _mdaiCreatePage(opts) {
   _mdaiSrcInit('new', opts.sources || []);
   _mdaiSrcRender('new');
   setTimeout(() => f('mdai-new-name').focus(), 30);
-  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; _mdaiSrcSync('new'); _mdaiSrcRender('new'); }).catch(() => {});
+  if (!_mdaiListData) fetch(API + '/api/mdai').then(r => r.json()).then(d => { _mdaiListData = d; _mdaiSrcSync('new'); _mdaiSrcRender('new'); }).catch(() => {});
 }
 function _mdaiNewBodyMode(mode) {
   const ta = document.getElementById('mdai-new-body'), pv = document.getElementById('mdai-new-preview');
@@ -41674,7 +41681,7 @@ async function _mdaiCreateSubmit(run) {
   const path = (folder ? folder + '/' : '') + name;
   btns.forEach(b => b.disabled = true);
   try {
-    const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', { path, doc, create: true });
+    const { r, d } = await _mdaiJson('/api/mdai/doc', 'PUT', { path, doc, create: true });
     if (_isLocallyQueued(r)) { errEl.textContent = 'The server could not be reached, so the node was not created.'; return; }
     if (!r.ok || d.error) { errEl.textContent = (d && d.error) || ('Could not create the node (HTTP ' + r.status + ').'); return; }
     showToast('Created ' + name);
@@ -41701,7 +41708,7 @@ async function _mdaiNewFile(dirOrOpts) {
   if (!/\.mdai$/i.test(fname)) fname += '.mdai';
   if (/[\/\0]/.test(fname)) { showToast('Invalid file name'); return null; }
   const base = fname.replace(/\.mdai$/i, '');
-  const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', { path: dir.replace(/\/+$/, '') + '/' + fname, create: true,
+  const { r, d } = await _mdaiJson('/api/mdai/doc', 'PUT', { path: dir.replace(/\/+$/, '') + '/' + fname, create: true,
     doc: { sources: [], refresh: 'manual', body: '# ' + base + '\n\nDescribe what this node should synthesize from its connected sources.\n' } }).catch(() => ({ r: null, d: {} }));
   if (!r || !r.ok || d.error) { showToast((d && d.error) || 'Could not create node'); return null; }
   if (!silent) showToast('Created ' + fname);
@@ -41729,7 +41736,7 @@ async function openMdaiNode(path, opts) {
   const node = _mdaiCur;
   await _mdaiLoadDoc();
   if (_mdaiCur !== node) return;
-  if (!_mdaiListData) fetch(API + '/api/files/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
+  if (!_mdaiListData) fetch(API + '/api/mdai').then(r => r.json()).then(d => { _mdaiListData = d; }).catch(() => {});
   await Promise.all([_mdaiLoadHistory(), _mdaiLoadGraph(), _mdaiLoadActive(), _mdaiLoadChat()]);
   if (_mdaiCur !== node) return;
   if (_mdaiHist.length && !_mdaiShown) await _mdaiShowRun(_mdaiHist.find(h => h.status === 'ok') || _mdaiHist[0], true);
@@ -41744,7 +41751,7 @@ async function openMdaiNode(path, opts) {
 async function _mdaiLoadDoc() {
   const node = _mdaiCur;
   try {
-    const r = await fetch(API + '/api/files/mdai/doc?path=' + encodeURIComponent(node.abs));
+    const r = await fetch(API + '/api/mdai/doc?path=' + encodeURIComponent(node.abs));
     const d = await r.json().catch(() => ({}));
     if (_mdaiCur !== node) return;
     if (!r.ok || d.error) { _mdaiRunError = d.error || ('Could not read the node (HTTP ' + r.status + ')'); return; }
@@ -41785,7 +41792,7 @@ async function closeMdaiNode() {
 async function _mdaiLoadHistory() {
   if (!_mdaiCur) return;
   try {
-    const r = await fetch(API + '/api/files/mdai/history?lite=1&limit=100&path=' + encodeURIComponent(_mdaiCur.abs));
+    const r = await fetch(API + '/api/mdai/history?lite=1&limit=100&path=' + encodeURIComponent(_mdaiCur.abs));
     const d = await r.json();
     _mdaiHist = (d && d.runs) || [];
     _mdaiCur.runsTotal = (d && d.total) || _mdaiHist.length;
@@ -41795,7 +41802,7 @@ async function _mdaiLoadHistory() {
 async function _mdaiLoadGraph() {
   if (!_mdaiCur) return;
   try {
-    const r = await fetch(API + '/api/files/mdai/graph?path=' + encodeURIComponent(_mdaiCur.abs));
+    const r = await fetch(API + '/api/mdai/graph?path=' + encodeURIComponent(_mdaiCur.abs));
     const d = await r.json();
     _mdaiGraph = r.ok && !d.error ? d : { error: d.error || ('HTTP ' + r.status) };
   } catch (e) { _mdaiGraph = { error: 'unreachable' }; }
@@ -41803,7 +41810,7 @@ async function _mdaiLoadGraph() {
 async function _mdaiLoadActive() {
   if (!_mdaiCur) return;
   try {
-    const r = await fetch(API + '/api/files/mdai/active?path=' + encodeURIComponent(_mdaiCur.abs));
+    const r = await fetch(API + '/api/mdai/active?path=' + encodeURIComponent(_mdaiCur.abs));
     _mdaiActive = r.ok ? await r.json() : null;
   } catch (e) { _mdaiActive = null; }
   _mdaiRunning = !!(_mdaiActive && _mdaiActive.running);
@@ -41813,7 +41820,7 @@ async function _mdaiShowRun(run, quiet) {
   if (!_mdaiCur || !run) return;
   if (run.output == null) {
     try {
-      const r = await fetch(API + '/api/files/mdai/history?limit=1&id=' + run.id + '&path=' + encodeURIComponent(_mdaiCur.abs));
+      const r = await fetch(API + '/api/mdai/history?limit=1&id=' + run.id + '&path=' + encodeURIComponent(_mdaiCur.abs));
       const d = await r.json();
       const full = (d.runs || [])[0];
       if (full) run.output = full.output;
@@ -41841,7 +41848,7 @@ async function _mdaiRun(opts) {
   _mdaiRunError = null; _mdaiRunCycle = null;
   _mdaiRender();
   try {
-    const r = await fetch(API + '/api/files/mdai/run', {
+    const r = await fetch(API + '/api/mdai/run', {
       method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ path: node.abs, wait: false }) });
     const d = await r.json().catch(() => ({}));
@@ -41910,7 +41917,7 @@ async function _mdaiCancel() {
   await _mdaiCancelSend();
 }
 async function _mdaiCancelSend() {
-  const { r, d } = await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => ({ r: null, d: {} }));
+  const { r, d } = await _mdaiJson('/api/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => ({ r: null, d: {} }));
   if (!r || !r.ok) { showToast((d && d.error) || 'Could not stop the run'); return; }
   showToast('Stopping…');
   if (_mdaiActive) _mdaiActive.cancel_requested = true;
@@ -41963,7 +41970,7 @@ async function _mdaiPutDoc(req) {
   // save's own render would then put the saved value back over it.
   const fields0 = _mdaiFieldValues();
   try {
-    const { r, d } = await _mdaiJson('/api/files/mdai/doc', 'PUT', req);
+    const { r, d } = await _mdaiJson('/api/mdai/doc', 'PUT', req);
     if (_isLocallyQueued(r)) { showToast('Offline: not saved'); return false; }
     if (!r.ok || d.error) {
       _mdaiFormErr = { field: d.field || 'doc', msg: d.error || ('HTTP ' + r.status) };
@@ -42114,7 +42121,7 @@ async function _mdaiDelete() {
   const users = (_mdaiGraph && _mdaiGraph.used_by) || [];
   if (!(await showConfirm('Delete ' + name + '?' + (_mdaiRunning ? ' Its run in progress is stopped first.' : '') + (users.length ? ' ' + users.length + ' node(s) read it and will fail until you reconnect them.' : '') + ' Its run history stays in the database.', 'Delete', true))) return;
   try {
-    if (_mdaiRunning) await _mdaiJson('/api/files/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => null);
+    if (_mdaiRunning) await _mdaiJson('/api/mdai/cancel', 'POST', { path: _mdaiCur.abs }).catch(() => null);
     const r = await fetch(API + '/api/fs/delete', { method: 'DELETE', headers: _authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ path: _mdaiCur.abs }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { showToast('Delete failed: ' + (d.error || r.status)); return; }
@@ -42317,7 +42324,7 @@ function _mdaiPreviewHtml() {
   return h;
 }
 // ---- Chat: change the node by telling it what you want ---------------------------
-// POST /api/files/mdai/chat hands the model this file, the latest output and the
+// POST /api/mdai/chat hands the model this file, the latest output and the
 // message; the server validates and writes the revised node and answers with the
 // file before and after. The page shows the exchange with the changed lines, then
 // starts a run through the ordinary run flow so the output catches up.
@@ -42333,7 +42340,7 @@ async function _mdaiLoadChat() {
   if (!node) return;
   _mdaiChatLoadErr = null;
   try {
-    const r = await fetch(API + '/api/files/mdai/chat?path=' + encodeURIComponent(node.abs));
+    const r = await fetch(API + '/api/mdai/chat?path=' + encodeURIComponent(node.abs));
     const d = await r.json().catch(() => ({}));
     if (_mdaiCur !== node) return;
     if (!r.ok || d.error) { _mdaiChat = []; _mdaiChatLoadErr = d.error || ('HTTP ' + r.status); return; }
@@ -42371,7 +42378,7 @@ async function _mdaiChatSend(text) {
   _mdaiRender();
   let ok = false, changed = false;
   try {
-    const { r, d } = await _mdaiJson('/api/files/mdai/chat', 'POST', { path: node.abs, message: msg, base_mtime_ms: node.mtime });
+    const { r, d } = await _mdaiJson('/api/mdai/chat', 'POST', { path: node.abs, message: msg, base_mtime_ms: node.mtime });
     if (_mdaiCur !== node) return;
     if (_isLocallyQueued(r)) {
       _mdaiChatErr = 'The server could not be reached, so the message was not sent. Nothing changed.';
@@ -42800,7 +42807,7 @@ async function _mdaiConnectPicker(sourceAbs) {
     if (t) _mdaiDoConnect(sourceAbs, t);
   };
   try {
-    const r = await fetch(API + '/api/files/mdai');
+    const r = await fetch(API + '/api/mdai');
     const d = await r.json();
     const files = (d && d.files) || [];
     const listEl = document.getElementById('mdai-picker-list');
@@ -42827,7 +42834,7 @@ async function _mdaiDoConnect(sourceAbs, targetRel) {
   const targetDir = targetAbs.slice(0, targetAbs.lastIndexOf('/')) || '/';
   const sourceForEdge = _mdaiRelPath(sourceAbs, targetDir);   // portable, resolved from the node's dir
   try {
-    const r = await fetch(API + '/api/files/mdai/connect', {
+    const r = await fetch(API + '/api/mdai/connect', {
       method: 'POST', headers: _authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ source: sourceForEdge, target: targetRel })
     });
@@ -43133,7 +43140,7 @@ function _showFilesMenu(path, btn, type) {
   popup.appendChild(linkItem);
   _filesPinItems(popup, path, type);
   // Connect to a .mdai node: make THIS file/folder a source of a chosen computed
-  // node. Picks from the GLOBAL list of .mdai files (GET /api/files/mdai) and POSTs
+  // node. Picks from the GLOBAL list of .mdai files (GET /api/mdai) and POSTs
   // /connect; the target gets a default edge prompt, editable in the node view after.
   const connItem = document.createElement('button');
   connItem.className = 'explore-menu-item';

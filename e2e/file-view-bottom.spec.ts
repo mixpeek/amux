@@ -319,8 +319,8 @@ test('PDF CDN fallback notice and full download remain reachable in a short wind
 
 test('computed Markdown node editor and raw view fit with its full instruction retained',async({page})=>{
   let runs=0;
-  await page.route('**/api/files/mdai/run',r=>{runs++;return r.fulfill({status:503,json:{error:'Raw viewing must never run a model'}});});
-  allowUnusedRoute(page,'**/api/files/mdai/run'); // Expected zero: raw viewing must not execute a node.
+  await page.route('**/api/mdai/run',r=>{runs++;return r.fulfill({status:503,json:{error:'Raw viewing must never run a model'}});});
+  allowUnusedRoute(page,'**/api/mdai/run'); // Expected zero: raw viewing must not execute a node.
   const dir=await mkdtemp(join(tmpdir(),'amux-node-view-'));
   try{
     const file=join(dir,'node.mdai');await writeFile(file,longText);await page.goto('/');

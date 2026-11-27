@@ -132,6 +132,7 @@ pub mod map;
 pub mod map_store;
 pub mod mcp;
 pub mod mdai;
+pub mod legacy_routes;
 pub mod measured;
 pub mod decision_digest;
 pub mod directive;
@@ -415,16 +416,24 @@ pub fn router_with_connector_transport(
         // Ebook library index (calibre metadata.db / opf scan) — top-level
         // path in python, so top-level here.
         .route("/api/library", axum::routing::any(file_viewer::library))
+        // Legacy Files spellings (primitive integrity audit P1): the listing,
+        // download and raw-body upload are thin adapters onto /api/fs,
+        // /api/file/raw and the chunked upload's writer (api/files.rs).
         .nest("/api/files", files::routes())
         // The .mdai computed-file engine (AMUX-3240): run a node's upstream DAG,
-        // list nodes, browse run history, connect an edge. Nested one level
-        // deeper than /api/files above; files::routes() has no /mdai or wildcard,
-        // so the two prefixes do not conflict.
-        .nest("/api/files/mdai", mdai::routes())
+        // list nodes, browse run history, connect an edge. Its own family; the
+        // old /api/files/mdai/* spelling rewrites here (aliases.rs).
+        .nest("/api/mdai", mdai::routes())
+        // Who still calls a retired spelling, from the request log's raw paths
+        // (api/legacy_routes.rs). Protected: it names caller sessions.
+        .route(
+            "/api/debug/legacy-routes",
+            axum::routing::get(legacy_routes::debug),
+        )
         // /api/fs/* is the SPA's Files contract (multipart upload + dir
         // field, open/mkdir/rename/read/list/search/delete on ABSOLUTE
-        // paths) — a different contract from /api/files above. NATIVE port
-        // of the python handlers (api/fs.rs), same wire shapes.
+        // paths), the one browse API. NATIVE port of the python handlers
+        // (api/fs.rs), same wire shapes.
         .nest("/api/fs", fs::routes().layer(axum::middleware::from_fn(capabilities::fs_gate)))
         .route("/api/workers/{name}/capabilities", axum::routing::get(capabilities::view))
         .route("/api/workers/{name}/sandbox", axum::routing::get(cli_sandbox::view))

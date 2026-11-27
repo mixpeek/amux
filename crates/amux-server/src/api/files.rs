@@ -1,31 +1,36 @@
-//! Files API (RR-0093): browse / download / upload rooted at `$HOME`
-//! (override: `AMUX_FILES_ROOT`, which is also how tests pin a temp root).
+//! Legacy Files spellings (RR-0093), now adapters onto the one browse API and
+//! the one upload writer (primitive integrity audit 2026-11-26, P1).
 //!
-//! Routes (nested at `/api/files`):
-//! - `GET  /api/files?path=<rel>`            — directory listing
-//!   `{path, entries:[{name,size,mtime,kind}]}` (kind: file|dir|symlink|other)
-//! - `GET  /api/files/download?path=<rel>`   — raw bytes, attachment headers
-//! - `POST /api/files/upload?path=<rel>`     — RAW REQUEST BODY, not
-//!   multipart: the workspace's axum has no `multipart` feature (checked —
-//!   default features + http2 only), and adding one for a single endpoint is
-//!   not worth the surface. Callers send the file bytes as the body:
-//!   `curl --data-binary @file '$URL/api/files/upload?path=dir/file'`.
+//! Routes (nested at `/api/files`), each rooted at `$HOME` (override:
+//! `AMUX_FILES_ROOT`, which is also how tests pin a temp root):
+//! - `GET  /api/files?path=<rel>`          — resolves `<rel>` under the root,
+//!   then answers EXACTLY what `GET /api/fs/list?path=<abs>` answers
+//!   (`{path, count, entries:[{name, dir, size, modified}], truncated?}`).
+//! - `GET  /api/files/download?path=<rel>` — resolves, then answers what
+//!   `GET /api/file/raw?path=<abs>&download=1` answers (streamed, ranges,
+//!   attachment disposition; no 50MB buffer cap any more).
+//! - `POST /api/files/upload?path=<rel>`   — RAW REQUEST BODY (not multipart),
+//!   written through `upload::publish`, the chunked upload's writer. Replaces
+//!   an existing file, as this route always did. 50MB cap (413 beyond):
+//!   larger files belong on the chunked `/api/upload`.
 //!
-//! Size limits are honest: 50MB on upload (413 beyond, enforced by both the
-//! body-limit layer and an explicit check) and the same cap on download —
-//! the handler buffers the file, so serving a 4GB file would really mean
-//! buffering 4GB; refusing with 413 tells the truth instead.
+//! These stay because callers outside this repo can reach them (the `amux`
+//! skill doc taught the curl recipes; `cloud/export_env.py` lists through
+//! `/api/files`). No dashboard code calls them. Every hit is counted
+//! (`legacy_routes::record`, `GET /api/debug/legacy-routes`) so a sweep can
+//! tell when they are unused and can be deleted.
 //!
 //! Path traversal: every request path is joined to the root, canonicalized
 //! (symlinks resolved), and prefix-checked against the canonicalized root.
 //! `../` escapes and symlinks pointing outside the root both fail the same
-//! check. Uploads additionally reject `..`/absolute components lexically
-//! BEFORE any filesystem work, because the target may not exist yet.
+//! check. The fs handlers then apply their own deny sets on top. Uploads
+//! additionally reject `..`/absolute components lexically BEFORE any
+//! filesystem work, because the target may not exist yet.
 
 use super::AppState;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Query};
-use axum::http::{header, StatusCode};
+use axum::extract::{DefaultBodyLimit, Query, Request};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -121,137 +126,25 @@ pub struct PathParam {
     path: String,
 }
 
-#[derive(serde::Serialize)]
-pub struct FileEntry {
-    pub name: String,
-    pub size: u64,
-    pub mtime: i64,
-    pub kind: &'static str,
+fn legacy_hit(legacy: &'static str, canonical: &'static str, headers: &HeaderMap) {
+    super::legacy_routes::record(
+        legacy,
+        canonical,
+        legacy,
+        &super::legacy_routes::caller_of(headers),
+    );
 }
 
-fn entry_kind(meta: &std::fs::Metadata) -> &'static str {
-    let ft = meta.file_type();
-    if ft.is_dir() {
-        "dir"
-    } else if ft.is_file() {
-        "file"
-    } else if ft.is_symlink() {
-        "symlink"
-    } else {
-        "other"
-    }
-}
-
-/// Directory listing, sorted dirs-first then by name (the shape the
-/// dashboard's file browser renders).
-pub fn list_dir(dir: &Path) -> std::io::Result<Vec<FileEntry>> {
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(dir)? {
-        let e = e?;
-        // symlink_metadata so a symlink is reported AS a symlink instead of
-        // silently followed into whatever it points at.
-        let Ok(meta) = e.path().symlink_metadata() else {
-            continue;
-        };
-        out.push(FileEntry {
-            name: e.file_name().to_string_lossy().into_owned(),
-            size: meta.len(),
-            mtime: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-            kind: entry_kind(&meta),
-        });
-    }
-    out.sort_by(|a, b| {
-        (b.kind == "dir")
-            .cmp(&(a.kind == "dir"))
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    Ok(out)
-}
-
-async fn list(Query(q): Query<PathParam>) -> Response {
+async fn list(headers: HeaderMap, Query(q): Query<PathParam>) -> Response {
+    legacy_hit("/api/files", "/api/fs/list", &headers);
     let root = files_root();
     let dir = match resolve_existing(&root, &q.path) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
     };
-    if !dir.is_dir() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "not a directory", "path": q.path }),
-        );
-    }
-    let entries = match crate::db::interactions::spawn_blocking(move || list_dir(&dir)).await {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(e)) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": e.to_string() }),
-            )
-        }
-        Err(e) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": e.to_string() }),
-            )
-        }
-    };
-    Json(json!({ "path": q.path, "entries": entries })).into_response()
-}
-
-async fn download(Query(q): Query<PathParam>) -> Response {
-    let root = files_root();
-    let file = match resolve_existing(&root, &q.path) {
-        Ok(f) => f,
-        Err(e) => return err(StatusCode::NOT_FOUND, json!({ "error": e })),
-    };
-    if !file.is_file() {
-        return err(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "not a regular file", "path": q.path }),
-        );
-    }
-    match file.metadata() {
-        Ok(m) if m.len() > MAX_BYTES as u64 => {
-            return err(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                json!({
-                    "error": format!(
-                        "file is {} bytes; this endpoint buffers whole files and caps at {} bytes",
-                        m.len(), MAX_BYTES
-                    ),
-                    "limit": MAX_BYTES,
-                }),
-            );
-        }
-        Err(e) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": e.to_string() }),
-            )
-        }
-        _ => {}
-    }
-    let name = file
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "download".into());
-    match tokio::fs::read(&file).await {
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (
-                    header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{}\"", name.replace('"', "_")),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
+    let abs = dir.to_string_lossy().into_owned();
+    match crate::db::interactions::spawn_blocking(move || super::fs::list_dir_at(&abs)).await {
+        Ok(res) => res,
         Err(e) => err(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": e.to_string() }),
@@ -259,11 +152,50 @@ async fn download(Query(q): Query<PathParam>) -> Response {
     }
 }
 
-async fn upload(Query(q): Query<PathParam>, body: Bytes) -> Response {
+async fn download(req: Request) -> Response {
+    legacy_hit("/api/files/download", "/api/file/raw?download=1", req.headers());
+    let rel = super::fs::parse_qs(req.uri().query().unwrap_or(""))
+        .into_iter()
+        .find(|(k, _)| k == "path")
+        .map(|(_, v)| v)
+        .unwrap_or_default();
+    let root = files_root();
+    let file = match resolve_existing(&root, &rel) {
+        Ok(f) => f,
+        Err(e) => return err(StatusCode::NOT_FOUND, json!({ "error": e })),
+    };
+    let mut url = match reqwest::Url::parse("http://localhost/api/file/raw") {
+        Ok(u) => u,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("could not build the raw URL: {e}") }),
+            )
+        }
+    };
+    url.query_pairs_mut()
+        .append_pair("path", &file.to_string_lossy())
+        .append_pair("download", "1");
+    let target = format!("{}?{}", url.path(), url.query().unwrap_or_default());
+    let (mut parts, body) = req.into_parts();
+    parts.uri = match target.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("could not build the raw URI: {e}") }),
+            )
+        }
+    };
+    super::file_viewer::raw(Request::from_parts(parts, body)).await
+}
+
+async fn upload(headers: HeaderMap, Query(q): Query<PathParam>, body: Bytes) -> Response {
+    legacy_hit("/api/files/upload", "/api/upload", &headers);
     if body.len() > MAX_BYTES {
         return err(
             StatusCode::PAYLOAD_TOO_LARGE,
-            json!({ "error": format!("body is {} bytes; upload cap is {} bytes", body.len(), MAX_BYTES), "limit": MAX_BYTES }),
+            json!({ "error": format!("body is {} bytes; upload cap is {} bytes (use the chunked /api/upload for larger files)", body.len(), MAX_BYTES), "limit": MAX_BYTES }),
         );
     }
     let root = files_root();
@@ -281,36 +213,48 @@ async fn upload(Query(q): Query<PathParam>, body: Bytes) -> Response {
         }
     };
     let target = canon_root.join(&rel);
-    if let Some(parent) = target.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": "path required" }));
+    };
+    let name = name.to_string_lossy().into_owned();
+    if let Err(e) = tokio::fs::create_dir_all(parent).await {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        );
+    }
+    // Post-create containment check: the lexical filter above blocks
+    // `..`, but a symlink INSIDE the root can still point outside it —
+    // canonicalize the now-existing parent and re-verify.
+    let real_parent = match parent.canonicalize() {
+        Ok(real_parent) if real_parent.starts_with(&canon_root) => real_parent,
+        Ok(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "upload path resolves outside the files root (symlink)" }),
+            )
+        }
+        Err(e) => {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": e.to_string() }),
-            );
+            )
         }
-        // Post-create containment check: the lexical filter above blocks
-        // `..`, but a symlink INSIDE the root can still point outside it —
-        // canonicalize the now-existing parent and re-verify.
-        match parent.canonicalize() {
-            Ok(real_parent) if real_parent.starts_with(&canon_root) => {}
-            Ok(_) => {
-                return err(
-                    StatusCode::BAD_REQUEST,
-                    json!({ "error": "upload path resolves outside the files root (symlink)" }),
-                )
-            }
-            Err(e) => {
-                return err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({ "error": e.to_string() }),
-                )
-            }
-        }
-    }
+    };
     let size = body.len();
-    match tokio::fs::write(&target, body).await {
-        Ok(()) => Json(json!({ "ok": true, "path": rel.display().to_string(), "size": size }))
+    let written = crate::db::interactions::spawn_blocking(move || {
+        super::upload::publish(&real_parent, &name, super::upload::OnExisting::Replace, |f| {
+            std::io::Write::write_all(f, &body)
+        })
+    })
+    .await;
+    match written {
+        Ok(Ok(_)) => Json(json!({ "ok": true, "path": rel.display().to_string(), "size": size }))
             .into_response(),
+        Ok(Err(e)) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": e.to_string() }),
+        ),
         Err(e) => err(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": e.to_string() }),
@@ -366,31 +310,5 @@ mod tests {
         assert!(validate_upload_rel("../x").is_err());
         assert!(validate_upload_rel("a/../../x").is_err());
         assert!(validate_upload_rel("/abs/path").is_err());
-    }
-
-    #[test]
-    fn dir_listing_shape() {
-        let dir = root();
-        std::fs::write(dir.path().join("b.txt"), "12345").unwrap();
-        std::fs::create_dir(dir.path().join("adir")).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("b.txt", dir.path().join("link")).unwrap();
-
-        let entries = list_dir(dir.path()).unwrap();
-        // dirs first, then names
-        assert_eq!(entries[0].name, "adir");
-        assert_eq!(entries[0].kind, "dir");
-        let file = entries.iter().find(|e| e.name == "b.txt").unwrap();
-        assert_eq!(file.kind, "file");
-        assert_eq!(file.size, 5);
-        assert!(file.mtime > 0, "mtime populated");
-        #[cfg(unix)]
-        {
-            let link = entries.iter().find(|e| e.name == "link").unwrap();
-            assert_eq!(
-                link.kind, "symlink",
-                "symlinks reported as symlinks, not followed"
-            );
-        }
     }
 }
