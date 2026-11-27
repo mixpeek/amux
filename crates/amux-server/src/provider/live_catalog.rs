@@ -105,10 +105,15 @@ pub fn decide(prev: Option<&LastGood>, attempt: Option<Result<Vec<String>, Strin
 /// Ollama already lists live via `ollama list` (`static_providers.rs`); Muse
 /// already lists live via the CLI's own catalog file. Neither needs an entry
 /// here.
-const HTTP_VENDORS: [(&str, &str, &str); 3] = [
-    ("anthropic", "claude", "ANTHROPIC_API_KEY"),
-    ("openai", "codex", "OPENAI_API_KEY"),
-    ("google", "gemini", "GEMINI_API_KEY"),
+///
+/// Each vendor's key names, in the order they are tried. Google's is listed
+/// under both names the Gemini CLI and Google's SDKs accept: an install that
+/// kept only `GOOGLE_API_KEY` read as "not configured" here, so the Gemini 4
+/// family (live since 2026-10-13) never reached a picker (2026-11-27).
+const HTTP_VENDORS: [(&str, &str, &[&str]); 3] = [
+    ("anthropic", "claude", &["ANTHROPIC_API_KEY"]),
+    ("openai", "codex", &["OPENAI_API_KEY"]),
+    ("google", "gemini", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
 ];
 
 /// One catalog entry as served over the wire — owned strings, because a
@@ -202,10 +207,17 @@ pub fn worker_model_ids(provider: &str) -> Vec<String> {
 /// the process env). The Vault is where the owner keeps keys since its API
 /// Keys tab was removed (2026-11-11); server.env stays the fallback so an
 /// install that set the key there keeps its live list.
-fn vendor_key(home: &Path, env_key: &str) -> Option<String> {
-    crate::api::vault_secrets::global_value(home, env_key, "model_catalog")
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| crate::api::settings::effective_env(home, env_key).filter(|v| !v.trim().is_empty()))
+fn vendor_key(home: &Path, vendor: &str, env_keys: &[&str]) -> Option<String> {
+    env_keys.iter().enumerate().find_map(|(i, env_key)| {
+        let v = crate::api::vault_secrets::global_value(home, env_key, "model_catalog")
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| crate::api::settings::effective_env(home, env_key).filter(|v| !v.trim().is_empty()))?;
+        if i > 0 {
+            tracing::info!(kind = "provider_model_catalog_key_alias", vendor, key_name = *env_key,
+                preferred = env_keys[0], "vendor key found under its alternate name");
+        }
+        Some(v)
+    })
 }
 
 /// Recompute the snapshot: probe every HTTP-listable vendor with a
@@ -223,7 +235,7 @@ pub async fn refresh(home: &Path) {
     let mut last_good = load_last_good(home);
     let now = chrono::Utc::now().timestamp();
     let mut providers = Vec::with_capacity(HTTP_VENDORS.len());
-    for (vendor, provider, env_key) in HTTP_VENDORS {
+    for (vendor, provider, env_keys) in HTTP_VENDORS {
         let prev = last_good.get(vendor).cloned();
         if let Some(p) = prev.as_ref().filter(|p| !p.ids.is_empty() && now - p.fetched_at < FRESH_SECS) {
             merge_ids(&mut by_id, vendor, provider, p.ids.clone(), "live");
@@ -241,7 +253,7 @@ pub async fn refresh(home: &Path) {
             match super::claude::probe_models_raw().await {
                 Ok(ids) => Some(Ok(ids)),
                 Err(oauth_err) => {
-                    let key = vendor_key(home, env_key);
+                    let key = vendor_key(home, vendor, env_keys);
                     match key {
                         Some(key) => Some(fetch_vendor(vendor, &key).await),
                         // "no_token" means not logged into Claude Code at all
@@ -257,7 +269,7 @@ pub async fn refresh(home: &Path) {
                 }
             }
         } else {
-            let key = vendor_key(home, env_key);
+            let key = vendor_key(home, vendor, env_keys);
             match key {
                 Some(key) => Some(fetch_vendor(vendor, &key).await),
                 None => None,
@@ -365,6 +377,14 @@ fn heuristic_classify(id: &str) -> (String, bool) {
         ("image", "image"),
         ("moderation", "moderation"),
         ("realtime", "realtime"),
+        ("-live", "realtime"),
+        ("live-", "realtime"),
+        ("banana", "image"),
+        ("genie", "world-model"),
+        ("robotics", "robotics"),
+        ("lyria", "music"),
+        ("veo-", "video"),
+        ("sora", "video"),
         ("audio", "audio"),
         ("clip", "vision-embedding"),
         ("davinci", "legacy"),
@@ -556,6 +576,18 @@ mod tests {
     }
 
     #[test]
+    fn a_google_key_under_either_name_lists_gemini_live() {
+        let home = tempfile::tempdir().unwrap();
+        // Present-but-empty GEMINI_API_KEY is "cleared", so a key in this
+        // process's env cannot answer for the file under test.
+        std::fs::write(home.path().join("server.env"), "GEMINI_API_KEY=\nGOOGLE_API_KEY=k-test\n").unwrap();
+        let (_, _, names) = HTTP_VENDORS.iter().find(|v| v.0 == "google").unwrap();
+        assert_eq!(vendor_key(home.path(), "google", names).as_deref(), Some("k-test"));
+        std::fs::write(home.path().join("server.env"), "GEMINI_API_KEY=\nGOOGLE_API_KEY=\n").unwrap();
+        assert_eq!(vendor_key(home.path(), "google", names), None);
+    }
+
+    #[test]
     fn non_agent_modalities_are_never_worker_selectable_even_when_unseen_before() {
         for id in [
             "text-embedding-4-large",
@@ -563,6 +595,11 @@ mod tests {
             "gpt-image-3",
             "omni-moderation-latest",
             "tts-2-hd",
+            "gpt-live-2",
+            "gemini-4.1-live",
+            "gemini-nano-banana-3",
+            "genie-5",
+            "veo-4-generate",
         ] {
             let (_, selectable) = classify(None, id);
             assert!(!selectable, "{id} should not be worker_selectable");

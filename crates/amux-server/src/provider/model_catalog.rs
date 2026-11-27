@@ -7,14 +7,14 @@
 //! string remains the authority, so an id released after this catalog date can
 //! still be entered immediately instead of waiting for an amux release.
 //!
-//! Sources checked 2026-09-06:
+//! Sources checked 2026-11-27 (each vendor's list-models API and docs):
 //! - <https://developers.openai.com/api/docs/models/all>
 //! - <https://platform.claude.com/docs/en/models/overview>
 //! - <https://ai.google.dev/gemini-api/docs/models>
 
 use serde::Serialize;
 
-pub const CATALOG_UPDATED_AT: &str = "2026-10-18";
+pub const CATALOG_UPDATED_AT: &str = "2026-11-27";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ModelDescriptor {
@@ -61,6 +61,10 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "flagship",
         true,
         &[
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -168,7 +172,11 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "codex",
         "search",
         true,
-        &["gpt-4o-search-preview", "gpt-4o-mini-search-preview"],
+        &[
+            "gpt-5-search-api",
+            "gpt-4o-search-preview",
+            "gpt-4o-mini-search-preview",
+        ],
     );
     add(
         &mut out,
@@ -188,6 +196,21 @@ pub fn catalog() -> Vec<ModelDescriptor> {
             "gpt-5.6-cyber",
             "gpt-daybreak-red-latest",
             "gpt-daybreak-blue-latest",
+        ],
+    );
+    // Domain-tuned variants of the flagships. Selectable, the same bar as the
+    // cyber variants above: they answer the same Responses API as their base.
+    add(
+        &mut out,
+        "openai",
+        "codex",
+        "healthcare",
+        true,
+        &[
+            "gpt-6.2-astra-healthcare",
+            "gpt-6.2-sol-healthcare",
+            "gpt-6.1-sol-healthcare",
+            "gpt-6-astra-healthcare",
         ],
     );
     add(
@@ -214,6 +237,10 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         false,
         &[
             "chatgpt-image-latest",
+            "gpt-image-2.6-flare",
+            "gpt-image-2.6-sunburst",
+            "gpt-image-2.5-flare",
+            "gpt-image-2.5-sunburst",
             "gpt-image-2",
             "gpt-image-1.5",
             "gpt-image-1",
@@ -241,6 +268,8 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "realtime",
         false,
         &[
+            "gpt-live-1.1",
+            "gpt-live-1",
             "gpt-realtime",
             "gpt-realtime-1.5",
             "gpt-realtime-2",
@@ -323,7 +352,7 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "claude",
         "fable",
         true,
-        &["claude-fable-5-1", "claude-fable-5"],
+        &["claude-fable-5-2", "claude-fable-5-1", "claude-fable-5"],
     );
     add(
         &mut out,
@@ -354,6 +383,7 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "sonnet",
         true,
         &[
+            "claude-sonnet-5-5",
             "claude-sonnet-5",
             "claude-sonnet-4-6",
             "claude-sonnet-4-6[1m]",
@@ -370,6 +400,7 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "haiku",
         true,
         &[
+            "claude-haiku-5-5",
             "claude-haiku-4-5-20251001",
             "claude-haiku-3-5",
             "claude-haiku-3",
@@ -382,7 +413,12 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "gemini",
         "alias",
         true,
-        &["auto", "gemini-flash-latest"],
+        &[
+            "auto",
+            "gemini-pro-latest",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest",
+        ],
     );
     add(
         &mut out,
@@ -391,7 +427,11 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "pro",
         true,
         &[
+            "gemini-4-carbon",
+            "gemini-4-neon",
+            "gemini-4-argon",
             "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-customtools",
             "gemini-3-pro-preview",
             "gemini-2.5-pro",
         ],
@@ -403,6 +443,7 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "flash",
         true,
         &[
+            "gemini-4-hydrogen",
             "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
@@ -443,6 +484,8 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "image",
         false,
         &[
+            "gemini-nano-banana-2.1",
+            "nano-banana-pro-preview",
             "gemini-3-pro-image",
             "gemini-3.1-flash-image",
             "gemini-3.1-flash-lite-image",
@@ -457,6 +500,7 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "video",
         false,
         &[
+            "gemini-omni-1.2-flash",
             "gemini-omni-1.1-flash",
             "gemini-omni-flash",
             "veo-3.1-generate-preview",
@@ -493,7 +537,11 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "gemini",
         "managed-agent",
         false,
-        &["antigravity-preview-05-2026"],
+        &[
+            "antigravity-preview-latest",
+            "antigravity-preview-09-2026",
+            "antigravity-preview-05-2026",
+        ],
     );
     add(
         &mut out,
@@ -502,6 +550,8 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "live-audio",
         false,
         &[
+            "gemini-3.8-live",
+            "gemini-3.8-live-extended-thinking",
             "gemini-3.5-live-translate-preview",
             "gemini-3.1-flash-live-preview",
             "gemini-2.5-flash-native-audio-preview-12-2025",
@@ -514,6 +564,8 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "speech",
         false,
         &[
+            "gemini-3.8-flash-tts",
+            "gemini-3.8-flash-lite-tts",
             "gemini-3.1-flash-tts-preview",
             "gemini-2.5-flash-preview-tts",
             "gemini-2.5-pro-preview-tts",
@@ -533,7 +585,11 @@ pub fn catalog() -> Vec<ModelDescriptor> {
         "gemini",
         "embedding",
         false,
-        &["gemini-embedding-2-preview", "gemini-embedding-001"],
+        &[
+            "gemini-embedding-2",
+            "gemini-embedding-2-preview",
+            "gemini-embedding-001",
+        ],
     );
     add(
         &mut out,
@@ -547,6 +603,24 @@ pub fn catalog() -> Vec<ModelDescriptor> {
             "gemini-robotics-er-1.6-preview",
             "gemini-robotics-er-1.5-preview",
         ],
+    );
+    // Neither drives a coding agent: Decisions answers yes/no/score through
+    // its own API, Genie streams interactive worlds.
+    add(
+        &mut out,
+        "google",
+        "gemini",
+        "decision",
+        false,
+        &["gemini-decision-1"],
+    );
+    add(
+        &mut out,
+        "google",
+        "gemini",
+        "world-model",
+        false,
+        &["genie-4"],
     );
 
     // Meta / Muse Code. Ids and the default come from the catalog the CLI itself
@@ -637,15 +711,24 @@ mod tests {
     fn current_flagships_and_every_modality_are_represented() {
         let models = catalog();
         for id in [
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
             "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-image-2",
             "gpt-realtime-2.1",
             "text-embedding-3-large",
+            "claude-fable-5-2",
             "claude-fable-5-1",
             "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
             "claude-opus-5",
             "claude-sonnet-5",
+            "gemini-4-carbon",
+            "gemini-4-neon",
+            "gemini-4-argon",
+            "gemini-4-hydrogen",
             "gemini-3.8-flash",
             "gemini-3.1-pro-preview",
             "gemini-embedding-2-preview",
@@ -702,6 +785,8 @@ mod tests {
                     | "research-agent"
                     | "managed-agent"
                     | "robotics"
+                    | "decision"
+                    | "world-model"
             ) {
                 assert!(
                     !model.worker_selectable,
