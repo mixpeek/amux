@@ -110,7 +110,7 @@ async fn a_card_with_history_gets_a_cited_timeline() {
         "_amux_state_events",
         "_amux_request_log",
         "_amux_turns",
-        "interaction_log",
+        "_amux_ledger",
     ] {
         assert!(
             sources(&v).contains(&t),

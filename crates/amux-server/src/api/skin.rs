@@ -11,7 +11,7 @@
 //! per-scope contract (`/api/scope`, `SCOPE_CAPS`). Adding `skin` as a
 //! descriptor row means it inherits the global -> group -> worker precedence,
 //! the write authorization (a session may write only its own worker layer),
-//! and the `interaction_log` audit row — none of which a new subsystem would
+//! and the ledger audit row (kind `scope`) — none of which a new subsystem would
 //! have had, and all of which it would eventually have needed.
 //!
 //! This endpoint is the RESOLVER: `/api/scope` answers "what is set AT this

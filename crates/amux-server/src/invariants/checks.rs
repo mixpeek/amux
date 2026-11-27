@@ -1174,7 +1174,7 @@ pub fn reviewer_is_independent(cards: &[(String, String, String)]) -> Vec<Invari
 ///
 /// ```text
 /// SECONDS       _amux_request_log.ts, session_events.ts, token_ledger.ts
-/// MILLISECONDS  cmd_history.ts, interaction_log.ts
+/// MILLISECONDS  cmd_history.ts, _amux_ledger.ts (and interaction_log.ts, dropped 2026-11-26)
 /// ```
 ///
 /// This has now cost four separate sessions. Two on one evening wrote
@@ -1423,7 +1423,6 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("guard_verdicts", "ts", false),
     // 28cdee7b added the table; `record` stamps chrono::Utc::now().timestamp(), which is seconds.
     ("host_metrics", "ts", false),
-    ("interaction_log", "ts", true),
     ("issue_files", "added_at", false),
     ("issue_tags", "added_at", false),
     // SECONDS, like every other `issues` timestamp. Set from `row.updated`,
@@ -9595,7 +9594,6 @@ mod negative_controls {
             "cmd_history.queued_at",
             "cmd_history.delivered_at",
             "cmd_history.ts",
-            "interaction_log.ts",
             "dictation_history.ts",
         ] {
             assert!(

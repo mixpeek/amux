@@ -31,11 +31,14 @@
 //!   `group:<name>` key convention (group) or the bare name (worker)
 //! - status_mode: `statuses.mode` (global) / `status_scope` rows
 //!
-//! The write audit is REAL, not claimed (ethos rule 6): every scope mutation
-//! inserts the same `interaction_log` row Python's `_ilog` writes — kind
-//! "scope", action "write:<cap>", per-(kind,target) seq, before/after blobs
-//! capped at 4000 chars — into the shared DB, where the existing audit
-//! consumers already look.
+//! The write audit is REAL, not claimed (ethos rule 6): every applied scope
+//! mutation appends one `_amux_ledger` row (`api/ledger.rs`): kind "scope",
+//! action "write:<cap>", resource "scope:<level>:<name>", the principal the
+//! server proved, and SHA-256 hashes of the value before and after (never the
+//! values: an env write can be a credential). Read them with
+//! `GET /api/ledger?kind=scope`. Until 2026-11-26 this wrote `interaction_log`,
+//! a Python-era table nothing read; the migration that dropped it archived its
+//! rows under `<amux home>/archive/primitive-audit-2026-11-26/`.
 //!
 //! Memory compose: `write_claude_memory` in `api/session_verbs.rs` now
 //! propagates worker memory writes into Claude's project MEMORY.md after
@@ -1029,12 +1032,14 @@ async fn put_scope(state: AppState, req: Request) -> Response {
         body.get("value"),
         &actor,
         member.as_ref(),
+        &super::ledger::principal(&super::groups::amux_home(), &headers),
     )
     .await
 }
 
 /// Python `_scope_write`: validate → authorize → before-read → storage write
 /// → after-read → audit → respond. Errors carry Python's exact strings.
+#[allow(clippy::too_many_arguments)]
 async fn scope_write(
     state: &AppState,
     level: &str,
@@ -1043,6 +1048,7 @@ async fn scope_write(
     value: Option<&Value>,
     actor: &str,
     member: Option<&super::org::MemberScope>,
+    principal: &super::ledger::Principal,
 ) -> Response {
     let Some(cap) = cap_by_key(key) else {
         return j(400, json!({"error": format!("unknown capability '{key}'")}));
@@ -1149,13 +1155,11 @@ async fn scope_write(
     let (after_value, set_here) = after.clone().unwrap_or((Value::Null, false));
 
     // The audit row (ethos rule 6: a scope MUTATION with no trace is the
-    // same gap as an unlogged gate bypass). Same table, same fields, same
-    // per-(kind,target) seq as Python's _ilog — the consumers already read
-    // interaction_log. Best-effort like Python: logging must never break
-    // the action that succeeded.
-    ilog_scope_write(
+    // same gap as an unlogged gate bypass) goes to the ledger, with the
+    // principal the server proved. Best effort: the write already applied.
+    audit_scope_write(
         state,
-        actor,
+        principal,
         level,
         name,
         key,
@@ -1495,78 +1499,77 @@ fn scope_outcome() -> crate::db::WriteOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Audit — Python _ilog, the scope-write call site
+// Audit — the scope-write ledger row
 // ---------------------------------------------------------------------------
 
-/// Python `_ILOG_BLOB_CAP`: per-field cap so one huge value cannot bloat
-/// the audit table.
-const ILOG_BLOB_CAP: usize = 4000;
-
-fn blob(v: Option<Value>) -> String {
+/// The value a scope write hashes: its JSON text, or the bare string. The
+/// ledger keeps hashes, never payloads, which matters here: an env write's
+/// value can be a credential.
+fn value_text(v: Option<&Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.chars().take(ILOG_BLOB_CAP).collect(),
-        Some(other) => serde_json::to_string(&other)
-            .unwrap_or_default()
-            .chars()
-            .take(ILOG_BLOB_CAP)
-            .collect(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 
+/// The ledger row one applied scope write leaves (ethos rule 6). Pure, so a
+/// test pins the shape without a server.
+pub(crate) fn scope_ledger_event(
+    principal: &super::ledger::Principal,
+    level: &str,
+    name: &str,
+    key: &str,
+    why: &str,
+    before: Option<&Value>,
+    after: &Value,
+) -> super::ledger::Event {
+    let trace = super::trace::current();
+    super::ledger::Event {
+        event_id: format!("scope:{}", ulid::Ulid::new()),
+        ts_ms: chrono::Utc::now().timestamp_millis(),
+        kind: "scope".into(),
+        action: Some(format!("write:{key}")),
+        resource: Some(format!("scope:{level}:{}", if name.is_empty() { "global" } else { name })),
+        input_hash: Some(super::ledger::sha256_hex(value_text(before).as_bytes())),
+        output_hash: Some(super::ledger::sha256_hex(value_text(Some(after)).as_bytes())),
+        decision: Some("applied".into()),
+        outcome: Some(why.chars().take(200).collect()),
+        trace_id: trace.as_ref().map(|t| t.trace_id.clone()),
+        span_id: trace.as_ref().map(|t| t.span_id.clone()),
+        parent_span_id: trace.as_ref().and_then(|t| t.parent_span_id.clone()),
+        trace_source: trace.as_ref().map(|t| t.source.to_string()),
+        ..Default::default()
+    }
+    .with_principal(principal)
+}
+
+/// Append the scope write's ledger row. Best effort: the write it records has
+/// already applied, so a failure is logged (`scope_audit_failed`) and counted
+/// by the ledger, never returned.
 #[allow(clippy::too_many_arguments)]
-async fn ilog_scope_write(
+async fn audit_scope_write(
     state: &AppState,
-    actor: &str,
+    principal: &super::ledger::Principal,
     level: &str,
     name: &str,
     key: &str,
     why: &str,
     before: Option<Value>,
-    result: Value,
+    after: Value,
 ) {
-    let kind = "scope".to_string();
-    let action = format!("write:{key}");
-    let actor = if actor.is_empty() {
-        "human".to_string()
-    } else {
-        actor.to_string()
-    };
-    let target = format!("{level}:{}", if name.is_empty() { "global" } else { name });
-    let detail = blob(Some(json!({
-        "capability": key, "level": level, "name": name, "why_allowed": why,
-    })));
-    let before = blob(before);
-    let result = blob(Some(result));
-    let ts = chrono::Utc::now().timestamp_millis();
+    let ev = scope_ledger_event(principal, level, name, key, why, before.as_ref(), &after);
+    let event_id = ev.event_id.clone();
     let res = state
         .store
         .write_async(move |conn| {
-            // Per-(kind,target) sequence, exactly Python's derivation.
-            let seq: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(seq),0) FROM interaction_log WHERE kind=?1 AND target=?2",
-                    rusqlite::params![kind, target],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0)
-                + 1;
-            conn.execute(
-                "INSERT INTO interaction_log \
-                 (ts,kind,actor,target,action,url,detail,before,result,ok,ms,seq) \
-                 VALUES (?1,?2,?3,?4,?5,'',?6,?7,?8,1,0,?9)",
-                rusqlite::params![ts, kind, actor, target, action, detail, before, result, seq],
-            )?;
-            // Audit rows ride the transaction but announce nothing: Python's
-            // _ilog emits no client-visible event either.
-            Ok(crate::db::WriteOutcome {
-                applied: false,
-                events: vec![],
-            })
+            super::ledger::append(conn, &ev);
+            Ok(crate::db::WriteOutcome { applied: false, events: vec![] })
         })
         .await;
     if let Err(e) = res {
-        tracing::warn!("scope ilog failed (write already applied): {e}");
+        tracing::warn!(verdict = "scope_audit_failed", event_id, error = %e, measured = true, n_considered = 1,
+            "a scope write applied but its ledger row was not written");
     }
 }
 
@@ -2037,14 +2040,14 @@ mod tests {
             "/api/scope",
             Some(
                 json!({"level": "group", "name": "alpha", "capability": "env",
-                        "value": {"NEW": "val", "OLD": null}}),
+                        "value": {"NEW": "s3cr3t-Q7v", "OLD": null}}),
             ),
             None,
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         let env_txt = std::fs::read_to_string(home.path().join("env/alpha.env")).unwrap();
-        assert_eq!(env_txt, "KEEP=x\nNEW=val\n");
+        assert_eq!(env_txt, "KEEP=x\nNEW=s3cr3t-Q7v\n");
         assert_eq!(v["value"]["keys"], json!(["KEEP", "NEW"]));
         #[cfg(unix)]
         {
@@ -2178,34 +2181,49 @@ mod tests {
         let (_, v) = call(&app, "GET", "/api/scope?level=group&name=alpha", None, None).await;
         assert_eq!(cap(&v, "status_mode")["value"], json!([]));
 
-        // The audit is REAL (ethos rule 6): every write above left an
-        // interaction_log row with Python's field shape, and seq counts
-        // per (kind, target).
+        // The audit is REAL (ethos rule 6): every write above left a ledger
+        // row, at a resource naming the level and scope, and the values are
+        // hashed, never stored.
         let conn = st.store.read().unwrap();
         let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM interaction_log WHERE kind='scope'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM _amux_ledger WHERE kind='scope'", [], |r| r.get(0))
             .unwrap();
-        assert!(n >= 7, "expected an audit row per applied write, got {n}");
-        let (actor, action, target, seq): (String, String, String, i64) = conn
+        assert!(n >= 7, "expected a ledger row per applied write, got {n}");
+        let (actor, action, input_hash, output_hash): (String, String, String, String) = conn
             .query_row(
-                "SELECT actor, action, target, seq FROM interaction_log \
-                 WHERE kind='scope' AND action='write:gates' AND target='group:alpha' \
-                 ORDER BY id DESC LIMIT 1",
+                "SELECT actor, action, input_hash, output_hash FROM _amux_ledger \
+                 WHERE kind='scope' AND action='write:gates' AND resource='scope:group:alpha' \
+                 ORDER BY seq DESC LIMIT 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(actor, "human");
+        assert_eq!(actor, "anonymous", "no proof on these test calls, so no claimed name becomes the actor");
         assert_eq!(action, "write:gates");
-        assert_eq!(target, "group:alpha");
-        // seq counts per (kind, target) across ALL actions — Python's
-        // derivation. group:alpha saw memory, env, gates, gates in order,
-        // so the second gates write is the 4th row at this target.
-        assert_eq!(seq, 4, "4th write at (scope, group:alpha)");
+        assert_ne!(input_hash, output_hash, "the before and after values differ, so do their hashes");
+        // group:alpha saw memory, env, gates, gates, status_mode, status_mode.
+        let at_alpha: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_ledger WHERE kind='scope' AND resource='scope:group:alpha'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(at_alpha, 6, "one ledger row per applied write at (scope, group:alpha)");
+        let gates_at_alpha: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_ledger WHERE kind='scope' AND resource='scope:group:alpha' AND action='write:gates'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gates_at_alpha, 2, "both applied gates writes");
+        let mode_at_global: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_ledger WHERE kind='scope' AND resource='scope:global:global' AND action='write:status_mode'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode_at_global, 1, "the refused status_mode write leaves no row; the applied one does");
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM _amux_ledger WHERE kind='scope' AND \
+                 (COALESCE(outcome,'') || COALESCE(resource,'') || COALESCE(action,'') || COALESCE(decision,'')) \
+                 GLOB '*alpha notes*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0, "a written value (here the memory text) never reaches the ledger in clear, only its hash");
     }
 
     /// Connectors step 3 (AMUX-3105 data model): `connectors` is a scopable

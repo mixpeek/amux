@@ -3677,7 +3677,7 @@ fn card_needsyou_asked_at(conn: &Connection, card: &str) -> Option<f64> {
 /// engaged reviewer. Engagement is decidable from an id-reference plus a
 /// timestamp; approval is not decidable from prose.
 ///
-/// UNITS: `cmd_history.ts` and `interaction_log.ts` are both MILLISECONDS. They
+/// UNITS: `cmd_history.ts` and `_amux_ledger.ts` are both MILLISECONDS. They
 /// cancel when compared to each other, which is the only comparison the caller
 /// makes. Never compare either to wall-clock seconds unscaled.
 fn reviewer_msg_engagement(conn: &Connection, card_id: &str, reviewer: &str) -> i64 {
@@ -3723,64 +3723,59 @@ fn reviewer_msg_engagement(conn: &Connection, card_id: &str, reviewer: &str) -> 
 /// fires on every commit into whatever card the author holds, and a naive
 /// "who wrote last" test reads ~75 of those as the author replying.
 fn reviewer_has_responded(conn: &Connection, card: &str, reviewer: &str) -> Option<&'static str> {
-    const DELIB: &str = "('patch','status_update','gate_force')";
-    let rev_ts: i64 = conn
-        .query_row(
-            &format!(
-                "SELECT ts FROM interaction_log WHERE kind='board' AND target=?1 AND actor=?2 \
-                 AND action IN {DELIB} ORDER BY ts DESC LIMIT 1"
-            ),
-            rusqlite::params![card, reviewer],
-            |r| r.get(0),
+    // The deliberate board writes are the commands that edit the card or post
+    // a status update on it, as the ledger records them (`interactions::
+    // middleware` writes one `interaction` row per finished command, resource
+    // `board:<id>`, action `<METHOD> <path>`). A refused or failed write is
+    // not a review action. Commit attach is a different route, so it is out.
+    // The ledger's `ts` is MILLISECONDS, like `cmd_history.ts`.
+    let patch = format!("PATCH /api/board/{card}");
+    let status = format!("POST /api/board/{card}/status-update");
+    let worker = format!("worker:{reviewer}");
+    let newest = |mine: bool| -> i64 {
+        let who = "(actor = ?4 OR actor = ?5 OR COALESCE(claimed, '') = ?4)";
+        let sql = format!(
+            "SELECT MAX(ts) FROM _amux_ledger WHERE kind='interaction' AND resource = ?1 \
+             AND action IN (?2, ?3) AND decision = 'allowed' AND {}{who}",
+            if mine { "" } else { "NOT " }
+        );
+        conn.query_row(
+            &sql,
+            rusqlite::params![format!("board:{card}"), patch, status, worker, reviewer],
+            |r| r.get::<_, Option<i64>>(0),
         )
-        .optional()
         .ok()
         .flatten()
-        .unwrap_or(0);
-    let other_ts: i64 = conn
-        .query_row(
-            &format!(
-                "SELECT ts FROM interaction_log WHERE kind='board' AND target=?1 AND actor<>?2 \
-                 AND action IN {DELIB} ORDER BY ts DESC LIMIT 1"
-            ),
-            rusqlite::params![card, reviewer],
-            |r| r.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .unwrap_or(0);
+        .unwrap_or(0)
+    };
+    let rev_ts = newest(true);
+    let other_ts = newest(false);
     // AF-154: REFUSE RATHER THAN GUESS WHEN THE BOARD SIDE IS BLIND.
     //
-    // This function is a COMPARISON — did the reviewer's last deliberate board
-    // action outrank everyone else's — and the message timestamp was only ever
-    // a tiebreaker within it. Nothing in the Rust server has written a
-    // kind='board' interaction_log row since 2026-08-09 (792ce1f, the Python
-    // deletion): the sole INSERT is in this module's own #[cfg(test)] block,
-    // and the live table's only surviving kind is 'scope'. Measured in the
-    // live DB: 1136 board rows, every one dated 08-09.
+    // This function is a COMPARISON: did the reviewer's last deliberate board
+    // action outrank everyone else's? The message timestamp is only a
+    // tiebreaker within it. Until 2026-11-26 it read `interaction_log`, which
+    // nothing had written for board writes since 2026-08-09 (792ce1f), so
+    // both sides were 0 on every card and the comparison collapsed into "has
+    // the reviewer ever named this card in a message". It reads the ledger
+    // now, which records every finished board command.
     //
-    // So on every card created since, rev_ts and other_ts are BOTH 0, the
-    // comparison collapses, and `best > other_ts && best > 0` degenerates into
-    // "has the reviewer ever named this card in a message" — which ANY message
-    // satisfies, including the one ANNOUNCING the card. That is what told a
-    // lane its reviewer had responded when the card's own log said otherwise.
-    //
-    // Both-zero is knowable, so say it instead of guessing. The failure this
-    // trades toward is one extra nudge to a reviewer who answered only by
-    // message; the failure it removes is a review gate waiting on nothing,
-    // which is the one that makes the gate meaningless. When board writes come
-    // back (or this reads the board's own log instead), the branch stops
-    // firing on its own.
+    // Both-zero still happens (a card nobody has edited through the API, or
+    // `AMUX_LEDGER=off`), and it is knowable, so say it instead of guessing.
+    // The failure this trades toward is one extra nudge to a reviewer who
+    // answered only by message; the failure it removes is a review gate
+    // waiting on nothing.
     if rev_ts == 0 && other_ts == 0 {
         static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
             tracing::warn!(
-                "[board-drive] interaction_log kind='board' is EMPTY for review cards — \
-                 reviewer-response detection is running blind and now declines to infer a \
-                 response from messages alone (AF-154). Nothing has written that channel \
-                 since the Python server was deleted; a message naming a card is not a \
-                 review action."
+                verdict = "reviewer_response_no_board_evidence",
+                card,
+                measured = true,
+                n_considered = 0,
+                "[board-drive] the ledger holds no allowed board write on this review card, \
+                 so reviewer-response detection declines to infer a response from messages \
+                 alone (AF-154). A message naming a card is not a review action."
             );
         }
         return None;
@@ -17921,11 +17916,47 @@ mod tests {
         }
     }
 
+    /// One finished board command as `interactions::middleware` writes it to
+    /// the ledger: an unproven worker, so the lane is only `claimed`.
+    fn ledger_board_write(conn: &Connection, card: &str, lane: &str, action: &str, decision: &str) {
+        crate::api::ledger::append(conn, &crate::api::ledger::Event {
+            event_id: format!("int:test-{}", ulid::Ulid::new()),
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            kind: "interaction".into(),
+            action: Some(action.into()),
+            resource: Some(format!("board:{card}")),
+            decision: Some(decision.into()),
+            source_table: Some("_amux_interactions".into()),
+            ..Default::default()
+        }
+        .with_principal(&crate::api::ledger::Principal::anonymous(Some(format!("worker:{lane}")))));
+    }
+
+    /// The reviewer's board write is read from the ledger, and only a
+    /// deliberate, allowed write on THIS card counts.
+    #[test]
+    fn reviewer_response_is_read_from_the_ledger_and_only_allowed_writes_on_the_card_count() {
+        let conn = board_db();
+        add_card(&conn, "R-3", "lane", "review", "needs a peer", "SCOPE: x");
+        ledger_board_write(&conn, "R-3", "peer", "PATCH /api/board/R-3", "refused");
+        ledger_board_write(&conn, "R-30", "peer", "PATCH /api/board/R-30", "allowed");
+        ledger_board_write(&conn, "R-3", "peer", "POST /api/board/R-3/commits", "allowed");
+        assert_eq!(reviewer_has_responded(&conn, "R-3", "peer"), None,
+            "a refused write, another card's write and a non-deliberate route are not a response");
+        ledger_board_write(&conn, "R-3", "peer", "POST /api/board/R-3/status-update", "allowed");
+        assert_eq!(reviewer_has_responded(&conn, "R-3", "peer"), Some("board write"));
+        // The author answers after the reviewer: the reviewer no longer outranks.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        ledger_board_write(&conn, "R-3", "lane", "PATCH /api/board/R-3", "allowed");
+        assert_eq!(reviewer_has_responded(&conn, "R-3", "peer"), None,
+            "a later write by someone else outranks the reviewer's");
+    }
+
     /// AC-234: blocking a card IS a completed review action but leaves it in
     /// `review`, so without this the sweep re-nudges a reviewer whose analysis is
     /// already on the card — and AMUX-2498: the conclusion "the author owes the
     /// next move" must be ACTED on, not thrown away.
-    /// AF-154. The test ABOVE inserts the interaction_log row itself, so it
+    /// AF-154. The test ABOVE seeds the board write itself, so it
     /// manufactures the precondition production has lacked since 2026-08-09
     /// and is structurally blind to the empty table — it passed for two weeks
     /// while the function it covers was guessing. This is the cell it could
@@ -17966,11 +17997,7 @@ mod tests {
         // CONTROL, or the assertion above passes for a function that always
         // returns None: the SAME message plus a real board write by the
         // reviewer must still be detected.
-        conn.execute(
-            "INSERT INTO interaction_log (ts,kind,actor,target,action)              VALUES (?1,'board','peer','R-2','patch')",
-            rusqlite::params![chrono::Utc::now().timestamp_millis()],
-        )
-        .expect("ilog");
+        ledger_board_write(&conn, "R-2", "peer", "PATCH /api/board/R-2", "allowed");
         assert!(
             reviewer_has_responded(&conn, "R-2", "peer").is_some(),
             "a real board write by the reviewer must still count"
@@ -17983,12 +18010,7 @@ mod tests {
         add_card(&conn, "R-1", "lane", "review", "needs a peer", "SCOPE: x");
         conn.execute("UPDATE issues SET reviewer='peer' WHERE id='R-1'", [])
             .expect("rev");
-        conn.execute(
-            "INSERT INTO interaction_log (ts,kind,actor,target,action) \
-             VALUES (?1,'board','peer','R-1','patch')",
-            rusqlite::params![chrono::Utc::now().timestamp_millis()],
-        )
-        .expect("ilog");
+        ledger_board_write(&conn, "R-1", "peer", "PATCH /api/board/R-1", "allowed");
         match select_advance(&conn, "lane", &[], now_f64()) {
             Advance::Nudge {
                 target, kind, text, ..

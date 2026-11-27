@@ -16,6 +16,7 @@
 
 pub mod advance;
 pub mod artifact_store;
+pub mod audit_archive;
 pub mod read_manager;
 pub mod attempts;
 pub mod board_store;

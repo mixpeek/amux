@@ -954,7 +954,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "0178_telegram_links_in_bridge",
         sql: include_str!("../../migrations/0178_telegram_links_in_bridge.sql"),
     },
+    Migration {
+        version: DROP_INTERACTION_LOG,
+        name: "0179_drop_interaction_log",
+        sql: include_str!("../../migrations/0179_drop_interaction_log.sql"),
+    },
 ];
+
+/// The migration that drops `interaction_log`. Before it runs,
+/// [`super::audit_archive::interaction_log`] copies the rows it removes.
+const DROP_INTERACTION_LOG: i64 = 179;
 
 /// The migration that drops `_amux_messages`. Before it runs,
 /// [`archive_before_drop`] copies the rows it removes.
@@ -965,7 +974,7 @@ const DROP_AMUX_MESSAGES: i64 = 177;
 pub(crate) const AUDIT_ARCHIVE_DIR: &str = "archive/primitive-audit-2026-11-26";
 
 /// Rows a query returns, as JSON objects keyed by column name.
-fn rows_json(conn: &Connection, sql: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+pub(crate) fn rows_json(conn: &Connection, sql: &str) -> anyhow::Result<Vec<serde_json::Value>> {
     use rusqlite::types::ValueRef;
     let mut stmt = conn.prepare(sql)?;
     let cols: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
@@ -1379,6 +1388,9 @@ pub fn apply_all_with_home(conn: &mut Connection, home: Option<&std::path::Path>
         let started = std::time::Instant::now();
         if m.version == DROP_AMUX_MESSAGES {
             archive_before_drop(conn, home)?;
+        }
+        if m.version == DROP_INTERACTION_LOG {
+            super::audit_archive::interaction_log(conn, home)?;
         }
         let tx = conn.transaction()?;
         apply_one(&tx, m.sql)?;
@@ -1830,6 +1842,69 @@ mod tests {
         // An empty table needs no archive.
         conn.execute_batch("DELETE FROM _amux_messages; DELETE FROM _amux_commands;").unwrap();
         apply_all(&mut conn).unwrap();
+    }
+
+    /// A database just before the drop, holding `interaction_log` rows.
+    fn interaction_log_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, DROP_INTERACTION_LOG - 1);
+        conn.execute_batch(
+            "INSERT INTO interaction_log (ts, kind, actor, target, action, detail, before, result, seq) VALUES
+               (1794675511113, 'scope', 'human', 'group:alpha', 'write:gates', '{\"capability\":\"gates\"}', '{}', '{\"done\":[]}', 1),
+               (1795033259429, 'scope', 'amux', 'worker:w1', 'write:env', '{}', '', 'kept result', 1);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn dropping_interaction_log_archives_its_rows_first_and_never_overwrites_the_archive() {
+        let mut conn = interaction_log_fixture();
+        let home = tempfile::tempdir().unwrap();
+        apply_all_with_home(&mut conn, Some(home.path())).unwrap();
+        let path = home.path().join(AUDIT_ARCHIVE_DIR).join("interaction_log.json");
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(rows.len(), 2, "every row is kept");
+        assert_eq!(rows[0]["target"], "group:alpha");
+        assert_eq!(rows[0]["ts"], 1794675511113i64, "integers stay integers");
+        assert_eq!(rows[1]["result"], "kept result");
+        assert_eq!(rows[0]["detail"], "{\"capability\":\"gates\"}", "columns are kept as stored");
+        assert!(!table_exists(&conn, "interaction_log"), "the table is dropped");
+
+        // A second database migrating into the same home must not overwrite
+        // the first copy.
+        let mut again = interaction_log_fixture();
+        again.execute("DELETE FROM interaction_log WHERE id = 1", []).unwrap();
+        apply_all_with_home(&mut again, Some(home.path())).unwrap();
+        let kept: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(kept.len(), 2, "the first archive is left as it is");
+    }
+
+    #[test]
+    fn dropping_interaction_log_is_refused_when_its_rows_have_nowhere_to_go() {
+        let mut conn = interaction_log_fixture();
+        let err = apply_all_with_home(&mut conn, None).unwrap_err().to_string();
+        assert!(err.contains("interaction_log") && err.contains("2 row"), "{err}");
+        assert!(table_exists(&conn, "interaction_log"), "nothing is dropped when the archive cannot be written");
+        let applied: Option<i64> = conn
+            .query_row("SELECT version FROM _amux_migrations WHERE version=?1", [DROP_INTERACTION_LOG], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(applied, None, "the drop is not recorded as applied");
+
+        // An archive directory that cannot be created refuses too.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("archive"), b"a file where the directory goes").unwrap();
+        let mut blocked = interaction_log_fixture();
+        assert!(apply_all_with_home(&mut blocked, Some(home.path())).is_err());
+        assert!(table_exists(&blocked, "interaction_log"));
+    }
+
+    #[test]
+    fn dropping_an_empty_interaction_log_needs_no_archive() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        apply_all_with_home(&mut conn, None).expect("a fresh database has nothing to keep");
+        assert!(!table_exists(&conn, "interaction_log"));
     }
 
     /// Either 0082/0083 history converges, and 0139 then removes the project

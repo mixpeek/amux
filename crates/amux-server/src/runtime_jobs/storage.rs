@@ -32,7 +32,6 @@
 //!
 //! | table                  | column       | unit                        |
 //! |------------------------|--------------|-----------------------------|
-//! | `interaction_log`      | `ts`         | **milliseconds** (INTEGER)  |
 //! | `cmd_history`          | `ts`         | **milliseconds** (INTEGER)  |
 //! | `session_events`       | `ts`         | seconds (REAL)              |
 //! | `token_ledger`         | `ts`         | seconds (INTEGER)           |
@@ -41,7 +40,8 @@
 //! | `_amux_state_events`   | `at`         | **ISO-8601 TEXT**           |
 //!
 //! `ethos.md` records that two sessions in one evening wrote
-//! `datetime(ts,'unixepoch')` against `interaction_log` and got a cutoff ~1000x
+//! `datetime(ts,'unixepoch')` against `interaction_log` (a millisecond table,
+//! since dropped) and got a cutoff ~1000x
 //! too small, so the filter matched the entire table — and one of them nearly
 //! reported the whole historical backlog as post-fix regressions. That was a
 //! READ. This file does DELETEs.
@@ -338,17 +338,9 @@ pub const SPECS: &[SweepSpec] = &[
         env: "AMUX_HOST_METRICS_RETAIN_DAYS",
         default_days: 30.0,
     },
-    // MILLISECONDS. The expensive one: 1,893 B/row (it stores `before`/`detail`/
-    // `result` blobs), 3,236 rows/day. At 90d this single table would reach 524MB —
-    // larger than the entire DB today — which is why it gets 14d and not the 90d
-    // the cheaper tables can afford. 14d x 3,236 x 1,893B = ~82MB.
-    SweepSpec {
-        table: "interaction_log",
-        ts_col: "ts",
-        unit: TsUnit::Millis,
-        env: "AMUX_INTERACTION_LOG_RETAIN_DAYS",
-        default_days: 14.0,
-    },
+    // `interaction_log` was listed here (14d, AMUX_INTERACTION_LOG_RETAIN_DAYS)
+    // until 2026-11-26, when its writers moved to the ledger and a migration
+    // dropped it (primitive integrity audit, P2).
     // The highest row count in the DB (387k) but cheap at 104 B/row, 7,995 rows/day.
     // Cost accounting, so keep it long: it is the only record of what the fleet
     // spent. 365d would be 4.7M rows / ~300MB; 180d x 7,995 x 104B = ~150MB.
@@ -2222,7 +2214,7 @@ mod tests {
     #[test]
     fn a_cutoff_that_can_never_fire_deletes_nothing_and_is_not_refused() {
         let c = mem();
-        c.execute_batch("CREATE TABLE interaction_log (id INTEGER PRIMARY KEY, ts INTEGER)")
+        c.execute_batch("CREATE TABLE ms_log (id INTEGER PRIMARY KEY, ts INTEGER)")
             .unwrap();
         let now = unix_now();
         // A live table's real shape: old rows AND recent ones. (A table where
@@ -2230,13 +2222,13 @@ mod tests {
         // `guard_1_also_refuses_a_legitimately_dormant_table`.)
         for d in [400.0, 300.0, 1.0] {
             c.execute(
-                "INSERT INTO interaction_log (ts) VALUES (?1)",
+                "INSERT INTO ms_log (ts) VALUES (?1)",
                 rusqlite::params![((now - d * 86_400.0) * 1000.0) as i64],
             )
             .unwrap();
         }
         let wrong = SweepSpec {
-            table: "interaction_log",
+            table: "ms_log",
             ts_col: "ts",
             unit: TsUnit::Secs, // WRONG: this table is milliseconds.
             env: "AMUX_TEST_NOPE2",

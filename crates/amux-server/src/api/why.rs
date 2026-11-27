@@ -33,7 +33,7 @@
 //!
 //! `issues.created/updated`, `schedule_runs.ran_at`, `logs.ts` are unix
 //! SECONDS. `_amux_request_log.ts` and `session_events.ts` are REAL unix
-//! seconds. `interaction_log.ts` is MILLISECONDS (ethos.md records two
+//! seconds. `_amux_ledger.ts` is MILLISECONDS, as `interaction_log.ts` was (ethos.md records two
 //! sessions in one evening writing `datetime(ts,'unixepoch')` against it and
 //! getting a filter ~1000x too small, which matched the entire table while
 //! looking like a correct answer). Each read below converts explicitly and
@@ -718,93 +718,86 @@ fn parse_log_line(line: &str) -> (Option<&str>, &str) {
     (None, t)
 }
 
-/// `interaction_log` — the UI/agent interaction trail. **ts is MILLISECONDS**
-/// on this table (unlike every other timestamp here).
+/// `_amux_ledger` — the record of every finished command and decision that
+/// names this card (resource `board:<id>`, written by `interactions::
+/// middleware`). **ts is MILLISECONDS** on this table (unlike most other
+/// timestamps here). Replaced `interaction_log`, which nothing had written for
+/// board work since 2026-08-09 and which a migration dropped on 2026-11-26.
 fn collect_interactions(conn: &Connection, w: &mut Why, target: &str) -> rusqlite::Result<()> {
+    let resource = format!("board:{target}");
     let total: usize = conn
         .query_row(
-            "SELECT COUNT(*) FROM interaction_log WHERE target = ?1",
-            [target],
+            "SELECT COUNT(*) FROM _amux_ledger WHERE resource = ?1",
+            [&resource],
             |r| r.get::<_, i64>(0).map(|n| n as usize),
         )
         .unwrap_or(0);
     let mut stmt = conn.prepare(
-        "SELECT id, ts, kind, actor, action, detail, ok, result FROM interaction_log
-         WHERE target = ?1 ORDER BY ts ASC LIMIT ?2",
+        "SELECT seq, ts, kind, actor, claimed, action, decision, outcome FROM _amux_ledger
+         WHERE resource = ?1 ORDER BY ts ASC LIMIT ?2",
     )?;
     let rows: Vec<WhyEvent> = stmt
-        .query_map(rusqlite::params![target, PER_SOURCE_CAP as i64], |r| {
-            let id: i64 = r.get(0)?;
+        .query_map(rusqlite::params![resource, PER_SOURCE_CAP as i64], |r| {
+            let seq: i64 = r.get(0)?;
             let ts_ms: i64 = r.get(1)?;
             let kind: String = r.get(2)?;
             let actor: String = r.get(3)?;
-            let action: String = r.get(4)?;
-            let detail: String = r.get(5)?;
-            let ok: i64 = r.get(6)?;
-            let result: String = r.get(7)?;
+            let claimed: Option<String> = r.get(4)?;
+            let action: Option<String> = r.get(5)?;
+            let decision: Option<String> = r.get(6)?;
+            let outcome: Option<String> = r.get(7)?;
             // MILLISECONDS -> seconds. Doing this in the wrong direction is
             // the documented way to produce a filter that matches everything.
             let secs = ts_ms / 1000;
+            let decision = decision.unwrap_or_default();
             Ok(WhyEvent {
                 at: Some(epoch_to_rfc3339(secs)),
                 at_epoch: Some(secs),
                 kind: "interaction".into(),
-                actor: Some(actor).filter(|s| !s.is_empty()),
+                actor: Some(actor.clone()).filter(|s| !s.is_empty() && s != "anonymous").or(claimed.clone()),
                 summary: format!(
-                    "{kind} {action}{}",
-                    if ok == 1 {
+                    "{kind} {}{}",
+                    action.unwrap_or_default(),
+                    if decision == "allowed" || decision.is_empty() {
                         String::new()
                     } else {
-                        format!(" FAILED: {result}")
+                        format!(" {}: {}", decision.to_uppercase(), outcome.unwrap_or_default())
                     }
                 ),
-                detail: (!detail.is_empty()).then(|| json!({ "detail": detail })),
-                source: json!({"table": "interaction_log", "rowid": id}),
+                detail: Some(json!({ "actor": actor, "claimed": claimed })),
+                source: json!({"table": "_amux_ledger", "rowid": seq}),
                 ordering: "timestamped",
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
     let n = rows.len();
     w.events.extend(rows);
-    // AMUX-3526 / AF-154: a zero here is a claim about the CHANNEL far more
-    // often than about the entity. Nothing has written kind='board' since
-    // 2026-08-09 (792ce1f, the Python deletion) and 'scope' is the only kind
-    // still produced, so for anything created since, this query returns an
-    // empty set — and "no interaction rows target this entity" states that as
-    // a fact about the entity. That is the wrong subject: an explanation
-    // built from a dead source should say the source is dead, not that
-    // nothing happened. Compounded by the reaper — storage.rs sweeps this
-    // table at 14 days, so the surviving 08-09 rows are expiring now, after
-    // which the table is EMPTY and this note would be wrong about everything.
+    // AMUX-3526 / AF-154: a zero here can be a claim about the CHANNEL rather
+    // than the entity: the ledger is off (`AMUX_LEDGER=off`) or empty. Say so
+    // when that is the case, so a dead source is never reported as a quiet
+    // entity.
     let note = if total > 0 {
         None
     } else {
-        let (rows_anywhere, newest_ms): (i64, i64) = conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(MAX(ts), 0) FROM interaction_log",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap_or((0, 0));
+        let rows_anywhere: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _amux_ledger", [], |r| r.get(0))
+            .unwrap_or(0);
         if rows_anywhere == 0 {
-            Some(
-                "interaction_log is EMPTY — this is a fact about the SOURCE, not about this \
-                 entity. Nothing has written it since the Python server was deleted \
-                 (2026-08-09) and the storage reaper expires what remained."
-                    .to_string(),
-            )
-        } else {
-            let newest = epoch_to_rfc3339(newest_ms / 1000);
             Some(format!(
-                "no interaction rows target this entity — but the newest row in the whole \
-                 table is {newest}, so this channel is stale and a zero here is weak \
-                 evidence about the entity (AMUX-3526)."
+                "_amux_ledger is EMPTY — this is a fact about the SOURCE, not about this entity \
+                 (ledger {}).",
+                if super::ledger::enabled() { "on" } else { "off: AMUX_LEDGER=off stops appends" }
+            ))
+        } else {
+            Some(format!(
+                "no ledger row names board:{target}: nothing has edited this card through the API \
+                 since the ledger's retention window began ({rows_anywhere} rows in the ledger)."
             ))
         }
     };
     w.probe(
-        "interaction_log",
-        format!("target='{target}' (ts is MILLISECONDS on this table)"),
+        "_amux_ledger",
+        format!("resource='board:{target}' (ts is MILLISECONDS on this table)"),
         n,
         total,
         note,
@@ -1719,7 +1712,7 @@ async fn contract() -> Json<Value> {
         "endpoint": "GET /api/why/{kind}/{id}",
         "window": "GET /api/why?since=<epoch|rfc3339>&until=<epoch|rfc3339>&limit=N",
         "kinds": {
-            "task":        ["issues", "issues.log", "_amux_state_events", "_amux_request_log", "_amux_turns", "interaction_log"],
+            "task":        ["issues", "issues.log", "_amux_state_events", "_amux_request_log", "_amux_turns", "_amux_ledger"],
             "worker":      ["_amux_workers", "_amux_state_events", "_amux_sessions", "_amux_commands", "_amux_turns", "_amux_request_log"],
             "command":     ["_amux_commands", "_amux_turns"],
             "schedule":    ["schedules", "schedule_runs", "schedule_audit", "_amux_state_events", "_amux_request_log"],
@@ -1781,74 +1774,47 @@ mod tests {
     }
 
     /// AMUX-3526. A zero from a DEAD source must not be reported as a fact
-    /// about the entity. interaction_log has had no writer since 2026-08-09,
-    /// so "no interaction rows target this entity" was true of the table and
-    /// false as an explanation — and the storage reaper is expiring what
-    /// remains, after which it would be wrong about everything.
+    /// about the entity. The card's command trail is the ledger now; an empty
+    /// ledger names the source, a populated one without this card says so,
+    /// and a real row produces no caveat.
     #[test]
-    fn an_empty_interaction_log_is_reported_as_a_dead_source_not_a_quiet_entity() {
-        let conn = Connection::open_in_memory().expect("db");
-        conn.execute_batch(
-            "CREATE TABLE interaction_log (id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, \
-             actor TEXT, target TEXT, action TEXT, detail TEXT, ok INTEGER, result TEXT);",
-        )
-        .expect("schema");
+    fn an_empty_ledger_is_reported_as_a_dead_source_not_a_quiet_entity() {
+        let conn = crate::db::migrate::test_memdb();
+        let ev = |id: &str, resource: &str| super::super::ledger::Event {
+            event_id: id.into(),
+            ts_ms: 1786233600000,
+            kind: "interaction".into(),
+            actor: "worker:peer".into(),
+            action: Some(format!("PATCH /api/{}", resource.replace(':', "/"))),
+            resource: Some(resource.into()),
+            decision: Some("allowed".into()),
+            ..Default::default()
+        };
 
-        // (a) TABLE COMPLETELY EMPTY — the post-reaper shape.
+        // (a) LEDGER COMPLETELY EMPTY.
         let mut w = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w, "AMUX-1").expect("collect");
         let note = format!("{:?}", w.sources);
-        assert!(
-            note.contains("EMPTY"),
-            "must name the SOURCE as empty: {note}"
-        );
-        assert!(
-            !note.contains("no interaction rows target this entity"),
-            "must not state a dead channel as a fact about the entity: {note}"
-        );
+        assert!(note.contains("EMPTY"), "must name the SOURCE as empty: {note}");
 
-        // (b) TABLE HAS ROWS, none for this target — the note must say the
-        // channel is STALE and name the newest row, not imply the entity was
-        // quiet. Without this branch the assertion above passes for a probe
-        // that shouts EMPTY unconditionally.
-        conn.execute(
-            "INSERT INTO interaction_log (ts,kind,actor,target,action,detail,ok,result) \
-             VALUES (?1,'board','someone','OTHER-9','patch','',1,'')",
-            rusqlite::params![1786233600000i64],
-        )
-        .expect("seed");
+        // (b) LEDGER HAS ROWS, none for this card.
+        super::super::ledger::append(&conn, &ev("a", "board:OTHER-9"));
         let mut w2 = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w2, "AMUX-1").expect("collect");
         let note2 = format!("{:?}", w2.sources);
-        assert!(
-            note2.contains("stale"),
-            "a populated-but-old table must read as stale: {note2}"
-        );
-        assert!(
-            note2.contains("2026-08-09"),
-            "the note must name the newest row: {note2}"
-        );
+        assert!(!note2.contains("EMPTY"), "a populated ledger is not empty: {note2}");
+        assert!(note2.contains("no ledger row names board:AMUX-1"), "{note2}");
 
-        // (c) CONTROL — a row that DOES target the entity produces no note at
-        // all, or every explanation would carry a caveat and the caveat would
-        // stop being read.
-        conn.execute(
-            "INSERT INTO interaction_log (ts,kind,actor,target,action,detail,ok,result) \
-             VALUES (?1,'board','someone','AMUX-1','patch','',1,'')",
-            rusqlite::params![1786233600000i64],
-        )
-        .expect("seed2");
+        // (c) CONTROL — a row that DOES name the card is a timeline line and
+        // carries no caveat.
+        super::super::ledger::append(&conn, &ev("b", "board:AMUX-1"));
         let mut w3 = Why::new("task", "AMUX-1");
         collect_interactions(&conn, &mut w3, "AMUX-1").expect("collect");
         let note3 = format!("{:?}", w3.sources);
-        assert!(
-            !note3.contains("EMPTY"),
-            "a real hit must not be caveated: {note3}"
-        );
-        assert!(
-            !note3.contains("stale"),
-            "a real hit must not be caveated: {note3}"
-        );
+        assert!(!note3.contains("EMPTY") && !note3.contains("no ledger row"), "{note3}");
+        assert_eq!(w3.events.len(), 1, "the card's own row is on the timeline");
+        assert_eq!(w3.events[0].source["table"], "_amux_ledger");
+        assert_eq!(w3.events[0].actor.as_deref(), Some("worker:peer"));
     }
 
     #[test]
