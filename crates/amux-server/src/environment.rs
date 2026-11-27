@@ -139,6 +139,7 @@ pub const REGISTRY: &[KeySpec] = &[
     k("AMUX_GMAIL_ACCOUNTS", SO, "Gmail accounts this worker may use"),
     k("AMUX_GOAL_CHECK", PF, "the worker's goal checker; creates its goal-check schedule"),
     k("AMUX_GOAL_CHECK_INTERVAL_S", PF, "minutes between goal checker runs, in seconds"),
+    k("AMUX_GOAL_CHECK_TIMEOUT_S", PF, "how long one goal-check run may take, in seconds (default 600, at most 4h)"),
     k("AMUX_GOAL_CONTINUE", PF, "goal keeper continues an unmet /goal"),
     k("AMUX_GOAL_LOOP_GUARD", PF, "stop a /goal that loops without progress"),
     k("AMUX_GOAL_STALL_H", PF, "hours before a goal counts as stalled"),

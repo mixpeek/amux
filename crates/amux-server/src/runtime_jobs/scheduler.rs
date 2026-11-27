@@ -1791,6 +1791,70 @@ fn days_in_month(y: i32, mo: u32) -> Option<u32> {
 /// `subprocess.run(..., timeout=600)`.
 pub const SHELL_TIMEOUT_S: u64 = 600;
 
+/// The longest a goal check may ask for. Four hours: GS-12's checker reads
+/// 51 rows in 25 minutes and over two hours under load (2026-11-27).
+pub const GOAL_CHECK_TIMEOUT_MAX_S: u64 = 4 * 3600;
+
+/// How long one run of this schedule may take. Every shell schedule gets
+/// [`SHELL_TIMEOUT_S`], except a goal check (`managed_by = goal-check`),
+/// which honours its lane's `AMUX_GOAL_CHECK_TIMEOUT_S` as the checker did
+/// before it became a schedule (75cd5d17f). Without that, GS-12's checks were
+/// killed at 600s and every all-rows verdict would read unknown.
+pub fn shell_timeout_for(managed_by: &str, session: &str) -> u64 {
+    let process = crate::environment::process("AMUX_GOAL_CHECK_TIMEOUT_S");
+    shell_timeout_in(&crate::config::amux_home(), managed_by, session, process.as_deref())
+}
+
+/// [`shell_timeout_for`] over an explicit home and process value.
+fn shell_timeout_in(home: &std::path::Path, managed_by: &str, session: &str, process_value: Option<&str>) -> u64 {
+    if managed_by != "goal-check" || session.trim().is_empty() {
+        return SHELL_TIMEOUT_S;
+    }
+    let raw = crate::environment::resolve_in(
+        home,
+        crate::environment::Scope::Lane(session),
+        "AMUX_GOAL_CHECK_TIMEOUT_S",
+        process_value,
+    )
+    .map(|r| r.value);
+    match raw.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        None => SHELL_TIMEOUT_S,
+        Some(v) => match v.parse::<f64>() {
+            Ok(n) if n.is_finite() && n >= 1.0 => (n.ceil() as u64).min(GOAL_CHECK_TIMEOUT_MAX_S),
+            _ => {
+                tracing::warn!(session = %session, value = %v, verdict = "goal_check_timeout_unparsed", measured = true, n_considered = 1,
+                    "AMUX_GOAL_CHECK_TIMEOUT_S is not a number of seconds; the goal check runs under the default shell timeout");
+                SHELL_TIMEOUT_S
+            }
+        },
+    }
+}
+
+/// The lane's own scope env (global, then its groups, then the worker file,
+/// later layers winning) for a goal-check run, so a checker reads the same
+/// settings its worker does (for example GS12_ROWS). Other shell schedules
+/// keep the server's environment.
+fn goal_check_lane_env(managed_by: &str, session: &str) -> Vec<(String, String)> {
+    goal_check_lane_env_in(&crate::config::amux_home(), managed_by, session)
+}
+
+fn goal_check_lane_env_in(home: &std::path::Path, managed_by: &str, session: &str) -> Vec<(String, String)> {
+    if managed_by != "goal-check" || session.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut merged: Vec<(String, String)> = Vec::new();
+    for path in crate::environment::scope_env_layers(home, session) {
+        let f = crate::api::session_verbs::EnvFile::load(&path);
+        for k in f.keys() {
+            if let Some(v) = f.get(&k) {
+                merged.retain(|(have, _)| have != &k);
+                merged.push((k, v.to_string()));
+            }
+        }
+    }
+    merged
+}
+
 /// `/bin/bash -o pipefail -c <cmd>` in a process group of its own, so a run
 /// that times out can be stopped whole. `kill_on_drop` alone kills only this
 /// bash: SCHED-783's `bash "$R" | tail -60` kept running after its 600s
@@ -2003,7 +2067,16 @@ pub fn claim_manual_shell_run(
     source: &str,
 ) -> rusqlite::Result<ShellRunClaim> {
     let now = chrono::Utc::now().timestamp();
-    let stale_before = now - SHELL_TIMEOUT_S as i64 - 30;
+    // A goal check may run longer than the default (shell_timeout_for), and a
+    // Run now pressed during it must not mark that live run as dead.
+    let (managed_by, session): (String, String) = conn
+        .query_row(
+            "SELECT COALESCE(managed_by, ''), COALESCE(session, '') FROM schedules WHERE id=?1",
+            [schedule_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap_or_default();
+    let stale_before = now - shell_timeout_for(&managed_by, &session) as i64 - 30;
     conn.execute(
         "UPDATE schedule_runs
          SET status='error', note='server stopped or the shell timeout elapsed before a result was recorded',
@@ -2384,6 +2457,14 @@ impl LiveDeliverer {
         // was most recently active: SCHED-550 (amux-helper's) sent 55 messages
         // stamped amux, canvas-app-use-cases, amux-app and gainz (2026-10-04).
         let owner = sched.str_field("session").trim().to_string();
+        let managed_by = sched.str_field("managed_by").trim().to_string();
+        let timeout_s = shell_timeout_for(&managed_by, &owner);
+        let lane_env = std::sync::Arc::new(goal_check_lane_env(&managed_by, &owner));
+        if timeout_s != SHELL_TIMEOUT_S || !lane_env.is_empty() {
+            tracing::info!(schedule = %sched_id, session = %owner, timeout_s, lane_env_keys = lane_env.len(),
+                verdict = "goal_check_run_scoped", measured = true, n_considered = 1,
+                "goal-check run uses its lane's timeout and environment");
+        }
         // The owner's vault secrets (AMUX-5375), resolved at every run so a
         // rotation applies to the next fire. They go into the child's
         // environment, never argv, and are masked out of every byte of output
@@ -2413,6 +2494,7 @@ impl LiveDeliverer {
             let sid = sched_id.clone();
             let owner = owner.clone();
             let vault_vals = vault_vals.clone();
+            let lane_env = lane_env.clone();
             async move {
                 let _in_flight = ShellRunInFlight::enter(&sid);
                 let _watched = det::Watched::enter(run_id);
@@ -2430,6 +2512,11 @@ impl LiveDeliverer {
                             .ok_or_else(|| format!("could not create {}", shell_runs_dir(&sid).display()))?;
                         let mut command = det::detached_command(&cmd, &files)
                             .map_err(|e| format!("could not prepare the run's output files: {e}"))?;
+                        // The lane's env first, so the owner's secrets and the
+                        // run identity set below win over a same-named key.
+                        for (k, v) in lane_env.iter() {
+                            command.env(k, v);
+                        }
                         for (k, v) in vault_vals.iter() {
                             command.env(k, v);
                         }
@@ -2472,7 +2559,7 @@ impl LiveDeliverer {
                         (files, meta, det::Proc::Child(child), log)
                     }
                 };
-                let end = det::watch(&files, meta.started_ms, proc, vault_vals.clone(), &mut log, SHELL_TIMEOUT_S,
+                let end = det::watch(&files, meta.started_ms, proc, vault_vals.clone(), &mut log, timeout_s,
                     SHELL_COMBINED_KEEP, SHELL_OUTPUT_TAIL_BYTES).await;
                 if let Some(t) = &meta.token_path {
                     let _ = std::fs::remove_file(t);
@@ -2496,8 +2583,8 @@ impl LiveDeliverer {
                     det::WatchEnd::Exited(code, o, e, tail) => Ok::<_, String>((code, o, e, tail)),
                     det::WatchEnd::TimedOut => {
                         tracing::warn!(schedule = %sid, verdict = "shell_schedule_timed_out_group_killed", measured = true, n_considered = 1,
-                            "shell schedule timed out after {SHELL_TIMEOUT_S}s; killed its whole process group, so nothing it started keeps running");
-                        Err(format!("timed out after {SHELL_TIMEOUT_S}s"))
+                            "shell schedule timed out after {timeout_s}s; killed its whole process group, so nothing it started keeps running");
+                        Err(format!("timed out after {timeout_s}s"))
                     }
                     det::WatchEnd::Vanished => {
                         tracing::warn!(schedule = %sid, verdict = "shell_run_lost", measured = true, n_considered = 1,
@@ -7318,5 +7405,45 @@ mod sun_schedule_tests {
 
     fn chrono_tz_ny() -> chrono::FixedOffset {
         chrono::FixedOffset::west_opt(4 * 3600).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod goal_check_run_scope_tests {
+    use super::{goal_check_lane_env_in, shell_timeout_in, GOAL_CHECK_TIMEOUT_MAX_S, SHELL_TIMEOUT_S};
+
+    fn home_with(worker_env: &str) -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("sessions")).unwrap();
+        std::fs::write(d.path().join("amux.env"), "GS12_ROWS=1-51\nSHARED=global\n").unwrap();
+        std::fs::write(d.path().join("sessions").join("gs-lane.env"), worker_env).unwrap();
+        d
+    }
+
+    /// A goal check honours its lane's AMUX_GOAL_CHECK_TIMEOUT_S, clamped to
+    /// four hours; every other shell schedule keeps the 600s default.
+    #[test]
+    fn a_goal_check_runs_under_its_lanes_timeout_and_others_keep_the_default() {
+        let d = home_with("AMUX_GOAL_CHECK_TIMEOUT_S=2400\n");
+        assert_eq!(shell_timeout_in(d.path(), "goal-check", "gs-lane", None), 2400);
+        assert_eq!(shell_timeout_in(d.path(), "", "gs-lane", None), SHELL_TIMEOUT_S, "an ordinary schedule");
+        assert_eq!(shell_timeout_in(d.path(), "goal-check", "other-lane", None), SHELL_TIMEOUT_S, "no key set");
+        let big = home_with("AMUX_GOAL_CHECK_TIMEOUT_S=999999\n");
+        assert_eq!(shell_timeout_in(big.path(), "goal-check", "gs-lane", None), GOAL_CHECK_TIMEOUT_MAX_S);
+        let junk = home_with("AMUX_GOAL_CHECK_TIMEOUT_S=soon\n");
+        assert_eq!(shell_timeout_in(junk.path(), "goal-check", "gs-lane", None), SHELL_TIMEOUT_S);
+    }
+
+    /// The run gets the lane's scope env with the worker file winning, and an
+    /// ordinary schedule gets none of it.
+    #[test]
+    fn a_goal_check_gets_its_lanes_env_with_the_worker_layer_winning() {
+        let d = home_with("GS12_ROWS=59\nCC_DIR=/tmp\n");
+        let env = goal_check_lane_env_in(d.path(), "goal-check", "gs-lane");
+        let get = |k: &str| env.iter().find(|(have, _)| have == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("GS12_ROWS"), Some("59"), "the worker's own value wins over the global one");
+        assert_eq!(get("SHARED"), Some("global"));
+        assert_eq!(env.iter().filter(|(k, _)| k == "GS12_ROWS").count(), 1, "one value per key");
+        assert!(goal_check_lane_env_in(d.path(), "", "gs-lane").is_empty(), "an ordinary schedule gets none");
     }
 }
