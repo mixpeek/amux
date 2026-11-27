@@ -7,7 +7,7 @@
 #                          authorized_keys forces scripts/amux-prebuilt-receive.sh for this key
 #   AMUX_PREBUILT_KEY      the private key for them (default ~/.ssh/amux-prebuilt)
 #   AMUX_PREBUILT_REPO     default https://github.com/mixpeek/amux.git
-#   AMUX_PREBUILT_CPUS     CPU cap for the build container (default 40 of 48: the box is shared)
+#   AMUX_PREBUILT_CPUS     CPU cap for the build container (default 40; clamped to the host's CPUs minus 4)
 #   AMUX_PREBUILT_POLL_S   how often main is read (default 15)
 #   AMUX_PREBUILT_NICE     the build's niceness (default 0; the CPU cap protects the box)
 #
@@ -18,6 +18,15 @@ TARGETS="${AMUX_PREBUILT_TARGETS:?set AMUX_PREBUILT_TARGETS}"
 KEY="${AMUX_PREBUILT_KEY:-$HOME/.ssh/amux-prebuilt}"
 REPO="${AMUX_PREBUILT_REPO:-https://github.com/mixpeek/amux.git}"
 CPUS="${AMUX_PREBUILT_CPUS:-40}"
+# Docker refuses a --cpus above the host's core count, so a resized host (mixpeek-dev went
+# from 48 to 32) failed every build in 3s, 2026-11-27 05:44Z to 10:43Z, with the cap still
+# set to 40. Leave four cores for the box and never ask for more than it has.
+HOST_CPUS=$(docker info --format '{{.NCPU}}' 2>/dev/null || nproc 2>/dev/null || echo 0)
+ALLOW=$(( HOST_CPUS > 4 ? HOST_CPUS - 4 : HOST_CPUS ))
+if [ "${HOST_CPUS:-0}" -gt 0 ] && [ "${CPUS%.*}" -gt "$ALLOW" ]; then
+  echo "$(date -u +%FT%TZ) amux-prebuilt cpus=$CPUS is more than this host's $HOST_CPUS CPUs allow; using $ALLOW verdict=prebuilt_cpus_clamped"
+  CPUS=$ALLOW
+fi
 POLL="${AMUX_PREBUILT_POLL_S:-15}"
 NICE="${AMUX_PREBUILT_NICE:-0}"   # the box idles at load ~10 of 48; the CPU cap is the guard
 IMAGE="${AMUX_PREBUILT_IMAGE:-rust:1-bookworm}"
