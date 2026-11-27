@@ -10,7 +10,8 @@
 //!   - only the owner moves a deal to or from `proposal` or `won` (the human
 //!     boundary: the agents drive to booked and nurtured; the owner prices and
 //!     signs), refused as `crm_deal_owner_stage`;
-//!   - `won` needs `amount`, `mrr_usd` and `close_date` (`crm_deal_won_incomplete`);
+//!   - `won` needs `amount` (the signed value) and `close_date` (`crm_deal_won_incomplete`);
+//!     `mrr_usd` is optional, for a deal that really is a subscription;
 //!   - `lost` needs a `lost_reason` from [`LOST_REASONS`] (`crm_deal_lost_reason`).
 //!
 //!   GET  /api/crm/deals/{id}/stages   the deal's stage history, oldest first
@@ -95,7 +96,9 @@ pub(crate) fn check_stage(from: &str, to: &str, deal: &Value, owner: bool) -> Re
         _ => false,
     };
     if to == "won" {
-        let missing: Vec<&str> = ["amount", "mrr_usd", "close_date"].into_iter().filter(|k| !has(k)).collect();
+        // The signed value and the day. A contract is not a subscription, so
+        // mrr_usd is optional: set it on a deal that really is monthly.
+        let missing: Vec<&str> = ["amount", "close_date"].into_iter().filter(|k| !has(k)).collect();
         if !missing.is_empty() {
             return Err(("crm_deal_won_incomplete", format!("a won deal needs {}", missing.join(", "))));
         }
@@ -633,10 +636,10 @@ mod tests {
 
     #[test]
     fn the_stage_rules_hold_the_owner_boundary_and_the_closing_fields() {
-        let full = json!({ "amount": 12000, "mrr_usd": 1000, "close_date": "2026-12-01" });
+        let full = json!({ "amount": 12000, "close_date": "2026-12-01" });
         assert_eq!(check_stage("demo", "won", &full, false).unwrap_err().0, "crm_deal_owner_stage", "a worker cannot sign");
         assert_eq!(check_stage("proposal", "lost", &json!({ "lost_reason": "timing" }), false).unwrap_err().0, "crm_deal_owner_stage", "a lost proposal is the owner's");
-        assert!(check_stage("demo", "won", &full, true).is_ok());
+        assert!(check_stage("demo", "won", &full, true).is_ok(), "a contract needs no monthly figure");
         assert_eq!(check_stage("demo", "won", &json!({ "amount": 12000 }), true).unwrap_err().0, "crm_deal_won_incomplete");
         assert_eq!(check_stage("demo", "lost", &json!({}), false).unwrap_err().0, "crm_deal_lost_reason");
         assert!(check_stage("demo", "lost", &json!({ "lost_reason": "no_budget" }), false).is_ok());
@@ -754,7 +757,7 @@ mod tests {
         assert_eq!((st, r["code"].as_str()), (StatusCode::CONFLICT, Some("crm_deal_won_incomplete")));
         let (_, d) = call(&app, "GET", &format!("/deals/{deal}"), &OWNER, None).await;
         assert_eq!((d["stage"].as_str(), d["amount"].as_f64()), (Some("demo"), None), "a refused move writes nothing");
-        let (st, _) = call(&app, "PATCH", &format!("/deals/{deal}"), &OWNER, Some(json!({"stage": "won", "amount": 12000, "mrr_usd": 1000, "close_date": "2026-12-20"}))).await;
+        let (st, _) = call(&app, "PATCH", &format!("/deals/{deal}"), &OWNER, Some(json!({"stage": "won", "amount": 12000, "close_date": "2026-12-20"}))).await;
         assert_eq!(st, StatusCode::OK);
 
         let (_, h) = call(&app, "GET", &format!("/deals/{deal}/stages"), &OWNER, None).await;
@@ -769,7 +772,7 @@ mod tests {
         let g = &f["groups"][0];
         let counts: Vec<i64> = STEPS.iter().map(|k| g[*k].as_i64().unwrap()).collect();
         assert_eq!(counts, vec![1, 1, 1, 1, 1, 1, 0], "{g}");
-        assert_eq!((g["key"].as_str(), g["mrr_usd"].as_f64(), g["won_amount_usd"].as_f64()), (Some(seq.as_str()), Some(1000.0), Some(12000.0)));
+        assert_eq!((g["key"].as_str(), g["mrr_usd"].as_f64(), g["won_amount_usd"].as_f64()), (Some(seq.as_str()), Some(0.0), Some(12000.0)));
         assert_eq!(g["conversion"]["won_per_enrolled"].as_f64(), Some(1.0));
         let (_, f) = call(&app, "GET", "/funnel?group=cohort", &OWNER, None).await;
         assert_eq!(f["groups"][0]["key"], "ip-check-2026-12");

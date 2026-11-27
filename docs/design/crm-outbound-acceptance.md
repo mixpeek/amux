@@ -72,14 +72,14 @@ Statuses:
 | 35 | A booking moves the deal to `demo` and plans a pre-demo prep touch | a booking stops the sequences, moves the person's open deal (or a new one) to `demo` with `next_step` "prep the demo", and plans a `note` touch for whoever last worked them; `crm.contact.booked` carries the move and the prep touch | Pass | `crates/amux-server/src/api/crm_close.rs` tests; `e2e/crm-tab.spec.ts` "closing" on desktop, mobile and ios-safari |
 | 36 | A positive reply advances the deal to `qualification` | a reply opens the deal at `lead` with `next_step` "read their reply and record its intent"; an interested, book-later or objection intent moves it to `qualification` | Pass | `crates/amux-server/src/api/crm_close.rs` tests; a hand-logged reply (direction in) counts the same as a captured one |
 | 37 | After the demo: `trial` or `proposal`, with `next_step` | the owner moves it from the deal record; a worker may move a deal up to `trial` | Partial | No demo-done verb yet: the move after the call is a PATCH (worker to `trial`, owner to `proposal`) |
-| 38 | A signature closes the deal `won` with amount and close date | `won` refuses to save without `amount`, `mrr_usd` and `close_date` (`crm_deal_won_incomplete`) | Pass | `crates/amux-server/src/api/crm_close.rs` tests; the e2e signs a deal from the deal record only after the three are in |
+| 38 | A signature closes the deal `won` with amount and close date | `won` refuses to save without `amount` (the contract value) and `close_date` (`crm_deal_won_incomplete`); `mrr_usd` is optional, for a deal that really is a subscription | Pass | `crates/amux-server/src/api/crm_close.rs` tests; the e2e signs a deal from the deal record only after both are in |
 | 39 | A no closes the deal `lost` with a reason | `lost` refuses to save without `lost_reason` from no_budget, no_need, timing, competitor, no_response, other (`crm_deal_lost_reason`); a select on the deal record | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
 | **Reply intelligence** (section 11) | | | | |
 | 40 | A worker reads each reply and records its intent: interested, book later, objection, not interested, referral | `POST /api/crm/replies/{interaction_id}/intent`, stored on the interaction (`intent`, `intent_why`), emitting `crm.reply.classified`; `crm.contact.replied` now carries the `interaction_id`; the timeline shows the intent | Pass | `crates/amux-server/src/api/crm_close.rs` tests `each_intent_makes_its_move`; `e2e/crm-tab.spec.ts` shows the pill |
 | 41 | The intent drives the next move | interested: `qualification`, next step the booking push (`AMUX_CRM_BOOKING_URL` when set). Book later: a follow-up date on the reply. Objection: next step names it. Not interested: sequences stop, `do_not_contact` when asked, the deal `lost`. Referral: a new person with `source: referral:<id>` | Pass | Drafting the booking push, the answer or the intro stays the worker's job, from the event |
 | **Measurement** (section 12) | | | | |
 | 42 | The campaign funnel: enrolled, contacted, replied, booked, demoed, won, with conversion per step, per sequence and per cohort | `GET /api/crm/funnel?group=sequence|cohort&sequence=&cohort=&since=` on `crm.funnel.v1`; enrollments carry a `cohort`; the CRM tab's Funnel section | Pass | `crates/amux-server/src/api/crm_close.rs` tests; `e2e/crm-tab.spec.ts` reads the cohort's card |
-| 43 | Monthly recurring revenue per sequence or cohort | `crm_deals.mrr_usd`, required at `won`; the funnel sums it per group | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
+| 43 | Value signed per sequence or cohort (contracts; MRR only where a deal is a subscription) | `won_amount_usd` sums the won deals' contract value per group; `mrr_usd` (optional on a deal) sums apart, for subscriptions such as amux Cloud | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
 | 44 | "Demoed" and "won" are counted from what happened, even after a deal moves on or is lost | `crm_deal_stages` (from, to, at, by, why), backfilled with each deal's stage when it began; `GET /api/crm/deals/{id}/stages`; `crm.deal.stage`; the deal record shows the history | Pass | `crates/amux-server/src/api/crm_close.rs` tests: a deal won then lost still counts as demoed |
 | **Approval throughput** (section 13) | | | | |
 | 45 | Low-risk touches (like, follow, watch) run without the owner while email, DM, comment, connect with a note, letter and gift still hold | `AMUX_CRM_AUTO_ACTIONS` in `~/.amux/server.env` (default `like,follow,watch`, plus an internal `note`): those run and are recorded done with no approval; the guard and cooldowns ignore them | Pass | `crates/amux-server/src/api/crm_close.rs` tests: a like is done with no approve while a DM waits |
@@ -246,7 +246,7 @@ A deal moves on what happens, and the worker sets `next_step` at every move.
 | A booked meeting | `demo` | "prep the demo": a prep touch with the brief, the app and the questions to ask | the server, on the booking |
 | The demo is done and they want to try it | `trial` | the trial's success test and the check-in date | the worker, from the call notes; the owner confirms |
 | The demo is done and they want terms | `proposal` | what the proposal covers | the owner (section 16) |
-| A signature | `won`, with `amount`, `mrr_usd` and `close_date` | onboarding | the owner |
+| A signature | `won`, with `amount` (the contract value) and `close_date`; `mrr_usd` only for a subscription | onboarding | the owner |
 | A no, at any point | `lost`, with `lost_reason` | when to look again, if ever | the worker for a clear no; the owner for a lost proposal |
 
 **Pass:**
@@ -254,7 +254,7 @@ A deal moves on what happens, and the worker sets `next_step` at every move.
 - For one test company, a booking logged for its person moves their deal to `demo` within a minute.
 - That booking plans a prep touch for the assignee.
 - A worker-recorded demo moves the deal to `trial` with a `next_step`.
-- An owner-set `won` refuses to save without `amount`, `mrr_usd` and `close_date`.
+- An owner-set `won` refuses to save without `amount` and `close_date`.
 - A `lost` refuses to save without `lost_reason`.
 - Every move appears in the stage history and in Activity as `crm.deal.stage`.
 
@@ -320,8 +320,8 @@ Definitions, each counted once per person (a person is the unit):
 | `demoed` | has a deal that reached `demo` or later in the stage history, even if it later moved on or was lost |
 | `won` | has a deal that reached `won` |
 | `lost` | has a deal whose latest stage is `lost` |
-| `mrr_usd` | the sum of `mrr_usd` over the group's won deals |
-| `won_amount_usd` | the sum of `amount` over the group's won deals, in USD |
+| `won_amount_usd` | the sum of `amount` (the contract value) over the group's won deals, in USD: the revenue measure for contracts |
+| `mrr_usd` | the sum of `mrr_usd` over the group's won deals that are subscriptions; 0 when none are |
 
 Each conversion is the later count over the earlier one, and `null` when the earlier one is 0.
 A cohort is a tag on the enrollment (`cohort` on `POST /sequences/{id}/enroll`, for example
@@ -442,4 +442,4 @@ Waiting on the owner (a paid key, money, or a call only the owner makes):
 - **Enrichment and mailbox-level verification (rows 6, 7, 51's paid half):** which providers (Hunter.io, Apollo, Exa, Google, a verifier), and their keys.
 - **Offline fulfillment (row 13):** which print-and-mail and gift services, and the card rules for them under `amux order`.
 - **The sending domains themselves (row 28):** buying trymixpeek.com and getmixpeek.com style domains and their Google Workspace seats.
-- **Confirmations:** `mrr_usd` as the revenue measure, the auto-run list (`like`, `follow`, `watch`), and that `proposal` and `won` are owner-only.
+- **Confirmations:** the auto-run list (`like`, `follow`, `watch`), and that `proposal` and `won` are owner-only. (Revenue is the contract value, `won_amount_usd`: owner, 2026-11-27, "it's not a subscription".)

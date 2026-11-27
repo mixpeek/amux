@@ -475,8 +475,8 @@ test('on a phone Outbound has one row of controls, and a draft opens full width 
 // Closing the loop (docs/design/crm-outbound-acceptance.md sections 10 to 16;
 // owner 2026-11-27: "it barely covers closing, and closing is the point").
 // A worker reads a reply as interested, a booking moves the deal to demo and
-// plans the prep, the owner signs it won only with amount, MRR and close date,
-// and the Funnel shows the person at every step with the MRR.
+// plans the prep, the owner signs it won only with its contract value and close
+// date (a contract, not a subscription), and the Funnel shows the value signed.
 test('closing: a reply read as interested, a booking to demo, won only with its numbers, and the funnel counts it', async ({ page }, info) => {
   test.setTimeout(120_000);
   const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
@@ -516,8 +516,6 @@ test('closing: a reply read as interested, a booking to demo, won only with its 
   await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.stage).toBe('demo');
   await rec.locator('#crmf-amount').fill('12000'); await rec.locator('#crmf-amount').blur();
   await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.amount).toBe(12000);
-  await rec.locator('#crmf-mrr').fill('1000'); await rec.locator('#crmf-mrr').blur();
-  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.mrr_usd).toBe(1000);
   await rec.locator('[data-path$="' + deal.id + '"][type="date"]').fill('2026-12-20');
   await rec.locator('[data-path$="' + deal.id + '"][type="date"]').blur();
   await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.close_date).toBe('2026-12-20');
@@ -533,15 +531,15 @@ test('closing: a reply read as interested, a booking to demo, won only with its 
   await expect(page.locator('#crm-drawer .crm-ix', { hasText: 'tell me more ' + R }).locator('.cx-pill')).toHaveText('interested');
   await page.locator('#crm-drawer [aria-label="Close"]').first().click();
 
-  // The funnel: this cohort's one person at every step, and the MRR.
+  // The funnel: this cohort's one person at every step, and the contract value signed.
   await page.locator('#crm-q').fill('');
   await crmView(page, 'Funnel');
   await page.locator('#crm-chips .cx-filter', { hasText: 'By cohort' }).click();
   const card = page.locator('#crm-list .crm-funnel[data-key="cohort-' + R + '"]');
   for (const step of ['enrolled', 'contacted', 'replied', 'booked', 'demoed', 'won']) await expect(card.locator('.crm-step[data-step="' + step + '"] .crm-step-n')).toHaveText('1');
-  await expect(card).toContainText('$1,000/mo');
+  await expect(card).toContainText('$12,000 signed');
   const f = await api(page, 'GET', '/funnel?group=cohort&cohort=cohort-' + R);
-  expect([f.body.contract, f.body.groups[0].won, f.body.groups[0].mrr_usd]).toEqual(['crm.funnel.v1', 1, 1000]);
+  expect([f.body.contract, f.body.groups[0].won, f.body.groups[0].won_amount_usd, f.body.groups[0].mrr_usd]).toEqual(['crm.funnel.v1', 1, 12000, 0]);
   await page.screenshot({ path: test.info().outputPath('crm-funnel.png') });
 });
 

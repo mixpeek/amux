@@ -48250,13 +48250,14 @@ function _crmFunnelHtml(d) {
     const top = Math.max(1, g.enrolled || 0), conv = g.conversion || {};
     const title = g.key === '(none)' ? 'No cohort' : (g.name || g.key);
     return '<section class="crm-card crm-funnel" data-key="' + esc(g.key) + '"><div class="crm-line"><span class="crm-name">' + esc(title) + '</span>'
-      + (g.mrr_usd ? '<span class="cx-pill cx-ok">' + esc('$' + Number(g.mrr_usd).toLocaleString() + '/mo') + '</span>' : '')
+      + (g.won_amount_usd ? '<span class="cx-pill cx-ok">' + esc('$' + Number(g.won_amount_usd).toLocaleString() + ' signed') + '</span>' : '')
+      + (g.mrr_usd ? '<span class="cx-pill cx-idle">' + esc('$' + Number(g.mrr_usd).toLocaleString() + '/mo recurring') + '</span>' : '')
       + (g.lost ? '<span class="cx-pill cx-idle">' + esc(g.lost) + ' lost</span>' : '') + '</div>'
       + '<div class="crm-steps">' + steps.map(([k, label, c]) => '<div class="crm-step" data-step="' + k + '">'
         + '<span class="crm-step-l">' + esc(label) + '</span>'
         + '<span class="crm-step-track"><span class="crm-step-bar" data-w="' + Math.round(((g[k] || 0) / top) * 100) + '"></span></span>'
         + '<span class="crm-step-n">' + esc(g[k] || 0) + '</span><span class="crm-step-c">' + esc(c ? pct(conv[c]) : '') + '</span></div>').join('') + '</div>'
-      + '<div class="crm-meta crm-wrap">' + esc(['won ' + (pct(conv.won_per_enrolled) || '0%') + ' of enrolled', g.won_amount_usd ? '$' + Number(g.won_amount_usd).toLocaleString() + ' signed' : ''].filter(Boolean).join(' · ')) + '</div></section>';
+      + '<div class="crm-meta crm-wrap">' + esc('won ' + (pct(conv.won_per_enrolled) || '0%') + ' of enrolled') + '</div></section>';
   }).join('') + '<div class="crm-meta crm-capnote">Each person counts once per step · ' + esc(d.n_considered) + ' enrollments · ' + esc(d.contract || '') + '</div>';
 }
 
@@ -48416,13 +48417,13 @@ async function _crmDrawerRender() {
     h += '<dl class="crm-kv">' + _crmField('Title', 'title', x.title, p)
       + '<dt><label for="crmf-stage">Stage</label></dt><dd><select id="crmf-stage" class="input" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'stage\',this.value)">'
       + _CRM_STAGES.map(st => '<option' + (x.stage === st ? ' selected' : '') + '>' + st + '</option>').join('') + '</select></dd>'
-      + '<dt><label for="crmf-amount">Amount</label></dt><dd><input id="crmf-amount" class="input" type="number" value="' + esc(x.amount != null ? x.amount : '') + '" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'amount\',this.value===\'\'?null:Number(this.value))"></dd>'
-      + '<dt><label for="crmf-mrr">MRR (USD)</label></dt><dd><input id="crmf-mrr" class="input" type="number" value="' + esc(x.mrr_usd != null ? x.mrr_usd : '') + '" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'mrr_usd\',this.value===\'\'?null:Number(this.value))"></dd>'
+      + '<dt><label for="crmf-amount">Contract value</label></dt><dd><input id="crmf-amount" class="input" type="number" value="' + esc(x.amount != null ? x.amount : '') + '" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'amount\',this.value===\'\'?null:Number(this.value))"></dd>'
+      + '<dt><label for="crmf-mrr">MRR, if a subscription</label></dt><dd><input id="crmf-mrr" class="input" type="number" value="' + esc(x.mrr_usd != null ? x.mrr_usd : '') + '" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'mrr_usd\',this.value===\'\'?null:Number(this.value))"></dd>'
       + _crmField('Close date', 'close_date', x.close_date, p, 'date') + _crmField('Next step', 'next_step', x.next_step, p) + _crmField('Owner', 'owner', x.owner, p)
       + '<dt><label for="crmf-lost">Lost reason</label></dt><dd><select id="crmf-lost" class="input" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'lost_reason\',this.value)">'
       + ['', ..._CRM_LOST_REASONS].map(r => '<option value="' + r + '"' + ((x.lost_reason || '') === r ? ' selected' : '') + '>' + (r ? esc(_crmLabel(r)) : 'Not lost') + '</option>').join('') + '</select></dd>'
       + _crmField('App link', 'asset_url', x.asset_url, p, 'url') + '</dl>';
-    h += '<div class="crm-meta crm-wrap">A won deal needs amount, MRR and close date; a lost one, its reason. Proposal and won are the owner\'s to set.</div>';
+    h += '<div class="crm-meta crm-wrap">A won deal needs its contract value and close date; a lost one, its reason. Proposal and won are the owner\'s to set.</div>';
     if (/^https?:\/\//i.test(x.asset_url || '')) h += '<div class="crm-actions"><a class="btn" target="_blank" rel="noopener" href="' + esc(x.asset_url) + '">Open the app</a></div>';
     if (stages.length) h += '<div class="cx-sec">Stage history</div><div class="crm-stack">' + stages.map(st => '<div class="crm-meta crm-wrap crm-stage-row">'
       + esc([new Date(st.at * 1000).toLocaleDateString(), (st.from_stage ? st.from_stage + ' to ' : '') + st.to_stage, st.by, st.why].filter(Boolean).join(' · ')) + '</div>').join('') + '</div>';
