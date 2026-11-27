@@ -778,7 +778,7 @@ jobs:
       - name: land precheck verdict and attributed cancel (3/8)
         run: |
           set -uo pipefail
-          bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-shared-clone-remote.sh && bash scripts/test-land-fast-gate.sh
+          bash scripts/test-land-resume-place.sh && bash scripts/test-land-shared-config-guard.sh && bash scripts/test-land-heal-core-worktree.sh && bash scripts/test-land-already-landed.sh && bash scripts/test-land-shared-clone-remote.sh && bash scripts/test-land-fast-gate.sh && bash scripts/test-land-stale-hooks.sh
       - name: two machines share one remote land lease (1/2)
         run: |
           set -uo pipefail

@@ -13998,9 +13998,27 @@ $f"
     # the same way this block does.
     local _fg_on=0
     { [ "${AMUX_LAND_FAST_GATE:-}" = 1 ] || [ "$(_land_cfg --bool --get amux.landFastGate 2>/dev/null)" = true ]; } && _fg_on=1
-    [ -n "$lanes" ] && [ "$_fg_on" = 1 ] && [ "${AMUX_LAND_PRECHECK_BATCH:-1}" = 1 ] && \
-      _land_log "batch precheck skipped: the fast-gate push runs the same legs on this stack"
-    if [ -n "$lanes" ] && [ "$_fg_on" = 0 ] && [ "${AMUX_LAND_PRECHECK_BATCH:-1}" = 1 ]; then
+    # The fast-gate push runs the CHECKOUT's .githooks, the working-tree bytes.
+    # On a shared checkout far behind origin those can be stale: mixpeek's
+    # land-precheck there was a 3-line stub while origin/main's enforced GS-12's
+    # row holds, so ba6c902485 landed on held rows 1 and 60 (2026-11-27 12:33Z)
+    # after this block skipped the batch precheck. Skip only when the checkout's
+    # hooks are the branch's committed hooks; otherwise run the committed
+    # precheck on the stack here, solo or batched.
+    local _hooks_fresh=1
+    git diff --quiet "$remote/$branch" -- .githooks 2>/dev/null || _hooks_fresh=0
+    local _pc_run=0
+    if [ "${AMUX_LAND_PRECHECK_BATCH:-1}" = 1 ]; then
+      if [ "$_fg_on" = 1 ] && [ "$_hooks_fresh" = 0 ]; then
+        _land_log "WARN verdict=land_hooks_stale: this checkout's .githooks differ from $remote/$branch's, so the push hook would not run the committed checks; running $remote/$branch's land precheck on the stack first"
+        _pc_run=1
+      elif [ -n "$lanes" ] && [ "$_fg_on" = 1 ]; then
+        _land_log "batch precheck skipped: the fast-gate push runs the same legs on this stack"
+      elif [ -n "$lanes" ]; then
+        _pc_run=1
+      fi
+    fi
+    if [ "$_pc_run" = 1 ]; then
       local _pc_out _pc_rc=0 _pc_t0 _pc_named _pc_tk _pc_rest _pc_excl=""
       _pc_t0=$(date +%s)
       _pc_out="$(_land_precheck_exec "$(git rev-parse "$remote/$branch")" "$stack_tip")" || _pc_rc=$?
@@ -14035,6 +14053,13 @@ $f"
             rm -f -- "${q:?}/${_pc_tk:?}"
           done
           _land_log "composed batch with ${lanes} failed the land precheck on ${_pc_excl}'s commit in $(( $(date +%s) - _pc_t0 ))s; retrying without it, no gate run spent. Output: $full"
+        elif [ -z "$lanes" ]; then
+          # Alone (the stale-hooks path): the committed check refused this
+          # lane's own stack, so nothing is pushed.
+          _land_log "refused: $remote/$branch's land precheck refused this stack in $(( $(date +%s) - _pc_t0 ))s (stale checkout hooks would have passed it); nothing pushed. Output: $full"
+          printf '%s\n' "$_pc_out" | tail -30 >&2
+          echo "amux land: $remote/$branch's land precheck refused this stack (full output $full). Fix the commits and run amux land again." >&2
+          return 1
         else
           _land_tell "excluded: the composed batch failed the land precheck (full output $full); landing on your own turn"
           _land_log "composed batch with ${lanes} failed the land precheck naming no waiter in $(( $(date +%s) - _pc_t0 ))s; pushing this lane alone, no gate run spent. Output: $full"
