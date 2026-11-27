@@ -991,18 +991,50 @@ mod boot_arrival_window_tests {
         let mut w = BootArrivalWindow::default();
         c.execute_batch("INSERT INTO _amux_request_log VALUES (100, 50), (110, 120), (120, NULL);")
             .unwrap();
-        assert_eq!(w.advance(&c, 130.0, 100.0).unwrap(), (2, 1));
+        assert_eq!(w.advance(&c, 130.0, 100.0, 1000).unwrap(), Some((2, 1)));
         let seen = w.last_rowid;
         c.execute_batch("INSERT INTO _amux_request_log VALUES (200, 50);").unwrap();
         // A row the window already counted is never read again: rewriting
         // one behind the rowid mark changes nothing.
         c.execute_batch("UPDATE _amux_request_log SET boot_at = 999 WHERE rowid = 1;").unwrap();
-        assert_eq!(w.advance(&c, 205.0, 100.0).unwrap(), (3, 1));
+        assert_eq!(w.advance(&c, 205.0, 100.0, 1000).unwrap(), Some((3, 1)));
         assert!(w.last_rowid > seen);
         // At now=299 the first bucket (newest ts 120) is older than 199 and
         // leaves; the bucket holding ts 200 is still inside.
-        assert_eq!(w.advance(&c, 299.0, 100.0).unwrap(), (1, 0));
-        assert_eq!(w.advance(&c, 301.0, 100.0).unwrap(), (0, 0));
+        assert_eq!(w.advance(&c, 299.0, 100.0, 1000).unwrap(), Some((1, 0)));
+        assert_eq!(w.advance(&c, 301.0, 100.0, 1000).unwrap(), Some((0, 0)));
+    }
+
+    /// The first pass after a boot reads at most `chunk` rows, reports
+    /// unmeasured until it has caught up, and then reports the same counts a
+    /// single full scan would, starting at the window's first row.
+    #[test]
+    fn seeding_is_bounded_per_pass_and_ends_with_the_full_count() {
+        let c = log();
+        // Rows before the window (ts 10) must never be read or counted.
+        c.execute_batch("INSERT INTO _amux_request_log VALUES (10, 50), (10, 50);").unwrap();
+        for i in 0..10 {
+            let boot = if i % 2 == 0 { "50" } else { "NULL" };
+            c.execute_batch(&format!("INSERT INTO _amux_request_log VALUES ({}, {boot});", 100 + i))
+                .unwrap();
+        }
+        let mut w = BootArrivalWindow::default();
+        let mut passes = 0;
+        let got = loop {
+            passes += 1;
+            assert!(passes < 20, "seeding never caught up");
+            let before = w.last_rowid;
+            match w.advance(&c, 150.0, 100.0, 3).unwrap() {
+                Some(r) => break r,
+                None => {
+                    let read = w.last_rowid.unwrap() - before.unwrap_or(2);
+                    assert!(read <= 3, "a seeding pass read {read} rows, past its chunk");
+                }
+            }
+        };
+        assert_eq!(got, (5, 0), "five rows in the window carry a boot_at");
+        assert_eq!(w.seeded_rows, 10, "only the window's rows were read");
+        assert!(passes >= 4, "10 rows at 3 per pass take at least 4 passes, took {passes}");
     }
 }
 
@@ -2332,10 +2364,17 @@ fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let window = windows.entry(key).or_default();
-    match window.advance(&conn, now, WINDOW_H * 3600.0) {
-        Ok((with_boot, before)) => {
+    match window.advance(&conn, now, WINDOW_H * 3600.0, BOOT_WINDOW_CHUNK) {
+        Ok(Some((with_boot, before))) => {
             checks::request_arrival_follows_boot(with_boot, before, WINDOW_H)
         }
+        Ok(None) => vec![InvariantResult::unknown(
+            ID,
+            format!(
+                "seeding the 24h request window: {} rows read so far",
+                window.seeded_rows
+            ),
+        )],
         Err(e) => vec![InvariantResult::unknown(
             ID,
             format!("request log unreadable: {e}"),
@@ -2343,52 +2382,112 @@ fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
     }
 }
 
+/// Rows one pass of [`BootArrivalWindow::advance`] reads at most. The first
+/// pass after a boot used to read the whole 24h window at once (~750k rows,
+/// 70s to 325s on the live Mac, 2026-11-26), holding the monitor tick and
+/// showing it hung after every deploy. A bounded pass keeps each tick short;
+/// the window catches up over the following ticks.
+const BOOT_WINDOW_CHUNK: i64 = 20_000;
+
 /// Rolling 24h counts for [`arrival_follows_boot_check`], fed by rowid.
 #[derive(Default)]
 struct BootArrivalWindow {
-    last_rowid: i64,
+    /// Highest rowid already counted; `None` until the window's first row is found.
+    last_rowid: Option<i64>,
+    /// True once a pass has read up to the table's newest row.
+    caught_up: bool,
+    /// Rows read while seeding, and how long seeding took in total.
+    seeded_rows: i64,
+    seed_ms: u128,
     /// (newest ts in the bucket, rows with a boot_at, rows with ts < boot_at)
     buckets: std::collections::VecDeque<(f64, i64, i64)>,
 }
 
 impl BootArrivalWindow {
+    /// Reads at most `chunk` rows past the last one counted. Returns `None`
+    /// while the window is still being seeded, so the invariant reads
+    /// unmeasured rather than a partial count.
     fn advance(
         &mut self,
         conn: &rusqlite::Connection,
         now: f64,
         window_s: f64,
-    ) -> rusqlite::Result<(i64, i64)> {
+        chunk: i64,
+    ) -> rusqlite::Result<Option<(i64, i64)>> {
         let cutoff = now - window_s;
         let t0 = std::time::Instant::now();
-        let first = self.last_rowid == 0;
-        let (max_rowid, max_ts, with_boot, before): (Option<i64>, Option<f64>, i64, i64) = conn
-            .query_row(
-                "SELECT MAX(rowid), MAX(ts), COUNT(boot_at), \
-                 COALESCE(SUM(boot_at IS NOT NULL AND ts < boot_at), 0) \
-                 FROM _amux_request_log WHERE rowid > ?1 AND ts >= ?2",
-                rusqlite::params![self.last_rowid, cutoff],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
-        if let (Some(rowid), Some(ts)) = (max_rowid, max_ts) {
-            self.last_rowid = rowid;
+        let start = match self.last_rowid {
+            Some(r) => r,
+            // The ts index finds the window's first row in milliseconds; a
+            // MIN(rowid) over the same predicate walks the table instead.
+            None => conn
+                .query_row(
+                    "SELECT rowid FROM _amux_request_log WHERE ts >= ?1 ORDER BY ts LIMIT 1",
+                    [cutoff],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|r| r - 1)
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => conn.query_row(
+                        "SELECT COALESCE(MAX(rowid), 0) FROM _amux_request_log",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    ),
+                    e => Err(e),
+                })?,
+        };
+        let table_max: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(rowid), 0) FROM _amux_request_log",
+            [],
+            |r| r.get(0),
+        )?;
+        let hi = start.saturating_add(chunk.max(1)).min(table_max.max(start));
+        let (max_ts, with_boot, before): (Option<f64>, i64, i64) = conn.query_row(
+            "SELECT MAX(ts), COUNT(boot_at), \
+             COALESCE(SUM(boot_at IS NOT NULL AND ts < boot_at), 0) \
+             FROM _amux_request_log WHERE rowid > ?1 AND rowid <= ?2 AND ts >= ?3",
+            rusqlite::params![start, hi, cutoff],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        self.last_rowid = Some(hi);
+        if let Some(ts) = max_ts {
             self.buckets.push_back((ts, with_boot, before));
         }
         while self.buckets.front().is_some_and(|b| b.0 < cutoff) {
             self.buckets.pop_front();
         }
         let ms = t0.elapsed().as_millis();
-        if first || ms > 1000 {
+        if !self.caught_up {
+            self.seeded_rows += hi - start;
+            self.seed_ms += ms;
+            if hi >= table_max {
+                self.caught_up = true;
+                tracing::info!(
+                    verdict = "reqlog_boot_window_seeded",
+                    ms = self.seed_ms as u64,
+                    rows = self.seeded_rows,
+                    measured = true,
+                    n_considered = self.seeded_rows,
+                    "reqlog.arrival_follows_boot: 24h request window seeded in bounded passes"
+                );
+            }
+        }
+        if ms > 1000 {
             tracing::info!(
-                verdict = if first { "reqlog_boot_window_seeded" } else { "reqlog_boot_window_slow" },
+                verdict = "reqlog_boot_window_slow",
                 ms = ms as u64,
-                rows = with_boot,
-                "reqlog.arrival_follows_boot: scanned request rows after rowid"
+                rows = hi - start,
+                "reqlog.arrival_follows_boot: one bounded pass was slow"
             );
         }
-        Ok(self
-            .buckets
-            .iter()
-            .fold((0, 0), |(w, b), x| (w + x.1, b + x.2)))
+        if !self.caught_up {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.buckets
+                .iter()
+                .fold((0, 0), |(w, b), x| (w + x.1, b + x.2)),
+        ))
     }
 }
 
