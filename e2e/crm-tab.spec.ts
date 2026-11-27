@@ -471,3 +471,106 @@ test('on a phone Outbound has one row of controls, and a draft opens full width 
   await review.locator('.crm-back').click();
   await expect(page.locator('#crm-drawer')).toHaveCount(0);
 });
+
+// Closing the loop (docs/design/crm-outbound-acceptance.md sections 10 to 16;
+// owner 2026-11-27: "it barely covers closing, and closing is the point").
+// A worker reads a reply as interested, a booking moves the deal to demo and
+// plans the prep, the owner signs it won only with amount, MRR and close date,
+// and the Funnel shows the person at every step with the MRR.
+test('closing: a reply read as interested, a booking to demo, won only with its numbers, and the funnel counts it', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  const W = 'crm-close-' + R;
+  const phone = (page.viewportSize()?.width || 1280) < 1000;
+  await openCrm(page, 'Deals');
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb, w]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': w }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b, W] as const);
+  const acct = (await api(page, 'POST', '/accounts', { name: 'Closeco ' + R, domain: `closeco-${R}.io` })).body.id;
+  const nina = (await api(page, 'POST', '/contacts', { name: 'Nina Close ' + R, email: `nina.${R}@closeco.io`, linkedin: 'linkedin.com/in/nina-' + R, account_id: acct })).body.id;
+  const seq = (await asWorker('POST', '/sequences', { name: 'Close ' + R, steps: [{ channel: 'linkedin', action: 'dm', template: 'Hi {first_name}' }, { day: 3, channel: 'linkedin', action: 'comment' }] })).body.id;
+  const en = await asWorker('POST', '/sequences/' + seq + '/enroll', { contact_ids: [nina], cohort: 'cohort-' + R });
+  const t1 = en.body.enrolled[0].touch_id;
+  expect((await api(page, 'POST', '/touches/' + t1 + '/approve')).status).toBe(200);
+  expect((await asWorker('POST', '/touches/' + t1 + '/done', { result: 'sent' })).status).toBe(200);
+  // Their reply, then the worker's reading of it.
+  const ix = (await asWorker('POST', '/contacts/' + nina + '/interactions', { type: 'dm', direction: 'in', notes: 'sounds great, tell me more ' + R })).body.id;
+  const read = await asWorker('POST', '/replies/' + ix + '/intent', { intent: 'interested', why: 'asked for more' });
+  expect(read.status).toBe(200);
+  // A booking: the deal moves to demo and a prep touch is planned.
+  expect((await asWorker('POST', '/contacts/' + nina + '/interactions', { type: 'meeting', notes: 'calendly ' + R })).status).toBe(201);
+  const deal = (await api(page, 'GET', '/deals?account_id=' + acct)).body[0];
+  expect([deal.stage, deal.next_step.startsWith('prep the demo')]).toEqual(['demo', true]);
+  // A worker cannot sign it.
+  expect((await asWorker('PATCH', '/deals/' + deal.id, { stage: 'won', amount: 1, mrr_usd: 1, close_date: '2026-12-20' })).body.code).toBe('crm_deal_owner_stage');
+
+  // The owner opens the deal: its history, then won is refused until the numbers are in.
+  await crmView(page, 'Deals');
+  await page.locator('#crm-list .crm-row', { hasText: deal.title }).click();
+  const rec = page.locator('#crm-drawer .cx-drawer');
+  await expect(rec.locator('.crm-stage-row')).toHaveCount(3);
+  await expect(rec.locator('.crm-stage-row').last()).toContainText('qualification to demo');
+  await rec.locator('#crmf-stage').selectOption('won');
+  await expect(page.locator('#toast')).toContainText('a won deal needs');
+  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.stage).toBe('demo');
+  await rec.locator('#crmf-amount').fill('12000'); await rec.locator('#crmf-amount').blur();
+  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.amount).toBe(12000);
+  await rec.locator('#crmf-mrr').fill('1000'); await rec.locator('#crmf-mrr').blur();
+  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.mrr_usd).toBe(1000);
+  await rec.locator('[data-path$="' + deal.id + '"][type="date"]').fill('2026-12-20');
+  await rec.locator('[data-path$="' + deal.id + '"][type="date"]').blur();
+  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.close_date).toBe('2026-12-20');
+  await rec.locator('#crmf-stage').selectOption('won');
+  await expect.poll(async () => (await api(page, 'GET', '/deals/' + deal.id)).body.stage).toBe('won');
+  await expect(rec.locator('.crm-stage-row').last()).toContainText('demo to won', { timeout: 10_000 });
+  if (phone) await page.locator('#crm-drawer [aria-label="Close"]').first().click();
+
+  // The person's timeline shows what the reply meant.
+  await crmView(page, 'People');
+  await page.locator('#crm-q').fill('Nina Close ' + R);
+  await page.locator('#crm-list .crm-row', { hasText: 'Nina Close ' + R }).click();
+  await expect(page.locator('#crm-drawer .crm-ix', { hasText: 'tell me more ' + R }).locator('.cx-pill')).toHaveText('interested');
+  await page.locator('#crm-drawer [aria-label="Close"]').first().click();
+
+  // The funnel: this cohort's one person at every step, and the MRR.
+  await page.locator('#crm-q').fill('');
+  await crmView(page, 'Funnel');
+  await page.locator('#crm-chips .cx-filter', { hasText: 'By cohort' }).click();
+  const card = page.locator('#crm-list .crm-funnel[data-key="cohort-' + R + '"]');
+  for (const step of ['enrolled', 'contacted', 'replied', 'booked', 'demoed', 'won']) await expect(card.locator('.crm-step[data-step="' + step + '"] .crm-step-n')).toHaveText('1');
+  await expect(card).toContainText('$1,000/mo');
+  const f = await api(page, 'GET', '/funnel?group=cohort&cohort=cohort-' + R);
+  expect([f.body.contract, f.body.groups[0].won, f.body.groups[0].mrr_usd]).toEqual(['crm.funnel.v1', 1, 1000]);
+  await page.screenshot({ path: test.info().outputPath('crm-funnel.png') });
+});
+
+// Desktop: several drafts decided at once; each still goes through its own approve.
+test('bulk: the owner approves two drafts at once and declines one with a note', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'a phone decides one draft at a time (no bulk row there)');
+  const R = Math.random().toString(36).slice(2, 7);
+  await openCrm(page, 'Outbound');
+  const ids: string[] = [];
+  for (const n of ['A', 'B', 'C']) {
+    const p = (await api(page, 'POST', '/contacts', { name: 'Bulk ' + n + ' ' + R, email: `bulk${n}.${R}@example.com` })).body.id;
+    const t = await page.evaluate(async ([id, r]) => (await (await fetch('/api/crm/touches', { method: 'POST', headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': 'crm-bulk' }), body: JSON.stringify({ contact_id: id, channel: 'linkedin', action: 'dm', body: 'Hi there ' + r }) })).json()).id, [p, R] as const);
+    ids.push(t);
+  }
+  await crmView(page, 'Outbound');
+  await page.locator('#crm-q').fill(R);
+  const rows = page.locator('#crm-list .crm-row');
+  await expect(rows).toHaveCount(3);
+  await rows.filter({ hasText: 'Bulk A' }).locator('.crm-pick').check();
+  await rows.filter({ hasText: 'Bulk B' }).locator('.crm-pick').check();
+  await page.locator('.crm-bulk .btn.primary', { hasText: 'Approve 2' }).click();
+  await page.locator('#modal-btns').getByRole('button', { name: 'Approve 2' }).click();
+  await expect(rows).toHaveCount(1);
+  await rows.first().locator('.crm-pick').check();
+  await page.locator('.crm-bulk .btn', { hasText: 'Decline 1' }).click();
+  await page.locator('#modal-prompt-input').fill('off-target ' + R);
+  await page.locator('#modal-prompt-input').press('Enter');
+  await expect(rows).toHaveCount(0);
+  const all = (await api(page, 'GET', '/touches?limit=1000')).body.filter((t: any) => ids.includes(t.id));
+  expect(all.map((t: any) => t.status).sort()).toEqual(['approved', 'approved', 'skipped']);
+  expect(all.find((t: any) => t.status === 'skipped').result).toBe('declined by the owner: off-target ' + R);
+});

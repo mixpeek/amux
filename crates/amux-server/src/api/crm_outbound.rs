@@ -7,7 +7,7 @@
 //!   GET  /api/crm/sequences, POST {name, goal?, steps, stop_on_reply?, assignee?}
 //!   GET  /api/crm/sequences/{id}       the sequence, its enrollments and per-step results
 //!   PATCH /api/crm/sequences/{id}, DELETE (soft)
-//!   POST /api/crm/sequences/{id}/enroll  {contact_ids} or {filter: {grade, tag, status, source, limit}}
+//!   POST /api/crm/sequences/{id}/enroll  {contact_ids} or {filter: {grade, tag, status, source, limit}}, cohort?
 //!   POST /api/crm/sequences/{id}/stop    {contact_id}
 //!   GET  /api/crm/contacts/{id}/brief    everything a drafter needs to make a touch personal, and the voice to write it in
 //!
@@ -18,8 +18,9 @@
 //! person who unsubscribed, bounced or is do_not_contact, no second open touch on the
 //! same channel, and none within AMUX_CRM_TOUCH_COOLDOWN_DAYS (default 2) of another
 //! outward touch outside its own sequence. Personal: a template fills {first_name},
-//! {name}, {company}, {role} and {signal} (the newest thing a watched channel showed),
-//! and the brief carries the rest.
+//! {name}, {company}, {role}, {signal} (the newest thing a watched channel showed),
+//! and from the person's open deal {deal}, {next_step} and {asset_url} (the static
+//! app that shows the opportunity), read at fill time; the brief carries the rest.
 //! Verdicts: crm_touch_suppressed, crm_touch_duplicate, crm_touch_cooldown,
 //! crm_sequence_enrolled, crm_sequence_advanced, crm_sequence_stopped_on_reply, crm_sequence_stopped_by_guard,
 //! crm_contact_unsubscribed_by_reply, crm_touch_due_emitted, crm_touch_no_channel, crm_deal_from_reply,
@@ -56,8 +57,25 @@ fn slot<T>(s: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     s.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Actions that run without the owner's approve (approval throughput, plan
+/// section 13): an internal `note`, plus AMUX_CRM_AUTO_ACTIONS (default
+/// like, follow, watch). Each reaches nobody's inbox. Everything else a person
+/// outside the company reads waits for the owner.
+pub(crate) fn auto_actions() -> Vec<String> {
+    let mut v: Vec<String> = crate::config::env_string("AMUX_CRM_AUTO_ACTIONS", "like,follow,watch")
+        .split(',').map(|a| a.trim().to_lowercase()).filter(|a| !a.is_empty()).collect();
+    v.push("note".into());
+    v
+}
+
 pub(crate) fn outward(action: &str) -> bool {
-    !matches!(action, "note" | "follow" | "like")
+    !auto_actions().iter().any(|a| a == action)
+}
+
+/// `('like','follow',...)`: the auto actions as an SQL list, for the checks
+/// that only count outward touches.
+fn auto_sql() -> String {
+    auto_actions().iter().map(|a| format!("'{}'", a.replace('\'', ""))).collect::<Vec<_>>().join(",")
 }
 
 fn day_plus(days: i64) -> String {
@@ -81,13 +99,20 @@ pub(crate) fn guard(conn: &rusqlite::Connection, contact: &str, channel: &str, a
             return Some(("crm_touch_suppressed", format!("this person is {why}; nothing outward goes to them"), String::new()));
         }
     }
+    // Suppression beyond the person (plan section 14). No `force` gets past these.
+    if let Some(r) = suppressed(conn, contact, channel) {
+        return Some(r);
+    }
     if force {
         return None;
     }
+    if let Some(r) = account_cooldown(conn, contact) {
+        return Some(r);
+    }
     let open: Option<String> = conn
         .query_row(
-            "SELECT id FROM crm_touches WHERE contact_id=?1 AND channel=?2 AND deleted IS NULL AND status IN ('planned','drafted','approved') \
-             AND action NOT IN ('note','follow','like') LIMIT 1",
+            &format!("SELECT id FROM crm_touches WHERE contact_id=?1 AND channel=?2 AND deleted IS NULL AND status IN ('planned','drafted','approved') \
+             AND action NOT IN ({}) LIMIT 1", auto_sql()),
             [contact, channel],
             |r| r.get(0),
         )
@@ -99,8 +124,8 @@ pub(crate) fn guard(conn: &rusqlite::Connection, contact: &str, channel: &str, a
     if days > 0 {
         let recent: Option<String> = conn
             .query_row(
-                "SELECT id FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status='done' AND done_at>=?2 \
-                 AND action NOT IN ('note','follow','like') AND (?3='' OR sequence<>?3) ORDER BY done_at DESC LIMIT 1",
+                &format!("SELECT id FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status='done' AND done_at>=?2 \
+                 AND action NOT IN ({}) AND (?3='' OR sequence<>?3) ORDER BY done_at DESC LIMIT 1", auto_sql()),
                 rusqlite::params![contact, now_secs() - days * 86_400, sequence],
                 |r| r.get(0),
             )
@@ -110,6 +135,78 @@ pub(crate) fn guard(conn: &rusqlite::Connection, contact: &str, channel: &str, a
         }
     }
     None
+}
+
+/// A customer, a deal the owner runs, a competitor, or an address that failed
+/// its check: nothing cold goes to them.
+fn suppressed(conn: &rusqlite::Connection, contact: &str, channel: &str) -> Option<Refusal> {
+    let (status, account, check): (String, String, String) = conn
+        .query_row("SELECT status, account_id, email_check FROM crm_contacts WHERE id=?1", [contact], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .ok()?;
+    let tagged = |tag: &str| -> bool {
+        !account.is_empty() && conn.query_row(
+            "SELECT 1 FROM crm_accounts a, json_each(CASE WHEN json_valid(a.tags) THEN a.tags ELSE '[]' END) t WHERE a.id=?1 AND lower(t.value)=?2",
+            [account.as_str(), tag], |_| Ok(true)).unwrap_or(false)
+    };
+    let won: bool = conn
+        .query_row("SELECT 1 FROM crm_deals WHERE deleted IS NULL AND stage='won' AND (contact_ids LIKE '%\"' || ?1 || '\"%' OR (?2<>'' AND account_id=?2)) LIMIT 1",
+            [contact, account.as_str()], |_| Ok(true))
+        .unwrap_or(false);
+    if status == "customer" || won || tagged("customer") {
+        return Some(("crm_touch_customer", "they are a customer: cold outreach does not go to customers".into(), String::new()));
+    }
+    if tagged("competitor") {
+        return Some(("crm_touch_competitor", "their company is tagged competitor".into(), String::new()));
+    }
+    // The owner's names go into the query, so any open owner deal at the
+    // account is found, whichever deal a plain first row would have been.
+    let owners = serde_json::to_string(&crate::config::env_string("AMUX_CRM_OWNER_NAMES", "owner").split(',')
+        .map(|o| o.trim().to_lowercase()).filter(|o| !o.is_empty()).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
+    let owner_deal: Option<String> = conn
+        .query_row("SELECT id FROM crm_deals WHERE deleted IS NULL AND stage NOT IN ('won','lost') \
+                    AND lower(owner) IN (SELECT value FROM json_each(?3)) \
+                    AND (contact_ids LIKE '%\"' || ?1 || '\"%' OR (?2<>'' AND account_id=?2)) ORDER BY created LIMIT 1",
+            [contact, account.as_str(), owners.as_str()], |r| r.get::<_, String>(0))
+        .ok();
+    if let Some(id) = owner_deal {
+        return Some(("crm_touch_owner_deal", format!("{id} is the owner's own deal with them; the owner talks to them"), id));
+    }
+    if channel == "email" {
+        if let Ok(v) = serde_json::from_str::<Value>(&check) {
+            if v.get("ok").and_then(Value::as_bool) == Some(false) {
+                return Some(("crm_touch_address_unverified", format!("their address failed its check: {}", v["why"].as_str().unwrap_or("")), String::new()));
+            }
+        }
+    }
+    None
+}
+
+/// Two people at one small company the same week reads as a campaign. Under
+/// AMUX_CRM_ACCOUNT_COOLDOWN_MAX_PEOPLE (default 200) people, an outward touch
+/// done to anyone at the account in AMUX_CRM_ACCOUNT_COOLDOWN_DAYS (default 7)
+/// holds the next one to a different person.
+fn account_cooldown(conn: &rusqlite::Connection, contact: &str) -> Option<Refusal> {
+    let days = crate::config::env_i64("AMUX_CRM_ACCOUNT_COOLDOWN_DAYS", 7);
+    if days <= 0 {
+        return None;
+    }
+    let account: String = conn.query_row("SELECT account_id FROM crm_contacts WHERE id=?1", [contact], |r| r.get(0)).ok()?;
+    if account.is_empty() {
+        return None;
+    }
+    let people: i64 = conn.query_row("SELECT COUNT(*) FROM crm_contacts WHERE account_id=?1 AND deleted IS NULL", [&account], |r| r.get(0)).unwrap_or(0);
+    if people > crate::config::env_i64("AMUX_CRM_ACCOUNT_COOLDOWN_MAX_PEOPLE", 200) {
+        return None;
+    }
+    let recent: Option<(String, String)> = conn
+        .query_row(
+            &format!("SELECT t.id, c.name FROM crm_touches t JOIN crm_contacts c ON c.id=t.contact_id WHERE c.account_id=?1 AND t.contact_id<>?2 \
+             AND t.deleted IS NULL AND t.status='done' AND t.done_at>=?3 AND t.action NOT IN ({}) ORDER BY t.done_at DESC LIMIT 1", auto_sql()),
+            rusqlite::params![&account, contact, now_secs() - days * 86_400],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    recent.map(|(id, name)| ("crm_touch_account_cooldown", format!("{name} at the same company was reached within {days} day(s) by {id}; wait, or send force: true"), id))
 }
 
 /// The newest thing a watched channel of the person or their company showed in 30 days.
@@ -146,6 +243,24 @@ pub(crate) fn fill(conn: &rusqlite::Connection, template: &str, contact: &str) -
         .replace("{company}", &company)
         .replace("{role}", &role)
         .replace("{signal}", &signal(conn, &id, &account))
+        .replace("{deal}", &deal_field(conn, &id, &account, "title"))
+        .replace("{next_step}", &deal_field(conn, &id, &account, "next_step"))
+        .replace("{asset_url}", &deal_field(conn, &id, &account, "asset_url"))
+}
+
+/// A field of the person's open deal (theirs, or their company's), read when
+/// the template is filled, so a draft carries the opportunity as it is now.
+fn deal_field(conn: &rusqlite::Connection, contact: &str, account: &str, field: &str) -> String {
+    if !matches!(field, "title" | "next_step" | "asset_url") {
+        return String::new();
+    }
+    conn.query_row(
+        &format!("SELECT {field} FROM crm_deals WHERE deleted IS NULL AND stage NOT IN ('won','lost') \
+                  AND (contact_ids LIKE '%\"' || ?1 || '\"%' OR (?2<>'' AND account_id=?2)) ORDER BY created LIMIT 1"),
+        [contact, account],
+        |r| r.get::<_, String>(0),
+    )
+    .unwrap_or_default()
 }
 
 /// The name to greet someone by: the first word of a real name, or "there"
@@ -279,32 +394,25 @@ pub(crate) fn on_reply(conn: &rusqlite::Connection, contact: &str, text: &str) -
         rusqlite::params![contact, now],
     )?;
     // Pipeline: a reply to a sequence is a lead worth a deal. One per person
-    // and sequence, at qualification, unless an open deal already covers them.
+    // and sequence, unless an open deal already covers them.
     let replied_to: Vec<(String, String)> = conn
         .prepare("SELECT e.sequence_id, s.name FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1 AND e.status='active'")?
         .query_map([contact], |r| Ok((r.get(0)?, r.get(1)?)))?
         .filter_map(Result::ok)
         .collect();
     for (seq, seq_name) in &replied_to {
-        let (name, account, company): (String, String, String) = conn
-            .query_row("SELECT c.name, c.account_id, COALESCE(NULLIF(a.name,''), c.company) FROM crm_contacts c LEFT JOIN crm_accounts a ON a.id=c.account_id WHERE c.id=?1",
-                [contact], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap_or_default();
+        let account: String = conn.query_row("SELECT account_id FROM crm_contacts WHERE id=?1", [contact], |r| r.get(0)).unwrap_or_default();
         let open: bool = conn
             .query_row("SELECT 1 FROM crm_deals WHERE deleted IS NULL AND stage NOT IN ('won','lost') AND (contact_ids LIKE '%\"' || ?1 || '\"%' OR (?2<>'' AND account_id=?2)) LIMIT 1",
                 [contact, account.as_str()], |_| Ok(true))
             .unwrap_or(false);
         if !open {
-            let id = next_issue_id(conn, "DEAL")?;
-            let title = if company.trim().is_empty() { name.clone() } else { company.clone() };
-            conn.execute(
-                "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,next_step,notes,source,external,created,updated) \
-                 VALUES (?1,?2,?3,?4,'qualification','reply to their answer',?5,?6,?7,?8,?8)",
-                rusqlite::params![&id, title, &account, json!([contact]).to_string(), format!("replied to {seq_name}"), format!("sequence:{seq}"),
-                    json!({ "sequence": seq }).to_string(), now],
-            )?;
+            // At lead until a worker reads the reply: a "no" is a reply too
+            // (row 36). Its intent (crm_close.rs) moves the deal on.
+            let id = super::crm_close::open_deal(conn, contact, "lead", "read their reply and record its intent", &format!("sequence:{seq}"), &format!("replied to {seq_name}"))?;
+            conn.execute("UPDATE crm_deals SET external=?2 WHERE id=?1", rusqlite::params![&id, json!({ "sequence": seq }).to_string()])?;
             tracing::info!(target: "amux::crm", contact = %contact, deal = %id, sequence = %seq, measured = true, n_considered = 1,
-                verdict = "crm_deal_from_reply", "a reply to a sequence opened a deal at qualification");
+                verdict = "crm_deal_from_reply", "a reply to a sequence opened a deal at lead, waiting for its intent");
         }
     }
     let ended = conn.execute(
@@ -359,7 +467,7 @@ pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<O
     let touches = query_rows_json(conn,
         "SELECT id, channel, action, status, sequence, step, due_date, substr(body,1,600) AS body, result FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL ORDER BY created DESC LIMIT 15", &p[..1])?;
     let deals = query_rows_json(conn,
-        "SELECT id, title, stage, amount, next_step FROM crm_deals WHERE deleted IS NULL AND (account_id=?2 AND ?2<>'' OR contact_ids LIKE '%\"' || ?1 || '\"%')", p)?;
+        "SELECT id, title, stage, amount, mrr_usd, next_step, asset_url, substr(notes,1,1500) AS notes, lost_reason FROM crm_deals WHERE deleted IS NULL AND (account_id=?2 AND ?2<>'' OR contact_ids LIKE '%\"' || ?1 || '\"%')", p)?;
     let sequences = query_rows_json(conn,
         "SELECT e.sequence_id, s.name, e.status, e.step FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1", &p[..1])?;
     let lookalikes = if account.is_empty() { vec![] } else { super::crm_accounts::lookalikes_of(conn, "account", &account)? };
@@ -545,7 +653,7 @@ async fn delete_sequence(State(state): State<AppState>, Path(id): Path<String>) 
 
 /// Enrolls people and plans step 1 for each. Who cannot be reached, or is
 /// already in it, is listed with the reason rather than enrolled.
-pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[String], by: &str) -> rusqlite::Result<Option<Value>> {
+pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[String], by: &str, cohort: &str) -> rusqlite::Result<Option<Value>> {
     let Some((steps, _)) = steps_of(conn, seq) else { return Ok(None) };
     let first_day = steps.first().and_then(|s| s.get("day")).and_then(Value::as_i64).unwrap_or(0);
     let channels: Vec<String> = steps.iter().map(|s| s["channel"].as_str().unwrap_or("").to_string()).collect();
@@ -577,7 +685,7 @@ pub(crate) fn enroll_people(conn: &rusqlite::Connection, seq: &str, ids: &[Strin
             continue;
         }
         let now = now_secs();
-        conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated) VALUES (?1,?2,?3,?4,?4)", rusqlite::params![seq, cid, by, now])?;
+        conn.execute("INSERT INTO crm_enrollments (sequence_id,contact_id,enrolled_by,created,updated,cohort) VALUES (?1,?2,?3,?4,?4,?5)", rusqlite::params![seq, cid, by, now, cohort])?;
         let touch = plan_step_due(conn, seq, cid, k + 1, Some(first_day), worker, &format!("sequence:{seq}"))?;
         if k > 0 {
             tracing::info!(target: "amux::crm", sequence = %seq, contact = %cid, step = k + 1, unreachable = %channels[..k].join(","), measured = true, n_considered = 1,
@@ -616,7 +724,9 @@ async fn enroll(State(state): State<AppState>, headers: HeaderMap, Path(id): Pat
                 *slot(&w) = Some(json!({ "error": "send contact_ids or a filter that matches someone", "code": "nobody" }));
                 return Ok(WriteOutcome { applied: false, events: vec![] });
             }
-            let v = enroll_people(conn, &id, &ids, &by)?;
+            // A cohort tags this batch for the funnel (GET /api/crm/funnel?group=cohort).
+            let cohort = body.get("cohort").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            let v = enroll_people(conn, &id, &ids, &by, &cohort)?;
             let applied = v.as_ref().and_then(|v| v["enrolled"].as_array()).is_some_and(|a| !a.is_empty());
             *slot(&w) = Some(v.unwrap_or(json!({ "error": "not found", "code": "not_found" })));
             Ok(WriteOutcome { applied, events: if applied { vec![ev("crm_sequence", &id, MutationKind::Updated), ev("crm_touch", "", MutationKind::Created)] } else { vec![] } })
@@ -867,7 +977,7 @@ mod tests {
         state.store.write_async(move |c| { on_reply(c, &ada, "sounds interesting")?; fill_domains(c)?; Ok(WriteOutcome { applied: true, events: vec![] }) }).await.unwrap();
         let (_, d) = call(&app, "GET", "/deals", &owner, None).await;
         let deal = d.as_array().unwrap().iter().find(|x| x["source"] == format!("sequence:{seq}").as_str()).expect("a deal from the reply");
-        assert_eq!(deal["stage"], "qualification");
+        assert_eq!(deal["stage"], "lead", "a reply opens the deal; its intent moves it on");
         let (_, a) = call(&app, "GET", "/accounts?q=Acme", &owner, None).await;
         assert_eq!(a[0]["domain"].as_str(), Some("acme.io"), "the most common work-email domain of its people");
     }
@@ -916,7 +1026,7 @@ mod tests {
         let (_, v) = call(&app, "GET", &format!("/sequences/{seq}"), &w, None).await;
         assert_eq!(v["enrollments"][0]["status"], "booked", "{v}");
         let (_, t) = call(&app, "GET", &format!("/touches?contact_id={}", ids[0]), &owner, None).await;
-        assert!(t.as_array().unwrap().iter().all(|x| x["status"] == "skipped"), "{t}");
+        assert!(t.as_array().unwrap().iter().filter(|x| x["source"] != "booking").all(|x| x["status"] == "skipped"), "{t}");
         let n: i64 = state.store.read().unwrap().query_row(
             "SELECT COUNT(*) FROM session_events WHERE type='crm.contact.booked' AND json_extract(data,'$.contact_id')=?1", [&ids[0]], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "the booking is an event");

@@ -48,8 +48,8 @@ Statuses:
 | 16 | The step that is due wakes its worker | `crm.touch.due`, once per touch | Pass | `crm_outbound` unit tests |
 | 17 | The owner approves every outward touch | `POST /touches/{id}/approve` is owner-only; the CRM's Outbound review | Pass | `e2e/crm-tab.spec.ts` outbound review test |
 | **What each touch says** | | | | |
-| 18 | Every touch is written from the current notes, opportunity and assets | Templates fill `{first_name}`, `{name}`, `{company}`, `{role}`, `{signal}`; the brief (`/contacts/{id}/brief`) gives a drafting worker the notes, deals, signals, activity and voice | Partial | No `{deal}`, `{asset_url}` or `{notes}` fields, and the brief carries each deal's title, stage and next step but not its notes or assets. So a template cannot follow the opportunity as it changes |
-| 19 | A static app per opportunity (no backend, loads instantly) that shows their use case | amux Apps (`amux publish`, `api/pages.rs`) host a static page at a link | Partial | Nothing links an app to its deal or company, so the sequence cannot use it and the CRM does not show it |
+| 18 | Every touch is written from the current notes, opportunity and assets | Templates fill `{first_name}`, `{name}`, `{company}`, `{role}`, `{signal}`, and from the person's open deal `{deal}`, `{next_step}` and `{asset_url}`, read when the step is planned; the brief carries each deal's notes, MRR, app link and lost reason | Pass | `a_deal_runs_from_reply_to_won_...` fills `{asset_url}` and `{deal}` from the live deal. A draft already written keeps its text: a worker redrafts it when the deal changes |
+| 19 | A static app per opportunity (no backend, loads instantly) that shows their use case | `crm_deals.asset_url` (the static app made with `amux publish`), shown as "Open the app" on the deal and given to every draft as `{asset_url}` | Built | A password for the app goes in the deal's notes; nothing yet checks the link answers before a send beyond the voice check's link check (row 21) |
 | 20 | Founder voice and anti-slop on every draft | the voice check (VOX-1) on create and edit; the slop attestation; both shown as checks in the review | Pass | `e2e/crm-tab.spec.ts` voice test; `crm_voice` unit tests |
 | 21 | Accuracy: every link in a draft answers | the voice check's link check, shown in the review | Built | |
 | 22 | Research before each touch | the brief; "Ask a worker"; "Ask the worker to redraft" from the review | Built | |
@@ -69,34 +69,34 @@ Statuses:
 | 33 | One review queue with full context, on desktop and phone | the CRM's Outbound: message, brief, sequence step, checks; Approve, Edit, Decline, Redraft | Pass | `e2e/crm-tab.spec.ts`, `e2e/crm-layout.spec.ts` (every section at 375 to 1920 px, both themes) |
 | 34 | A record of everything that happened | the Activity view over `crm.*` events; each person's timeline | Pass | `e2e/crm-tab.spec.ts` |
 | **Closing the loop** (section 10) | | | | |
-| 35 | A booking moves the deal to `demo` and plans a pre-demo prep touch | the booking stops sequences and emits `crm.contact.booked` (row 15) | Partial | The deal's stage is not touched, and no prep touch is planned. Needs: on a booking, the person's open deal (or a new one) moves to `demo` with `next_step` "prep the demo", and a planned `note` touch for the assignee to research and write the prep brief |
-| 36 | A positive reply advances the deal to `qualification` | any reply opens a deal at `qualification` with `next_step` "reply to their answer" | Partial | Any reply does it, a "no" included: it waits on reading the reply (row 40) |
-| 37 | After the demo: `trial` or `proposal`, with `next_step` | the stage select in the deal record; `PATCH /deals/{id}` | Partial | Moved by hand only. Needs a demo-done verb a worker calls after the call notes land, which sets the stage and `next_step` |
-| 38 | A signature closes the deal `won` with amount and close date | stages include `won`; `amount`, `currency`, `close_date` exist | Partial | Nothing requires amount and close date at `won`, and there is no monthly value to sum (row 43) |
-| 39 | A no closes the deal `lost` with a reason | stage `lost`; free-text `notes` | Partial | No `lost_reason`, so losses cannot be counted by why. Needs the field, required at `lost`, from a short list (no budget, no need, timing, competitor, no response, other) |
+| 35 | A booking moves the deal to `demo` and plans a pre-demo prep touch | a booking stops the sequences, moves the person's open deal (or a new one) to `demo` with `next_step` "prep the demo", and plans a `note` touch for whoever last worked them; `crm.contact.booked` carries the move and the prep touch | Pass | `crates/amux-server/src/api/crm_close.rs` tests; `e2e/crm-tab.spec.ts` "closing" on desktop, mobile and ios-safari |
+| 36 | A positive reply advances the deal to `qualification` | a reply opens the deal at `lead` with `next_step` "read their reply and record its intent"; an interested, book-later or objection intent moves it to `qualification` | Pass | `crates/amux-server/src/api/crm_close.rs` tests; a hand-logged reply (direction in) counts the same as a captured one |
+| 37 | After the demo: `trial` or `proposal`, with `next_step` | the owner moves it from the deal record; a worker may move a deal up to `trial` | Partial | No demo-done verb yet: the move after the call is a PATCH (worker to `trial`, owner to `proposal`) |
+| 38 | A signature closes the deal `won` with amount and close date | `won` refuses to save without `amount`, `mrr_usd` and `close_date` (`crm_deal_won_incomplete`) | Pass | `crates/amux-server/src/api/crm_close.rs` tests; the e2e signs a deal from the deal record only after the three are in |
+| 39 | A no closes the deal `lost` with a reason | `lost` refuses to save without `lost_reason` from no_budget, no_need, timing, competitor, no_response, other (`crm_deal_lost_reason`); a select on the deal record | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
 | **Reply intelligence** (section 11) | | | | |
-| 40 | A worker reads each reply and records its intent: interested, book later, objection, not interested, referral | `crm.contact.replied` wakes a subscribed worker with the subject and snippet | Missing | No intent field and no verb. Needs `POST /api/crm/replies/{interaction_id}/intent {intent, why, referral?}`, stored on the interaction, emitting `crm.reply.classified` |
-| 41 | The intent drives the next move | none | Missing | interested: draft the booking push with `https://mixpeek.com/demo`, deal to `qualification`. Book later: a follow-up touch on the date they gave. Objection: draft the answer for approval. Not interested: stop and set `do_not_contact` when they asked, otherwise `lost` with the reason. Referral: add the named person with `source` naming the referrer, and draft the intro |
+| 40 | A worker reads each reply and records its intent: interested, book later, objection, not interested, referral | `POST /api/crm/replies/{interaction_id}/intent`, stored on the interaction (`intent`, `intent_why`), emitting `crm.reply.classified`; `crm.contact.replied` now carries the `interaction_id`; the timeline shows the intent | Pass | `crates/amux-server/src/api/crm_close.rs` tests `each_intent_makes_its_move`; `e2e/crm-tab.spec.ts` shows the pill |
+| 41 | The intent drives the next move | interested: `qualification`, next step the booking push (`AMUX_CRM_BOOKING_URL` when set). Book later: a follow-up date on the reply. Objection: next step names it. Not interested: sequences stop, `do_not_contact` when asked, the deal `lost`. Referral: a new person with `source: referral:<id>` | Pass | Drafting the booking push, the answer or the intro stays the worker's job, from the event |
 | **Measurement** (section 12) | | | | |
-| 42 | The campaign funnel: enrolled, contacted, replied, booked, demoed, won, with conversion per step, per sequence and per cohort | the parts are in `crm_enrollments`, `crm_touches`, `crm.*` events and `crm_deals` | Missing | No funnel endpoint. Contract in section 12 |
-| 43 | Monthly recurring revenue per sequence or cohort | `crm_deals.amount` with no period | Missing | Needs `mrr_usd` on a deal, required at `won` |
-| 44 | "Demoed" and "won" are counted from what happened, even after a deal moves on or is lost | the current stage only | Missing | Needs a stage history (`crm_deal_stages`: deal, from, to, at, by) written on every stage change, emitting `crm.deal.stage` |
+| 42 | The campaign funnel: enrolled, contacted, replied, booked, demoed, won, with conversion per step, per sequence and per cohort | `GET /api/crm/funnel?group=sequence|cohort&sequence=&cohort=&since=` on `crm.funnel.v1`; enrollments carry a `cohort`; the CRM tab's Funnel section | Pass | `crates/amux-server/src/api/crm_close.rs` tests; `e2e/crm-tab.spec.ts` reads the cohort's card |
+| 43 | Monthly recurring revenue per sequence or cohort | `crm_deals.mrr_usd`, required at `won`; the funnel sums it per group | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
+| 44 | "Demoed" and "won" are counted from what happened, even after a deal moves on or is lost | `crm_deal_stages` (from, to, at, by, why), backfilled with each deal's stage when it began; `GET /api/crm/deals/{id}/stages`; `crm.deal.stage`; the deal record shows the history | Pass | `crates/amux-server/src/api/crm_close.rs` tests: a deal won then lost still counts as demoed |
 | **Approval throughput** (section 13) | | | | |
-| 45 | Low-risk touches (like, follow, watch) run without the owner while email, DM, comment, connect with a note, letter and gift still hold | follow, like and note already count as non-outward, so a worker may do them and record them done without an approval; the browser holds only typing on an outbound site | Partial | It is hard-coded, so the owner cannot set the list, and nothing tests a like or follow end to end. Needs `AMUX_CRM_AUTO_ACTIONS` (default `like,follow,watch`) read at one place, a test, and the review's counts saying how many ran on their own |
-| 46 | The owner clears a batch quickly | Approve and Decline per draft; the email banner's own approvals | Partial | No bulk approve in the CRM's Outbound. The Outbound tab has it for held sends |
+| 45 | Low-risk touches (like, follow, watch) run without the owner while email, DM, comment, connect with a note, letter and gift still hold | `AMUX_CRM_AUTO_ACTIONS` in `~/.amux/server.env` (default `like,follow,watch`, plus an internal `note`): those run and are recorded done with no approval; the guard and cooldowns ignore them | Pass | `crates/amux-server/src/api/crm_close.rs` tests: a like is done with no approve while a DM waits |
+| 46 | The owner clears a batch quickly | Select drafts on Pending, then Approve N or Decline N with one note (desktop; a phone decides one at a time) | Pass | `e2e/crm-tab.spec.ts` "bulk" |
 | **Suppression** (section 14) | | | | |
-| 47 | No outreach to an existing customer | `status=customer` on a person | Missing | The guard checks only unsubscribed, bounced and do-not-contact. Needs customer at the person or the account (account has a won deal, or is tagged customer) to refuse cold touches |
-| 48 | No outreach on a deal the owner runs himself | `crm_deals.owner` | Missing | Needs the guard to refuse a worker's cold touch to anyone at an account with an open deal whose owner is the owner |
-| 49 | No outreach to competitors | none | Missing | Needs a `competitor` tag on an account, refused by the guard |
-| 50 | Account-level cooldown: two workers never reach two people at one small account in the same week | per-person cooldown (`AMUX_CRM_TOUCH_COOLDOWN_DAYS`) | Missing | Needs `AMUX_CRM_ACCOUNT_COOLDOWN_DAYS` (default 7) across all people of one account, with a size threshold so a large company is not one slot |
+| 47 | No outreach to an existing customer | the guard refuses a cold touch to a person with `status=customer`, at an account with a `won` deal, or tagged `customer` (`crm_touch_customer`) | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
+| 48 | No outreach on a deal the owner runs himself | an open deal at their account whose `owner` is in `AMUX_CRM_OWNER_NAMES` (default `owner`) refuses workers' touches (`crm_touch_owner_deal`) | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
+| 49 | No outreach to competitors | an account tagged `competitor` refuses cold touches (`crm_touch_competitor`) | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
+| 50 | Account-level cooldown: two workers never reach two people at one small account in the same week | `AMUX_CRM_ACCOUNT_COOLDOWN_DAYS` (default 7) for accounts with at most `AMUX_CRM_ACCOUNT_COOLDOWN_MAX_PEOPLE` (default 200) people (`crm_touch_account_cooldown`; `force` passes it, like the per-person cooldown) | Pass | `crates/amux-server/src/api/crm_close.rs` tests |
 | **Address validation** (section 15) | | | | |
-| 51 | An address is checked before the first cold send | `bounced_at` after the fact | Missing | Free half: syntax, the domain's MX records, role addresses (info, sales) and known disposable domains, run when the address is added and again before the first send. Paid half: a mailbox-level check from a verification provider (row 6's decision) |
-| 52 | A failed check holds the send and says why | none | Missing | The guard refuses with `crm_touch_address_unverified`, shown as a Blocked reason in the review |
+| 51 | An address is checked before the first cold send | before the first email is approved: syntax, role address, disposable domain, and the domain's MX records over the system resolver, null MX included; stored as `email_check`; `POST /api/crm/contacts/{id}/check-email` | Pass (free half) | `crates/amux-server/src/api/crm_close.rs` tests. The paid mailbox-level check waits on row 6's provider. `AMUX_CRM_MX_CHECK=0` turns the lookup off (the e2e servers) |
+| 52 | A failed check holds the send and says why | a failed check refuses the email (`crm_touch_address_unverified`) and the review shows it as the Blocked reason | Pass | `crm_touch_address_unverified` in the unit tests; found live in e2e when a made-up domain had no mail server |
 | **The human boundary** (section 16) | | | | |
-| 53 | The agent drives to booked and nurtured; the owner runs the demo, sets pricing and signs | owner-only approvals; deal stages | Partial | Written down here (section 16). Needs the guard to refuse a worker moving a deal to `proposal` or `won`, and a hand-off card to the owner at `demo` |
-| 54 | Every hand-off reaches the owner with the full context | Needs-you cards; the person's brief | Built | A hand-off card at `demo` would carry the brief, the reply thread and the app link |
+| 53 | The agent drives to booked and nurtured; the owner runs the demo, sets pricing and signs | workers are refused moving a deal to or from `proposal` or `won` (`crm_deal_owner_stage`); a booking moves the deal to `demo` and emits `crm.deal.stage` | Partial | The refusal is built and tested. The hand-off is the `crm.deal.stage` event to `demo`, which a subscription can turn into a notice; there is no Needs-you card yet |
+| 54 | Every hand-off reaches the owner with the full context | the brief, the reply thread and the app link sit on the person and the deal | Built |  |
 
-**Count, over the 54 rows: 14 Pass, 9 Built, 16 Partial, 15 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. The rows that most limit the next month are 35 to 44, closing and measurement, all buildable now; then 18 and 19, a sequence that reads the opportunity and its asset. Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
+**Count, over the 54 rows: 32 Pass, 10 Built, 8 Partial, 4 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
 
 ## 2. The test companies
 
@@ -324,9 +324,11 @@ Definitions, each counted once per person (a person is the unit):
 | `won_amount_usd` | the sum of `amount` over the group's won deals, in USD |
 
 Each conversion is the later count over the earlier one, and `null` when the earlier one is 0.
-A cohort is a tag on the enrollment (for example `ip-check-2026-12`). The same numbers stream as
-`crm.funnel.changed` whenever one moves, so a worker or the report can subscribe instead of
-polling.
+A cohort is a tag on the enrollment (`cohort` on `POST /sequences/{id}/enroll`, for example
+`ip-check-2026-12`); people enrolled with none group as `(none)`. `crm.funnel.changed` fires
+when a number may have moved (a stage change, a booking, a classified reply) and names the
+person and their sequences, so a worker or the report re-reads the endpoint instead of
+polling it.
 
 **Pass:**
 
@@ -343,8 +345,8 @@ reads nothing, so it runs on its own.
 |---|---|
 | `like`, `follow`, `watch` (and an internal `note`) | `email`, `dm`, `comment`, `connect` with a note, `letter`, `gift`, `text`, `call`, `invite` |
 
-The list lives in one setting, `AMUX_CRM_AUTO_ACTIONS` (default `like,follow,watch`), set at
-the Scope tab. An auto action is still recorded done with its result and appears in Activity.
+The list lives in one setting, `AMUX_CRM_AUTO_ACTIONS` (default `like,follow,watch`), in
+`~/.amux/server.env`. An auto action is still recorded done with its result and appears in Activity.
 
 **Pass:**
 
@@ -410,31 +412,28 @@ the app link. A worker's attempt to move a deal to `proposal` or `won` is refuse
 
 ## 17. What to build to finish, in order
 
-Straight away, with no key and no decision needed (in this order):
+Built on 2026-11-27:
+- closing, with stage history, `won` and `lost` fields, the owner's stages, and booking to demo with the prep touch
+- the funnel, on `crm.funnel.v1`
+- reply intent
+- suppression (customer, owner's deal, competitor, account cooldown)
+- `AMUX_CRM_AUTO_ACTIONS`, and bulk approve
+- the free address check
+- `{deal}`, `{next_step}` and `{asset_url}` in templates
 
-1. **Closing and measurement (rows 35 to 39, 42 to 44).**
-   - Stage history and `crm.deal.stage`.
-   - `lost_reason` and `mrr_usd`.
-   - A booking moves the deal to `demo` and plans the prep touch.
-   - The demo-done verb.
-   - `GET /api/crm/funnel` on the `crm.funnel.v1` contract, and `crm.funnel.changed`.
-2. **Reply intelligence (rows 40, 41).** The intent verb, `crm.reply.classified`, and the moves it drives.
-3. **Suppression and the human boundary (rows 47 to 50, 53).** Customer, owner's deal, competitor and account cooldown in the guard; workers refused at `proposal` and `won`; the hand-off card at `demo`.
-4. **Approval throughput (rows 45, 46).** `AMUX_CRM_AUTO_ACTIONS` with a test, and bulk approve in the CRM's Outbound.
-5. **The free half of address validation (rows 51, 52).** Syntax, MX records, role and disposable flags; the send refused on a failed check.
-6. **The opportunity in the sequence (rows 18, 19).**
-   - A deal carries its asset link and password as fields.
-   - The brief carries the deal's notes and assets.
-   - Templates gain `{deal}`, `{asset_url}` and `{notes}`, so every draft reads what is current.
-7. **The mailbox pool's software (rows 28 to 32).**
+Still to build, with no key or decision needed (in this order):
+
+1. **The rest of closing (rows 37, 53).**
+   - A demo-done verb that a worker calls after the call notes land.
+   - A Needs-you hand-off card at `demo` for the owner.
+2. **The mailbox pool's software (rows 28 to 32).**
    - A sequence names mailboxes.
    - The send path rotates them under a daily cap.
    - There is a warm-up schedule per mailbox.
-   - There is an unsubscribe link and an endpoint that honours it.
    - There are per-mailbox bounce and reply rates.
 
-   This is what retires Instantly.
-8. **Comment targeting and press (rows 12, 25).**
+   The unsubscribe link also needs a public address for amux, which is the owner's call (amux Cloud or a tunnel). This is what retires Instantly.
+3. **Comment targeting and press (rows 12, 25).**
    - A comment step picks the person's latest post from their watched channel.
    - A press feed is added beside the page watch.
 

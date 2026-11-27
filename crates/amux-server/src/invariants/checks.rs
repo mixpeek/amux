@@ -1218,6 +1218,7 @@ pub const TIMESTAMP_COLUMNS: &[(&str, &str, bool)] = &[
     ("crm_contacts", "bounced_at", false),
     ("crm_accounts", "icp_scored_at", false),
     ("crm_lookalikes", "found_at", false),
+    ("crm_deal_stages", "at", false),
     // 0170: api/crm_agent.rs writes epoch seconds.
     ("crm_channels", "last_checked_at", false),
     ("crm_channels", "last_changed_at", false),

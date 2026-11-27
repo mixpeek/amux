@@ -715,6 +715,15 @@ pub fn env_i64(key: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+/// `$KEY` trimmed, falling back to `default` when unset or blank.
+pub fn env_string(key: &str, default: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
 /// Unix epoch seconds as f64. Three identical copies (board_drive, alerts,
 /// session_verbs).
 ///

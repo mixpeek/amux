@@ -74,7 +74,7 @@ pub fn routes() -> Router<AppState> {
 pub const KINDS: &[&str] = &["linkedin", "x", "instagram", "website", "careers", "email", "phone", "youtube", "tiktok", "github",
     "sms", "whatsapp", "slack", "discord", "community", "post", "event", "in_person", "other"];
 pub const ACTIONS: &[&str] = &["dm", "comment", "connect", "email", "followup", "follow", "like", "call", "note",
-    "text", "voicemail", "letter", "gift", "meet", "invite", "intro", "visit"];
+    "text", "voicemail", "letter", "gift", "meet", "invite", "intro", "visit", "watch"];
 /// Touch points that happen off a screen: the owner or a worker records them done.
 pub const OFFLINE: &[&str] = &["post", "event", "in_person"];
 const STATUSES: &[&str] = &["planned", "drafted", "approved", "done", "skipped", "failed"];
@@ -373,7 +373,7 @@ async fn list_touches(State(state): State<AppState>, Query(q): Query<HashMap<Str
         let mut sql = String::from(
             "SELECT t.*, COALESCE(c.name,'') AS contact_name, COALESCE(a.name, ca.name, c.company, '') AS account_name, \
              COALESCE(c.icp_grade, a.icp_grade, '') AS icp_grade, COALESCE(c.email,'') AS contact_email, \
-             c.unsubscribed_at AS contact_unsubscribed_at, c.bounced_at AS contact_bounced_at, COALESCE(c.status,'') AS contact_status FROM crm_touches t \
+             c.unsubscribed_at AS contact_unsubscribed_at, c.bounced_at AS contact_bounced_at, COALESCE(c.status,'') AS contact_status, COALESCE(c.email_check,'') AS contact_email_check FROM crm_touches t \
              LEFT JOIN crm_contacts c ON c.id=t.contact_id LEFT JOIN crm_accounts a ON a.id=t.account_id \
              LEFT JOIN crm_accounts ca ON ca.id=c.account_id WHERE t.deleted IS NULL",
         );
@@ -554,6 +554,20 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
     if let Err(r) = super::land_approvals::owner_only(&state, &headers, &uri, "crm_touch_approve_refused", "approve an outreach touch") {
         return *r;
     }
+    // An email that would go to an unchecked address is checked first (plan
+    // section 15); the guard below refuses it when the check failed.
+    let unchecked: Option<String> = {
+        let store = state.store.clone();
+        let tid = id.clone();
+        tokio::task::spawn_blocking(move || -> Option<String> {
+            store.read().ok()?.query_row(
+                "SELECT t.contact_id FROM crm_touches t JOIN crm_contacts c ON c.id=t.contact_id WHERE t.id=?1 AND t.channel='email' AND c.email_check=''",
+                [&tid], |r| r.get(0)).ok()
+        }).await.ok().flatten()
+    };
+    if let Some(c) = unchecked {
+        super::crm_close::check_and_store(&state, &c).await;
+    }
     let out: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
     let refused: Arc<Mutex<Option<super::crm_outbound::Refusal>>> = Arc::new(Mutex::new(None));
@@ -621,7 +635,7 @@ async fn done_touch(State(state): State<AppState>, headers: HeaderMap, Path(id):
             let Some((status, action, channel, contact, text, account)) = cur else { *slot(&w) = Some(Err("not_found")); return Ok(WriteOutcome { applied: false, events: vec![] }) };
             // Reaching someone outside needs the owner's approval first; a note
             // or a follow is the worker's own business.
-            let outward = !matches!(action.as_str(), "note" | "follow" | "like");
+            let outward = super::crm_outbound::outward(&action);
             if !failed && outward && status != "approved" {
                 *slot(&w) = Some(Err("not_approved"));
                 return Ok(WriteOutcome { applied: false, events: vec![] });
@@ -845,9 +859,10 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
             (cid, name, "linkedin", "LinkedIn message".to_string(), unescape_html(d.get("snippet").and_then(Value::as_str).unwrap_or("")),
                 format!("linkedin:{}", d.get("key").and_then(Value::as_str).unwrap_or("")))
         };
+        let ix = ulid::Ulid::new().to_string();
         let added = conn.execute(
             "INSERT OR IGNORE INTO crm_interactions (id,contact_id,date,type,notes,created,updated,direction,subject,message_id) VALUES (?1,?2,?3,?4,?5,?6,?6,'in',?7,?8)",
-            rusqlite::params![ulid::Ulid::new().to_string(), &contact, chrono::Local::now().format("%Y-%m-%d").to_string(),
+            rusqlite::params![&ix, &contact, chrono::Local::now().format("%Y-%m-%d").to_string(),
                 if channel == "email" { "email" } else { "dm" }, &snippet, now_secs(), &subject, &msg],
         )?;
         if added > 0 {
@@ -855,7 +870,7 @@ pub(crate) fn capture_events(conn: &rusqlite::Connection) -> rusqlite::Result<(u
             // A reply stops the sequences that stop on one, and a request to stop is honoured.
             let stopped = super::crm_outbound::on_reply(conn, &contact, &format!("{subject}\n{snippet}"))?;
             let open: i64 = conn.query_row("SELECT COUNT(*) FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status IN ('planned','drafted','approved')", [&contact], |r| r.get(0))?;
-            replied.push(json!({ "contact_id": contact, "name": name, "channel": channel, "subject": subject, "snippet": snippet, "open_touches": open, "stopped_touches": stopped }));
+            replied.push(json!({ "contact_id": contact, "name": name, "interaction_id": ix, "channel": channel, "subject": subject, "snippet": snippet, "open_touches": open, "stopped_touches": stopped }));
         }
     }
     state_set(conn, "events_id", &last.to_string())?;

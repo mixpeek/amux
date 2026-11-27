@@ -389,6 +389,10 @@ export default defineConfig({
       // between this target and the next (10 apart). The default, the 32 after
       // the apps port, runs into the next target's server.
       AMUX_APP_PORTS: `${t.port + 2}-${t.port + 9}`,
+      // The CRM's address check asks DNS for a recipient's mail server before
+      // a first cold email (api/crm_close.rs). Specs use made-up domains, so
+      // the lookup is off here and the check reports measured: false.
+      AMUX_CRM_MX_CHECK: '0',
     },
   })),
 });

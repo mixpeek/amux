@@ -172,6 +172,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Add lookalike | `_crmAddLookalike` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Plan touch | `_crmAddTouch` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Send | `_crmAsk` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
+| app.js | Approve … | `_crmBulk` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Decline … | `_crmBulk` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Add | `_crmCreate` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Approve | `_crmDecide` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Decline | `_crmDecide` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
@@ -1257,6 +1259,7 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Preview ${esc(name)} | `` | onclick |
 | app.js | Resend to ${esc(_target \|\| session)} | `` | onclick |
 | app.js | Review or restore | `` | onclick |
+| app.js | Select | `` | onclick |
 | app.js | Select | `` | onclick |
 | app.js | Select  | `` | onclick |
 | app.js | Select row | `` | onclick |

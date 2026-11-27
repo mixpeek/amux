@@ -11497,11 +11497,25 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .crm-decide .btn { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @container (max-width: 440px) { .crm-decide .crm-long { display: none; } }
 .crm-back { display: none; }
+/* The funnel: one card per sequence or cohort, a row per step with its bar, count and the share that moved on. */
+.crm-funnel { margin-bottom: 0; }
+.crm-steps { display: flex; flex-direction: column; gap: var(--space-1-5); margin: var(--space-2-5) 0; }
+.crm-step { display: grid; grid-template-columns: 88px minmax(0, 1fr) 56px 48px; align-items: center; gap: var(--space-2-5); font-size: var(--fs-md); }
+.crm-step-l { color: var(--dim); }
+.crm-step-track { height: 10px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--accent) 10%, transparent); overflow: hidden; }
+.crm-step-bar { display: block; height: 100%; width: 0; border-radius: var(--radius-pill); background: var(--accent); }
+.crm-step[data-step="won"] .crm-step-bar { background: var(--green); }
+.crm-step-n { font-weight: 700; text-align: right; }
+.crm-step-c { color: var(--dim); font-size: var(--fs-sm); text-align: right; }
+/* Bulk decisions on Pending (desktop). */
+.crm-bulk { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-1) var(--space-1-5); flex-shrink: 0; }
+.crm-bulk-all { display: inline-flex; align-items: center; gap: var(--space-1-5); font-size: var(--fs-md); color: var(--dim); margin-right: auto; cursor: pointer; }
+.crm-pick { flex: 0 0 auto; width: 16px; height: 16px; margin: 0; cursor: pointer; }
 .crm-brief { margin: var(--space-2) 0 var(--space-1); }
 @media (min-width: 1000px) {
   .crm-panes > .crm-list { flex: 0 1 46%; max-width: 560px; border-right: 1px solid var(--border); }
-  .crm-view:not([data-view="sequences"]):not([data-view="activity"]) .crm-detail { display: flex; flex-direction: column; flex: 1 1 54%; min-width: 0; overflow: hidden; }
-  .crm-view[data-view="sequences"] .crm-panes > .crm-list, .crm-view[data-view="activity"] .crm-panes > .crm-list { max-width: none; flex: 1; border-right: none; }
+  .crm-view:not([data-view="sequences"]):not([data-view="activity"]):not([data-view="funnel"]) .crm-detail { display: flex; flex-direction: column; flex: 1 1 54%; min-width: 0; overflow: hidden; }
+  .crm-view[data-view="sequences"] .crm-panes > .crm-list, .crm-view[data-view="activity"] .crm-panes > .crm-list, .crm-view[data-view="funnel"] .crm-panes > .crm-list { max-width: none; flex: 1; border-right: none; }
   .crm-detail > .crm-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .crm-vchip { display: none; }
 }
@@ -11576,6 +11590,9 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
   .crm-decide .btn { flex: 1 1 0; min-width: 0; padding-left: var(--space-1-5); padding-right: var(--space-1-5); white-space: nowrap; }
   .crm-decide .crm-approve { flex-grow: 1.6; }
   .crm-long { display: none; }
+  /* A phone decides one draft at a time: no bulk row, no checkboxes. */
+  .crm-bulk, .crm-pick { display: none; }
+  .crm-step { grid-template-columns: 72px minmax(0, 1fr) 40px 40px; gap: var(--space-2); }
 }
 .calls-view { display: none; flex-direction: column; flex: 1; min-height: 0; height: calc(100dvh - var(--calls-top, 110px) - env(safe-area-inset-bottom, 0px)); max-width: 980px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 .calls-bar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 0 auto; }

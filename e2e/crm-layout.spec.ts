@@ -28,7 +28,7 @@ async function layoutProblems(page: Page): Promise<string[]> {
     if (document.documentElement.scrollWidth > vw + 1) out.push('the page scrolls sideways by ' + (document.documentElement.scrollWidth - vw) + 'px');
     const shown = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
     const name = (el: Element) => (el.className + ' "' + ((el as HTMLElement).innerText || '').replace(/\s+/g, ' ').slice(0, 40) + '"');
-    const boxes = '#crm-view .crm-row, #crm-view .crm-act, #crm-view .crm-stat, #crm-view .crm-nav-item, #crm-drawer .crm-card, #crm-drawer .crm-row, #crm-drawer .crm-ix, #crm-drawer .crm-ch, #crm-view .cx-filter, #crm-drawer .btn, #crm-view .btn';
+    const boxes = '#crm-view .crm-row, #crm-view .crm-act, #crm-view .crm-funnel, #crm-view .crm-step, #crm-view .crm-bulk, #crm-view .crm-stat, #crm-view .crm-nav-item, #crm-drawer .crm-card, #crm-drawer .crm-row, #crm-drawer .crm-ix, #crm-drawer .crm-ch, #crm-view .cx-filter, #crm-drawer .btn, #crm-view .btn';
     for (const el of Array.from(document.querySelectorAll(boxes))) {
       if (!shown(el)) continue;
       if (el.scrollHeight > el.clientHeight + 2) out.push('content spills out of ' + name(el) + ' (' + el.scrollHeight + ' > ' + el.clientHeight + ')');
@@ -78,6 +78,8 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
     const t = await api(page, 'POST', '/touches', { contact_id: p.body.id, channel: i % 2 ? 'linkedin' : 'email', action: i % 2 ? 'dm' : 'email', body, due_date: '2026-11-2' + (i % 9), sequence: i < 6 ? seq.body.id : '', step: i < 6 ? 1 : 0 }, 'amux-gtm');
     expect(t.status).toBe(201);
   }
+  // Six of them enrolled, in a cohort, so the Funnel has something to draw.
+  expect((await api(page, 'POST', '/sequences/' + seq.body.id + '/enroll', { contact_ids: people.slice(6, 12), cohort: 'layout-' + R }, 'amux-gtm')).status).toBe(200);
   const owner = (m: string, p: string, b?: any) => api(page, m, p, b);
   const drafts = (await owner('GET', '/touches?status=drafted&limit=1000')).body.filter((t: any) => (t.contact_name || '').includes(R));
   await owner('POST', '/touches/' + drafts[0].id + '/approve');
@@ -90,7 +92,7 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
   await owner('POST', '/contacts/' + people[3] + '/interactions', { type: 'call', notes: 'Intro call, wants a demo', follow_up_date: today, follow_up_note: 'Pick up our meetup conversation' });
 
   await page.evaluate(() => { (window as any).switchView('crm'); });
-  const sections = ['outbound', 'people', 'companies', 'deals', 'followups', 'sequences', 'activity'];
+  const sections = ['outbound', 'people', 'companies', 'deals', 'followups', 'sequences', 'funnel', 'activity'];
   const phone = info.project.name !== 'desktop';
   // Desktop covers the laptop, tablet and wide screens; the phone projects their own device.
   const sizes = phone ? [page.viewportSize()!] : [{ width: 1280, height: 800 }, { width: 1024, height: 768 }, { width: 820, height: 1180 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }];
@@ -102,12 +104,12 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
       await page.evaluate(t => (window as any)._applyTheme(t === 'light'), theme);
       await expect(page.locator('body')).toHaveAttribute('data-theme', 'amux-' + theme);
       for (const v of sections) {
-        const q = v === 'sequences' || v === 'deals' ? '' : R;
+        const q = v === 'sequences' || v === 'deals' || v === 'funnel' ? '' : R;
         // _crm is a top-level const: reachable from page script, not from window.
         await page.evaluate(`_crmClose(); _crm.q = ${JSON.stringify(q)}; _crmSet('view', ${JSON.stringify(v)})`);
         const input = page.locator('#crm-q');
         await input.evaluate((el: HTMLInputElement, val) => { el.value = val; }, q);
-        await expect(page.locator('#crm-list .crm-row, #crm-list .crm-act').first()).toBeVisible({ timeout: 15_000 });
+        await expect(page.locator('#crm-list .crm-row, #crm-list .crm-act, #crm-list .crm-funnel').first()).toBeVisible({ timeout: 15_000 });
         await page.waitForTimeout(300);
         // Open a record where the section has one: the long draft, a person, a company, a deal.
         const opener = v === 'outbound' ? '#crm-list .crm-row' : ['people', 'companies', 'deals'].includes(v) ? '#crm-list .crm-row[data-kind]' : '';

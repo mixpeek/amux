@@ -338,7 +338,7 @@ async fn soft_delete(state: AppState, table: &'static str, kind: &'static str, i
 
 // ---- deals ---------------------------------------------------------------------
 
-const DEAL_FIELDS: &[&str] = &["title", "account_id", "currency", "close_date", "next_step", "owner", "notes", "external"];
+const DEAL_FIELDS: &[&str] = &["title", "account_id", "currency", "close_date", "next_step", "owner", "notes", "external", "lost_reason", "asset_url"];
 
 fn stage_of(v: &Value) -> Result<String, String> {
     let s = v.as_str().unwrap_or("").trim().to_lowercase();
@@ -478,6 +478,10 @@ async fn create_deal(State(state): State<AppState>, headers: HeaderMap, Json(bod
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
     };
+    // A deal opened straight at a closing stage passes the same rules as a move there.
+    if let Err((code, why)) = super::crm_close::check_stage("lead", &stage, &body, super::standing_approvals::is_owner_request(&headers)) {
+        return err(StatusCode::CONFLICT, json!({ "error": why, "code": code }));
+    }
     let source = source_of(&body, &headers);
     let slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let w = slot.clone();
@@ -497,6 +501,9 @@ async fn create_deal(State(state): State<AppState>, headers: HeaderMap, Json(bod
                     body.get("external").filter(|e| e.is_object()).map(Value::to_string).unwrap_or_else(|| "{}".into()), now,
                     body.get("tags").filter(|t| t.is_array()).map(Value::to_string).unwrap_or_else(|| "[]".into())],
             )?;
+            conn.execute("UPDATE crm_deals SET mrr_usd=?2, lost_reason=?3, asset_url=?4 WHERE id=?1",
+                rusqlite::params![&id, body.get("mrr_usd").and_then(Value::as_f64), s("lost_reason"), s("asset_url")])?;
+            super::crm_close::first_stage(conn, &id, &stage, &source, "opened")?;
             *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id.clone());
             Ok(WriteOutcome { applied: true, events: vec![ev("crm_deal", &id, MutationKind::Created)] })
         })
@@ -507,16 +514,21 @@ async fn create_deal(State(state): State<AppState>, headers: HeaderMap, Json(bod
     }
 }
 
-async fn patch_deal(State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
+/// What a deal PATCH did: the stage move it made (if any), or the rule that refused it.
+type StageWrite = Result<Option<Value>, (&'static str, String)>;
+
+async fn patch_deal(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Json(body): Json<Value>) -> Response {
     let mut extra: Vec<(&str, SqlValue)> = Vec::new();
-    if let Some(s) = body.get("stage") {
-        match stage_of(s) {
-            Ok(s) => extra.push(("stage", SqlValue::Text(s))),
-            Err(e) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
-        }
-    }
+    let to = match body.get("stage").map(stage_of) {
+        Some(Ok(s)) => Some(s),
+        Some(Err(e)) => return err(StatusCode::BAD_REQUEST, json!({ "error": e })),
+        None => None,
+    };
     if let Some(a) = body.get("amount") {
         extra.push(("amount", a.as_f64().map(SqlValue::Real).unwrap_or(SqlValue::Null)));
+    }
+    if let Some(a) = body.get("mrr_usd") {
+        extra.push(("mrr_usd", a.as_f64().map(SqlValue::Real).unwrap_or(SqlValue::Null)));
     }
     if let Some(c) = body.get("contact_ids").filter(|v| v.is_array()) {
         extra.push(("contact_ids", SqlValue::Text(c.to_string())));
@@ -524,16 +536,55 @@ async fn patch_deal(State(state): State<AppState>, Path(id): Path<String>, Json(
     if let Some(t) = body.get("tags").filter(|v| v.is_array()) {
         extra.push(("tags", SqlValue::Text(t.to_string())));
     }
+    let owner = super::standing_approvals::is_owner_request(&headers);
+    let by = source_of(&json!({}), &headers);
+    let out: Arc<Mutex<Option<StageWrite>>> = Arc::new(Mutex::new(None));
+    let w = out.clone();
     let res = state
         .store
         .write_async(move |conn| {
+            // The rules read the deal as it will be: its row with this request laid over it.
+            let mut merged = query_rows_json(conn, "SELECT * FROM crm_deals WHERE id=?1 AND deleted IS NULL", &[&id as &dyn rusqlite::ToSql])?
+                .pop().unwrap_or(Value::Null);
+            let from = merged["stage"].as_str().unwrap_or("").to_string();
+            if let (Some(o), Some(b)) = (merged.as_object_mut(), body.as_object()) {
+                for (k, v) in b {
+                    o.insert(k.clone(), v.clone());
+                }
+            }
+            if let Some(to) = &to {
+                if let Err(e) = super::crm_close::check_stage(&from, to, &merged, owner) {
+                    *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(e));
+                    return Ok(WriteOutcome { applied: false, events: vec![] });
+                }
+            }
             let n = patch_row(conn, "crm_deals", &id, &body, DEAL_FIELDS, &extra)?;
-            Ok(WriteOutcome { applied: n > 0, events: if n > 0 { vec![ev("crm_deal", &id, MutationKind::Updated)] } else { vec![] } })
+            let moved = match &to {
+                Some(to) => super::crm_close::move_stage(conn, &id, to, &by, body.get("why").and_then(Value::as_str).unwrap_or(""), None)?,
+                None => None,
+            };
+            let applied = n > 0 || moved.is_some();
+            *w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(moved));
+            Ok(WriteOutcome { applied, events: if applied { vec![ev("crm_deal", &id, MutationKind::Updated)] } else { vec![] } })
         })
         .await;
-    match res {
-        Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => internal(e),
+    if let Err(e) = res {
+        return internal(e);
+    }
+    let taken = out.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    match taken {
+        Some(Err((code, why))) => {
+            tracing::info!(target: "amux::crm", measured = true, n_considered = 1, verdict = code, "a deal's stage change was refused: {why}");
+            err(StatusCode::CONFLICT, json!({ "error": why, "code": code }))
+        }
+        Some(Ok(moved)) => {
+            if let Some(m) = &moved {
+                super::crm_agent::emit(&state, "crm.deal.stage", m.clone()).await;
+                super::crm_close::emit_funnel_changed(&state, "deal_stage", "").await;
+            }
+            Json(json!({ "ok": true, "moved": moved })).into_response()
+        }
+        None => Json(json!({ "ok": true })).into_response(),
     }
 }
 
@@ -609,7 +660,8 @@ async fn summary(State(state): State<AppState>) -> Response {
         // failed with no stated reason to send anyway, or the person opted out, bounced or is do-not-contact. The
         // Outbound view's Blocked list uses the same predicate (app.js _crmBlocked).
         let blocked = n("SELECT COUNT(*) FROM crm_touches t LEFT JOIN crm_contacts c ON c.id=t.contact_id WHERE t.deleted IS NULL AND t.status='drafted' \
-             AND ((json_extract(t.voice_check,'$.ok')=0 AND COALESCE(json_extract(t.voice_check,'$.override'),'')='') OR c.unsubscribed_at IS NOT NULL OR c.bounced_at IS NOT NULL OR c.status='do_not_contact')").unwrap_or(0);
+             AND ((json_extract(t.voice_check,'$.ok')=0 AND COALESCE(json_extract(t.voice_check,'$.override'),'')='') OR c.unsubscribed_at IS NOT NULL OR c.bounced_at IS NOT NULL OR c.status='do_not_contact' \
+             OR (t.channel='email' AND json_valid(c.email_check) AND json_extract(c.email_check,'$.ok')=0))").unwrap_or(0);
         let decided = n("SELECT COUNT(*) FROM crm_touches WHERE deleted IS NULL AND status IN ('approved','done','skipped','failed')").unwrap_or(0);
         let watched = n("SELECT COUNT(*) FROM crm_channels WHERE deleted IS NULL AND watch=1").unwrap_or(0);
         Ok(json!({

@@ -599,15 +599,24 @@ pub async fn add_interaction(
                 "UPDATE crm_contacts SET updated=?1 WHERE id=?2",
                 rusqlite::params![now, &id],
             )?;
+            // A reply logged by hand (direction in, a mail or a message) is a
+            // reply like a captured one: it stops the sequences that stop on
+            // one, honours a request to stop, and opens the deal for its intent.
+            if str_field(&body, "direction") == "in" && matches!(ty.as_str(), "email" | "dm" | "text" | "call") {
+                super::crm_outbound::on_reply(conn, &id, &format!("{}\n{}", str_field(&body, "subject"), str_field(&body, "notes")))?;
+            }
             // A booked meeting (gtm-engine logs a /demo booking as a `meeting`
             // with "calendly <uuid>" in its notes) ends the person's sequences.
             if matches!(ty.as_str(), "meeting" | "booking") {
                 let (sequences, touches) = super::crm_outbound::on_booking(conn, &id)?;
+                // It also moves their deal to demo and plans the prep (row 35).
+                let (stage, prep) = super::crm_close::on_booking_deal(conn, &id)?;
                 let name: String = conn.query_row("SELECT name FROM crm_contacts WHERE id=?1", [&id], |r| r.get(0)).unwrap_or_default();
                 *booked_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(json!({
                     "contact_id": id.clone(), "name": name, "interaction_id": ix_id.clone(), "type": ty.clone(), "date": date.clone(),
                     "notes": str_field(&body, "notes").chars().take(300).collect::<String>(),
                     "stopped_sequences": sequences, "skipped_touches": touches,
+                    "deal": stage, "prep_touch_id": prep,
                 }));
             }
             *slot_w.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ix_id);
@@ -616,6 +625,10 @@ pub async fn add_interaction(
         .await;
     let booking = booked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     if let Some(b) = booking {
+        if let Some(d) = b.get("deal").filter(|d| !d.is_null()) {
+            super::crm_agent::emit(&state, "crm.deal.stage", d.clone()).await;
+        }
+        super::crm_close::emit_funnel_changed(&state, "booked", &cid).await;
         super::crm_agent::emit(&state, "crm.contact.booked", b).await;
         tracing::info!(target: "amux::crm", contact = %cid, measured = true, n_considered = 1, verdict = "crm_contact_booked", "a booked meeting was recorded for a person");
     }
