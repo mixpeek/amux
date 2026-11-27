@@ -47470,7 +47470,7 @@ function _crmSet(kind, v) {
     if (v === 'approvals') v = 'outbound';
     if (_crm.view !== v && _crm.open) _crmClose();
     _crm.view = v; _crm.stage = '';
-    try { localStorage.setItem('amux_crm_view', v); } catch (_) {}
+    try { localStorage.setItem('amux_crm_view', v); } catch (e) { console.warn('[crm] could not remember the section', e); }
   }
   else if (kind === 'grade') _crm.grade = _crm.grade === v ? '' : v;
   else if (kind === 'status') _crm.status = _crm.status === v ? '' : v;
