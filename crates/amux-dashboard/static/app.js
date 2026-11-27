@@ -38934,6 +38934,7 @@ async function loadFiles(path) {
   // Breadcrumb
   document.getElementById('files-breadcrumb').innerHTML = _feCrumbsHtml(path, 'loadFiles');
   _filesToolbarCheck();
+  if (_filesWorkerOnlyOn()) { _filesLoadWorkerOnly(path, current); return; }
   // CACHE FIRST (Ethan, 2026-10-04, offline on a phone: "this should load
   // offline cached locally"). The saved listing was only read after the
   // request FAILED, and a request to an unreachable server does not fail, it
@@ -39044,7 +39045,7 @@ function _feBuildRow(entry, parentPath, depth, q, opts) {
     : `<span class="fe-expand-spacer"></span>`;
   const indentStyle = depth ? ` style="padding-left:${depth * 16}px"` : '';
   row.innerHTML =
-    `<div class="fe-cell-name"${indentStyle}>${_feCheckHtml(entryPath)}${toggle}${icon}<span>${nameHtml}${slash}</span></div>` +
+    `<div class="fe-cell-name"${indentStyle}>${_feCheckHtml(entryPath)}${toggle}${icon}<span>${nameHtml}${slash}</span>${entry.workerTag ? '<span class="fe-worker-tag fe-worker-tag-' + esc(entry.workerTag) + '">' + esc(entry.workerTag) + '</span>' : ''}</div>` +
     `<div class="fe-cell-size">${sizeStr}</div>` +
     `<div class="fe-cell-date">${dateStr}</div>` +
     `<div class="fe-cell-date fe-cell-opened">${openedStr}</div>` +
@@ -39393,13 +39394,13 @@ function _renderFilesEntries(body, path, data, cacheTs) {
 
   // Status bar
   const statusEl = document.getElementById('fe-status');
-  if (statusEl) statusEl.textContent = _feStatusText(entries, q);
+  if (statusEl) statusEl.textContent = _feStatusText(entries, q) + (data.statusNote || '');
 
   // ".. up" row
   if (!q && data.parent && data.parent !== data.path) body.appendChild(_feParentRow(() => loadFiles(data.parent)));
 
   if (!entries.length) {
-    body.appendChild(_feEmptyRow(q ? `No results for "${q}"` : 'Empty folder'));
+    body.appendChild(_feEmptyRow(q ? `No results for "${q}"` : (data.emptyText || 'Empty folder')));
     return;
   }
 
@@ -43004,6 +43005,65 @@ function openExplore(startPath, session) {
   _updateFilesSessionBtn();
   _filesLoadBookmarks();   // load THIS session's shortcuts (or global if none)
 }
+// "Only this worker's files": the worker's Files tab, filtered to the files
+// the worker created or edited (Ethan, 2026-11-27). The list comes from
+// /api/sessions/<w>/files-written and renders through the same table, so
+// sorting, search, selection and opening work as in any folder. The current
+// folder scopes it: every file the worker wrote below this folder, with its
+// path relative to the folder. The Opened column shows when the worker last
+// wrote the file instead.
+let _filesWorkerOnly = localStorage.getItem('amux_files_worker_only') === '1';
+let _filesWorkerCache = null;   // {session, at, data}
+function _filesWorkerOnlyOn() { return !!(_filesWorkerOnly && _exploreSession); }
+function _filesToggleWorkerOnly() {
+  _filesWorkerOnly = !_filesWorkerOnly;
+  try { localStorage.setItem('amux_files_worker_only', _filesWorkerOnly ? '1' : '0'); } catch (e) { console.warn('[files] could not remember the worker-only toggle', e); }
+  _filesWorkerCache = null;
+  _updateFilesSessionBtn();
+  loadFiles(_filesPath);
+}
+async function _filesLoadWorkerOnly(path, current, attempt) {
+  const body = document.getElementById('files-body');
+  const w = _exploreSession;
+  let data = _filesWorkerCache && _filesWorkerCache.session === w && Date.now() - _filesWorkerCache.at < 15000 ? _filesWorkerCache.data : null;
+  if (!data) {
+    try {
+      const r = await fetch(API + '/api/sessions/' + encodeURIComponent(w) + '/files-written', {signal: AbortSignal.timeout(20000)});
+      data = await r.json();
+    } catch (e) { data = {measured: false, why_unmeasured: 'Could not reach the server'}; }
+    if (!current() || _exploreSession !== w) return;
+    if (data.measured) _filesWorkerCache = {session: w, at: Date.now(), data};
+  }
+  if (!data.measured) {
+    body.innerHTML = '';
+    body.appendChild(_feEmptyRow('Could not list the files ' + w + ' wrote: ' + (data.why_unmeasured || data.error || 'unknown error')));
+    return;
+  }
+  const root = String(path || '/').replace(/\/+$/, '');
+  const under = (data.files || []).filter(f => !root || f.path.startsWith(root + '/'));
+  const entries = under.map(f => ({
+    name: f.path.slice(root.length + 1), type: 'file', size: f.size || 0,
+    modified: f.modified || 0, opened: f.last_ts,
+    workerTag: !f.exists ? 'deleted' : (f.created ? 'created' : 'edited'),
+  }));
+  const elsewhere = (data.files || []).length - under.length;
+  const t = data.transcripts || {};
+  let note = ' written by ' + w;
+  if (elsewhere > 0) note += ' · ' + elsewhere + ' more outside this folder';
+  if (!data.complete) note += ' · still reading its history (' + (t.indexed || 0) + ' of ' + (t.known || 0) + ' conversations)';
+  _renderFilesEntries(body, path, {path, parent: null, entries,
+    emptyText: elsewhere > 0 ? (w + ' wrote no files in this folder. ' + elsewhere + ' are elsewhere: go up to see them.') : (w + ' has not created or edited any files yet.'),
+    statusNote: note}, false);
+  try { amuxTrack('files_worker_only_render', {measured: true, n_considered: (data.files || []).length, shown: entries.length, complete: !!data.complete}); } catch (e) { console.warn('[files] worker-only render beacon failed', e); }
+  // A long history indexes across requests; keep reading until it is whole.
+  if (!data.complete && (attempt || 0) < 30) {
+    setTimeout(() => {
+      if (!current() || !_filesWorkerOnlyOn() || _exploreSession !== w) return;
+      _filesWorkerCache = null;
+      _filesLoadWorkerOnly(path, current, (attempt || 0) + 1);
+    }, 1000);
+  }
+}
 function _updateFilesSessionBtn() {
   const btn = document.getElementById('files-set-session-btn');
   const lbl = document.getElementById('files-set-session-label');
@@ -43018,6 +43078,18 @@ function _updateFilesSessionBtn() {
   if (backBtn) backBtn.style.display = show ? 'inline-flex' : 'none';
   if (backLbl && _exploreSession) backLbl.textContent = _exploreSession;
   if (olbl && _exploreSession) olbl.textContent = 'Set dir for ' + _exploreSession;
+  const only = document.getElementById('files-worker-only-btn');
+  if (only) {
+    only.style.display = show ? 'inline-flex' : 'none';
+    only.classList.toggle('active', _filesWorkerOnlyOn());
+    only.setAttribute('aria-pressed', _filesWorkerOnlyOn() ? 'true' : 'false');
+    only.title = _exploreSession ? 'Show only the files ' + _exploreSession + ' created or edited' : '';
+  }
+  const opened = document.getElementById('fe-hdr-opened');
+  if (opened) {
+    opened.childNodes.forEach(n => { if (n.nodeType === 3) n.textContent = _filesWorkerOnlyOn() ? 'Worker wrote' : 'Opened'; });
+    opened.title = _filesWorkerOnlyOn() ? 'When ' + _exploreSession + ' last wrote this file' : 'Last opened in amux';
+  }
 }
 async function setFilesSessionDir() {
   if (!_exploreSession) return;

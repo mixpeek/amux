@@ -11937,3 +11937,21 @@ body.view-outbound #email-approvals-banner { display: none !important; }
 
 /* Scheduler audit trail: the actor the server proved, beside the claimed one (ledger record). */
 .sx-audit-proven { color: var(--dim); font-size: var(--fs-3xs); }
+
+/* Files: "Only this worker" toggle and the created/edited tag on its rows */
+.fe-worker-only-btn { gap: var(--space-1); white-space: nowrap; font-size: var(--fs-xs); flex-shrink: 0; }
+.fe-worker-only-dot { width: 8px; height: 8px; border-radius: var(--radius-round); border: 1.5px solid currentColor; flex-shrink: 0; }
+.fe-worker-only-btn.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.fe-worker-only-btn.active .fe-worker-only-dot { background: currentColor; }
+.fe-worker-only-lbl-short { display: none; }
+.fe-worker-tag { margin-left: var(--space-1); padding: 0 var(--space-1); border-radius: var(--radius-xs); font-size: var(--fs-xs); color: var(--dim); border: 1px solid var(--border); flex-shrink: 0; }
+.fe-worker-tag-created { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, transparent); }
+.fe-worker-tag-deleted { text-decoration: line-through; }
+@media (max-width: 600px) {
+  /* One toolbar row on a phone: the toggle keeps its dot, and a long worker
+     name in Back is cut, so the breadcrumb keeps room. */
+  .fe-worker-only-lbl { display: none; }
+  .fe-worker-only-lbl-short { display: inline; }
+  .fe-worker-only-btn { min-width: 44px; min-height: 44px; justify-content: center; }
+  #files-back-session-label { max-width: 28vw; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
+}

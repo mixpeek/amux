@@ -3221,6 +3221,11 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         path: "/api/sessions/{name}/quota",
         methods: &["GET"],
     },
+    // -- the files a worker created or edited, from its transcripts (worker_files::files_written)
+    RouteEntry {
+        path: "/api/sessions/{name}/files-written",
+        methods: &["GET"],
+    },
     // -- every worker's tasks, oldest first (sessions_legacy::task_list, the Tasks tab)
     RouteEntry {
         path: "/api/task-history",

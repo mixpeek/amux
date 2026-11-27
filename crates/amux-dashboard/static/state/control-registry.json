@@ -2412,6 +2412,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_filesLoadWorkerOnly": {
+      "kind": "command._filesLoadWorkerOnly",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_filesNewFolder": {
       "kind": "command._filesNewFolder",
       "feedback_required": true,
@@ -2462,6 +2468,12 @@
     },
     "_filesSetSort": {
       "kind": "command._filesSetSort",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
+    "_filesToggleWorkerOnly": {
+      "kind": "command._filesToggleWorkerOnly",
       "feedback_required": true,
       "target": "control-or-request",
       "queue_policy": "transport-declared"

@@ -1193,6 +1193,9 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
     <button class="fe-tb-btn" id="files-back-session-btn" onclick="closeExplore()" title="Return to worker" style="display:none;background:var(--purple);color:var(--on-solid);border-color:var(--purple);font-size:var(--fs-xs);white-space:nowrap;gap:var(--space-1);font-weight:600;">
       &#x2190; <span id="files-back-session-label">Back</span>
     </button>
+    <button class="fe-tb-btn fe-worker-only-btn" id="files-worker-only-btn" onclick="_filesToggleWorkerOnly()" aria-pressed="false" aria-label="Only this worker's files" style="display:none;">
+      <span class="fe-worker-only-dot"></span><span class="fe-worker-only-lbl">Only this worker</span><span class="fe-worker-only-lbl-short">This worker</span>
+    </button>
     <div id="files-breadcrumb" class="fe-breadcrumb"></div>
     <!-- Primary labeled actions (hidden on mobile, where they move into the More menu) -->
     <div class="fe-tb-actions">

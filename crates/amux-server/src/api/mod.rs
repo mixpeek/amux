@@ -185,6 +185,7 @@ pub(crate) mod send_probe;
 pub mod session_verbs;
 pub mod sessions_git;
 pub mod sessions_legacy;
+pub mod worker_files;
 pub mod worker_projection;
 pub mod settings;
 pub mod simple;
@@ -302,6 +303,7 @@ pub fn router_with_connector_transport(
         .route("/api/session-renames", axum::routing::get(session_verbs::session_renames))
         .route("/api/sessions/{name}/task-history", axum::routing::get(sessions_legacy::task_history))
         .route("/api/sessions/{name}/quota", axum::routing::get(agent_limit_resume::worker_quota))
+        .route("/api/sessions/{name}/files-written", axum::routing::get(worker_files::files_written))
         .route("/api/task-history", axum::routing::get(sessions_legacy::task_list))
         .route("/api/task-history/at", axum::routing::get(sessions_legacy::task_at_batch))
         .route("/api/task-history/links", axum::routing::get(sessions_legacy::task_links))
