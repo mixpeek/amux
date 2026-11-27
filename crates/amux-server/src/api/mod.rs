@@ -182,6 +182,7 @@ pub(crate) mod send_probe;
 pub mod session_verbs;
 pub mod sessions_git;
 pub mod sessions_legacy;
+pub mod worker_projection;
 pub mod settings;
 pub mod simple;
 pub mod skill_examples;

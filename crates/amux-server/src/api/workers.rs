@@ -14,6 +14,7 @@
 
 use super::aliases::{alias_fields, FieldStyle};
 use super::health::{Admission, AdmissionOverride};
+use super::worker_projection;
 use super::AppState;
 use crate::db::queries::{self, SessionRow, WorkerRow};
 use crate::db::{PendingEvent, WriteOutcome};
@@ -28,7 +29,7 @@ use amux_core::worker::{
     WorkerState,
 };
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -278,28 +279,21 @@ fn state_tag(state: &WorkerState) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Map WorkerState to the dashboard status string the JS expects.
-/// The dashboard reads `s.status` and renders status badges from it.
+/// The status string for a typed state, in the projection's vocabulary
+/// (`worker_projection::python_status`), so a mutation receipt and both list
+/// routes spell one state one way. A stopped worker reads blank there.
 fn dashboard_status(state: &WorkerState) -> &'static str {
-    match state {
-        WorkerState::Stopped => "stopped",
-        WorkerState::Starting => "starting",
-        WorkerState::Active { .. } => "active",
-        WorkerState::Idle { .. } => "idle",
-        WorkerState::Waiting { .. } => "waiting",
-        WorkerState::RateLimited { .. } => "rate_limited",
-        WorkerState::Error { .. } => "error",
-    }
+    worker_projection::python_status(&serde_json::to_string(state).unwrap_or_default())
 }
 
 /// The canonical API body for a worker. Field aliasing (RR-0018a) is applied
 /// by callers via `alias_fields`.
 ///
-/// Includes dashboard-facing fields (`status`, `running`, `rate_limited_until`,
-/// `name`) so the JS `_renderSessionCard` renders status badges on every card
-/// and shows terminal preview on expand. Fields that require backend adapters
-/// (Phase 1) return null until then: `preview_lines`, `preview`, `tokens`,
-/// `last_activity`, `task_name`.
+/// This is the typed store's half of a record. A mutation receipt returns it
+/// as is; `GET /api/workers[/{id}]` passes it to
+/// `worker_projection::worker_record`, which overwrites every shared field
+/// (`status`, `running`, `preview`, `task_name`, ...) from the `/api/sessions`
+/// projection row.
 fn worker_body(row: &WorkerRow) -> Value {
     let status = dashboard_status(&row.state);
     let running = !matches!(row.state, WorkerState::Stopped);
@@ -329,8 +323,8 @@ fn worker_body(row: &WorkerRow) -> Value {
         "version": row.version,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
-        // Phase 1 (backend adapters): preview_lines, preview, tokens,
-        // last_activity, task_name, credit_limited, session_created
+        // A GET serializes these from the /api/sessions projection row
+        // (worker_projection::worker_record); the receipt keeps placeholders.
         "preview_lines": Value::Null,
         "preview": Value::Null,
         "tokens": Value::Null,
@@ -429,7 +423,19 @@ fn default_limit() -> u64 {
 /// List workers, PagedResponse-shaped (Invariant 40: `total`/`truncated`
 /// announce what a page omits instead of silently capping).
 /// Optional `?lifecycle=active` (or comma-separated: `active,paused`) filter.
-pub async fn list_workers(State(state): State<AppState>, Query(p): Query<ListParams>) -> Response {
+///
+/// THE SAME FLEET AS `/api/sessions` (audit P2, step 9). Every record is
+/// serialized from that route's projection row by
+/// [`worker_projection::worker_record`]; the typed store adds only the fields
+/// it alone has. Typed workers come first in their creation order, then every
+/// fleet worker the typed store does not know, by name. A typed row the
+/// snapshot does not carry (a deleted row asked for by `?lifecycle=deleted`)
+/// is served from the typed body alone and counted as `unprojected`.
+pub async fn list_workers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<ListParams>,
+) -> Response {
     let offset = p.offset;
     let limit = p.limit.clamp(1, 1000);
     let lifecycles: Vec<WorkerLifecycle> = p
@@ -440,27 +446,77 @@ pub async fn list_workers(State(state): State<AppState>, Query(p): Query<ListPar
         .filter_map(|s| WorkerLifecycle::parse(s.trim()))
         .collect();
     let store = state.store.clone();
+    let wanted = lifecycles.clone();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
         let conn = store.read()?;
-        if lifecycles.is_empty() {
-            Ok(queries::list_workers(&conn, offset, limit)?)
+        if wanted.is_empty() {
+            Ok(queries::list_workers(&conn, 0, TYPED_ROWS_MAX)?.0)
         } else {
-            Ok(queries::list_workers_by_lifecycle(
-                &conn,
-                &lifecycles,
-                offset,
-                limit,
-            )?)
+            Ok(queries::list_workers_by_lifecycle(&conn, &wanted, 0, TYPED_ROWS_MAX)?.0)
         }
     })
     .await;
-    let (rows, total) = match joined {
+    let typed_rows = match joined {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => return internal(e),
         Err(e) => return internal(e),
     };
-    let items: Vec<Value> = rows.iter().map(worker_body).collect();
-    let page = match PagedResponse::new(items, total, offset, limit) {
+    worker_projection::refresh_for_typed(typed_rows.iter().map(|r| r.updated_at.as_str()));
+    let fleet = match super::sessions_legacy::caller_sessions_values(state.store.clone(), &headers).await {
+        Ok(rows) => rows,
+        Err(e) => return super::sessions_legacy::discovery_failure(&e, e.to_string()),
+    };
+    let wanted_tags: Vec<&str> = lifecycles.iter().map(|l| l.as_str()).collect();
+    // `sources[i]` is the projection row `records[i]` was serialized from.
+    let mut records: Vec<Value> = Vec::new();
+    let mut sources: Vec<Option<&Value>> = Vec::new();
+    let mut unprojected = 0usize;
+    for row in &typed_rows {
+        let proj = worker_projection::row_for(&fleet, &row.display_name);
+        records.push(match proj {
+            Some(p) => worker_projection::worker_record(p, Some(worker_body(row))),
+            None => {
+                unprojected += 1;
+                worker_body(row)
+            }
+        });
+        sources.push(proj);
+    }
+    let typed_names: std::collections::BTreeSet<String> =
+        typed_rows.iter().map(|r| r.display_name.to_lowercase()).collect();
+    let mut untyped: Vec<&Value> = fleet
+        .iter()
+        .filter(|r| {
+            r.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| !typed_names.contains(&n.to_lowercase()))
+        })
+        .filter(|r| {
+            wanted_tags.is_empty()
+                || r.get("lifecycle")
+                    .and_then(Value::as_str)
+                    .is_some_and(|l| wanted_tags.contains(&l))
+        })
+        .collect();
+    untyped.sort_by_key(|r| r.get("name").and_then(Value::as_str).unwrap_or("").to_lowercase());
+    for proj in untyped {
+        records.push(worker_projection::worker_record(proj, None));
+        sources.push(Some(proj));
+    }
+    let checked: Vec<(&Value, &Value)> = sources
+        .iter()
+        .zip(&records)
+        .filter_map(|(src, rec)| src.map(|p| (p, rec)))
+        .collect();
+    worker_projection::note_verdict("/api/workers", &checked, unprojected);
+    let all = records;
+    let total = all.len() as u64;
+    let page: Vec<Value> = all
+        .into_iter()
+        .skip(usize::try_from(offset).unwrap_or(usize::MAX))
+        .take(usize::try_from(limit).unwrap_or(usize::MAX))
+        .collect();
+    let page = match PagedResponse::new(page, total, offset, limit) {
         Ok(p) => p,
         Err(e) => return internal(e),
     };
@@ -469,6 +525,10 @@ pub async fn list_workers(State(state): State<AppState>, Query(p): Query<ListPar
         Err(e) => internal(e),
     }
 }
+
+/// Every typed row is read per list call: the typed store is small (6 rows
+/// live) and paging happens over the merged fleet, not over the typed table.
+const TYPED_ROWS_MAX: u64 = 100_000;
 
 // ---- POST /api/workers --------------------------------------------------
 
@@ -692,8 +752,14 @@ async fn create_worker_inner(
 // ---- GET /api/workers/{id} ----------------------------------------------
 
 /// Detail by id, display_name, or alias (Invariant 17 — see
-/// `queries::get_worker` for the resolution order).
-pub async fn get_worker(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+/// `queries::get_worker` for the resolution order), or by the name of a fleet
+/// worker the typed store does not know. Serialized from the `/api/sessions`
+/// projection row like the list, so the two routes agree about it.
+pub async fn get_worker(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Response {
     let store = state.store.clone();
     let k = key.clone();
     let joined = crate::db::interactions::spawn_blocking(move || -> anyhow::Result<_> {
@@ -701,14 +767,32 @@ pub async fn get_worker(State(state): State<AppState>, Path(key): Path<String>) 
         Ok(queries::get_worker(&conn, &k)?)
     })
     .await;
-    match joined {
-        Ok(Ok(Some(row))) => {
-            Json(alias_fields(worker_body(&row), FieldStyle::default())).into_response()
-        }
-        Ok(Ok(None)) => not_found(&key),
-        Ok(Err(e)) => internal(e),
-        Err(e) => internal(e),
+    let typed = match joined {
+        Ok(Ok(row)) => row,
+        Ok(Err(e)) => return internal(e),
+        Err(e) => return internal(e),
+    };
+    if let Some(row) = &typed {
+        worker_projection::refresh_for_typed(std::iter::once(row.updated_at.as_str()));
     }
+    let fleet = match super::sessions_legacy::caller_sessions_values(state.store.clone(), &headers).await {
+        Ok(rows) => rows,
+        Err(e) => return super::sessions_legacy::discovery_failure(&e, e.to_string()),
+    };
+    let name = typed.as_ref().map_or(key.as_str(), |r| r.display_name.as_str());
+    let body = match (worker_projection::row_for(&fleet, name), &typed) {
+        (Some(proj), t) => {
+            let record = worker_projection::worker_record(proj, t.as_ref().map(worker_body));
+            worker_projection::note_verdict("/api/workers/{id}", &[(proj, &record)], 0);
+            record
+        }
+        (None, Some(row)) => {
+            worker_projection::note_verdict("/api/workers/{id}", &[], 1);
+            worker_body(row)
+        }
+        (None, None) => return not_found(&key),
+    };
+    Json(alias_fields(body, FieldStyle::default())).into_response()
 }
 
 // ---- PATCH /api/workers/{id} --------------------------------------------
@@ -2908,6 +2992,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_get_rename_then_alias_resolves() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let (st, _, created) = send(
             &app,
@@ -2956,6 +3041,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_expect_version_is_409_and_applies_nothing() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "w").await;
         // Move to version 1.
@@ -2988,6 +3074,7 @@ mod tests {
 
     #[tokio::test]
     async fn noop_patch_reports_unapplied_and_bumps_nothing() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "w").await;
         let rev_before = health_rev(&app).await;
@@ -3161,6 +3248,10 @@ mod tests {
 
     #[tokio::test]
     async fn start_stop_delete_lifecycle() {
+        // The list now carries the fleet registry too (audit P2 step 9), so pin
+        // an empty one: the total below is about the typed worker alone.
+        let empty_home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(empty_home.path());
         let (app, _dir) = app();
         let id = create(&app, "w").await;
 
@@ -3298,6 +3389,91 @@ mod tests {
             serde_json::from_str::<ExitReason>(&reason).unwrap(),
             ExitReason::Replaced
         );
+    }
+
+    // ---- one worker projection behind both routes (audit P2, step 9) -----
+
+    /// `/api/sessions` and `/api/workers` list the same fleet and agree, per
+    /// worker, on every shared field: env-file workers (paused, stopped,
+    /// archived, isolated) and a typed worker. A peer sees the isolated worker
+    /// on neither route, and the detail route serves the same record.
+    #[tokio::test]
+    async fn sessions_and_workers_serialize_one_projection_per_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::api::settings::test_env::set_home(home.path());
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        for (name, extra) in [
+            ("rt-paused", "CC_PAUSED=\"1\"\n"),
+            ("rt-stopped", ""),
+            ("rt-archived", "CC_ARCHIVED=\"1\"\n"),
+            ("rt-isolated", "CC_ISOLATED=\"1\"\n"),
+        ] {
+            std::fs::write(
+                sessions.join(format!("{name}.env")),
+                format!("CC_DIR=\"/tmp/{name}\"\nCC_PROVIDER=\"claude\"\n{extra}"),
+            )
+            .unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while crate::api::sessions_legacy::fleet_suppressed() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let (app, _dir) = app();
+        let typed_id = create(&app, "rt-typed").await;
+        crate::api::sessions_legacy::invalidate_sessions_cache();
+
+        let (st, _, legacy) = read_real_sessions_settled(&app, "projection").await;
+        assert_eq!(st, StatusCode::OK, "{legacy}");
+        let rows = legacy.as_array().expect("bare array").clone();
+        let (st, _, list) = send(&app, "GET", "/api/workers?limit=1000", None).await;
+        assert_eq!(st, StatusCode::OK, "{list}");
+        let items = list["items"].as_array().expect("items").clone();
+        let names = |v: &[Value]| -> std::collections::BTreeSet<String> {
+            v.iter().filter_map(|r| r["name"].as_str().map(str::to_string)).collect()
+        };
+        assert_eq!(names(&rows), names(&items), "both routes list one fleet");
+        assert_eq!(names(&rows).len(), 5, "{rows:?}");
+        assert_eq!(list["total"], json!(rows.len()));
+        for row in &rows {
+            let name = row["name"].as_str().unwrap();
+            let item = worker_projection::row_for(&items, name).unwrap();
+            assert_eq!(worker_projection::diverged_fields(row, item), Vec::<&str>::new(),
+                "{name}: sessions {row} workers {item}");
+            // Named outright as well, so a field dropped from SHARED_FIELDS (which
+            // also hides it from the comparator) still fails here.
+            for key in ["status", "running", "lifecycle", "activity", "agent_state", "provider"] {
+                assert_eq!(item.get(key), row.get(key), "{name}.{key}: sessions {row} workers {item}");
+            }
+        }
+        let typed = worker_projection::row_for(&items, "rt-typed").unwrap();
+        assert_eq!(typed["id"], json!(typed_id), "the typed fields survive: {typed}");
+        let paused = worker_projection::row_for(&items, "rt-paused").unwrap();
+        assert_eq!((paused["lifecycle"].clone(), paused["status"].clone()), (json!("paused"), json!("")));
+        let archived = worker_projection::row_for(&items, "rt-archived").unwrap();
+        assert_eq!(archived["archived"], json!(true), "{archived}");
+
+        // The detail route is the same record.
+        let (st, _, detail) = send(&app, "GET", "/api/workers/rt-paused", None).await;
+        assert_eq!(st, StatusCode::OK, "{detail}");
+        let row = worker_projection::row_for(&rows, "rt-paused").unwrap();
+        assert_eq!(worker_projection::diverged_fields(row, &detail), Vec::<&str>::new(), "{detail}");
+
+        // The lifecycle filter reads the projection's lifecycle.
+        let (_, _, only) = send(&app, "GET", "/api/workers?lifecycle=paused", None).await;
+        assert_eq!(names(only["items"].as_array().unwrap()), names(&[json!({"name":"rt-paused"})]), "{only}");
+
+        // A peer finds the isolated worker on neither route.
+        let peer = [("x-amux-worker", "some-peer")];
+        let (_, _, peer_rows) = send_with(&app, "GET", "/api/sessions", None, &peer).await;
+        let (_, _, peer_list) = send_with(&app, "GET", "/api/workers?limit=1000", None, &peer).await;
+        let peer_rows = peer_rows.as_array().expect("peer array").clone();
+        assert!(!names(&peer_rows).contains("rt-isolated"), "{peer_rows:?}");
+        assert_eq!(names(&peer_rows), names(peer_list["items"].as_array().unwrap()), "{peer_list}");
+        let (st, _, _) = send_with(&app, "GET", "/api/workers/rt-isolated", None, &peer).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "a peer cannot read an isolated worker by name");
+        let (st, _, _) = send(&app, "GET", "/api/workers/rt-isolated", None).await;
+        assert_eq!(st, StatusCode::OK, "the owner can");
     }
 
     // ---- RR-0018a wiring -------------------------------------------------
@@ -3791,6 +3967,7 @@ mod tests {
 
     #[tokio::test]
     async fn worker_routes_sit_behind_auth_including_legacy_paths() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app_with_token(Some("sekrit".into()));
         let (st, _, _) = send(&app, "GET", "/api/workers", None).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
@@ -3876,6 +4053,7 @@ mod tests {
     /// DB state sat at whatever the last poll wrote for the whole turn.
     #[tokio::test]
     async fn turn_events_flow_to_worker_state_and_journal() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         use crate::opencode::mock::MockProtocol;
         use amux_core::ids::TurnId;
         use amux_core::protocol::{TurnResult, WorkerEvent};
@@ -3907,14 +4085,17 @@ mod tests {
         let mut active = Value::Null;
         for _ in 0..200 {
             let (_, _, body) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
-            if body["status"] == json!("active") {
+            // The typed state machine's own tag. `status` is the /api/sessions
+            // projection's (audit P2 step 9), which reads `unattributed` for a
+            // working lane with no board card.
+            if body["state"]["state"] == json!("active") {
                 active = body;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(
-            active["status"],
+            active["state"]["state"],
             json!("active"),
             "worker never went active: {active}"
         );
@@ -3934,14 +4115,14 @@ mod tests {
         let mut settled = Value::Null;
         for _ in 0..200 {
             let (_, _, body) = send(&app, "GET", &format!("/api/workers/{id}"), None).await;
-            if body["status"] == json!("idle") {
+            if body["state"]["state"] == json!("idle") {
                 settled = body;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         assert_eq!(
-            settled["status"],
+            settled["state"]["state"],
             json!("idle"),
             "worker never settled idle: {settled}"
         );
@@ -3985,6 +4166,7 @@ mod tests {
     /// slot, and parallel tests mutating it would race each other.
     #[tokio::test]
     async fn peek_reads_the_live_terminal_and_names_every_non_answer() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         use crate::backend::{
             AttachInfo, BackendError, BackendSession, BackendStatus, ProcessRef, SessionBackend,
             SessionSpec,
@@ -4537,6 +4719,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_worker_rejects_an_unknown_backend_string_before_writing() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "af651-patch").await;
         let rev_before = health_rev(&app).await;
@@ -4569,6 +4752,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_worker_accepts_a_real_backend_and_applies_it() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "af651-patch-ok").await;
         let (st, _, body) = send(
@@ -4657,6 +4841,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_worker_rejects_an_unknown_permission_before_writing() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "af650-patch").await;
         let rev_before = health_rev(&app).await;
@@ -4688,6 +4873,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_worker_accepts_a_real_permission_and_applies_it() {
+        let _fleet = crate::api::sessions_legacy::suppress_fleet_for_test();
         let (app, _dir) = app();
         let id = create(&app, "af650-patch-ok").await;
         let (st, _, body) = send(

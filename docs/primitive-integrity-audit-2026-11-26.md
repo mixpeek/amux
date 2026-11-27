@@ -252,6 +252,11 @@ by that module's own definition, yet they keep their own clocks:
   shapes computed by two code paths are not.
 - Remedy: one projection function produces the worker record, and both routes serialize it.
 - Verdict: mixed. The alias is legitimate; the duplicate computation is accidental.
+- Done (step 9): `api/worker_projection.rs` holds the status derivation and the record
+  builder. `/api/sessions` serves the projection rows; `GET /api/workers[/{id}]` serializes
+  the same rows (`worker_record`) and lists the same fleet, with the typed store adding only
+  `id`, `version`, `state` and the other typed-only fields. `SHARED_FIELDS` names what both
+  carry and every read logs `worker_projection_agrees` or `worker_projection_diverged`.
 
 ### P2. Two CLIs
 

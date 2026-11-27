@@ -167,10 +167,10 @@ follow-up.
   names like `amux`). There is no bridge from a tmux session name to a
   `wrk_` id today, so `notes create` can't target "this session's notes"
   directly — only global scope is wired up.
-  Confirmed live: `curl -sk $AMUX_URL/api/workers` in this run returned an
-  empty store while `/api/sessions` listed 9 tmux sessions, i.e. no
-  session here currently has a matching worker row — the gap is real, not
-  hypothetical, for this deployment.
+  Since the primitive integrity audit (P2, step 9) `/api/workers` lists the
+  same fleet as `/api/sessions`, serialized from one projection, but a
+  fleet-only worker carries `id: null`: it still has no `wrk_` id to scope
+  notes to.
 - **`board update`** for arbitrary PATCH bodies (tags, session, reviewer,
   `depends_on`, …) beyond the `status`/`claim` helpers here.
 - **Schedules and CRM** families exist in `skills/amux.md` and were out of
