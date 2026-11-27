@@ -11955,3 +11955,7 @@ body.view-outbound #email-approvals-banner { display: none !important; }
   .fe-worker-only-btn { min-width: 44px; min-height: 44px; justify-content: center; }
   #files-back-session-label { max-width: 28vw; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
 }
+
+/* Chat: the reconnecting line and its Retry now */
+.chat-retry-now { background: none; border: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+@media (max-width: 600px) { .chat-retry-now { min-height: 44px; padding: 0 var(--space-1); } }

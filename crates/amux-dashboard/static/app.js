@@ -19828,7 +19828,7 @@ function _workerRenderer(name) {
 // rendered from its full text, so it is what a full re-render produces.
 const _chat = { name: null, es: null, messages: [], streaming: null, loadedAt: 0, busy: false, queued: 0, gen: 0,
   cursor: '', stick: true, unseen: false, raf: 0, onScroll: null, live: null, offlineNote: '',
-  holdUntil: 0, holdCap: 0, held: 0, onRelease: null };
+  holdUntil: 0, holdCap: 0, held: 0, onRelease: null, downSince: 0, retryTimer: 0, graceTimer: 0, attempts: 0 };
 
 // OFFLINE PARITY WITH CODING WORKERS (Ethan 2026-09-26: "make sure amux chat
 // has all the same offline capabilities as coding too"). A coding worker's
@@ -19881,6 +19881,8 @@ function _chatUnmount() {
   _chat.es = null; _chat.name = null; _chat.messages = []; _chat.streaming = null; _chat.gen++;
   _chat.cursor = ''; _chat.stick = true; _chat.unseen = false; _chat.raf = 0; _chat.onScroll = null; _chat.live = null;
   _chat.loadedAt = 0; _chat.offlineNote = ''; _chat.pendingShown = 0;
+  clearTimeout(_chat.retryTimer); clearTimeout(_chat.graceTimer);
+  _chat.retryTimer = 0; _chat.graceTimer = 0; _chat.downSince = 0; _chat.attempts = 0;
   if (_peekChatPaintSkips && typeof _peekPollBeacon === 'function') {
     // Before the guard these ticks replaced the chat with terminal output.
     _peekPollBeacon('chat-terminal-paint-refused', _chat.name || peekSession, { n: _peekChatPaintSkips, verdict: 'chat_kept', measured: true });
@@ -19908,11 +19910,17 @@ async function _chatLoad(name) {
   } catch (e) {
     if (gen !== _chat.gen || _chat.name !== name) return;
     const why = (typeof online !== 'undefined' && !online) ? 'Offline.' : 'Could not reach the server (' + e.message + ').';
-    if (!(await _chatPaintCached(name, why))) _chatRender('Could not load the chat: ' + e.message);
+    // Scheduled first, so the render below knows a reconnect is under way
+    // and says so in one line instead of a raw fetch error.
+    _chatScheduleReconnect(name, 'load_failed');
+    if (!(await _chatPaintCached(name, why))) _chatRender();
     return;
   }
   if (gen !== _chat.gen || _chat.name !== name) return;
   hidePeekLoading();
+  // The history answered; the stream it opens below settles the outage
+  // (_chatRecovered on its first message) or reschedules it (onerror).
+  clearTimeout(_chat.retryTimer); _chat.retryTimer = 0;
   _chat.offlineNote = '';
   _chat.messages = d.messages || [];
   _chatCacheSave(name, _chat.messages);
@@ -19971,6 +19979,7 @@ function _chatConnect(name) {
   es.onmessage = (ev) => {
     if (_chat.es !== es || _chat.name !== name) return;
     _chatLastData = Date.now();
+    if (_chat.downSince) _chatRecovered(name);
     _chatRetries = 0;
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     _chatOnEvent(name, m);
@@ -19979,14 +19988,61 @@ function _chatConnect(name) {
     if (_chat.es !== es || _chat.name !== name) return;
     try { es.close(); } catch (e) {}
     if (_chat.es === es) _chat.es = null;
-    _chatRetries++;
-    const delay = Math.min(2000 * _chatRetries, 30000);
-    setTimeout(() => {
-      if (_chat.name === name && !_chat.es) {
-        _chatLoad(name);
-      }
-    }, delay);
+    _chatScheduleReconnect(name, 'stream_error');
   };
+}
+
+// INTERMITTENT CONNECTIVITY (Ethan, 2026-11-27: "We need better handling of
+// intermittent data connectivity", over a Chat tab stuck on "Stream
+// disconnected. Reconnect"). A dropped stream retried once: that retry
+// reloaded the history, and when the network was still down the failed reload
+// scheduled nothing, so the tab waited for a click forever. Every failure now
+// lands here and keeps retrying with backoff (1s doubling to 15s, jittered)
+// until the stream is back; coming back online, to the tab or to the window
+// retries at once (_chatResume). A blip shorter than the grace period shows
+// nothing; after it, one quiet line says what is happening and offers Retry now.
+const _CHAT_DOWN_GRACE_MS = 4000;
+function _chatScheduleReconnect(name, why) {
+  if (_chat.name !== name) return;
+  if (!_chat.downSince) {
+    _chat.downSince = Date.now();
+    clearTimeout(_chat.graceTimer);
+    _chat.graceTimer = setTimeout(() => { if (_chat.name === name && _chat.downSince && !_chat.es) _chatRender(); }, _CHAT_DOWN_GRACE_MS + 50);
+  }
+  _chat.attempts++;
+  _chatRetries = _chat.attempts;
+  const offline = (typeof online !== 'undefined' && !online) || navigator.onLine === false;
+  // Offline, the 'online' event retries at once; the timer is the backstop for
+  // a network that comes back without firing it.
+  const delay = offline ? 15000 : Math.min(1000 * 2 ** Math.min(_chat.attempts - 1, 4), 15000) + Math.random() * 500;
+  clearTimeout(_chat.retryTimer);
+  _chat.retryTimer = setTimeout(() => {
+    _chat.retryTimer = 0;
+    if (_chat.name === name && !_chat.es) _chatLoad(name);
+  }, delay);
+  if (_chat.attempts === 1 || _chat.attempts % 10 === 0) {
+    try { amuxTrack('chat_stream_down', { session: name, why, attempts: _chat.attempts, offline, down_ms: Date.now() - _chat.downSince, measured: true, n_considered: 1 }); } catch (e) { console.warn('[chat] down beacon failed', e); }
+  }
+}
+function _chatRecovered(name) {
+  clearTimeout(_chat.retryTimer); clearTimeout(_chat.graceTimer);
+  _chat.retryTimer = 0; _chat.graceTimer = 0;
+  if (_chat.downSince) {
+    try { amuxTrack('chat_stream_recovered', { session: name, attempts: _chat.attempts, down_ms: Date.now() - _chat.downSince, measured: true, n_considered: 1 }); } catch (e) { console.warn('[chat] recovered beacon failed', e); }
+  }
+  const shown = _chat.downSince && Date.now() - _chat.downSince >= _CHAT_DOWN_GRACE_MS;
+  _chat.downSince = 0; _chat.attempts = 0; _chatRetries = 0;
+  // The reconnecting line is drawn by a full render; take it down the same way.
+  if (shown) _chatRender();
+}
+// Back online, back to the tab, or the window refocused: retry now rather
+// than waiting out the backoff.
+function _chatResume() {
+  if (!_chat.name || _chat.es || document.hidden || !_chatShowing()) return;
+  if (!_chat.downSince && _chat.loadedAt) return;
+  clearTimeout(_chat.retryTimer); _chat.retryTimer = 0;
+  _chat.attempts = 0;
+  _chatLoad(_chat.name);
 }
 function _chatStartWatchdog(name) {
   clearInterval(_chatWatchdog);
@@ -20090,6 +20146,9 @@ function _chatMount(name) {
 // carries live updates; the poll only re-syncs a view that has gone quiet.
 function _chatRefresh(name) {
   if (_chat.name !== name) { _chatMount(name); return Promise.resolve(); }
+  // During an outage the reconnect timer owns the retries. Loading here too
+  // repainted the chat on every poll tick, so Retry now moved under the tap.
+  if (_chat.downSince) return Promise.resolve();
   if (Date.now() - _chat.loadedAt > 15000 && !_chat.streaming) return _chatLoad(name);
   return Promise.resolve();
 }
@@ -20106,7 +20165,8 @@ function _chatReconnect() {
   const name = _chat.name;
   if (!name) return;
   if (_chat.es) { try { _chat.es.close(); } catch (e) {} _chat.es = null; }
-  _chatRetries = 0;
+  clearTimeout(_chat.retryTimer); _chat.retryTimer = 0;
+  _chat.attempts = 0; _chatRetries = 0;
   showToast('Reconnecting chat...');
   _chatLoad(name);
 }
@@ -20358,20 +20418,24 @@ function _chatRender(errorText) {
   const s = sessions.find(x => x.name === _chat.name) || {};
   const chatOf = _chatCompanionOf(_chat.name);
   let html = '';
-  if (_chat.offlineNote) html += '<div class="chat-offline-note" role="status">' + esc(_chat.offlineNote) + '</div>';
-  if (errorText) html += '<div class="chat-empty">' + esc(errorText)
-    + ' <button class="btn" style="margin-top:var(--space-2);font-size:var(--fs-base);" onclick="_chatReconnect()">Reconnect</button></div>';
-  if (!errorText && !_chat.es && _chat.name && !_chat.streaming) {
-    html += '<div class="chat-offline-note" role="status" style="cursor:pointer;" onclick="_chatReconnect()">'
-      + 'Stream disconnected. <u>Reconnect</u></div>';
-  }
+  const down = _chat.downSince && !_chat.es && Date.now() - _chat.downSince >= _CHAT_DOWN_GRACE_MS;
+  if (down) {
+    // One line for the whole outage, in place of the saved-copy note: the
+    // conversation below is still the saved one, and it says so.
+    const offline = (typeof online !== 'undefined' && !online) || navigator.onLine === false;
+    html += '<div class="chat-offline-note chat-reconnecting" role="status">'
+      + (offline ? 'Offline. The chat reconnects when the connection is back.' : 'Connection lost. Reconnecting…')
+      + ' <button type="button" class="chat-retry-now" onclick="_chatReconnect()">Retry now</button></div>';
+  } else if (_chat.offlineNote) html += '<div class="chat-offline-note" role="status">' + esc(_chat.offlineNote) + '</div>';
+  if (errorText && !_chat.downSince) html += '<div class="chat-empty">' + esc(errorText)
+    + ' <button class="btn" style="margin-top:var(--space-2);font-size:var(--fs-base);" onclick="_chatReconnect()">Retry now</button></div>';
   // A pending send the server has already recorded is the SAME message: drop
   // it BY msg_id (never by text). The outbox entry outlives the server's copy
   // while its response is in flight or awaiting a receipt, and the Chat tab
   // showed both (Ethan, 2026-10-01: "chat creates a duplicate message").
   const recordedIds = new Set(_chat.messages.filter(x => x.role === 'user' && x.msg_id).map(x => x.msg_id));
   const pendingSends = _pendingSendsFor(_chat.name).filter(p => !p.msg_id || !recordedIds.has(p.msg_id));
-  if (!_chat.messages.length && !_chat.streaming && !errorText && !pendingSends.length) {
+  if (!_chat.messages.length && !_chat.streaming && !errorText && !pendingSends.length && !_chat.downSince) {
     html += '<div class="chat-empty">' + (chatOf
       ? 'Ask anything about ' + esc(chatOf) + '\u2019s work below.'
       : s.running
@@ -61027,6 +61091,7 @@ function _resyncEverything() {
 function _onClientResume(reason) {
   peekCheckSelection({ type: 'resume' });
   if (document.hidden) { _peekPollStop('hidden'); return; }
+  _chatResume();
   _resumePendingUploads();
   // Resume the open-view poller if we're on a peek and it was paused while
   // hidden; also refetch the log and repaint the status badge so a tab that

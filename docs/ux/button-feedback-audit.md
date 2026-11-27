@@ -123,8 +123,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Stop | `_chatInterrupt` | async (writes) | no busy state (request after an await); disables itself; toast on failure; toast on success | yes | yes |
 | app.js | Latest | `_chatJumpToLatest` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | … | `_chatReadAloud` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js | + Stream disconnected. | `_chatReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
-| app.js | Reconnect | `_chatReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Retry now | `_chatReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
+| app.js | Retry now | `_chatReconnect` | async (writes) | outline pulse while running; no double-press guard; failure only in Recent actions; toast on success | yes | yes |
 | app.js | Retry | `_chatRetryTurn` | async (writes) | no busy state (request after an await); no double-press guard; failure only in Recent actions; success only in Recent actions | yes | yes |
 | app.js | Approve | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Deny | `_chatgptDecide` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
