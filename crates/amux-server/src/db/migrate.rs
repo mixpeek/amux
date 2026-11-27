@@ -1912,13 +1912,17 @@ mod tests {
         conn
     }
 
-    /// A database just before 0180 holding a `tasks` row and a planning node.
+    /// A database just before 0180 holding a `tasks` row and a planning node
+    /// with the goal contract its foreign key requires.
     fn dormant_planning_fixture() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         apply_history_through(&conn, DROP_DORMANT_PLANNING - 1);
         conn.execute_batch(
             "INSERT INTO tasks (id, session, text, done, pos, created, updated)
                VALUES ('19c7bf83a1e24746d', 'ops', 'tailscale ingress', 0, 1, 1771606391, 1771606391);
+             INSERT INTO _amux_goal_contracts (id, objective, dependency_policy, release_policy,
+               expected_scope_min, expected_scope_max, version, updated_by, updated_at)
+               VALUES ('goal-1', 'ship it', 'none', 'manual', 1, 1, 1, 'lane-a', '2026-09-01T00:00:00Z');
              INSERT INTO _amux_planning_nodes (id, goal_id, parent_id, role, owner, title, objective, status, updated_at)
                VALUES ('pn_1', 'goal-1', NULL, 'root_planner', 'lane-a', 'root', 'plan it', 'active', '2026-09-01T00:00:00Z');",
         )
@@ -1988,7 +1992,10 @@ mod tests {
         let nodes: Vec<serde_json::Value> =
             serde_json::from_slice(&std::fs::read(dir.join("_amux_planning_nodes.json")).unwrap()).unwrap();
         assert_eq!(nodes[0]["owner"], "lane-a");
-        assert!(!dir.join("_amux_goal_contracts.json").exists(), "an empty table writes no file");
+        let goals: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(dir.join("_amux_goal_contracts.json")).unwrap()).unwrap();
+        assert_eq!(goals[0]["id"], "goal-1");
+        assert!(!dir.join("_amux_task_budgets.json").exists(), "an empty table writes no file");
         for t in DORMANT_PLANNING_TABLES {
             let gone = conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1", [t], |_| Ok(())).optional().unwrap();
             assert!(gone.is_none(), "{t} is dropped");
@@ -2012,7 +2019,7 @@ mod tests {
         assert!(e.contains("no home to archive") && e.contains("0180"), "{e}");
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "nothing was dropped");
-        conn.execute_batch("DELETE FROM tasks; DELETE FROM _amux_planning_nodes;").unwrap();
+        conn.execute_batch("DELETE FROM tasks; DELETE FROM _amux_planning_nodes; DELETE FROM _amux_goal_contracts;").unwrap();
         apply_all(&mut conn).unwrap();
     }
 
