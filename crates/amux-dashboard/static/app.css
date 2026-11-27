@@ -11809,3 +11809,6 @@ body.view-outbound #email-approvals-banner { display: none !important; }
 
 /* Scope tab: the scopable env keys listed under the editor hint (environment registry). */
 .scope-env-registry-list { max-height: 30vh; overflow: auto; font-family: var(--font-mono); }
+
+/* Scheduler audit trail: the actor the server proved, beside the claimed one (ledger record). */
+.sx-audit-proven { color: var(--dim); font-size: var(--fs-3xs); }

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { cleanup } from './teardown';
 
 // AMUX-2755. GET /api/schedules/audit was routed and the SPA referenced it zero
 // times. The trail existed and reached nobody — in the subsystem whose own
@@ -103,6 +104,6 @@ test('the real audit trail carries the ledger record, and the panel renders it',
     if (actor !== 'anonymous') expect(html).toContain(`(proven: ${actor})`);
     else expect(html).not.toContain('proven:');
   } finally {
-    await request.delete(`/api/schedules/${id}`, { headers: auth });
+    await cleanup('delete the test schedule', () => request.delete(`/api/schedules/${id}`, { headers: auth }));
   }
 });

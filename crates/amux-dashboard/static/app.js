@@ -50680,7 +50680,7 @@ function _schedAuditRow(r, live) {
     // `by_who` is only what the write claimed; an anonymous record proves nothing.
     const proven = r.ledger && r.ledger.actor && r.ledger.actor !== 'anonymous' ? r.ledger.actor : '';
     const provenHtml = proven
-      ? ' <span class="sx-audit-proven" style="color:var(--dim);font-size:var(--fs-3xs);" title="Ledger record #' + esc(String(r.ledger.seq)) + ': the actor the server verified">(proven: ' + esc(proven) + ')</span>'
+      ? ' <span class="sx-audit-proven" title="Ledger record #' + esc(String(r.ledger.seq)) + ': the actor the server verified">(proven: ' + esc(proven) + ')</span>'
       : '';
     const diff = (r.old_value || r.new_value)
       ? '<div style="color:var(--dim);font-size:var(--fs-3xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
