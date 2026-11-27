@@ -47526,7 +47526,9 @@ function _crmSubject(t) {
   const body = String(t.body || '');
   const m = body.match(/^\s*subject:\s*(.+)$/im);
   if (m) return m[1].trim();
-  const line = body.split('\n').map(s => s.trim()).find(Boolean);
+  // No subject (a DM, a comment): the first line that says something, past a greeting like "Hi Sam,".
+  const lines = body.split('\n').map(s => s.trim()).filter(Boolean);
+  const line = lines.find(l => !/^(hi|hey|hello|dear|yo|hiya|good (morning|afternoon|evening))\b[^.!?]{0,40}[,!.:]?$/i.test(l)) || lines[0];
   return line ? (line.length > 80 ? line.slice(0, 79) + '…' : line) : (t.action + ' on ' + t.channel);
 }
 function _crmChannelName(c) { return ({ x: 'X', linkedin: 'LinkedIn', email: 'Email', github: 'GitHub', youtube: 'YouTube', tiktok: 'TikTok', sms: 'SMS', whatsapp: 'WhatsApp', in_person: 'In person' })[c] || _crmLabel(c).replace(/^./, s => s.toUpperCase()); }
@@ -47941,7 +47943,7 @@ async function _crmTouchHtml(t) {
         : (t.status === 'drafted' ? '<button class="btn primary crm-approve" data-id="' + id + '" onclick="_crmDecide(this.dataset.id,\'approve\')"' + (blocked ? ' disabled title="' + esc(blocked) + '"' : dis) + '>&#x2713; Approve<span class="crm-long"> touch</span></button>' : '')
           + '<button class="btn" data-id="' + id + '" onclick="_crm.editing=this.dataset.id;_crmDrawerRender()"' + dis + '>Edit<span class="crm-long"> draft</span></button>'
           + '<button class="btn" data-id="' + id + '" onclick="_crmDecide(this.dataset.id,\'decline\')"' + dis + '>Decline</button>'
-          + (t.assignee ? '<button class="btn" data-id="' + id + '" onclick="_crmRedraft(this.dataset.id)"' + dis + '><span class="crm-long">Ask ' + esc(t.assignee) + ' to r</span><span class="crm-short">R</span>edraft</button>' : ''))
+          + (t.assignee ? '<button class="btn" data-id="' + id + '" onclick="_crmRedraft(this.dataset.id)"' + dis + ' title="Ask ' + esc(t.assignee) + ' to redraft it, with your note">Redraft</button>' : ''))
       + '</div>';
   } else if (t.status === 'approved') {
     foot += '<div class="crm-decide"><div class="crm-meta crm-wrap">Approved' + (t.approved_at ? ' ' + esc(timeAgo(t.approved_at)) : '') + (t.assignee ? '; ' + esc(t.assignee) + ' does it and records it done.' : '.') + '</div>'

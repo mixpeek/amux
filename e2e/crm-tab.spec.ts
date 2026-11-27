@@ -435,7 +435,7 @@ test('outbound review: a draft is read with its brief and checks, edited, approv
 
   // Activity: the approval is an event a worker can subscribe to; tapping it opens Nina.
   await crmView(page, 'Activity');
-  await page.locator('#crm-q').fill('Nina Park');
+  await page.locator('#crm-q').fill(W);   // this run's worker: repeats share one server
   const ev = page.locator('#crm-list .crm-act', { hasText: 'crm.touch.approved' }).filter({ hasText: 'Nina Park' });
   await expect(ev.first()).toContainText(W + ' does it');
   await ev.first().click();
