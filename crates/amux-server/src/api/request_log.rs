@@ -386,11 +386,12 @@ fn should_log(path: &str) -> bool {
 
 pub async fn middleware(State(logger): State<RequestLogger>, req: Request, next: Next) -> Response {
     let path = req.uri().path().to_string();
-    // RC-13: per-route counters are fed by the same middleware as the log.
-    super::route_metrics::record(req.method().as_str(), &path);
     if !should_log(&path) {
         return next.run(req).await;
     }
+    // RC-13: per-route counters count only what the request log records, so
+    // non-/api paths (ids in /pub, /pages, /f) cannot become labels.
+    super::route_metrics::record(req.method().as_str(), &path);
     let ts = unix_now();
     let started = std::time::Instant::now();
     let method = req.method().as_str().to_string();

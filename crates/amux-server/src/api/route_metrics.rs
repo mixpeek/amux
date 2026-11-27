@@ -1,7 +1,9 @@
 //! RC-13: per-route request counters, exposed on `GET /api/metrics` as `routes`.
 //!
-//! Counted in the request-log middleware for every /api request it sees, so
-//! the counters cover exactly what the request log covers. Counters live in
+//! Counted in the request-log middleware only for requests the request log
+//! itself records (`should_log`: /api paths minus /api/events and /api/debug),
+//! so non-/api paths (pages, /pub/<app id>, /f/...) never become labels and
+//! cannot fill the label cap. Counters live in
 //! memory and start at zero when the server process starts (`uptime_s` on the
 //! same endpoint says how long they have been counting).
 //!
@@ -46,6 +48,13 @@ pub fn route_label(method: &str, path: &str) -> String {
 pub fn record(method: &str, path: &str) {
     let label = route_label(method, path);
     let mut map = counters().lock().unwrap_or_else(|p| p.into_inner());
+    record_into(&mut map, label);
+}
+
+/// Count `label` in `map`, folding new labels into [`OVERFLOW_LABEL`] once
+/// [`MAX_ROUTES`] distinct labels exist. Split out so the cap is testable on a
+/// fresh map.
+fn record_into(map: &mut BTreeMap<String, u64>, label: String) {
     if let Some(n) = map.get_mut(&label) {
         *n += 1;
     } else if map.len() < MAX_ROUTES {
@@ -68,7 +77,8 @@ pub fn snapshot() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{record, route_label, snapshot};
+    use super::{record, record_into, route_label, snapshot, MAX_ROUTES, OVERFLOW_LABEL};
+    use std::collections::BTreeMap;
 
     #[test]
     fn labels_collapse_worker_names_and_verbs() {
@@ -98,5 +108,21 @@ mod tests {
         assert_eq!(by["GET /api/rtest-counter-zz"].as_u64().unwrap(), 1);
         assert_eq!(by["GET /api/rtest-counter-zz/*"].as_u64().unwrap(), 1);
         assert!(snap["total"].as_u64().unwrap() >= 2);
+    }
+
+    #[test]
+    fn cap_folds_new_labels_into_overflow_on_a_fresh_map() {
+        let mut map = BTreeMap::new();
+        for i in 0..MAX_ROUTES {
+            record_into(&mut map, format!("GET /api/r{i}"));
+        }
+        assert_eq!(map.len(), MAX_ROUTES);
+        record_into(&mut map, "GET /api/new".to_string());
+        record_into(&mut map, "GET /api/new2".to_string());
+        assert_eq!(map[OVERFLOW_LABEL], 2);
+        assert!(!map.contains_key("GET /api/new"));
+        // An existing label keeps counting under its own name past the cap.
+        record_into(&mut map, "GET /api/r0".to_string());
+        assert_eq!(map["GET /api/r0"], 2);
     }
 }
