@@ -51,7 +51,7 @@ test('a goal-check schedule names its key, says why it is paused, and the goal t
   await expect(row('SCHED-gc1').locator('.sx-managed')).toHaveText('AMUX_GOAL_CHECK');
 
   // Searching by the key finds the managed rows only.
-  const hay = await page.evaluate(() => (globalThis as any).eval(`[_sxSearchHay(${JSON.stringify(running)}), _sxSearchHay(${JSON.stringify(plain)})]`));
+  const hay = await page.evaluate(([a, b]) => (globalThis as any).eval(`[_sxSearchHay(${JSON.stringify(a)}), _sxSearchHay(${JSON.stringify(b)})]`), [running, plain]);
   expect(hay[0]).toContain('amux_goal_check');
   expect(hay[1]).not.toContain('amux_goal_check');
 
