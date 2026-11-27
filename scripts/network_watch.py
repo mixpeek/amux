@@ -84,6 +84,10 @@ DYNAMIC_PORT_COMMANDS = ("amux-serv", "rapportd", "Spotify", "ControlCe", "ident
 # A process a test binary starts (the shard tests run target/debug/mvs-shard as a
 # child, 2026-11-09) is judged by that parent: a plain target/ binary with no test
 # parent may be a dev server and keeps its port key.
+# Each rebuild gets a new hash, so the key drops it: one line per test crate per
+# SEEN_TTL (three mvs_shard builds alerted on 11-27). A crate not seen that day
+# still alerts.
+TEST_HASH = re.compile(r"-[0-9a-f]{16}$")
 TEST_BINARY = re.compile(r"/target/[^/ ]+/deps/[^/ ]+-[0-9a-f]{16}(\s|$)")
 FILE_SERVER = re.compile(
     r"(-m\s+(http\.server|SimpleHTTPServer)\b|\bhttp-server\b|\bnpx\s+serve\b|\bserve\s+-[ls]\b)"
@@ -309,7 +313,8 @@ def evaluate(snap: dict, base: dict, reqs: dict) -> list[dict]:
         elif not known:
             test = bool(TEST_BINARY.search(w.get("cmdline", ""))
                         or TEST_BINARY.search(w.get("parent", "")))
-            key = f"listener:{w['command']}:{'cargo-test' if test else port}"
+            name = TEST_HASH.sub("", w["command"]) if test else w["command"]
+            key = f"listener:{name}:{'cargo-test' if test else port}"
             if not any(r["key"] == key for r in out):  # one line per test binary
                 out.append({"key": key, "kind": "LISTENER", "w": w, "test": test})
     known_peers = set(base.get("peers", []))

@@ -82,6 +82,14 @@ check("a cargo test binary is reported on one line per run",
       sum(r["kind"] == "LISTENER" for r in run_a) == 1, str([nw.line(r) for r in run_a]))
 check("a cargo test binary is still reported and says so",
       any("cargo test binary" in nw.line(r) for r in run_a), str([nw.line(r) for r in run_a]))
+rebuilt = "/y/target/debug/deps/mvs_shard-669424ee673c15c1"
+run_c = nw.evaluate({**snap, "wide": [{**tbrow(12, "53602", rebuilt), "command": "mvs_shard-669424ee673c15c1"}]}, base, reqs)
+check("a rebuilt test binary (new hash) shares its crate's key",
+      {r["key"] for r in run_c if r["kind"] == "LISTENER"} == keys_a, str([r["key"] for r in run_c]))
+other = nw.evaluate({**snap, "wide": [{**tbrow(13, "53603", "/y/target/debug/deps/other_crate-669424ee673c15c1"),
+                                       "command": "other_crate-669424ee673c15c1"}]}, base, reqs)
+check("a different test crate gets its own key",
+      {r["key"] for r in other if r["kind"] == "LISTENER"} == {"listener:other_crate:cargo-test"})
 for label, exe in [("a release binary", "/x/target/debug/mvs_shard"),
                    ("a hashed name outside deps/", "/x/target/debug/mvs_shard-b41e156173769d4b"),
                    ("a short hash in deps/", "/x/target/debug/deps/mvs_shard-b41e")]:
