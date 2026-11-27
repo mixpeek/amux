@@ -55,6 +55,13 @@ const ALLOWED_BARE_SPAWNS: &[(&str, &str)] = &[
          would put a job on /api/system-jobs that exits immediately by design (AMUX-2888)",
     ),
     (
+        "import_worker_channels",
+        "one-shot boot import of the retired worker channel files into Messages direct \
+         messages (primitive integrity audit step 3). It copies each file once, renames it \
+         `.imported` and exits; every run logs verdict=channel_import_pass with its counts, \
+         so a registered job would only be one that exits immediately by design (AMUX-2888)",
+    ),
+    (
         "reconcile_on_startup",
         "one-shot startup reconciliation moved off the bind path so the listener answers \
          immediately instead of connection-refusing for ~88s (AMUX-3969b). It runs once, \
@@ -87,7 +94,13 @@ fn unregistered_spawns(src: &str) -> Vec<(usize, String)> {
         // Look FORWARD, not backward: the identifying text (the SQL, the bind
         // call) is inside the spawned block. A backward window would land in
         // the comment above it, which is prose and would match anything.
-        let win = &src[pos..src.len().min(pos + 400)];
+        // End the window on a char boundary: lib.rs comments carry multi-byte
+        // characters, and a fixed byte offset panics when it lands inside one.
+        let mut end = src.len().min(pos + 400);
+        while !src.is_char_boundary(end) {
+            end -= 1;
+        }
+        let win = &src[pos..end];
         if !ALLOWED_BARE_SPAWNS
             .iter()
             .any(|(needle, _)| win.contains(needle))
