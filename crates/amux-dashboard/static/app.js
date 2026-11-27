@@ -62942,6 +62942,22 @@ function _macSettingsTabSync() {
   const t = document.getElementById('settings-tab-mac');
   if (t) t.hidden = !_macSettingsBridge();
 }
+// The Mac app's Settings window (desktop/amux-settings.swift
+// SettingsWindowController) loads /?settings_window=1: Settings fills that
+// window and is all it shows, apart from every amux window (owner, 2026-11-27).
+// The app asks this before trusting the page; an older dashboard answers no.
+function _settingsWindowMode() { return /[?&]settings_window=/.test(location.search); }
+(function _settingsWindowBoot() {
+  if (!_settingsWindowMode()) return;
+  document.documentElement.classList.add('settings-window');
+  const boot = () => {
+    // This Mac first when the app is listening, else the last tab.
+    const mac = _macSettingsOpen();
+    if (!mac) { const m = document.getElementById('settings-menu'); if (m && !m.classList.contains('open')) toggleSettings(); }
+    console.info('[settings] verdict=settings_window_open mac_tab=' + mac);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else setTimeout(boot, 0);
+})();
 // Called by the app (showSettings). True means the tab is open.
 function _macSettingsOpen() {
   if (!_macSettingsBridge()) return false;
@@ -63582,7 +63598,8 @@ async function sendTestAlert(btn) {
 // the top, so the gear stays clickable. A phone keeps its own CSS placement.
 function _settingsPlace() {
   const menu = document.getElementById('settings-menu');
-  if (!menu) return;
+  // The Settings window places it with CSS (html.settings-window).
+  if (!menu || _settingsWindowMode()) return;
   const st = menu.style;
   // The menu lives in the sticky header, whose stacking level (40) is under
   // the held-email strip's (90): wherever they overlap the strip painted over
@@ -63622,6 +63639,8 @@ function _settingsPlace() {
 })();
 
 function closeSettings() {
+  // The Settings window is Settings: nothing in it closes it but the window's own close.
+  if (_settingsWindowMode()) return;
   document.getElementById('settings-menu').classList.remove('open');
   const banner=document.getElementById('amux-auth-withheld'); if(banner) banner.hidden=false;
 }
@@ -63712,7 +63731,7 @@ function saveSettingsNewServer() {
 // not outside: answering it used to close Settings under the user.
 document.addEventListener('click', function(e) {
   const wrap = document.querySelector('.settings-wrap');
-  if (wrap && !wrap.contains(e.target) && !e.target.closest?.('#modal-backdrop')) closeSettings();
+  if (wrap && !_settingsWindowMode() && !wrap.contains(e.target) && !e.target.closest?.('#modal-backdrop')) closeSettings();
 });
 
 // ── Default Model ────────────────────────────────────────────────────────────

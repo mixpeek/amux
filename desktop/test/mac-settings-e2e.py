@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Every setting in one place: amux > Settings… opens the dashboard's Settings
-on its This Mac tab, which carries the app's own settings (owner, 2026-11-25:
+"""Every setting in one place, in its own window: amux > Settings… opens a
+Settings window apart from the amux windows (owner, 2026-11-27: "it should open
+up a modal that's outside of the amux app"). It shows the server's Settings
+alone, on its This Mac tab, with the server's tabs beside it (owner, 2026-11-25:
 "consolidate all our settings to the amux Mac app settings").
 
     desktop/test/mac-settings-e2e.py [path/to/Amux.app]
 
 A second copy of the app, with its own config, opens one window on a private
-server that serves this checkout's dashboard. Settings… must open the page's
-This Mac tab (not the app's own window). A switch flipped there must reach the
+server that serves this checkout's dashboard. Settings… must open the Settings
+window on the server's This Mac tab, and leave the amux window as it was. A switch flipped there must reach the
 app's config, and the page must redraw from the app's answer. A workspace saved
 there must be in the config and listed. The amux, View and Dock menus no longer
 carry their own copies of these switches.
@@ -71,19 +73,20 @@ def state():
     return json.load(open(ST))
 
 
-def js(code, timeout=15):
+def js(code, timeout=15, where="settings"):
+    """Run code in the Settings window's page, or (where="pane") the amux window's."""
     out = ST + ".js"
     if os.path.exists(out):
         os.remove(out)
-    send("amux://test/js-pane?i=0&code=%s" % urllib.parse.quote(code), 0)
+    send("amux://test/js-pane?i=0&in=%s&code=%s" % (where, urllib.parse.quote(code)), 0)
     end = time.time() + timeout
     while time.time() < end and not os.path.exists(out):
         time.sleep(0.1)
     return open(out).read() if os.path.exists(out) else "no answer"
 
 
-def page():
-    r = js("await new Promise(r => setTimeout(r, 800));"
+def page(where="settings"):
+    r = js(where=where, code="await new Promise(r => setTimeout(r, 800));"
            " const m = document.getElementById('settings-menu'), t = document.getElementById('settings-tab-mac'),"
            " h = document.getElementById('mac-settings'), b = document.getElementById('mac-set-dockBadge');"
            " return JSON.stringify({open: !!(m && m.classList.contains('open')), tab_shown: !!(t && !t.hidden),"
@@ -111,15 +114,29 @@ try:
         time.sleep(0.3)
     time.sleep(4)
 
+    windows_before = len(state()["windows"])
     send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2.5)
+    end = time.time() + 15
+    while time.time() < end and "verdict=settings_window_shown" not in log():
+        time.sleep(0.3)
     check("amux > Settings… is a menu item", "verdict=test_menu_chosen title=Settings… found=1" in log(), log()[-400:])
-    check("it opens the dashboard's Settings, not the app's own window", "verdict=settings_in_page" in log() and "verdict=settings_native" not in log(), log()[-600:])
+    check("it opens the Settings window on the server's Settings", "verdict=settings_window_open server=1" in log()
+          and "verdict=settings_window_shown source=server" in log(), log()[-600:])
+    st = state()
+    sw = st.get("settings_window") or {}
+    check("the Settings window is its own window, titled Settings", sw.get("visible") and sw.get("title") == "Settings", sw)
+    check("it loads the server's Settings-only page", "settings_window=1" in sw.get("url", "") and sw.get("url", "").startswith(url), sw)
+    check("no amux window was opened for it", len(st["windows"]) == windows_before, (windows_before, len(st["windows"])))
+    check("and the amux window's own Settings stays closed", page("pane").get("open") is False, page("pane"))
+    shown = json.loads(js("return JSON.stringify({mode: document.documentElement.classList.contains('settings-window'),"
+                          " server_tabs: [...document.querySelectorAll('.settings-tab-btn[data-group=server]')].filter(b => !b.hidden).map(b => b.dataset.stab)})") or "{}")
+    check("the window shows Settings alone", shown.get("mode") is True, shown)
+    check("with the server's tabs beside This Mac", shown.get("server_tabs") == ["account", "workers", "notifications", "integrations"], shown)
     pg = page()
     check("Settings is open on the This Mac tab", pg.get("open") and pg.get("tab_shown") and pg.get("active") == "mac", pg)
     for want in ("Workspaces", "Computer use", "Permissions", "Quick Ask", "When amux opens", "Show in menu bar",
                  "Notifications", "Show count on Dock icon", "Zoom all windows together", "Snap windows to a grid", "Updates", "Server"):
         check(f"This Mac shows {want}", want in pg.get("text", ""), pg.get("text", "")[:300])
-    st = state()
     check("one row per macOS permission, as the app reports them", pg.get("perms") == len(st.get("permissions", [])) > 0, (pg.get("perms"), len(st.get("permissions", []))))
     check("the Dock count switch shows the app's value (on)", pg.get("dock") is True, pg)
 
@@ -131,9 +148,6 @@ try:
     pg = page()
     check("the page redraws from the app's answer (still off)", pg.get("dock") is False, pg)
 
-    # An update check started from the tab redraws its Updates row with no
-    # other Settings window ever opened (review F1: the redraw hook was only
-    # set when the app's own window was made).
     # update-check sends no redraw of its own, so only the Updater's hook can.
     draws = lambda: int(js("return document.getElementById('mac-settings').dataset.draws || '0'") or 0)
     before = draws()
@@ -143,52 +157,25 @@ try:
         time.sleep(0.5)
         after = draws()
     check("Check for Updates redraws the tab's Updates row", after > before, (before, after))
-    check("and the native window was never made for it", "verdict=settings_native" not in log(), log()[-300:])
 
     js("document.getElementById('mac-ws-name').value = 'E2E desk'; document.getElementById('mac-ws-save').click(); return 'ok'")
     time.sleep(3)
     check("a workspace saved there is in the config", any(l.get("name") == "E2E desk" for l in config().get("layouts", [])), config().get("layouts"))
     check("and listed on the tab", "E2E desk" in page().get("text", ""), page().get("text", "")[:300])
 
-    # Settings opens inside the window wherever the gear is (2026-11-25: the
-    # Needs-you approvals above the header pushed the gear to 777px of an 832px
-    # window and the menu hung off the bottom, so Settings "could not open").
-    def placed():
-        r = js("await new Promise(r => setTimeout(r, 400)); const m = document.getElementById('settings-menu'), r = m.getBoundingClientRect();"
-               " const t = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 200));"
-               " const g = document.getElementById('settings-btn').getBoundingClientRect();"
-               " return JSON.stringify({open: m.classList.contains('open'), top: r.top, bottom: r.bottom, left: r.left, right: r.right, vh: innerHeight, vw: innerWidth,"
-               " hit: !!(t && m.contains(t)), gear_top: g.top, gear_hit: m.contains(document.elementFromPoint(g.left + g.width / 2, g.top + g.height / 2))})")
-        try:
-            return json.loads(r)
-        except ValueError:
-            return {"error": r}
-    # A new server starts in the simple layout, which has no header; the
-    # owner's has one. "Everything else" is how a person gets it.
-    js("closeSettings(); _homeShowEverything(); return 'ok'")
-    time.sleep(1.5)
-    js("closeSettings(); const d = document.createElement('div'); d.id = 'e2e-push'; d.style.height = (innerHeight - 70) + 'px';"
-       " const h = document.querySelector('.header-row'); h.parentNode.insertBefore(d, h); scrollTo(0, 0); return 'pushed'")
-    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2.5)
-    pl = placed()
-    check("the gear really is near the bottom of the window", pl.get("gear_top", 0) > pl.get("vh", 1) - 140, pl)
-    check("Settings still opens fully inside the window", pl.get("open") and pl.get("top", -1) >= 0 and pl.get("bottom", 1e9) <= pl.get("vh", 0) + 1
-          and pl.get("left", -1) >= 0 and pl.get("right", 1e9) <= pl.get("vw", 0) + 1, pl)
-    check("and it is what you see there, not covered", pl.get("hit"), pl)
-    check("the gear stays uncovered, so it can close Settings", pl.get("gear_hit") is False, pl)
-    js("closeSettings(); document.getElementById('e2e-push').remove(); return 'ok'")
-    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2.5)
-    pl = placed()
-    check("with the gear at the top it opens under the gear", pl.get("open") and pl.get("top", 0) >= pl.get("gear_top", 0) and pl.get("bottom", 1e9) <= pl.get("vh", 0) + 1, pl)
-    js("closeSettings(); return 'ok'")
-
-    # A page that does not answer must not leave ⌘, doing nothing.
+    # Settings stays Settings: a page change inside it goes to the amux window.
     mark = len(log())
-    js("setTimeout(() => { const t = Date.now() + 5000; while (Date.now() < t) {} }, 50); return 'busy'")
-    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 3.5)
-    check("a page busy for 5 s gets the app's own Settings window after 2 s", "verdict=settings_native reason=page_did_not_answer" in log()[mark:], log()[mark:][-500:])
-    time.sleep(3)
-    check("and the late answer does not open a second one", log()[mark:].count("verdict=settings_") == 1, log()[mark:][-500:])
+    js("location.href = '/#view=board'; return 'ok'")
+    time.sleep(2)
+    sw = state().get("settings_window") or {}
+    check("a link out of Settings opens in the amux window", "verdict=settings_window_link to=server" in log()[mark:], log()[mark:][-400:])
+    check("and the Settings window still shows Settings", "settings_window=1" in sw.get("url", ""), sw)
+
+    # Opening it again is the same window, not a reload or a second one.
+    mark = len(log())
+    send("amux://test/menu?title=" + urllib.parse.quote("Settings…"), 2)
+    check("Settings… again does not reload the page", "verdict=settings_window_shown" not in log()[mark:], log()[mark:][-400:])
+    check("and Settings is still open in it", page().get("open") is True)
 
     for gone in ("Show in Menu Bar", "Notify When amux Needs You", "Show Count on Dock Icon", "Zoom All Windows"):
         send("amux://test/menu?title=" + urllib.parse.quote(gone), 0.8)

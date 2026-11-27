@@ -1227,19 +1227,14 @@ extension AppDelegate {
             // JSON-quoted for JavaScript (jsString also escapes for HTML attributes).
             let lit = String(data: (try? JSONSerialization.data(withJSONObject: [id])) ?? Data("[\"\"]".utf8), encoding: .utf8)?.dropFirst().dropLast() ?? "\"\""
             let click = "(function(){const b=document.getElementById(\(lit));if(!b)return 'missing';if(b.disabled)return 'disabled';b.click();return 'clicked'})()"
-            if q.first(where: { $0.name == "in" })?.value == "page" {
-                showSettings(nil)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                    (self?.keyPage ?? self?.controllers.first)?.webView.evaluateJavaScript(click) { r, e in
-                        dlog("verdict=test_settings_click in=page id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
-                    }
-                }
-                break
-            }
+            // in=page: the server's Settings in the window; otherwise the app's own page.
+            let inPage = q.first(where: { $0.name == "in" })?.value == "page"
+            if settings == nil { settings = SettingsWindowController(app: self) }
+            settings?.builtIn = !inPage
             showNativeSettings(nil)
             settings?.afterLoad.append { [weak self] in
-                self?.settings?.webView.evaluateJavaScript("(function(){const b=document.getElementById(\(lit));if(!b)return 'missing';if(b.disabled)return 'disabled';b.click();return 'clicked'})()") { r, e in
-                    dlog("verdict=test_settings_click id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
+                self?.settings?.webView.evaluateJavaScript(click) { r, e in
+                    dlog("verdict=test_settings_click\(inPage ? " in=page" : "") id=\(id) result=\(r ?? "-") error=\(e.map { "\($0)" } ?? "-")")
                 }
             }
         // Name a tab, as Rename Tab does (empty clears it).
@@ -1343,9 +1338,11 @@ extension AppDelegate {
             let i = Int(q.first { $0.name == "i" }?.value ?? "") ?? 0
             let host = controllers.first { $0.grid != nil && isShown($0) } ?? controllers.first { isShown($0) }
             let target = host?.grid.flatMap { g in i >= 0 && i < g.tree.leaves.count ? g.members[g.tree.leaves[i]] : nil } ?? host
-            if let code = q.first(where: { $0.name == "code" })?.value, let c = target,
+            // in=settings: the Settings window's page instead of a pane.
+            let web = q.first(where: { $0.name == "in" })?.value == "settings" ? settings?.webView : target?.webView
+            if let code = q.first(where: { $0.name == "code" })?.value, let w = web,
                let path = ProcessInfo.processInfo.environment["AMUX_DESKTOP_TEST_STATE"] {
-                c.webView.callAsyncJavaScript(code, arguments: [:], in: nil, in: .page) { r in
+                w.callAsyncJavaScript(code, arguments: [:], in: nil, in: .page) { r in
                     let out: String
                     switch r { case .success(let v): out = "\(v)"; case .failure(let e): out = "error: " + e.localizedDescription }
                     try? out.data(using: .utf8)?.write(to: URL(fileURLWithPath: path + ".js"), options: .atomic)
@@ -1454,6 +1451,10 @@ extension AppDelegate {
                                      "permissions": MacPermissions.all(),
                                      "settings_permission_rows": settingsHTML(self).components(separatedBy: "data-permission=").count - 1,
                                      "mac_settings": macSettingsState(),
+                                     "settings_window": settings.map { s -> [String: Any] in
+                                         ["visible": s.window?.isVisible ?? false, "key": s.window?.isKeyWindow ?? false, "number": s.window?.windowNumber ?? 0, "title": s.window?.title ?? "",
+                                          "url": s.webView.url?.absoluteString ?? "", "server": s.server?.absoluteString ?? ""]
+                                     } ?? NSNull(),
                                      // Every page, shown or not: its web process and what it costs.
                                      "pages": controllers.map { c -> [String: Any] in
                                          let pid = webPID(c)

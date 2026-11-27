@@ -2433,6 +2433,18 @@
       z-index: 6000;
     }
   }
+  /* The Mac app's Settings window (?settings_window=1, app.js
+     _settingsWindowMode): Settings fills the window and covers the rest of the
+     page. The header is lifted over the banners (90) and stays under the
+     dialogs Settings opens (100+). */
+  html.settings-window, html.settings-window body { overflow: hidden; }
+  html.settings-window .header-row { z-index: 95; }
+  html.settings-window #chrome-tabs-bar { display: none; }
+  html.settings-window .settings-menu.open {
+    position: fixed; inset: 0; transform: none;
+    min-width: 0; max-width: none; max-height: none;
+    border: 0; border-radius: 0; box-shadow: none; background: var(--bg);
+  }
   /* AMUX-2975: the 17-section list is grouped into 5 tabs. The strip is sticky
      so it stays reachable while a panel scrolls, and overflow-x:auto so it never
      overflows the 260px menu on a 375px phone — it scrolls instead. */

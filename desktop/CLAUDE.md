@@ -54,11 +54,16 @@ script message handlers (`amuxPane`, `amuxWindowLabel`, `amuxNotify`, `amuxZoom`
   feed); both overlays use `sharingType = .none`. ⌥Space opens Quick Ask (Settings can turn it
   off; a quiet test copy never registers it). Settings > Permissions shows what macOS granted.
   `agent-view-e2e.py` proves them; `amux://test/quickask` drives Quick Ask.
-- Settings is one place: amux > Settings… (⌘,), the Dock menu and the menu bar item open the
-  dashboard's Settings on its This Mac tab (app.js `_macSettings*`, bridge `amuxSettings`,
-  `settingsAction` and `macSettingsState` in `amux-settings.swift`). A new app setting goes there,
-  never as a second switch in a menu. The app's own Settings window is only the fallback with no
-  server page open. `mac-settings-e2e.py` proves it; `amux://test/settings-action` sends one action.
+- Settings is one place, in its own window: amux > Settings… (⌘,), the Dock menu and the menu
+  bar item open the Settings window (`SettingsWindowController`, apart from every amux window),
+  which loads the server's dashboard as Settings alone (`/?settings_window=1`, app.js
+  `_settingsWindowMode`) on its This Mac tab, with the server's tabs beside it (app.js
+  `_macSettings*`, bridge `amuxSettings`, `settingsAction` and `macSettingsState` in
+  `amux-settings.swift`). A link out of it opens in an amux window. A new app setting goes on
+  This Mac, never as a second switch in a menu. With no server, or one too old for the mode, the
+  window shows the app's own page (`verdict=settings_window_shown source=app reason=`).
+  `mac-settings-e2e.py` proves it; `amux://test/settings-action` sends one action and
+  `amux://test/js-pane?in=settings` runs script in the window.
 - A test screenshot captures its own window or rectangle, never the whole screen: the owner's
   screen can hold a live call.
 - The page side of a feature lives in `crates/amux-dashboard`; the app side is opt-in behind

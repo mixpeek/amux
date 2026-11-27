@@ -577,7 +577,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             // Only a page on this tab's own server reads or changes this Mac's settings.
             guard webView.url.map({ app?.isServerURL($0) ?? false }) ?? false, let app = app,
                   let d = message.body as? [String: Any] else { return }
-            if (d["action"] as? String) == "state" { app.tellMacSettings(self) } else { app.settingsAction(d) }
+            if (d["action"] as? String) == "state" { app.tellMacSettings(webView) } else { app.settingsAction(d) }
             return
         }
         if message.name == "amuxZoom" {
@@ -595,7 +595,7 @@ class DashboardWindowController: NSWindowController, NSWindowDelegate, WKNavigat
             if (d["op"] as? String) == "set", let on = d["on"] as? Bool {
                 app.setNotifications(on, source: "page")
             } else {
-                app.tellNotifications(self)
+                app.tellNotifications(webView)
             }
             return
         }
@@ -2116,12 +2116,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         config.notifications = on
         saveConfig(config)
         dlog("verdict=notifications_set on=\(on ? 1 : 0) source=\(source) pages=\(controllers.count)")
-        for c in controllers { tellNotifications(c) }
+        for c in controllers { tellNotifications(c.webView) }
+        if let w = settings?.webView { tellNotifications(w) }
     }
 
-    func tellNotifications(_ c: DashboardWindowController) {
+    func tellNotifications(_ w: WKWebView) {
         let on = (config.notifications ?? true) ? "true" : "false"
-        c.webView.evaluateJavaScript("typeof _notifDesktopState === 'function' && _notifDesktopState(\(on))", completionHandler: nil)
+        w.evaluateJavaScript("typeof _notifDesktopState === 'function' && _notifDesktopState(\(on))", completionHandler: nil)
     }
 
     // ── Menu actions ──

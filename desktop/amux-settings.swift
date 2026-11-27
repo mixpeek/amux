@@ -482,47 +482,16 @@ extension AppDelegate {
         return parts.joined(separator: " · ") + "\n" + workspaceWindows(l).joined(separator: "\n")
     }
 
-    /// amux > Settings… (⌘,), the Dock menu and the menu bar item: the
-    /// dashboard's Settings opened on its This Mac tab, so every setting, this
-    /// Mac's and the server's, is in one place (owner, 2026-11-25: "consolidate
-    /// all our settings"). The app's own window is the fallback for a Mac with
-    /// no server page open, or a server whose dashboard has no such tab.
+    /// amux > Settings… (⌘,), the Dock menu and the menu bar item: Settings in
+    /// its own window, apart from every amux window (owner, 2026-11-27: "it
+    /// should open up a modal that's outside of the amux app"). The window
+    /// shows the server's Settings alone (app.js `?settings_window=1`): This
+    /// device and This Mac first, then the server's tabs. With no server, or a
+    /// server whose dashboard has no such mode, it shows the app's own page.
     @objc func showSettings(_ sender: Any?) {
-        // The page you are looking at; from the Dock or menu bar menu, with no
-        // key window, a page on screen before any hidden tab (opening it in a
-        // hidden tab switched the window away from what it showed).
-        let onServer = { (c: DashboardWindowController) in c.webView.url.map { self.isServerURL($0) } ?? false }
-        guard let page = keyPage.flatMap({ onServer($0) ? $0 : nil })
-                ?? controllers.first(where: { isShown($0) && onServer($0) })
-                ?? controllers.first(where: onServer) else {
-            dlog("verdict=settings_native reason=no_server_page")
-            showNativeSettings(sender)
-            return
-        }
-        // A page that does not answer (busy, or its process gone) must not
-        // leave ⌘, doing nothing: after 2 s the app's own window opens.
-        var answered = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + envSeconds("AMUX_DESKTOP_SETTINGS_WAIT_S", 2)) { [weak self] in
-            guard !answered, let self = self else { return }
-            answered = true
-            dlog("verdict=settings_native reason=page_did_not_answer")
-            self.showNativeSettings(sender)
-        }
-        page.webView.evaluateJavaScript("typeof _macSettingsOpen === 'function' && _macSettingsOpen()") { [weak self] r, _ in
-            guard let self = self, !answered else { return }
-            answered = true
-            if (r as? Bool) == true {
-                dlog("verdict=settings_in_page")
-                page.window?.makeKeyAndOrderFront(nil)
-                activateApp()
-                self.checkUpdatesIfStale()
-            } else {
-                dlog("verdict=settings_native reason=page_has_no_mac_tab")
-                self.showNativeSettings(sender)
-            }
-        }
+        settings?.builtIn = false
+        showNativeSettings(sender)
     }
-
     /// At most every 10 minutes, opening Settings also checks for an update.
     func checkUpdatesIfStale() {
         let u = Updater.shared
@@ -531,6 +500,7 @@ extension AppDelegate {
 
     @objc func showNativeSettings(_ sender: Any?) {
         if settings == nil { settings = SettingsWindowController(app: self) }
+        dlog("verdict=settings_window_open server=\(serverURL == nil ? 0 : 1)")
         settings?.reload()
         settings?.showWindow(nil)
         settings?.window?.makeKeyAndOrderFront(nil)
@@ -551,19 +521,30 @@ extension AppDelegate {
 }
 
 // ── Settings window ──
-final class SettingsWindowController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate {
+// One window, apart from the dashboard windows. It loads the server's
+// dashboard in its Settings-only mode, so the This Mac tab and every server tab
+// are the same code the gear opens; the app's own page (settingsHTML) is the
+// fallback when there is no server, it cannot be reached, or it predates the mode.
+final class SettingsWindowController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     weak var app: AppDelegate?
     let webView: WKWebView
+    /// The server whose Settings this window shows; nil while it shows the app's own page.
+    private(set) var server: URL?
+    /// The app's own page even with a server (a test of its buttons).
+    var builtIn = false
 
     init(app: AppDelegate) {
         self.app = app
         let cfg = WKWebViewConfiguration()
+        // The dashboard windows' store: the same sign-in.
+        cfg.websiteDataStore = .default()
+        cfg.applicationNameForUserAgent = "Amux-Desktop/2.0"
         webView = WKWebView(frame: .zero, configuration: cfg)
         QuietTestCopy.keepRendering(webView)
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 680),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 720),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "amux Settings"
+        w.title = "Settings"
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 480, height: 420)
         w.contentView = webView
@@ -572,28 +553,161 @@ final class SettingsWindowController: NSWindowController, WKScriptMessageHandler
         super.init(window: w)
 
         cfg.userContentController.add(WeakScriptHandler(self), name: "amuxSettings")
+        cfg.userContentController.add(WeakScriptHandler(self), name: "amuxNotifyPrefs")
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// The page this window loads for `base`: its Settings and nothing else.
+    static func pageURL(_ base: URL) -> URL? {
+        guard var c = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        c.path = "/"
+        c.query = "settings_window=1"
+        c.fragment = nil
+        return c.url
+    }
+
+    func isSettingsPage(_ url: URL?) -> Bool {
+        guard let url = url, let app = app, app.isServerURL(url) else { return false }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "settings_window" } ?? false
+    }
+
     /// Run once the page has loaded (a test click must not land on the page a reload is replacing).
     var afterLoad: [() -> Void] = []
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if server != nil {
+            // An older server's dashboard has no Settings-only mode: it would
+            // show a whole second amux here.
+            webView.evaluateJavaScript("typeof _settingsWindowMode === 'function' && _settingsWindowMode()") { [weak self] r, _ in
+                guard let self = self else { return }
+                if (r as? Bool) == true {
+                    dlog("verdict=settings_window_shown source=server")
+                    self.runAfterLoad()
+                } else {
+                    self.fallBack("server_has_no_settings_window")
+                }
+            }
+            return
+        }
+        runAfterLoad()
+    }
+
+    private func runAfterLoad() {
         let run = afterLoad
         afterLoad = []
         run.forEach { $0() }
     }
 
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        loadFailed(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        loadFailed(error)
+    }
+
+    /// A load another load replaced (-999) or our own cancel of a link out
+    /// (WebKit 102) is not a failure: the page that replaced it reports itself.
+    private func loadFailed(_ error: Error) {
+        let e = error as NSError
+        if e.code == NSURLErrorCancelled || (e.domain == "WebKitErrorDomain" && e.code == 102) { return }
+        if server != nil { fallBack("load_failed error=\(e.code)") }
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        dlog("verdict=settings_window_process_gone")
+        server = nil
+        reload()
+    }
+
+    /// The app's own page, saying why.
+    private func fallBack(_ why: String) {
+        guard let app = app else { return }
+        dlog("verdict=settings_window_shown source=app reason=\(why)")
+        server = nil
+        webView.loadHTMLString(settingsHTML(app), baseURL: nil)
+    }
+
+    /// Show the current state: the server's Settings when there is a server
+    /// (loaded once; afterwards only told the app's new state), else the app's page.
     func reload() {
         guard let app = app else { return }
+        if !builtIn, let base = app.serverURL, let url = SettingsWindowController.pageURL(base) {
+            if server == base, isSettingsPage(webView.url) {
+                app.tellMacSettings(webView)
+                app.tellNotifications(webView)
+                runAfterLoad()
+                return
+            }
+            server = base
+            webView.load(URLRequest(url: url))
+            return
+        }
+        server = nil
         webView.loadHTMLString(settingsHTML(app), baseURL: nil)
+    }
+
+    func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let host = challenge.protectionSpace.host
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           isLocalHost(host) || host == app?.serverURL?.host,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    /// Settings stays Settings: a link or a page change to anywhere else opens
+    /// in an amux window (the server) or the default browser (elsewhere).
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url, navigationAction.targetFrame?.isMainFrame ?? false,
+              server != nil, !isSettingsPage(url), url.scheme != "about", url.scheme != "blob", url.scheme != "data" else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        open(url)
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url { open(url) }
+        return nil
+    }
+
+    private func open(_ url: URL) {
+        guard let app = app else { return }
+        if url.scheme == "amux" { app.handleAmuxURL(url); return }
+        if app.isServerURL(url) {
+            dlog("verdict=settings_window_link to=server")
+            let c = app.keyController ?? app.controllers.first(where: { app.isServerURL($0.webView.url ?? url) })
+            if let c = c { c.webView.load(URLRequest(url: url)); c.window?.makeKeyAndOrderFront(nil) } else { _ = app.openWindow(url: url, frame: nil) }
+            activateApp()
+        } else {
+            dlog("verdict=settings_window_link to=browser")
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let app = app, let m = message.body as? [String: Any] else { return }
-        app.settingsAction(m)
+        // A server page speaks only from that server; the app's own page from about:blank.
+        if server != nil, !isSettingsPage(webView.url) { return }
+        if message.name == "amuxNotifyPrefs" {
+            if (m["op"] as? String) == "set", let on = m["on"] as? Bool { app.setNotifications(on, source: "settings") } else { app.tellNotifications(webView) }
+            return
+        }
+        switch m["action"] as? String {
+        case "state": app.tellMacSettings(webView)
+        case "close": window?.performClose(nil)
+        default: app.settingsAction(m)
+        }
     }
 }
 
@@ -695,14 +809,14 @@ extension AppDelegate {
     /// Every Settings surface redraws from the new state.
     func settingsChanged() {
         settings?.reload()
-        for p in allPages { tellMacSettings(p) }
+        for p in allPages { tellMacSettings(p.webView) }
     }
 
-    func tellMacSettings(_ p: DashboardWindowController) {
-        guard p.webView.url.map({ isServerURL($0) }) ?? false,
+    func tellMacSettings(_ w: WKWebView) {
+        guard w.url.map({ isServerURL($0) }) ?? false,
               let d = try? JSONSerialization.data(withJSONObject: macSettingsState()),
               let json = String(data: d, encoding: .utf8) else { return }
-        p.webView.evaluateJavaScript("typeof _macSettingsState === 'function' && _macSettingsState(\(json))", completionHandler: nil)
+        w.evaluateJavaScript("typeof _macSettingsState === 'function' && _macSettingsState(\(json))", completionHandler: nil)
     }
 
     /// What the This Mac tab draws. Keys are the toggles' names in settingsAction.
