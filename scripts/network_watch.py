@@ -138,9 +138,15 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "socat",
 # 11-24: grep, date and git, each to 140.82.112.0/20). So they are judged per
 # destination like a shell: GitHub is quiet, anything else alerts.
 # lsof and the kernel cut a name short (git-remot, git-remote-http), so any
-# git-remote-* helper counts by prefix.
-GIT_AND_INHERITORS = {"git", "date", "grep", "sed",
-                      "awk", "cat", "head", "tail", "sort", "cut", "tr", "wc", "sleep"}
+# git-remote-* helper counts by prefix. The set holds the coreutils a hook or
+# script commonly runs, so a new child (mkdir on 11-27) does not need its own
+# alert and fix; none of them opens a socket of its own.
+GIT_AND_INHERITORS = {"git", "date", "grep", "sed", "awk", "cat", "head", "tail",
+                      "sort", "cut", "tr", "wc", "sleep", "mkdir", "rm", "mv", "cp",
+                      "ls", "touch", "ln", "chmod", "basename", "dirname", "readlink",
+                      "realpath", "mktemp", "tee", "printf", "echo", "expr", "test",
+                      "uname", "stat", "find", "uniq", "diff", "true", "false", "id",
+                      "whoami", "hostname", "pwd"}
 PER_DESTINATION = SHELLS | GIT_AND_INHERITORS
 
 
