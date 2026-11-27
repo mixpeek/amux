@@ -964,6 +964,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0180_drop_dormant_planning_tables",
         sql: include_str!("../../migrations/0180_drop_dormant_planning_tables.sql"),
     },
+    Migration {
+        version: 181,
+        name: "0181_schedule_managed_by",
+        sql: include_str!("../../migrations/0181_schedule_managed_by.sql"),
+    },
 ];
 
 /// The migration that drops `interaction_log`. Before it runs,

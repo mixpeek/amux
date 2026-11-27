@@ -9537,6 +9537,7 @@ button.cv-sec:hover { color:var(--text); }
 .sx-fail { font-variant-numeric:tabular-nums; color:var(--dim); }
 .sx-fail.bad { color:var(--red); font-weight:700; }
 .sx-told { color:var(--dim); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sx-managed { color:var(--dim); font-family:var(--font-mono); font-size:var(--fs-4xs); border:1px solid var(--border); border-radius:var(--radius-sm); padding:0 var(--space-1); white-space:nowrap; }
 .sx-told[data-route="owner"] { color:var(--red); }
 .sx-pill { display:inline-flex; align-items:center; gap:var(--space-1); padding:var(--space-0-5) var(--space-2); border-radius:var(--radius-pill); font-size:var(--fs-sm); font-weight:600; white-space:nowrap;
   border:1px solid transparent; }

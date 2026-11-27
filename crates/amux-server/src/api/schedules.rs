@@ -1476,6 +1476,67 @@ pub async fn create(
     }
 }
 
+// ---- Schedules a configuration key keeps in step (migration 0181) ---------
+
+/// The key that creates a managed schedule, and where the owner changes it.
+fn managed_key(managed_by: &str) -> &'static str {
+    match managed_by {
+        crate::runtime_jobs::goal_check::MANAGED_BY => "AMUX_GOAL_CHECK",
+        _ => "its configuration key",
+    }
+}
+
+/// The fields a PATCH would change on a managed schedule that the next
+/// reconcile would put back. Enabling, pausing, bounds and title stay editable.
+fn managed_edits(s: &DurableSchedule, body: &ScheduleBody) -> Vec<&'static str> {
+    let differs = |new: Option<&str>, col: &str| new.is_some_and(|v| v.trim() != s.str_field(col).trim());
+    let mut out = Vec::new();
+    if differs(body.command.as_deref(), "command") {
+        out.push("command");
+    }
+    if differs(body.schedule_expr.as_deref(), "schedule_expr") {
+        out.push("schedule_expr");
+    }
+    if differs(body.kind.as_deref(), "kind") {
+        out.push("kind");
+    }
+    if differs(body.session.as_deref(), "session") {
+        out.push("session");
+    }
+    let actions = body.exit_actions.as_ref().map(|v| match v {
+        Value::String(t) => t.clone(),
+        other => other.to_string(),
+    });
+    let same_actions = |a: &str| {
+        serde_json::from_str::<Value>(a).ok() == serde_json::from_str::<Value>(s.str_field("exit_actions")).ok()
+    };
+    if actions.as_deref().is_some_and(|a| !same_actions(a)) {
+        out.push("exit_actions");
+    }
+    if body.resurrect == Some(true) {
+        out.push("resurrect");
+    }
+    out
+}
+
+/// The 409 for a write the managing key would undo. Logged, so a sweep sees
+/// an owner trying to edit the wrong place.
+fn managed_refusal(id: &str, verb: &str, managed_by: &str, fields: &[&'static str]) -> Response {
+    let key = managed_key(managed_by);
+    tracing::info!(schedule = %id, verb, managed_by, fields = ?fields, measured = true, n_considered = 1,
+        verdict = "schedule_managed_edit_refused", "refused an edit to a schedule a configuration key keeps in step");
+    err(
+        StatusCode::CONFLICT,
+        json!({
+            "error": format!("{id} is kept in step with {key}: {verb} it by changing {key} in the worker's Scope tab (clear it to remove the schedule). You can still pause, resume or run it here."),
+            "code": "schedule_managed",
+            "managed_by": managed_by,
+            "key": key,
+            "fields": fields,
+        }),
+    )
+}
+
 // ---- PATCH /api/schedules/{id} --------------------------------------------
 
 /// Who deleted this schedule, from the audit trail (best effort — the trail
@@ -1580,6 +1641,7 @@ pub async fn patch(
         Locked(DurableSchedule),
         WhenOnShell,
         CriticalNotShell,
+        Managed(String, Vec<&'static str>),
         Applied(Value, Option<(DurableSchedule, String)>),
     }
     let slot: Arc<Mutex<Option<Outcome>>> = Arc::new(Mutex::new(None));
@@ -1592,6 +1654,13 @@ pub async fn patch(
             let Some(mut s) = get_schedule(conn, &id_w)? else {
                 return finish(&slot_w, Outcome::NotFound, no_write());
             };
+            let managed = s.str_field("managed_by").to_string();
+            if !managed.is_empty() {
+                let fields = managed_edits(&s, &body);
+                if !fields.is_empty() {
+                    return finish(&slot_w, Outcome::Managed(managed, fields), no_write());
+                }
+            }
             // A tombstone accepts NO ordinary write (AMUX-3431): the row will
             // never fire, so a 200 here is fictional coverage. The one honest
             // write is an EXPLICIT resurrect, audited as such.
@@ -1906,6 +1975,7 @@ pub async fn patch(
             Some(Outcome::Locked(s)) => owner_lock_refusal(&id, "re-enable", &by_outer, &s),
             Some(Outcome::WhenOnShell) => when_on_shell_refusal(),
             Some(Outcome::CriticalNotShell) => critical_not_shell_refusal(),
+            Some(Outcome::Managed(by_key, fields)) => managed_refusal(&id, "edit", &by_key, &fields),
             Some(Outcome::Tombstone {
                 deleted_at,
                 deleted_by,
@@ -1938,6 +2008,7 @@ pub async fn delete_schedule(
         NotFound,
         Already,
         Deleted,
+        Managed(String),
     }
     let slot: Arc<Mutex<Option<Outcome>>> = Arc::new(Mutex::new(None));
     let slot_w = slot.clone();
@@ -1951,6 +2022,10 @@ pub async fn delete_schedule(
             if s.is_deleted() {
                 // Idempotent re-delete: no duplicate audit row (Python parity).
                 return finish(&slot_w, Outcome::Already, no_write());
+            }
+            let managed = s.str_field("managed_by").to_string();
+            if !managed.is_empty() {
+                return finish(&slot_w, Outcome::Managed(managed), no_write());
             }
             let now_ts = chrono::Utc::now().timestamp();
             soft_delete_schedule(conn, s.id(), now_ts)?;
@@ -1990,6 +2065,7 @@ pub async fn delete_schedule(
                 Json(json!({ "deleted": id, "already": true })).into_response()
             }
             Some(Outcome::NotFound) => not_found(),
+            Some(Outcome::Managed(by_key)) => managed_refusal(&id, "delete", &by_key, &[]),
             None => internal("delete produced no outcome"),
         },
         Err(e) => internal(e),
@@ -2890,6 +2966,42 @@ mod tests {
         // On again without a check is refused on PATCH too.
         let (st, _) = send(&app, "PATCH", "/api/schedules/SCHED-1", Some(json!({ "pass_fail": 1 })), &SES).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+
+    /// A goal-check schedule (managed_by, 0181) is kept in step with
+    /// AMUX_GOAL_CHECK. The API refuses the edits the next reconcile would
+    /// undo, and the delete, naming the key; pausing and resuming still work.
+    #[tokio::test]
+    async fn a_managed_schedule_refuses_edits_its_key_would_undo() {
+        let (app, dir) = app();
+        let conn = rusqlite::Connection::open(dir.path().join("sched-api-test.db")).unwrap();
+        let want = crate::runtime_jobs::goal_check::Want {
+            session: "lane".into(),
+            command: crate::runtime_jobs::goal_check::compose("./check.sh", ""),
+            expr: "every 10m".into(),
+            running: true,
+        };
+        crate::runtime_jobs::goal_check::reconcile(&conn, &[want], Local::now()).unwrap();
+        let id: String = conn.query_row("SELECT id FROM schedules WHERE managed_by='goal-check'", [], |r| r.get(0)).unwrap();
+        let (st, g) = send(&app, "GET", &format!("/api/schedules/{id}"), None, &[]).await;
+        assert_eq!((st, g["managed_by"].clone()), (StatusCode::OK, json!("goal-check")), "{g}");
+
+        for body in [json!({ "command": "true" }), json!({ "schedule_expr": "every 1m" }), json!({ "kind": "tmux" })] {
+            let (st, r) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(body.clone()), &SES).await;
+            assert_eq!((st, r["code"].clone(), r["key"].clone()), (StatusCode::CONFLICT, json!("schedule_managed"), json!("AMUX_GOAL_CHECK")), "{body} {r}");
+        }
+        // Sending the stored values back (an editor's full-form save) is no edit.
+        let same = json!({ "command": g["command"], "schedule_expr": "every 10m", "kind": "shell", "title": "Goal check: lane" });
+        let (st, r) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(same), &SES).await;
+        assert_eq!(st, StatusCode::OK, "{r}");
+        let (st, r) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({ "enabled": 0 })), &SES).await;
+        assert_eq!((st, r["enabled"].clone()), (StatusCode::OK, json!(0)), "{r}");
+        let (st, r) = send(&app, "PATCH", &format!("/api/schedules/{id}"), Some(json!({ "enabled": 1 })), &SES).await;
+        assert_eq!((st, r["enabled"].clone()), (StatusCode::OK, json!(1)), "{r}");
+        let (st, r) = send(&app, "DELETE", &format!("/api/schedules/{id}"), None, &SES).await;
+        assert_eq!((st, r["code"].clone()), (StatusCode::CONFLICT, json!("schedule_managed")), "{r}");
+        let live: i64 = conn.query_row("SELECT COUNT(*) FROM schedules WHERE id=?1 AND deleted IS NULL", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(live, 1, "the refused delete left the row");
     }
 
     /// `critical` (0173) is accepted on a shell schedule and published, and

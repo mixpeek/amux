@@ -829,7 +829,7 @@ async fn report_goal_prompt(app: &crate::api::AppState, name: &str, line: &str, 
 
 /// Where a worker's goal check runs: its worktree when it has one. The base
 /// directory holds a different checkout, so a check could read "not met" forever.
-fn goal_check_dir(s: &Value) -> &str {
+pub(crate) fn goal_check_dir(s: &Value) -> &str {
     s["worktree_path"].as_str().filter(|p| s["worktree_active"] == true && !p.is_empty())
         .or(s["dir"].as_str())
         .unwrap_or("")
@@ -852,14 +852,16 @@ async fn tick(app: crate::api::AppState) {
     if !stamped.is_empty() {
         crate::api::goal_loop::restore_tick(&app, &stamped).await;
     }
+    // The worker's own checker is a shell schedule (goal_check.rs): keep each
+    // one in step with AMUX_GOAL_CHECK and read its newest run. It runs
+    // whatever the worker is doing, costs no turn, and drives the goal tile
+    // and the stall alert.
+    super::goal_check::sync(&app, &sessions, now).await;
     for s in &sessions {
         let name = s["name"].as_str().unwrap_or("").to_string();
         if name.is_empty() || s["running"] != true || s["archived"] == true || s["provider"] != "claude" {
             continue;
         }
-        // The worker's own checker runs whatever the worker is doing: it is
-        // shell, costs no turn, and drives the goal tile and the stall alert.
-        super::goal_check::maybe_run(&app, &name, goal_check_dir(s), now);
         // A lane the goal-loop guard parked on the owner is not continued:
         // continuing it is the loop (AMUX-5277).
         if stamped.contains(&name) {

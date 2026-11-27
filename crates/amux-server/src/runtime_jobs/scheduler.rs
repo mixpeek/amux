@@ -1277,7 +1277,7 @@ fn due_schedules(conn: &Connection, now_str: &str) -> rusqlite::Result<Vec<Durab
 /// is still written, and the only behavioural difference is that an unset
 /// defaulted column now gets its default instead of failing the insert.
 pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Result<()> {
-    const COLS: [&str; 42] = [
+    const COLS: [&str; 43] = [
         "id",
         "title",
         "session",
@@ -1325,6 +1325,10 @@ pub fn insert_schedule(conn: &Connection, s: &DurableSchedule) -> rusqlite::Resu
         "created_by_verified",
         // 0173 fires through a critical host (shell only).
         "critical",
+        // 0181 the configuration key that keeps this row in step
+        // (goal_check.rs). Never in update_schedule: a PATCH cannot claim or
+        // drop it.
+        "managed_by",
     ];
     let present: Vec<&str> = COLS
         .iter()
@@ -3262,7 +3266,7 @@ struct Claim {
 /// missing — a fire that is unrecorded rather than one that fires twice. A
 /// missing row is visible (the run history has a hole against `run_count`); a
 /// double delivery is not undoable.
-async fn fire_one(
+pub(crate) async fn fire_one(
     store: &SharedStore,
     deliverer: &dyn Deliverer,
     id: &str,

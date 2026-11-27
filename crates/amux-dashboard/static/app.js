@@ -9590,6 +9590,7 @@ function _goalTile(g) {
     ck.why_unmeasured ? `Checker problem: ${ck.why_unmeasured}` : '',
     ck.checked_at ? `Checked ${when(ck.checked_at)}; last movement ${when(ck.progress_changed_at)}` : '',
     ck.stalled ? `STALLED: no movement for over ${Math.round((ck.stall_after_s || 0) / 3600)}h; the owner is alerted once per stall` : '',
+    ck.schedule?.id ? `Runs as schedule ${ck.schedule.id}${ck.schedule.enabled ? '' : ' (paused' + (ck.schedule.disabled_reason === 'goal_check_worker_stopped' ? ' while the worker is stopped' : '') + ')'}; its run history is in the Schedules tab` : '',
   ].filter(Boolean);
   return `<span class="badge goal ${esc(cls)}" data-goal-state="${esc(state)}" title="${esc(lines.join('\n'))}">&#9678; ${esc(label)}${esc(progress)}</span>`;
 }
@@ -50918,7 +50919,9 @@ function _sxStatus(s, runs) {
   // disabled_reason / lock_reason (0125): say WHY it is off, and that a
   // worker cannot turn an owner-locked schedule back on.
   if (!s.enabled) return { key: 'paused', label: (s.sched_type === 'once' && s.last_run) ? 'Done' : 'Paused',
-    why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || '')) : (s.disabled_reason || '') };
+    why: s.locked_by ? ('Disabled by the owner and locked: a worker cannot re-enable it. ' + (s.lock_reason || ''))
+      : s.disabled_reason === 'goal_check_worker_stopped' ? 'Paused while its worker is stopped; it resumes when the worker runs'
+      : (s.disabled_reason || '') };
   if (_sxClass(s) === 'unknown') return { key: 'unparsed', label: 'Unparsed' };
   // Pass/fail (schedule_check.rs): the check, not the delivery, says whether
   // the work is done, so a failing check outranks a delivered run.
@@ -51203,8 +51206,23 @@ function _sxToldHTML(s) {
     + (n.delivery ? '; ' + n.delivery : '');
   return `<span class="sx-told sx-sub" data-route="${esc(n.route || '')}" title="${esc(tip)}">${esc(t)}</span>`;
 }
+// A schedule a configuration key keeps in step (managed_by, migration 0181):
+// which key, and where the owner changes its command or interval.
+const _SX_MANAGED = {
+  'goal-check': { key: 'AMUX_GOAL_CHECK', what: 'Goal check',
+    how: 'Created by AMUX_GOAL_CHECK. Change the check or AMUX_GOAL_CHECK_INTERVAL_S in the worker\'s Scope tab; clearing the key removes this schedule. Pause, resume and Run now work here.' },
+};
+function _sxManaged(s) {
+  const m = s && s.managed_by;
+  return m ? (_SX_MANAGED[m] || { key: m, what: m, how: 'Kept in step with ' + m + '.' }) : null;
+}
+function _sxManagedHTML(s) {
+  const m = _sxManaged(s);
+  return m ? `<span class="sx-managed sx-sub" title="${esc(m.how)}">${esc(m.key)}</span>` : '';
+}
 function _sxSearchHay(s) {
-  return [s.title, s.session, s.command, s.schedule_expr, s.recurrence, s.id, _sxFreq(s), s.kind === 'shell' ? 'shell command' : 'worker prompt']
+  const m = _sxManaged(s);
+  return [s.title, s.session, s.command, s.schedule_expr, s.recurrence, s.id, _sxFreq(s), s.kind === 'shell' ? 'shell command' : 'worker prompt', m && m.key, m && m.what]
     .filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -51217,7 +51235,7 @@ function _sxRowHTML(s, runMap, sessMap, scoped) {
   return `<div class="sx-row sched-item${sel ? ' selected' : ''}" data-sched-id="${id}" data-status="${st.key}" role="button" tabindex="0"
       onclick="openSchedDetail('${idJs}')" onkeydown="if(event.key==='Enter'&&event.target===this)openSchedDetail('${idJs}')">
     <label class="sx-cell sx-sel" onclick="event.stopPropagation()"><input type="checkbox" ${sel ? 'checked' : ''} onchange="_sxToggleSel('${idJs}',this.checked)" aria-label="Select ${esc(s.title)}"></label>
-    <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code>${_sxToldHTML(s)}</div></div>
+    <div class="sx-cell sx-name">${_sxTypeIcon(s)}<div class="sx-name-text"><span class="sx-title">${esc(s.title)}</span><code class="sched-id-badge" title="Schedule id: click to copy" onclick="event.stopPropagation();_copySchedId('${idJs}')">${id}</code>${_sxManagedHTML(s)}${_sxToldHTML(s)}</div></div>
     ${scoped ? '' : `<div class="sx-cell sx-worker">${_sxWorkerChip(s, sessMap)}</div>`}
     <div class="sx-cell sx-freq"><span title="${esc(freqTitle)}">${esc(_sxFreq(s))}</span>${_schedLastRunHTML(s)}</div>
     <div class="sx-cell sx-nextc">${_sxNextCell(s, st)}</div>
@@ -51874,6 +51892,8 @@ function _sxRenderDetail() {
       ['Last run', _sxFmtWhen(s.last_run)],
       ['Total runs', esc(String(s.run_count || 0))],
     ];
+    const managed = _sxManaged(s);
+    if (managed) rows.push(['Managed by', `<span class="sx-managed">${esc(managed.key)}</span><div class="sx-dim sx-sub">${esc(managed.how)}</div>`]);
     if (_sxToldText(s)) rows.push(['Failure notice', _sxToldHTML(s)]);
     if (s.last_delivery) rows.push(['Last delivery', esc(s.last_delivery)]);
     if (s.last_refusal_reason) rows.push(['Last refusal', `<span class="sx-bad">${esc(s.last_refusal_reason)}</span>`]);
