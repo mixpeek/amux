@@ -476,7 +476,11 @@ LSOF_BIN=${AMUX_CLEANUP_LSOF_BIN:-$(command -v lsof 2>/dev/null || echo /usr/sbi
 # hold a worktree that IS the point of the directory, not scratch beside it).
 # Roots are exactly the shared, generic scratch locations observed to actually
 # accumulate this: the per-user temp dir, and the two committed worktree stores.
-WORKTREE_ROOTS=${AMUX_CLEANUP_WORKTREE_ROOTS:-${USER_TMP%/}@2:$HOME/Dev/amux-worktrees@1:$HOME/.amux/worktrees@1:$HOME/.ao/data/worktrees@1}
+# The user temp dir goes LAST (Mac self RCA 20261127-095953): it held 9,567
+# entries and its depth-2 find took 45-60s, so the scan deadline ran out inside
+# it and 15 of 23 ticks never reached the three real worktree roots after it
+# ("found 0 under 1 root(s), scan complete=no").
+WORKTREE_ROOTS=${AMUX_CLEANUP_WORKTREE_ROOTS:-$HOME/Dev/amux-worktrees@1:$HOME/.amux/worktrees@1:$HOME/.ao/data/worktrees@1:${USER_TMP%/}@2}
 # Short idle floor on purpose: the tick runs every 30 minutes and this class
 # accumulates on a 10-90 minute cadence, so a 24h floor (right for a cargo
 # target, rebuilt in minutes) would let dozens pile up before the first one
@@ -1210,10 +1214,16 @@ TICK_SECTION="" TICK_SECTION_T0=0 TICK_SLOWEST="" TICK_SLOWEST_S=-1
 tick_mark() { # <label> (or "end")
   if [ -n "$TICK_SECTION" ]; then
     local d=$(( SECONDS - TICK_SECTION_T0 ))
+    # An arm that runs past its share takes the time of the arms after it, and
+    # the skip it causes is reported against them (Mac self RCA 20261127-095953).
+    if [ "${TICK_SECTION_CAP:-0}" -gt 0 ] && [ "$d" -gt $(( TICK_SECTION_CAP + ${TICK_OVERRUN_SLACK_S:-10} )) ]; then
+      echo "mac-cleanup: $TICK_SECTION overran its share: took ${d}s of ${TICK_SECTION_CAP}s (verdict=tick_arm_overran)"
+      TICK_OVERRAN="${TICK_OVERRAN:+$TICK_OVERRAN,}${TICK_SECTION// /_}:${d}/${TICK_SECTION_CAP}"
+    fi
     if [ "$d" -gt "$TICK_SLOWEST_S" ]; then TICK_SLOWEST_S=$d; TICK_SLOWEST="${TICK_SECTION// /_}:${d}s"; fi
     [ "$d" -gt 0 ] && TICK_SECTIONS="${TICK_SECTIONS:+$TICK_SECTIONS,}${TICK_SECTION// /_}:${d}"
   fi
-  TICK_SECTION=$1; TICK_SECTION_T0=$SECONDS
+  TICK_SECTION=$1; TICK_SECTION_T0=$SECONDS; TICK_SECTION_CAP=0
   [ "$1" = end ] && TICK_SECTION=""
   return 0
 }
@@ -1236,7 +1246,7 @@ tick_arm() { # <label> [budget var]...
   if [ "$w" -gt 0 ] && [ "$rest" -gt "$w" ]; then
     share=$(( left * w / rest )); [ "$share" -ge 1 ] || share=1
   fi
-  TICK_ARM_SHARE=$share
+  TICK_ARM_SHARE=$share; TICK_SECTION_CAP=$share
   for v in "$@"; do sum=$(( sum + ${!v} )); done
   if [ "$share" -lt "$left" ] && [ "$sum" -gt "$share" ]; then
     # Phases run one after another, so they split the share in proportion.
@@ -3235,8 +3245,8 @@ reap_lane_tmp() { # <dry:0|1>
   fi
   # Resumes where the last pass ran out of time or hit the cap, as reap_claude_tmp
   # does, so the same front entries cannot use up every tick's budget.
-  local -a ents=(); local j nall start=0 stopped="" t0=$SECONDS rc out n_unk=0 n_over=0
-  local walk=${LANE_TMP_WALK_S:-20} budget=${LANE_TMP_BUDGET_S:-90} cursor_file=""
+  local -a ents=(); local j nall start=0 stopped="" t0=$SECONDS rc out n_unk=0 n_unsized=0 n_over=0
+  local walk=${LANE_TMP_WALK_S:-20} budget=${LANE_TMP_BUDGET_S:-90} cursor_file="" wl step_min=${LANE_TMP_STEP_MIN_S:-5}
   [ -n "${STATE_DIR:-}" ] && cursor_file="$STATE_DIR/lane-tmp.cursor"
   for e in "$root"/*/*; do [ -e "$e" ] && ents+=("$e"); done
   nall=${#ents[@]}
@@ -3249,7 +3259,12 @@ reap_lane_tmp() { # <dry:0|1>
     [ -e "$e" ] || continue
     if [ "$n" -ge "${LANE_TMP_MAX:-300}" ]; then capped=1; stopped=$e; break; fi
     if [ $(( SECONDS - t0 )) -ge "$budget" ]; then n_over=$((n_over+1)); [ -n "$stopped" ] || stopped=$e; continue; fi
-    rc=0; out=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -mmin -"$LANE_TMP_IDLE_MIN" -print -quit 2>/dev/null) || rc=$?
+    # Each step below waits at most what the budget has left, not a whole walk:
+    # five 20s steps on one entry ran the arm to 196s of an 81s share (Mac self
+    # RCA 20261127-095953). A step cut short keeps the entry, as a timeout does.
+    # LANE_TMP_STEP_MIN_S is the floor, so a pass near its end still judges.
+    wl=$(( budget - (SECONDS - t0) )); [ "$wl" -ge "$step_min" ] || wl=$step_min; [ "$wl" -le "$walk" ] || wl=$walk
+    rc=0; out=$(perl -e 'alarm shift; exec @ARGV' "$wl" find "$e" -mmin -"$LANE_TMP_IDLE_MIN" -print -quit 2>/dev/null) || rc=$?
     if [ "$rc" = 142 ]; then n_unk=$((n_unk+1)); continue; fi
     if [ -n "$out" ]; then
       [ -n "$notice_file" ] && [ -s "$notice_file" ] && awk -F'\t' -v r="${e#"$root"/}" '$1!=r' "$notice_file" > "$notice_file.new" && mv "$notice_file.new" "$notice_file"
@@ -3265,8 +3280,10 @@ reap_lane_tmp() { # <dry:0|1>
     # that cannot answer keeps it: unsaved work must not be guessed away.
     if [ -d "$e" ] && [ ! -L "$e" ] && [ -e "$e/.git" ]; then
       local dirty ahead
-      dirty=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" status --porcelain --untracked-files=no 2>/dev/null) || dirty="?"
-      ahead=$(perl -e 'alarm shift; exec @ARGV' "$walk" git -C "$e" rev-list -n 1 HEAD --not --remotes 2>/dev/null) || ahead="?"
+      wl=$(( budget - (SECONDS - t0) )); [ "$wl" -ge "$step_min" ] || wl=$step_min; [ "$wl" -le "$walk" ] || wl=$walk
+      dirty=$(perl -e 'alarm shift; exec @ARGV' "$wl" git -C "$e" status --porcelain --untracked-files=no 2>/dev/null) || dirty="?"
+      wl=$(( budget - (SECONDS - t0) )); [ "$wl" -ge "$step_min" ] || wl=$step_min; [ "$wl" -le "$walk" ] || wl=$walk
+      ahead=$(perl -e 'alarm shift; exec @ARGV' "$wl" git -C "$e" rev-list -n 1 HEAD --not --remotes 2>/dev/null) || ahead="?"
       if [ -n "$dirty" ] || [ -n "$ahead" ]; then
         n_unsaved=$((n_unsaved+1))
         echo "mac-cleanup:   lane tmp kept $e: a git checkout with unsaved work ($([ -n "$dirty" ] && echo 'uncommitted changes')$([ -n "$dirty" ] && [ -n "$ahead" ] && echo ', ')$([ -n "$ahead" ] && echo 'commits on no remote')) (verdict=lane_tmp_unsaved_work_kept)"
@@ -3277,14 +3294,19 @@ reap_lane_tmp() { # <dry:0|1>
       n_small=$((n_small+1)); continue
     fi
     if [ -d "$e" ] && [ ! -L "$e" ]; then
-      nf=$(perl -e 'alarm shift; exec @ARGV' "$walk" find "$e" -type f 2>/dev/null | head -n $((keep_dir_files + 1)) | grep -c . || true)
+      wl=$(( budget - (SECONDS - t0) )); [ "$wl" -ge "$step_min" ] || wl=$step_min; [ "$wl" -le "$walk" ] || wl=$walk
+      nf=$(perl -e 'alarm shift; exec @ARGV' "$wl" find "$e" -type f 2>/dev/null | head -n $((keep_dir_files + 1)) | grep -c . || true)
       if [ "$nf" -ge 1 ] && [ "$nf" -le "$keep_dir_files" ] && [ "$(du -sk "$e" 2>/dev/null | cut -f1)" -lt "$keep_dir_kb" ] 2>/dev/null; then
         n_small_dir=$((n_small_dir+1)); continue
       fi
     fi
     ce=$( (cd "$e" 2>/dev/null && pwd -P) || printf '%s' "$e"); ce=${ce#/private}
     printf '%s\n' "$inuse" | awk -v p="$ce" '$0==p || index($0, p "/")==1 {f=1} END{exit !f}' && continue
-    k=$(perl -e 'alarm shift; exec @ARGV' "$walk" du -sk "$e" 2>/dev/null | cut -f1)
+    wl=$(( budget - (SECONDS - t0) )); [ "$wl" -ge "$step_min" ] || wl=$step_min; [ "$wl" -le "$walk" ] || wl=$walk
+    k=$(perl -e 'alarm shift; exec @ARGV' "$wl" du -sk "$e" 2>/dev/null | cut -f1)
+    # An entry that could not be sized is kept: an unknown size read as 0 would
+    # skip the notice a large entry is owed.
+    case "$k" in ''|*[!0-9]*) n_unsized=$((n_unsized+1)); continue ;; esac
     if [ "$dry" = 1 ]; then
       n=$((n+1)); kb=$((kb+${k:-0}))
       echo "mac-cleanup:   lane tmp would remove $e ($(( ${k:-0} / 1024 ))M, nothing changed in ${LANE_TMP_IDLE_MIN} min)"
@@ -3335,7 +3357,7 @@ reap_lane_tmp() { # <dry:0|1>
   if [ "$dry" != 1 ] && [ -n "$cursor_file" ]; then
     if [ -n "$stopped" ]; then mkdir -p "$STATE_DIR" && printf '%s\n' "$stopped" > "$cursor_file"; else rm -f "$cursor_file"; fi
   fi
-  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, under ${keep_dir_kb}K in all), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$n_notice" -gt 0 ] && echo "; gave notice for $n_notice large entr(ies)")$([ "$n_notice_wait" -gt 0 ] && echo "; $n_notice_wait large entr(ies) inside their ${notice_min} min notice")$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
+  echo "mac-cleanup: lane tmp: $([ "$dry" = 1 ] && echo 'would remove' || echo removed) $n entr$([ "$n" = 1 ] && echo y || echo ies) idle over ${LANE_TMP_IDLE_MIN} min, $(awk -v k="$kb" 'BEGIN{printf "%.1fG", k/1048576}') ($root); kept $n_named named by an enabled schedule, $n_small small file(s) under ${small_kb}K, $n_small_dir small dir(s) (<= ${keep_dir_files} files, under ${keep_dir_kb}K in all), $n_marked marked .amux-keep, $n_unsaved git checkout(s) with unsaved work$([ "$n_notice" -gt 0 ] && echo "; gave notice for $n_notice large entr(ies)")$([ "$n_notice_wait" -gt 0 ] && echo "; $n_notice_wait large entr(ies) inside their ${notice_min} min notice")$([ "$capped" = 1 ] && echo "; capped at $LANE_TMP_MAX this tick, the rest next tick")$([ "$n_unk" -gt 0 ] && echo "; kept $n_unk whose idle walk ran past ${walk}s (idleness unknown)")$([ "$n_unsized" -gt 0 ] && echo "; kept $n_unsized idle whose size could not be read (verdict=lane_tmp_size_unmeasured)")$([ "$n_over" -gt 0 ] && echo "; $n_over not reached inside the ${budget}s budget")$([ -n "$stopped" ] && [ "$dry" != 1 ] && echo ", the next tick starts at ${stopped#"$root"/}")"
 }
 
 reap_user_tmp() { # <dry:0|1>
@@ -3855,7 +3877,9 @@ vm_level=$($PRESSURE_CMD 2>/dev/null); case "$vm_level" in ''|*[!0-9]*) vm_level
 vm_level=$(vm_arm_pressure "${level:-}" "$vm_level")
 if [ "$vm_level" -ge 2 ]; then stop_idle_vms "$DRY" "memory pressure $vm_level"; stop_idle_docker_desktop "$DRY" "memory pressure $vm_level"
 elif [ "$tgt_idle" != "$TARGET_IDLE_H" ]; then stop_idle_vms "$DRY" "disk under ${TARGET_TIGHT_FREE_GB}G"; fi
-tick_arm "worktrees" WORKTREE_BUDGET_S && reap_idle_worktrees "$WORKTREE_ROOTS" "$WORKTREE_IDLE_H" "$DRY"
+# The scan is capped with the budget (Mac self RCA 20261127-095953): only the
+# budget was, so a 60s scan ran on a 23-28s share and skipped the census after it.
+tick_arm "worktrees" WORKTREE_SCAN_S WORKTREE_BUDGET_S && reap_idle_worktrees "$WORKTREE_ROOTS" "$WORKTREE_IDLE_H" "$DRY"
 
 # ── act: thin APFS local snapshots when the disk is tight ────────────────────
 disk_free_gb=$(df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2{ printf "%.1f", $4/1048576 }')
@@ -4247,5 +4271,5 @@ if [ "$SECONDS" -ge "$TICK_WARN_S" ]; then
   echo "mac-cleanup: WARN tick took ${SECONDS}s, over ${TICK_WARN_S}s: the scheduler kills it at 600s, so a slower run is lost; tighten the budgets"
 fi
 tick_mark end
-echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} util_reniced=${UTIL_RENICED:-0} daemons_demoted=${DEMOTED:-0} reclaim_started=${reclaim_started:-0} skipped=${TICK_SKIPPED:-none} sections=${TICK_SECTIONS:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
+echo "mac-cleanup: done elapsed=${SECONDS}s slowest=${TICK_SLOWEST:-none} purge=${purged%% *} agents_restarted=${agents_restarted}/${agents_checked} stale_shells=${stale_killed} sqlite_orphans=${sqlite_stopped} targets_reaped=${TARGETS_REAPED} claude_tmp_reaped=${CLAUDE_TMP_REAPED:-0} cpu_restarted=${CPU_RESTARTED:-0} test_orphans=${TEST_ORPHANS_STOPPED:-0} crash_pruned=${CRASH_PRUNED:-0} util_reniced=${UTIL_RENICED:-0} daemons_demoted=${DEMOTED:-0} reclaim_started=${reclaim_started:-0} skipped=${TICK_SKIPPED:-none} overran=${TICK_OVERRAN:-none} sections=${TICK_SECTIONS:-none} constraints=$(printf '%s' "$verdicts" | grep -c . || true) escalated=${escalated} reported=${reported}"
 exit 0

@@ -88,6 +88,68 @@ check "no arm is skipped"                             none "$skipped"
 check "worktrees keeps a working budget (3-13s)"      yes  "$([ "$wt" -ge 8 ] && echo yes || echo no)"
 check "the census keeps a working budget (3-23s)"     yes  "$([ "$churn" -ge 5 ] && echo yes || echo no)"
 
+echo "1d. no arm runs past its share, and one that does is named (Mac self RCA 20261127-095953)"
+# 2026-11-27: worktrees took 68-70s on a 23-28s share (only its budget was capped,
+# its 60s scan was not) and lane tmp 196s on 81s (five 20s steps per entry), and
+# the census after them was skipped by 3 ticks in 24h.
+got=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=300
+  tick_arm "worktrees" WORKTREE_SCAN_S WORKTREE_BUDGET_S >/dev/null
+  printf "%s|%s|%s" "$TICK_ARM_SHARE" "$WORKTREE_SCAN_S" "$WORKTREE_BUDGET_S"')
+IFS='|' read -r share scan wtb <<<"$got"
+check "the worktree scan and budget together fit its share" yes "$([ $(( scan + wtb )) -le $(( share + 2 )) ] && echo yes || echo no)"
+check "the tick gives the scan to tick_arm"           yes "$(grep -qE '^tick_arm "worktrees" WORKTREE_SCAN_S WORKTREE_BUDGET_S' "$TICK" && echo yes || echo no)"
+roots=$(TICK_PATH="$TICK" bash -c 'AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null; echo "$WORKTREE_ROOTS"')
+check "the user temp dir is scanned after the real worktree roots" yes "$(has "$roots" 'worktrees@1:[^:]*@2$')"
+out=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=200; tick_arm "lane tmp" LANE_TMP_BUDGET_S >/dev/null; cap=$TICK_ARM_SHARE
+  SECONDS=$(( 200 + cap + 115 )); tick_mark "worktrees"
+  SECONDS=$(( SECONDS + 5 )); tick_mark end
+  echo "overran=${TICK_OVERRAN:-none}"')
+check "an arm past its share is named, with its verdict" yes "$(has "$out" 'lane tmp overran its share: took [0-9]+s of [0-9]+s \(verdict=tick_arm_overran\)')"
+check "and carried to the done line"                  yes "$(has "$out" 'overran=lane_tmp:[0-9]+/[0-9]+')"
+out=$(TICK_PATH="$TICK" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  SECONDS=200; tick_arm "lane tmp" LANE_TMP_BUDGET_S >/dev/null; cap=$TICK_ARM_SHARE
+  SECONDS=$(( 200 + cap )); tick_mark "worktrees"; tick_mark end
+  echo "overran=${TICK_OVERRAN:-none}"')
+check "an arm inside its share is not"                no  "$(has "$out" 'verdict=tick_arm_overran')"
+check "a done line with no overrun says none"         yes "$(grep -q 'overran=${TICK_OVERRAN:-none}' "$TICK" && echo yes || echo no)"
+# The lane tmp arm stops a slow step at what its budget has left. A git that
+# hangs stands in for a large checkout under load: two 20s walks before.
+LT="$FIX/lt1"; mkdir -p "$LT/root/w/co" "$LT/bin" "$LT/state"
+echo "gitdir: /nonexistent" > "$LT/root/w/co/.git"
+touch -t 202601010000 "$LT/root/w/co/.git" "$LT/root/w/co" "$LT/root/w"
+printf '#!/bin/sh\nexec sleep 30\n' > "$LT/bin/git"; chmod +x "$LT/bin/git"
+sqlite3 "$LT/s.db" "CREATE TABLE schedules(command TEXT, enabled INT, deleted TEXT)"
+t0=$(date +%s)
+out=$(TICK_PATH="$TICK" LTR="$LT" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  PATH="$LTR/bin:$PATH"   # after the tick puts its own dirs first
+  LANE_TMP_ROOT="$LTR/root"; LANE_TMP_SCHED_DB="$LTR/s.db"; STATE_DIR="$LTR/state"; LANE_TMP_BUDGET_S=3; LANE_TMP_WALK_S=20; LANE_TMP_STEP_MIN_S=1
+  reap_lane_tmp 1' 2>&1)
+took=$(( $(date +%s) - t0 ))
+check "a hung step ends near the arm budget, not after two 20s walks (took ${took}s)" yes "$([ "$took" -le 12 ] && echo yes || echo no)"
+check "the step reached the checkout and kept it as unjudged" yes "$(has "$out" 'lane tmp kept .*/w/co: a git checkout with unsaved work')"
+check "and the entry it could not judge is kept"      yes "$([ -e "$LT/root/w/co" ] && echo yes || echo no)"
+# An idle entry whose size cannot be read is kept and named as such, apart
+# from the entries whose idle walk ran out (land review F2).
+LU="$FIX/lt2"; mkdir -p "$LU/root/w/big" "$LU/bin" "$LU/state"
+for i in $(seq 1 70); do : > "$LU/root/w/big/f$i"; done
+touch -t 202601010000 "$LU/root/w/big"/* "$LU/root/w/big" "$LU/root/w"
+printf '#!/bin/sh\nexit 1\n' > "$LU/bin/du"; chmod +x "$LU/bin/du"
+sqlite3 "$LU/s.db" "CREATE TABLE schedules(command TEXT, enabled INT, deleted TEXT)"
+out=$(TICK_PATH="$TICK" LTR="$LU" bash -c '
+  AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH" >/dev/null
+  PATH="$LTR/bin:$PATH"
+  LANE_TMP_ROOT="$LTR/root"; LANE_TMP_SCHED_DB="$LTR/s.db"; STATE_DIR="$LTR/state"
+  reap_lane_tmp 0' 2>&1)
+check "an idle entry that cannot be sized is kept"    yes "$([ -d "$LU/root/w/big" ] && echo yes || echo no)"
+check "and counted as unsized, not as an unknown idle walk" yes "$(has "$out" 'kept 1 idle whose size could not be read \(verdict=lane_tmp_size_unmeasured\)')"
+check "the idle-walk count does not take it"          no  "$(has "$out" 'whose idle walk ran past')"
+
 echo "1b. the deadline sits under the warning, and the done line names the slowest section"
 got=$(TICK_PATH="$TICK" bash -c '
   AMUX_CLEANUP_LIB_ONLY=1 . "$TICK_PATH"

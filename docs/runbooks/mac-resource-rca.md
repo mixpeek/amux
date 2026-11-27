@@ -34,6 +34,12 @@ a `self ...` constraint, which escalates like any other class:
 
 An unreadable history prints `verdict=self_unmeasured` and judges nothing.
 
+When arms are skipped for lack of time, look for `verdict=tick_arm_overran` in
+the same run (and `overran=` on its done line): it names the arm that ran past
+its share and took the skipped arms' time. Fix that arm's bound, not the plan
+weights (Mac self RCA 20261127-095953: the worktrees scan was not capped by its
+share and lane tmp gave each step a full walk).
+
 The fallback (`scripts/mac-cleanup-fallback.sh`, launchd every 15 minutes) runs
 the tick when its output is over 80 minutes old or unfinished. The window must
 stay longer than the hourly gap: at 45 minutes it ran a duplicate tick before
