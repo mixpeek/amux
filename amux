@@ -13738,7 +13738,19 @@ p.communicate(msg.encode())
       who=""; wsha=""; wcommon=""; wbatch=""
       { read -r who; read -r wsha; read -r wcommon; read -r wbatch; } < "$q/$tk" 2>/dev/null || true
       [ "$wbatch" = 1 ] || { _sk "$tk" "not batchable (flag ${wbatch:-?})"; continue; }
-      [ "$wcommon" = "$common" ] || { _sk "$tk" "another repository ($wcommon)"; continue; }
+      # A WAITER IN ANOTHER CLONE of the same remote (the queue key is the
+      # remote's URL) is fetched from that clone. It was skipped: on
+      # mixpeek-dev every lane lands from its own clone, so a queue 26 deep
+      # drained one ticket per 10-15 minute hold while the Mac's worktrees
+      # batched six (mixpeek-meta-worker, 2026-11-27). Only the commit is
+      # read; nothing is written to the waiter's clone.
+      if [ "$wcommon" != "$common" ] && ! git cat-file -e "$wsha^{commit}" 2>/dev/null; then
+        if [ -d "$wcommon" ] && git fetch -q --no-tags --no-write-fetch-head "$wcommon" "$wsha" 2>/dev/null; then
+          _land_log "batch fetched $who's ${wsha:0:10} from its own clone ($wcommon) verdict=land_batch_fetched_other_clone"
+        else
+          _sk "$tk" "another repository ($wcommon), and ${wsha:0:10} could not be fetched from it"; continue
+        fi
+      fi
       git cat-file -e "$wsha^{commit}" 2>/dev/null || { _sk "$tk" "commit ${wsha:0:10} not in this object store"; continue; }
       # One lane with two land processes queues the same commit twice
       # (gs12-restore, 2026-10-01); replaying it again adds an empty duplicate.
