@@ -464,8 +464,9 @@ async fn checkpoint_budget_and_health_endpoints_round_trip_measured_state() {
         &[],
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{budget}");
-    assert_eq!(budget["version"], 1);
+    // Per-task budgets were retired with `_amux_task_budgets` (migration 0180).
+    assert_eq!(status, StatusCode::GONE, "{budget}");
+    assert_eq!(budget["code"], "route_retired");
 
     let (status, _, health) = send(&app, "GET", "/api/harness/health?days=7", None, &[]).await;
     assert_eq!(status, StatusCode::OK, "{health}");

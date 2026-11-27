@@ -1,7 +1,7 @@
 //! Production-harness control and measurement plane.
 //!
 //! These endpoints expose the durable objects the runtime already enforces:
-//! checkpoints/handoffs, per-task budgets, sensor profiles, and versioned
+//! checkpoints/handoffs, sensor profiles, and versioned
 //! guide rules.  Compilation and health responses always carry a measured
 //! flag and population size so an empty database cannot masquerade as a pass.
 
@@ -9,7 +9,6 @@ use super::AppState;
 use amux_core::harness::{
     EnforcementLayer, GuideRule, GuideRuleStatus, HandoffPacket, SensorProfile, TaskCheckpoint,
 };
-use amux_core::limits::ExecutionLimits;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -30,10 +29,6 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/handoffs/{id}",
             axum::routing::get(get_handoff).post(post_handoff),
-        )
-        .route(
-            "/budgets/{id}",
-            axum::routing::get(get_budget).put(put_budget),
         )
         .route("/sensors", axum::routing::get(list_sensors))
         .route(
@@ -328,49 +323,19 @@ async fn post_handoff(
     Json(body): Json<HandoffInput>,
 ) -> Response {
     let sender = actor(&headers);
-    if let Some(node_id) = body.planning_scope_id.as_deref() {
-        let conn = match state.store.read() {
-            Ok(conn) => conn,
-            Err(error) => return internal(error),
-        };
-        let node = match crate::db::harness_store::get_planning_node(&conn, node_id) {
-            Ok(Some(node)) => node,
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"error": "unknown planning node"})),
-                )
-                    .into_response()
-            }
-            Err(error) => return internal(error),
-        };
-        if node.owner != sender {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "error": "handoff sender does not own the planning node",
-                    "code": "handoff_sender_not_owner"
-                })),
-            )
-                .into_response();
-        }
-        if let Some(parent_id) = node.parent_id.as_deref() {
-            let parent = match crate::db::harness_store::get_planning_node(&conn, parent_id) {
-                Ok(Some(parent)) => parent,
-                Ok(None) => return internal("planning node parent is missing"),
-                Err(error) => return internal(error),
-            };
-            if parent.owner != body.receiver {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({
-                        "error": "handoff receiver must own the parent planning node",
-                        "code": "handoff_receiver_not_parent_owner"
-                    })),
-                )
-                    .into_response();
-            }
-        }
+    // Planning nodes were retired with their table (audit step 2, migration
+    // 0180), so a handoff can no longer be scoped to one.
+    if body.planning_scope_id.is_some() {
+        tracing::warn!(task = %id, measured = true, n_considered = 1, verdict = "handoff_planning_scope_retired",
+            "a handoff named a planning node; planning nodes were retired");
+        return (
+            StatusCode::GONE,
+            Json(json!({
+                "error": "planning_scope_id names a planning node, and planning nodes were retired on 2026-11-26; send the handoff without it",
+                "code": "planning_scope_retired"
+            })),
+        )
+            .into_response();
     }
     let packet = HandoffPacket {
         id: format!("hof_{}", ulid::Ulid::new().to_string().to_lowercase()),
@@ -419,68 +384,6 @@ async fn post_handoff(
         .await
     {
         Ok(_) => (StatusCode::CREATED, Json(packet)).into_response(),
-        Err(error) => internal(error),
-    }
-}
-
-async fn get_budget(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let conn = match state.store.read() {
-        Ok(conn) => conn,
-        Err(error) => return internal(error),
-    };
-    match crate::db::harness_store::get_budget(&conn, &id) {
-        Ok(Some((limits, version))) => {
-            Json(json!({"task_id": id, "version": version, "limits": limits})).into_response()
-        }
-        Ok(None) => Json(json!({
-            "task_id": id,
-            "version": 0,
-            "limits": ExecutionLimits::default(),
-            "source": "default"
-        }))
-        .into_response(),
-        Err(error) => internal(error),
-    }
-}
-
-async fn put_budget(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(limits): Json<ExecutionLimits>,
-) -> Response {
-    if limits.max_attempts == 0
-        || limits.max_tokens == 0
-        || limits.max_wall_clock_secs == 0
-        || limits.max_tool_calls == 0
-        || limits.max_cost_microusd == 0
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "all task budget limits must be greater than zero"})),
-        )
-            .into_response();
-    }
-    let limits_w = limits;
-    let version = std::sync::Arc::new(std::sync::Mutex::new(0));
-    let version_w = version.clone();
-    match state
-        .store
-        .write_async(move |conn| {
-            let next = crate::db::harness_store::put_budget(conn, &id, &limits_w)?;
-            *version_w.lock().expect("budget version") = next;
-            Ok(crate::db::WriteOutcome {
-                applied: true,
-                events: vec![crate::db::PendingEvent {
-                    entity_type: amux_core::revision::EntityType::Other("task_budget".into()),
-                    entity_id: id,
-                    mutation: amux_core::revision::MutationKind::Updated,
-                    payload: Some(json!({"version": next, "limits": limits_w})),
-                }],
-            })
-        })
-        .await
-    {
-        Ok(_) => Json(json!({"version": *version.lock().expect("budget version")})).into_response(),
         Err(error) => internal(error),
     }
 }

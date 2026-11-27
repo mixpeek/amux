@@ -4019,7 +4019,6 @@ pub const SESSION_SCOPED_FIELDS: &[(&str, RenameDisposition)] = &[
     ("token_ledger", RenameDisposition::Migrate),
     // Skill invocations are counted per lane on the Skills page; they follow it.
     ("skill_usage", RenameDisposition::Migrate),
-    ("tasks", RenameDisposition::Migrate),
     ("task_windows", RenameDisposition::Migrate),
     ("mdai_runs", RenameDisposition::Migrate),
     ("board_drive_nudge_state", RenameDisposition::Migrate),
@@ -34044,7 +34043,6 @@ async fn delete_post_inner(state: &AppState, name: &str, headers: &HeaderMap) ->
                 "DELETE FROM board_drive_nudge_budget WHERE session=?1",
                 "DELETE FROM board_drive_nudge_state WHERE session=?1",
                 "DELETE FROM task_windows WHERE session=?1",
-                "DELETE FROM tasks WHERE session=?1",
                 "DELETE FROM logs WHERE session=?1",
                 "DELETE FROM standing_approval_uses WHERE session=?1",
                 "DELETE FROM worker_resource_samples WHERE session=?1",

@@ -728,12 +728,10 @@ impl Runtime {
             for assignment in plan.assignments.clone() {
                 let semantic =
                     crate::orchestrator::context::issue_by_internal_id(&conn, &assignment.task)?;
-                let limits = match semantic.as_ref() {
-                    Some(row) => crate::db::harness_store::get_budget(&conn, &row.id)?
-                        .map(|(limits, _)| limits)
-                        .unwrap_or_default(),
-                    None => amux_core::limits::ExecutionLimits::default(),
-                };
+                // Per-task budgets were retired with `_amux_task_budgets`
+                // (migration 0180; nothing ever set one), so every assignment
+                // runs under the default limits.
+                let limits = amux_core::limits::ExecutionLimits::default();
                 let depth: u32 = match semantic.as_ref() {
                     Some(row) => decomposition_depth(&conn, &row.id)?,
                     None => 0,

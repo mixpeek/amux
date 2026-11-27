@@ -959,6 +959,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0179_drop_interaction_log",
         sql: include_str!("../../migrations/0179_drop_interaction_log.sql"),
     },
+    Migration {
+        version: DROP_DORMANT_PLANNING,
+        name: "0180_drop_dormant_planning_tables",
+        sql: include_str!("../../migrations/0180_drop_dormant_planning_tables.sql"),
+    },
 ];
 
 /// The migration that drops `interaction_log`. Before it runs,
@@ -968,6 +973,54 @@ const DROP_INTERACTION_LOG: i64 = 179;
 /// The migration that drops `_amux_messages`. Before it runs,
 /// [`archive_before_drop`] copies the rows it removes.
 const DROP_AMUX_MESSAGES: i64 = 177;
+
+/// The migration that drops the dormant typed model's planning and budget
+/// tables and the legacy `tasks` table (audit step 2). Archived the same way.
+const DROP_DORMANT_PLANNING: i64 = 180;
+
+/// The tables [`DROP_DORMANT_PLANNING`] drops, each archived as `<table>.json`.
+const DORMANT_PLANNING_TABLES: &[&str] = &[
+    "_amux_goal_contracts",
+    "_amux_goal_contract_revisions",
+    "_amux_planning_nodes",
+    "_amux_current_plans",
+    "_amux_plan_revisions",
+    "_amux_task_budgets",
+    "tasks",
+];
+
+/// One file of rows a dropping migration keeps: written only when `table`
+/// exists and the query returns rows.
+struct ArchiveSet {
+    file: String,
+    table: &'static str,
+    sql: String,
+}
+
+/// What a migration must archive before it runs; empty for most.
+fn archive_sets(version: i64) -> Vec<ArchiveSet> {
+    match version {
+        DROP_AMUX_MESSAGES => vec![
+            ArchiveSet {
+                file: "_amux_messages.json".into(),
+                table: "_amux_messages",
+                sql: "SELECT * FROM _amux_messages ORDER BY created_at, id".into(),
+            },
+            ArchiveSet {
+                file: "_amux_commands.deliver_message.json".into(),
+                table: "_amux_commands",
+                sql: "SELECT * FROM _amux_commands WHERE json_extract(command, '$.kind') = 'deliver_message' \
+                      AND json_type(command, '$.data') = 'text' ORDER BY queued_at, id"
+                    .into(),
+            },
+        ],
+        DROP_DORMANT_PLANNING => DORMANT_PLANNING_TABLES
+            .iter()
+            .map(|t| ArchiveSet { file: format!("{t}.json"), table: t, sql: format!("SELECT * FROM {t} ORDER BY rowid") })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
 
 /// Where the primitive integrity audit's dropped rows are kept, under the amux
 /// home (the database's directory).
@@ -997,45 +1050,41 @@ pub(crate) fn rows_json(conn: &Connection, sql: &str) -> anyhow::Result<Vec<serd
     Ok(out)
 }
 
-/// Before 0177 drops `_amux_messages` (and rewrites the orchestrator commands
-/// that named its rows), write both sets of rows to
+/// Before a dropping migration runs (0177 `_amux_messages`, 0180 the dormant
+/// planning tables), write the rows [`archive_sets`] names to
 /// `<home>/archive/primitive-audit-2026-11-26/` as JSON. A file already there
 /// is kept as it is (a re-run never overwrites the first copy). With rows to
 /// keep and no home to keep them in, the migration is refused rather than
 /// run: the drop must never be the only copy's end.
-fn archive_before_drop(conn: &Connection, home: Option<&std::path::Path>) -> anyhow::Result<()> {
-    let table_exists = conn
-        .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_amux_messages'", [], |_| Ok(()))
-        .optional()?
-        .is_some();
-    let sets = [
-        ("_amux_messages.json", if table_exists { rows_json(conn, "SELECT * FROM _amux_messages ORDER BY created_at, id")? } else { Vec::new() }),
-        ("_amux_commands.deliver_message.json", rows_json(conn,
-            "SELECT * FROM _amux_commands WHERE json_extract(command, '$.kind') = 'deliver_message' \
-             AND json_type(command, '$.data') = 'text' ORDER BY queued_at, id")?),
-    ];
-    for (file, rows) in sets {
+fn archive_before_drop(conn: &Connection, home: Option<&std::path::Path>, migration: &str, sets: Vec<ArchiveSet>) -> anyhow::Result<()> {
+    for set in sets {
+        let table_exists = conn
+            .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1", [set.table], |_| Ok(()))
+            .optional()?
+            .is_some();
+        let rows = if table_exists { rows_json(conn, &set.sql)? } else { Vec::new() };
+        let file = set.file.as_str();
         if rows.is_empty() {
-            tracing::info!(file, rows = 0, measured = true, n_considered = 0, verdict = "audit_archive_nothing_to_keep",
-                "0177: no rows to archive for this file");
+            tracing::info!(migration, file, table_exists, rows = 0, measured = true, n_considered = 0,
+                verdict = "audit_archive_nothing_to_keep", "no rows to archive for this file");
             continue;
         }
         let Some(home) = home else {
-            anyhow::bail!("0177 would drop {} row(s) archived as {file} but this database has no home to archive them in", rows.len());
+            anyhow::bail!("{migration} would drop {} row(s) archived as {file} but this database has no home to archive them in", rows.len());
         };
         let dir = home.join(AUDIT_ARCHIVE_DIR);
         let path = dir.join(file);
         if path.exists() {
-            tracing::info!(path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
-                verdict = "audit_archive_kept_existing", "0177: an archive is already there; left as it is");
+            tracing::info!(migration, path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
+                verdict = "audit_archive_kept_existing", "an archive is already there; left as it is");
             continue;
         }
         std::fs::create_dir_all(&dir)?;
         let tmp = dir.join(format!(".{file}.tmp"));
         std::fs::write(&tmp, serde_json::to_vec_pretty(&rows)?)?;
         std::fs::rename(&tmp, &path)?;
-        tracing::warn!(path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
-            verdict = "audit_archive_written", "0177: rows archived before _amux_messages is dropped");
+        tracing::warn!(migration, path = %path.display(), rows = rows.len(), measured = true, n_considered = rows.len(),
+            verdict = "audit_archive_written", "rows archived before their table is dropped");
     }
     Ok(())
 }
@@ -1386,8 +1435,9 @@ pub fn apply_all_with_home(conn: &mut Connection, home: Option<&std::path::Path>
         // migration is the one startup step that can take arbitrarily long
         // while looking exactly like a dead process.
         let started = std::time::Instant::now();
-        if m.version == DROP_AMUX_MESSAGES {
-            archive_before_drop(conn, home)?;
+        let sets = archive_sets(m.version);
+        if !sets.is_empty() {
+            archive_before_drop(conn, home, m.name, sets)?;
         }
         if m.version == DROP_INTERACTION_LOG {
             super::audit_archive::interaction_log(conn, home)?;
@@ -1857,6 +1907,20 @@ mod tests {
         conn
     }
 
+    /// A database just before 0180 holding a `tasks` row and a planning node.
+    fn dormant_planning_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_history_through(&conn, DROP_DORMANT_PLANNING - 1);
+        conn.execute_batch(
+            "INSERT INTO tasks (id, session, text, done, pos, created, updated)
+               VALUES ('19c7bf83a1e24746d', 'ops', 'tailscale ingress', 0, 1, 1771606391, 1771606391);
+             INSERT INTO _amux_planning_nodes (id, goal_id, parent_id, role, owner, title, objective, status, updated_at)
+               VALUES ('pn_1', 'goal-1', NULL, 'root_planner', 'lane-a', 'root', 'plan it', 'active', '2026-09-01T00:00:00Z');",
+        )
+        .unwrap();
+        conn
+    }
+
     #[test]
     fn dropping_interaction_log_archives_its_rows_first_and_never_overwrites_the_archive() {
         let mut conn = interaction_log_fixture();
@@ -1905,6 +1969,46 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         apply_all_with_home(&mut conn, None).expect("a fresh database has nothing to keep");
         assert!(!table_exists(&conn, "interaction_log"));
+    }
+
+    #[test]
+    fn dropping_the_dormant_planning_tables_archives_their_rows_first() {
+        let mut conn = dormant_planning_fixture();
+        let home = tempfile::tempdir().unwrap();
+        apply_all_with_home(&mut conn, Some(home.path())).unwrap();
+        let dir = home.path().join(AUDIT_ARCHIVE_DIR);
+        let tasks: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(dir.join("tasks.json")).unwrap()).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["text"], "tailscale ingress", "columns are kept as stored");
+        let nodes: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(dir.join("_amux_planning_nodes.json")).unwrap()).unwrap();
+        assert_eq!(nodes[0]["owner"], "lane-a");
+        assert!(!dir.join("_amux_goal_contracts.json").exists(), "an empty table writes no file");
+        for t in DORMANT_PLANNING_TABLES {
+            let gone = conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1", [t], |_| Ok(())).optional().unwrap();
+            assert!(gone.is_none(), "{t} is dropped");
+        }
+        for kept in ["_amux_leases", "_amux_attempts", "_amux_decompositions", "_amux_memories", "_amux_workers"] {
+            let there = conn.query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1", [kept], |_| Ok(())).optional().unwrap();
+            assert!(there.is_some(), "{kept} is kept");
+        }
+        // A second database never overwrites the first archive.
+        let mut again = dormant_planning_fixture();
+        again.execute("UPDATE tasks SET text='changed'", []).unwrap();
+        apply_all_with_home(&mut again, Some(home.path())).unwrap();
+        let kept: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(dir.join("tasks.json")).unwrap()).unwrap();
+        assert_eq!(kept[0]["text"], "tailscale ingress");
+    }
+
+    #[test]
+    fn dormant_planning_rows_with_nowhere_to_archive_them_refuse_the_drop() {
+        let mut conn = dormant_planning_fixture();
+        let e = apply_all(&mut conn).unwrap_err().to_string();
+        assert!(e.contains("no home to archive") && e.contains("0180"), "{e}");
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "nothing was dropped");
+        conn.execute_batch("DELETE FROM tasks; DELETE FROM _amux_planning_nodes;").unwrap();
+        apply_all(&mut conn).unwrap();
     }
 
     /// Either 0082/0083 history converges, and 0139 then removes the project

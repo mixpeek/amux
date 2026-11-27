@@ -142,368 +142,47 @@ fn issue(title: &str, owner: Option<&str>) -> NewIssue {
     }
 }
 
-fn goal_body(objective: &str) -> Value {
-    json!({
-        "id": "goal-control-plane",
-        "objective": objective,
-        "non_goals": ["automatic pushes"],
-        "success_metrics": ["all gates pass"],
-        "performance_requirements": ["bounded WIP"],
-        "resource_constraints": ["local repository only"],
-        "dependency_policy": "children report evidence to their owning parent",
-        "release_policy": "manual promotion after green reconciliation",
-        "expected_scope_min": 2,
-        "expected_scope_max": 8,
-        "root_owner": "root-planner",
-        "root_title": "Control-plane rollout"
-    })
-}
-
+/// Goals, planning nodes and task budgets were retired with their tables
+/// (migration 0180, primitive integrity audit 2026-11-26 step 2). Through the
+/// real router and its policy middleware every old path answers 410 with a
+/// pointer, and a handoff can no longer be scoped to a planning node.
 #[tokio::test]
-async fn recursive_planning_feedback_replans_and_history_is_immutable() {
+async fn retired_planning_routes_answer_gone_through_the_real_router() {
     let rig = rig();
-    let mut spoofed_goal = goal_body("Hijack another planner identity");
-    spoofed_goal["id"] = json!("goal-spoof-attempt");
-    spoofed_goal["root_owner"] = json!("victim-session");
-    let (status, _, spoof_refusal) = send(
-        &rig.app,
-        "POST",
-        "/api/harness/goals",
-        Some(spoofed_goal),
-        &[("x-amux-session", "attacker-session")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{spoof_refusal}");
-    assert_eq!(spoof_refusal["code"], "root_owner_mismatch");
-
-    let (status, _, created) = send(
-        &rig.app,
-        "POST",
-        "/api/harness/goals",
-        Some(goal_body("Ship the self-driving control plane")),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    assert_eq!(created["goal"]["version"], 1);
-    assert_eq!(created["root"]["role"], "root_planner");
-    let root = created["root"]["id"].as_str().unwrap().to_string();
-
-    let (status, _, denied) = send(
-        &rig.app,
-        "POST",
-        "/api/board",
-        Some(json!({"title": "planner must not implement this"})),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
-    assert_eq!(
-        denied["decision"]["rule_id"],
-        "builtin-planner-no-execution"
-    );
-
-    let plan_path = format!("/api/harness/planning-nodes/{root}/plan");
-    let (status, _, plan_refusal) = send(
-        &rig.app,
-        "PUT",
-        &plan_path,
-        Some(json!({"body": "steal the plan", "reason": "not the owner"})),
-        &[("x-amux-session", "not-root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{plan_refusal}");
-    assert_eq!(plan_refusal["code"], "planning_node_owner_required");
-    let (status, _, first_plan) = send(
-        &rig.app,
-        "PUT",
-        &plan_path,
-        Some(json!({
-            "body": "Delegate implementation and verification independently.",
-            "reason": "Initial decomposition"
-        })),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{first_plan}");
-    assert_eq!(first_plan["version"], 1);
-
-    let node_path = "/api/harness/goals/goal-control-plane/nodes";
-    let (status, _, delegation_refusal) = send(
-        &rig.app,
-        "POST",
-        node_path,
-        Some(json!({
-            "parent_id": root,
-            "role": "worker",
-            "owner": "unauthorized-worker",
-            "title": "Unauthorized slice",
-            "objective": "Must never be inserted"
-        })),
-        &[("x-amux-session", "not-root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{delegation_refusal}");
-    assert_eq!(delegation_refusal["code"], "parent_planner_owner_required");
-    let (status, _, subplanner) = send(
-        &rig.app,
-        "POST",
-        node_path,
-        Some(json!({
-            "parent_id": root,
-            "role": "subplanner",
-            "owner": "subplanner-a",
-            "title": "Trace design",
-            "objective": "Implement trace evidence and report deviations"
-        })),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{subplanner}");
-    let subplanner_id = subplanner["id"].as_str().unwrap().to_string();
-
-    let (status, _, handoff_sender_refusal) = send(
-        &rig.app,
-        "POST",
-        "/api/harness/handoffs/unauthorized-trace-slice",
-        Some(json!({
-            "objective": "Spoof a typed handoff",
-            "planning_scope_id": subplanner_id,
-            "next_action": "Must not wake the parent",
-            "receiver": "root-planner"
-        })),
-        &[("x-amux-session", "not-subplanner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{handoff_sender_refusal}");
-    assert_eq!(handoff_sender_refusal["code"], "handoff_sender_not_owner");
-
-    let (status, _, handoff_receiver_refusal) = send(
-        &rig.app,
-        "POST",
-        "/api/harness/handoffs/wrong-parent-trace-slice",
-        Some(json!({
-            "objective": "Send feedback to the wrong parent",
-            "planning_scope_id": subplanner_id,
-            "next_action": "Must not wake anyone",
-            "receiver": "wrong-root"
-        })),
-        &[("x-amux-session", "subplanner-a")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{handoff_receiver_refusal}");
-    assert_eq!(
-        handoff_receiver_refusal["code"],
-        "handoff_receiver_not_parent_owner"
-    );
-
-    let (status, _, mixed_role_refusal) = send(
-        &rig.app,
-        "POST",
-        node_path,
-        Some(json!({
-            "parent_id": subplanner_id,
-            "role": "worker",
-            "owner": "root-planner",
-            "title": "Mixed authority",
-            "objective": "Must not let a planner acquire execution authority"
-        })),
-        &[("x-amux-session", "subplanner-a")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{mixed_role_refusal}");
-    assert_eq!(
-        mixed_role_refusal["code"],
-        "planning_identity_role_conflict"
-    );
-
-    let mut worker_node_id = None;
-    for (role, owner) in [("worker", "worker-a"), ("verifier", "verifier-a")] {
-        let (status, _, node) = send(
-            &rig.app,
-            "POST",
-            node_path,
-            Some(json!({
-                "parent_id": subplanner_id,
-                "role": role,
-                "owner": owner,
-                "title": format!("{role} slice"),
-                "objective": format!("Own the {role} boundary")
-            })),
-            &[("x-amux-session", "subplanner-a")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "{node}");
-        if role == "worker" {
-            worker_node_id = node["id"].as_str().map(str::to_owned);
-        }
+    for (method, path, body) in [
+        ("POST", "/api/harness/goals", Some(json!({"id": "goal-1", "objective": "x"}))),
+        ("GET", "/api/harness/goals/goal-1", None),
+        ("PUT", "/api/harness/goals/goal-1", Some(json!({"objective": "y"}))),
+        ("GET", "/api/harness/goals/goal-1/nodes", None),
+        ("POST", "/api/harness/goals/goal-1/nodes", Some(json!({"owner": "w"}))),
+        ("GET", "/api/harness/planning-nodes/pn-1", None),
+        ("GET", "/api/harness/planning-nodes/pn-1/plan", None),
+        ("PUT", "/api/harness/planning-nodes/pn-1/plan", Some(json!({"body": "b"}))),
+        ("GET", "/api/harness/budgets/AMUX-1", None),
+        ("PUT", "/api/harness/budgets/AMUX-1", Some(json!({"max_attempts": 2}))),
+    ] {
+        let (status, _, value) = send(&rig.app, method, path, body, &[("x-amux-session", "root-planner")]).await;
+        assert_eq!(status, StatusCode::GONE, "{method} {path}: {value}");
+        assert_eq!(value["code"], "route_retired", "{method} {path}: {value}");
     }
-
-    let worker_node_id = worker_node_id.unwrap();
-    let (status, _, worker_handoff) = send(
+    let (status, _, value) = send(
         &rig.app,
         "POST",
-        "/api/harness/handoffs/worker-slice",
+        "/api/harness/handoffs/AMUX-1",
         Some(json!({
-            "objective": "Return executed slice evidence",
-            "evidence": ["worker boundary completed"],
-            "planning_scope_id": worker_node_id,
-            "next_action": "Subplanner incorporates the worker result",
-            "receiver": "subplanner-a"
+            "objective": "hand it back",
+            "next_action": "review",
+            "receiver": "root-planner",
+            "planning_scope_id": "pn-1"
         })),
         &[("x-amux-session", "worker-a")],
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{worker_handoff}");
-    let (status, _, worker_after) = send(
-        &rig.app,
-        "GET",
-        &format!("/api/harness/planning-nodes/{worker_node_id}"),
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{worker_after}");
-    assert_eq!(worker_after["status"], "complete");
-    let (status, _, subplanner_after_worker) = send(
-        &rig.app,
-        "GET",
-        &format!("/api/harness/planning-nodes/{subplanner_id}"),
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{subplanner_after_worker}");
-    assert_eq!(subplanner_after_worker["status"], "active");
-    assert_eq!(subplanner_after_worker["wake_count"], 0);
-
-    let (status, _, handoff) = send(
-        &rig.app,
-        "POST",
-        "/api/harness/handoffs/trace-slice",
-        Some(json!({
-            "objective": "Return trace implementation evidence",
-            "artifacts": ["trace-store", "trace-api"],
-            "evidence": ["provider subprocess E2E passed"],
-            "assumptions": ["14 day default retention"],
-            "unresolved": [],
-            "concerns": ["provider output can contain secrets"],
-            "deviations": ["raw terminal screen capture intentionally excluded"],
-            "findings": ["all raw provider lines are now durable"],
-            "requires_replan": true,
-            "planning_scope_id": subplanner_id,
-            "next_action": "Revise the root plan from measured evidence",
-            "receiver": "root-planner"
-        })),
-        &[("x-amux-session", "subplanner-a")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{handoff}");
-    assert_eq!(handoff["requires_replan"], true);
-    assert_eq!(handoff["concerns"].as_array().unwrap().len(), 1);
-
-    let (status, _, root_after_feedback) = send(
-        &rig.app,
-        "GET",
-        &format!("/api/harness/planning-nodes/{root}"),
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{root_after_feedback}");
-    assert_eq!(root_after_feedback["status"], "needs_replan");
-    assert_eq!(root_after_feedback["wake_count"], 1);
-
-    let (status, _, second_plan) = send(
-        &rig.app,
-        "PUT",
-        &plan_path,
-        Some(json!({
-            "body": "Redact provider output before durable storage.",
-            "reason": "Subplanner reported a secret-exposure concern"
-        })),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{second_plan}");
-    assert_eq!(second_plan["version"], 2);
-
-    let mut revised_goal = goal_body("Ship a redacted self-driving control plane");
-    revised_goal.as_object_mut().unwrap().remove("id");
-    let (status, _, goal_refusal) = send(
-        &rig.app,
-        "PUT",
-        "/api/harness/goals/goal-control-plane",
-        Some(revised_goal.clone()),
-        &[("x-amux-session", "not-root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{goal_refusal}");
-    assert_eq!(goal_refusal["code"], "goal_owner_required");
-    let (status, _, goal_v2) = send(
-        &rig.app,
-        "PUT",
-        "/api/harness/goals/goal-control-plane",
-        Some(revised_goal),
-        &[("x-amux-session", "root-planner")],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{goal_v2}");
-    assert_eq!(goal_v2["version"], 2);
-
-    let (_, _, plans) = send(&rig.app, "GET", &plan_path, None, &[]).await;
-    assert_eq!(plans["n_considered"], 2);
-    assert_eq!(plans["current"]["version"], 2);
-    assert_eq!(plans["history"][0]["version"], 1);
-    assert_eq!(plans["history"][1]["version"], 2);
-    let (_, _, goals) = send(
-        &rig.app,
-        "GET",
-        "/api/harness/goals/goal-control-plane",
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(goals["n_considered"], 2);
-    assert_eq!(goals["current"]["objective"], goal_v2["objective"]);
-
-    let conn = rig.store.read().unwrap();
-    let receipt: (String, String) = conn
-        .query_row(
-            "SELECT role,effect FROM _amux_policy_receipts
-             WHERE rule_id='builtin-planner-no-execution' ORDER BY created_at DESC LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(receipt, ("root_planner".into(), "deny".into()));
-    drop(conn);
-    assert!(rig
-        .store
-        .write(move |conn| {
-            conn.execute(
-                "UPDATE _amux_plan_revisions SET body='rewritten' WHERE planning_node_id=?1",
-                [&root],
-            )?;
-            Ok(WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
-        .is_err());
-    assert!(rig
-        .store
-        .write(|conn| {
-            conn.execute(
-                "DELETE FROM _amux_goal_contract_revisions WHERE goal_id='goal-control-plane'",
-                [],
-            )?;
-            Ok(WriteOutcome {
-                applied: true,
-                events: vec![],
-            })
-        })
-        .is_err());
+    assert_eq!(status, StatusCode::GONE, "{value}");
+    assert_eq!(value["code"], "planning_scope_retired", "{value}");
+    let n: i64 = rig.store.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM _amux_handoffs", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 0, "a refused handoff writes nothing");
 }
 
 #[tokio::test]
