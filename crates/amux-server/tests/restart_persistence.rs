@@ -469,8 +469,17 @@ async fn every_durable_subsystem_survives_a_hard_restart() {
          VALUES ('tsk_rr0150_live', ?1, ?2, ?3, 0)",
         &[&worker_id, &now.to_rfc3339(), &(now + chrono::Duration::hours(1)).to_rfc3339()],
     );
+    // /api/metrics counts the BOARD's leases (issues.lease_*, audit P0), so the
+    // same live/expired pair is held by two cards as well.
+    let (live_exp, gone_exp) = (now.timestamp() + 3600, now.timestamp() - 3600);
+    rig.seed(
+        "INSERT INTO issues (id, title, created, updated, status, lease_owner, lease_expires_at)
+         VALUES ('RR-LIVE', 'leased', 1, 1, 'doing', ?1, ?2), ('RR-GONE', 'lapsed', 1, 1, 'doing', ?1, ?3)",
+        &[&lane, &live_exp, &gone_exp],
+    );
     let (_, metrics_before) = rig.get("/api/metrics").await;
-    assert_eq!(metrics_before["leases"]["live"], 1, "expired RFC3339 leases must not appear live");
+    assert_eq!(metrics_before["leases"]["source"], "issues");
+    assert_eq!(metrics_before["leases"]["live"], 1, "expired leases must not appear live");
     assert_eq!(metrics_before["leases"]["total"], 2);
     // A 'running' transcode whose heartbeat is long stale — the exact state
     // migration 0009 exists to make survivable (python held this in memory,

@@ -3961,6 +3961,34 @@ pub fn refresh_lease_heartbeat(
     Ok(n)
 }
 
+/// Board leases as the expiry reaper sees them (`reclaim_expired_leases`): a
+/// live, non-archived card in `doing` with a holder and an expiry. `live` have
+/// not expired at `now`; `expired` have and wait for the reaper.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct BoardLeaseCounts {
+    pub live: usize,
+    pub expired: usize,
+}
+
+/// Count [`BoardLeaseCounts`] at `now` (unix seconds). This is the lease count
+/// FleetProgress and /api/metrics report: the board's `issues.lease_*` columns
+/// are where leases live (primitive integrity audit 2026-11-26, P0), and the
+/// orchestrator's own `_amux_leases` is always empty.
+pub fn board_lease_counts(conn: &Connection, now: i64) -> rusqlite::Result<BoardLeaseCounts> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(lease_expires_at >= ?1), 0), COALESCE(SUM(lease_expires_at < ?1), 0) \
+         FROM issues WHERE status = 'doing' AND lease_owner IS NOT NULL AND TRIM(lease_owner) != '' \
+           AND lease_expires_at IS NOT NULL AND deleted IS NULL AND COALESCE(archived, 0) = 0",
+        params![now],
+        |r| {
+            Ok(BoardLeaseCounts {
+                live: r.get::<_, i64>(0)?.max(0) as usize,
+                expired: r.get::<_, i64>(1)?.max(0) as usize,
+            })
+        },
+    )
+}
+
 /// Release every lease held by `holder`, and say how many (AMUX-4954).
 ///
 /// A DELETED WORKER MUST STOP BEING A HOLDER. Measured 2026-09-20: after DELETE
@@ -5652,6 +5680,25 @@ mod tests {
             .any(|p| p.raw_status == "some-operator-column"));
         // And the archived row is excluded by both.
         assert!(!narrow.iter().any(|p| p.task.id == internal_id("P-4")));
+    }
+
+    /// FleetProgress counts leases where the board keeps them (audit P0).
+    #[test]
+    fn board_lease_counts_split_live_from_expired_and_skip_cards_nobody_holds() {
+        let conn = crate::db::migrate::test_memdb();
+        conn.execute_batch(
+            "INSERT INTO issues (id,title,created,updated,status,lease_owner,lease_expires_at,deleted,archived)
+             VALUES ('L-1','live',1,1,'doing','w1',2000,NULL,0),
+                    ('L-2','live at the edge',1,1,'doing','w2',1000,NULL,0),
+                    ('E-1','expired',1,1,'doing','w1',999,NULL,0),
+                    ('X-1','done keeps a stale lease',1,1,'done','w1',2000,NULL,0),
+                    ('X-2','deleted',1,1,'doing','w1',2000,1,0),
+                    ('X-3','archived',1,1,'doing','w1',2000,NULL,1),
+                    ('X-4','no holder',1,1,'doing','  ',2000,NULL,0),
+                    ('X-5','no expiry',1,1,'doing','w1',NULL,NULL,0);",
+        )
+        .unwrap();
+        assert_eq!(board_lease_counts(&conn, 1000).unwrap(), BoardLeaseCounts { live: 2, expired: 1 });
     }
 
     /// AMUX-4954. A deleted worker must stop being a lease holder.

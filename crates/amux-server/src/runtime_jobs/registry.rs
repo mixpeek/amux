@@ -478,8 +478,11 @@ pub const CATALOG: &[Doc] = &[
     Doc {
         id: ids::ORCH_RUNTIME,
         name: "Orchestrator runtime",
-        purpose: "The reconcile/plan/execute pump: leases, the fleet circuit breaker, and every worker state transition.",
-        env: &[EnvControl { var: "AMUX_RS_TICK_SECS", effect: "tick seconds (default 3)", off: None }],
+        purpose: "The retiring plan/execute pump for rust-managed workers: its own leases, the fleet circuit breaker and the command pump. Off by default; the board dispatcher is canonical.",
+        env: &[
+            EnvControl { var: "AMUX_RS_ORCH", effect: "1 runs the loop; anything else (the default) leaves it off", off: None },
+            EnvControl { var: "AMUX_RS_TICK_SECS", effect: "tick seconds (default 3)", off: None },
+        ],
         pref: None,
         detail: None,
     },

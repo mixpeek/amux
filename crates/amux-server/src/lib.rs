@@ -946,6 +946,16 @@ async fn async_main() {
         .unwrap_or(amux_core::circuit::FleetState::Normal)
     };
     boot_watch::step("orchestrator_runtime");
+    // The tick loop is off unless AMUX_RS_ORCH=1 (primitive integrity audit
+    // 2026-11-26, step 2): it planned over rust-managed workers while the board
+    // dispatcher does the real dispatch. Reconciliation below still runs, it is
+    // what /health's `reconciled` waits on.
+    let orch_loop = orchestrator::runtime::loop_decision(
+        cfg.env.get(orchestrator::runtime::LOOP_SWITCH).map(String::as_str),
+    );
+    orchestrator::runtime::record_loop_decision(&orch_loop);
+    tracing::warn!(job = jobs::ids::ORCH_RUNTIME, on = orch_loop.on, measured = true, n_considered = 1,
+        verdict = orch_loop.verdict, "{}", orch_loop.reason);
     let runtime = Arc::new(orchestrator::runtime::Runtime {
         store: store.clone(),
         backends: backends.clone(),
@@ -1015,11 +1025,17 @@ async fn async_main() {
             crate::api::reclaim::reap_orphaned_scans(&store);
             reconciled.store(true, std::sync::atomic::Ordering::Release);
             let orch_tick_secs = runtime.tick_secs.max(1);
-            jobs::spawn_loop(
-                jobs::ids::ORCH_RUNTIME,
-                Some(secs(orch_tick_secs)),
-                move || runtime.clone().run(),
-            );
+            if orch_loop.on {
+                jobs::spawn_loop(
+                    jobs::ids::ORCH_RUNTIME,
+                    Some(secs(orch_tick_secs)),
+                    move || runtime.clone().run(),
+                );
+            } else {
+                // Inert but visible: /api/system-jobs shows it `disabled` with
+                // the reason, never a loop that reads `stalled`.
+                jobs::register_disabled(jobs::ids::ORCH_RUNTIME, "loop", Some(secs(orch_tick_secs)), orch_loop.reason);
+            }
         });
     }
 

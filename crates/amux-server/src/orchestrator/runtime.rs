@@ -22,15 +22,74 @@ use std::sync::Arc;
 /// The L4 heartbeat: "is progress continuing?" answered as data, not
 /// inferred from scrollback. Published as a StateEvent so SSE clients and
 /// the dashboard status bar receive it like any other state change.
+///
+/// `live_leases` / `expired_leases` count the BOARD's leases (`issues.lease_*`,
+/// [`crate::db::board_store::board_lease_counts`]), the ones cards actually
+/// hold. They used to count `_amux_leases`, which only this planner writes and
+/// which reads 0 while dozens of cards hold leases (primitive integrity audit
+/// 2026-11-26, P0). `workers_*` and `reclaimed_last_tick` still describe this
+/// planner: rust-managed workers and its own lease table.
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetProgress {
     pub at: DateTime<Utc>,
     pub workers_total: usize,
     pub workers_active: usize,
     pub live_leases: usize,
+    pub expired_leases: usize,
+    pub lease_source: &'static str,
     pub reclaimed_last_tick: usize,
     pub stall_violations: usize,
     pub quarantined_total: u64,
+}
+
+/// Where FleetProgress's lease counts come from, carried in the payload.
+pub const LEASE_SOURCE: &str = "issues";
+
+/// The switch for the orchestrator tick loop. The loop is OFF unless it is
+/// exactly `1`: it planned over rust-managed workers, of which none is live,
+/// while the board dispatcher (`runtime_jobs/board_drive.rs`) does the real
+/// dispatch (primitive integrity audit 2026-11-26, step 2). Kept for one
+/// release so an operator can turn it back on.
+pub const LOOP_SWITCH: &str = "AMUX_RS_ORCH";
+
+/// What boot decided about the loop, with the verdict it logs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopDecision {
+    pub on: bool,
+    pub verdict: &'static str,
+    pub reason: String,
+}
+
+pub fn loop_decision(value: Option<&str>) -> LoopDecision {
+    let v = value.map(str::trim).unwrap_or("");
+    if v == "1" {
+        LoopDecision {
+            on: true,
+            verdict: "orchestrator_loop_on",
+            reason: format!("{LOOP_SWITCH}=1: the orchestrator tick loop runs (retiring; the board dispatcher is canonical)"),
+        }
+    } else {
+        let shown = if v.is_empty() { "unset".to_string() } else { format!("{v:?}") };
+        LoopDecision {
+            on: false,
+            verdict: "orchestrator_loop_off",
+            reason: format!("{LOOP_SWITCH} is {shown}: the orchestrator tick loop is off by default; set {LOOP_SWITCH}=1 in server.env and restart to run it"),
+        }
+    }
+}
+
+static LOOP_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Record boot's decision so a view can say why the heartbeat is old.
+pub fn record_loop_decision(d: &LoopDecision) {
+    if LOOP_ON.set(d.on).is_err() {
+        tracing::debug!(verdict = "orchestrator_loop_decision_already_set", "loop decision recorded once per process");
+    }
+}
+
+/// Boot's decision, or None before boot made one (tests, a bare router).
+pub fn loop_running() -> Option<bool> {
+    LOOP_ON.get().copied()
 }
 
 /// Deterministic WorkerId for a Python-fleet owner name: matches no
@@ -702,6 +761,10 @@ impl Runtime {
         }
 
         if heartbeat {
+            let board_leases = {
+                let conn = self.store.read()?;
+                crate::db::board_store::board_lease_counts(&conn, now.timestamp())?
+            };
             let progress = FleetProgress {
                 at: now,
                 workers_total: workers.len(),
@@ -709,7 +772,9 @@ impl Runtime {
                     .iter()
                     .filter(|w| matches!(w.state, amux_core::worker::WorkerState::Active { .. }))
                     .count(),
-                live_leases: leases.iter().filter(|l| !l.is_expired(now)).count(),
+                live_leases: board_leases.live,
+                expired_leases: board_leases.expired,
+                lease_source: LEASE_SOURCE,
                 reclaimed_last_tick: plan.reclaim.len(),
                 stall_violations: plan.stalls.len(),
                 quarantined_total,
@@ -2537,6 +2602,51 @@ mod tests {
             kinds.iter().any(|k| k.contains("fleet_progress")),
             "{kinds:?}"
         );
+    }
+
+    /// The heartbeat counts the leases cards hold on the board, not the
+    /// planner's own `_amux_leases` (audit P0: that read 0 beside 22 held cards).
+    #[tokio::test]
+    async fn heartbeat_counts_board_leases_from_issues() {
+        let store = store();
+        let now = Utc::now().timestamp();
+        store
+            .write(move |conn| {
+                conn.execute(
+                    "INSERT INTO issues (id,title,created,updated,status,lease_owner,lease_expires_at)
+                     VALUES ('B-1','held',1,1,'doing','lane-a',?1), ('B-2','held',1,1,'doing','lane-b',?1),
+                            ('B-3','expired',1,1,'doing','lane-a',?2)",
+                    params![now + 600, now - 600],
+                )?;
+                Ok(WriteOutcome { applied: true, events: vec![] })
+            })
+            .unwrap();
+        let rt = test_runtime(store.clone(), vec![]);
+        let mut rx = store.subscribe();
+        rt.tick_once(true).await.unwrap();
+        let mut hb = None;
+        while let Ok(ev) = rx.try_recv() {
+            if format!("{:?}", ev.entity_type).contains("fleet_progress") {
+                hb = serde_json::from_str::<serde_json::Value>(&ev.entity_id).ok();
+            }
+        }
+        let hb = hb.expect("a heartbeat was published");
+        assert_eq!(hb["live_leases"], serde_json::json!(2), "{hb}");
+        assert_eq!(hb["expired_leases"], serde_json::json!(1), "{hb}");
+        assert_eq!(hb["lease_source"], serde_json::json!("issues"), "{hb}");
+    }
+
+    #[test]
+    fn the_loop_runs_only_when_the_switch_is_exactly_one() {
+        assert!(loop_decision(Some("1")).on);
+        assert!(loop_decision(Some(" 1 ")).on);
+        for off in [None, Some(""), Some("0"), Some("true"), Some("yes")] {
+            let d = loop_decision(off);
+            assert!(!d.on, "{off:?}");
+            assert_eq!(d.verdict, "orchestrator_loop_off");
+            assert!(d.reason.contains("AMUX_RS_ORCH=1"), "{}", d.reason);
+        }
+        assert_eq!(loop_decision(Some("1")).verdict, "orchestrator_loop_on");
     }
 }
 

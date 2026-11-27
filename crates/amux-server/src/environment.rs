@@ -174,6 +174,7 @@ pub const REGISTRY: &[KeySpec] = &[
     k("AMUX_REPEAT_ASK_NOTE", PF, "note a repeated owner ask"),
     k("AMUX_RESUME_MODE_ACTION", PO, "answer to the resume-mode prompt"),
     k("AMUX_RS_LEGACY_PORT", PO, "legacy port compatibility bind"),
+    k("AMUX_RS_ORCH", PO, "1 runs the retiring orchestrator tick loop (off by default)"),
     k("AMUX_SEND_QUEUE_FOR_PAUSED", PF, "queue sends to a paused worker"),
     k("AMUX_SEND_RESERVATION_EXPIRE_S", PO, "send reservation expiry"),
     k("AMUX_SIGNAL_WAKE", PF, "wake a worker on a signal"),

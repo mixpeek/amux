@@ -797,12 +797,9 @@ async fn metrics(State(state): State<AppState>) -> Response {
             "open": count(&conn, "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND COALESCE(archived,0)=0 AND status NOT IN ('done','verified','discarded')"),
             "quarantined": count(&conn, "SELECT COUNT(*) FROM issues WHERE deleted IS NULL AND status = 'quarantined'"),
         },
-        "leases": {
-            // Lease expiry is RFC3339, while datetime('now') uses a space.
-            // Compare instants: lexical comparison labels expired leases live.
-            "live": count(&conn, "SELECT COUNT(*) FROM _amux_leases WHERE julianday(expires_at) > julianday('now')"),
-            "total": count(&conn, "SELECT COUNT(*) FROM _amux_leases"),
-        },
+        // The board's leases (`issues.lease_*`), the ones cards hold. This
+        // used to count the orchestrator's `_amux_leases`, always 0 (audit P0).
+        "leases": board_leases_json(&conn),
         "turns_recorded": count(&conn, "SELECT COUNT(*) FROM _amux_turns"),
         "events_journal": count(&conn, "SELECT COUNT(*) FROM _amux_state_events"),
     });
@@ -827,6 +824,20 @@ async fn metrics(State(state): State<AppState>) -> Response {
         }
     }
     Json(body).into_response()
+}
+
+/// Board lease counts for a metrics payload, with `measured` so a failed read
+/// cannot pass for a fleet holding no leases.
+fn board_leases_json(conn: &rusqlite::Connection) -> serde_json::Value {
+    match crate::db::board_store::board_lease_counts(conn, chrono::Utc::now().timestamp()) {
+        Ok(c) => json!({"live": c.live, "expired": c.expired, "total": c.live + c.expired,
+            "source": crate::orchestrator::runtime::LEASE_SOURCE, "measured": true}),
+        Err(e) => {
+            tracing::warn!(error = %e, measured = false, n_considered = 0, verdict = "board_lease_count_failed",
+                "metrics: could not count board leases");
+            json!({"source": crate::orchestrator::runtime::LEASE_SOURCE, "measured": false, "why_unmeasured": e.to_string()})
+        }
+    }
 }
 
 async fn fleet(State(state): State<AppState>) -> Response {
@@ -899,6 +910,14 @@ async fn fleet(State(state): State<AppState>) -> Response {
     };
 
     Json(json!({
+        // Measured now, so it is current whether or not the loop publishes a
+        // heartbeat (it is off by default; `orchestrator_loop` says which).
+        "board_leases": board_leases_json(&conn),
+        "orchestrator_loop": match crate::orchestrator::runtime::loop_running() {
+            Some(on) => json!({"running": on, "switch": crate::orchestrator::runtime::LOOP_SWITCH, "measured": true}),
+            None => json!({"running": null, "switch": crate::orchestrator::runtime::LOOP_SWITCH, "measured": false,
+                "why_unmeasured": "this process has not made the boot decision"}),
+        },
         "last_heartbeat": parse(last("fleet_progress")),
         "last_fleet_state_change": parse(last("fleet_state")),
         "last_exhaustion_action": parse(last("exhaustion")),
