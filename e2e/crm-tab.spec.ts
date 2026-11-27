@@ -572,3 +572,71 @@ test('bulk: the owner approves two drafts at once and declines one with a note',
   expect(all.map((t: any) => t.status).sort()).toEqual(['approved', 'approved', 'skipped']);
   expect(all.find((t: any) => t.status === 'skipped').result).toBe('declined by the owner: off-target ' + R);
 });
+
+// Campaigns (owner 2026-11-27: "Do we have the concept of a campaign?" ... "yes
+// build it"): made from the tab, its sequences put in it, its app filled into
+// the drafts, the funnel added up across it, and a pause holding new people.
+test('a campaign is made in the tab, gathers its sequences, fills its app into drafts, rolls up the funnel, and a pause holds it', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  const W = 'crm-camp-' + R;
+  const phone = (page.viewportSize()?.width || 1280) < 1000;
+  await openCrm(page, 'Campaigns');
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb, w]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': w }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b, W] as const);
+  const s1 = (await asWorker('POST', '/sequences', { name: 'IP email ' + R, steps: [{ channel: 'linkedin', action: 'dm', template: 'Hi {first_name}, {campaign}: {asset_url}' }, { day: 3, channel: 'linkedin', action: 'comment' }] })).body.id;
+  const s2 = (await asWorker('POST', '/sequences', { name: 'IP X ' + R, steps: [{ channel: 'x', action: 'dm', template: 'hi' }] })).body.id;
+
+  // + New makes it, as a draft.
+  await page.locator('.crm-new').click();
+  await page.locator('#crm-new-name').fill('IP check ' + R);
+  await page.locator('#crm-new-goal').fill('book IP check demos');
+  await page.locator('#crm-new-use_case').fill('ip-check');
+  await page.locator('#crm-drawer .btn.primary', { hasText: 'Add' }).click();
+  const rec = page.locator('#crm-drawer .cx-drawer');
+  await expect(rec.locator('.cx-dhead .crm-name')).toHaveText('IP check ' + R);
+  await expect(rec.locator('.cx-dhead .cx-pill')).toHaveText('draft');
+  const camp = (await api(page, 'GET', '/campaigns')).body.find((c: any) => c.name === 'IP check ' + R);
+
+  // Its app and both sequences, then active.
+  await rec.locator('#crmf-asset_url').fill('https://apps.example/ip-' + R);
+  await rec.locator('#crmf-asset_url').blur();
+  await expect.poll(async () => (await api(page, 'GET', '/campaigns/' + camp.id)).body.asset_url).toBe('https://apps.example/ip-' + R);
+  for (const s of [s1, s2]) {
+    await rec.locator('#crm-camp-seq').selectOption(s);
+    await rec.locator('button', { hasText: 'Add sequence' }).click();
+    await expect(rec.locator('.crm-seq[data-id="' + s + '"]')).toBeVisible();
+  }
+  await rec.locator('#crmf-cstatus').selectOption('active');
+  await expect.poll(async () => (await api(page, 'GET', '/campaigns/' + camp.id)).body.status).toBe('active');
+
+  // A person enrolled in it gets a draft with its name and app.
+  const ada = (await api(page, 'POST', '/contacts', { name: 'Ada Camp ' + R, email: `ada.${R}@acme.io`, linkedin: 'linkedin.com/in/ada-' + R })).body.id;
+  const en = await asWorker('POST', '/sequences/' + s1 + '/enroll', { contact_ids: [ada] });
+  expect(en.body.enrolled.length).toBe(1);
+  const t = (await api(page, 'GET', '/touches?contact_id=' + ada)).body[0];
+  expect(t.body).toBe('Hi Ada, IP check ' + R + ': https://apps.example/ip-' + R);
+
+  // The list rolls it up, and the Funnel groups by campaign.
+  if (phone) await page.locator('#crm-drawer [aria-label="Close"]').first().click();
+  await crmView(page, 'Campaigns');
+  await page.locator('#crm-q').fill(R);
+  await expect(page.locator('#crm-list .crm-row', { hasText: 'IP check ' + R })).toContainText('2 sequences · 1 enrolled');
+  await page.locator('#crm-q').fill('');
+  await crmView(page, 'Funnel');
+  await expect(page.locator('#crm-chips .cx-filter.on', { hasText: 'By campaign' })).toBeVisible();
+  await expect(page.locator('#crm-list .crm-funnel[data-key="' + camp.id + '"] .crm-step[data-step="enrolled"] .crm-step-n')).toHaveText('1');
+
+  // Paused: nobody new goes in.
+  await crmView(page, 'Campaigns');
+  await page.locator('#crm-q').fill(R);
+  await page.locator('#crm-list .crm-row', { hasText: 'IP check ' + R }).click();
+  await page.locator('#crm-drawer #crmf-cstatus').selectOption('paused');
+  await expect.poll(async () => (await api(page, 'GET', '/campaigns/' + camp.id)).body.status).toBe('paused');
+  const bo = (await api(page, 'POST', '/contacts', { name: 'Bo Camp ' + R, email: `bo.${R}@acme.io`, linkedin: 'linkedin.com/in/bo-' + R })).body.id;
+  expect((await asWorker('POST', '/sequences/' + s1 + '/enroll', { contact_ids: [bo] })).body.code).toBe('crm_campaign_not_active');
+  await expect(page.locator('#crm-drawer .crm-brief')).toContainText('Paused');
+  await page.screenshot({ path: test.info().outputPath('crm-campaign.png') });
+});

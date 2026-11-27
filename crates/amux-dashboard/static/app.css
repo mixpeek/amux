@@ -11459,7 +11459,8 @@ body.light #file-overlay .mdx-out .file-overlay-body { background: var(--bg); co
 .crm-subj { color: var(--text); }
 .crm-tag { display: inline-flex; align-items: center; font-size: var(--fs-sm); padding: var(--space-0-5) var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .crm-tags { display: flex; flex-wrap: wrap; gap: var(--space-1-5); margin-top: var(--space-2); }
-.crm-wrap { white-space: normal; }
+/* A line that should wrap, never cut off: .crm-meta below sets nowrap with an ellipsis, so this pairs with it to win. */
+.crm-wrap, .crm-meta.crm-wrap { white-space: normal; overflow-wrap: anywhere; }
 .crm-capnote { text-align: center; padding: var(--space-2) 0; white-space: normal; }
 .crm-furow { cursor: default; }
 .crm-actions-tight { margin: var(--space-1-5) 0 0; }

@@ -322,7 +322,7 @@ fn plan_step_due(conn: &rusqlite::Connection, seq: &str, contact: &str, n: usize
     let Some(step) = steps.get(n - 1) else { return Ok(None) };
     let day = day.unwrap_or_else(|| step.get("day").and_then(Value::as_i64).unwrap_or(0));
     let s = |k: &str| step.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let body = fill(conn, &s("template"), contact);
+    let body = fill(conn, &super::crm_campaigns::fill_campaign(conn, &s("template"), seq, contact), contact);
     let assignee = [s("assignee"), seq_assignee, fallback_assignee.to_string()].into_iter().find(|a| !a.is_empty()).unwrap_or_default();
     let id = next_issue_id(conn, "TCH")?;
     let now = now_secs();
@@ -470,6 +470,9 @@ pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<O
         "SELECT id, title, stage, amount, mrr_usd, next_step, asset_url, substr(notes,1,1500) AS notes, lost_reason FROM crm_deals WHERE deleted IS NULL AND (account_id=?2 AND ?2<>'' OR contact_ids LIKE '%\"' || ?1 || '\"%')", p)?;
     let sequences = query_rows_json(conn,
         "SELECT e.sequence_id, s.name, e.status, e.step FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.contact_id=?1", &p[..1])?;
+    let campaigns = query_rows_json(conn,
+        "SELECT DISTINCT c.id, c.name, c.goal, c.use_case, c.icp, c.asset_url, c.status FROM crm_enrollments e JOIN crm_sequences s ON s.id=e.sequence_id \
+         JOIN crm_campaigns c ON c.id=s.campaign_id WHERE e.contact_id=?1 AND c.deleted IS NULL", &p[..1])?;
     let lookalikes = if account.is_empty() { vec![] } else { super::crm_accounts::lookalikes_of(conn, "account", &account)? };
     let replied = activity.iter().find(|a| a["direction"] == "in").cloned().unwrap_or(Value::Null);
     let voice = super::crm_voice::brief_voice(conn, &channels, &person)?;
@@ -477,7 +480,7 @@ pub(crate) fn brief(conn: &rusqlite::Connection, id: &str) -> rusqlite::Result<O
     let held = super::crm::held_emails_for(person["email"].as_str().unwrap_or(""));
     Ok(Some(json!({
         "person": person, "company": company, "channels": channels, "signals": signals, "activity": activity, "last_inbound": replied, "held_emails": held,
-        "touches": touches, "deals": deals, "sequences": sequences, "lookalikes": lookalikes, "can_reach": can_reach, "voice": voice,
+        "touches": touches, "deals": deals, "sequences": sequences, "campaigns": campaigns, "lookalikes": lookalikes, "can_reach": can_reach, "voice": voice,
         "measured": true, "n_considered": activity.len() + touches.len() + signals.len(),
     })))
 }
@@ -511,7 +514,8 @@ async fn list_sequences(State(state): State<AppState>) -> Response {
     let store = state.store.clone();
     let r = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
         Ok(query_rows_json(&*store.read()?,
-            "SELECT s.*, (SELECT COUNT(*) FROM crm_enrollments e WHERE e.sequence_id=s.id) AS enrolled, \
+            "SELECT s.*, COALESCE((SELECT c.name FROM crm_campaigns c WHERE c.id=s.campaign_id AND c.deleted IS NULL),'') AS campaign_name, \
+             (SELECT COUNT(*) FROM crm_enrollments e WHERE e.sequence_id=s.id) AS enrolled, \
              (SELECT COUNT(*) FROM crm_enrollments e WHERE e.sequence_id=s.id AND e.status='active') AS active, \
              (SELECT COUNT(*) FROM crm_enrollments e WHERE e.sequence_id=s.id AND e.status='replied') AS replied \
              FROM crm_sequences s WHERE s.deleted IS NULL ORDER BY s.created DESC", &[])?)
@@ -537,23 +541,30 @@ async fn create_sequence(State(state): State<AppState>, headers: HeaderMap, Json
     let s = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
     let assignee = { let a = s("assignee"); if a.is_empty() { source.strip_prefix("worker:").unwrap_or("").to_string() } else { a } };
     let goal = s("goal");
+    let campaign = s("campaign_id");
     let stop = body.get("stop_on_reply").and_then(Value::as_bool).unwrap_or(true);
     let out: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let w = out.clone();
     let res = state
         .store
         .write_async(move |conn| {
+            if !campaign.is_empty() && conn.query_row("SELECT 1 FROM crm_campaigns WHERE id=?1 AND deleted IS NULL", [&campaign], |_| Ok(())).is_err() {
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
             let id = next_issue_id(conn, "SEQ")?;
             conn.execute(
-                "INSERT INTO crm_sequences (id,name,goal,steps,stop_on_reply,assignee,source,created,updated) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8)",
-                rusqlite::params![&id, &name, &goal, &steps, stop as i64, &assignee, &source, now_secs()],
+                "INSERT INTO crm_sequences (id,name,goal,steps,stop_on_reply,assignee,source,created,updated,campaign_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9)",
+                rusqlite::params![&id, &name, &goal, &steps, stop as i64, &assignee, &source, now_secs(), &campaign],
             )?;
             *slot(&w) = Some(id.clone());
             Ok(WriteOutcome { applied: true, events: vec![ev("crm_sequence", &id, MutationKind::Created)] })
         })
         .await;
     match res {
-        Ok(_) => (StatusCode::CREATED, Json(json!({ "id": slot(&out).take(), "ok": true }))).into_response(),
+        Ok(_) => match slot(&out).take() {
+            Some(id) => (StatusCode::CREATED, Json(json!({ "id": id, "ok": true }))).into_response(),
+            None => err(StatusCode::BAD_REQUEST, json!({ "error": "no campaign with that campaign_id", "code": "crm_campaign_not_found" })),
+        },
         Err(e) => internal(e),
     }
 }
@@ -616,18 +627,35 @@ async fn patch_sequence(State(state): State<AppState>, Path(id): Path<String>, J
     };
     let s = |k: &str| body.get(k).and_then(Value::as_str).map(str::to_string);
     let (name, goal, assignee) = (s("name"), s("goal"), s("assignee"));
+    // "" takes the sequence out of its campaign; an id must be a live campaign.
+    let campaign = s("campaign_id").map(|c| c.trim().to_string());
     let stop = body.get("stop_on_reply").and_then(Value::as_bool);
+    let missing = Arc::new(Mutex::new(false));
+    let mw = missing.clone();
     let res = state
         .store
         .write_async(move |conn| {
+            if let Some(c) = campaign.as_deref().filter(|c| !c.is_empty()) {
+                if conn.query_row("SELECT 1 FROM crm_campaigns WHERE id=?1 AND deleted IS NULL", [c], |_| Ok(())).is_err() {
+                    *slot(&mw) = true;
+                    return Ok(WriteOutcome { applied: false, events: vec![] });
+                }
+            }
             let n = conn.execute(
                 "UPDATE crm_sequences SET name=COALESCE(?2,name), goal=COALESCE(?3,goal), steps=COALESCE(?4,steps), assignee=COALESCE(?5,assignee), \
-                 stop_on_reply=COALESCE(?6,stop_on_reply), updated=?7 WHERE id=?1 AND deleted IS NULL",
-                rusqlite::params![&id, name, goal, steps, assignee, stop.map(|b| b as i64), now_secs()],
+                 stop_on_reply=COALESCE(?6,stop_on_reply), campaign_id=COALESCE(?8,campaign_id), updated=?7 WHERE id=?1 AND deleted IS NULL",
+                rusqlite::params![&id, name, goal, steps, assignee, stop.map(|b| b as i64), now_secs(), campaign],
             )?;
-            Ok(WriteOutcome { applied: n > 0, events: if n > 0 { vec![ev("crm_sequence", &id, MutationKind::Updated)] } else { vec![] } })
+            let mut events = if n > 0 { vec![ev("crm_sequence", &id, MutationKind::Updated)] } else { vec![] };
+            if n > 0 && campaign.is_some() {
+                events.push(ev("crm_campaign", "", MutationKind::Updated));
+            }
+            Ok(WriteOutcome { applied: n > 0, events })
         })
         .await;
+    if *slot(&missing) {
+        return err(StatusCode::BAD_REQUEST, json!({ "error": "no campaign with that campaign_id", "code": "crm_campaign_not_found" }));
+    }
     match res {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
         Err(e) => internal(e),
@@ -726,6 +754,11 @@ async fn enroll(State(state): State<AppState>, headers: HeaderMap, Path(id): Pat
             }
             // A cohort tags this batch for the funnel (GET /api/crm/funnel?group=cohort).
             let cohort = body.get("cohort").and_then(Value::as_str).unwrap_or("").trim().to_string();
+            if let Some(why) = super::crm_campaigns::enroll_refusal(conn, &id) {
+                tracing::info!(target: "amux::crm", sequence = %id, measured = true, n_considered = ids.len(), verdict = "crm_campaign_not_active", "an enrollment was refused: {why}");
+                *slot(&w) = Some(json!({ "error": why, "code": "crm_campaign_not_active" }));
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
             let v = enroll_people(conn, &id, &ids, &by, &cohort)?;
             let applied = v.as_ref().and_then(|v| v["enrolled"].as_array()).is_some_and(|a| !a.is_empty());
             *slot(&w) = Some(v.unwrap_or(json!({ "error": "not found", "code": "not_found" })));
@@ -798,7 +831,9 @@ pub(crate) fn take_due(conn: &rusqlite::Connection, today: &str) -> rusqlite::Re
     let rows = query_rows_json(conn,
         "SELECT t.id, t.contact_id, COALESCE(c.name,'') AS contact_name, COALESCE(a.name,'') AS account_name, t.channel, t.action, t.status, \
          t.sequence, t.step, t.due_date, t.assignee FROM crm_touches t LEFT JOIN crm_contacts c ON c.id=t.contact_id LEFT JOIN crm_accounts a ON a.id=c.account_id \
-         WHERE t.deleted IS NULL AND t.status IN ('planned','drafted','approved') AND t.due_date<>'' AND t.due_date<=?1 AND t.due_announced_at IS NULL ORDER BY t.due_date LIMIT 200",
+         WHERE t.deleted IS NULL AND t.status IN ('planned','drafted','approved') AND t.due_date<>'' AND t.due_date<=?1 AND t.due_announced_at IS NULL \
+         AND NOT EXISTS (SELECT 1 FROM crm_sequences s JOIN crm_campaigns cp ON cp.id=s.campaign_id WHERE s.id=t.sequence AND cp.deleted IS NULL AND cp.status IN ('paused','done')) \
+         ORDER BY t.due_date LIMIT 200",
         &[&today as &dyn rusqlite::ToSql])?;
     let now = now_secs();
     let mut out = Vec::new();

@@ -39,6 +39,10 @@ async function layoutProblems(page: Page): Promise<string[]> {
     for (const el of Array.from(document.querySelectorAll('#crm-drawer .crm-decide, #crm-drawer .crm-dhead, #crm-head, .crm-stats, #crm-drawer .crm-checks, #crm-drawer .crm-tags'))) {
       if (shown(el) && el.scrollWidth > el.clientWidth + 1) out.push('a row is wider than its box: ' + name(el));
     }
+    // A line meant to wrap is never cut off with an ellipsis (the brief, the review, a campaign's numbers).
+    for (const el of Array.from(document.querySelectorAll('#crm-view .crm-wrap, #crm-drawer .crm-wrap'))) {
+      if (shown(el) && el.scrollWidth > el.clientWidth + 1) out.push('text is cut off: ' + name(el));
+    }
     // The record's actions are one row: a second row eats the draft being reviewed.
     const decide = document.querySelector('#crm-drawer .crm-decide');
     if (decide && shown(decide) && decide.getBoundingClientRect().height > 72) out.push('the actions take more than one row (' + Math.round(decide.getBoundingClientRect().height) + 'px)');
@@ -78,6 +82,11 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
     const t = await api(page, 'POST', '/touches', { contact_id: p.body.id, channel: i % 2 ? 'linkedin' : 'email', action: i % 2 ? 'dm' : 'email', body, due_date: '2026-11-2' + (i % 9), sequence: i < 6 ? seq.body.id : '', step: i < 6 ? 1 : 0 }, 'amux-gtm');
     expect(t.status).toBe(201);
   }
+  // A campaign holding the sequence, so Campaigns and the Funnel's default grouping have one.
+  const camp = await api(page, 'POST', '/campaigns', { name: 'IP check: rights on media libraries, a long campaign name ' + R, goal: 'Book IP check demos with media teams',
+    use_case: 'ip-check', icp: 'Media libraries with licensing exposure', asset_url: 'https://apps.example/ip', mailboxes: 'ethan@trymixpeek.com, ethan@getmixpeek.com', starts: '2026-12-01', ends: '2026-12-31' });
+  expect(camp.status).toBe(201);
+  expect((await api(page, 'PATCH', '/sequences/' + seq.body.id, { campaign_id: camp.body.id })).status).toBe(200);
   // Six of them enrolled, in a cohort, so the Funnel has something to draw.
   expect((await api(page, 'POST', '/sequences/' + seq.body.id + '/enroll', { contact_ids: people.slice(6, 12), cohort: 'layout-' + R }, 'amux-gtm')).status).toBe(200);
   const owner = (m: string, p: string, b?: any) => api(page, m, p, b);
@@ -92,7 +101,7 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
   await owner('POST', '/contacts/' + people[3] + '/interactions', { type: 'call', notes: 'Intro call, wants a demo', follow_up_date: today, follow_up_note: 'Pick up our meetup conversation' });
 
   await page.evaluate(() => { (window as any).switchView('crm'); });
-  const sections = ['outbound', 'people', 'companies', 'deals', 'followups', 'sequences', 'funnel', 'activity'];
+  const sections = ['outbound', 'campaigns', 'people', 'companies', 'deals', 'followups', 'sequences', 'funnel', 'activity'];
   const phone = info.project.name !== 'desktop';
   // Desktop covers the laptop, tablet and wide screens; the phone projects their own device.
   const sizes = phone ? [page.viewportSize()!] : [{ width: 1280, height: 800 }, { width: 1024, height: 768 }, { width: 820, height: 1180 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }];
@@ -112,7 +121,7 @@ test('every CRM section fits and reads cleanly at every width, in both themes, w
         await expect(page.locator('#crm-list .crm-row, #crm-list .crm-act, #crm-list .crm-funnel').first()).toBeVisible({ timeout: 15_000 });
         await page.waitForTimeout(300);
         // Open a record where the section has one: the long draft, a person, a company, a deal.
-        const opener = v === 'outbound' ? '#crm-list .crm-row' : ['people', 'companies', 'deals'].includes(v) ? '#crm-list .crm-row[data-kind]' : '';
+        const opener = v === 'outbound' ? '#crm-list .crm-row' : ['campaigns', 'people', 'companies', 'deals'].includes(v) ? '#crm-list .crm-row[data-kind]' : '';
         let opened = false;
         if (opener && (theme === 'dark' || size.width === sizes[0].width)) {
           await page.locator(opener).first().click();

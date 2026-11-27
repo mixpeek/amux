@@ -190,6 +190,7 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Open person | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -198,6 +199,8 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Redraft | `_crmRedraft` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `_crmSave` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Save draft | `_crmSaveDraft` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Add sequence | `_crmSeqCampaign` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Take out | `_crmSeqCampaign` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | + | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + esc(label) + (n != null ? | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1356,6 +1359,8 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy id  | `_copyTextWithToast` | onclick |
 | app.js | All drafts | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |

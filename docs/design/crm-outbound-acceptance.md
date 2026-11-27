@@ -95,8 +95,13 @@ Statuses:
 | **The human boundary** (section 16) | | | | |
 | 53 | The agent drives to booked and nurtured; the owner runs the demo, sets pricing and signs | workers are refused moving a deal to or from `proposal` or `won` (`crm_deal_owner_stage`); a booking moves the deal to `demo` and emits `crm.deal.stage` | Partial | The refusal is built and tested. The hand-off is the `crm.deal.stage` event to `demo`, which a subscription can turn into a notice; there is no Needs-you card yet |
 | 54 | Every hand-off reaches the owner with the full context | the brief, the reply thread and the app link sit on the person and the deal | Built |  |
+| **Campaigns** | | | | |
+| 55 | A campaign groups one push: goal, use case, ICP, the opportunity's app, its mailboxes, dates, status; its sequences and deals point to it | `crm_campaigns`; `campaign_id` on sequences (set at create or PATCH) and on deals opened from them; `/api/crm/campaigns`; the CRM tab's Campaigns section | Pass | `crm_campaigns.rs` test; `e2e/crm-tab.spec.ts` "a campaign is made in the tab" on desktop, mobile and ios-safari |
+| 56 | The funnel adds up across a campaign's sequences | `GET /api/crm/funnel?group=campaign` (the tab's default) and `?campaign=<id>`; a campaign's record shows its funnel per sequence | Pass | same tests |
+| 57 | Pausing a campaign holds it | paused or done: new enrollments refused (`crm_campaign_not_active`), approvals refused (`crm_campaign_paused`), due days not announced until active again | Pass | `crm_campaigns.rs` test |
+| 58 | A campaign's drafts carry its app and name | `{campaign}` and `{asset_url}` (the campaign's app when the deal has none of its own); the brief lists the person's campaigns | Pass | same tests |
 
-**Count, over the 54 rows: 32 Pass, 10 Built, 8 Partial, 4 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
+**Count, over the 58 rows: 36 Pass, 10 Built, 8 Partial, 4 Missing.** Rows 1 to 34 can all pass while a deal never moves past `lead`, so the plan is finished only when rows 35 to 54 pass too. Closing, reply intent, the funnel, suppression and the free address check landed on 2026-11-27; what is left in them is a demo-done verb (37) and a Needs-you hand-off card (53). Waiting on the owner: enrichment and verification providers (6, 7, 51), offline fulfillment (13), and the sending domains (28).
 
 ## 2. The test companies
 
@@ -420,6 +425,7 @@ Built on 2026-11-27:
 - `AMUX_CRM_AUTO_ACTIONS`, and bulk approve
 - the free address check
 - `{deal}`, `{next_step}` and `{asset_url}` in templates
+- campaigns (rows 55 to 58), with mailboxes recorded per campaign for the sending pool
 
 Still to build, with no key or decision needed (in this order):
 

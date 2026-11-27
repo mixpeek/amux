@@ -177,9 +177,11 @@ pub(crate) fn open_deal(conn: &rusqlite::Connection, contact: &str, stage: &str,
     let id = next_issue_id(conn, "DEAL")?;
     let title = if company.trim().is_empty() { name } else { company };
     let now = now_secs();
+    // A deal opened from a campaign's sequence belongs to that campaign.
+    let campaign = super::crm_campaigns::of_contact(conn, contact);
     conn.execute(
-        "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,next_step,notes,source,external,created,updated) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'{}',?9,?9)",
-        rusqlite::params![&id, title, account, json!([contact]).to_string(), stage, next_step, notes, source, now],
+        "INSERT INTO crm_deals (id,title,account_id,contact_ids,stage,next_step,notes,source,external,created,updated,campaign_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'{}',?9,?9,?10)",
+        rusqlite::params![&id, title, account, json!([contact]).to_string(), stage, next_step, notes, source, now, campaign],
     )?;
     first_stage(conn, &id, stage, source, notes)?;
     Ok(id)
@@ -394,22 +396,26 @@ struct Group {
 const STEPS: [&str; 7] = ["enrolled", "contacted", "replied", "booked", "demoed", "won", "lost"];
 
 pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -> rusqlite::Result<Value> {
-    let by_cohort = q.get("group").map(String::as_str) == Some("cohort");
+    let group = q.get("group").map(String::as_str).unwrap_or("sequence");
+    let (by_cohort, by_campaign) = (group == "cohort", group == "campaign");
     let since_day = q.get("since").cloned().unwrap_or_default();
     let since_ts = chrono::NaiveDate::parse_from_str(&since_day, "%Y-%m-%d").ok()
         .and_then(|d| d.and_hms_opt(0, 0, 0)).map(|t| t.and_utc().timestamp()).unwrap_or(0);
     let seq_f = q.get("sequence").cloned().unwrap_or_default();
     let cohort_f = q.get("cohort").cloned().unwrap_or_default();
-    let rows: Vec<(String, String, String, String, i64, String)> = conn
+    let campaign_f = q.get("campaign").cloned().unwrap_or_default();
+    type Row = (String, String, String, String, i64, String, String, String);
+    let rows: Vec<Row> = conn
         .prepare(
-            "SELECT e.sequence_id, COALESCE(s.name,''), e.contact_id, e.cohort, e.created, e.status FROM crm_enrollments e \
-             LEFT JOIN crm_sequences s ON s.id=e.sequence_id WHERE e.created>=?1 AND (?2='' OR e.sequence_id=?2) AND (?3='' OR e.cohort=?3)",
+            "SELECT e.sequence_id, COALESCE(s.name,''), e.contact_id, e.cohort, e.created, e.status, COALESCE(s.campaign_id,''), COALESCE(cp.name,'') \
+             FROM crm_enrollments e LEFT JOIN crm_sequences s ON s.id=e.sequence_id LEFT JOIN crm_campaigns cp ON cp.id=s.campaign_id AND cp.deleted IS NULL \
+             WHERE e.created>=?1 AND (?2='' OR e.sequence_id=?2) AND (?3='' OR e.cohort=?3) AND (?4='' OR s.campaign_id=?4)",
         )?
-        .query_map(rusqlite::params![since_ts, &seq_f, &cohort_f], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?
+        .query_map(rusqlite::params![since_ts, &seq_f, &cohort_f, &campaign_f], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let silent = SILENT_ACTIONS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
-    for (seq, seq_name, contact, cohort, at, status) in &rows {
+    for (seq, seq_name, contact, cohort, at, status, campaign, campaign_name) in &rows {
         let one = |sql: &str| -> bool { conn.query_row(sql, rusqlite::params![contact, at], |_| Ok(true)).unwrap_or(false) };
         let contacted = one(&format!("SELECT 1 FROM crm_touches WHERE contact_id=?1 AND deleted IS NULL AND status='done' AND COALESCE(done_at,updated)>=?2 AND action NOT IN ({silent}) LIMIT 1"));
         let replied = status == "replied" || one("SELECT 1 FROM crm_interactions WHERE contact_id=?1 AND direction='in' AND created>=?2 LIMIT 1");
@@ -426,9 +432,13 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
         let demoed = deals.iter().any(|(d, _)| reached(d, "'demo','trial','proposal','won'"));
         let won: Vec<&String> = deals.iter().filter(|(d, _)| reached(d, "'won'")).map(|(d, _)| d).collect();
         let lost = deals.iter().any(|(d, st)| st == "lost" && reached(d, "'lost'"));
-        let key = if by_cohort { if cohort.is_empty() { "(none)".to_string() } else { cohort.clone() } } else { seq.clone() };
+        let key = if by_cohort { if cohort.is_empty() { "(none)".to_string() } else { cohort.clone() } }
+            else if by_campaign { if campaign.is_empty() { "(none)".to_string() } else { campaign.clone() } }
+            else { seq.clone() };
         let g = groups.entry(key).or_default();
-        if !by_cohort {
+        if by_campaign {
+            g.name = if campaign.is_empty() { "No campaign".into() } else { campaign_name.clone() };
+        } else if !by_cohort {
             g.name = seq_name.clone();
         }
         let flags = [true, contacted, replied, booked, demoed, !won.is_empty(), lost];
@@ -453,7 +463,8 @@ pub(crate) fn funnel(conn: &rusqlite::Connection, q: &HashMap<String, String>) -
                 amount += a.unwrap_or(0.0);
             }
         }
-        let mut row = json!({ "group": if by_cohort { "cohort" } else { "sequence" }, "key": key, "name": if by_cohort { key.clone() } else { g.name.clone() } });
+        let mut row = json!({ "group": if by_cohort { "cohort" } else if by_campaign { "campaign" } else { "sequence" }, "key": key,
+            "name": if by_cohort { key.clone() } else { g.name.clone() } });
         for (i, step) in STEPS.iter().enumerate() {
             row[*step] = json!(c[i]);
         }

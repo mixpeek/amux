@@ -47371,6 +47371,7 @@ const _CRM_PAGE = 200;
 // Sections, in the rail's order: [id, label, glyph, what it is for].
 const _CRM_VIEWS = [
   ['outbound', 'Outbound', '↗', 'Drafts from workers waiting for you, and what you already decided.'],
+  ['campaigns', 'Campaigns', '◎', 'Each push: its goal, ICP, sequences, app and mailboxes, and how it is going.'],
   ['people', 'People', '☺', 'Reachable channels, watched sources and a brief on each person.'],
   ['companies', 'Companies', '▦', 'Account fit, domains and lookalike companies.'],
   ['deals', 'Deals', '◇', 'Opportunities opened by signups and outbound replies.'],
@@ -47421,8 +47422,9 @@ async function _crmLoad() {
     // Every touch, drafts first: the views below are filters over one list.
     outbound: () => Promise.all([_crmApi('/touches?limit=1000'), _crmApi('/sequences')]).then(([t, s]) => { _crm.seqs = s; return t; }),
     sequences: () => _crmApi('/sequences'),
+    campaigns: () => _crmApi('/campaigns'),
     activity: () => _crmApi('/activity?limit=300'),
-    funnel: () => _crmApi('/funnel' + (_crm.funnelBy === 'cohort' ? '?group=cohort' : '')),
+    funnel: () => _crmApi('/funnel?group=' + (_crm.funnelBy || 'campaign')),
   };
   const view = _crm.view;
   try {
@@ -47608,7 +47610,8 @@ function _crmRender() {
       + chans.map(c => '<option value="' + esc(c) + '"' + (_crm.ob.channel === c ? ' selected' : '') + '>' + esc(_crmChannelName(c)) + '</option>').join('') + '</select>';
   }
   if (_crm.view === 'funnel') {
-    h += chip('funnel', 'sequence', 'By sequence', _crm.funnelBy !== 'cohort') + chip('funnel', 'cohort', 'By cohort', _crm.funnelBy === 'cohort');
+    const by = _crm.funnelBy || 'campaign';
+    h += chip('funnel', 'campaign', 'By campaign', by === 'campaign') + chip('funnel', 'sequence', 'By sequence', by === 'sequence') + chip('funnel', 'cohort', 'By cohort', by === 'cohort');
   }
   if (_crm.view === 'activity') {
     const types = Object.entries((_crm.data.activity || {}).types || {}).sort((a, b) => b[1] - a[1]);
@@ -47690,7 +47693,20 @@ function _crmRender() {
     return;
   }
   if (!rows || !rows.length) {
-    empty(filtered ? 'Nothing matches.' : _crm.view === 'sequences' ? 'No sequences yet. A worker makes one with amux crm sequence.' : 'Nothing here yet. Add one with + New, or ask a worker to.');
+    empty(filtered ? 'Nothing matches.' : _crm.view === 'sequences' ? 'No sequences yet. A worker makes one with amux crm sequence.'
+      : _crm.view === 'campaigns' ? 'No campaigns yet. Make one with + New: its goal, ICP and app, then put its sequences in it.' : 'Nothing here yet. Add one with + New, or ask a worker to.');
+    return;
+  }
+  if (_crm.view === 'campaigns') {
+    const q = _crm.q.toLowerCase();
+    const items = rows.filter(c => !q || [c.name, c.goal, c.use_case, c.icp].join(' ').toLowerCase().includes(q));
+    if (!items.length) { empty('Nothing matches.'); return; }
+    list.innerHTML = items.map(c => row('campaign', c.id, _crmAvatar(c.name)
+      + '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(c.name) + '</span>'
+      + '<span class="cx-pill ' + (_CRM_CAMPAIGN_PILL[c.status] || 'cx-idle') + '">' + esc(c.status) + '</span></div>'
+      + '<div class="crm-meta">' + esc([c.use_case, c.goal].filter(Boolean).join(' · ') || 'No goal yet') + '</div>'
+      + '<div class="crm-meta">' + esc([c.sequences + ' sequence' + (c.sequences === 1 ? '' : 's'), c.enrolled + ' enrolled', c.won ? c.won + ' won' : '',
+        c.won_amount_usd ? '$' + Number(c.won_amount_usd).toLocaleString() + ' signed' : '', c.starts ? (c.starts + (c.ends ? ' to ' + c.ends : '')) : ''].filter(Boolean).join(' · ')) + '</div></div>')).join('');
     return;
   }
   if (_crm.view === 'people') {
@@ -47719,6 +47735,7 @@ function _crmRender() {
     list.innerHTML = rows.map(q => '<div class="crm-row crm-seq" data-id="' + esc(q.id) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name crm-seq-name">' + esc(q.name) + '</span>'
       + (q.active ? '<span class="cx-pill cx-warn">' + esc(q.active) + ' active</span>' : '')
       + (q.replied ? '<span class="cx-pill cx-ok">' + esc(q.replied) + ' replied</span>' : '') + '</div>'
+      + (q.campaign_name ? '<div class="crm-meta">' + esc('Campaign: ' + q.campaign_name) + '</div>' : '')
       + (q.goal ? '<div class="crm-seq-goal">' + esc(q.goal) + '</div>' : '')
       + '<div class="crm-meta">' + esc(_crmSteps(q.steps)) + '</div>'
       + '<div class="crm-meta">' + esc([q.enrolled + ' enrolled', q.assignee ? 'drafted by ' + q.assignee : '', 'reachability, the voice check and your approval before each touch'].filter(Boolean).join(' · ')) + '</div></div></div>').join('');
@@ -47755,7 +47772,7 @@ function _crmDetailIdle() {
   const pane = document.getElementById('crm-detail');
   if (!pane || document.getElementById('crm-drawer')) return;
   const hint = { outbound: 'Pick a draft to review it.', people: 'Pick a person to see their brief, channels and touches.', companies: 'Pick a company to see its fit, people and lookalikes.',
-    deals: 'Pick a deal.', followups: 'Mark a touch complete, or open the person.', sequences: 'Workers enroll people; each step comes to Outbound for your approve.', activity: 'Tap an event to open the person.' }[_crm.view] || '';
+    deals: 'Pick a deal.', campaigns: 'Pick a campaign to see its sequences, funnel and deals.', followups: 'Mark a touch complete, or open the person.', sequences: 'Workers enroll people; each step comes to Outbound for your approve.', activity: 'Tap an event to open the person.' }[_crm.view] || '';
   pane.innerHTML = '<div class="crm-detail-idle">' + esc(hint) + '</div>';
 }
 
@@ -48248,7 +48265,7 @@ function _crmFunnelHtml(d) {
   const pct = (v) => v == null ? '' : Math.round(v * 100) + '%';
   return groups.map(g => {
     const top = Math.max(1, g.enrolled || 0), conv = g.conversion || {};
-    const title = g.key === '(none)' ? 'No cohort' : (g.name || g.key);
+    const title = g.key === '(none)' ? (g.group === 'campaign' ? 'No campaign' : 'No cohort') : (g.name || g.key);
     return '<section class="crm-card crm-funnel" data-key="' + esc(g.key) + '"><div class="crm-line"><span class="crm-name">' + esc(title) + '</span>'
       + (g.won_amount_usd ? '<span class="cx-pill cx-ok">' + esc('$' + Number(g.won_amount_usd).toLocaleString() + ' signed') + '</span>' : '')
       + (g.mrr_usd ? '<span class="cx-pill cx-idle">' + esc('$' + Number(g.mrr_usd).toLocaleString() + '/mo recurring') + '</span>' : '')
@@ -48263,7 +48280,7 @@ function _crmFunnelHtml(d) {
 
 // Bar widths from data-w (the slop ratchet refuses inline styles).
 function _crmFunnelBars() {
-  document.querySelectorAll('#crm-list .crm-step-bar[data-w]').forEach(b => { b.style.width = Math.min(100, Number(b.dataset.w) || 0) + '%'; });
+  document.querySelectorAll('#crm-view .crm-step-bar[data-w], #crm-drawer .crm-step-bar[data-w]').forEach(b => { b.style.width = Math.min(100, Number(b.dataset.w) || 0) + '%'; });
 }
 
 // Bulk decisions on the Pending list (desktop; a phone decides one at a time).
@@ -48303,6 +48320,50 @@ async function _crmBulk(how) {
   _crmLoad();
 }
 
+const _CRM_CAMPAIGN_PILL = { active: 'cx-ok', draft: 'cx-idle', paused: 'cx-warn', done: 'cx-idle' };
+
+// A campaign: what it is for, its sequences (add or take one out), its funnel
+// per sequence, and its deals. Fields save on change, like a person's.
+function _crmCampaignHtml(c, allSeqs) {
+  const p = '/campaigns/' + encodeURIComponent(c.id);
+  const mine = c.sequence_list || [];
+  const free = allSeqs.filter(s => !s.campaign_id);
+  let h = '<div class="cx-drawer" role="dialog" aria-label="' + esc(c.name) + '"><div class="cx-dhead">'
+    + '<span class="cx-pill ' + (_CRM_CAMPAIGN_PILL[c.status] || 'cx-idle') + '">' + esc(c.status) + '</span>'
+    + '<span class="crm-name crm-dname">' + esc(c.name) + '</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div><div class="cx-dbody">';
+  h += '<section class="crm-card crm-brief"><div class="crm-card-h">How it is going</div>'
+    + '<div class="crm-meta crm-wrap">' + esc([c.sequences + ' sequence' + (c.sequences === 1 ? '' : 's'), c.enrolled + ' enrolled', c.contacted + ' contacted', c.replied + ' replied',
+      c.booked + ' booked', c.won + ' won', c.open_deals ? c.open_deals + ' open deal' + (c.open_deals === 1 ? '' : 's') : ''].filter(Boolean).join(' · ')) + '</div>'
+    + (c.won_amount_usd ? '<div class="crm-meta">' + esc('$' + Number(c.won_amount_usd).toLocaleString() + ' signed') + '</div>' : '')
+    + (c.status === 'paused' ? '<div class="crm-meta crm-wrap">Paused: no new people are enrolled and its drafts wait until it is active again.</div>' : '') + '</section>';
+  h += '<dl class="crm-kv">' + _crmField('Name', 'name', c.name, p) + _crmField('Goal', 'goal', c.goal, p) + _crmField('Use case', 'use_case', c.use_case, p)
+    + _crmField('ICP', 'icp', c.icp, p) + _crmField('App link', 'asset_url', c.asset_url, p, 'url')
+    + _crmField('Mailboxes', 'mailboxes', (c.mailboxes || []).join(', '), p)
+    + _crmField('Starts', 'starts', c.starts, p, 'date') + _crmField('Ends', 'ends', c.ends, p, 'date') + _crmField('Owner', 'owner', c.owner, p)
+    + '<dt><label for="crmf-cstatus">Status</label></dt><dd><select id="crmf-cstatus" class="input" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'status\',this.value)">'
+    + ['draft', 'active', 'paused', 'done'].map(st => '<option' + (c.status === st ? ' selected' : '') + '>' + st + '</option>').join('') + '</select></dd></dl>';
+  h += '<div class="crm-meta crm-wrap">Its drafts fill {campaign} with its name and {asset_url} with its app when the deal has none. The mailboxes are kept here for the sending pool.</div>';
+  h += '<div class="cx-sec">Sequences</div><div class="crm-stack">' + (mine.map(q => '<div class="crm-row crm-seq" data-id="' + esc(q.id) + '"><div class="crm-main">'
+      + '<span class="crm-name">' + esc(q.name) + '</span><span class="crm-meta">' + esc([_crmSteps(q.steps), q.enrolled + ' enrolled', q.assignee ? 'drafted by ' + q.assignee : ''].filter(Boolean).join(' · ')) + '</span></div>'
+      + '<button class="btn" data-id="' + esc(q.id) + '" onclick="_crmSeqCampaign(this.dataset.id,\'\')">Take out</button></div>').join('') || '<div class="crm-meta">No sequences in it yet.</div>')
+    + (free.length ? '<div class="crm-form-row crm-form"><select id="crm-camp-seq" class="input" aria-label="Sequence to add">' + free.map(q => '<option value="' + esc(q.id) + '">' + esc(q.name) + '</option>').join('') + '</select>'
+      + '<button class="btn" data-id="' + esc(c.id) + '" onclick="_crmSeqCampaign(document.getElementById(\'crm-camp-seq\').value,this.dataset.id)">Add sequence</button></div>' : '') + '</div>';
+  if (c.funnel && (c.funnel.groups || []).length) h += '<div class="cx-sec">Funnel, per sequence</div>' + _crmFunnelHtml(c.funnel);
+  if ((c.deals || []).length) h += '<div class="cx-sec">Deals</div><div class="crm-stack">' + c.deals.map(d => '<div class="crm-row" role="button" tabindex="0" data-kind="deal" data-id="' + esc(d.id) + '" onclick="_crmOpen(\'deal\',this.dataset.id)"><div class="crm-main">'
+    + '<span class="crm-name">' + esc(d.title) + '</span><span class="crm-meta">' + esc([d.stage, d.account_name, d.next_step].filter(Boolean).join(' · ')) + '</span></div></div>').join('') + '</div>';
+  h += '<div class="cx-sec">Notes</div><textarea class="input crm-ta" aria-label="Campaign notes" data-path="' + esc(p) + '" onchange="_crmSave(this.dataset.path,\'notes\',this.value)">' + esc(c.notes || '') + '</textarea>';
+  return h + '</div></div>';
+}
+
+async function _crmSeqCampaign(seqId, campaignId) {
+  if (!seqId) return;
+  try {
+    await _crmApi('/sequences/' + encodeURIComponent(seqId), { method: 'PATCH', body: JSON.stringify({ campaign_id: campaignId }) });
+    showToast(campaignId ? 'Added to the campaign' : 'Taken out of the campaign');
+    _crmDrawerRender(); _crmLoad();
+  } catch (e) { showToast('Not changed: ' + e.message, true); }
+}
+
 function _crmPersonBrief(x, chans, brief) {
   const reach = [x.email ? 'Email' : '', x.phone ? 'Phone' : '', x.linkedin ? 'LinkedIn' : '', x.twitter ? 'X' : '']
     .concat((chans || []).filter(c => !c.watch).map(c => _crmChannelName(c.kind))).filter(Boolean);
@@ -48340,6 +48401,17 @@ async function _crmDrawerRender() {
   const gen = _crm.drawerGen = (_crm.drawerGen || 0) + 1;
   const el = _crmDrawerEl();
   if (o.kind === 'new') { _crm.shown = 'new'; el.innerHTML = _crmNewHtml(o.id); return; }
+  if (o.kind === 'campaign') {
+    let c = null, seqs = [];
+    try { [c, seqs] = await Promise.all([_crmApi('/campaigns/' + encodeURIComponent(o.id)), _crmApi('/sequences')]); } catch (e) { console.warn('[crm] campaign load failed', e); }
+    if (!_crm.open || _crm.open.id !== o.id || gen !== _crm.drawerGen) return;
+    const key = 'campaign:' + o.id;
+    if (_crm.shown === key && _crmEditing()) return;
+    _crm.shown = key;
+    el.innerHTML = c ? _crmCampaignHtml(c, seqs || []) : '<div class="cx-drawer" role="dialog"><div class="cx-dhead"><span class="crm-name">Not found</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div></div>';
+    _crmFunnelBars();
+    return;
+  }
   if (o.kind === 'touch') {
     let t = _crmTouchById(o.id);
     if (!t) { try { t = ((await _crmApi('/touches?limit=1000')) || []).find(x => x.id === o.id); } catch (e) { console.warn('[crm] touch load failed', e); } }
@@ -48436,12 +48508,13 @@ async function _crmDrawerRender() {
 
 // + New: what kind is on screen decides the form (a person, a company or a deal).
 function _crmNew() {
-  _crmOpen('new', _crm.view === 'companies' ? 'company' : _crm.view === 'deals' ? 'deal' : 'person');
+  _crmOpen('new', _crm.view === 'companies' ? 'company' : _crm.view === 'deals' ? 'deal' : _crm.view === 'campaigns' ? 'campaign' : 'person');
 }
 
 function _crmNewHtml(kind) {
   const f = (id, ph, type = 'text') => '<input id="crm-new-' + id + '" class="input" type="' + type + '" placeholder="' + esc(ph) + '" aria-label="' + esc(ph) + '">';
-  let body = kind === 'company' ? f('name', 'Company name') + f('domain', 'domain.com') + f('industry', 'Industry')
+  let body = kind === 'campaign' ? f('name', 'Campaign name') + f('goal', 'Goal (book IP check demos)') + f('use_case', 'Use case (ip-check, creative-dna)')
+    : kind === 'company' ? f('name', 'Company name') + f('domain', 'domain.com') + f('industry', 'Industry')
     : kind === 'deal' ? f('title', 'Deal title') + f('account', 'Company name') + f('amount', 'Amount (USD)', 'number')
     : f('name', 'Full name') + f('email', 'Email', 'email') + f('phone', 'Phone', 'tel') + f('company', 'Company') + f('role', 'Role') + f('linkedin', 'LinkedIn URL');
   return '<div class="cx-drawer" role="dialog" aria-label="New ' + kind + '"><div class="cx-dhead"><span class="crm-name crm-dname">New ' + kind + '</span>'
@@ -48462,7 +48535,10 @@ async function _crmCreate(kind) {
   const v = (id) => ((document.getElementById('crm-new-' + id) || {}).value || '').trim();
   try {
     let id;
-    if (kind === 'company') {
+    if (kind === 'campaign') {
+      if (!v('name')) throw new Error('name it');
+      id = (await _crmApi('/campaigns', { method: 'POST', body: JSON.stringify({ name: v('name'), goal: v('goal'), use_case: v('use_case'), status: 'draft' }) })).id;
+    } else if (kind === 'company') {
       if (!v('name')) throw new Error('name it');
       id = (await _crmApi('/accounts', { method: 'POST', body: JSON.stringify({ name: v('name'), domain: v('domain'), industry: v('industry') }) })).id;
     } else if (kind === 'deal') {
@@ -48474,7 +48550,7 @@ async function _crmCreate(kind) {
         role: v('role'), linkedin: v('linkedin'), account_id: await _crmAccountFor(v('company')) }) })).id;
     }
     showToast('Added');
-    _crmOpen(kind === 'company' ? 'company' : kind === 'deal' ? 'deal' : 'person', id);
+    _crmOpen(kind === 'company' ? 'company' : kind === 'deal' ? 'deal' : kind === 'campaign' ? 'campaign' : 'person', id);
     _crmLoad();
   } catch (e) {
     if (e.status === 409 && e.data && e.data.id) { showToast('Already in the CRM: opening it'); _crmOpen(kind === 'company' ? 'company' : 'person', e.data.id); return; }

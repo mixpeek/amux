@@ -575,6 +575,11 @@ async fn approve_touch(State(state): State<AppState>, OriginalUri(uri): Original
     let res = state
         .store
         .write_async(move |conn| {
+            // A paused or finished campaign holds its touches until it is active again.
+            if let Some(why) = super::crm_campaigns::hold_refusal(conn, &id) {
+                *slot(&wr) = Some(("crm_campaign_paused", why, String::new()));
+                return Ok(WriteOutcome { applied: false, events: vec![] });
+            }
             // The person may have opted out since the draft was written.
             let who: Option<(String, String, String)> = conn
                 .query_row("SELECT contact_id, channel, action FROM crm_touches WHERE id=?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
