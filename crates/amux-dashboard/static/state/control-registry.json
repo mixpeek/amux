@@ -1200,6 +1200,12 @@
       "target": "control-or-request",
       "queue_policy": "transport-declared"
     },
+    "_crmRedraft": {
+      "kind": "command._crmRedraft",
+      "feedback_required": true,
+      "target": "control-or-request",
+      "queue_policy": "transport-declared"
+    },
     "_cvAttach": {
       "kind": "command._cvAttach",
       "feedback_required": true,

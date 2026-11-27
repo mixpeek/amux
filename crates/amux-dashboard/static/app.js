@@ -47368,17 +47368,39 @@ async function _callsDrawerRender() {
 // or a worker, arrives as a crm_* state event and the open view reloads.
 // People and companies come 200 at a time; "Show more" asks for the next 200.
 const _CRM_PAGE = 200;
-const _crm = { view: 'people', q: '', grade: '', status: '', stage: '', data: {}, summary: null, open: null, err: '', timer: 0, limit: _CRM_PAGE };
+// Sections, in the rail's order: [id, label, glyph, what it is for].
+const _CRM_VIEWS = [
+  ['outbound', 'Outbound', '↗', 'Drafts from workers waiting for you, and what you already decided.'],
+  ['people', 'People', '☺', 'Reachable channels, watched sources and a brief on each person.'],
+  ['companies', 'Companies', '▦', 'Account fit, domains and lookalike companies.'],
+  ['deals', 'Deals', '◇', 'Opportunities opened by signups and outbound replies.'],
+  ['followups', 'Follow-ups', '◷', 'What is due across channels: follow-ups and approved touches to do.'],
+  ['sequences', 'Sequences', '≡', 'Multi-step outreach that workers draft and you approve.'],
+  ['activity', 'Activity', '⌁', 'The CRM events workers subscribe to, newest first.'],
+];
+const _crmSavedView = (() => { try { const v = localStorage.getItem('amux_crm_view'); return _CRM_VIEWS.some(x => x[0] === v) ? v : 'outbound'; } catch (_) { return 'outbound'; } })();
+const _crm = { view: _crmSavedView, q: '', grade: '', status: '', stage: '', data: {}, summary: null, open: null, err: '', timer: 0, limit: _CRM_PAGE,
+  ob: { tab: 'pending', channel: '' }, act: '', editing: '', busy: false, settleUntil: 0, seqs: null };
 const _CRM_STATUSES = ['lead', 'active', 'customer', 'partner', 'personal', 'do_not_contact'];
 const _CRM_STAGES = ['lead', 'qualification', 'demo', 'trial', 'proposal', 'won', 'lost'];
 const _CRM_TYPES = ['email', 'call', 'meeting', 'dm', 'note', 'event', 'other'];
+// The record opens beside the list from this width; below it, over the list.
+const _CRM_WIDE = '(min-width: 1000px)';
+const _crmWide = () => window.matchMedia(_CRM_WIDE).matches;
+// Sequences and Activity use the whole width for their list; a record opened from them comes over it.
+const _crmPaneOn = () => _crmWide() && !['sequences', 'activity'].includes(_crm.view);
 
 function _crmFit() {
   const view = document.getElementById('crm-view');
   if (!view || view.style.display === 'none') return;
   requestAnimationFrame(() => { window.scrollTo(0, 0); view.style.setProperty('--crm-top', Math.max(0, view.getBoundingClientRect().top) + 'px'); });
 }
-window.addEventListener('resize', _crmFit);
+window.addEventListener('resize', () => {
+  _crmFit();
+  // Crossing the width where the record moves between the pane and the overlay re-homes it.
+  const el = document.getElementById('crm-drawer');
+  if (el && _crm.open && (el.classList.contains('crm-pane') !== _crmPaneOn())) { el.remove(); _crm.shown = ''; _crmDrawerRender(); }
+});
 
 async function _crmApi(path, opts = {}) {
   const r = await fetch(API + '/api/crm' + path, { ...opts, headers: _authHeaders(opts.body ? { 'Content-Type': 'application/json' } : {}) });
@@ -47394,20 +47416,30 @@ async function _crmLoad() {
     people: () => _crmApi('/contacts' + qs({ q: _crm.q, grade: _crm.grade, status: _crm.status, limit: _crm.limit })),
     companies: () => _crmApi('/accounts' + qs({ q: _crm.q, grade: _crm.grade, limit: _crm.limit })),
     deals: () => _crmApi('/deals' + qs({ stage: _crm.stage })),
-    followups: () => _crmApi('/followups'),
-    approvals: () => _crmApi('/touches?status=drafted'),
+    followups: () => Promise.all([_crmApi('/followups'), _crmApi('/touches?status=approved&limit=500')]).then(([fu, touches]) => ({ fu, touches })),
+    // Every touch, drafts first: the views below are filters over one list.
+    outbound: () => Promise.all([_crmApi('/touches?limit=1000'), _crmApi('/sequences')]).then(([t, s]) => { _crm.seqs = s; return t; }),
     sequences: () => _crmApi('/sequences'),
+    activity: () => _crmApi('/activity?limit=300'),
   };
+  const view = _crm.view;
   try {
-    const [summary, rows] = await Promise.all([_crmApi('/summary'), want[_crm.view]()]);
-    _crm.summary = summary; _crm.data[_crm.view] = rows; _crm.err = '';
+    const [summary, rows] = await Promise.all([_crmApi('/summary'), want[view]()]);
+    _crm.summary = summary; _crm.data[view] = rows; _crm.err = '';
+    if (view === 'sequences') _crm.seqs = rows;
   } catch (e) {
     _crm.err = 'Could not load the CRM: ' + e.message;
     console.warn('[crm] load failed', e);
   }
+  if (view !== _crm.view) return;
   _crmRender();
+  // The review queue opens its first draft beside the list, as the Outbound tab does.
+  if (view === 'outbound' && !_crm.open && _crmWide()) {
+    const first = _crmObList()[0];
+    if (first) _crmOpen('touch', first.id);
+  }
   // A refresh from elsewhere (another device, a worker) never rebuilds the
-  // drawer under the owner's cursor: what they are typing saves on blur, and
+  // record under the owner's cursor: what they are typing saves on blur, and
   // the next refresh catches up.
   if (_crm.open && !_crmEditing()) _crmDrawerRender();
 }
@@ -47427,86 +47459,269 @@ function _crmOnEvent() {
 function _crmSearch(v) {
   _crm.q = v.trim(); _crm.limit = _CRM_PAGE;
   clearTimeout(_crm.timer);
+  // Outbound and Activity filter what is already loaded; the rest ask the server.
+  if (_crm.view === 'outbound' || _crm.view === 'activity') { _crmRender(); return; }
   _crm.timer = setTimeout(_crmLoad, 250);
 }
 
 function _crmSet(kind, v) {
   _crm.limit = _CRM_PAGE;
-  if (kind === 'view') { _crm.view = v; _crm.stage = ''; }
+  if (kind === 'view') {
+    if (v === 'approvals') v = 'outbound';
+    if (_crm.view !== v && _crm.open) _crmClose();
+    _crm.view = v; _crm.stage = '';
+    try { localStorage.setItem('amux_crm_view', v); } catch (_) {}
+  }
   else if (kind === 'grade') _crm.grade = _crm.grade === v ? '' : v;
   else if (kind === 'status') _crm.status = _crm.status === v ? '' : v;
   else if (kind === 'stage') _crm.stage = _crm.stage === v ? '' : v;
+  else if (kind === 'ob') { _crm.ob.tab = v; if (_crm.open && _crm.open.kind === 'touch') _crmClose(); _crmRender(); _crmAutoOpen(); return; }
+  else if (kind === 'act') { _crm.act = _crm.act === v ? '' : v; _crmRender(); return; }
   _crmLoad();
+}
+
+function _crmAutoOpen() {
+  if (_crm.view !== 'outbound' || _crm.open || !_crmWide()) return;
+  const first = _crmObList()[0];
+  if (first) _crmOpen('touch', first.id);
 }
 
 function _crmGrade(g) { return '<span class="crm-grade" data-g="' + esc(g || '') + '" title="' + (g ? 'ICP grade ' + esc(g) : 'Not graded') + '">' + esc(g || '–') + '</span>'; }
 function _crmLabel(s) { return String(s || '').replace(/_/g, ' '); }
 function _crmToday() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function _crmInitials(name) {
+  const w = String(name || '?').trim().split(/\s+/).filter(Boolean);
+  return ((w[0] || '?')[0] + (w.length > 1 ? w[w.length - 1][0] : '')).toUpperCase();
+}
+function _crmAvatar(name) { return '<span class="crm-av" aria-hidden="true">' + esc(_crmInitials(name)) + '</span>'; }
+
+// ── Outbound: the drafts workers wrote, as one review queue ──
+// A draft is blocked when it cannot go out as it stands: its voice check
+// failed, or the person opted out, bounced or is do-not-contact. Same
+// predicate as the server's summary.blocked (api/crm_accounts.rs summary).
+function _crmVoice(t) {
+  let v = t.voice_check;
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch (_) { v = null; } }
+  return v || null;
+}
+function _crmBlockedWhy(t) {
+  if (t.status !== 'drafted') return '';
+  if (t.contact_unsubscribed_at) return 'They unsubscribed';
+  if (t.contact_bounced_at) return 'Their email bounced';
+  if (t.contact_status === 'do_not_contact') return 'Marked do not contact';
+  const v = _crmVoice(t);
+  // A worker that kept a draft past the voice check said why (voice_override): it comes to review.
+  if (v && v.ok === false && !v.override) return 'Voice: ' + ((v.problems || []).join('; ') || 'does not fit');
+  return '';
+}
+const _CRM_OB_TABS = [['pending', 'Pending'], ['blocked', 'Blocked'], ['history', 'History'], ['all', 'All touches']];
+const _CRM_DECIDED = ['approved', 'done', 'skipped', 'failed'];
+function _crmObIn(t, tab) {
+  if (tab === 'pending') return t.status === 'drafted' && !_crmBlockedWhy(t);
+  if (tab === 'blocked') return !!_crmBlockedWhy(t);
+  if (tab === 'history') return _CRM_DECIDED.includes(t.status);
+  return true;
+}
+function _crmSubject(t) {
+  const body = String(t.body || '');
+  const m = body.match(/^\s*subject:\s*(.+)$/im);
+  if (m) return m[1].trim();
+  const line = body.split('\n').map(s => s.trim()).find(Boolean);
+  return line ? (line.length > 80 ? line.slice(0, 79) + '…' : line) : (t.action + ' on ' + t.channel);
+}
+function _crmChannelName(c) { return ({ x: 'X', linkedin: 'LinkedIn', email: 'Email', github: 'GitHub', youtube: 'YouTube', tiktok: 'TikTok', sms: 'SMS', whatsapp: 'WhatsApp', in_person: 'In person' })[c] || _crmLabel(c).replace(/^./, s => s.toUpperCase()); }
+const _CRM_STATUS_WORD = { planned: 'Planned', drafted: 'Pending', approved: 'Approved', done: 'Sent', skipped: 'Declined', failed: 'Failed' };
+function _crmTouchPill(t) {
+  const blocked = _crmBlockedWhy(t);
+  return '<span class="cx-pill ' + (blocked ? 'cx-bad' : (_CRM_TOUCH_PILL[t.status] || 'cx-idle')) + '">' + esc(blocked ? 'Blocked' : (_CRM_STATUS_WORD[t.status] || t.status)) + '</span>';
+}
+function _crmObList(tab) {
+  const all = _crm.data.outbound || [];
+  const q = _crm.q.toLowerCase(), ch = _crm.ob.channel;
+  return all.filter(t => _crmObIn(t, tab || _crm.ob.tab) && (!ch || t.channel === ch)
+    && (!q || [t.contact_name, t.account_name, t.body, t.channel, t.assignee, t.contact_email].join(' ').toLowerCase().includes(q)));
+}
+// The counts are the server's (summary covers every touch); the list is the first 1000.
+function _crmObCounts() {
+  const s = _crm.summary || {};
+  const to = s.to_approve || 0, bl = s.blocked || 0;
+  return { pending: Math.max(0, to - bl), blocked: bl, history: s.decided || 0, all: (_crm.data.outbound || []).length };
+}
+
+function _crmHeadHtml() {
+  const v = _CRM_VIEWS.find(x => x[0] === _crm.view) || _CRM_VIEWS[0];
+  let h = '<div class="crm-eyebrow">CRM / ' + esc(v[1]) + '</div><div class="crm-title-row"><h2 class="crm-title">' + esc(v[1]) + '</h2>'
+    + (_crm.view === 'outbound' ? '<span class="cx-pill cx-idle crm-rule" title="A worker drafts; nothing a person outside the company reads goes out until you approve it">You approve every send</span>' : '')
+    + '</div><div class="crm-sub">' + esc(v[3]) + '</div>';
+  if (_crm.view === 'outbound') {
+    const c = _crmObCounts();
+    const card = (tab, label, n, hint) => '<button class="crm-stat' + (_crm.ob.tab === tab ? ' on' : '') + '" data-v="' + tab + '" onclick="_crmSet(\'ob\',this.dataset.v)" title="' + esc(hint) + '">'
+      + '<span class="crm-stat-l">' + esc(label) + '</span><span class="crm-stat-n">' + esc(n) + '</span></button>';
+    h += '<div class="crm-stats">' + card('pending', 'Pending review', c.pending, 'Drafts ready for your approve')
+      + card('blocked', 'Needs attention', c.blocked, 'Drafts that cannot go out as they stand')
+      + card('history', 'Approval history', c.history, 'Touches you approved, declined, or a worker recorded')
+      + '</div>';
+  }
+  return h;
+}
+
+function _crmNavHtml() {
+  const s = _crm.summary || {};
+  const badge = { outbound: s.to_approve, followups: s.followups_due };
+  return '<div class="crm-nav-h">Relationships</div>' + _CRM_VIEWS.map(([id, label, glyph]) =>
+    '<button class="crm-nav-item' + (_crm.view === id ? ' on' : '') + '" data-v="' + id + '" onclick="_crmSet(\'view\',this.dataset.v)"' + (_crm.view === id ? ' aria-current="page"' : '') + '>'
+    + '<span class="crm-nav-g" aria-hidden="true">' + glyph + '</span><span class="crm-nav-l">' + esc(label) + '</span>'
+    + (badge[id] ? '<span class="crm-nav-n">' + esc(badge[id]) + '</span>' : '') + '</button>').join('')
+    + '<div class="crm-nav-foot">Workers draft, research and watch; you approve. <button class="crm-link" onclick="_crmSet(\'view\',\'activity\')">See their events</button></div>';
+}
 
 function _crmRender() {
   const chips = document.getElementById('crm-chips'), list = document.getElementById('crm-list'), note = document.getElementById('crm-note');
   if (!chips || !list) return;
+  const nav = document.getElementById('crm-nav'), head = document.getElementById('crm-head');
+  if (nav) nav.innerHTML = _crmNavHtml();
+  if (head) head.innerHTML = _crmHeadHtml();
+  const view = document.getElementById('crm-view');
+  if (view) view.dataset.view = _crm.view;
   const s = _crm.summary || {};
   const chip = (kind, v, label, on, n) => '<button class="cx-filter' + (on ? ' on' : '') + '" data-kind="' + kind + '" data-v="' + esc(v)
     + '" onclick="_crmSet(this.dataset.kind,this.dataset.v)">' + esc(label) + (n != null ? '<span class="crm-chip-n">' + esc(n) + '</span>' : '') + '</button>';
-  let h = chip('view', 'people', 'People', _crm.view === 'people', s.people)
-    + chip('view', 'companies', 'Companies', _crm.view === 'companies', s.companies)
-    + chip('view', 'deals', 'Deals', _crm.view === 'deals', s.deals)
-    + chip('view', 'followups', 'Follow-ups', _crm.view === 'followups', s.followups_due || null)
-    + chip('view', 'approvals', 'To approve', _crm.view === 'approvals', s.to_approve || null)
-    + chip('view', 'sequences', 'Sequences', _crm.view === 'sequences', null);
+  // On a phone the rail is hidden and the sections are the first chips of the one row.
+  const vcount = { people: s.people, companies: s.companies, deals: s.deals, followups: s.followups_due || null, outbound: s.to_approve || null };
+  let h = _CRM_VIEWS.map(([id, label]) => chip('view', id, label, _crm.view === id, vcount[id] != null ? vcount[id] : null).replace('class="cx-filter', 'class="cx-filter crm-vchip')).join('')
+    + '<span class="crm-sep crm-vchip" aria-hidden="true"></span>';
+  if (_crm.view === 'outbound') {
+    const c = _crmObCounts();
+    h += _CRM_OB_TABS.map(([id, label]) => chip('ob', id, label, _crm.ob.tab === id, c[id])).join('');
+    const chans = [...new Set((_crm.data.outbound || []).map(t => t.channel))].sort();
+    h += '<select class="input crm-status" aria-label="Channel" onchange="_crm.ob.channel=this.value;_crmRender()"><option value="">All channels</option>'
+      + chans.map(c => '<option value="' + esc(c) + '"' + (_crm.ob.channel === c ? ' selected' : '') + '>' + esc(_crmChannelName(c)) + '</option>').join('') + '</select>';
+  }
+  if (_crm.view === 'activity') {
+    const types = Object.entries((_crm.data.activity || {}).types || {}).sort((a, b) => b[1] - a[1]);
+    h += types.map(([t, n]) => chip('act', t, t.replace(/^crm\./, ''), _crm.act === t, n)).join('');
+  }
   if (_crm.view === 'people' || _crm.view === 'companies') {
-    h += '<span class="crm-sep" aria-hidden="true"></span>' + ['A', 'B', 'C', 'D'].map(g => chip('grade', g, 'ICP ' + g, _crm.grade === g)).join('');
+    h += ['A', 'B', 'C', 'D'].map(g => chip('grade', g, 'ICP ' + g, _crm.grade === g)).join('');
   }
   // Status is one select, not six chips: the row stays short enough to read whole on a laptop.
   if (_crm.view === 'people') h += '<select class="input crm-status" aria-label="Status" onchange="_crm.status=this.value;_crmLoad()">'
     + '<option value="">Any status</option>' + _CRM_STATUSES.map(st => '<option value="' + st + '"' + (_crm.status === st ? ' selected' : '') + '>' + esc(_crmLabel(st)) + '</option>').join('') + '</select>';
-  if (_crm.view === 'deals') h += '<span class="crm-sep" aria-hidden="true"></span>' + _CRM_STAGES.map(st => chip('stage', st, st, _crm.stage === st, (s.stages || {})[st] || null)).join('');
+  if (_crm.view === 'deals') h += _CRM_STAGES.map(st => chip('stage', st, st, _crm.stage === st, (s.stages || {})[st] || null)).join('');
   chips.innerHTML = h;
   note.textContent = _crm.err;
-  const rows = _crm.data[_crm.view] || [];
-  if (!rows.length) {
-    list.innerHTML = '<div class="crm-empty">' + (_crm.err ? '' : _crm.q || _crm.grade || _crm.status || _crm.stage ? 'Nothing matches.' : 'Nothing here yet. Add one with + New, or ask a worker to.') + '</div>';
+  const q = document.getElementById('crm-q');
+  if (q) q.placeholder = 'Search ' + ((_CRM_VIEWS.find(x => x[0] === _crm.view) || [])[1] || '').toLowerCase();
+  _crmDetailIdle();
+  const rows = _crm.data[_crm.view];
+  const sel = (kind, id) => _crm.open && _crm.open.kind === kind && _crm.open.id === id ? ' on' : '';
+  const row = (kind, id, inner, extra = '') => '<div class="crm-row' + sel(kind, id) + extra + '" role="button" tabindex="0" data-kind="' + kind + '" data-id="' + esc(id) + '"'
+    + ' onclick="_crmOpen(this.dataset.kind,this.dataset.id)" onkeydown="if(event.key===\'Enter\')_crmOpen(this.dataset.kind,this.dataset.id)">' + inner + '</div>';
+  const empty = (msg) => { list.innerHTML = '<div class="crm-empty">' + (_crm.err ? '' : msg) + '</div>'; };
+  const filtered = _crm.q || _crm.grade || _crm.status || _crm.stage;
+  if (_crm.view === 'outbound') {
+    const items = _crmObList();
+    if (!items.length) {
+      empty(_crm.q || _crm.ob.channel ? 'Nothing matches.' : _crm.ob.tab === 'pending' ? 'Nothing waiting for you. Workers put drafts here when a sequence step comes due.'
+        : _crm.ob.tab === 'blocked' ? 'Nothing blocked.' : 'Nothing yet.');
+      return;
+    }
+    list.innerHTML = items.map(t => row('touch', t.id, _crmAvatar(t.contact_name || t.account_name)
+      + '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(t.contact_name || t.account_name || 'Unknown') + '</span>'
+      + (t.contact_name && t.account_name ? '<span class="crm-meta crm-co">' + esc(t.account_name) + '</span>' : '') + '</div>'
+      + '<div class="crm-meta crm-subj">' + esc(_crmSubject(t)) + '</div>'
+      + '<div class="crm-meta">' + esc([_crmChannelName(t.channel) + (t.action && t.action !== t.channel ? ' ' + t.action : ''), t.due_date ? 'due ' + t.due_date : '', t.assignee ? 'by ' + t.assignee : ''].filter(Boolean).join(' · ')) + '</div></div>'
+      + _crmTouchPill(t), ' crm-obrow')).join('')
+      + (items.length >= 1000 ? '<div class="crm-meta crm-capnote">Showing the first 1000 touches.</div>' : '');
     return;
   }
-  const row = (kind, id, inner) => '<div class="crm-row" role="button" tabindex="0" data-kind="' + kind + '" data-id="' + esc(id) + '"'
-    + ' onclick="_crmOpen(this.dataset.kind,this.dataset.id)" onkeydown="if(event.key===\'Enter\')_crmOpen(this.dataset.kind,this.dataset.id)">' + inner + '</div>';
+  if (_crm.view === 'activity') {
+    const d = rows || {};
+    const q = _crm.q.toLowerCase();
+    const evs = (d.events || []).filter(e => (!_crm.act || e.type === _crm.act) && (!q || (e.type + ' ' + _crmEventLine(e)).toLowerCase().includes(q)));
+    if (!evs.length) { empty(filtered || _crm.act ? 'Nothing matches.' : 'No CRM events yet. They appear as workers draft, the owner approves, people reply and watched pages change.'); return; }
+    list.innerHTML = evs.map(e => {
+      const who = (e.data || {}).contact_id || '';
+      return '<div class="crm-act' + (who ? '' : ' crm-act-static') + '"' + (who ? ' role="button" tabindex="0" data-id="' + esc(who) + '" onclick="_crmOpen(\'person\',this.dataset.id)"' : '') + '>'
+        + '<code class="crm-act-type">' + esc(e.type) + '</code><div class="crm-act-line">' + esc(_crmEventLine(e)) + '</div>'
+        + '<div class="crm-meta">' + esc(timeAgo(e.ts)) + '</div></div>';
+    }).join('') + ((d.total || 0) > (d.events || []).length ? '<div class="crm-meta crm-capnote">The newest ' + (d.events || []).length + ' of ' + d.total + ' events.</div>' : '')
+      + '<div class="crm-meta crm-capnote">A worker wakes on any of these with <code>amux subscribe</code>.</div>';
+    return;
+  }
+  if (_crm.view === 'followups') {
+    const d = rows || {};
+    const today = _crmToday();
+    const items = [...(d.fu || []).map(f => ({ kind: 'fu', date: f.follow_up_date, f })), ...(d.touches || []).map(t => ({ kind: 'touch', date: t.due_date || '', t }))]
+      .filter(x => !_crm.q || JSON.stringify(x).toLowerCase().includes(_crm.q.toLowerCase()))
+      .sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+    if (!items.length) { empty(_crm.q ? 'Nothing matches.' : 'Nothing due. Follow-ups and approved touches waiting to be done land here.'); return; }
+    list.innerHTML = items.map(x => {
+      if (x.kind === 'fu') {
+        const f = x.f;
+        return row('person', f.id, '<div class="crm-main"><div class="crm-line"><span class="crm-tag">' + esc(f.follow_up_note || 'Follow up') + '</span>'
+          + '<span class="cx-pill ' + (f.follow_up_date <= today ? 'cx-bad' : 'cx-idle') + '">' + esc(f.follow_up_date) + '</span></div>'
+          + '<div class="crm-meta">' + esc([f.name, f.company].filter(Boolean).join(' · ')) + '</div></div>');
+      }
+      const t = x.t;
+      return '<div class="crm-row crm-furow" data-id="' + esc(t.id) + '"><div class="crm-main"><div class="crm-line"><span class="crm-tag">' + esc(_crmSubject(t)) + '</span>'
+        + (t.due_date ? '<span class="cx-pill ' + (t.due_date <= today ? 'cx-bad' : 'cx-idle') + '">' + esc(t.due_date) + '</span>' : '') + '</div>'
+        + '<div class="crm-meta">' + esc([t.contact_name || t.account_name, t.account_name && t.contact_name ? t.account_name : '', _crmChannelName(t.channel) + ' ' + t.action, t.assignee ? t.assignee + ' does it' : ''].filter(Boolean).join(' · ')) + '</div>'
+        + '<div class="crm-actions crm-actions-tight"><button class="btn" data-id="' + esc(t.id) + '" onclick="event.stopPropagation();_crmTouchDone(this.dataset.id)">Mark complete</button>'
+        + '<button class="btn" data-id="' + esc(t.contact_id) + '" onclick="event.stopPropagation();_crmOpen(\'person\',this.dataset.id)">Open person</button></div></div></div>';
+    }).join('');
+    return;
+  }
+  if (!rows || !rows.length) {
+    empty(filtered ? 'Nothing matches.' : _crm.view === 'sequences' ? 'No sequences yet. A worker makes one with amux crm sequence.' : 'Nothing here yet. Add one with + New, or ask a worker to.');
+    return;
+  }
   if (_crm.view === 'people') {
-    list.innerHTML = rows.map(p => row('person', p.id, _crmGrade(p.icp_grade)
+    list.innerHTML = rows.map(p => row('person', p.id, _crmAvatar(p.name)
       + '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(p.name) + '</span>'
       + (p.status ? '<span class="cx-pill cx-idle">' + esc(_crmLabel(p.status)) + '</span>' : '') + '</div>'
       + '<div class="crm-meta">' + esc([p.role, p.account_name || p.company].filter(Boolean).join(' · ') || p.email || '') + '</div>'
       + '<div class="crm-meta">' + esc([p.last_date ? 'last ' + p.last_date : 'no contact yet', p.next_followup ? 'follow up ' + p.next_followup : ''].filter(Boolean).join(' · ')) + '</div>'
-      + '</div>')).join('') + _crmMore(rows.length);
+      + '</div>' + _crmGrade(p.icp_grade))).join('') + _crmMore(rows.length);
   } else if (_crm.view === 'companies') {
-    list.innerHTML = rows.map(a => row('company', a.id, _crmGrade(a.icp_grade)
+    list.innerHTML = rows.map(a => row('company', a.id, _crmAvatar(a.name)
       + '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(a.name) + '</span>'
       + (a.open_deals ? '<span class="cx-pill cx-warn">' + esc(a.open_deals) + ' open deal' + (a.open_deals > 1 ? 's' : '') + '</span>' : '') + '</div>'
       + '<div class="crm-meta">' + esc([a.domain, a.industry, a.people + ' ' + (a.people === 1 ? 'person' : 'people')].filter(Boolean).join(' · ')) + '</div>'
-      + '</div>')).join('') + _crmMore(rows.length);
+      + '</div>' + _crmGrade(a.icp_grade))).join('') + _crmMore(rows.length);
   } else if (_crm.view === 'deals') {
     const by = {};
     for (const d of rows) (by[d.stage] = by[d.stage] || []).push(d);
     list.innerHTML = _CRM_STAGES.filter(st => by[st]).map(st => '<div class="crm-stage-h">' + esc(st) + ' · ' + by[st].length + '</div>'
       + by[st].map(d => row('deal', d.id, '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(d.title) + '</span>'
+        + '<span class="cx-pill cx-idle">' + esc(d.stage) + '</span>'
         + (d.amount != null ? '<span class="cx-pill cx-ok">' + esc((d.currency || 'USD') + ' ' + Number(d.amount).toLocaleString()) + '</span>' : '') + '</div>'
         + '<div class="crm-meta">' + esc([d.account_name, d.next_step, d.close_date ? 'close ' + d.close_date : ''].filter(Boolean).join(' · ')) + '</div></div>')).join('')).join('');
-  } else if (_crm.view === 'approvals') {
-    // The owner's queue: drafts a worker wrote for someone outside the company.
-    list.innerHTML = rows.map(t => _crmTouchCard(t, true)).join('');
   } else if (_crm.view === 'sequences') {
     // Outbound sequences (api/crm_outbound.rs): who is in each and how it is going.
-    list.innerHTML = rows.map(q => '<div class="crm-row" data-id="' + esc(q.id) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(q.name) + '</span>'
+    list.innerHTML = rows.map(q => '<div class="crm-row crm-seq" data-id="' + esc(q.id) + '"><div class="crm-main"><div class="crm-line"><span class="crm-name crm-seq-name">' + esc(q.name) + '</span>'
       + (q.active ? '<span class="cx-pill cx-warn">' + esc(q.active) + ' active</span>' : '')
       + (q.replied ? '<span class="cx-pill cx-ok">' + esc(q.replied) + ' replied</span>' : '') + '</div>'
-      + '<div class="crm-meta">' + esc([q.goal, q.enrolled + ' enrolled', q.assignee ? 'by ' + q.assignee : ''].filter(Boolean).join(' · ')) + '</div>'
-      + '<div class="crm-meta">' + esc(_crmSteps(q.steps)) + '</div></div></div>').join('')
-      || '<div class="crm-empty">No sequences yet. A worker makes one with amux crm sequence.</div>';
-  } else {
-    const today = _crmToday();
-    list.innerHTML = rows.map(f => row('person', f.id, '<div class="crm-main"><div class="crm-line"><span class="crm-name">' + esc(f.name) + '</span>'
-      + '<span class="cx-pill ' + (f.follow_up_date <= today ? 'cx-bad' : 'cx-idle') + '">' + esc(f.follow_up_date) + '</span></div>'
-      + '<div class="crm-meta">' + esc([f.company, f.follow_up_note].filter(Boolean).join(' · ')) + '</div></div>')).join('');
+      + (q.goal ? '<div class="crm-seq-goal">' + esc(q.goal) + '</div>' : '')
+      + '<div class="crm-meta">' + esc(_crmSteps(q.steps)) + '</div>'
+      + '<div class="crm-meta">' + esc([q.enrolled + ' enrolled', q.assignee ? 'drafted by ' + q.assignee : '', 'reachability, the voice check and your approval before each touch'].filter(Boolean).join(' · ')) + '</div></div></div>').join('');
+  }
+}
+
+// One sentence per CRM event, from the fields event_subs.rs documents for it.
+function _crmEventLine(e) {
+  const d = e.data || {};
+  const who = d.contact_name || d.name || d.owner_name || d.account_name || '';
+  const ch = d.channel ? _crmChannelName(d.channel) + (d.action ? ' ' + d.action : '') : '';
+  switch (e.type) {
+    case 'crm.touch.approved': return [who, ch + ' approved', d.assignee ? d.assignee + ' does it' : ''].filter(Boolean).join(' · ');
+    case 'crm.touch.done': return [who, ch + ' ' + (d.status || 'done'), d.result].filter(Boolean).join(' · ');
+    case 'crm.touch.due': return [who, ch + ' due ' + (d.due_date || ''), d.next].filter(Boolean).join(' · ');
+    case 'crm.contact.replied': return [who + ' replied' + (d.channel ? ' on ' + _crmChannelName(d.channel) : ''), d.subject || d.snippet].filter(Boolean).join(' · ');
+    case 'crm.channel.changed': return [who, (d.kind || '') + ': ' + (d.summary || (d.n_added || 0) + ' new')].filter(Boolean).join(' · ');
+    case 'crm.signup': return [who + ' signed up', d.account_name, d.change || d.status].filter(Boolean).join(' · ');
+    case 'crm.contact.booked': return [who, 'booked a meeting'].filter(Boolean).join(' · ');
+    default: return who || Object.keys(d).slice(0, 4).join(', ');
   }
 }
 
@@ -47516,6 +47731,15 @@ function _crmMore(n) {
   const total = (_crm.summary || {})[_crm.view === 'companies' ? 'companies' : 'people'];
   return '<button class="btn crm-more" onclick="_crm.limit+=_CRM_PAGE;_crmLoad()">Show ' + _CRM_PAGE + ' more'
     + (total && !_crm.q && !_crm.grade && !_crm.status ? ' (' + n + ' of ' + total + ')' : '') + '</button>';
+}
+
+// The pane beside the list when nothing is open in it.
+function _crmDetailIdle() {
+  const pane = document.getElementById('crm-detail');
+  if (!pane || document.getElementById('crm-drawer')) return;
+  const hint = { outbound: 'Pick a draft to review it.', people: 'Pick a person to see their brief, channels and touches.', companies: 'Pick a company to see its fit, people and lookalikes.',
+    deals: 'Pick a deal.', followups: 'Mark a touch complete, or open the person.', sequences: 'Workers enroll people; each step comes to Outbound for your approve.', activity: 'Tap an event to open the person.' }[_crm.view] || '';
+  pane.innerHTML = '<div class="crm-detail-idle">' + esc(hint) + '</div>';
 }
 
 // ── Channels and touches (the agent side: api/crm_agent.rs) ──
@@ -47647,20 +47871,226 @@ async function _crmTouchSkip(id) {
   catch (e) { showToast('Not skipped: ' + e.message, true); }
 }
 
-function _crmOpen(kind, id) { _crm.open = { kind, id }; _crmDrawerRender(); }
-function _crmClose() { _crm.open = null; const el = document.getElementById('crm-drawer'); if (el) el.remove(); }
+// ── One draft under review (the Outbound pane) ──
+// What it says, who it is for (the person's brief: api/crm_outbound.rs brief),
+// where it sits in its sequence, and the checks it passed. The buttons decide;
+// after a decision the next draft opens, and its buttons stay off for a moment
+// so a double tap cannot decide it too.
+const _CRM_SETTLE_MS = 700;
+function _crmTouchById(id) { return (_crm.data.outbound || []).find(t => t.id === id) || ((_crm.data.followups || {}).touches || []).find(t => t.id === id); }
 
+async function _crmTouchHtml(t) {
+  let brief = null;
+  if (t.contact_id) { try { brief = await _crmApi('/contacts/' + encodeURIComponent(t.contact_id) + '/brief'); } catch (e) { console.warn('[crm] brief failed', e); } }
+  const v = _crmVoice(t), blocked = _crmBlockedWhy(t);
+  const seq = (_crm.seqs || []).find(s => s.id === t.sequence);
+  let steps = seq && seq.steps; if (typeof steps === 'string') { try { steps = JSON.parse(steps); } catch (_) { steps = []; } }
+  const person = (brief && brief.person) || {}, company = (brief && brief.company) || {};
+  const open = t.status === 'drafted' || t.status === 'planned';
+  const settling = Date.now() < _crm.settleUntil;
+  const dis = (_crm.busy || settling) ? ' disabled' : '';
+  const editing = _crm.editing === t.id;
+  const chk = (ok, label, why) => '<span class="crm-check ' + (ok === true ? 'ok' : ok === false ? 'bad' : 'unk') + '"' + (why ? ' title="' + esc(why) + '"' : '') + '>'
+    + (ok === true ? '✓ ' : ok === false ? '✕ ' : '? ') + esc(label) + '</span>';
+  let h = '<div class="cx-drawer crm-touch-detail" role="dialog" aria-label="' + esc(_crmSubject(t)) + '"><div class="cx-dhead crm-dhead">'
+    + _crmTouchPill(t) + '<span class="cx-pill cx-idle">' + esc(_crmChannelName(t.channel)) + (t.action && t.action !== t.channel ? ' ' + esc(t.action) : '') + '</span>'
+    + '<span class="crm-dspacer"></span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div><div class="cx-dbody">';
+  h += '<button class="btn crm-back" onclick="_crmClose()">&#x2039; All drafts</button>';
+  h += '<h3 class="crm-dtitle">' + esc(_crmSubject(t)) + '</h3>';
+  h += '<div class="crm-meta crm-dmeta">' + esc([t.contact_name || t.account_name, t.account_name && t.contact_name ? t.account_name : '', t.due_date ? 'due ' + t.due_date : '', t.created ? 'drafted ' + timeAgo(t.created) : ''].filter(Boolean).join(' · ')) + '</div>';
+  if (blocked) h += '<div class="crm-blocked">' + esc(blocked) + '. ' + (v && v.ok === false ? 'Edit the draft, or ask its worker to redraft.' : 'It cannot go out; decline it so the worker moves on.') + '</div>';
+  // The message.
+  h += '<section class="crm-card"><div class="crm-card-h">Message preview</div>'
+    + (editing ? '<textarea id="crm-edit-body" class="input crm-ta crm-ta-tall" aria-label="Draft text">' + esc(t.body || '') + '</textarea>'
+      : '<div class="crm-ix-text crm-msg">' + esc(t.body || '(no text yet: its worker drafts it)') + '</div>')
+    + (t.target_url ? '<div class="crm-meta">Goes to <a class="crm-link" target="_blank" rel="noopener" href="' + esc(/^https?:\/\//i.test(t.target_url) ? t.target_url : '#') + '">' + esc(t.target_url) + '</a></div>' : '')
+    + (t.result ? '<div class="crm-meta">' + esc(t.result) + '</div>' : '') + '</section>';
+  // Who it is for.
+  const tags = [person.icp_grade ? 'ICP ' + person.icp_grade : (company.icp_grade ? 'ICP ' + company.icp_grade : ''), person.status ? _crmLabel(person.status) : '', person.role, person.source ? 'from ' + person.source : ''].filter(Boolean);
+  const last = brief && brief.last_inbound && brief.last_inbound.date ? brief.last_inbound : null;
+  const signal = brief && (brief.signals || [])[0];
+  h += '<section class="crm-card"><div class="crm-card-h">Contact brief</div>'
+    + '<div class="crm-brief-who">' + esc([t.contact_name || t.account_name, person.role, company.name || t.account_name].filter(Boolean).join(' · ')) + (t.contact_email ? ' · ' + esc(t.contact_email) : '') + '</div>'
+    + (person.notes ? '<div class="crm-ix-text crm-brief-notes">' + esc(String(person.notes).slice(0, 400)) + (String(person.notes).length > 400 ? '…' : '') + '</div>' : '')
+    + (company.icp_reasons || person.icp_reasons ? '<div class="crm-meta crm-wrap">Fit: ' + esc(person.icp_reasons || company.icp_reasons) + '</div>' : '')
+    + (last ? '<div class="crm-meta crm-wrap">Last heard from them ' + esc(last.date) + (last.subject ? ': ' + esc(last.subject) : '') + '</div>' : '')
+    + (signal ? '<div class="crm-meta crm-wrap">Recent signal: ' + esc((signal.kind || '') + ' ' + (signal.summary || '')) + '</div>' : '')
+    + (tags.length ? '<div class="crm-tags">' + tags.map(x => '<span class="crm-tag">' + esc(x) + '</span>').join('') + '</div>' : '')
+    + (t.contact_id ? '<div class="crm-actions crm-actions-tight"><button class="btn" data-id="' + esc(t.contact_id) + '" onclick="_crmOpen(\'person\',this.dataset.id)">Open person</button>'
+      + (person.account_id ? '<button class="btn" data-id="' + esc(person.account_id) + '" onclick="_crmOpen(\'company\',this.dataset.id)">Open company</button>' : '') + '</div>' : '')
+    + '</section>';
+  // Where it sits and what it passed.
+  const reach = brief && brief.can_reach;
+  const links = v && v.links;
+  h += '<section class="crm-card"><div class="crm-card-h">Sequence and checks</div>'
+    + '<div class="crm-meta crm-wrap">' + esc([seq ? seq.name : (t.sequence || 'One-off touch'), t.step ? 'Step ' + t.step + (steps && steps.length ? ' of ' + steps.length : '') : '', t.assignee ? 'drafted by ' + t.assignee : ''].filter(Boolean).join(' · ')) + '</div>'
+    + '<div class="crm-checks">'
+    + chk(v ? v.ok === true : null, v ? (v.ok ? (v.rule || v.voice || 'Voice') + ' passed' : 'Voice: ' + ((v.problems || []).join('; ') || 'does not fit')) : 'Voice not checked', v ? '' : 'This draft was written before the voice check, or with no text')
+    + chk(v ? v.slop === true : null, v && v.slop === true ? 'Slop pass attested' : 'Slop pass not attested')
+    + (links ? chk(links.measured === true ? !/broken|fail|dead/i.test(links.summary || '') : null, links.measured === true ? 'Links: ' + (links.summary || links.checked + ' checked') : 'Links not checked') : '')
+    + chk(reach ? reach.ok === true : null, reach ? (reach.ok ? 'Channel verified' : 'Cannot reach') : 'Reach not checked', reach && !reach.ok ? reach.why : '')
+    + '</div>' + (v && v.override ? '<div class="crm-meta crm-wrap">Sent as written because: ' + esc(v.override) + '</div>' : '') + '</section>';
+  // The decision: a footer under the scrolling record, so it is always in reach.
+  h += '</div>';
+  let foot = '';
+  if (open) {
+    const id = esc(t.id);
+    foot += '<div class="crm-actions crm-decide">'
+      + (editing
+        ? '<button class="btn primary" data-id="' + id + '" onclick="_crmSaveDraft(this.dataset.id)"' + dis + '>Save draft</button><button class="btn" onclick="_crm.editing=\'\';_crmDrawerRender()">Cancel</button>'
+        : (t.status === 'drafted' ? '<button class="btn primary crm-approve" data-id="' + id + '" onclick="_crmDecide(this.dataset.id,\'approve\')"' + (blocked ? ' disabled title="' + esc(blocked) + '"' : dis) + '>&#x2713; Approve<span class="crm-long"> touch</span></button>' : '')
+          + '<button class="btn" data-id="' + id + '" onclick="_crm.editing=this.dataset.id;_crmDrawerRender()"' + dis + '>Edit<span class="crm-long"> draft</span></button>'
+          + '<button class="btn" data-id="' + id + '" onclick="_crmDecide(this.dataset.id,\'decline\')"' + dis + '>Decline</button>'
+          + (t.assignee ? '<button class="btn" data-id="' + id + '" onclick="_crmRedraft(this.dataset.id)"' + dis + '><span class="crm-long">Ask ' + esc(t.assignee) + ' to r</span><span class="crm-short">R</span>edraft</button>' : ''))
+      + '</div>';
+  } else if (t.status === 'approved') {
+    foot += '<div class="crm-decide"><div class="crm-meta crm-wrap">Approved' + (t.approved_at ? ' ' + esc(timeAgo(t.approved_at)) : '') + (t.assignee ? '; ' + esc(t.assignee) + ' does it and records it done.' : '.') + '</div>'
+      + '<div class="crm-actions crm-actions-tight"><button class="btn" data-id="' + esc(t.id) + '" onclick="_crmTouchDone(this.dataset.id)">Mark complete</button></div></div>';
+  } else {
+    foot += '<div class="crm-decide"><div class="crm-meta crm-wrap">' + esc((_CRM_STATUS_WORD[t.status] || t.status) + (t.done_at ? ' ' + timeAgo(t.done_at) : '') + (t.approved_by ? ' · approved by ' + t.approved_by : '')) + '</div></div>';
+  }
+  return h + foot + '</div>';
+}
+
+// The next draft in the list after this one (or before it, at the end).
+function _crmNextAfter(id) {
+  const list = _crmObList();
+  const i = list.findIndex(t => t.id === id);
+  if (i < 0) return '';
+  return (list[i + 1] || list[i - 1] || {}).id || '';
+}
+
+async function _crmDecide(id, how) {
+  if (_crm.busy) return;
+  if (Date.now() < _crm.settleUntil) { console.info('[crm] crm_decide_ignored_after_advance', id); return; }
+  let reason = '';
+  if (how === 'decline') {
+    const r = await showPrompt('Decline this draft? Say why if you like: its worker reads it.', 'Why (optional)');
+    if (r === null) return;
+    reason = String(r || '').trim();
+  }
+  const next = _crmNextAfter(id);
+  _crm.busy = true; _crmDrawerRender();
+  try {
+    if (how === 'approve') {
+      const d = await _crmApi('/touches/' + encodeURIComponent(id) + '/approve', { method: 'POST' });
+      showToast('Approved' + (d.touch && d.touch.assignee ? ': ' + d.touch.assignee + ' does it now' : ''));
+    } else {
+      await _crmApi('/touches/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ status: 'skipped', result: 'declined by the owner' + (reason ? ': ' + reason : '') }) });
+      showToast('Declined');
+    }
+  } catch (e) {
+    _crm.busy = false;
+    showToast((how === 'approve' ? 'Not approved: ' : 'Not declined: ') + e.message, true);
+    _crmDrawerRender();
+    return;
+  }
+  _crm.busy = false; _crm.editing = '';
+  const t = _crmTouchById(id);
+  if (t) t.status = how === 'approve' ? 'approved' : 'skipped';
+  if (_crm.view === 'outbound' && next) { _crm.settleUntil = Date.now() + _CRM_SETTLE_MS; _crm.open = { kind: 'touch', id: next }; setTimeout(() => { if (_crm.open && _crm.open.id === next) _crmDrawerRender(); }, _CRM_SETTLE_MS + 20); }
+  else _crmClose();
+  _crmRender();
+  if (_crm.open) _crmDrawerRender();
+  _crmLoad();
+}
+
+async function _crmSaveDraft(id) {
+  const ta = document.getElementById('crm-edit-body');
+  if (!ta) return;
+  try {
+    const d = await _crmApi('/touches/' + encodeURIComponent(id), { method: 'PATCH', body: JSON.stringify({ body: ta.value }) });
+    _crm.editing = '';
+    const t = _crmTouchById(id);
+    if (t) { t.body = ta.value; if (d && d.touch) Object.assign(t, d.touch); }
+    showToast('Draft saved');
+    _crmLoad();
+  } catch (e) {
+    // A voice refusal names what broke; the text stays in the box to fix.
+    showToast('Not saved: ' + e.message, true);
+  }
+}
+
+// Agentic loop: the owner's note goes to the worker that wrote the draft.
+async function _crmRedraft(id) {
+  const t = _crmTouchById(id);
+  if (!t || !t.assignee) return;
+  const note = await showPrompt('What should ' + t.assignee + ' change?', 'Shorter, mention their recent post, ...');
+  if (note === null || !String(note).trim()) return;
+  const text = 'Redraft CRM touch ' + t.id + ' (' + _crmChannelName(t.channel) + ' ' + t.action + ' to ' + (t.contact_name || t.account_name) + '). The owner says: ' + String(note).trim()
+    + '\nRead the person first (GET /api/crm/contacts/' + t.contact_id + '/brief), then PATCH /api/crm/touches/' + t.id + ' with the new body. It comes back to the owner for approval.';
+  try {
+    const r = await _directInteractionFetch(API + '/api/sessions/' + encodeURIComponent(t.assignee) + '/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    showToast(String(d.message || '').startsWith('queued') ? 'Queued for ' + t.assignee : 'Sent to ' + t.assignee);
+  } catch (e) { showToast('Not sent: ' + e.message, true); }
+}
+
+// A person's sequences: enroll them in one (the sequence's worker drafts each step).
+function _crmEnrollHtml(personId, seqs, inSeqs) {
+  const have = new Set((inSeqs || []).map(s => s.sequence_id));
+  const opts = (seqs || []).filter(s => !have.has(s.id));
+  const cur = (inSeqs || []).map(s => '<div class="crm-meta">' + esc(s.name + ' · ' + s.status + (s.step ? ' · step ' + s.step : '')) + '</div>').join('');
+  return '<div class="cx-sec">Sequences</div><div class="crm-stack">' + (cur || '<div class="crm-meta">Not in a sequence.</div>')
+    + (opts.length ? '<div class="crm-form-row crm-form"><select id="crm-enroll-seq" class="input" aria-label="Sequence">' + opts.map(s => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join('') + '</select>'
+      + '<button class="btn" data-id="' + esc(personId) + '" onclick="_crmEnroll(this.dataset.id)">Enroll in sequence</button></div>' : '') + '</div>';
+}
+
+async function _crmEnroll(personId) {
+  const sid = (document.getElementById('crm-enroll-seq') || {}).value;
+  if (!sid) return;
+  try {
+    const d = await _crmApi('/sequences/' + encodeURIComponent(sid) + '/enroll', { method: 'POST', body: JSON.stringify({ contact_ids: [personId] }) });
+    const n = (d.enrolled || []).length;
+    const skipped = (d.skipped || []).map(x => x.why || x.reason || x.verdict).filter(Boolean);
+    showToast(n ? 'Enrolled: the first step comes to Outbound for your approve' : 'Not enrolled' + (skipped.length ? ': ' + skipped.join('; ') : ''), !n);
+    _crmDrawerRender(); _crmLoad();
+  } catch (e) { showToast('Not enrolled: ' + e.message, true); }
+}
+
+function _crmOpen(kind, id) {
+  if (!(_crm.open && _crm.open.kind === kind && _crm.open.id === id)) _crm.editing = '';
+  _crm.open = { kind, id };
+  _crmMarkOpen();
+  _crmDrawerRender();
+}
+function _crmClose() {
+  _crm.open = null; _crm.editing = '';
+  const el = document.getElementById('crm-drawer'); if (el) el.remove();
+  _crmMarkOpen();
+  _crmDetailIdle();
+}
+// The open record's row reads as selected, without rebuilding the list.
+function _crmMarkOpen() {
+  const o = _crm.open;
+  document.querySelectorAll('#crm-list .crm-row.on').forEach(r => r.classList.remove('on'));
+  if (!o) return;
+  const r = [...document.querySelectorAll('#crm-list .crm-row')].find(x => x.dataset.kind === o.kind && x.dataset.id === o.id);
+  if (r) r.classList.add('on');
+}
+
+// On a desktop the record lives in the pane beside the list; on a phone it
+// opens over the list. Same element id either way.
 function _crmDrawerEl() {
   let el = document.getElementById('crm-drawer');
+  const wide = _crmPaneOn(), pane = document.getElementById('crm-detail');
+  if (el && el.classList.contains('crm-pane') !== (wide && !!pane)) { el.remove(); el = null; }
   if (!el) {
     el = document.createElement('div');
     el.id = 'crm-drawer';
-    el.className = 'cx-drawer-wrap';
-    el.onclick = (e) => { if (e.target === el) _crmClose(); };
     el.onkeydown = (e) => { if (e.key === 'Escape') _crmClose(); };
     el.tabIndex = -1;
-    document.body.appendChild(el);
-    el.focus();
+    if (wide && pane) {
+      el.className = 'crm-pane';
+      pane.innerHTML = '';
+      pane.appendChild(el);
+    } else {
+      el.className = 'cx-drawer-wrap';
+      el.onclick = (e) => { if (e.target === el) _crmClose(); };
+      document.body.appendChild(el);
+      el.focus();
+    }
   }
   return el;
 }
@@ -47774,21 +48204,68 @@ async function _crmAsk() {
   } catch (e) { showToast('Not sent: ' + e.message, true); }
 }
 
+// The top of a record: who this is and how to reach them, in a few lines,
+// before the fields. Reach is the contact fields and channels; watch is what
+// amux or a worker checks for news.
+function _crmPersonBrief(x, chans, brief) {
+  const reach = [x.email ? 'Email' : '', x.phone ? 'Phone' : '', x.linkedin ? 'LinkedIn' : '', x.twitter ? 'X' : '']
+    .concat((chans || []).filter(c => !c.watch).map(c => _crmChannelName(c.kind))).filter(Boolean);
+  const watch = (chans || []).filter(c => c.watch).map(c => _crmChannelName(c.kind));
+  const open = ((brief && brief.touches) || []).filter(t => ['planned', 'drafted', 'approved'].includes(t.status));
+  const sig = brief && (brief.signals || [])[0];
+  const lines = [
+    [x.role, x.account ? x.account.name : x.company].filter(Boolean).join(' · '),
+    reach.length ? 'Reach on ' + [...new Set(reach)].join(', ') : 'No way to reach them yet',
+    watch.length ? 'Watched on ' + [...new Set(watch)].join(', ') : '',
+    open.length ? open.length + ' open touch' + (open.length > 1 ? 'es' : '') + ': ' + open.map(t => _crmChannelName(t.channel) + ' ' + t.action + ' (' + (_CRM_STATUS_WORD[t.status] || t.status).toLowerCase() + ')').join(', ') : '',
+    sig ? 'Latest signal: ' + (sig.kind || '') + ' ' + (sig.summary || '') : '',
+  ].filter(Boolean);
+  return '<section class="crm-card crm-brief"><div class="crm-card-h">Brief</div>' + lines.map(l => '<div class="crm-meta crm-wrap">' + esc(l) + '</div>').join('')
+    + (x.notes ? '<div class="crm-ix-text crm-brief-notes">' + esc(String(x.notes).slice(0, 300)) + (String(x.notes).length > 300 ? '…' : '') + '</div>' : '') + '</section>';
+}
+
+function _crmCompanyFit(x, chans) {
+  const look = (x.lookalikes || []).map(l => l.name).slice(0, 4);
+  const watch = (chans || []).filter(c => c.watch).map(c => _crmChannelName(c.kind));
+  const lines = [
+    [x.domain, x.industry, x.size].filter(Boolean).join(' · '),
+    x.icp_grade ? 'ICP grade ' + x.icp_grade + (x.icp_reasons ? ': ' + x.icp_reasons : '') : 'Not graded yet: ask a worker below',
+    look.length ? 'Lookalikes: ' + look.join(', ') + ((x.lookalikes || []).length > 4 ? ' and ' + ((x.lookalikes || []).length - 4) + ' more' : '') : '',
+    watch.length ? 'Watched on ' + [...new Set(watch)].join(', ') : '',
+    (x.people || []).length + ' ' + ((x.people || []).length === 1 ? 'person' : 'people') + ((x.deals || []).length ? ' · ' + x.deals.length + ' deal' + (x.deals.length > 1 ? 's' : '') : ''),
+  ].filter(Boolean);
+  return '<section class="crm-card crm-brief"><div class="crm-card-h">Account fit</div>' + lines.map(l => '<div class="crm-meta crm-wrap">' + esc(l) + '</div>').join('') + '</section>';
+}
+
 async function _crmDrawerRender() {
   const o = _crm.open;
   if (!o) return;
   const gen = _crm.drawerGen = (_crm.drawerGen || 0) + 1;
   const el = _crmDrawerEl();
   if (o.kind === 'new') { _crm.shown = 'new'; el.innerHTML = _crmNewHtml(o.id); return; }
+  if (o.kind === 'touch') {
+    let t = _crmTouchById(o.id);
+    if (!t) { try { t = ((await _crmApi('/touches?limit=1000')) || []).find(x => x.id === o.id); } catch (e) { console.warn('[crm] touch load failed', e); } }
+    if (!_crm.seqs) { try { _crm.seqs = await _crmApi('/sequences'); } catch (_) { _crm.seqs = []; } }
+    const html = t ? await _crmTouchHtml(t) : '<div class="cx-drawer" role="dialog"><div class="cx-dhead"><span class="crm-name">Not found</span><button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div></div>';
+    if (!_crm.open || _crm.open.id !== o.id || gen !== _crm.drawerGen) return;
+    const key = 'touch:' + o.id;
+    if (_crm.shown === key && _crmEditing()) return;
+    _crm.shown = key;
+    el.innerHTML = html;
+    return;
+  }
   const path = o.kind === 'person' ? '/contacts/' : o.kind === 'company' ? '/accounts/' : '/deals';
-  let x, chans = [], touches = [];
+  let x, chans = [], touches = [], brief = null;
   try {
     if (o.kind === 'deal') x = ((await _crmApi('/deals')) || []).find(d => d.id === o.id);
     else {
       const ok = o.kind === 'person' ? 'contact' : 'account';
-      [x, chans, touches] = await Promise.all([_crmApi(path + encodeURIComponent(o.id)),
+      [x, chans, touches, brief] = await Promise.all([_crmApi(path + encodeURIComponent(o.id)),
         _crmApi('/channels?owner_kind=' + ok + '&owner_id=' + encodeURIComponent(o.id)),
-        _crmApi('/touches?' + (ok === 'contact' ? 'contact_id' : 'account_id') + '=' + encodeURIComponent(o.id))]);
+        _crmApi('/touches?' + (ok === 'contact' ? 'contact_id' : 'account_id') + '=' + encodeURIComponent(o.id)),
+        ok === 'contact' ? _crmApi('/contacts/' + encodeURIComponent(o.id) + '/brief').catch(() => null) : Promise.resolve(null)]);
+      if (ok === 'contact' && !_crm.seqs) _crm.seqs = await _crmApi('/sequences').catch(() => []);
     }
   } catch (e) { console.warn('[crm] drawer load failed', e); }
   if (!_crm.open || _crm.open.id !== o.id || gen !== _crm.drawerGen) return;
@@ -47805,6 +48282,7 @@ async function _crmDrawerRender() {
     + '<button class="cx-x" aria-label="Close" onclick="_crmClose()">&#x2715;</button></div><div class="cx-dbody">';
   if (o.kind === 'person') {
     h += '<div class="crm-meta">' + esc([x.id, x.source ? 'added by ' + x.source : ''].filter(Boolean).join(' · ')) + '</div>';
+    h += _crmPersonBrief(x, chans, brief);
     h += '<div class="crm-actions">' + _crmContactLinks(x) + '</div>';
     if (x.unsubscribed_at || x.bounced_at) h += '<div class="crm-note">' + (x.unsubscribed_at ? 'Unsubscribed. ' : '') + (x.bounced_at ? 'Email bounced.' : '') + '</div>';
     h += '<div class="cx-sec">Contact info</div><dl class="crm-kv">' + _crmField('Name', 'name', x.name, p) + _crmField('Email', 'email', x.email, p, 'email')
@@ -47818,11 +48296,13 @@ async function _crmDrawerRender() {
     if ((x.deals || []).length) h += '<div class="cx-sec">Deals</div><div class="crm-stack">' + x.deals.map(d => '<div class="crm-row" role="button" tabindex="0" data-id="' + esc(d.id) + '" onclick="_crmOpen(\'deal\',this.dataset.id)"><div class="crm-main"><span class="crm-name">' + esc(d.title) + '</span><span class="crm-meta">' + esc(d.stage) + '</span></div></div>').join('') + '</div>';
     if (x.account) h += _crmLookalikes(x.lookalikes, x.account.id);
     h += _crmChannels(chans, 'contact', x.id) + _crmTouches(touches, 'contact', x.id);
+    h += _crmEnrollHtml(x.id, _crm.seqs, brief && brief.sequences);
     h += _crmTimeline(x.interactions) + _crmLogForm(x.id);
     if (x.notes) h += '<div class="cx-sec">Notes</div><div class="crm-ix-text">' + esc(x.notes) + '</div>';
     h += _crmAskForm('person', x.id, x.name);
   } else if (o.kind === 'company') {
     h += '<div class="crm-meta">' + esc([x.id, x.source ? 'added by ' + x.source : ''].filter(Boolean).join(' · ')) + '</div>';
+    h += _crmCompanyFit(x, chans);
     h += '<div class="crm-actions">' + _crmContactLinks(x) + '</div>';
     h += '<div class="cx-sec">Company</div><dl class="crm-kv">' + _crmField('Name', 'name', x.name, p) + _crmField('Domain', 'domain', x.domain, p)
       + _crmField('Industry', 'industry', x.industry, p) + _crmField('Size', 'size', x.size, p) + _crmField('Location', 'location', x.location, p)

@@ -11,12 +11,19 @@ const api = (page: Page, method: string, path: string, body?: any) => page.evalu
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }, [method, path, body] as const);
 
-async function openCrm(page: Page) {
+// A section: the rail on a desktop, the first chips of the one row on a phone.
+async function crmView(page: Page, label: string) {
+  const item = page.locator('#crm-nav .crm-nav-item:visible, #crm-chips .crm-vchip:visible').filter({ hasText: label }).first();
+  await item.click();
+  await expect(item).toHaveClass(/\bon\b/);
+}
+
+async function openCrm(page: Page, view = 'People') {
   await page.goto('/');
   await page.waitForFunction(() => typeof (window as any).switchView === 'function');
   await page.locator('#tab-crm').click();
   await expect(page.locator('#crm-view')).toBeVisible();
-  await expect(page.locator('#crm-chips .cx-filter', { hasText: 'People' })).toBeVisible();
+  await crmView(page, view);
 }
 
 test('a person is added, graded, linked to a company with lookalikes, a deal and a follow-up', async ({ page }, info) => {
@@ -61,7 +68,7 @@ test('a person is added, graded, linked to a company with lookalikes, a deal and
   await page.locator('#crm-drawer .cx-x').click();
 
   // A deal on the company, moved to demo.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'Deals' }).click();
+  await crmView(page, 'Deals');
   await page.locator('.crm-new').click();
   await page.locator('#crm-new-title').fill('Pilot ' + R);
   await page.locator('#crm-new-account').fill(company);
@@ -78,7 +85,7 @@ test('a person is added, graded, linked to a company with lookalikes, a deal and
   expect(deal.account_name).toBe(company);
 
   // A follow-up due today shows under Follow-ups.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await crmView(page, 'People');
   await page.locator('#crm-q').fill(person);
   await page.locator('#crm-list .crm-row', { hasText: person }).click();
   const today = await page.evaluate(() => (window as any)._crmToday());
@@ -89,11 +96,11 @@ test('a person is added, graded, linked to a company with lookalikes, a deal and
   await expect(drawer.locator('.crm-ix', { hasText: 'Intro call, wants a demo' })).toBeVisible();
   await page.locator('#crm-drawer .cx-x').click();
   await page.locator('#crm-q').fill('');
-  await page.locator('#crm-chips .cx-filter', { hasText: 'Follow-ups' }).click();
+  await crmView(page, 'Follow-ups');
   await expect(page.locator('#crm-list .crm-row', { hasText: person })).toBeVisible();
 
   // The same email again opens the existing person instead of a duplicate.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await crmView(page, 'People');
   await page.locator('.crm-new').click();
   await page.locator('#crm-new-name').fill('Ada Again');
   await page.locator('#crm-new-email').fill(email.toUpperCase());
@@ -188,16 +195,20 @@ test('a worker plans a touch, the owner approves it, the worker records it done,
   expect(t.status).toBe(201);
   expect((await asWorker('POST', '/touches/' + t.body.id + '/done', { result: 'sent' })).body.code).toBe('not_approved');
   // The owner's queue shows it; Approve hands it to the worker.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
-  const card = page.locator('#crm-list .crm-touch', { hasText: 'video search ' + R });
-  await expect(card).toBeVisible();
-  await card.locator('button', { hasText: 'Approve' }).click();
+  await crmView(page, 'Outbound');
+  await page.locator('#crm-q').fill('video search ' + R);
+  const card = page.locator('#crm-list .crm-row', { hasText: 'Agent Target ' + R });
+  await card.click();
+  const review = page.locator('#crm-drawer .crm-touch-detail');
+  await expect(review.locator('.crm-msg')).toContainText('video search ' + R);
+  await review.locator('.crm-approve').click();
   await expect(card).toHaveCount(0);
+  await page.locator('#crm-q').fill('');
   const ev = await page.evaluate(async () => (await fetch('/api/subscriptions/events?type=crm.touch.approved', { headers: (window as any)._authHeaders() })).json().catch(() => ({})));
   void ev;
   expect((await asWorker('POST', '/touches/' + t.body.id + '/done', { result: 'sent', result_url: 'https://www.linkedin.com/messaging/' })).status).toBe(200);
   // A watched careers page: the first check records, the second reports what is new.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await crmView(page, 'People');
   await page.locator('#crm-q').fill('Agent Target ' + R);
   await page.locator('#crm-list .crm-row', { hasText: 'Agent Target ' + R }).click();
   const drawer = page.locator('#crm-drawer .cx-drawer');
@@ -240,10 +251,14 @@ test('a draft that breaks the voice is refused, and one sent anyway shows why on
   expect(refused.body.error).toContain('slack/dm is at most 30');
   const kept = await asWorker('POST', '/touches', { ...draft, voice_override: 'their thread asked for detail' });
   expect(kept.status).toBe(201);
-  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
-  const line = page.locator('#crm-list .crm-touch', { hasText: R }).locator('.crm-voice');
-  await expect(line).toContainText('slack/dm is at most 30');
-  await expect(line).toContainText('sent as written because: their thread asked for detail');
+  await crmView(page, 'Outbound');
+  await page.locator('#crm-q').fill(R);
+  // Kept past the voice with a reason: it waits in Pending (not Blocked), and the review says what broke and why.
+  await page.locator('#crm-list .crm-row', { hasText: 'Voice Target ' + R }).click();
+  const review = page.locator('#crm-drawer .crm-touch-detail');
+  await expect(review.locator('.crm-check.bad', { hasText: 'Voice' })).toContainText('slack/dm is at most 30');
+  await expect(review).toContainText('Sent as written because: their thread asked for detail');
+  await expect(review.locator('.crm-approve')).toBeEnabled();
 });
 
 // Outbound (owner 2026-11-24: "use every crm feature for amux outbound ...
@@ -268,12 +283,17 @@ test('a sequence mixes online and offline steps: step 1 drafted from a template,
   const dup = await asWorker('POST', '/touches', { contact_id: id, channel: 'email', action: 'email', body: 'again' });
   expect([dup.status, dup.body.code]).toEqual([409, 'crm_touch_duplicate']);
   // The owner sees the filled draft, with its sequence and step, and approves it.
-  await page.locator('#crm-chips .cx-filter', { hasText: 'To approve' }).click();
-  const card = page.locator('#crm-list .crm-touch', { hasText: 'Seq Target ' + R });
-  await expect(card).toContainText(seq.body.id + ' step 1');
-  await expect(card.locator('textarea')).toHaveValue('Hi Seq, a note for the CTO of Acme ' + R + ' ' + R);
-  await card.locator('button', { hasText: 'Approve' }).click();
+  await crmView(page, 'Outbound');
+  await page.locator('#crm-q').fill('Seq Target ' + R);
+  const card = page.locator('#crm-list .crm-row', { hasText: 'Seq Target ' + R });
+  await card.click();
+  const review = page.locator('#crm-drawer .crm-touch-detail');
+  await expect(review).toContainText('Outbound ' + R + ' · Step 1 of 2 · drafted by amux-gtm');
+  await expect(review.locator('.crm-msg')).toHaveText('Hi Seq, a note for the CTO of Acme ' + R + ' ' + R);
+  await expect(review.locator('.crm-check', { hasText: 'Channel verified' })).toHaveClass(/\bok\b/);
+  await review.locator('.crm-approve').click();
   await expect(card).toHaveCount(0);
+  await page.locator('#crm-q').fill('');
   expect((await asWorker('POST', '/touches/' + en.body.enrolled[0].touch_id + '/done', { result: 'sent' })).body.touch.next_touch).toBeTruthy();
   // Step 2, a letter by post, is planned; drafted, approved, then recorded done from the tab.
   const touches = await api(page, 'GET', '/touches?contact_id=' + id);
@@ -281,7 +301,7 @@ test('a sequence mixes online and offline steps: step 1 drafted from a template,
   expect([letter.channel, letter.action, letter.status]).toEqual(['post', 'letter', 'planned']);
   await asWorker('PATCH', '/touches/' + letter.id, { body: 'Handwritten card with the amux sticker ' + R });
   await api(page, 'POST', '/touches/' + letter.id + '/approve');
-  await page.locator('#crm-chips .cx-filter', { hasText: 'People' }).click();
+  await crmView(page, 'People');
   await page.locator('#crm-q').fill('Seq Target ' + R);
   await page.locator('#crm-list .crm-row', { hasText: 'Seq Target ' + R }).click();
   const drawer = page.locator('#crm-drawer .cx-drawer');
@@ -290,7 +310,7 @@ test('a sequence mixes online and offline steps: step 1 drafted from a template,
   await expect(lc).toContainText('done', { timeout: 10_000 });
   // The Sequences view shows it with its steps.
   await page.locator('#crm-drawer .cx-drawer-close, #crm-drawer [aria-label="Close"]').first().click().catch(() => {});
-  await page.locator('#crm-chips .cx-filter', { hasText: 'Sequences' }).click();
+  await crmView(page, 'Sequences');
   const row = page.locator('#crm-list .crm-row', { hasText: 'Outbound ' + R });
   await expect(row).toContainText('email email · day 0 post letter');
   // The brief: one read with the person, activity and touches.
@@ -319,4 +339,135 @@ test('on a phone the CRM has one row of controls and the list fills the screen',
   const d = await page.locator('#crm-drawer .cx-drawer').boundingBox();
   expect(Math.round(d!.width), 'the drawer is the full width').toBe(page.viewportSize()!.width);
   await page.screenshot({ path: test.info().outputPath('crm-phone-new.png') });
+});
+
+// Owner, 2026-11-27: "Enhance the crm in amux ux ... the goal is agentic crm
+// powered by workers". Outbound is the review queue of what workers drafted:
+// Pending, Blocked (cannot go out as it stands) and History, each draft with
+// its message, the person's brief and the checks it passed. The owner edits,
+// approves, declines with a note the worker reads, and the next draft opens.
+// Activity lists the events workers subscribe to.
+test('outbound review: a draft is read with its brief and checks, edited, approved once on a double tap, the next declined with a note, and both land in history and activity', async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  const W = 'crm-e2e-' + R;
+  const phone = (page.viewportSize()?.width || 1280) < 1000;
+  await openCrm(page, 'Outbound');
+  const asWorker = (m: string, p: string, b?: any) => page.evaluate(async ([mm, pp, bb, w]) => {
+    const r = await fetch('/api/crm' + pp, { method: mm, headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': w }), body: bb ? JSON.stringify(bb) : undefined });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }, [m, p, b, W] as const);
+  const person = async (name: string, extra: any = {}) => (await api(page, 'POST', '/contacts', { name, email: `${name.split(' ')[0].toLowerCase()}.${R}@renderwell-${R}.io`, company: 'Renderwell ' + R, role: 'Founder', icp_grade: 'A', notes: 'Starred amux after exploring tools for concurrent coding sessions ' + R, ...extra })).body.id;
+  const nina = await person('Nina Park'), jon = await person('Jon Bell'), sam = await person('Sam Reed');
+  const draft = async (id: string, text: string) => { const t = await asWorker('POST', '/touches', { contact_id: id, channel: 'linkedin', action: 'dm', body: text }); expect(t.status).toBe(201); return t.body.id; };
+  const tNina = await draft(nina, 'Hey Nina, saw you starred amux ' + R);
+  const tJon = await draft(jon, 'Hey Jon, how do you hand off agent work ' + R);
+  await draft(sam, 'Hey Sam ' + R);
+  // Sam opts out after the draft was written: it can no longer go out.
+  expect((await api(page, 'PATCH', '/contacts/' + sam, { unsubscribed: true })).status).toBe(200);
+
+  // Pending holds the two that can go out; Blocked the one whose person opted out.
+  await crmView(page, 'Outbound');   // seeded before the page's live stream may be up: open the section afresh
+  await page.locator('#crm-q').fill(R);
+  const rows = page.locator('#crm-list .crm-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: 'Sam Reed' })).toHaveCount(0);
+  await page.locator('#crm-chips .cx-filter', { hasText: 'Blocked' }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('Sam Reed');
+  await expect(rows.first().locator('.cx-pill')).toHaveText('Blocked');
+  await rows.first().click();
+  const review = page.locator('#crm-drawer .crm-touch-detail');
+  await expect(review.locator('.crm-blocked')).toContainText('They unsubscribed');
+  await expect(review.locator('.crm-approve')).toBeDisabled();
+  if (phone) await review.locator('.crm-back').click();
+  await page.locator('#crm-chips .cx-filter', { hasText: 'Pending' }).click();
+
+  // The counts are the server's, for every touch.
+  if (!phone) {
+    const s = (await api(page, 'GET', '/summary')).body;
+    await expect(page.locator('.crm-stat', { hasText: 'Pending review' }).locator('.crm-stat-n')).toHaveText(String(s.to_approve - s.blocked));
+    await expect(page.locator('.crm-stat', { hasText: 'Needs attention' }).locator('.crm-stat-n')).toHaveText(String(s.blocked));
+    await expect(page.locator('#crm-nav .crm-nav-item', { hasText: 'Outbound' }).locator('.crm-nav-n')).toHaveText(String(s.to_approve));
+  }
+
+  // Nina's draft: the message, who she is, and what it passed.
+  await rows.filter({ hasText: 'Nina Park' }).click();
+  await expect(rows.filter({ hasText: 'Nina Park' })).toHaveClass(/\bon\b/);
+  await expect(review.locator('.crm-dtitle')).toHaveText('Hey Nina, saw you starred amux ' + R);
+  await expect(review.locator('.crm-card', { hasText: 'Contact brief' })).toContainText('Renderwell ' + R);
+  await expect(review.locator('.crm-card', { hasText: 'Contact brief' })).toContainText('concurrent coding sessions');
+  await expect(review.locator('.crm-card', { hasText: 'Sequence and checks' })).toContainText('One-off touch · drafted by ' + W);
+  await expect(review.locator('.crm-check', { hasText: 'Channel verified' })).toHaveClass(/\bok\b/);
+
+  // Edit the draft; the saved text is what the worker sends.
+  await review.locator('button', { hasText: 'Edit draft' }).click();
+  await review.locator('#crm-edit-body').fill('Hey Nina, thanks for the star. What do you run in amux? ' + R);
+  await review.locator('button', { hasText: 'Save draft' }).click();
+  await expect(review.locator('.crm-msg')).toHaveText('Hey Nina, thanks for the star. What do you run in amux? ' + R);
+  expect((await api(page, 'GET', '/touches?contact_id=' + nina)).body[0].body).toBe('Hey Nina, thanks for the star. What do you run in amux? ' + R);
+
+  // A double tap on Approve approves Nina once; Jon's draft opens next and stays held.
+  await review.locator('.crm-approve').dblclick();
+  await expect(review.locator('.crm-dtitle')).toHaveText('Hey Jon, how do you hand off agent work ' + R);
+  await page.waitForTimeout(1000);
+  const after = (await api(page, 'GET', '/touches?limit=1000')).body;
+  expect(after.find((t: any) => t.id === tNina).status).toBe('approved');
+  expect(after.find((t: any) => t.id === tJon).status).toBe('drafted');
+
+  // Decline Jon's with a note: the worker reads why.
+  await review.locator('button', { hasText: 'Decline' }).click();
+  await page.locator('#modal-prompt-input').fill('too generic ' + R);
+  await page.locator('#modal-prompt-input').press('Enter');
+  await expect(rows).toHaveCount(0);
+  const jt = (await api(page, 'GET', '/touches?contact_id=' + jon)).body[0];
+  expect([jt.status, jt.result]).toEqual(['skipped', 'declined by the owner: too generic ' + R]);
+
+  // History has both, by what happened.
+  await page.locator('#crm-chips .cx-filter', { hasText: 'History' }).click();
+  await expect(rows.filter({ hasText: 'Nina Park' }).locator('.cx-pill')).toHaveText('Approved');
+  await expect(rows.filter({ hasText: 'Jon Bell' }).locator('.cx-pill')).toHaveText('Declined');
+  // Survives a reload: the section and its data come back.
+  await page.reload();
+  await page.waitForFunction(() => typeof (window as any).switchView === 'function');
+  await page.locator('#tab-crm').click();
+  await expect(page.locator('#crm-nav .crm-nav-item.on:visible, #crm-chips .crm-vchip.on:visible').filter({ hasText: 'Outbound' })).toBeVisible();
+
+  // Activity: the approval is an event a worker can subscribe to; tapping it opens Nina.
+  await crmView(page, 'Activity');
+  await page.locator('#crm-q').fill('Nina Park');
+  const ev = page.locator('#crm-list .crm-act', { hasText: 'crm.touch.approved' }).filter({ hasText: 'Nina Park' });
+  await expect(ev.first()).toContainText(W + ' does it');
+  await ev.first().click();
+  await expect(page.locator('#crm-drawer .cx-dhead .crm-name')).toHaveText('Nina Park');
+  await expect(page.locator('#crm-drawer .cx-sec', { hasText: /^Sequences$/ })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('crm-activity.png') });
+});
+
+// Phone: Outbound keeps one row of controls, and a draft opens over the list with a way back.
+test('on a phone Outbound has one row of controls, and a draft opens full width with a way back', async ({ page }, info) => {
+  test.skip(info.project.name === 'desktop', 'the phone layout; desktop is covered by the review test');
+  const R = info.project.name + '-' + Math.random().toString(36).slice(2, 6);
+  await openCrm(page, 'Outbound');
+  const made = await api(page, 'POST', '/contacts', { name: 'Phone Target ' + R, email: `phone.${R}@example.com` });
+  const t = await page.evaluate(async ([id, r]) => (await fetch('/api/crm/touches', { method: 'POST', headers: (window as any)._authHeaders({ 'Content-Type': 'application/json', 'X-Amux-Session': 'crm-e2e-phone' }), body: JSON.stringify({ contact_id: id, channel: 'email', action: 'email', body: 'Subject: hello ' + r + '\n\nHi there' }) })).status, [made.body.id, R] as const);
+  expect(t).toBe(201);
+  await crmView(page, 'Outbound');
+  await page.locator('#crm-q').fill(R);
+  const bar = (await page.locator('#crm-bar').boundingBox())!;
+  expect(bar.height, 'one row').toBeLessThanOrEqual(64);
+  await expect(page.locator('#crm-head')).toBeHidden();
+  await expect(page.locator('#crm-nav')).toBeHidden();
+  const list = (await page.locator('#crm-list').boundingBox())!;
+  expect(list.height, 'the list gets at least half the screen').toBeGreaterThanOrEqual(page.viewportSize()!.height / 2);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow, 'nothing pushes the page sideways').toBeLessThanOrEqual(0);
+  await page.locator('#crm-list .crm-row', { hasText: 'Phone Target ' + R }).click();
+  const review = page.locator('#crm-drawer .crm-touch-detail');
+  await expect(review.locator('.crm-dtitle')).toHaveText('hello ' + R);
+  expect(Math.round((await review.boundingBox())!.width), 'full width').toBe(page.viewportSize()!.width);
+  for (const b of ['.crm-approve', '.crm-back']) expect((await review.locator(b).boundingBox())!.height, b + ' touch target').toBeGreaterThanOrEqual(44);
+  await page.screenshot({ path: test.info().outputPath('crm-phone-review.png') });
+  await review.locator('.crm-back').click();
+  await expect(page.locator('#crm-drawer')).toHaveCount(0);
 });

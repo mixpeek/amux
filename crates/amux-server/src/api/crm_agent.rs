@@ -13,9 +13,12 @@
 //! Touches: one planned action on one channel.
 //!   GET    /api/crm/touches[?status=&assignee=&contact_id=&account_id=]
 //!   POST   /api/crm/touches             {contact_id|account_id, channel, action, body?, due_date?, assignee?, sequence?, step?}
-//!   PATCH  /api/crm/touches/{id}        body, due date, assignee, status (not approved)
+//!   PATCH  /api/crm/touches/{id}        body, due date, assignee, result, status (not approved)
 //!   POST   /api/crm/touches/{id}/approve   owner only
 //!   POST   /api/crm/touches/{id}/done      {result?, result_url?, failed?}
+//!
+//! Activity: the CRM events themselves, newest first, as a worker's subscription sees them.
+//!   GET    /api/crm/activity[?limit=&type=]
 //!
 //! Real time is amux's event subscriptions (api/event_subs.rs). The server
 //! emits, as source `crm`, so any worker's subscription can match:
@@ -62,6 +65,7 @@ pub fn routes() -> Router<AppState> {
         .route("/touches/{id}", axum::routing::patch(patch_touch))
         .route("/touches/{id}/approve", post(approve_touch))
         .route("/touches/{id}/done", post(done_touch))
+        .route("/activity", get(activity))
 }
 
 // Online and offline touch points (owner 2026-11-24: "it should support multiple
@@ -367,8 +371,11 @@ async fn list_touches(State(state): State<AppState>, Query(q): Query<HashMap<Str
     let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
         let conn = store.read()?;
         let mut sql = String::from(
-            "SELECT t.*, COALESCE(c.name,'') AS contact_name, COALESCE(a.name,'') AS account_name FROM crm_touches t \
-             LEFT JOIN crm_contacts c ON c.id=t.contact_id LEFT JOIN crm_accounts a ON a.id=t.account_id WHERE t.deleted IS NULL",
+            "SELECT t.*, COALESCE(c.name,'') AS contact_name, COALESCE(a.name, ca.name, c.company, '') AS account_name, \
+             COALESCE(c.icp_grade, a.icp_grade, '') AS icp_grade, COALESCE(c.email,'') AS contact_email, \
+             c.unsubscribed_at AS contact_unsubscribed_at, c.bounced_at AS contact_bounced_at, COALESCE(c.status,'') AS contact_status FROM crm_touches t \
+             LEFT JOIN crm_contacts c ON c.id=t.contact_id LEFT JOIN crm_accounts a ON a.id=t.account_id \
+             LEFT JOIN crm_accounts ca ON ca.id=c.account_id WHERE t.deleted IS NULL",
         );
         let mut args: Vec<String> = Vec::new();
         for (k, col) in [("status", "t.status"), ("assignee", "t.assignee"), ("contact_id", "t.contact_id"), ("account_id", "t.account_id"), ("channel", "t.channel")] {
@@ -381,6 +388,10 @@ async fn list_touches(State(state): State<AppState>, Query(q): Query<HashMap<Str
             sql.push_str(" AND t.status IN ('planned','drafted','approved')");
         }
         sql.push_str(" ORDER BY CASE t.status WHEN 'drafted' THEN 0 WHEN 'approved' THEN 1 WHEN 'planned' THEN 2 ELSE 3 END, CASE WHEN t.due_date='' THEN '9999' ELSE t.due_date END, t.created");
+        // A cap only when asked: the person and company views want every touch.
+        if let Some(n) = q.get("limit").and_then(|v| v.parse::<i64>().ok()).filter(|n| *n > 0) {
+            sql.push_str(&format!(" LIMIT {}", n.min(2000)));
+        }
         let refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|a| a as &dyn rusqlite::ToSql).collect();
         Ok(query_rows_json(&conn, &sql, &refs)?)
     })
@@ -489,7 +500,8 @@ async fn patch_touch(State(state): State<AppState>, headers: HeaderMap, Path(id)
             sets.push(("voice_check", SqlValue::Text(c.to_string())));
         }
     }
-    for f in ["body", "due_date", "assignee", "target_url", "sequence"] {
+    // `result` carries why the owner declined a draft (Skip with a note), which its worker reads.
+    for f in ["body", "due_date", "assignee", "target_url", "sequence", "result"] {
         if let Some(v) = body.get(f).and_then(Value::as_str) {
             sets.push((f, SqlValue::Text(v.to_string())));
         }
@@ -911,6 +923,46 @@ pub(crate) fn capture_sent(conn: &rusqlite::Connection, path: &std::path::Path) 
     Ok(n)
 }
 
+// ---- activity ------------------------------------------------------------------------
+
+/// The CRM's own events (`emit` above writes them as session `crm`), newest
+/// first: what a worker's subscription would have matched. `total` counts every
+/// one, so a capped list says how much it left out.
+async fn activity(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).filter(|n| *n > 0).unwrap_or(200).min(1000);
+    let etype = q.get("type").map(|s| s.trim().to_string()).filter(|s| s.starts_with("crm."));
+    let store = state.store.clone();
+    let joined = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+        let conn = store.read()?;
+        let like = etype.clone().unwrap_or_else(|| "crm.%".into());
+        let rows: Vec<Value> = conn
+            .prepare("SELECT id, ts, type, data FROM session_events WHERE session='crm' AND type LIKE ?1 ORDER BY id DESC LIMIT ?2")?
+            .query_map(rusqlite::params![&like, limit], |r| {
+                let data: Option<String> = r.get(3)?;
+                Ok(json!({ "id": r.get::<_, i64>(0)?, "ts": r.get::<_, f64>(1)?, "type": r.get::<_, String>(2)?,
+                    "data": data.and_then(|d| serde_json::from_str::<Value>(&d).ok()).unwrap_or(Value::Null) }))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM session_events WHERE session='crm' AND type LIKE ?1", [&like], |r| r.get(0))?;
+        let mut types = serde_json::Map::new();
+        let mut st = conn.prepare("SELECT type, COUNT(*) FROM session_events WHERE session='crm' AND type LIKE 'crm.%' GROUP BY type")?;
+        for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (t, n) = row?;
+            types.insert(t, json!(n));
+        }
+        Ok(json!({ "events": rows, "total": total, "types": types, "measured": true, "n_considered": total }))
+    })
+    .await;
+    match joined {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "amux::crm", measured = false, verdict = "crm_activity_failed", "the CRM activity could not be read: {e}");
+            internal(e)
+        }
+        Err(e) => internal(anyhow::anyhow!(e)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1025,5 +1077,45 @@ mod tests {
         assert_eq!(capture_sent(&conn, &log).unwrap(), 1);
         let note: String = conn.query_row("SELECT notes FROM crm_interactions WHERE message_id='g1'", [], |r| r.get(0)).unwrap();
         assert_eq!(note, "Understood, thanks.");
+    }
+    #[tokio::test]
+    async fn activity_lists_the_crm_events_and_the_outbound_counts_name_what_is_blocked() {
+        let mut state = test_state();
+        state.auth_token = Some("owner-secret".into());
+        let app = crate::api::crm::routes().merge(crate::api::crm_accounts::routes()).merge(routes()).with_state(state.clone());
+        let owner = [("authorization", "Bearer owner-secret")];
+        let w = [("x-amux-session", "gtm-engine")];
+        let (_, a) = call(&app, "POST", "/contacts", &owner, Some(json!({"name": "Ada", "email": "ada@acme.io", "company": "Acme"}))).await;
+        let (_, b) = call(&app, "POST", "/contacts", &owner, Some(json!({"name": "Bo", "email": "bo@acme.io"}))).await;
+        let (ada, bo) = (a["id"].as_str().unwrap().to_string(), b["id"].as_str().unwrap().to_string());
+        let (_, t1) = call(&app, "POST", "/touches", &w, Some(json!({"contact_id": ada, "channel": "linkedin", "action": "dm", "body": "Hi Ada"}))).await;
+        let (_, t2) = call(&app, "POST", "/touches", &w, Some(json!({"contact_id": bo, "channel": "linkedin", "action": "dm", "body": "Hi Bo"}))).await;
+        assert_eq!(t2["status"].as_str(), Some("drafted"));
+        state.store.write_async(move |c| { c.execute("UPDATE crm_contacts SET unsubscribed_at=1 WHERE id=?1", [&bo])?; Ok(WriteOutcome { applied: true, events: vec![] }) }).await.unwrap();
+        let (_, s) = call(&app, "GET", "/summary", &owner, None).await;
+        assert_eq!((s["to_approve"].as_i64(), s["blocked"].as_i64(), s["decided"].as_i64()), (Some(2), Some(1), Some(0)), "an opted-out person's draft is blocked");
+        let (_, rows) = call(&app, "GET", "/touches?status=drafted&limit=1", &owner, None).await;
+        assert_eq!(rows.as_array().map(Vec::len), Some(1), "limit caps the list when asked");
+        let (_, rows) = call(&app, "GET", "/touches?status=drafted", &owner, None).await;
+        let bo_row = rows.as_array().unwrap().iter().find(|r| r["contact_name"] == "Bo").unwrap();
+        assert!(bo_row["contact_unsubscribed_at"].as_i64().is_some(), "a touch row says its person opted out");
+        let id = t1["id"].as_str().unwrap();
+        let (st, _) = call(&app, "POST", &format!("/touches/{id}/approve"), &owner, None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, s) = call(&app, "GET", "/summary", &owner, None).await;
+        assert_eq!(s["decided"].as_i64(), Some(1), "an approval moves into the history count");
+        let id2 = t2["id"].as_str().unwrap();
+        let (st, _) = call(&app, "PATCH", &format!("/touches/{id2}"), &owner, Some(json!({"status": "skipped", "result": "declined: too pushy"}))).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, rows) = call(&app, "GET", "/touches?status=skipped", &owner, None).await;
+        assert_eq!(rows[0]["result"].as_str(), Some("declined: too pushy"), "a decline keeps its reason for the worker");
+        let (st, act) = call(&app, "GET", "/activity", &owner, None).await;
+        assert_eq!((st, act["measured"].as_bool()), (StatusCode::OK, Some(true)));
+        let ev = &act["events"][0];
+        assert_eq!((ev["type"].as_str(), ev["data"]["contact_name"].as_str()), (Some("crm.touch.approved"), Some("Ada")));
+        assert_eq!(act["total"].as_i64(), Some(act["events"].as_array().unwrap().len() as i64));
+        assert_eq!(act["types"]["crm.touch.approved"].as_i64(), Some(1));
+        let (_, none) = call(&app, "GET", "/activity?type=crm.signup", &owner, None).await;
+        assert_eq!((none["total"].as_i64(), none["measured"].as_bool()), (Some(0), Some(true)), "an empty filter still says it measured");
     }
 }

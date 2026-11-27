@@ -173,10 +173,19 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | Plan touch | `_crmAddTouch` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Send | `_crmAsk` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | Add | `_crmCreate` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Approve | `_crmDecide` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Decline | `_crmDecide` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Cancel | `_crmDrawerRender` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Edit | `_crmDrawerRender` | async (reads) | no busy state (request after an await); no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Enroll in sequence | `_crmEnroll` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Show … more + (total && !_crm.q && !_crm.grade & | `_crmLoad` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Log it | `_crmLog` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | index.html | Add to the CRM | `_crmNew` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Open company | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open company | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open person | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | Open person | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | div | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -184,10 +193,17 @@ Counts (controls inventoried, async, writes, reads, gaps) are printed by the scr
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_crmOpen` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | button | `_crmRedraft` | async (writes) | no busy state (request after an await); no double-press guard; toast on failure; toast on success | yes | yes |
 | app.js | … | `_crmSave` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Save draft | `_crmSaveDraft` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | + | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | + | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | + esc(label) + (n != null ? | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
+| app.js | See their events | `_crmSet` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | Approve | `_crmTouchApprove` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Done | `_crmTouchDone` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Mark complete | `_crmTouchDone` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
+| app.js | Mark complete | `_crmTouchDone` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Skip | `_crmTouchSkip` | async (reads) | no busy state (request after an await); no double-press guard; toast on failure | yes | yes |
 | app.js | Cancel | `_cvCancelEdit` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
 | app.js | … | `_cvChArchive` | async (reads) | outline pulse while running; no double-press guard; failure only in Recent actions | yes | yes |
@@ -1336,6 +1352,9 @@ These change the screen immediately (open a menu, switch a tab) and need no busy
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy | `_copyTextWithToast` | onclick |
 | app.js | Copy id  | `_copyTextWithToast` | onclick |
+| app.js | All drafts | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
+| app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |
 | app.js | Close | `_crmClose` | onclick |

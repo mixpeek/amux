@@ -1527,16 +1527,25 @@ setTimeout(function(){document.documentElement.classList.remove('boot-peek-pendi
 </div>
 <!-- Photos: a media library on the owner's own Mixpeek (photos.js, loaded on first open). -->
 <div id="photos-view" class="ph-host" style="display:none;"></div>
-<!-- CRM (docs/design/crm.md): people, companies, deals, follow-ups. One row of
-     controls on a phone: search, then the views and filters, scrolling sideways. -->
+<!-- CRM (docs/design/crm.md): an agentic CRM run by workers. On a desktop a
+     rail of sections, a list and the open record beside it; on a phone one row
+     of controls (search, sections and filters scrolling sideways) over the list,
+     and the record opens over it. -->
 <div id="crm-view" class="crm-view">
-  <div id="crm-bar" class="crm-bar" role="toolbar" aria-label="CRM views and filters">
-    <input id="crm-q" class="input crm-q" type="search" placeholder="Search" aria-label="Search the CRM" oninput="_crmSearch(this.value)">
-    <div id="crm-chips" class="crm-chips"></div>
-    <button class="btn primary crm-new" onclick="_crmNew()" aria-label="Add to the CRM">+ New</button>
+  <nav id="crm-nav" class="crm-nav" aria-label="CRM sections"></nav>
+  <div class="crm-col">
+    <div id="crm-head" class="crm-head"></div>
+    <div id="crm-bar" class="crm-bar" role="toolbar" aria-label="CRM views and filters">
+      <input id="crm-q" class="input crm-q" type="search" placeholder="Search" aria-label="Search the CRM" oninput="_crmSearch(this.value)">
+      <div id="crm-chips" class="crm-chips"></div>
+      <button class="btn primary crm-new" onclick="_crmNew()" aria-label="Add to the CRM">+ New</button>
+    </div>
+    <div id="crm-note" class="crm-note"></div>
+    <div class="crm-panes">
+      <div id="crm-list" class="crm-list"></div>
+      <div id="crm-detail" class="crm-detail"></div>
+    </div>
   </div>
-  <div id="crm-note" class="crm-note"></div>
-  <div id="crm-list" class="crm-list"></div>
 </div>
 <div id="outbound-view" class="ob-view-root">
   <div class="ob-bar" role="toolbar" aria-label="Outbound views and filters">

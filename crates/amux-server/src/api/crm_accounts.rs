@@ -605,6 +605,12 @@ async fn summary(State(state): State<AppState>) -> Response {
         let people = n("SELECT COUNT(*) FROM crm_contacts WHERE deleted IS NULL")?;
         // The owner's queue: drafted touches waiting for an approve.
         let to_approve = n("SELECT COUNT(*) FROM crm_touches WHERE deleted IS NULL AND status='drafted'").unwrap_or(0);
+        // Of those, the ones that cannot go out as they stand: the voice check
+        // failed with no stated reason to send anyway, or the person opted out, bounced or is do-not-contact. The
+        // Outbound view's Blocked list uses the same predicate (app.js _crmBlocked).
+        let blocked = n("SELECT COUNT(*) FROM crm_touches t LEFT JOIN crm_contacts c ON c.id=t.contact_id WHERE t.deleted IS NULL AND t.status='drafted' \
+             AND ((json_extract(t.voice_check,'$.ok')=0 AND COALESCE(json_extract(t.voice_check,'$.override'),'')='') OR c.unsubscribed_at IS NOT NULL OR c.bounced_at IS NOT NULL OR c.status='do_not_contact')").unwrap_or(0);
+        let decided = n("SELECT COUNT(*) FROM crm_touches WHERE deleted IS NULL AND status IN ('approved','done','skipped','failed')").unwrap_or(0);
         let watched = n("SELECT COUNT(*) FROM crm_channels WHERE deleted IS NULL AND watch=1").unwrap_or(0);
         Ok(json!({
             "people": people,
@@ -612,6 +618,8 @@ async fn summary(State(state): State<AppState>) -> Response {
             "deals": n("SELECT COUNT(*) FROM crm_deals WHERE deleted IS NULL")?,
             "followups_due": due,
             "to_approve": to_approve,
+            "blocked": blocked,
+            "decided": decided,
             "watched": watched,
             "stages": stages,
             "measured": true, "n_considered": people,
