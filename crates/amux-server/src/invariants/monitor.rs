@@ -2386,8 +2386,13 @@ fn arrival_follows_boot_check(state: &AppState) -> Vec<InvariantResult> {
 /// pass after a boot used to read the whole 24h window at once (~750k rows,
 /// 70s to 325s on the live Mac, 2026-11-26), holding the monitor tick and
 /// showing it hung after every deploy. A bounded pass keeps each tick short;
-/// the window catches up over the following ticks.
-const BOOT_WINDOW_CHUNK: i64 = 20_000;
+/// the window catches up over the following ticks. Sized from the live run
+/// of the first version (20k rows a pass): 736,735 rows read in 12.7s of
+/// query time, about 17ms per 1,000 rows, but the monitor ticks every ~107s
+/// under load, so seeding took 67 minutes and the invariant read unmeasured
+/// for most of an hour after each deploy. 100k rows is ~2s a pass and ~8
+/// passes for a 24h window.
+const BOOT_WINDOW_CHUNK: i64 = 100_000;
 
 /// Rolling 24h counts for [`arrival_follows_boot_check`], fed by rowid.
 #[derive(Default)]
@@ -2472,7 +2477,7 @@ impl BootArrivalWindow {
                 );
             }
         }
-        if ms > 1000 {
+        if ms > 5000 {
             tracing::info!(
                 verdict = "reqlog_boot_window_slow",
                 ms = ms as u64,
