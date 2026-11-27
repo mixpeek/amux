@@ -3513,6 +3513,26 @@ pub const ROUTE_TABLE: &[RouteEntry] = &[
         methods: &["GET"],
     },
     RouteEntry {
+        path: "/llms.txt",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/discover",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/discover/search",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/discover/{family}",
+        methods: &["GET"],
+    },
+    RouteEntry {
+        path: "/api/mcp-server",
+        methods: &["POST"],
+    },
+    RouteEntry {
         path: "/api/crm/campaigns",
         methods: &["GET", "POST"],
     },

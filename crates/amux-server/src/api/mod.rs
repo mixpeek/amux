@@ -15,6 +15,7 @@ pub mod boundaries;
 pub mod bridge;
 pub mod contract;
 pub mod deep_links;
+pub mod discover;
 pub mod scratchpad;
 pub(crate) mod send_profile;
 pub(crate) mod board_groom;
@@ -534,6 +535,7 @@ pub fn router_with_connector_transport(
         // Skills / slash-commands / map: the SPA tabs' data (AMUX-2586 #6).
         .nest("/api/skills", skills::routes())
         .nest("/api/mcp", mcp::routes())
+        .merge(discover::routes())
         .nest("/api/sql", sql::routes())
         .nest("/api/pages", pages::api_routes())
         .nest("/api/slash-commands", skills::slash_routes())
@@ -865,6 +867,10 @@ pub fn router_with_connector_transport(
         // Copied file links (/f/<path>) and the file that lets the iOS app
         // claim them; neither reveals anything (deep_links.rs).
         .merge(deep_links::public_routes())
+        // What amux can do, for an agent pointed at it: the guide and the family
+        // index as markdown (no data in it, so no login). The API and MCP halves
+        // are behind auth with everything else (discover.rs).
+        .merge(discover::public_routes())
         // The ChatGPT app (AMUX-5396): /mcp and its OAuth server. Outside
         // require_bearer on purpose; each route authenticates for itself and
         // the loopback bypass earns nothing here (chatgpt_app.rs, trust rule).
