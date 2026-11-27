@@ -270,9 +270,17 @@ impl RequestLogger {
                             // The COUNT is the point (mandate: "count logged"):
                             // a sweep whose effect is invisible is a sweep
                             // nobody can verify fired.
+                            // `batch_full` says a backlog is draining across
+                            // sweeps (AMUX-4750's cap), not that retention
+                            // stopped at what it found.
                             tracing::info!(
+                                verdict = "request_log_retention",
                                 deleted,
                                 retain_days,
+                                batch_cap = RETENTION_BATCH_ROWS,
+                                batch_full = deleted as i64 >= RETENTION_BATCH_ROWS,
+                                measured = true,
+                                n_considered = deleted,
                                 "request-log retention sweep"
                             );
                             // Worker tool calls (audit.rs) keep the same window
